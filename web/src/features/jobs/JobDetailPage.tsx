@@ -12,12 +12,13 @@
  * - Gated (review_required) chip routes to EXISTING approve/reject flow
  * - Calm/empty/loading/error states with retry
  */
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
+import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { Button } from '@/design-system/primitives/Button';
 import { useJob, useRunJob, useStopJob } from '@/hooks/jobs';
 // eslint-disable-next-line no-restricted-imports -- need blocked_on_job_id filter not exposed via hooks; THR-011 option 3
@@ -65,18 +66,49 @@ function ScriptBlock({ job }: { job: JobRecord }): JSX.Element {
   );
 }
 
-/** Property rail — stored fields only, no invented columns. */
-function PropertyRail({ job }: { job: JobRecord }): JSX.Element {
-  const items: { label: string; value: string | null }[] = [
-    { label: 'Agent', value: job.agent_name },
-    { label: 'Task', value: job.task_id },
+/**
+ * Role for the agent avatar chip. Only the founder is distinguishable from a
+ * bare agent-name string, so every other agent renders as a worker (the dot is
+ * decorative). Mirrors the Tasks/Threads surfaces' honest mapping.
+ */
+function chipRole(name: string): 'worker' | 'founder' {
+  return name === 'founder' ? 'founder' : 'worker';
+}
+
+/** One label/value row inside the metadata rail card. */
+function RailRow({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+  return (
+    <div className="flex items-baseline gap-3">
+      <dt className="text-text-muted w-24 shrink-0 text-xs">{label}</dt>
+      <dd className="min-w-0 flex-1">{children}</dd>
+    </div>
+  );
+}
+
+/** Mono value for stored/technical fields (preserves the prior grid styling). */
+function MonoValue({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <span className="text-text-primary font-mono text-xs break-words tabular-nums">{children}</span>
+  );
+}
+
+/**
+ * Metadata rail — right-rail card styled per the a-job-detail reference
+ * (JOBDET-01). Agent identities (Requested by / Reviewed by) render via the
+ * AgentChip avatar idiom; the Task id renders as an entity link. Every stored
+ * field the prior inline "Details" grid showed is preserved here — no data is
+ * dropped. The reference's curated Routed-via / Thread / Kind / File rows have
+ * no backing value in the job payload, so they are honestly omitted rather
+ * than fabricated.
+ */
+function PropertyRail({ job, slug }: { job: JobRecord; slug: string | undefined }): JSX.Element {
+  // Stored technical fields, in the prior grid's order; only non-null shown.
+  const stored: { label: string; value: string | null }[] = [
     { label: 'Interpreter', value: job.interpreter },
     { label: 'CWD hint', value: job.cwd_hint },
     { label: 'CWD resolved', value: job.cwd_resolved },
-    { label: 'Created', value: formatDateTime(job.created_at) },
     { label: 'Started', value: formatDateTime(job.started_at) },
     { label: 'Finished', value: formatDateTime(job.finished_at) },
-    { label: 'Reviewed by', value: job.reviewed_by },
     { label: 'Reviewed at', value: formatDateTime(job.reviewed_at) },
     { label: 'Exit code', value: job.exit_code !== null ? String(job.exit_code) : null },
     { label: 'Duration', value: job.duration_ms !== null ? `${(job.duration_ms / 1000).toFixed(1)}s` : null },
@@ -85,28 +117,41 @@ function PropertyRail({ job }: { job: JobRecord }): JSX.Element {
     { label: 'Review required', value: job.review_required ? 'yes' : 'no' },
   ];
 
-  // Only show items with non-null values
-  const visible: { label: string; value: string }[] = [];
-  for (const item of items) {
-    if (item.value !== null) visible.push({ label: item.label, value: item.value });
-  }
-
-  if (visible.length === 0) return <></>;
-
   return (
-    <section>
-      <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-        Details
-      </h3>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-        {visible.map(({ label, value }) => (
-          <div key={label} className="flex gap-2">
-            <dt className="text-text-muted shrink-0">{label}</dt>
-            <dd className="text-text-primary truncate font-mono text-xs tabular-nums">{value}</dd>
-          </div>
-        ))}
-      </dl>
-    </section>
+    <aside className="lg:w-72 lg:shrink-0">
+      <div className="border-border-default bg-surface-raised rounded-xl border p-4">
+        <dl className="space-y-3 text-sm">
+          {/* Agent identities — AgentChip avatar idiom */}
+          <RailRow label="Requested by">
+            <AgentChip name={job.agent_name} role={chipRole(job.agent_name)} />
+          </RailRow>
+          {job.reviewed_by && (
+            <RailRow label="Reviewed by">
+              <AgentChip name={job.reviewed_by} role={chipRole(job.reviewed_by)} />
+            </RailRow>
+          )}
+          {/* Entity link — Task id deep-links to the task-detail route */}
+          <RailRow label="Task">
+            <IdBadge
+              id={job.task_id}
+              kind="task"
+              to={slug ? `/orgs/${slug}/tasks/${job.task_id}` : undefined}
+            />
+          </RailRow>
+          <RailRow label="Created">
+            <MonoValue>{formatDateTime(job.created_at)}</MonoValue>
+          </RailRow>
+          {/* Preserved stored fields — no data loss vs the prior grid */}
+          {stored.map(({ label, value }) =>
+            value !== null ? (
+              <RailRow key={label} label={label}>
+                <MonoValue>{value}</MonoValue>
+              </RailRow>
+            ) : null,
+          )}
+        </dl>
+      </div>
+    </aside>
   );
 }
 
@@ -337,7 +382,7 @@ export function JobDetailPage(): JSX.Element {
 
   // ── Normal render ──
   return (
-    <div className="mx-auto max-w-3xl px-4 py-6">
+    <div className="mx-auto max-w-5xl px-4 py-6">
       {/* Breadcrumb: contextual back-link to spawning task */}
       <nav className="mb-4">
         <Link
@@ -348,128 +393,131 @@ export function JobDetailPage(): JSX.Element {
         </Link>
       </nav>
 
-      {/* Header */}
-      <PageHeader
-        title={
-          <span className="flex items-center gap-2">
-            <span className="text-text-primary font-mono text-base tabular-nums">{job.id}</span>
-            <StatusBadge status={job.status as 'pending'} />
-          </span>
-        }
-        meta={
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-            <span>{job.agent_name}</span>
-            <span>·</span>
-            <IdBadge id={job.task_id} kind="task" to={`/orgs/${slug}/tasks/${job.task_id}`} />
-            <span>·</span>
-            <span>{relativeAge(job.created_at)}</span>
-          </span>
-        }
-      />
+      {/* Two-column body: primary content + right-rail metadata card (JOBDET-01) */}
+      <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div className="min-w-0 flex-1">
+          {/* Header */}
+          <PageHeader
+            title={
+              <span className="flex items-center gap-2">
+                <span className="text-text-primary font-mono text-base tabular-nums">{job.id}</span>
+                <StatusBadge status={job.status as 'pending'} />
+              </span>
+            }
+            meta={
+              <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <span>{job.agent_name}</span>
+                <span>·</span>
+                <IdBadge id={job.task_id} kind="task" to={`/orgs/${slug}/tasks/${job.task_id}`} />
+                <span>·</span>
+                <span>{relativeAge(job.created_at)}</span>
+              </span>
+            }
+          />
 
-      {/* Title */}
-      <h2 className="text-text-primary font-display mt-4 text-base font-semibold">{job.title}</h2>
+          {/* Title */}
+          <h2 className="text-text-primary font-display mt-4 text-base font-semibold">{job.title}</h2>
 
-      {/* Rationale */}
-      {job.rationale && (
-        <section className="mt-5">
-          <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-            Rationale
-          </h3>
-          <p className="text-text-primary text-sm whitespace-pre-wrap">{job.rationale}</p>
-        </section>
-      )}
-
-      {/* Verbatim command */}
-      <div className="mt-5">
-        <ScriptBlock job={job} />
-      </div>
-
-      {/* Rejection reason */}
-      {job.status === 'rejected' && job.reject_reason && (
-        <section className="mt-5">
-          <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-            Rejection reason
-          </h3>
-          <p className="text-text-primary text-sm whitespace-pre-wrap">{job.reject_reason}</p>
-        </section>
-      )}
-
-      {/* Failure reason */}
-      {job.status === 'failed' && job.reason && (
-        <section className="mt-5">
-          <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-            Failure reason
-          </h3>
-          <p className="text-text-primary font-mono text-sm">{job.reason}</p>
-        </section>
-      )}
-
-      {/* "If approved" cascade — always visible for pending jobs */}
-      {job.status === 'pending' && slug && (
-        <div className="mt-5">
-          <IfApprovedCascade slug={slug} jobId={jobId ?? ''} />
-        </div>
-      )}
-
-      {/* Property rail */}
-      <div className="mt-5">
-        <PropertyRail job={job} />
-      </div>
-
-      {/* ── Actions ── */}
-      {/* Gated (review_required) pending job → chip with Approve + Reject */}
-      {job.status === 'pending' && job.review_required && showTwoStep === null && (
-        <GatedChip
-          onApprove={() => setShowTwoStep('run')}
-          onReject={() => setOpenDialog('reject')}
-        />
-      )}
-
-      {/* Pending, non-gated → uniform two-step confirm */}
-      {job.status === 'pending' && !job.review_required && showTwoStep === null && (
-        <div className="mt-4 flex gap-3">
-          <Button onClick={() => setShowTwoStep('run')}>Run</Button>
-          <Button variant="secondary" onClick={() => setOpenDialog('reject')}>
-            Reject
-          </Button>
-        </div>
-      )}
-
-      {/* Two-step confirm for run (used by both gated and non-gated paths) */}
-      {job.status === 'pending' && showTwoStep === 'run' && (
-        <TwoStepConfirm
-          action="run"
-          onConfirm={() => {
-            setShowTwoStep(null);
-            setOpenDialog('run');
-          }}
-          onCancel={() => setShowTwoStep(null)}
-          isPending={run.isPending}
-        />
-      )}
-
-      {/* Running job: Stop button */}
-      {job.status === 'running' && (
-        <div className="mt-4 flex flex-col gap-2">
-          <div className="flex gap-3">
-            <Button
-              variant="destructive"
-              onClick={onStop}
-              disabled={stop.isPending}
-            >
-              {stop.isPending ? 'Stopping…' : 'Stop'}
-            </Button>
-          </div>
-          {actionError && (
-            <p className="text-feedback-danger text-sm">{actionError}</p>
+          {/* Rationale */}
+          {job.rationale && (
+            <section className="mt-5">
+              <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                Rationale
+              </h3>
+              <p className="text-text-primary text-sm whitespace-pre-wrap">{job.rationale}</p>
+            </section>
           )}
-        </div>
-      )}
 
-      {/* Output panel */}
-      <div className="mt-5">
-        <OutputPanel job={job} slug={slug ?? ''} />
+          {/* Verbatim command */}
+          <div className="mt-5">
+            <ScriptBlock job={job} />
+          </div>
+
+          {/* Rejection reason */}
+          {job.status === 'rejected' && job.reject_reason && (
+            <section className="mt-5">
+              <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                Rejection reason
+              </h3>
+              <p className="text-text-primary text-sm whitespace-pre-wrap">{job.reject_reason}</p>
+            </section>
+          )}
+
+          {/* Failure reason */}
+          {job.status === 'failed' && job.reason && (
+            <section className="mt-5">
+              <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                Failure reason
+              </h3>
+              <p className="text-text-primary font-mono text-sm">{job.reason}</p>
+            </section>
+          )}
+
+          {/* "If approved" cascade — always visible for pending jobs */}
+          {job.status === 'pending' && slug && (
+            <div className="mt-5">
+              <IfApprovedCascade slug={slug} jobId={jobId ?? ''} />
+            </div>
+          )}
+
+          {/* ── Actions ── */}
+          {/* Gated (review_required) pending job → chip with Approve + Reject */}
+          {job.status === 'pending' && job.review_required && showTwoStep === null && (
+            <GatedChip
+              onApprove={() => setShowTwoStep('run')}
+              onReject={() => setOpenDialog('reject')}
+            />
+          )}
+
+          {/* Pending, non-gated → uniform two-step confirm */}
+          {job.status === 'pending' && !job.review_required && showTwoStep === null && (
+            <div className="mt-4 flex gap-3">
+              <Button onClick={() => setShowTwoStep('run')}>Run</Button>
+              <Button variant="secondary" onClick={() => setOpenDialog('reject')}>
+                Reject
+              </Button>
+            </div>
+          )}
+
+          {/* Two-step confirm for run (used by both gated and non-gated paths) */}
+          {job.status === 'pending' && showTwoStep === 'run' && (
+            <TwoStepConfirm
+              action="run"
+              onConfirm={() => {
+                setShowTwoStep(null);
+                setOpenDialog('run');
+              }}
+              onCancel={() => setShowTwoStep(null)}
+              isPending={run.isPending}
+            />
+          )}
+
+          {/* Running job: Stop button */}
+          {job.status === 'running' && (
+            <div className="mt-4 flex flex-col gap-2">
+              <div className="flex gap-3">
+                <Button
+                  variant="destructive"
+                  onClick={onStop}
+                  disabled={stop.isPending}
+                >
+                  {stop.isPending ? 'Stopping…' : 'Stop'}
+                </Button>
+              </div>
+              {actionError && (
+                <p className="text-feedback-danger text-sm">{actionError}</p>
+              )}
+            </div>
+          )}
+
+          {/* Output panel */}
+          <div className="mt-5">
+            <OutputPanel job={job} slug={slug ?? ''} />
+          </div>
+        </div>
+
+        {/* Right-rail metadata card */}
+        <PropertyRail job={job} slug={slug} />
       </div>
 
       {/* ── Dialogs ── */}
