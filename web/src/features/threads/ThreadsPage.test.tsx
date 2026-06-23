@@ -770,6 +770,93 @@ describe('ThreadsPage — segmented status filter (THREADS-02)', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  List header — serif eyebrow + title (THREADS-04)                   */
+/* ------------------------------------------------------------------ */
+
+describe('ThreadsPage — list header eyebrow + serif title (THREADS-04)', () => {
+  // Status-aware handler: open + archived are disjoint, so the org-wide header
+  // counts (total threads, dream-opened) are derived across BOTH buckets.
+  function mountWithHeaderData() {
+    const open = [
+      mkThread('THR-O1', 'Open alpha', { status: 'open' }),
+      mkThread('THR-O2', 'Open beta', {
+        status: 'open',
+        composed_from_dream_id: 'DREAM-007',
+      }),
+    ];
+    const archived = [mkThread('THR-A1', 'Archived gamma', { status: 'archived' })];
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+        const status = new URL(request.url).searchParams.get('status');
+        if (status === 'archived') return HttpResponse.json({ threads: archived });
+        if (status === 'open') return HttpResponse.json({ threads: open });
+        return HttpResponse.json({ threads: [...open, ...archived] });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+  }
+
+  test('renders the serif (font-display) title "Conversations across the org"', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountWithHeaderData();
+    mountAt(`/orgs/${SLUG}/threads`);
+    const title = await screen.findByRole('heading', {
+      name: /Conversations across the org/i,
+    });
+    // Serif display role — the same font-display token the KB/Audit headers use.
+    expect(title).toHaveClass('font-display');
+  });
+
+  test('eyebrow shows org-wide thread count and dream-opened count (data-backed)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountWithHeaderData();
+    mountAt(`/orgs/${SLUG}/threads`);
+    // 3 threads total (2 open + 1 archived), 1 opened from a dream.
+    await waitFor(() => {
+      expect(
+        screen.getByText(/3\s+THREADS\b.*\b1\s+DREAM-OPENED/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  test('singular thread count is not pluralized', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+        const status = new URL(request.url).searchParams.get('status');
+        if (status === 'archived') return HttpResponse.json({ threads: [] });
+        return HttpResponse.json({ threads: [mkThread('THR-1', 'Solo')] });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => {
+      expect(screen.getByText(/\b1\s+THREAD\b/)).toBeInTheDocument();
+    });
+    // "1 THREAD", never "1 THREADS".
+    expect(screen.queryByText(/\b1\s+THREADS\b/)).not.toBeInTheDocument();
+  });
+
+  test('omits the unbacked "waiting on you" eyebrow segment (no awaiting-founder field)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountWithHeaderData();
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Conversations across the org/i }),
+      ).toBeInTheDocument();
+    });
+    // The threads-list payload exposes no awaiting-founder field, so the
+    // Direction-A "X WAITING ON YOU" segment is honestly omitted, not faked.
+    expect(screen.queryByText(/waiting on you/i)).not.toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /*  Retry button query-key invalidation (regression guard for TASK-506) */
 /* ------------------------------------------------------------------ */
 

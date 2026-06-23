@@ -21,8 +21,14 @@ export function describeError(code: string | null | undefined, fallback?: string
 
 /** Per §2.5.5 shared state vocabulary for the Threads surface. */
 export const THREADS_STRINGS = {
-  /* Page chrome */
-  pageTitle: 'Threads',
+  /* Page chrome — THREADS-04: serif eyebrow + title (a-threads Direction-A).
+     Eyebrow segments are org-wide counts the threads-list payload already
+     returns: total threads + dream-opened (composed_from_dream_id). The
+     reference's "X waiting on you" segment is omitted — no awaiting-founder
+     field backs it honestly. */
+  pageTitle: 'Conversations across the org',
+  headerEyebrow: (total: number, dreamOpened: number) =>
+    `${total} THREAD${total === 1 ? '' : 'S'} · ${dreamOpened} DREAM-OPENED`,
   pageSubtitle: 'Broadcast conversations — all participants see every message.',
   newThread: '+ New',
   filterPlaceholder: 'Filter…',
