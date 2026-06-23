@@ -145,6 +145,10 @@ interface UseAssistantChatWs {
   messages: AssistantMessage[];
   sendMessage: (text: string) => void;
   connecting: boolean;
+  // True only once the server's "ready" ack has arrived and the socket is
+  // still live — surfaces an honest, data-backed connection state for the
+  // dock header's status line. Cleared on close/error/reconnect.
+  connected: boolean;
   error: string | null;
 }
 
@@ -155,6 +159,7 @@ function useAssistantChatWs(
 ): UseAssistantChatWs {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [connecting, setConnecting] = useState(false);
+  const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const readyRef = useRef(false);
@@ -175,6 +180,7 @@ function useAssistantChatWs(
     let disposed = false;
     readyRef.current = false;
     setConnecting(true);
+    setConnected(false);
     setError(null);
 
     openSession()
@@ -202,6 +208,7 @@ function useAssistantChatWs(
               if (frame.code === 'ready') {
                 readyRef.current = true;
                 setConnecting(false);
+                setConnected(true);
               }
             } else if (frame.type === 'output') {
               const text = frame.text ?? '';
@@ -248,17 +255,20 @@ function useAssistantChatWs(
         ws.onclose = () => {
           wsRef.current = null;
           setConnecting(false);
+          setConnected(false);
         };
 
         ws.onerror = () => {
           setError('WebSocket connection failed.');
           setConnecting(false);
+          setConnected(false);
         };
       })
       .catch((err: unknown) => {
         if (!disposed) {
           setError(`Connection failed: ${String(err)}`);
           setConnecting(false);
+          setConnected(false);
         }
       });
 
@@ -291,7 +301,7 @@ function useAssistantChatWs(
     [],
   );
 
-  return { messages, sendMessage, connecting, error };
+  return { messages, sendMessage, connecting, connected, error };
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +323,7 @@ export function AssistantDockHost(): JSX.Element {
   const statusQuery = useAssistantStatus();
   const status = statusQuery.data;
 
-  const { messages, sendMessage, connecting, error: wsError } =
+  const { messages, sendMessage, connecting, connected, error: wsError } =
     useAssistantChatWs(open, status, statusQuery.isLoading);
 
   const toggle = useCallback(() => setOpen((o) => !o), []);
@@ -364,6 +374,26 @@ export function AssistantDockHost(): JSX.Element {
   const assistantConfigured = status?.state === 'configured';
   const assistantPath = activeSlug ? `/orgs/${activeSlug}/assistant` : '/assistant';
 
+  // DOCK-02 header — connection status line. Every label below is derived
+  // from state the dock already tracks (status poll + live WS signals); no
+  // connection is asserted that cannot be proven. `tone` selects a token
+  // text-color for the leading dot + label.
+  const connection: { tone: string; label: string } = statusQuery.isLoading
+    ? { tone: 'text-text-muted', label: 'Checking…' }
+    : !assistantConfigured
+      ? { tone: 'text-text-muted', label: 'Not configured' }
+      : wsError
+        ? { tone: 'text-feedback-danger', label: 'Disconnected' }
+        : connecting
+          ? { tone: 'text-feedback-warning', label: 'Connecting…' }
+          : connected
+            ? { tone: 'text-feedback-success', label: 'Connected' }
+            : { tone: 'text-text-muted', label: 'Idle' };
+
+  // Executor pill — rendered only when the selected executor is data-backed
+  // (AssistantStatus.selected_executor). Honestly omitted when null.
+  const executor = status?.selected_executor ?? null;
+
   return (
     <>
       {/* Scrim — Pasture surface-scrim token, same opacity semantics */}
@@ -379,18 +409,37 @@ export function AssistantDockHost(): JSX.Element {
       <div
         ref={containerRef}
         role="dialog"
-        aria-label="System Assistant"
+        aria-label="Ranch Assistant"
         aria-modal={open ? 'true' : undefined}
         className={[
           'border-border-default bg-surface-raised fixed right-0 top-0 z-50 flex h-full w-full max-w-lg flex-col border-l shadow-pasture-lg rounded-l-lg transition-transform duration-200',
           open ? 'translate-x-0' : 'translate-x-full pointer-events-none',
         ].join(' ')}
       >
-        {/* Header — Pasture font-display heading */}
+        {/* Header — Pasture font-display heading + connection status line */}
         <div className="border-border-default flex shrink-0 items-center gap-2 border-b px-4 py-3">
-          <span className="text-text-primary font-display flex-1 text-base">
-            System Assistant
-          </span>
+          <div className="min-w-0 flex-1">
+            <span className="text-text-primary font-display block text-base">
+              Ranch Assistant
+            </span>
+            <div className="mt-0.5 flex items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-1 text-xs ${connection.tone}`}
+              >
+                <span
+                  className="inline-block h-1.5 w-1.5 rounded-full bg-current"
+                  aria-hidden="true"
+                />
+                {connection.label}
+              </span>
+              <span className="text-text-muted text-xs">· operates your runtime</span>
+              {executor && (
+                <span className="bg-surface-sunken text-text-secondary inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium">
+                  {executor}
+                </span>
+              )}
+            </div>
+          </div>
 
           {/* "Open full session" escape hatch — retained xterm page */}
           <a
