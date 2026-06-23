@@ -518,7 +518,7 @@ export function AssistantDockHost(): JSX.Element {
                 value={composerDraft}
                 onChange={(e) => setComposerDraft(e.target.value)}
                 onKeyDown={handleComposerKeyDown}
-                placeholder="Ask or search…"
+                placeholder="Ask the assistant, or type / to run a command…"
                 rows={1}
                 className="border-border-default bg-surface-sunken text-text-primary placeholder:text-text-muted focus:border-accent-ring min-h-9 flex-1 resize-none rounded-lg border px-3 py-2 text-sm focus:outline-none"
                 aria-label="Assistant composer"
