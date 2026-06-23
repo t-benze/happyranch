@@ -116,7 +116,29 @@ describe('JobDetailPage — read path', () => {
     // Property rail items (stored fields only) — use getAllByText since agent_name
     // appears in both the header meta and the property rail
     expect(screen.getAllByText('engineering_head').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('bash')).toBeInTheDocument();
+    // Interpreter now appears in both the property rail and the command-card
+    // terminal footer (JOBDET-02), so scope this stored-field check to the rail.
+    expect(within(screen.getByRole('complementary')).getByText('bash')).toBeInTheDocument();
+  });
+
+  // JOBDET-02: the command card is styled with terminal chrome — a "›_ command"
+  // header bar plus an interpreter/cwd footer — rather than a plain
+  // "COMMAND (bash · cwd: …)" label above a bare command box.
+  test('JOBDET-02: command card has a terminal header and an interpreter/cwd footer', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobDetail({ ...JOB, cwd_hint: '/srv/build' });
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText('docker image prune -af')).toBeInTheDocument();
+    });
+
+    // Terminal-chrome header bar with the "›_ command" prompt glyph.
+    expect(screen.getByText('›_')).toBeInTheDocument();
+    expect(screen.getByText('command')).toBeInTheDocument();
+
+    // Interpreter/cwd footer rendered from existing job fields.
+    expect(screen.getByText('bash · cwd: /srv/build')).toBeInTheDocument();
   });
 
   // JOBDET-01: job metadata renders as a right-rail card styled per the
