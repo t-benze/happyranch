@@ -434,6 +434,95 @@ describe('KbPage — candidate review gate', () => {
 /*  Tests — loading & empty states                                     */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/*  Tests — header treatment (KB-02, THR-030)                          */
+/* ------------------------------------------------------------------ */
+
+describe('KbPage — header treatment (KB-02)', () => {
+  test('renders the uppercase eyebrow with the live document count and the serif title; no plain "Knowledge" title', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        // Two entries rendered → "2 DOCUMENTS"
+        HttpResponse.json({ entries: [ENTRY_A, ENTRY_B] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+
+    // Uppercase eyebrow reflects the live count of rendered entries.
+    expect(screen.getByText('ALL ENTRIES · 2 DOCUMENTS')).toBeInTheDocument();
+
+    // Serif title carries the font-display class and is an h1.
+    const title = screen.getByRole('heading', {
+      name: 'What the org has learned',
+    });
+    expect(title.tagName).toBe('H1');
+    expect(title).toHaveClass('font-display');
+
+    // The old plain "Knowledge" title is gone.
+    expect(screen.queryByRole('heading', { name: 'Knowledge' })).toBeNull();
+  });
+
+  test('renders an amber "N candidates pending" pill when candidate data is present', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [DREAM_WITH_CANDIDATE] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams/DREAM-0099`, () =>
+        HttpResponse.json({
+          ...DREAM_WITH_CANDIDATE,
+          kb_candidates: [CANDIDATE_A],
+        }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+
+    const pill = await screen.findByText('1 candidate pending');
+    // Amber treatment via the semantic feedback-warning token.
+    expect(pill).toHaveClass('text-feedback-warning');
+  });
+
+  test('omits the candidates pill when no candidate data is available', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    expect(screen.queryByText(/candidate.? pending/)).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Tests — loading & empty states                                     */
+/* ------------------------------------------------------------------ */
+
 describe('KbPage — loading & empty states', () => {
   test('shows loading skeleton while fetching', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
@@ -451,8 +540,9 @@ describe('KbPage — loading & empty states', () => {
       ),
     );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
-    // Skeleton should show — page title "Knowledge" is in an h1
-    await screen.findByRole('heading', { name: 'Knowledge' });
+    // Skeleton should show — the serif page title is in an h1 (renders
+    // synchronously, before the entries fetch resolves).
+    await screen.findByRole('heading', { name: 'What the org has learned' });
   });
 
   test('shows empty state when no entries and no candidates', async () => {
