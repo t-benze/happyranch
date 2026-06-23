@@ -78,6 +78,30 @@ describe('AuditPage — day-grouped timeline', () => {
     });
   });
 
+  // AUDIT-03: page header treatment — uppercase eyebrow + Newsreader serif
+  // title, matching the a-audit Direction-A reference and the Tasks/Agents
+  // surfaces shipped earlier this program.
+  test('renders the AUDIT-03 eyebrow and serif page title', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedAudit();
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    const title = await screen.findByRole('heading', {
+      name: "The org's audit trail",
+    });
+    expect(title).toBeInTheDocument();
+    expect(title).toHaveClass('font-display');
+
+    expect(
+      screen.getByText('APPEND-ONLY · EVERY ACTION, WHO & WHEN'),
+    ).toBeInTheDocument();
+
+    // The old plain "Audit" h2 title must be gone.
+    expect(
+      screen.queryByRole('heading', { name: 'Audit' }),
+    ).not.toBeInTheDocument();
+  });
+
   test('renders the five-class right-rail legend with per-class counts', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedAudit();

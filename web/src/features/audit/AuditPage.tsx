@@ -17,7 +17,6 @@
  */
 import { useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { Button } from '@/design-system/primitives/Button';
 import { cn } from '@/lib/utils';
 import { useAuditList } from '@/hooks/audit';
@@ -130,10 +129,16 @@ export function AuditPage(): JSX.Element {
       {/* --- Top bar --- */}
       <header className="bg-surface border-border-default mx-4 mt-4 rounded-lg border p-4">
         <div className="flex items-start justify-between gap-3">
-          <PageHeader
-            title="Audit"
-            meta="Immutable, append-only forensic record — what happened, who, when."
-          />
+          {/* AUDIT-03: uppercase eyebrow + Newsreader serif title, matching the
+              a-audit Direction-A reference and the Tasks/Agents surfaces. */}
+          <div className="min-w-0 flex-1">
+            <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
+              APPEND-ONLY · EVERY ACTION, WHO &amp; WHEN
+            </p>
+            <h1 className="font-display text-display text-text-primary mt-1 font-medium">
+              The org&apos;s audit trail
+            </h1>
+          </div>
           <Button variant="secondary" size="sm" onClick={handleExport}>
             Export
           </Button>
