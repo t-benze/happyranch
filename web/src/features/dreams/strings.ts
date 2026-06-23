@@ -31,6 +31,14 @@ export const DREAM_STRINGS = {
   /** Learnings */
   learningsCount: (n: number) => `${n} learning${n === 1 ? '' : 's'}`,
   candidatesCount: (n: number) => `${n} candidate${n === 1 ? '' : 's'}`,
+  reflectionsCount: (n: number) => `${n} reflection${n === 1 ? '' : 's'}`,
+  /** Right-side overview rail (DREAMS-02) — data-backed totals + calm sections */
+  railOverviewTitle: 'Overview',
+  railCandidatesTitle: 'Knowledge candidates',
+  railCandidatesEmpty: 'No knowledge candidates',
+  railScheduleTitle: 'Schedule',
+  /** Honest schedule note — no fabricated next-run time (none is on the payload) */
+  railScheduleNote: 'Runs on the schedule configured in Settings.',
   /** Thread */
   openReflectionThread: 'Open reflection thread',
   noReflectionThread: 'No reflection thread opened',
