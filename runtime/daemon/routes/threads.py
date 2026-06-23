@@ -1209,6 +1209,121 @@ async def send_thread_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# POST /threads/{id}/post-as-agent — a live task session posts a MESSAGE into
+# an EXISTING thread it participates in (THR-027). The task-session analogue of
+# /threads/{id}/send: binding checks mirror compose-as-agent; the append +
+# broadcast effect mirrors _send_thread_message_inprocess, except the message
+# is attributed to the agent and REPLY tokens are minted to OTHER participants
+# only (the composer is excluded). Authz is participant-only (founder ruling
+# THR-027 seq=18): contrast compose-as-agent, which opens a NEW thread.
+# ---------------------------------------------------------------------------
+
+
+class PostAsAgentBody(BaseModel):
+    composer: str
+    task_id: str | None = None
+    session_id: str | None = None
+    body_markdown: str = ""
+    attachments: list[AttachmentRefBody] = Field(default_factory=list)
+
+
+@router.post("/threads/{thread_id}/post-as-agent")
+async def post_thread_as_agent(
+    slug: str, thread_id: str, body: PostAsAgentBody, org: OrgDep,
+) -> dict:
+    # Task binding — mirrors compose_thread_as_agent: task_id+session_id
+    # required, task exists, composer owns it, active session matches.
+    if not body.task_id or not body.session_id:
+        raise HTTPException(status_code=422, detail={"code": "binding_required"})
+    task = org.db.get_task(body.task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "unknown_task", "task_id": body.task_id}
+        )
+    if task.assigned_agent != body.composer:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "composer_not_task_owner",
+                    "composer": body.composer, "assigned_agent": task.assigned_agent},
+        )
+    active_sid = org.sessions.get_active(body.task_id, body.composer)
+    if active_sid is None or active_sid != body.session_id:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
+        )
+
+    # Thread must exist before participation can be evaluated.
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+
+    # Authz (participant-only, founder ruling THR-027 seq=18): the composer must
+    # already be a current participant of the thread.
+    participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
+    if body.composer not in participants:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "not_a_participant", "composer": body.composer},
+        )
+
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+
+    attachments = _normalize_attachments(
+        org, body.attachments, uploaded_by=body.composer,
+    )
+    body_text = _normalize_message_body(body.body_markdown, attachments)
+
+    # Turn-cap guard mirrors _send_thread_message_inprocess.
+    projected = t.turns_used + 1
+    if projected > t.turn_cap:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "turn_cap_exceeded",
+                    "used": t.turns_used, "cap": t.turn_cap, "requested": 1},
+        )
+
+    # Broadcast model: mint REPLY for every OTHER participant (exclude the
+    # composer — they are the speaker).
+    addressed = [name for name in participants if name != body.composer]
+
+    tokens_to_enqueue: list[str] = []
+    async with org.db_lock:
+        seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker=body.composer,
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown=body_text,
+            attachments=attachments,
+            sent_from_task_id=body.task_id,
+        )
+        org.db.increment_thread_turns_used(thread_id, by=1)
+        AuditLogger(org.db).log_thread_message_sent(
+            thread_id, seq=seq, speaker=body.composer, kind="message",
+            attachment_names=[a.artifact_name for a in attachments],
+        )
+        for name in addressed:
+            inv = org.db.mint_thread_invocation(
+                thread_id=thread_id, agent_name=name,
+                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+            )
+            tokens_to_enqueue.append(inv.invocation_token)
+
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=seq, speaker=body.composer,
+        kind="message",
+        preview=body_text or _attachments_preview(attachments),
+        status="open",
+    )
+
+    return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
+
+
+# ---------------------------------------------------------------------------
 # Task 25 — POST /threads/{id}/invite
 # ---------------------------------------------------------------------------
 

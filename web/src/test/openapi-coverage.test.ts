@@ -164,6 +164,8 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/dispatch', 'agent invocation token only'],
   // agent-initiated thread compose (agent callback — not exercised from the Web UI)
   ['POST /api/v1/orgs/{slug}/threads/compose-as-agent', 'agent callback — not exercised from the Web UI'],
+  // task-session post into an existing thread (agent callback — not exercised from the Web UI)
+  ['POST /api/v1/orgs/{slug}/threads/{thread_id}/post-as-agent', 'agent callback — not exercised from the Web UI'],
   // jobs agent callback
   ['POST /api/v1/orgs/{slug}/jobs/submit', 'agent callback (matches /report-completion pattern)'],
   // Artifacts — agent-facing v1, also surfaced read+create in the founder
