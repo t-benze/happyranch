@@ -11,6 +11,9 @@ export const KB_STRINGS = {
   drawerLoading: 'Loading entry…',
   filterAll: 'All',
   filterFolders: 'Folders',
+  /** Grouped folder rail (KB-01). */
+  railLibrarySection: 'Library',
+  railAllEntries: 'All entries',
   authoredBy: (agent: string) => `Authored by ${agent}`,
   sourceTaskLabel: 'Source task:',
   relatedEntriesLabel: 'Related entries:',
