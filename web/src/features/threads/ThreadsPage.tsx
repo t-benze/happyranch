@@ -164,6 +164,16 @@ export function ThreadsPage(): JSX.Element {
     open: openCount,
     done: archivedCount,
   };
+  // Org-wide dream-opened count for the header eyebrow (THREADS-04) — derived
+  // across BOTH buckets from composed_from_dream_id, independent of the active
+  // filter, so the count reflects the org rather than the current view.
+  const dreamOpenedCount = useMemo(() => {
+    const openThreads = openQuery.data?.threads ?? [];
+    const archivedThreads = archivedQuery.data?.threads ?? [];
+    return [...openThreads, ...archivedThreads].filter(
+      (t) => t.composed_from_dream_id !== null,
+    ).length;
+  }, [openQuery.data, archivedQuery.data]);
   const bucketLoading =
     bucket === 'open'
       ? openQuery.isLoading
@@ -326,8 +336,18 @@ export function ThreadsPage(): JSX.Element {
   const inbox = (
       <aside className="bg-surface-sunken flex h-full flex-col">
         <header className="border-border-default border-b px-3 py-3">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="font-display text-text-primary text-lg font-medium tracking-tight">{S.pageTitle}</h2>
+          <div className="flex items-start justify-between gap-2">
+            {/* THREADS-04: uppercase eyebrow (org-wide thread + dream-opened
+                counts) + Newsreader serif title, matching the a-threads
+                Direction-A reference and the KB/Audit surfaces. */}
+            <div className="min-w-0 flex-1">
+              <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
+                {S.headerEyebrow(counts.all, dreamOpenedCount)}
+              </p>
+              <h1 className="font-display text-display text-text-primary mt-1 font-medium">
+                {S.pageTitle}
+              </h1>
+            </div>
             <Button
               size="sm"
               onClick={openNew}
