@@ -21,6 +21,7 @@ import type { AuditEntry } from '@/lib/api/types';
 import {
   decodeFilters,
   isAllClear,
+  classOf,
   DOT_COLOR_CLASS,
 } from './audit-filters';
 import {
@@ -224,7 +225,14 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
   });
   const queryClient = useQueryClient();
 
-  const entries = auditQuery.data?.entries ?? [];
+  // Narrow to the active event-class CLIENT-SIDE (AUDIT-02): the right-rail
+  // legend filter selects one of the five human classes, which spans several
+  // raw event-types, so it can't be a single-`action` API param. Filtering the
+  // already-fetched rows keeps the legend counts stable and avoids a refetch.
+  const allEntries = auditQuery.data?.entries ?? [];
+  const entries = filters.eventClass
+    ? allEntries.filter((e) => classOf(e.action) === filters.eventClass)
+    : allEntries;
 
   // Loading
   if (auditQuery.isLoading) return <TimelineSkeleton />;

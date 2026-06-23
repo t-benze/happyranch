@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -78,66 +78,83 @@ describe('AuditPage — day-grouped timeline', () => {
     });
   });
 
-  test('renders legend with counts', async () => {
+  test('renders the five-class right-rail legend with per-class counts', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedAudit();
     mountAt(`/orgs/${SLUG}/audit`);
 
+    // The right rail shows all five fixed classes, each with a colored dot + count.
+    const rail = await screen.findByLabelText('Event type filter');
+    for (const label of ['Dispatch', 'Completed', 'Merge', 'Escalation', 'Failure']) {
+      expect(within(rail).getByText(label)).toBeInTheDocument();
+    }
+    expect(screen.getByRole('heading', { name: 'Event types' })).toBeInTheDocument();
+
+    // defaultEntries: completion_report + review_verdict + escalation_resolved → Completed = 3
+    const completedBtn = within(rail).getByText('Completed').closest('button')!;
     await waitFor(() => {
-      // Each legend chip shows label + count. completion_report maps to "Completed".
-      expect(screen.getByText('Completed')).toBeInTheDocument();
-      expect(screen.getByText('Reviewed')).toBeInTheDocument();
-      expect(screen.getByText('Escalation')).toBeInTheDocument();
-      expect(screen.getByText('Escalated — resolved')).toBeInTheDocument();
+      expect(within(completedBtn).getByText('3')).toBeInTheDocument();
     });
+    // escalation → Escalation = 1
+    const escalationBtn = within(rail).getByText('Escalation').closest('button')!;
+    expect(within(escalationBtn).getByText('1')).toBeInTheDocument();
   });
 
-  test('legend click filters timeline by event type', async () => {
+  test('clicking a class narrows the timeline to that class', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    seedAudit();
+    seedAudit([
+      { id: 1, task_id: 'TASK-C', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-18T10:00:00Z' },
+      { id: 2, task_id: 'TASK-E', agent: 'qa_engineer', action: 'escalation', payload: {}, timestamp: '2026-06-18T09:00:00Z' },
+      { id: 3, task_id: 'TASK-F', agent: 'dev_agent', action: 'session_failed', payload: {}, timestamp: '2026-06-18T08:00:00Z' },
+    ]);
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/audit`);
 
-    // Wait for legend to render
     await waitFor(() => {
-      expect(screen.getByText('Completed')).toBeInTheDocument();
+      expect(screen.getByText('TASK-C')).toBeInTheDocument();
+      expect(screen.getByText('TASK-E')).toBeInTheDocument();
+      expect(screen.getByText('TASK-F')).toBeInTheDocument();
     });
 
-    // Click "Escalation" legend chip (first one is the legend, second is the row action text)
-    const escalationChips = screen.getAllByText('Escalation');
-    // The legend chip is inside a button; click its closest button
-    const chipBtn = escalationChips[0].closest('button')!;
-    await user.click(chipBtn);
+    const rail = screen.getByLabelText('Event type filter');
+    const completedBtn = within(rail).getByText('Completed').closest('button')!;
+    await user.click(completedBtn);
 
-    // URL should contain action=escalation
     await waitFor(() => {
-      // getSearchParams is driven by URL; check the active filter banner
-      expect(screen.getByText(/Filtered:/)).toBeInTheDocument();
-      // Verify the filter action text appears in the banner
-      expect(screen.getByText('escalation', { selector: '.text-text-primary.font-medium' })).toBeInTheDocument();
+      expect(completedBtn).toHaveAttribute('aria-pressed', 'true');
+      // Only the completed-class row remains; other classes are narrowed out.
+      expect(screen.getByText('TASK-C')).toBeInTheDocument();
+      expect(screen.queryByText('TASK-E')).not.toBeInTheDocument();
+      expect(screen.queryByText('TASK-F')).not.toBeInTheDocument();
     });
+    // The clear affordance appears once a class is active.
+    expect(within(rail).getByText('Show all events')).toBeInTheDocument();
   });
 
-  test('legend click toggles off filter', async () => {
+  test('clicking the active class clears the filter', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    seedAudit();
+    seedAudit([
+      { id: 1, task_id: 'TASK-C', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-18T10:00:00Z' },
+      { id: 2, task_id: 'TASK-E', agent: 'qa_engineer', action: 'escalation', payload: {}, timestamp: '2026-06-18T09:00:00Z' },
+    ]);
     const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/audit?action=escalation`);
+    mountAt(`/orgs/${SLUG}/audit?class=completed`);
 
     await waitFor(() => {
-      expect(screen.getByText('Escalation')).toBeInTheDocument();
-      expect(screen.getByText(/Filtered:/)).toBeInTheDocument();
+      expect(screen.getByText('TASK-C')).toBeInTheDocument();
+      expect(screen.queryByText('TASK-E')).not.toBeInTheDocument();
     });
 
-    // Click the already-active "Escalation" chip to deactivate
-    // getAllByText: legend chip + row action text
-    const escalationChips = screen.getAllByText('Escalation');
-    const chip = escalationChips[0].closest('button')!;
-    await user.click(chip);
+    const rail = screen.getByLabelText('Event type filter');
+    const completedBtn = within(rail).getByText('Completed').closest('button')!;
+    expect(completedBtn).toHaveAttribute('aria-pressed', 'true');
 
-    // Filtered banner should disappear
+    await user.click(completedBtn);
+
     await waitFor(() => {
-      expect(screen.queryByText(/Filtered:/)).not.toBeInTheDocument();
+      // Filter cleared — the escalation row is back, class no longer pressed.
+      expect(screen.getByText('TASK-E')).toBeInTheDocument();
+      expect(completedBtn).toHaveAttribute('aria-pressed', 'false');
     });
   });
 
@@ -519,9 +536,9 @@ describe('AuditPage — day-grouped timeline', () => {
             {
               id: 2,
               task_id: 'TASK-2',
-              agent: 'code_reviewer',
-              action: 'review_verdict',
-              payload: { verdict: 'APPROVE' },
+              agent: 'qa_engineer',
+              action: 'escalation',
+              payload: {},
               timestamp: '2026-06-18T09:00:00Z',
             },
           ],
@@ -529,14 +546,14 @@ describe('AuditPage — day-grouped timeline', () => {
       }),
     );
 
-    // Mount with active legend filter: action=completion_report, time window 7d
-    mountAt(`/orgs/${SLUG}/audit?action=completion_report&since=7d`);
+    // Mount with active class legend filter: class=completed, time window 7d
+    mountAt(`/orgs/${SLUG}/audit?class=completed&since=7d`);
 
-    // Wait for data to load — legend chips depend on allEntries
+    // Wait for data to load — legend counts depend on allEntries
     await waitFor(() => {
       expect(screen.getByText('Export')).toBeInTheDocument();
-      expect(screen.getByText('Completed')).toBeInTheDocument();
-      expect(screen.getByText(/Filtered:/)).toBeInTheDocument();
+      const rail = screen.getByLabelText('Event type filter');
+      expect(within(rail).getByText('Completed')).toBeInTheDocument();
     });
 
     // Spy on Blob/URL for export
@@ -566,10 +583,11 @@ describe('AuditPage — day-grouped timeline', () => {
       expect(csv).toContain('TASK-1');
       expect(csv).toContain('completion_report');
 
-      // Non-matching row (review_verdict) is ABSENT — this is the key assertion
-      // that proves handleExport respects filters.action, not just allEntries
+      // Non-matching row (escalation, a different class) is ABSENT — the key
+      // assertion that proves handleExport respects the active class filter,
+      // not just allEntries.
       expect(csv).not.toContain('TASK-2');
-      expect(csv).not.toContain('review_verdict');
+      expect(csv).not.toContain('escalation');
 
       // MSW handler should have received a since param (ISO date from 7d window)
       expect(capturedSince).not.toBeNull();
@@ -579,67 +597,54 @@ describe('AuditPage — day-grouped timeline', () => {
     }
   });
 
-  test('timeline uses action-filtered query, not unfiltered allEntries (regression: queryKey churn)', async () => {
+  test('class filter narrows the timeline client-side and threads the memoized since param', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
 
-    // Seed TWO entries with DIFFERENT actions, both within the 7d window.
-    // The MSW handler differentiates: when `action` query param is present
-    // (AuditTimeline), return only matching entries; when absent (AuditPage
-    // legend query), return all entries so legend counts stay correct.
+    // The class filter is applied CLIENT-SIDE off the already-fetched rows, so
+    // the backend returns the full set regardless; AuditTimeline narrows to the
+    // active class. Capture the since param to prove sinceISO is threaded.
+    let capturedSince: string | null = null;
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/audit`, ({ request }) => {
-        const url = new URL(request.url);
-        const actionParam = url.searchParams.get('action');
-        const all = [
-          {
-            id: 10,
-            task_id: 'TASK-10',
-            agent: 'dev_agent',
-            action: 'completion_report',
-            payload: { token_usage: { total: 500 } },
-            timestamp: '2026-06-18T10:00:00Z',
-          },
-          {
-            id: 20,
-            task_id: 'TASK-20',
-            agent: 'code_reviewer',
-            action: 'review_verdict',
-            payload: { verdict: 'APPROVE' },
-            timestamp: '2026-06-18T09:00:00Z',
-          },
-        ];
-        // AuditPage legend query → no action param → return all entries
-        // AuditTimeline query → action param present → return only matching
+        capturedSince = new URL(request.url).searchParams.get('since');
         return HttpResponse.json({
-          entries: actionParam ? all.filter((e) => e.action === actionParam) : all,
+          entries: [
+            {
+              id: 10,
+              task_id: 'TASK-10',
+              agent: 'dev_agent',
+              action: 'completion_report',
+              payload: { token_usage: { total: 500 } },
+              timestamp: '2026-06-18T10:00:00Z',
+            },
+            {
+              id: 20,
+              task_id: 'TASK-20',
+              agent: 'qa_engineer',
+              action: 'escalation',
+              payload: {},
+              timestamp: '2026-06-18T09:00:00Z',
+            },
+          ],
         });
       }),
     );
 
-    mountAt(`/orgs/${SLUG}/audit?action=completion_report&since=7d`);
+    mountAt(`/orgs/${SLUG}/audit?class=completed&since=7d`);
 
-    // Wait for data to settle — legend chips show both entries (legend
-    // query is unfiltered by action), filter banner shows active filter.
+    // Completed-class row renders.
     await waitFor(() => {
-      expect(screen.getByText('Completed')).toBeInTheDocument();
-      expect(screen.getByText('Reviewed')).toBeInTheDocument();
-      expect(screen.getByText(/Filtered:/)).toBeInTheDocument();
+      expect(screen.getByText('TASK-10')).toBeInTheDocument();
     });
 
-    // PASS: matching row (completion_report / TASK-10) renders in timeline.
-    expect(screen.getByText('TASK-10')).toBeInTheDocument();
-
-    // FAIL-IF-VACUOUS: non-matching row (review_verdict / TASK-20) MUST be
-    // absent from the timeline.  If AuditTimeline rendered the unfiltered
-    // allEntries set (from AuditPage's legend query) instead of its own
-    // action-filtered query, TASK-20 would appear and this assertion would
-    // fail — proving the test catches the vacuous baseline.
+    // FAIL-IF-VACUOUS: the escalation-class row (TASK-20) is narrowed out
+    // client-side. If AuditTimeline rendered the unfiltered set, TASK-20 would
+    // appear and this assertion would fail.
     expect(screen.queryByText('TASK-20')).not.toBeInTheDocument();
 
-    // Grep-proof: the sinceISO prop threaded from AuditPage to AuditTimeline
-    // must come from the memoized `useMemo(() => sinceToISO(filters.since),
-    // [filters.since])` in AuditPage.  An inline sinceToISO(filters.since)
-    // call on the JSX prop would produce a new ISO string every render,
-    // churning the queryKey and causing infinite re-fetches.
+    // sinceISO must be threaded from AuditPage's memoized
+    // `useMemo(() => sinceToISO(filters.since), [filters.since])`; an inline
+    // sinceToISO() on the JSX prop would churn the queryKey on every render.
+    expect(capturedSince).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });

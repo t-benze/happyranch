@@ -2,11 +2,15 @@ import { describe, expect, test } from 'vitest';
 import {
   decodeFilters,
   encodeFilters,
-  buildLegend,
+  classOf,
+  buildClassLegend,
   isAllClear,
   sinceToISO,
   FAILURE_ACTIONS,
+  EVENT_CLASS_ORDER,
+  EVENT_CLASS_META,
   type AuditFilters,
+  type EventClass,
 } from './audit-filters';
 import type { AuditEntry } from '@/lib/api/types';
 
@@ -47,6 +51,7 @@ describe('decode/encode filters', () => {
     const filters: AuditFilters = {
       agent: 'dev_agent',
       action: 'completion_report',
+      eventClass: 'completed',
       since: '7d',
       task_id: 'TASK-1',
     };
@@ -60,6 +65,7 @@ describe('decode/encode filters', () => {
     const filters: AuditFilters = {
       agent: null,
       action: null,
+      eventClass: null,
       since: null,
       task_id: null,
     };
@@ -70,48 +76,135 @@ describe('decode/encode filters', () => {
     const params = new URLSearchParams('since=999d');
     expect(decodeFilters(params).since).toBeNull();
   });
+
+  test('event class is carried on the `class` param', () => {
+    const params = new URLSearchParams('class=escalation');
+    expect(decodeFilters(params).eventClass).toBe('escalation');
+    expect(encodeFilters({ ...decodeFilters(new URLSearchParams()), eventClass: 'failure' })).toContain(
+      'class=failure',
+    );
+  });
+
+  test('invalid event class defaults to null', () => {
+    const params = new URLSearchParams('class=not_a_class');
+    expect(decodeFilters(params).eventClass).toBeNull();
+  });
 });
 
-describe('buildLegend', () => {
-  test('counts actions and returns ordered legend entries', () => {
+describe('classOf — raw event-type → one of five classes', () => {
+  // A representative raw action drawn from each authoritative bucket. Exhaustive
+  // coverage of the buckets is enforced by the totality test below.
+  const cases: Array<[string, EventClass]> = [
+    ['completion_report', 'completed'],
+    ['session_end', 'completed'],
+    ['review_verdict', 'completed'],
+    ['escalation_resolved', 'completed'],
+    ['job_run_completed', 'completed'],
+    ['merge_pr_merged', 'merge'],
+    ['escalation', 'escalation'],
+    ['escalation_superseded', 'escalation'],
+    ['session_failed', 'failure'],
+    ['executor_error', 'failure'],
+    ['job_run_failed', 'failure'],
+    ['task_cancelled', 'failure'],
+    ['session_start', 'dispatch'],
+    ['orchestration_step', 'dispatch'],
+    ['thread_dispatch', 'dispatch'],
+    ['artifact_put', 'dispatch'],
+    ['job_submitted', 'dispatch'],
+  ];
+
+  test.each(cases)('%s → %s', (action, expected) => {
+    expect(classOf(action)).toBe(expected);
+  });
+
+  test('every classOf result is one of the five canonical classes', () => {
+    for (const [action] of cases) {
+      expect(EVENT_CLASS_ORDER).toContain(classOf(action));
+    }
+  });
+
+  test('unknown / future event-types fall back to dispatch (never dropped)', () => {
+    expect(classOf('some_brand_new_action')).toBe('dispatch');
+    expect(classOf('')).toBe('dispatch');
+  });
+});
+
+describe('buildClassLegend', () => {
+  test('always returns the five classes in fixed order, even when empty', () => {
+    const legend = buildClassLegend([]);
+    expect(legend.map((l) => l.eventClass)).toEqual([...EVENT_CLASS_ORDER]);
+    // Every count is zero on an empty input.
+    expect(legend.every((l) => l.count === 0)).toBe(true);
+    // Labels + colors come from the locked per-class metadata.
+    for (const l of legend) {
+      expect(l.label).toBe(EVENT_CLASS_META[l.eventClass].label);
+      expect(l.color).toBe(EVENT_CLASS_META[l.eventClass].color);
+    }
+  });
+
+  test('collapses raw event-types into per-class counts', () => {
+    const entries = [
+      makeEntry({ action: 'completion_report' }), // completed
+      makeEntry({ action: 'session_end' }), // completed
+      makeEntry({ action: 'review_verdict' }), // completed
+      makeEntry({ action: 'escalation' }), // escalation
+      makeEntry({ action: 'session_start' }), // dispatch
+      makeEntry({ action: 'thread_dispatch' }), // dispatch
+      makeEntry({ action: 'session_failed' }), // failure
+    ];
+    const byClass = Object.fromEntries(
+      buildClassLegend(entries).map((l) => [l.eventClass, l.count]),
+    );
+    expect(byClass.completed).toBe(3);
+    expect(byClass.dispatch).toBe(2);
+    expect(byClass.escalation).toBe(1);
+    expect(byClass.failure).toBe(1);
+    expect(byClass.merge).toBe(0);
+  });
+
+  test('per-class counts partition the input — they sum to entries.length', () => {
     const entries = [
       makeEntry({ action: 'completion_report' }),
-      makeEntry({ action: 'completion_report' }),
       makeEntry({ action: 'escalation' }),
-      makeEntry({ action: 'session_end' }),
+      makeEntry({ action: 'session_failed' }),
+      makeEntry({ action: 'thread_dispatch' }),
+      makeEntry({ action: 'some_unknown_action' }), // counted under dispatch fallback
+      makeEntry({ action: 'merge_pr_merged' }),
     ];
-    const legend = buildLegend(entries);
+    const total = buildClassLegend(entries).reduce((sum, l) => sum + l.count, 0);
+    expect(total).toBe(entries.length);
+  });
+});
 
-    // completion_report should be first (LEGEND_ORDER), with count 2
-    expect(legend[0]).toMatchObject({ action: 'completion_report', count: 2, label: 'Completed' });
-    // session_end
-    expect(legend[1]).toMatchObject({ action: 'session_end', count: 1, label: 'Completed' });
-    // escalation
-    expect(legend[2]).toMatchObject({ action: 'escalation', count: 1, label: 'Escalation' });
+describe('class filter — selecting a class narrows to only that class', () => {
+  // Mirrors the client-side narrowing AuditTimeline applies: keep only entries
+  // whose action maps to the active class; a null class restores everything.
+  function filterByClass(entries: AuditEntry[], active: EventClass | null): AuditEntry[] {
+    if (!active) return entries;
+    return entries.filter((e) => classOf(e.action) === active);
+  }
+
+  const entries = [
+    makeEntry({ id: 1, action: 'completion_report' }), // completed
+    makeEntry({ id: 2, action: 'escalation' }), // escalation
+    makeEntry({ id: 3, action: 'session_failed' }), // failure
+    makeEntry({ id: 4, action: 'session_start' }), // dispatch
+    makeEntry({ id: 5, action: 'review_verdict' }), // completed
+  ];
+
+  test('selecting "completed" keeps only completed-class rows', () => {
+    const kept = filterByClass(entries, 'completed');
+    expect(kept.map((e) => e.id)).toEqual([1, 5]);
+    expect(kept.every((e) => classOf(e.action) === 'completed')).toBe(true);
   });
 
-  test('colors: positive for completed, danger for failure/escalation', () => {
-    const entries = [
-      makeEntry({ action: 'completion_report' }),
-      makeEntry({ action: 'escalation' }),
-      makeEntry({ action: 'session_timeout' }),
-    ];
-    const legend = buildLegend(entries);
-    const byAction = Object.fromEntries(legend.map((l) => [l.action, l]));
-
-    expect(byAction['completion_report'].color).toBe('positive');
-    expect(byAction['escalation'].color).toBe('danger');
-    expect(byAction['session_timeout'].color).toBe('danger');
+  test('selecting "escalation" keeps only the escalation row', () => {
+    expect(filterByClass(entries, 'escalation').map((e) => e.id)).toEqual([2]);
   });
 
-  test('unknown actions get attention and label equals action', () => {
-    const entries = [makeEntry({ action: 'custom_action' })];
-    const legend = buildLegend(entries);
-    expect(legend[0]).toMatchObject({ action: 'custom_action', label: 'custom_action', color: 'attention' });
-  });
-
-  test('empty entries returns empty legend', () => {
-    expect(buildLegend([])).toEqual([]);
+  test('clear (null class) restores the full set', () => {
+    expect(filterByClass(entries, null)).toEqual(entries);
   });
 });
 
