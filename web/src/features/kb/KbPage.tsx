@@ -314,25 +314,32 @@ export function KbPage(): JSX.Element {
 
       {/* Main feed area */}
       <main className="flex-1 overflow-y-auto bg-surface-canvas">
-        {/* Header */}
+        {/* Header — KB-02: uppercase eyebrow (live document count) + Newsreader
+            serif title, matching the a-knowledge Direction-A reference and the
+            Tasks/Audit surfaces. The amber pill surfaces pending dream
+            candidates from the same client-side count the feed derives. */}
         <header className="border-b border-border-subtle p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="font-display text-h2 text-text-primary font-medium">{KB_STRINGS.pageTitle}</h1>
-              <p className="text-text-muted text-sm">
-                {KB_STRINGS.pageSubtitle}
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-text-muted text-xs font-medium uppercase tracking-wide">
+                {KB_STRINGS.headerEyebrow(liveEntries.length)}
               </p>
+              <h1 className="font-display text-display text-text-primary mt-1 font-medium">
+                {KB_STRINGS.pageTitle}
+              </h1>
             </div>
-            {COMPOSE_ENABLED && (
-              <Button size="sm" onClick={() => setComposeOpen(true)}>
-                {KB_STRINGS.composeButton}
-              </Button>
-            )}
-            {candidatePendingCount > 0 && (
-              <span className="text-xs font-medium text-accent-text bg-accent-muted px-2.5 py-1 rounded-full">
-                {KB_STRINGS.pendingCandidatesTag(candidatePendingCount)}
-              </span>
-            )}
+            <div className="flex shrink-0 items-center gap-2">
+              {candidatePendingCount > 0 && (
+                <span className="text-xs font-medium text-feedback-warning bg-feedback-warning/10 px-2.5 py-1 rounded-full">
+                  {KB_STRINGS.pendingCandidatesTag(candidatePendingCount)}
+                </span>
+              )}
+              {COMPOSE_ENABLED && (
+                <Button size="sm" onClick={() => setComposeOpen(true)}>
+                  {KB_STRINGS.composeButton}
+                </Button>
+              )}
+            </div>
           </div>
         </header>
 

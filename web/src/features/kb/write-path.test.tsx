@@ -102,7 +102,7 @@ describe('KB compose write path (flag off)', () => {
       ),
     );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
-    await screen.findByRole('heading', { name: /Knowledge/ });
+    await screen.findByRole('heading', { name: /What the org has learned/ });
     expect(screen.queryByRole('button', { name: /Compose…/ })).toBeNull();
   });
 });

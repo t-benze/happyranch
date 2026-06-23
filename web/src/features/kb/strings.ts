@@ -1,6 +1,7 @@
 export const KB_STRINGS = {
-  pageTitle: 'Knowledge',
-  pageSubtitle: 'Org knowledge library — browsable by folder',
+  pageTitle: 'What the org has learned',
+  /** Uppercase header eyebrow — live count of rendered entries (KB-02). */
+  headerEyebrow: (n: number) => `ALL ENTRIES · ${n} DOCUMENT${n === 1 ? '' : 'S'}`,
   searchPlaceholder: 'Search entries…',
   composeButton: 'Compose…',
   emptyListTitle: 'No entries yet',
