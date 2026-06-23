@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
@@ -374,7 +374,7 @@ describe('TaskDetailPage — jobs cross-link', () => {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
     });
     await waitFor(() =>
-      expect(screen.getByText(/Live events/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Activity/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Jobs from this task/i)).not.toBeInTheDocument();
   });
@@ -457,7 +457,7 @@ describe('TaskDetailPage — workflow chain timeline', () => {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
     });
     await waitFor(() =>
-      expect(screen.getByText(/Live events/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Activity/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Workflow chain/i)).not.toBeInTheDocument();
   });
@@ -605,5 +605,120 @@ describe('TaskDetailPage — full-page surface', () => {
     // Back-nav returns to the roots list.
     const backLink = screen.getByRole('link', { name: /‹ All tasks/ });
     expect(backLink).toHaveAttribute('href', `/orgs/${SLUG}/tasks`);
+  });
+});
+
+describe('TaskDetailPage — property rail (THR-030 TASKDET-03)', () => {
+  const DETAIL_TASK = rootTask({
+    task_id: 'TASK-0091',
+    status: 'in_progress',
+    assigned_agent: 'content_writer',
+    dispatched_from_thread_id: 'THR-0030',
+    created_at: '2026-05-18T10:00:00Z',
+    severity_rollup: 'in_progress',
+  });
+
+  function stubHandlers(
+    taskOverrides?: Partial<TaskRecord> & Record<string, unknown>,
+    jobs: JobRecord[] = [],
+  ) {
+    const detailTask = { ...DETAIL_TASK, ...taskOverrides } as TaskRecord;
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [detailTask] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${DETAIL_TASK.task_id}`, () =>
+        HttpResponse.json({
+          task: detailTask,
+          results: [],
+          audit_log: [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          active_chain: null,
+          blocked_on_jobs: null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${DETAIL_TASK.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: DETAIL_TASK.task_id,
+          assigned_agent: null,
+          brief: DETAIL_TASK.brief,
+          status: DETAIL_TASK.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () => HttpResponse.json({ jobs })),
+    );
+  }
+
+  function mount() {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${DETAIL_TASK.task_id}`,
+    });
+  }
+
+  test('renders the labeled property rail with the backed fields', async () => {
+    stubHandlers(undefined, [JOB]);
+    mount();
+
+    const rail = await screen.findByRole('complementary', { name: /task properties/i });
+    const r = within(rail);
+    // Labeled rows for every field that has backing data in the task payload.
+    expect(r.getByText('Status')).toBeInTheDocument();
+    expect(r.getByText('Assignee')).toBeInTheDocument();
+    expect(r.getByText('Thread')).toBeInTheDocument();
+    expect(r.getByText('Job')).toBeInTheDocument();
+    expect(r.getByText('Created')).toBeInTheDocument();
+    // Assignee value
+    expect(r.getByText('content_writer')).toBeInTheDocument();
+  });
+
+  test('renders Thread and Job as inline entity links', async () => {
+    stubHandlers(undefined, [JOB]);
+    mount();
+
+    const rail = await screen.findByRole('complementary', { name: /task properties/i });
+    const r = within(rail);
+    const threadLink = r.getByRole('link', { name: /THR-0030/ });
+    expect(threadLink).toHaveAttribute('href', `/orgs/${SLUG}/threads/THR-0030`);
+    const jobLink = r.getByRole('link', { name: /JOB-0001/ });
+    expect(jobLink).toHaveAttribute('href', `/orgs/${SLUG}/jobs/JOB-0001`);
+  });
+
+  test('omits the Thread row when the task has no dispatched_from_thread_id', async () => {
+    stubHandlers({ dispatched_from_thread_id: null }, []);
+    mount();
+
+    const rail = await screen.findByRole('complementary', { name: /task properties/i });
+    const r = within(rail);
+    expect(r.getByText('Status')).toBeInTheDocument();
+    expect(r.queryByText('Thread')).not.toBeInTheDocument();
+    // No jobs → no Job row either.
+    expect(r.queryByText('Job')).not.toBeInTheDocument();
+  });
+
+  test('honestly omits fields with no backing data (Executor / Churn / Priority)', async () => {
+    stubHandlers(undefined, [JOB]);
+    mount();
+
+    const rail = await screen.findByRole('complementary', { name: /task properties/i });
+    const r = within(rail);
+    expect(r.queryByText('Executor')).not.toBeInTheDocument();
+    expect(r.queryByText('Churn')).not.toBeInTheDocument();
+    expect(r.queryByText('Priority')).not.toBeInTheDocument();
+  });
+
+  test('renders the Activity event-log card', async () => {
+    stubHandlers(undefined, []);
+    mount();
+    expect(
+      await screen.findByRole('heading', { name: /Activity/i }),
+    ).toBeInTheDocument();
   });
 });

@@ -12,18 +12,24 @@
  * Uses ds.css .card styling (bg-surface, rounded-lg, shadow-pasture-sm).
  * Title in serif font-display.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { Markdown } from '@/design-system/patterns/Markdown';
 import { useTask, useTaskRecall, useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
 // eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes getTask (useTask deliberately drops active_chain); routed direct per THR-011 founder ruling (option 3), pending a future hook
 import { getTask } from '@/lib/api/tasks';
-import type { ActiveChainResponse, TaskRecallNode } from '@/lib/api/types';
+import type {
+  ActiveChainResponse,
+  JobRecord,
+  TaskRecallNode,
+  TaskRecord,
+} from '@/lib/api/types';
 import { TaskRecallTree } from './TaskRecallTree';
 import { TaskEventsLog } from './TaskEventsLog';
 import { CancelTaskDialog } from './CancelTaskDialog';
@@ -336,6 +342,122 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
 }
 
 /* ================================================================
+ * Property rail — labeled metadata card (TASKDET-03)
+ *
+ * Mirrors the JOBDET-01 right-rail precedent (JobDetailPage.PropertyRail).
+ * The `a-task-detail` reference lists Status / Assignee / Executor / Thread /
+ * Job / Churn / Created / Priority. Only the rows with a backing field in the
+ * task-detail payload are rendered; the rest are honestly omitted rather than
+ * fabricated:
+ *   - Executor: per-agent config, not on the task record  → omitted (defer)
+ *   - Churn:    token usage, not on the task record         → omitted (defer)
+ *   - Priority: no priority field on the task model         → omitted (defer)
+ * Thread (dispatched_from_thread_id) and Job (jobs-from-this-task) render as
+ * inline entity links; Created formats the stored timestamp.
+ * ================================================================ */
+
+function formatDateTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString();
+}
+
+/** Only the founder is distinguishable from a bare agent-name string. */
+function chipRole(name: string): 'worker' | 'founder' {
+  return name === 'founder' ? 'founder' : 'worker';
+}
+
+/** One label/value row inside the metadata rail card. */
+function RailRow({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+  return (
+    <div className="flex items-baseline gap-3">
+      <dt className="text-text-muted w-20 shrink-0 text-xs">{label}</dt>
+      <dd className="min-w-0 flex-1">{children}</dd>
+    </div>
+  );
+}
+
+/** Mono value for stored/technical fields. */
+function MonoValue({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <span className="text-text-primary font-mono text-xs break-words tabular-nums">
+      {children}
+    </span>
+  );
+}
+
+function PropertyRail({
+  task,
+  jobs,
+  slug,
+}: {
+  task: TaskRecord;
+  jobs: JobRecord[];
+  slug: string | undefined;
+}): JSX.Element {
+  // dispatched_from_thread_id rides the TaskRecord `[extra]` catch-all (it is
+  // not in the typed surface); read it via the same cast idiom as `note`.
+  const threadId = (task as { dispatched_from_thread_id?: string | null })
+    .dispatched_from_thread_id;
+  const created = formatDateTime(task.created_at);
+  const firstJob = jobs[0];
+
+  return (
+    <aside
+      aria-label="Task properties"
+      className="lg:w-64 lg:shrink-0"
+    >
+      <div className="border-border-default bg-surface-raised rounded-xl border p-4">
+        <dl className="space-y-3 text-sm">
+          <RailRow label="Status">
+            <StatusBadge status={task.status} blockKind={task.block_kind} />
+          </RailRow>
+          <RailRow label="Assignee">
+            {task.assigned_agent ? (
+              <AgentChip name={task.assigned_agent} role={chipRole(task.assigned_agent)} />
+            ) : (
+              <span className="text-text-muted text-xs">unassigned</span>
+            )}
+          </RailRow>
+          {threadId && (
+            <RailRow label="Thread">
+              <IdBadge
+                id={threadId}
+                kind="thread"
+                to={slug ? `/orgs/${slug}/threads/${threadId}` : undefined}
+              />
+            </RailRow>
+          )}
+          {firstJob && (
+            <RailRow label="Job">
+              <span className="flex items-baseline gap-1">
+                {slug ? (
+                  <Link
+                    to={`/orgs/${slug}/jobs/${firstJob.id}`}
+                    className="text-accent-default font-mono text-xs hover:underline"
+                  >
+                    {firstJob.id}
+                  </Link>
+                ) : (
+                  <MonoValue>{firstJob.id}</MonoValue>
+                )}
+                {jobs.length > 1 && (
+                  <span className="text-text-muted text-xs">+{jobs.length - 1}</span>
+                )}
+              </span>
+            </RailRow>
+          )}
+          {created && (
+            <RailRow label="Created">
+              <MonoValue>{created}</MonoValue>
+            </RailRow>
+          )}
+        </dl>
+      </div>
+    </aside>
+  );
+}
+
+/* ================================================================
  * Main pane
  * ================================================================ */
 
@@ -378,7 +500,7 @@ export function TaskDetailPage(): JSX.Element {
   return (
     <>
       <div className="h-full overflow-y-auto">
-        <div className="mx-auto max-w-3xl px-4 py-6">
+        <div className="mx-auto max-w-5xl px-4 py-6">
           {/* Back-nav — return to the roots list */}
           <nav className="mb-4">
             <Link
@@ -474,8 +596,9 @@ export function TaskDetailPage(): JSX.Element {
             </div>
           </header>
 
-          {/* Body */}
-          <section className="py-4">
+          {/* Two-column body — primary content + right-rail property card (TASKDET-03) */}
+          <div className="mt-4 flex flex-col gap-6 lg:flex-row lg:items-start">
+          <section className="min-w-0 flex-1">
             {task.data?.brief && <BriefSection brief={brief} />}
 
             {chainQuery.data?.chain && (
@@ -500,9 +623,11 @@ export function TaskDetailPage(): JSX.Element {
 
             <section className="mt-5">
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
-                Live events
+                Activity
               </h3>
-              <TaskEventsLog taskId={taskId} />
+              <div className="border-border-default bg-surface-sunken rounded-md border p-3">
+                <TaskEventsLog taskId={taskId} />
+              </div>
             </section>
 
             {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (
@@ -532,6 +657,14 @@ export function TaskDetailPage(): JSX.Element {
               </section>
             )}
           </section>
+          {task.data && (
+            <PropertyRail
+              task={task.data}
+              jobs={jobsQuery.data?.jobs ?? []}
+              slug={slug}
+            />
+          )}
+          </div>
         </div>
       </div>
 
