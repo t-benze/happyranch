@@ -199,6 +199,41 @@ describe('TasksPage — read path (roots endpoint)', () => {
     });
   });
 
+  // TASKS-05: root rows surface the worst-child rollup inline when a descendant
+  // sits in a strictly-worse state than the root itself. Pure client-side
+  // derivation of severity_rollup vs the root's own status; count-free (the
+  // count-decorated design form "1 of 2 subtasks blocked" needs per-status
+  // subtask counts that the roots payload does not carry — deferred).
+  test('surfaces worst-child subtask rollup inline on root rows (TASKS-05)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Root is in_progress but a descendant is blocked → severity_rollup='blocked'.
+    const worseChild = rootTask({
+      task_id: 'TASK-0500',
+      status: 'in_progress',
+      severity_rollup: 'blocked',
+      brief: 'Root in progress with a stuck child',
+    });
+    // Root with no worse descendant (rollup === own status) → no inline rollup.
+    const noWorseChild = rootTask({
+      task_id: 'TASK-0501',
+      status: 'in_progress',
+      severity_rollup: 'in_progress',
+      brief: 'Root in progress all subtasks fine',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [worseChild, noWorseChild] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    // The worse-child root names the worst descendant status inline, colored
+    // with the blocked token.
+    const rollup = await screen.findByText('subtask blocked');
+    expect(rollup).toHaveClass('text-status-blocked');
+    // The healthy root surfaces no inline rollup (no fabricated subtask state).
+    expect(screen.queryByText('subtask in progress')).not.toBeInTheDocument();
+  });
+
   test('groups by thread on dispatched_from_thread_id, with no-thread bucket', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     const threaded = rootTask({

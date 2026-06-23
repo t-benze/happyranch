@@ -5,8 +5,14 @@
  * (AgentChip) · THREAD (IdBadge) · UPDATED (relative age).
  *
  * Presentation-only over already-loaded /tasks/roots fields. Missing agent or
- * thread render a neutral em-dash — never a fabricated identity. The inline
- * subtask rollup is intentionally NOT rendered here (deferred TASKS-05).
+ * thread render a neutral em-dash — never a fabricated identity.
+ *
+ * TASKS-05 (worst-child rollup): when the root's severity_rollup is strictly
+ * worse than its own status, a descendant sits in that worse state, so the row
+ * names it inline ("subtask blocked"). This is count-free on purpose — the
+ * design's count-decorated form ("1 of 2 subtasks blocked") needs per-status
+ * subtask counts the /tasks/roots payload does not carry (it exposes only the
+ * collapsed worst-status string), so the count layer is deferred, not faked.
  *
  * Local to the tasks feature on purpose: the shared TaskCard pattern stays
  * untouched (still consumed by features/agents/). Small helpers are duplicated
@@ -60,6 +66,42 @@ export function severityRollupStatus(task: TaskRecord): TaskStatus {
   const r = (task as Record<string, unknown>).severity_rollup;
   if (typeof r === 'string' && r.length > 0) return r as TaskStatus;
   return task.status;
+}
+
+/**
+ * Status text-color token for the inline subtask rollup. Mirrors StatusBadge's
+ * .tag color mapping (kept local — the row deliberately does not reach into
+ * StatusBadge internals). Drives both the led dot and the label color.
+ */
+const ROLLUP_COLOR: Record<TaskStatus, string> = {
+  pending: 'text-status-archiving',
+  in_progress: 'text-status-open',
+  blocked: 'text-status-blocked',
+  completed: 'text-status-open',
+  failed: 'text-status-abandoned',
+  resolved_superseded: 'text-status-archived',
+};
+
+/** Human label for the worst-child status (spaces, no underscores). */
+function rollupLabel(status: TaskStatus): string {
+  return status === 'resolved_superseded' ? 'superseded' : status.replace(/_/g, ' ');
+}
+
+/**
+ * Inline worst-child rollup. _worst_subtree_status returns the lowest-rank
+ * (worst) status among the root and its descendants, so a rollup that differs
+ * from the root's own status always comes from a strictly-worse descendant —
+ * honest to render "subtask <status>" with no count claim.
+ */
+function SubtaskRollup({ status }: { status: TaskStatus }): JSX.Element {
+  return (
+    <span
+      className={`${ROLLUP_COLOR[status]} inline-flex shrink-0 items-center gap-1 text-xs font-medium`}
+    >
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
+      subtask {rollupLabel(status)}
+    </span>
+  );
 }
 
 function directRevisits(task: TaskRecord): string[] {
@@ -120,8 +162,9 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
         <div className={COL.task}>
           <StatusBadge status={rollup} blockKind={task.block_kind} />
         </div>
-        <div className={`${COL.title} text-text-primary truncate`}>
-          {briefHeadline(task.brief)}
+        <div className={`${COL.title} flex items-center gap-2`}>
+          <span className="text-text-primary truncate">{briefHeadline(task.brief)}</span>
+          {rollup !== task.status && <SubtaskRollup status={rollup} />}
         </div>
         <div className={`${COL.agent} truncate`}>
           {agent ? (
@@ -149,12 +192,12 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
           {task.revisit_of_task_id && (
             <Link to={taskRoutes.detail(task.revisit_of_task_id)} className="hover:underline">
               supersedes{' '}
-              <span className="font-mono text-id-task">{task.revisit_of_task_id}</span>
+              <span className="text-id-task font-mono">{task.revisit_of_task_id}</span>
             </Link>
           )}
           {revisits.map((rid) => (
             <Link key={rid} to={taskRoutes.detail(rid)} className="hover:underline">
-              superseded by <span className="font-mono text-id-task">{rid}</span>
+              superseded by <span className="text-id-task font-mono">{rid}</span>
             </Link>
           ))}
         </div>
