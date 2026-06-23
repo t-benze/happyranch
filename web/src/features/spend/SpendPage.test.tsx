@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the spend hooks so the page renders deterministically
@@ -8,7 +8,14 @@ vi.mock('@/hooks/spend', () => ({
   useSpendByModel: vi.fn(),
 }));
 
+// Mock the agents roster hook — SPEND-03 joins per-agent burn to each agent's
+// `team` (carried on the LIST payload) to build the by-team breakdown card.
+vi.mock('@/hooks/agents', () => ({
+  useAgentsList: vi.fn(),
+}));
+
 import { useSpendByAgent, useSpendByThread, useSpendByModel } from '@/hooks/spend';
+import { useAgentsList } from '@/hooks/agents';
 import { SpendPage } from './SpendPage';
 
 // Stub URL.createObjectURL for CSV export tests
@@ -18,6 +25,7 @@ URL.createObjectURL = createObjectURL;
 const mockAgentQ = vi.mocked(useSpendByAgent);
 const mockThreadQ = vi.mocked(useSpendByThread);
 const mockModelQ = vi.mocked(useSpendByModel);
+const mockAgentsList = vi.mocked(useAgentsList);
 
 function loaded<T>(data: T) {
   return { data, isLoading: false, isError: false, error: null };
@@ -31,9 +39,18 @@ function errored() {
   return { data: undefined, isLoading: false, isError: true, error: new Error('fail') };
 }
 
+// Roster-list query shape: { agents: AgentSummary[] } where each agent carries
+// a per-agent `team`. Helper wraps an agents array into a loaded query.
+function agentsLoaded(agents: { name: string; team: string | null }[]) {
+  return loaded({ agents });
+}
+
 describe('SpendPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: empty roster so the by-team card folds every burning agent into
+    // the honest 'unattributed' bucket unless a test supplies a roster.
+    mockAgentsList.mockReturnValue(agentsLoaded([]) as ReturnType<typeof useAgentsList>);
   });
 
   it('renders the header with window toggles', () => {
@@ -599,6 +616,123 @@ describe('SpendPage', () => {
     // Honest zero — not a hidden element.
     expect(
       screen.getByText(/Cache saved 0 tokens .* 0% served from cache/),
+    ).toBeDefined();
+  });
+
+  // ---- SPEND-03: by-team breakdown card ----
+
+  // Shared fixture: three burning agents across two real teams plus one agent
+  // that is absent from the roster (→ honest 'unattributed' bucket).
+  const SPEND03_AGENT_ROLLUP = [
+    { agent: 'dev_agent', sessions: 2, input_tokens: 1000, output_tokens: 500,
+      cache_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, total_tokens: 1600 },
+    { agent: 'code_reviewer', sessions: 1, input_tokens: 300, output_tokens: 100,
+      cache_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, total_tokens: 400 },
+    { agent: 'consultant_a', sessions: 1, input_tokens: 200, output_tokens: 100,
+      cache_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, total_tokens: 300 },
+    { agent: 'ghost_agent', sessions: 1, input_tokens: 30, output_tokens: 20,
+      cache_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, total_tokens: 50 },
+  ];
+  const SPEND03_ROSTER = [
+    { name: 'dev_agent', team: 'engineering' },
+    { name: 'code_reviewer', team: 'engineering' },
+    { name: 'consultant_a', team: 'consultant' },
+    // ghost_agent intentionally absent → unattributed
+  ];
+
+  function renderSpend03(): HTMLElement {
+    mockAgentQ.mockReturnValue(loaded(SPEND03_AGENT_ROLLUP));
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+    mockAgentsList.mockReturnValue(
+      agentsLoaded(SPEND03_ROSTER) as ReturnType<typeof useAgentsList>,
+    );
+    render(<SpendPage />);
+    return screen.getByText('By team').closest('div') as HTMLElement;
+  }
+
+  it('renders a by-team card whose rows derive teams from the live roster', () => {
+    const card = renderSpend03();
+    // Teams come from the data, never fabricated.
+    expect(within(card).getByText('engineering')).toBeDefined();
+    expect(within(card).getByText('consultant')).toBeDefined();
+  });
+
+  it('each team total equals the summed burn of that team\'s agents', () => {
+    const card = renderSpend03();
+    // engineering = dev_agent 1600 + code_reviewer 400 = 2000
+    expect(within(card).getByText('2,000')).toBeDefined();
+    // consultant = consultant_a 300
+    expect(within(card).getByText('300')).toBeDefined();
+  });
+
+  it('folds roster-less agents into an honest unattributed bucket', () => {
+    const card = renderSpend03();
+    // ghost_agent (absent from roster) → unattributed = 50
+    expect(within(card).getByText('unattributed')).toBeDefined();
+    expect(within(card).getByText('50')).toBeDefined();
+  });
+
+  it('renders a colored design-system dot per team row, distinct across teams', () => {
+    const card = renderSpend03();
+    const dotFor = (label: string): HTMLElement => {
+      const row = within(card).getByText(label).closest('li') as HTMLElement;
+      const dot = row.querySelector('span[aria-hidden="true"]') as HTMLElement;
+      expect(dot).not.toBeNull();
+      expect(dot.className).toContain('rounded-full');
+      // Design-system token only — a bg-* utility, never a hardcoded hex.
+      expect(dot.className).toMatch(/\bbg-[a-z]/);
+      expect(dot.getAttribute('style')).toBeNull();
+      return dot;
+    };
+    const eng = dotFor('engineering');
+    const con = dotFor('consultant');
+    const unattributed = dotFor('unattributed');
+    // Deterministic categorical palette: two real teams get DIFFERENT tokens.
+    expect(eng.className).not.toEqual(con.className);
+    // Unattributed is the neutral token, distinct from any real-team color.
+    expect(unattributed.className).toContain('bg-border-strong');
+    expect(eng.className).not.toContain('bg-border-strong');
+  });
+
+  it('keeps the by-agent breakdown table alongside the new by-team card', () => {
+    renderSpend03();
+    // The existing by-agent table is untouched: agent rows still render.
+    expect(screen.getByText('dev_agent')).toBeDefined();
+    expect(screen.getByText('code_reviewer')).toBeDefined();
+    // And the segment control still offers the Agent breakdown.
+    expect(screen.getByRole('button', { name: 'Agent' })).toBeDefined();
+  });
+
+  it('shows the by-team empty state when there is no agent burn', () => {
+    mockAgentQ.mockReturnValue(loaded([]));
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+    render(<SpendPage />);
+    const card = screen.getByText('By team').closest('div') as HTMLElement;
+    expect(within(card).getByText('No token spend in this window')).toBeDefined();
+  });
+
+  it('shows the honest by-team error state — not an all-unattributed table — when the roster request fails', () => {
+    // Roster (agents-list) request FAILS while the spend rollup SUCCEEDS with
+    // non-empty burn. An unavailable roster must NOT be treated as proof that
+    // no agents have teams: the by-team card must NOT silently fold every
+    // burning agent into the 'unattributed' bucket (which fabricates a
+    // 'no agents have teams' reality). It must surface the honest error state.
+    mockAgentQ.mockReturnValue(loaded(SPEND03_AGENT_ROLLUP));
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+    mockAgentsList.mockReturnValue(errored() as ReturnType<typeof useAgentsList>);
+
+    render(<SpendPage />);
+    const card = screen.getByText('By team').closest('div') as HTMLElement;
+
+    // No fabricated 'unattributed' bucket from joining against the empty []
+    // roster fallback when the roster itself failed.
+    expect(within(card).queryByText('unattributed')).toBeNull();
+    // Honest error/unavailable state instead — mirrors the spend-rollup case.
+    expect(
+      within(card).getByText("Couldn't load spend by team — retry"),
     ).toBeDefined();
   });
 });
