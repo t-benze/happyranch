@@ -647,4 +647,125 @@ describe('AuditPage — day-grouped timeline', () => {
     // sinceToISO() on the JSX prop would churn the queryKey on every render.
     expect(capturedSince).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
+
+  // AUDIT-02 REVISE (Finding 1): the CSV export set must match the displayed
+  // /queried timeline. The timeline server-filters by the raw `action` deep-link
+  // AND narrows by the active `eventClass` client-side, so the export must apply
+  // BOTH. Below the MSW handler honors the `action` param exactly like the real
+  // /audit route, so the timeline query (which sends `action`) gets only the
+  // matching rows while the page's legend query (no `action`) gets the full set.
+  test('export honors a raw ?action=… deep-link — export rows == the action-filtered set', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const user = userEvent.setup();
+
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, ({ request }) => {
+        const action = new URL(request.url).searchParams.get('action');
+        const all = [
+          { id: 1, task_id: 'TASK-1', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-18T10:00:00Z' },
+          { id: 2, task_id: 'TASK-2', agent: 'qa_engineer', action: 'escalation', payload: {}, timestamp: '2026-06-18T09:00:00Z' },
+        ];
+        const entries = action ? all.filter((e) => e.action === action) : all;
+        return HttpResponse.json({ entries });
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/audit?action=completion_report`);
+
+    // Timeline is server-filtered to the completion row only; the escalation
+    // row is never displayed.
+    await waitFor(() => {
+      expect(screen.getByText('TASK-1')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('TASK-2')).not.toBeInTheDocument();
+
+    let capturedBlob: Blob | null = null;
+    const originalCreateObjectURL = URL.createObjectURL;
+    URL.createObjectURL = (blob: Blob) => {
+      capturedBlob = blob;
+      return 'blob:test';
+    };
+    try {
+      await user.click(screen.getByText('Export'));
+      expect(capturedBlob).not.toBeNull();
+      const csv = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsText(capturedBlob!);
+      });
+      // Export parity: the displayed action-filtered row is in; the row the
+      // timeline never showed (TASK-2 / escalation) is out. With the bug the
+      // export dumped every fetched row including TASK-2.
+      expect(csv).toContain('TASK-1');
+      expect(csv).toContain('completion_report');
+      expect(csv).not.toContain('TASK-2');
+      expect(csv).not.toContain('escalation');
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL;
+    }
+  });
+
+  test('export honors action + class together — a contradictory pair exports nothing, matching the empty timeline', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const user = userEvent.setup();
+
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, ({ request }) => {
+        const action = new URL(request.url).searchParams.get('action');
+        const all = [
+          { id: 1, task_id: 'TASK-OK', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-18T10:00:00Z' },
+          { id: 2, task_id: 'TASK-FAIL', agent: 'dev_agent', action: 'session_failed', payload: {}, timestamp: '2026-06-18T09:00:00Z' },
+        ];
+        const entries = action ? all.filter((e) => e.action === action) : all;
+        return HttpResponse.json({ entries });
+      }),
+    );
+
+    // action=completion_report server-filters the timeline to the completed
+    // row; class=failure then narrows it client-side to nothing → empty.
+    mountAt(`/orgs/${SLUG}/audit?action=completion_report&class=failure`);
+
+    await waitFor(() => {
+      expect(screen.getByText('No audit entries')).toBeInTheDocument();
+    });
+
+    let capturedBlob: Blob | null = null;
+    const originalCreateObjectURL = URL.createObjectURL;
+    URL.createObjectURL = (blob: Blob) => {
+      capturedBlob = blob;
+      return 'blob:test';
+    };
+    try {
+      await user.click(screen.getByText('Export'));
+      // The export set is empty too — it must NOT dump the failure-class row the
+      // timeline never showed. With the bug (class-only export) it contained
+      // TASK-FAIL while the timeline was empty.
+      expect(capturedBlob).toBeNull();
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL;
+    }
+  });
+
+  // AUDIT-02 REVISE (Finding 2): isAllClear derives from classOf, so a
+  // failure-class action the old hand-kept FAILURE_ACTIONS set omitted no
+  // longer renders 'All clear' over a real failure row.
+  test('does not render "All clear" for a failure-class action the old set omitted', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedAudit([
+      { id: 1, task_id: 'TASK-J', agent: 'founder', action: 'job_rejected', payload: {}, timestamp: '2026-06-18T10:00:00Z' },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    // Failure count == 1 proves the row loaded and classed as failure.
+    const rail = await screen.findByLabelText('Event type filter');
+    const failureBtn = within(rail).getByText('Failure').closest('button')!;
+    await waitFor(() => {
+      expect(within(failureBtn).getByText('1')).toBeInTheDocument();
+    });
+
+    // The 'All clear' calm state must NOT render.
+    expect(screen.queryByTestId('all-clear')).not.toBeInTheDocument();
+    expect(screen.queryByText('All clear')).not.toBeInTheDocument();
+  });
 });

@@ -98,12 +98,18 @@ export function AuditPage(): JSX.Element {
     setSearchParams(encodeFilters({ ...filters, eventClass: null }), { replace: true });
   }, [filters, setSearchParams]);
 
-  // Client-side filtered entries (class + time-window, already in memory) —
-  // used for the CSV export so it matches what the timeline shows.
+  // Client-side filtered entries used for the CSV export so it matches what the
+  // timeline shows. The timeline server-filters by the raw `action` deep-link
+  // AND narrows by the active `eventClass` client-side, so the export must apply
+  // BOTH — otherwise a raw `?action=…` link (or a contradictory action+class
+  // pair) makes the export dump rows the timeline never displayed.
   const filteredEntries = useMemo(() => {
-    if (!filters.eventClass) return allEntries;
-    return allEntries.filter((e) => classOf(e.action) === filters.eventClass);
-  }, [allEntries, filters.eventClass]);
+    return allEntries.filter(
+      (e) =>
+        (!filters.action || e.action === filters.action) &&
+        (!filters.eventClass || classOf(e.action) === filters.eventClass),
+    );
+  }, [allEntries, filters.action, filters.eventClass]);
 
   // Export the currently-visible (filtered) audit entries as CSV
   const handleExport = useCallback(() => {

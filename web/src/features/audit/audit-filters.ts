@@ -233,16 +233,20 @@ export function buildClassLegend(entries: AuditEntry[]): ClassLegendEntry[] {
   }));
 }
 
-export const FAILURE_ACTIONS = new Set([
-  'escalation',
-  'session_timeout',
-  'session_failed',
-  'executor_error',
-  'job_run_failed',
-  'task_cancelled',
-]);
-
-/** True when there are zero failure/escalation entries in the current view. */
+/**
+ * True when there are entries but none of them belong to the `failure` or
+ * `escalation` class. Derived from `classOf` — the single source of truth for
+ * the raw-event-type → class mapping — so the all-clear banner can never drift
+ * from the right-rail legend's Failure / Escalation buckets (a hand-maintained
+ * parallel set used to omit actions like `job_rejected` / `dream_timeout`,
+ * rendering 'All clear' over real failure rows).
+ */
 export function isAllClear(entries: AuditEntry[]): boolean {
-  return entries.length > 0 && entries.every((e) => !FAILURE_ACTIONS.has(e.action));
+  return (
+    entries.length > 0 &&
+    entries.every((e) => {
+      const c = classOf(e.action);
+      return c !== 'failure' && c !== 'escalation';
+    })
+  );
 }

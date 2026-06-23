@@ -6,7 +6,6 @@ import {
   buildClassLegend,
   isAllClear,
   sinceToISO,
-  FAILURE_ACTIONS,
   EVENT_CLASS_ORDER,
   EVENT_CLASS_META,
   type AuditFilters,
@@ -225,29 +224,67 @@ describe('isAllClear', () => {
     expect(isAllClear(entries)).toBe(false);
   });
 
-  test('false when any failure action present', () => {
-    for (const action of FAILURE_ACTIONS) {
+  test('false when any failure-class action present', () => {
+    const failureActions = [
+      'session_timeout',
+      'session_failed',
+      'executor_error',
+      'job_run_failed',
+      'task_cancelled',
+    ];
+    for (const action of failureActions) {
       const entries = [makeEntry({ action })];
       expect(isAllClear(entries)).toBe(false);
     }
   });
 
+  // AUDIT-02 REVISE (Finding 2): isAllClear must derive from classOf, the
+  // single source of truth, so it can never disagree with the right-rail
+  // Failure / Escalation buckets. These actions classOf() marks as `failure`
+  // but the old hand-maintained FAILURE_ACTIONS set omitted — selecting the
+  // Failure class for one of them used to render 'All clear' over real failures.
+  test('false for failure-class actions the old FAILURE_ACTIONS set omitted', () => {
+    const newlyCovered = [
+      'job_rejected',
+      'dream_failed',
+      'dream_timeout',
+      'work_hour_failed',
+      'work_hour_timeout',
+      'thread_invocation_failed',
+      'daemon_restart_failure',
+      'session_cancelled',
+    ];
+    for (const action of newlyCovered) {
+      expect(classOf(action)).toBe('failure');
+      expect(isAllClear([makeEntry({ action })])).toBe(false);
+    }
+  });
+
+  test('false for escalation-class actions beyond bare escalation', () => {
+    expect(classOf('escalation_superseded')).toBe('escalation');
+    expect(isAllClear([makeEntry({ action: 'escalation_superseded' })])).toBe(false);
+  });
+
+  test('agrees with classOf across the whole vocabulary (cannot drift)', () => {
+    const actions = [
+      'completion_report',
+      'session_end',
+      'review_verdict',
+      'session_start',
+      'thread_dispatch',
+      'job_rejected',
+      'dream_timeout',
+      'escalation_superseded',
+      'merge_pr_merged',
+    ];
+    for (const action of actions) {
+      const c = classOf(action);
+      const expectedAllClear = c !== 'failure' && c !== 'escalation';
+      expect(isAllClear([makeEntry({ action })])).toBe(expectedAllClear);
+    }
+  });
+
   test('false for empty entries (not all-clear, just empty)', () => {
     expect(isAllClear([])).toBe(false);
-  });
-});
-
-describe('FAILURE_ACTIONS', () => {
-  test('includes escalation and session failures', () => {
-    expect(FAILURE_ACTIONS.has('escalation')).toBe(true);
-    expect(FAILURE_ACTIONS.has('session_timeout')).toBe(true);
-    expect(FAILURE_ACTIONS.has('session_failed')).toBe(true);
-    expect(FAILURE_ACTIONS.has('executor_error')).toBe(true);
-    expect(FAILURE_ACTIONS.has('job_run_failed')).toBe(true);
-  });
-
-  test('does not include completion or session_end', () => {
-    expect(FAILURE_ACTIONS.has('completion_report')).toBe(false);
-    expect(FAILURE_ACTIONS.has('session_end')).toBe(false);
   });
 });
