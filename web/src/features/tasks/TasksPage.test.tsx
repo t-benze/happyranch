@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
@@ -374,7 +374,7 @@ describe('TaskDetailPage — jobs cross-link', () => {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
     });
     await waitFor(() =>
-      expect(screen.getByText(/Live events/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Activity/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Jobs from this task/i)).not.toBeInTheDocument();
   });
@@ -457,7 +457,7 @@ describe('TaskDetailPage — workflow chain timeline', () => {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
     });
     await waitFor(() =>
-      expect(screen.getByText(/Live events/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Activity/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Workflow chain/i)).not.toBeInTheDocument();
   });
@@ -605,5 +605,139 @@ describe('TaskDetailPage — full-page surface', () => {
     // Back-nav returns to the roots list.
     const backLink = screen.getByRole('link', { name: /‹ All tasks/ });
     expect(backLink).toHaveAttribute('href', `/orgs/${SLUG}/tasks`);
+  });
+});
+
+describe('TaskDetailPage — property grid (TASKDET-03)', () => {
+  // Detail task carrying every property-grid field that has REAL backing in the
+  // TaskRecord payload: status, assigned_agent, dispatched_from_thread_id,
+  // created_at. Executor / Churn / Priority have no backing field and are
+  // honestly omitted (see TaskDetailPage PropertyRail doc-comment).
+  const DETAIL_TASK = {
+    ...TASK,
+    assigned_agent: 'content_writer',
+    dispatched_from_thread_id: 'THR-0030',
+    created_at: '2026-05-18T10:00:00Z',
+  } as TaskRecord;
+
+  function stubHandlers(jobs: JobRecord[]) {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [DETAIL_TASK] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${DETAIL_TASK.task_id}`, () =>
+        HttpResponse.json({
+          task: DETAIL_TASK,
+          results: [],
+          audit_log: [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          active_chain: null,
+          blocked_on_jobs: null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${DETAIL_TASK.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: DETAIL_TASK.task_id,
+          assigned_agent: 'content_writer',
+          brief: DETAIL_TASK.brief,
+          status: DETAIL_TASK.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () => HttpResponse.json({ jobs })),
+    );
+  }
+
+  async function mountAndGetRail() {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${DETAIL_TASK.task_id}`,
+    });
+    return (await screen.findByRole('complementary', {
+      name: /task properties/i,
+    })) as HTMLElement;
+  }
+
+  test('renders a labeled property grid of the backed fields', async () => {
+    const rail = await (async () => {
+      stubHandlers([JOB]);
+      return mountAndGetRail();
+    })();
+
+    // Backed fields — each label/value renders inside the rail.
+    expect(within(rail).getByText('Status')).toBeInTheDocument();
+    expect(within(rail).getByText('Assignee')).toBeInTheDocument();
+    expect(within(rail).getByText('content_writer')).toBeInTheDocument();
+    expect(within(rail).getByText('Thread')).toBeInTheDocument();
+    const threadLink = within(rail).getByRole('link', { name: 'THR-0030' });
+    expect(threadLink).toHaveAttribute(
+      'href',
+      `/orgs/${SLUG}/threads/THR-0030`,
+    );
+    expect(within(rail).getByText('Job')).toBeInTheDocument();
+    const jobLink = within(rail).getByRole('link', { name: 'JOB-0001' });
+    expect(jobLink).toHaveAttribute('href', `/orgs/${SLUG}/jobs/JOB-0001`);
+    expect(within(rail).getByText('Created')).toBeInTheDocument();
+  });
+
+  test('honestly omits fields with no backing payload (Executor / Churn / Priority)', async () => {
+    stubHandlers([JOB]);
+    const rail = await mountAndGetRail();
+    expect(within(rail).queryByText('Executor')).toBeNull();
+    expect(within(rail).queryByText('Churn')).toBeNull();
+    expect(within(rail).queryByText('Priority')).toBeNull();
+  });
+
+  test('omits the Thread and Job rows when those fields are absent', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
+        HttpResponse.json({
+          task: TASK,
+          results: [],
+          audit_log: [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          active_chain: null,
+          blocked_on_jobs: null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: TASK.task_id,
+          assigned_agent: null,
+          brief: TASK.brief,
+          status: TASK.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () => HttpResponse.json({ jobs: [] })),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    const rail = (await screen.findByRole('complementary', {
+      name: /task properties/i,
+    })) as HTMLElement;
+    // No thread / no jobs → those rows are absent (not fabricated).
+    expect(within(rail).queryByText('Thread')).toBeNull();
+    expect(within(rail).queryByText('Job')).toBeNull();
+    // Always-present backed fields still render.
+    expect(within(rail).getByText('Status')).toBeInTheDocument();
+    expect(within(rail).getByText('Created')).toBeInTheDocument();
   });
 });
