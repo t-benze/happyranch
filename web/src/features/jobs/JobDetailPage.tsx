@@ -49,19 +49,34 @@ function formatDateTime(iso: string | null | undefined): string | null {
 
 // ── Sub-components ───────────────────────────────────────────────────
 
-/** Monospace script block with interpreter + cwd context. */
+/**
+ * Verbatim command rendered with terminal chrome (JOBDET-02) — a "›_ command"
+ * header bar and an interpreter/cwd footer, per the a-job-detail reference.
+ * Pure restyle: the interpreter and cwd_hint values were previously inlined in
+ * the heading label; cwd_hint is omitted honestly when absent.
+ */
 function ScriptBlock({ job }: { job: JobRecord }): JSX.Element {
   return (
     <section>
-      <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-        Command
-        <span className="ml-1 font-normal normal-case">
-          ({job.interpreter}{job.cwd_hint ? ` · cwd: ${job.cwd_hint}` : ''})
-        </span>
-      </h3>
-      <pre className="bg-surface-sunken border-border-default text-text-primary overflow-x-auto rounded-lg border p-3 font-mono text-xs whitespace-pre">
-        {job.script_text}
-      </pre>
+      <div className="border-border-default bg-surface-sunken overflow-hidden rounded-lg border">
+        <header className="text-text-muted border-border-default flex items-center gap-1.5 border-b px-3 py-2 font-mono text-xs">
+          <span aria-hidden="true">›_</span>
+          <span>command</span>
+        </header>
+        <pre className="text-text-primary overflow-x-auto p-3 font-mono text-xs whitespace-pre">
+          {job.script_text}
+        </pre>
+        <footer className="text-text-muted border-border-default flex flex-wrap gap-x-6 gap-y-1 border-t px-3 py-2 font-mono text-xs">
+          <span>
+            interpreter <span className="text-text-primary">{job.interpreter}</span>
+          </span>
+          {job.cwd_hint && (
+            <span>
+              cwd <span className="text-text-primary">{job.cwd_hint}</span>
+            </span>
+          )}
+        </footer>
+      </div>
     </section>
   );
 }

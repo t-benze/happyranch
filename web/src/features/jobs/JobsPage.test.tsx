@@ -116,7 +116,9 @@ describe('JobDetailPage — read path', () => {
     // Property rail items (stored fields only) — use getAllByText since agent_name
     // appears in both the header meta and the property rail
     expect(screen.getAllByText('engineering_head').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('bash')).toBeInTheDocument();
+    // Interpreter "bash" now appears in both the rail and the command-card
+    // footer (JOBDET-02), so assert presence without uniqueness.
+    expect(screen.getAllByText('bash').length).toBeGreaterThanOrEqual(1);
   });
 
   // JOBDET-01: job metadata renders as a right-rail card styled per the
@@ -159,6 +161,35 @@ describe('JobDetailPage — read path', () => {
 
     // Preserved stored field (no data loss): interpreter still shown.
     expect(within(rail).getByText('bash')).toBeInTheDocument();
+  });
+
+  // JOBDET-02: the command card is styled with terminal chrome — a "›_ command"
+  // header and an interpreter/cwd footer — replacing the old plain "COMMAND
+  // (bash · cwd: …)" heading + bare command box. Pure restyle of existing job
+  // fields (interpreter, cwd_hint, script_text); no new data.
+  test('JOBDET-02: command card has terminal-chrome header and interpreter/cwd footer', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const jobWithCwd: JobRecord = { ...JOB, cwd_hint: '~/happyranch/repo' };
+    stubJobDetail(jobWithCwd);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText('docker image prune -af')).toBeInTheDocument();
+    });
+
+    // Scope assertions to the command card itself (the chrome box wrapping the
+    // verbatim command), not the property rail which also lists interpreter/cwd.
+    const card = screen.getByText('docker image prune -af').closest('div');
+    expect(card).not.toBeNull();
+
+    // Terminal-chrome header marker.
+    expect(within(card!).getByText('command')).toBeInTheDocument();
+
+    // Interpreter/cwd footer surfaces the existing fields (was the inline
+    // "(bash · cwd: …)" heading label before).
+    expect(within(card!).getByText('interpreter')).toBeInTheDocument();
+    expect(within(card!).getByText('bash')).toBeInTheDocument();
+    expect(within(card!).getByText('~/happyranch/repo')).toBeInTheDocument();
   });
 
   test('shows gated chip for review_required pending job', async () => {
