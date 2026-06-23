@@ -12,18 +12,24 @@
  * Uses ds.css .card styling (bg-surface, rounded-lg, shadow-pasture-sm).
  * Title in serif font-display.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { Markdown } from '@/design-system/patterns/Markdown';
 import { useTask, useTaskRecall, useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
 // eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes getTask (useTask deliberately drops active_chain); routed direct per THR-011 founder ruling (option 3), pending a future hook
 import { getTask } from '@/lib/api/tasks';
-import type { ActiveChainResponse, TaskRecallNode } from '@/lib/api/types';
+import type {
+  ActiveChainResponse,
+  JobRecord,
+  TaskRecallNode,
+  TaskRecord,
+} from '@/lib/api/types';
 import { TaskRecallTree } from './TaskRecallTree';
 import { TaskEventsLog } from './TaskEventsLog';
 import { CancelTaskDialog } from './CancelTaskDialog';
@@ -336,6 +342,111 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
 }
 
 /* ================================================================
+ * Property rail — labeled metadata grid (a-task-detail / TASKDET-03)
+ * ================================================================ */
+
+function formatDateTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString();
+}
+
+/** Only the founder is distinguishable; every other agent is a worker. */
+function chipRole(name: string): 'worker' | 'founder' {
+  return name === 'founder' ? 'founder' : 'worker';
+}
+
+/** One label/value row inside the property rail card. */
+function RailRow({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+  return (
+    <div className="flex items-baseline gap-3">
+      <dt className="text-text-muted w-20 shrink-0 text-xs">{label}</dt>
+      <dd className="min-w-0 flex-1">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * Metadata rail — right-rail card styled per the a-task-detail reference
+ * (TASKDET-03), mirroring the JobDetailPage PropertyRail idiom (JOBDET-01).
+ *
+ * Renders ONLY property-grid fields with a real backing value in the
+ * TaskRecord payload the page already fetches: Status, Assignee, Thread,
+ * Job, Created. The reference's Executor / Churn (token usage) / Priority
+ * rows have NO backing field in the task-detail contract, so they are
+ * honestly omitted rather than fabricated — surfacing them would need a
+ * daemon/data-contract change, out of scope for this presentation-only leg.
+ */
+function PropertyRail({
+  task,
+  slug,
+  jobs,
+}: {
+  task: TaskRecord;
+  slug: string | undefined;
+  jobs: JobRecord[];
+}): JSX.Element {
+  const threadId = (task as Record<string, unknown>).dispatched_from_thread_id;
+  const created = formatDateTime(task.created_at);
+
+  return (
+    <aside aria-label="Task properties" className="lg:w-64 lg:shrink-0">
+      <div className="border-border-default bg-surface-raised rounded-xl border p-4">
+        <dl className="space-y-3 text-sm">
+          <RailRow label="Status">
+            <StatusBadge status={task.status} blockKind={task.block_kind} />
+          </RailRow>
+          {task.assigned_agent && (
+            <RailRow label="Assignee">
+              <AgentChip
+                name={task.assigned_agent}
+                role={chipRole(task.assigned_agent)}
+              />
+            </RailRow>
+          )}
+          {typeof threadId === 'string' && threadId && (
+            <RailRow label="Thread">
+              <IdBadge
+                id={threadId}
+                kind="thread"
+                to={slug ? `/orgs/${slug}/threads/${threadId}` : undefined}
+              />
+            </RailRow>
+          )}
+          {jobs.length > 0 && (
+            <RailRow label="Job">
+              <span className="flex flex-wrap gap-x-2 gap-y-1">
+                {jobs.map((j) =>
+                  slug ? (
+                    <Link
+                      key={j.id}
+                      to={`/orgs/${slug}/jobs/${j.id}`}
+                      className="text-accent-default font-mono text-xs hover:underline"
+                    >
+                      {j.id}
+                    </Link>
+                  ) : (
+                    <span key={j.id} className="font-mono text-xs">
+                      {j.id}
+                    </span>
+                  ),
+                )}
+              </span>
+            </RailRow>
+          )}
+          {created && (
+            <RailRow label="Created">
+              <span className="text-text-primary font-mono text-xs tabular-nums">
+                {created}
+              </span>
+            </RailRow>
+          )}
+        </dl>
+      </div>
+    </aside>
+  );
+}
+
+/* ================================================================
  * Main pane
  * ================================================================ */
 
@@ -378,7 +489,7 @@ export function TaskDetailPage(): JSX.Element {
   return (
     <>
       <div className="h-full overflow-y-auto">
-        <div className="mx-auto max-w-3xl px-4 py-6">
+        <div className="mx-auto max-w-5xl px-4 py-6">
           {/* Back-nav — return to the roots list */}
           <nav className="mb-4">
             <Link
@@ -389,6 +500,9 @@ export function TaskDetailPage(): JSX.Element {
             </Link>
           </nav>
 
+          {/* Two-column body: primary content + right-rail property grid (TASKDET-03) */}
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+            <div className="min-w-0 flex-1">
           {/* Header — identity card */}
           <header className="border-border-default border-b pb-4">
             <h1 className="flex items-center gap-2">
@@ -405,9 +519,6 @@ export function TaskDetailPage(): JSX.Element {
             {task.data && (
               <div className="text-text-muted mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs tabular-nums">
                 <span>{task.data.team}</span>
-                {task.data.assigned_agent && (
-                  <span>· {task.data.assigned_agent}</span>
-                )}
                 {task.data.parent_task_id && (
                   <span>
                     · parent{' '}
@@ -500,7 +611,7 @@ export function TaskDetailPage(): JSX.Element {
 
             <section className="mt-5">
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
-                Live events
+                Activity
               </h3>
               <TaskEventsLog taskId={taskId} />
             </section>
@@ -532,6 +643,16 @@ export function TaskDetailPage(): JSX.Element {
               </section>
             )}
           </section>
+            </div>
+
+            {task.data && (
+              <PropertyRail
+                task={task.data}
+                slug={slug}
+                jobs={jobsQuery.data?.jobs ?? []}
+              />
+            )}
+          </div>
         </div>
       </div>
 
