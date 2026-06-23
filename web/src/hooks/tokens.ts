@@ -84,3 +84,39 @@ export function useTokensToday(params: { since?: string }): QueryLike<number> {
     staleTime: 30_000,
   }) as QueryLike<number>;
 }
+
+/**
+ * Total tokens recorded since a `since` boundary, scoped to a 7-day window by
+ * the caller — powers the dashboard "This week's burn" rail card (THR-030
+ * HOME-06).
+ *
+ * A thin variant of {@link useTokensToday}: the identical
+ * `GET /tokens?group_by=agent` rollup summed over `total_tokens`, differing
+ * only in the window the caller supplies via `since` (this-week vs today) and
+ * the query-key label. No DashboardSummaryResponse / web-contract change — a
+ * client-side window aggregation of already-exposed data, the same source the
+ * "Tokens today" tile and Top-token-threads card already ride.
+ *
+ * `since` is optional so the dashboard can call the hook unconditionally
+ * (rules-of-hooks) before `server_now` is known; the query stays disabled
+ * until a boundary is supplied.
+ */
+export function useTokensWeek(params: { since?: string }): QueryLike<number> {
+  const { slug: routeSlug } = useParams<{ slug: string }>();
+  const ctxSlug = useOrgSlugOptional();
+  const slug = routeSlug ?? ctxSlug ?? '';
+  const since = params.since;
+  return useQuery({
+    queryKey: ['tokens', slug, 'week-total', since ?? null],
+    queryFn: async () => {
+      const res = await tokensApi.listTokens(slug, {
+        group_by: 'agent',
+        ...(since ? { since } : {}),
+      });
+      const rollup = 'rollup' in res ? res.rollup : [];
+      return rollup.reduce((sum, r) => sum + r.total_tokens, 0);
+    },
+    enabled: !!slug && !!since,
+    staleTime: 30_000,
+  }) as QueryLike<number>;
+}

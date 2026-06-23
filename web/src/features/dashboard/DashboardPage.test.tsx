@@ -6,17 +6,18 @@ import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import type { DashboardSummaryResponse } from '@/lib/api/types';
 
-// Partial-mock the tokens hooks: stub the new today-total hook so the
-// "Tokens today" tile renders a deterministic figure, while leaving
-// useTopThreadTokens REAL so the self-contained TopTokenThreadsPanel still
-// rides its MSW-seeded /tokens fetch (same pattern as
-// TopTokenThreadsPanel.test.tsx, scoped to the one new hook).
+// Partial-mock the tokens hooks: stub the today-total and week-total hooks so
+// the "Tokens today" tile and "This week's burn" card render deterministic
+// figures, while leaving useTopThreadTokens REAL so the self-contained
+// TopTokenThreadsPanel still rides its MSW-seeded /tokens fetch (same pattern
+// as TopTokenThreadsPanel.test.tsx, scoped to the two new hooks).
 vi.mock('@/hooks/tokens', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hooks/tokens')>();
-  return { ...actual, useTokensToday: vi.fn() };
+  return { ...actual, useTokensToday: vi.fn(), useTokensWeek: vi.fn() };
 });
-import { useTokensToday, formatTokens } from '@/hooks/tokens';
+import { useTokensToday, useTokensWeek, formatTokens } from '@/hooks/tokens';
 const mockTokensToday = vi.mocked(useTokensToday);
+const mockTokensWeek = vi.mocked(useTokensWeek);
 
 const SLUG = 'hk-macau-tourism';
 const ROUTE = `/orgs/${SLUG}/dashboard`;
@@ -80,6 +81,13 @@ describe('DashboardPage', () => {
   beforeEach(() => {
     // Default: a quiet today. Individual tests override as needed.
     mockTokensToday.mockReturnValue({
+      data: 0,
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    // Default: a quiet week's burn. Individual tests override as needed.
+    mockTokensWeek.mockReturnValue({
       data: 0,
       isLoading: false,
       isError: false,
@@ -324,6 +332,82 @@ describe('DashboardPage', () => {
     expect(within(tile).getByText(formatTokens(1_250_000))).toBeInTheDocument();
     // The success state replaces the neutral placeholder entirely.
     expect(within(tile).queryByText('—')).not.toBeInTheDocument();
+  });
+
+  test("This week's burn card renders a real 7d token figure with a chevron deep-link to Spend (THR-030 HOME-06)", async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    // A real this-week token total resolved by the (mocked) week-summing hook.
+    mockTokensWeek.mockReturnValue({
+      data: 274_400_991,
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const rail = await screen.findByTestId('dashboard-rail');
+    const card = within(rail)
+      .getByText("This week's burn")
+      .closest('section') as HTMLElement;
+
+    // Honest token figure via the shared compact formatter, scoped to the card.
+    expect(within(card).getByText(formatTokens(274_400_991))).toBeInTheDocument();
+    // Tokens are the unit (dollar burn is deferred — no '$' on this card).
+    expect(within(card).getByText('Tokens')).toBeInTheDocument();
+    expect(within(card).queryByText(/\$/)).not.toBeInTheDocument();
+
+    // The chevron affordance deep-links into the Spend page (same-window number).
+    const link = within(card).getByRole('link', { name: /view token spend/i });
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/spend`);
+  });
+
+  test("This week's burn card shows a neutral placeholder (not 0) while the token query is pending", async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    // Week query still in flight: data undefined. The card must NOT paint a
+    // fabricated 0 (honesty fence — value comes only from real data).
+    mockTokensWeek.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    });
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const rail = await screen.findByTestId('dashboard-rail');
+    const card = within(rail)
+      .getByText("This week's burn")
+      .closest('section') as HTMLElement;
+    expect(within(card).getByText('—')).toBeInTheDocument();
+    expect(within(card).queryByText('0')).not.toBeInTheDocument();
+  });
+
+  test("This week's burn card shows a neutral placeholder (not 0) when the token query errors", async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    // Week query failed: data undefined, isError true. Same neutral state —
+    // never a dishonest 0.
+    mockTokensWeek.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('boom'),
+    });
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const rail = await screen.findByTestId('dashboard-rail');
+    const card = within(rail)
+      .getByText("This week's burn")
+      .closest('section') as HTMLElement;
+    expect(within(card).getByText('—')).toBeInTheDocument();
+    expect(within(card).queryByText('0')).not.toBeInTheDocument();
   });
 
   test('renders org pulse table when teams exist', async () => {
