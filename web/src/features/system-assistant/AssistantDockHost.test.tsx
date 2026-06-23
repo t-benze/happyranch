@@ -17,12 +17,14 @@ import { AssistantDockHost } from './AssistantDockHost';
 // Shared mock state (hoisted so vi.mock factories can close over it)
 // ---------------------------------------------------------------------------
 
-const STATUS_CONFIGURED = {
-  data: { state: 'configured' as const, selected_executor: 'claude', workspace_path: '/ws', detail: null },
-  isLoading: false,
-  isError: false,
-  error: null,
-};
+function configuredStatus() {
+  return {
+    data: { state: 'configured' as const, selected_executor: 'claude' as string | null, workspace_path: '/ws', detail: null },
+    isLoading: false,
+    isError: false,
+    error: null,
+  };
+}
 
 interface MockSocket {
   readyState: number;
@@ -38,9 +40,26 @@ const h = vi.hoisted(() => {
   const result: {
     socket: MockSocket | null;
     openSession: ReturnType<typeof vi.fn<() => Promise<MockSocket>>>;
+    status: {
+      data: {
+        state: 'configured' | 'unconfigured' | 'error';
+        selected_executor: string | null;
+        workspace_path: string | null;
+        detail: string | null;
+      } | undefined;
+      isLoading: boolean;
+      isError: boolean;
+      error: unknown;
+    };
   } = {
     socket: null,
     openSession: vi.fn<() => Promise<MockSocket>>(),
+    status: {
+      data: { state: 'configured', selected_executor: 'claude', workspace_path: '/ws', detail: null },
+      isLoading: false,
+      isError: false,
+      error: null,
+    },
   };
   return result;
 });
@@ -50,7 +69,7 @@ const h = vi.hoisted(() => {
 // ---------------------------------------------------------------------------
 
 vi.mock('@/hooks/assistant', () => ({
-  useAssistantStatus: () => STATUS_CONFIGURED,
+  useAssistantStatus: () => h.status,
   useInitAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRegisterAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRepairAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -113,6 +132,7 @@ async function renderOpen() {
 beforeEach(() => {
   vi.clearAllMocks();
   h.socket = null;
+  h.status = configuredStatus();
 });
 
 // ---------------------------------------------------------------------------
@@ -213,5 +233,50 @@ describe('AssistantDockHost — pre-ack raw-frame tolerance (OPTION 3)', () => {
 
     // The pre-ack raw frame is NOT visible.
     expect(screen.queryByText('assistant ready')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DOCK-02 (THR-030) — header: title alignment, connected-status line,
+// data-backed executor pill.
+// ---------------------------------------------------------------------------
+
+describe('AssistantDockHost — DOCK-02 header (THR-030)', () => {
+  test('title reads "Ranch Assistant", not the old "System Assistant"', () => {
+    renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
+    expect(screen.getByText('Ranch Assistant')).toBeInTheDocument();
+    expect(screen.queryByText('System Assistant')).toBeNull();
+  });
+
+  test('connected-status line is rendered in the header', () => {
+    renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
+    // The static descriptor anchors the status line and is always present.
+    expect(screen.getByText(/operates your runtime/)).toBeInTheDocument();
+  });
+
+  test('status line shows a live "Connected" label after the ready ack', async () => {
+    await renderOpen();
+    fireOnmessage(JSON.stringify({ type: 'status', code: 'ready' }));
+    await waitFor(() => {
+      expect(screen.getByText('Connected')).toBeInTheDocument();
+    });
+  });
+
+  test('executor pill renders the data-backed selected_executor', () => {
+    renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
+    expect(screen.getByText('claude')).toBeInTheDocument();
+  });
+
+  test('executor pill is OMITTED when selected_executor is unbacked (null)', () => {
+    h.status = {
+      data: { state: 'configured', selected_executor: null, workspace_path: '/ws', detail: null },
+      isLoading: false,
+      isError: false,
+      error: null,
+    };
+    renderWithProviders(<AssistantDockHost />, { route: '/orgs/test-org' });
+    // No hardcoded executor name is fabricated when the field is null.
+    expect(screen.queryByText('claude')).toBeNull();
+    expect(screen.queryByText('codex')).toBeNull();
   });
 });
