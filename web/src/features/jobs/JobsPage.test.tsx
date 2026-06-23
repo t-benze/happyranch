@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
@@ -117,6 +117,48 @@ describe('JobDetailPage — read path', () => {
     // appears in both the header meta and the property rail
     expect(screen.getAllByText('engineering_head').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('bash')).toBeInTheDocument();
+  });
+
+  // JOBDET-01: job metadata renders as a right-rail card styled per the
+  // a-job-detail reference — agent identities via the AgentChip avatar idiom
+  // (role-colored dot) and entity-link styling for the Task id. Existing
+  // stored fields (e.g. interpreter) are preserved inside the same card.
+  test('JOBDET-01: metadata is a right-rail card with an agent avatar and a Task entity link', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const reviewedJob: JobRecord = {
+      ...JOB,
+      status: 'completed',
+      review_required: false,
+      reviewed_by: 'founder',
+      reviewed_at: '2026-05-23T13:00:00Z',
+      exit_code: 0,
+      duration_ms: 4200,
+    };
+    stubJobDetail(reviewedJob);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText('Clean up stale Docker images')).toBeInTheDocument();
+    });
+
+    // The metadata lives in a dedicated right-rail card (an <aside> →
+    // implicit ARIA "complementary" landmark), not the old inline grid.
+    const rail = screen.getByRole('complementary');
+
+    // Requested-by agent identity uses the AgentChip avatar idiom
+    // (role-colored dot), not plain text.
+    expect(within(rail).getByText('engineering_head')).toBeInTheDocument();
+    expect(rail.querySelector('.bg-agent-worker')).not.toBeNull();
+    // Reviewed-by founder identity also renders via AgentChip (founder dot).
+    expect(within(rail).getByText('founder')).toBeInTheDocument();
+    expect(rail.querySelector('.bg-agent-founder')).not.toBeNull();
+
+    // The Task id is an entity link to the task-detail route.
+    const taskLink = within(rail).getByRole('link', { name: /TASK-0042/ });
+    expect(taskLink).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-0042`);
+
+    // Preserved stored field (no data loss): interpreter still shown.
+    expect(within(rail).getByText('bash')).toBeInTheDocument();
   });
 
   test('shows gated chip for review_required pending job', async () => {
