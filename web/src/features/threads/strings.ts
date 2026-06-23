@@ -30,7 +30,7 @@ export const THREADS_STRINGS = {
   headerEyebrow: (total: number, dreamOpened: number) =>
     `${total} THREAD${total === 1 ? '' : 'S'} · ${dreamOpened} DREAM-OPENED`,
   pageSubtitle: 'Broadcast conversations — all participants see every message.',
-  newThread: '+ New',
+  newThread: '+ New thread',
   filterPlaceholder: 'Filter…',
   filterEmpty: 'No threads match the filter.',
   noThreads: 'No threads yet. Press N to compose.',

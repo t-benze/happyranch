@@ -856,6 +856,17 @@ describe('ThreadsPage — list header eyebrow + serif title (THREADS-04)', () =>
     // Direction-A "X WAITING ON YOU" segment is honestly omitted, not faked.
     expect(screen.queryByText(/waiting on you/i)).not.toBeInTheDocument();
   });
+
+  // THREADS-06: the new-thread button shows the FULL Direction-A label,
+  // not a truncated "+ New". The accessible name still comes from the
+  // aria-label ("New thread"); this guards the *visible* text.
+  test('new-thread button shows the full "+ New thread" label', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountWithHeaderData();
+    mountAt(`/orgs/${SLUG}/threads`);
+    const button = await screen.findByRole('button', { name: /New thread/i });
+    expect(button).toHaveTextContent('+ New thread');
+  });
 });
 
 /* ------------------------------------------------------------------ */
