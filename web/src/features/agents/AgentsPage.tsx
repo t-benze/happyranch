@@ -10,7 +10,7 @@
  *
  * NO autonomy toggle (founder ruling). NO permission-model changes.
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import {
@@ -52,8 +52,37 @@ export function AgentsPage(): JSX.Element {
     else navigate(routes.inbox());
   };
 
-  const agents = agentsQuery.data?.agents ?? [];
+  // Memoized so the auto-select effect's dependency array is stable across
+  // renders (the raw `?? []` fallback would be a fresh array each render).
+  const agents = useMemo(
+    () => agentsQuery.data?.agents ?? [],
+    [agentsQuery.data?.agents],
+  );
   const selectedAgent = typeof openAgentName === 'string' ? openAgentName : null;
+
+  // AGENTS-01: on first settle of the active roster surface, auto-select the
+  // first agent so its detail pane renders by default (matching the
+  // Direction-A `a-agents` reference). A ref latches this to fire once — so
+  // closing the detail pane (→ inbox) still returns to the calm empty state
+  // instead of immediately re-selecting. Deep-links, the empty roster, and
+  // the pending view are all left untouched.
+  const didAutoSelect = useRef(false);
+  useEffect(() => {
+    if (didAutoSelect.current) return;
+    if (agentsQuery.isLoading) return;
+    if (searchParams.get('view') === 'pending') return;
+    didAutoSelect.current = true;
+    if (!selectedAgent && agents.length > 0) {
+      navigate(routes.detail(agents[0].name), { replace: true });
+    }
+  }, [
+    agentsQuery.isLoading,
+    searchParams,
+    selectedAgent,
+    agents,
+    navigate,
+    routes,
+  ]);
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
