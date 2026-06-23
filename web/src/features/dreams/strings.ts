@@ -9,6 +9,17 @@ export const DREAM_STRINGS = {
   emptyBody: 'Dreams run on the schedule configured in Settings. First reflection will appear here.',
   errorTitle: "Couldn't load dreams",
   drawerLoading: 'Loading…',
+  /**
+   * Empty-state right rail (DREAMS-02). Calm/honest placeholders only — no
+   * fabricated candidate rows or concrete schedule times. The populated
+   * KB-candidate queue + Schedule bands depend on data paths not yet wired
+   * into this surface (see DREAMS-01 re-sweep).
+   */
+  railCandidatesTitle: 'Candidates to review',
+  railCandidatesEmpty:
+    'No candidates to review yet. Knowledge proposed by nightly reflections will appear here.',
+  railScheduleTitle: 'Schedule',
+  railScheduleEmpty: 'Reflections run on the schedule configured in Settings.',
   /** Quiet-dream state — first-class positive per PRD §2.5.5 */
   quietTitle: 'Quiet dream — nothing escalated · private learning saved',
   quietBody: 'The agent completed its reflection and saved private learnings. No action needed.',

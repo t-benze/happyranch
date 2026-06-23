@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -201,6 +201,38 @@ describe('DreamsPage', () => {
     expect(screen.getByText('No dreams yet')).toBeDefined();
     expect(
       screen.getByText('Dreams run on the schedule configured in Settings. First reflection will appear here.'),
+    ).toBeDefined();
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  DREAMS-02 — empty state is single-column feed + right rail       */
+  /* ---------------------------------------------------------------- */
+
+  it('renders the empty state as a single-column feed plus a right-side rail (DREAMS-02)', () => {
+    mockDreamsList.mockReturnValue(loaded({ dreams: [] }));
+    renderPage(<DreamsPage />);
+
+    // Calm empty feed still present
+    expect(screen.getByText('No dreams yet')).toBeDefined();
+
+    // A dedicated right-side rail exists (the <aside> → "complementary"
+    // landmark) instead of the old empty right pane.
+    const rail = screen.getByRole('complementary');
+    expect(rail).toBeDefined();
+    // border-l marks it as the right-hand rail (not the old left list rail).
+    expect(rail.className).toContain('border-l');
+
+    // Rail shows its own calm KB-candidates + Schedule placeholders —
+    // no fabricated candidate rows or schedule times.
+    expect(within(rail).getByText('Candidates to review')).toBeDefined();
+    expect(within(rail).getByText('Schedule')).toBeDefined();
+    expect(
+      within(rail).getByText(
+        'No candidates to review yet. Knowledge proposed by nightly reflections will appear here.',
+      ),
+    ).toBeDefined();
+    expect(
+      within(rail).getByText('Reflections run on the schedule configured in Settings.'),
     ).toBeDefined();
   });
 

@@ -203,6 +203,48 @@ export function DreamsPage(): JSX.Element {
 
   const dreams = dreamsQ.data?.dreams ?? [];
 
+  // DREAMS-02 — the empty/calm state renders as a single-column reflection
+  // feed plus a right-side rail (KB-candidates / Schedule), not the narrow
+  // list-rail master-detail (which left a stranded empty right pane). The
+  // rail shows calm placeholders only: the live instance has no dream data,
+  // and the populated candidate queue + schedule bands depend on data paths
+  // not wired into this surface (DREAMS-01 re-sweep when data exists).
+  if (!dreamsQ.isLoading && !dreamsQ.isError && dreams.length === 0) {
+    return (
+      <div className="flex h-full">
+        {/* Single-column reflection feed */}
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          <header className="border-border-default border-b p-4">
+            <PageHeader
+              title={<span className="font-display">{DREAM_STRINGS.pageTitle}</span>}
+              meta={DREAM_STRINGS.pageSubtitle}
+            />
+          </header>
+          <EmptyState title={DREAM_STRINGS.emptyTitle} body={DREAM_STRINGS.emptyBody} />
+        </main>
+
+        {/* Right rail — KB-candidates / Schedule, calm empty placeholders */}
+        <aside
+          aria-label="Candidates and schedule"
+          className="border-border-default bg-surface-sunken w-rail shrink-0 space-y-6 overflow-y-auto border-l p-4"
+        >
+          <section className="space-y-2">
+            <h3 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+              {DREAM_STRINGS.railCandidatesTitle}
+            </h3>
+            <p className="text-text-muted text-sm">{DREAM_STRINGS.railCandidatesEmpty}</p>
+          </section>
+          <section className="space-y-2">
+            <h3 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+              {DREAM_STRINGS.railScheduleTitle}
+            </h3>
+            <p className="text-text-muted text-sm">{DREAM_STRINGS.railScheduleEmpty}</p>
+          </section>
+        </aside>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full">
       {/* List rail — w-rail (244px) */}
@@ -231,11 +273,6 @@ export function DreamsPage(): JSX.Element {
               {DREAM_STRINGS.retry}
             </Button>
           </div>
-        ) : dreams.length === 0 ? (
-          <EmptyState
-            title={DREAM_STRINGS.emptyTitle}
-            body={DREAM_STRINGS.emptyBody}
-          />
         ) : (
           <div className="flex flex-col gap-1 p-3">
             {/* Count eyebrow — Pasture label */}
