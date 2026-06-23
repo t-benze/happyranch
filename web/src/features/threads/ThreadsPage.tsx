@@ -440,14 +440,8 @@ export function ThreadsPage(): JSX.Element {
                     status={threadStatusOrFallback(t.status)}
                     needsYou={false}
                     active={t.thread_id === threadId}
-                    meta={
-                      <span className="flex items-center gap-1.5">
-                        {t.composed_from_dream_id && (
-                          <CrescentMoonBadge className="h-3 w-3" />
-                        )}
-                        <span>{S.turnBudget(t.turns_used, t.turn_cap)}</span>
-                      </span>
-                    }
+                    fromDream={!!t.composed_from_dream_id}
+                    meta={<span>{S.turnBudget(t.turns_used, t.turn_cap)}</span>}
                     href={path}
                     onSelect={() => navigate(path)}
                   />

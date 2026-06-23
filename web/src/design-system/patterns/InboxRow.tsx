@@ -9,14 +9,20 @@
  * as a link. Plain primary clicks call `onSelect()` after suppressing the
  * default full-page reload, so the composition can drive SPA routing.
  *
- * Renders AgentChip for `lastSpeaker`, IdBadge for the thread id,
- * inline Pasture pill for status. The needs-you dot is a leading 6px accent.
+ * Renders AgentChip for `lastSpeaker`, IdBadge for the thread id, and the
+ * semantic status pill set (THREADS-05): an `active` pill for open threads, a
+ * `done` pill for archived (terminal) threads, plus an additive `from dream`
+ * pill when the thread was composed from a dream. The needs-you dot is a
+ * leading 6px accent. The finer Direction-A states (waiting-on-you / review /
+ * merged / live / idle) are intentionally absent — no field on the thread-list
+ * payload backs them honestly.
  *
  * Direction-A Pasture card styling: bg-surface border-border-default rounded-lg
  * shadow-pasture-sm (ds.css .card). Active row uses accent-muted + left marker.
  */
 import type { ReactNode } from 'react';
 import { AgentChip } from './AgentChip';
+import { CrescentMoonBadge } from './CrescentMoonBadge';
 import { IdBadge } from './IdBadge';
 
 interface InboxRowProps {
@@ -27,6 +33,8 @@ interface InboxRowProps {
   status: 'open' | 'archived';
   needsYou: boolean;
   active: boolean;
+  /** Composed-from-dream marker — renders an additive "from dream" pill. */
+  fromDream?: boolean;
   /** Destination URL for the row. Used as the `<a href>`. */
   href: string;
   /**
@@ -45,6 +53,7 @@ export function InboxRow({
   status,
   needsYou,
   active,
+  fromDream = false,
   href,
   onSelect,
 }: InboxRowProps): JSX.Element {
@@ -56,7 +65,7 @@ export function InboxRow({
     e.preventDefault();
     onSelect();
   };
-  const statusLabel = status === 'open' ? 'active' : 'archived';
+  const statusLabel = status === 'open' ? 'active' : 'done';
   const statusPillCls =
     status === 'open'
       ? 'bg-accent-soft text-accent-text'
@@ -91,10 +100,18 @@ export function InboxRow({
             {subject}
           </span>
         </div>
-        <span
-          className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}
-        >
-          {statusLabel}
+        <span className="flex shrink-0 items-center gap-1">
+          {fromDream && (
+            <span className="bg-accent-soft text-accent-text inline-flex items-center gap-1 rounded-full px-2 py-px text-xs leading-relaxed font-semibold">
+              <CrescentMoonBadge className="h-3 w-3" />
+              from dream
+            </span>
+          )}
+          <span
+            className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}
+          >
+            {statusLabel}
+          </span>
         </span>
       </div>
       <div className="text-caption text-text-muted mt-1 flex items-center justify-between gap-2">
