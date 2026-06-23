@@ -21,6 +21,7 @@
  */
 import { useMemo, useState, useCallback, useRef } from 'react';
 import { useSpendByAgent, useSpendByThread, useSpendByModel } from '@/hooks/spend';
+import { useAgentsList } from '@/hooks/agents';
 import { cn } from '@/lib/utils';
 // classifyModel is the single canonical model-label renderer; Spend and
 // Dashboard must never disagree. Moving it out of @/features/dashboard
@@ -358,6 +359,145 @@ function BreakdownTable({
 }
 
 /* ------------------------------------------------------------------ */
+/*  By-team breakdown card (SPEND-03)                                   */
+/* ------------------------------------------------------------------ */
+
+/** Roster shape we consume — the agents-LIST payload carries `team` per agent
+ *  (AgentSummary.team), so the join is a pure client-side fold, no new route. */
+interface RosterAgent {
+  name: string;
+  team: string | null;
+}
+
+interface TeamBurnRow {
+  team: string;
+  totalTokens: number;
+  isUnattributed: boolean;
+}
+
+/** Honest bucket for agents whose team is null/blank, or who are absent from
+ *  the roster entirely. We never fabricate a team to fill the gap. */
+const UNATTRIBUTED_LABEL = 'unattributed';
+
+/** Deterministic categorical dot palette — design-system tokens only (no
+ *  hardcoded hex), mirroring how the rest of Spend fills with token classes.
+ *  Five visually distinct hues; assignment is by stable alphabetical index so a
+ *  given team always keeps the same color regardless of burn ordering. */
+const TEAM_DOT_TOKENS = [
+  'bg-accent',
+  'bg-agent-manager',
+  'bg-agent-worker',
+  'bg-feedback-warning',
+  'bg-feedback-info',
+] as const;
+
+/** Neutral token for the unattributed bucket — never one of the team hues. */
+const UNATTRIBUTED_DOT_TOKEN = 'bg-border-strong';
+
+/** Fold the per-agent burn rollup into per-team totals by joining each rollup
+ *  row's `agent` to the roster's per-agent `team`. Missing/blank team → the
+ *  honest 'unattributed' bucket, which always sorts last. */
+function aggregateByTeam(
+  agentRollup: TokenUsageRollup[],
+  agents: RosterAgent[],
+): TeamBurnRow[] {
+  const teamByAgent = new Map<string, string | null>();
+  for (const a of agents) teamByAgent.set(a.name, a.team);
+
+  const totals = new Map<string, number>();
+  for (const r of agentRollup) {
+    const rawTeam = r.agent != null ? teamByAgent.get(r.agent) : undefined;
+    const team =
+      rawTeam != null && rawTeam.trim() !== '' ? rawTeam : UNATTRIBUTED_LABEL;
+    totals.set(team, (totals.get(team) ?? 0) + r.total_tokens);
+  }
+
+  return [...totals.entries()]
+    .map(([team, totalTokens]): TeamBurnRow => ({
+      team,
+      totalTokens,
+      isUnattributed: team === UNATTRIBUTED_LABEL,
+    }))
+    .sort((a, b) => {
+      if (a.isUnattributed !== b.isUnattributed) return a.isUnattributed ? 1 : -1;
+      return b.totalTokens - a.totalTokens || a.team.localeCompare(b.team);
+    });
+}
+
+/** Stable dot token for a team: alphabetical index into the categorical palette
+ *  (deterministic across renders). Unattributed is always the neutral token. */
+function dotTokenForTeam(team: string, orderedRealTeams: string[]): string {
+  if (team === UNATTRIBUTED_LABEL) return UNATTRIBUTED_DOT_TOKEN;
+  const idx = orderedRealTeams.indexOf(team);
+  return TEAM_DOT_TOKENS[(idx < 0 ? 0 : idx) % TEAM_DOT_TOKENS.length]!;
+}
+
+function ByTeamCard({
+  agentRollup,
+  agents,
+  loading,
+  error,
+}: {
+  agentRollup: TokenUsageRollup[];
+  agents: RosterAgent[];
+  loading: boolean;
+  error: boolean;
+}): JSX.Element {
+  const rows = useMemo(
+    () => aggregateByTeam(agentRollup, agents),
+    [agentRollup, agents],
+  );
+  // Alphabetical real-team order anchors the deterministic color assignment.
+  const orderedRealTeams = useMemo(
+    () =>
+      rows
+        .filter((r) => !r.isUnattributed)
+        .map((r) => r.team)
+        .sort((a, b) => a.localeCompare(b)),
+    [rows],
+  );
+
+  return (
+    <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+      <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
+        By team
+      </h3>
+      {error ? (
+        <p className="text-feedback-danger text-sm">Couldn't load spend by team — retry</p>
+      ) : loading ? (
+        <div className="animate-pulse space-y-2">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="bg-surface-raised h-5 rounded" />
+          ))}
+        </div>
+      ) : rows.length === 0 ? (
+        <p className="text-text-muted text-sm">No token spend in this window</p>
+      ) : (
+        <ul className="space-y-1.5 font-mono text-xs">
+          {rows.map((r) => (
+            <li key={r.team} className="flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'inline-block h-2 w-2 shrink-0 rounded-full',
+                  dotTokenForTeam(r.team, orderedRealTeams),
+                )}
+              />
+              <span className="text-text-primary truncate" title={r.team}>
+                {r.team}
+              </span>
+              <span className="text-text-primary ml-auto tabular-nums">
+                {r.totalTokens.toLocaleString()}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Top threads table (derived from thread rollup)                     */
 /* ------------------------------------------------------------------ */
 
@@ -602,6 +742,13 @@ export function SpendPage(): JSX.Element {
   const agentQ = useSpendByAgent({ since });
   const threadQ = useSpendByThread({ since });
   const modelQ = useSpendByModel({ since });
+  // Roster join source for the by-team card — the LIST payload carries each
+  // agent's `team`. Not windowed; the roster is a small static set.
+  const agentsQ = useAgentsList();
+  const roster = useMemo<RosterAgent[]>(
+    () => agentsQ.data?.agents ?? [],
+    [agentsQ.data],
+  );
 
   const [segment, setSegment] = useState<BreakdownSegment>('agent');
 
@@ -721,14 +868,25 @@ export function SpendPage(): JSX.Element {
             </h2>
             <BreakdownToggle segment={segment} setSegment={setSegment} />
           </div>
-          <BreakdownTable
-            segment={segment}
-            agentRollup={agentQ.data ?? []}
-            threadRollup={threadQ.data ?? []}
-            modelRollup={modelQ.data ?? []}
-            loading={isAnyLoading}
-            error={isAnyError && !isAnyLoading}
-          />
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* By-team card sits alongside the by-agent table; it always reads
+                the agent rollup joined to the roster, independent of the
+                agent/thread/model segment toggle above. */}
+            <ByTeamCard
+              agentRollup={agentQ.data ?? []}
+              agents={roster}
+              loading={agentQ.isLoading || agentsQ.isLoading}
+              error={agentQ.isError && !agentQ.isLoading}
+            />
+            <BreakdownTable
+              segment={segment}
+              agentRollup={agentQ.data ?? []}
+              threadRollup={threadQ.data ?? []}
+              modelRollup={modelQ.data ?? []}
+              loading={isAnyLoading}
+              error={isAnyError && !isAnyLoading}
+            />
+          </div>
         </div>
 
         {/* Top threads */}
