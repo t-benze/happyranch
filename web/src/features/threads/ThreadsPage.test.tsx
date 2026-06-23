@@ -217,6 +217,8 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       expect(screen.getByText(/Dream reflection/)).toBeInTheDocument();
       // Moon badge with aria-label
       expect(screen.getByLabelText(/Dream-originated/)).toBeInTheDocument();
+      // THREADS-05: dream origin surfaces as a labeled "from dream" pill.
+      expect(screen.getByText('from dream')).toBeInTheDocument();
     });
   });
 
