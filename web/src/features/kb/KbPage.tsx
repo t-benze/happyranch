@@ -22,7 +22,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useKbRoutes, useKBList, useKBSearch, useKBStats } from '@/hooks/kb';
 import { useDensity } from '@/hooks/density';
 import { useDreamsList, useDream } from '@/hooks/dreams';
-import { FilterSidebar, type FilterGroup } from '@/design-system/patterns/FilterSidebar';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Input } from '@/design-system/primitives/Input';
 import { Button } from '@/design-system/primitives/Button';
@@ -51,6 +50,116 @@ function CrescentMoonBadge({ className }: { className?: string }): JSX.Element {
     >
       <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a6.4 6.4 0 0 1-4.54 1.86c-3.53 0-6.4-2.87-6.4-6.4 0-1.62.6-3.1 1.6-4.24A9 9 0 0 0 12 3Z" />
     </svg>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Folder rail icons + grouped rail (KB-01)                           */
+/* ------------------------------------------------------------------ */
+
+const RAIL_ICON_PROPS = {
+  width: 16,
+  height: 16,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.9,
+  'aria-hidden': true,
+} as const;
+
+/** Library/drawer glyph for the "All entries" row (matches a-knowledge). */
+function LibraryIcon(): JSX.Element {
+  return (
+    <svg className="shrink-0" {...RAIL_ICON_PROPS}>
+      <path d="M3 5h18v14H3z" />
+      <path d="M3 9h18" />
+    </svg>
+  );
+}
+
+/** Folder glyph for each per-type row (matches a-knowledge). */
+function FolderIcon(): JSX.Element {
+  return (
+    <svg className="shrink-0" {...RAIL_ICON_PROPS}>
+      <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+    </svg>
+  );
+}
+
+/**
+ * GroupedFolderRail — KB-01. Replaces the flat type list with labeled
+ * sections (folder icons + per-folder counts), matching the Direction-A
+ * `a-knowledge` reference.
+ *
+ * DATA FENCE (Confusion Protocol): the design also calls for ENGINEERING
+ * (review/qa/build) vs ORG (protocols/from-dreams) origin sections. The
+ * kb-list payload carries no origin/category/path field to back that split,
+ * and KBEntry has no "from dream" flag, so those folders are honestly OMITTED
+ * here (not zero-faked). The backed grouping below is over the existing
+ * `type` field — the same dimension the flat rail already filtered on.
+ */
+function GroupedFolderRail({
+  folders,
+  counts,
+  total,
+  selected,
+  onSelect,
+}: {
+  folders: string[];
+  counts: Map<string, number>;
+  total: number;
+  selected: string | null;
+  onSelect: (type: string | null) => void;
+}): JSX.Element {
+  const rowClass = (active: boolean) =>
+    cn(
+      'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm',
+      active
+        ? 'bg-accent-muted text-accent-text font-medium'
+        : 'text-text-muted hover:bg-surface-raised',
+    );
+  const countClass = 'ml-auto font-mono text-xs tabular-nums';
+
+  return (
+    <div className="space-y-4">
+      <section>
+        <h3 className="text-text-muted font-display mb-1.5 px-2.5 text-2xs font-medium tracking-wider uppercase">
+          {KB_STRINGS.railLibrarySection}
+        </h3>
+        <button
+          type="button"
+          onClick={() => onSelect(null)}
+          className={rowClass(selected == null)}
+        >
+          <LibraryIcon />
+          <span>{KB_STRINGS.railAllEntries}</span>
+          <span className={countClass}>{total}</span>
+        </button>
+      </section>
+
+      {folders.length > 0 && (
+        <section>
+          <h3 className="text-text-muted font-display mb-1.5 px-2.5 text-2xs font-medium tracking-wider uppercase">
+            {KB_STRINGS.filterFolders}
+          </h3>
+          <ul className="space-y-0.5">
+            {folders.map((f) => (
+              <li key={f}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(f)}
+                  className={rowClass(selected === f)}
+                >
+                  <FolderIcon />
+                  <span className="truncate">{f}</span>
+                  <span className={countClass}>{counts.get(f) ?? 0}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
   );
 }
 
@@ -169,6 +278,11 @@ export function KbPage(): JSX.Element {
 
   // Fetch live KB entries, filtered by type (folder)
   const listQuery = useKBList(folder ? { type: folder } : undefined);
+  // Unfiltered list backing the folder rail's counts (KB-01). Kept separate
+  // from the feed query so per-folder counts and the "All entries" total stay
+  // stable regardless of the active folder/search. Same route, no params —
+  // when no folder is selected this dedupes with listQuery's cache.
+  const railListQuery = useKBList();
   const searchQuery = useKBSearch(debouncedQ);
   const statsQuery = useKBStats();
 
@@ -229,27 +343,25 @@ export function KbPage(): JSX.Element {
     [],
   );
 
-  // Build folder filter options from KB entry types.
-  // FilterSidebar renders its own "All" button — don't duplicate.
-  const folders = useMemo(() => {
-    const set = new Set<string>();
-    rawEntries.forEach((e) => set.add(e.type));
-    return Array.from(set).sort();
-  }, [rawEntries]);
-
-  const filterGroups: FilterGroup[] = [
-    {
-      key: 'folder',
-      label: KB_STRINGS.filterFolders,
-      options: folders.map((f) => ({ value: f, label: f })),
-    },
-  ];
-
-  const filterState: Record<string, string | null> = { folder };
-  const handleFilterChange = (next: Record<string, string | null>) => {
-    const val = next.folder;
-    setFolder(val || null);
-  };
+  // Derive the grouped folder rail (KB-01) from the unfiltered library:
+  // one folder per existing `type` value, each with its live count, plus the
+  // total backing the "All entries" row. Counts come from railListQuery so
+  // they stay stable when a folder filter narrows the feed.
+  const railEntries = useMemo(
+    () => railListQuery.data?.entries ?? [],
+    [railListQuery.data?.entries],
+  );
+  const folderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const e of railEntries) {
+      counts.set(e.type, (counts.get(e.type) ?? 0) + 1);
+    }
+    return counts;
+  }, [railEntries]);
+  const railFolders = useMemo(
+    () => Array.from(folderCounts.keys()).sort(),
+    [folderCounts],
+  );
 
   const loading = listQuery.isLoading || dreamsQuery.isLoading;
 
@@ -305,10 +417,12 @@ export function KbPage(): JSX.Element {
             onChange={(e) => setSearchInput(e.target.value)}
           />
         </div>
-        <FilterSidebar
-          groups={filterGroups}
-          value={filterState}
-          onChange={handleFilterChange}
+        <GroupedFolderRail
+          folders={railFolders}
+          counts={folderCounts}
+          total={railEntries.length}
+          selected={folder}
+          onSelect={setFolder}
         />
       </aside>
 

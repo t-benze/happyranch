@@ -5,7 +5,7 @@
  * state transitions (Accept/Dismiss), pending-count tag, error states,
  * and shared candidate state via the merged STEP-1 route.
  */
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test, beforeEach } from 'vitest';
@@ -143,7 +143,7 @@ describe('KbPage — folder filtering', () => {
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
     await screen.findByText(/Refund authority by tier/);
-    await user.click(screen.getByRole('button', { name: /^precedent$/ }));
+    await user.click(screen.getByRole('button', { name: /precedent/ }));
     await waitFor(() => expect(serverParams).toBe('precedent'));
     await waitFor(() =>
       expect(screen.queryByText(/Spanish-speaking walk-in flow/)).not.toBeInTheDocument(),
@@ -176,14 +176,14 @@ describe('KbPage — folder filtering', () => {
     // Both entries visible initially
     expect(screen.getByText(/Spanish-speaking walk-in flow/)).toBeInTheDocument();
     // Click a specific folder — only precedent-type entries should show
-    await user.click(screen.getByRole('button', { name: /^precedent$/ }));
+    await user.click(screen.getByRole('button', { name: /precedent/ }));
     await waitFor(() => expect(serverParams).toBe('precedent'));
     await waitFor(() =>
       expect(screen.queryByText(/Spanish-speaking walk-in flow/)).not.toBeInTheDocument(),
     );
-    // Click "All" — FilterSidebar clears selection, shows cached both entries
+    // Click "All entries" — clears the type filter, shows cached both entries
     // (no re-fetch since the query key matches the initial cache)
-    await user.click(screen.getByRole('button', { name: /^All$/ }));
+    await user.click(screen.getByRole('button', { name: /All entries/i }));
     await waitFor(() =>
       expect(screen.getByText(/Spanish-speaking walk-in flow/)).toBeInTheDocument(),
     );
@@ -919,5 +919,143 @@ describe('KbPage — debounced search', () => {
     await screen.findByText('No matches', {}, { timeout: 3000 });
     // Verify the empty body text is also present
     expect(screen.getByText('No entries match that search.')).toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Tests — grouped folder rail (KB-01)                                */
+/* ------------------------------------------------------------------ */
+
+/** A second precedent-type entry so the precedent folder count is 2. */
+const ENTRY_C = {
+  slug: 'policy/chargeback-window',
+  title: 'Chargeback dispute window',
+  type: 'precedent',
+  topic: 'finance',
+  tags: ['policy', 'finance'],
+  body: '# Chargeback window\n\nDisputes must be filed within 60 days.',
+  updated_at: '2026-05-18T09:00:00Z',
+  authored_by: 'founder',
+  source_task: 'TASK-0043',
+  related_entries: [],
+};
+
+/** Stubs orgs + dreams(empty) + kb-list (type-filtered) + stats for rail tests. */
+function stubRail(entries: { type: string }[]) {
+  stubKBStats();
+  server.use(
+    http.get('/api/v1/orgs', () =>
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/kb`, ({ request }) => {
+      const type = new URL(request.url).searchParams.get('type');
+      const filtered = type ? entries.filter((e) => e.type === type) : entries;
+      return HttpResponse.json({ entries: filtered });
+    }),
+    http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+      HttpResponse.json({ dreams: [] }),
+    ),
+  );
+}
+
+describe('KbPage — grouped folder rail (KB-01)', () => {
+  beforeEach(() => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+  });
+
+  test('renders a labeled Library section with an "All entries" row carrying the total count', async () => {
+    stubRail([ENTRY_A, ENTRY_B, ENTRY_C]);
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+
+    const rail = screen.getByRole('complementary', { name: /KB folders/i });
+    // Section label
+    expect(within(rail).getByText('Library')).toBeInTheDocument();
+    // "All entries" row with the total (3) count
+    const allBtn = within(rail).getByRole('button', { name: /All entries/i });
+    expect(allBtn).toBeInTheDocument();
+    expect(within(allBtn).getByText('3')).toBeInTheDocument();
+  });
+
+  test('renders one folder per type with its correct per-folder count', async () => {
+    stubRail([ENTRY_A, ENTRY_B, ENTRY_C]);
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+
+    const rail = screen.getByRole('complementary', { name: /KB folders/i });
+    // precedent appears twice (ENTRY_A + ENTRY_C) → count 2
+    const precedentBtn = within(rail).getByRole('button', { name: /precedent/ });
+    expect(within(precedentBtn).getByText('2')).toBeInTheDocument();
+    // sop appears once (ENTRY_B) → count 1
+    const sopBtn = within(rail).getByRole('button', { name: /sop/ });
+    expect(within(sopBtn).getByText('1')).toBeInTheDocument();
+  });
+
+  test('per-folder counts stay stable when a folder filter is active', async () => {
+    stubRail([ENTRY_A, ENTRY_B, ENTRY_C]);
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+
+    const rail = screen.getByRole('complementary', { name: /KB folders/i });
+    // Filter to sop — feed narrows to ENTRY_B only…
+    await user.click(within(rail).getByRole('button', { name: /sop/ }));
+    await waitFor(() =>
+      expect(screen.queryByText(/Refund authority by tier/)).not.toBeInTheDocument(),
+    );
+    // …but the rail still shows the full-library counts (precedent 2, sop 1, All 3).
+    expect(
+      within(within(rail).getByRole('button', { name: /precedent/ })).getByText('2'),
+    ).toBeInTheDocument();
+    expect(
+      within(within(rail).getByRole('button', { name: /All entries/i })).getByText('3'),
+    ).toBeInTheDocument();
+  });
+
+  test('renders folder icons (svg) in the rail', async () => {
+    stubRail([ENTRY_A, ENTRY_B, ENTRY_C]);
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+
+    const rail = screen.getByRole('complementary', { name: /KB folders/i });
+    // Each folder/library row carries a leading icon glyph.
+    expect(rail.querySelectorAll('svg').length).toBeGreaterThanOrEqual(3);
+  });
+
+  test('clicking a folder still filters the feed by type (behavior preserved)', async () => {
+    stubRail([ENTRY_A, ENTRY_B, ENTRY_C]);
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Spanish-speaking walk-in flow/);
+
+    const rail = screen.getByRole('complementary', { name: /KB folders/i });
+    await user.click(within(rail).getByRole('button', { name: /precedent/ }));
+    // sop-type entry drops out of the feed
+    await waitFor(() =>
+      expect(
+        screen.queryByText(/Spanish-speaking walk-in flow/),
+      ).not.toBeInTheDocument(),
+    );
+    // Click "All entries" → filter cleared, both visible again
+    await user.click(within(rail).getByRole('button', { name: /All entries/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/Spanish-speaking walk-in flow/)).toBeInTheDocument(),
+    );
+  });
+
+  test('does NOT zero-fake the design folders that existing data cannot back', async () => {
+    // The design (a-knowledge) shows Engineering→review/qa/build and
+    // Org→protocols/from-dreams. The kb-list payload has no origin/category
+    // field to back those, so the rail must honestly omit them, not render
+    // them with a faked 0/placeholder count.
+    stubRail([ENTRY_A, ENTRY_B, ENTRY_C]);
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+
+    const rail = screen.getByRole('complementary', { name: /KB folders/i });
+    expect(within(rail).queryByText(/from dreams?/i)).toBeNull();
+    expect(within(rail).queryByRole('button', { name: /^review$/ })).toBeNull();
+    expect(within(rail).queryByRole('button', { name: /^build$/ })).toBeNull();
+    expect(within(rail).queryByRole('button', { name: /^protocols$/ })).toBeNull();
   });
 });
