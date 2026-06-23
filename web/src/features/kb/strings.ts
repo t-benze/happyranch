@@ -11,6 +11,12 @@ export const KB_STRINGS = {
   drawerLoading: 'Loading entry…',
   filterAll: 'All',
   filterFolders: 'Folders',
+  /** Folder-rail section headers (KB-01). */
+  railSectionLibrary: 'Library',
+  railSectionEngineering: 'Engineering',
+  railSectionOrg: 'Org',
+  /** LIBRARY overview row — selecting it clears the folder/type filter. */
+  railAllEntries: 'All entries',
   authoredBy: (agent: string) => `Authored by ${agent}`,
   sourceTaskLabel: 'Source task:',
   relatedEntriesLabel: 'Related entries:',

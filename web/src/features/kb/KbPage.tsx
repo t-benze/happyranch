@@ -22,11 +22,11 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useKbRoutes, useKBList, useKBSearch, useKBStats } from '@/hooks/kb';
 import { useDensity } from '@/hooks/density';
 import { useDreamsList, useDream } from '@/hooks/dreams';
-import { FilterSidebar, type FilterGroup } from '@/design-system/patterns/FilterSidebar';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Input } from '@/design-system/primitives/Input';
 import { Button } from '@/design-system/primitives/Button';
 import { cn } from '@/lib/utils';
+import { KbFolderRail, type KbFolder } from './KbFolderRail';
 import { KbEntryCard } from './KbEntryCard';
 import { KbEntryDetailPane } from './KbEntryDetailPane';
 import { ComposeKbEntryDialog } from './ComposeKbEntryDialog';
@@ -169,6 +169,11 @@ export function KbPage(): JSX.Element {
 
   // Fetch live KB entries, filtered by type (folder)
   const listQuery = useKBList(folder ? { type: folder } : undefined);
+  // Unfiltered list backs the folder rail so its sections + per-folder counts
+  // stay stable (full totals) regardless of the active folder filter. With no
+  // folder selected this dedups with `listQuery` (identical query key) — no
+  // extra request. Counts are computed client-side from these entries (KB-01).
+  const railListQuery = useKBList(undefined);
   const searchQuery = useKBSearch(debouncedQ);
   const statsQuery = useKBStats();
 
@@ -229,27 +234,18 @@ export function KbPage(): JSX.Element {
     [],
   );
 
-  // Build folder filter options from KB entry types.
-  // FilterSidebar renders its own "All" button — don't duplicate.
-  const folders = useMemo(() => {
-    const set = new Set<string>();
-    rawEntries.forEach((e) => set.add(e.type));
-    return Array.from(set).sort();
-  }, [rawEntries]);
-
-  const filterGroups: FilterGroup[] = [
-    {
-      key: 'folder',
-      label: KB_STRINGS.filterFolders,
-      options: folders.map((f) => ({ value: f, label: f })),
-    },
-  ];
-
-  const filterState: Record<string, string | null> = { folder };
-  const handleFilterChange = (next: Record<string, string | null>) => {
-    const val = next.folder;
-    setFolder(val || null);
-  };
+  // Folder rail: one folder per KB `type`, each with a live count, derived
+  // from the unfiltered entry set. Grouping into Library/Engineering/Org
+  // sections happens in KbFolderRail. Only types present in the data become
+  // folders — no empty/zero-count folders are fabricated (KB-01).
+  const railFolders: KbFolder[] = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const e of railListQuery.data?.entries ?? []) {
+      counts.set(e.type, (counts.get(e.type) ?? 0) + 1);
+    }
+    return Array.from(counts, ([value, count]) => ({ value, count }));
+  }, [railListQuery.data?.entries]);
+  const railTotal = railListQuery.data?.entries?.length ?? 0;
 
   const loading = listQuery.isLoading || dreamsQuery.isLoading;
 
@@ -305,10 +301,11 @@ export function KbPage(): JSX.Element {
             onChange={(e) => setSearchInput(e.target.value)}
           />
         </div>
-        <FilterSidebar
-          groups={filterGroups}
-          value={filterState}
-          onChange={handleFilterChange}
+        <KbFolderRail
+          total={railTotal}
+          folders={railFolders}
+          selected={folder}
+          onSelect={setFolder}
         />
       </aside>
 

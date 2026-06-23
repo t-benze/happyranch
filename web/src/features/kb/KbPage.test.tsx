@@ -5,7 +5,7 @@
  * state transitions (Accept/Dismiss), pending-count tag, error states,
  * and shared candidate state via the merged STEP-1 route.
  */
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test, beforeEach } from 'vitest';
@@ -181,9 +181,9 @@ describe('KbPage — folder filtering', () => {
     await waitFor(() =>
       expect(screen.queryByText(/Spanish-speaking walk-in flow/)).not.toBeInTheDocument(),
     );
-    // Click "All" — FilterSidebar clears selection, shows cached both entries
-    // (no re-fetch since the query key matches the initial cache)
-    await user.click(screen.getByRole('button', { name: /^All$/ }));
+    // Click "All entries" — clears the folder selection, shows cached both
+    // entries (no re-fetch since the query key matches the initial cache)
+    await user.click(screen.getByRole('button', { name: /^All entries$/ }));
     await waitFor(() =>
       expect(screen.getByText(/Spanish-speaking walk-in flow/)).toBeInTheDocument(),
     );
@@ -919,5 +919,130 @@ describe('KbPage — debounced search', () => {
     await screen.findByText('No matches', {}, { timeout: 3000 });
     // Verify the empty body text is also present
     expect(screen.getByText('No entries match that search.')).toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Tests — folder rail grouping (KB-01)                               */
+/* ------------------------------------------------------------------ */
+
+/** Entries spanning both backed rail sections (Engineering / Org). */
+const RAIL_REFERENCE_1 = {
+  ...ENTRY_A,
+  slug: 'eng/ref-one',
+  title: 'Reference one',
+  type: 'reference',
+};
+const RAIL_REFERENCE_2 = {
+  ...ENTRY_A,
+  slug: 'eng/ref-two',
+  title: 'Reference two',
+  type: 'reference',
+};
+const RAIL_ADR = {
+  ...ENTRY_A,
+  slug: 'eng/adr-one',
+  title: 'ADR one',
+  type: 'ADR',
+};
+const RAIL_RULING = {
+  ...ENTRY_A,
+  slug: 'org/ruling-one',
+  title: 'Ruling one',
+  type: 'ruling',
+};
+const RAIL_SOP = {
+  ...ENTRY_A,
+  slug: 'org/sop-one',
+  title: 'SOP one',
+  type: 'sop',
+};
+
+const RAIL_ENTRIES = [
+  RAIL_REFERENCE_1,
+  RAIL_REFERENCE_2,
+  RAIL_ADR,
+  RAIL_RULING,
+  RAIL_SOP,
+];
+
+/** Stubs an unfiltered /kb returning the rail fixtures (folder param honored). */
+function stubRailKB() {
+  server.use(
+    http.get('/api/v1/orgs', () =>
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/kb`, ({ request }) => {
+      const type = new URL(request.url).searchParams.get('type');
+      const entries = type
+        ? RAIL_ENTRIES.filter((e) => e.type === type)
+        : RAIL_ENTRIES;
+      return HttpResponse.json({ entries });
+    }),
+    http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+      HttpResponse.json({ dreams: [] }),
+    ),
+  );
+}
+
+describe('KbPage — folder rail grouping (KB-01)', () => {
+  test('groups folders into Library / Engineering / Org sections with per-folder counts', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    stubRailKB();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Reference one/);
+
+    // Three labeled sections present.
+    expect(screen.getByText('Library')).toBeInTheDocument();
+    expect(screen.getByText('Engineering')).toBeInTheDocument();
+    expect(screen.getByText('Org')).toBeInTheDocument();
+
+    // LIBRARY: a single "All entries" overview row carrying the TOTAL count.
+    const allEntries = screen.getByRole('button', { name: 'All entries' });
+    expect(within(allEntries).getByText('5')).toBeInTheDocument();
+
+    // ENGINEERING: the reference folder (count 2) and ADR folder (count 1).
+    const referenceFolder = screen.getByRole('button', { name: 'reference' });
+    expect(within(referenceFolder).getByText('2')).toBeInTheDocument();
+    const adrFolder = screen.getByRole('button', { name: 'ADR' });
+    expect(within(adrFolder).getByText('1')).toBeInTheDocument();
+
+    // ORG: ruling + sop folders, each count 1.
+    const rulingFolder = screen.getByRole('button', { name: 'ruling' });
+    expect(within(rulingFolder).getByText('1')).toBeInTheDocument();
+    const sopFolder = screen.getByRole('button', { name: 'sop' });
+    expect(within(sopFolder).getByText('1')).toBeInTheDocument();
+
+    // Each folder row carries a (decorative) folder icon.
+    expect(referenceFolder.querySelector('svg')).not.toBeNull();
+  });
+
+  test('selecting a folder keeps the full sectioned rail (stable totals) and filters the feed', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    stubRailKB();
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Reference one/);
+
+    // Select the Org "ruling" folder — feed narrows to ruling entries…
+    await user.click(screen.getByRole('button', { name: 'ruling' }));
+    await waitFor(() =>
+      expect(screen.queryByText(/Reference one/)).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText(/Ruling one/)).toBeInTheDocument();
+
+    // …but the rail still shows every section with stable totals.
+    expect(screen.getByText('Engineering')).toBeInTheDocument();
+    const allEntries = screen.getByRole('button', { name: 'All entries' });
+    expect(within(allEntries).getByText('5')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'reference' })).toBeInTheDocument();
+
+    // "All entries" clears the filter and restores the full feed.
+    await user.click(allEntries);
+    await waitFor(() =>
+      expect(screen.getByText(/Reference one/)).toBeInTheDocument(),
+    );
   });
 });
