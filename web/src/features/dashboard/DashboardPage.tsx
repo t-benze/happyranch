@@ -4,7 +4,9 @@
  * Single useDashboardSummary() query powers the whole page. A wide MAIN
  * column carries the Waiting-on-you escalation queue + Recent-activity
  * feed; a narrower RIGHT RAIL stacks the secondary cards (Today heartbeat
- * + counters, Org pulse, top-token threads, Updates-this-week).
+ * + counters, Org pulse, This week's burn, top-token threads,
+ * Updates-this-week). The "This week's burn" card sources its own /tokens
+ * rollup (useTokensWeek), not DashboardSummaryResponse (THR-030 HOME-06).
  *
  * Design: a-dashboard.html reference from the Direction-A design bundle.
  * Pasture tokens (tokens.css) provide the full warm/green OKLCH palette
@@ -13,10 +15,11 @@
  * Spec: docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md
  */
 import { useState, type ReactNode } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardSummary } from '@/hooks/dashboard';
-import { useTokensToday, formatTokens } from '@/hooks/tokens';
+import { useTokensToday, useTokensWeek, formatTokens } from '@/hooks/tokens';
 import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -99,6 +102,23 @@ export function DashboardPage(): JSX.Element {
     ? startOfLocalDayIso(new Date(q.data.server_now))
     : undefined;
   const tokensTodayQ = useTokensToday({ since: tokensTodaySince });
+
+  // This-week REAL token total for the "This week's burn" rail card (THR-030
+  // HOME-06). Same honest /tokens rollup as the Tokens-today tile, only the
+  // window differs: a rolling 7d back from the server clock (server_now), so
+  // the figure stays consistent with the rest of the page and matches the
+  // Spend page's same-window number the chevron links to. Disabled until
+  // server_now is loaded.
+  const tokensWeekSince = q.data
+    ? new Date(new Date(q.data.server_now).getTime() - 7 * 86_400_000).toISOString()
+    : undefined;
+  const tokensWeekQ = useTokensWeek({ since: tokensWeekSince });
+  // Honest display value: the real formatted total only once resolved; the
+  // neutral em-dash while pending/disabled/errored — never a fabricated 0.
+  const weekBurnDisplay =
+    tokensWeekQ.data !== undefined && !tokensWeekQ.isError
+      ? formatTokens(tokensWeekQ.data)
+      : '—';
 
   if (q.isLoading) {
     return <p className="text-text-muted p-6 text-sm">Loading dashboard…</p>;
@@ -315,6 +335,42 @@ export function DashboardPage(): JSX.Element {
 
             <Panel title="Org pulse · last 7d" meta="acceptance %">
               <OrgPulseTable rows={s.org_pulse} />
+            </Panel>
+
+            {/* This week's burn — glance card deep-linking to Spend (THR-030
+                HOME-06). The figure is the honest 7d token total from the same
+                /tokens rollup the Tokens-today tile rides; tokens are the unit
+                (dollar burn is deferred). While the query is pending/errored
+                the value is unknown, so we paint the neutral em-dash, never a
+                fabricated 0. The chevron drills into the Spend page's
+                same-window number. */}
+            <Panel title="This week's burn" meta="last 7d">
+              {slug ? (
+                <Link
+                  to={`/orgs/${slug}/spend`}
+                  aria-label="View token spend on the Spend page"
+                  className="group flex items-end justify-between"
+                >
+                  <div>
+                    <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
+                      {weekBurnDisplay}
+                    </div>
+                    <div className="text-text-muted text-overline mt-1">Tokens</div>
+                  </div>
+                  <ChevronRight
+                    size={20}
+                    aria-hidden="true"
+                    className="text-text-muted group-hover:text-text-primary shrink-0"
+                  />
+                </Link>
+              ) : (
+                <div>
+                  <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
+                    {weekBurnDisplay}
+                  </div>
+                  <div className="text-text-muted text-overline mt-1">Tokens</div>
+                </div>
+              )}
             </Panel>
 
             {/* Self-contained cost-oversight card — fetches its own
