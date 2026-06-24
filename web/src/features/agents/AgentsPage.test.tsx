@@ -177,18 +177,37 @@ describe('AgentsPage — two-pane roster list', () => {
     expect(screen.getByText('No agents yet')).toBeInTheDocument();
   });
 
-  test('Add agent button opens dialog', async () => {
+  test('AGENTS-03: roster header primary action reads "New agent" (Direction-A label)', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    mountAt(`/orgs/${SLUG}/agents`);
+
+    await waitFor(() =>
+      expect(screen.getByText('support_agent')).toBeInTheDocument(),
+    );
+    // The roster-header primary action aligns to the authoritative
+    // Direction-A `a-agents` reference label "New agent" (was "Add agent").
+    // The dialog is closed here, so the trigger is the only "New agent" button.
+    expect(
+      screen.getByRole('button', { name: 'New agent' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Add agent' }),
+    ).not.toBeInTheDocument();
+  });
+
+  test('New agent button opens dialog', async () => {
     stubBaseHandlers();
     // Auto-select (AGENTS-01) mounts the detail pane — stub its endpoints.
     stubDetailHandlers();
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/agents`);
 
-    await user.click(screen.getByRole('button', { name: 'Add agent' }));
-    await waitFor(() => {
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
-    });
-    expect(screen.getByText('New agent')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'New agent' }));
+    const dialog = await screen.findByRole('dialog');
+    // The dialog title is also "New agent"; scope to the dialog so it does not
+    // collide with the (now identically-labeled) trigger button.
+    expect(within(dialog).getByText('New agent')).toBeInTheDocument();
   });
 });
 

@@ -12,6 +12,7 @@
  * NO autonomy toggle (founder ruling). NO permission-model changes.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Plus } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import {
@@ -122,7 +123,15 @@ export function AgentsPage(): JSX.Element {
             title="Agents"
             meta="Editable roster — click an agent to view and edit details."
           />
-          <Button onClick={() => setAddOpen(true)}>Add agent</Button>
+          {/* AGENTS-03: align the primary action to the Direction-A
+              `a-agents` reference — leading "+" glyph + "New agent" label
+              (was "Add agent"). The reference renders this in the app bar;
+              relocating it into the shared AppShell AppBar is a cross-surface
+              change held out of this presentation-only single-surface fix. */}
+          <Button onClick={() => setAddOpen(true)}>
+            <Plus aria-hidden="true" />
+            New agent
+          </Button>
         </div>
         <Tabs value={tab} onValueChange={onTabChange} className="mt-3">
           <TabsList>
