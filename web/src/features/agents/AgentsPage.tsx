@@ -2,7 +2,8 @@
  * AgentsPage — two-pane Pasture layout.
  *
  * LEFT PANE: agent roster list at w-rail (244px) with Pasture card styling,
- * role-colored led dot, active-state left-marker accent bar.
+ * role-colored avatar-initial chip, a `role`-derived meta line, role-colored
+ * led dot, active-state left-marker accent bar.
  *
  * RIGHT PANE: AgentDetailPane — editable executor segmented control,
  * repo/tool chips as rounded-full tags, accountability metrics with
@@ -26,6 +27,34 @@ import { useDensity } from '@/hooks/density';
 import { PendingEnrollmentsTab } from './PendingEnrollmentsTab';
 import { AgentDetailPane } from './AgentDetailPane';
 import { AddAgentDialog } from './AddAgentDialog';
+
+/**
+ * AGENTS-02: avatar-initial chip text, derived CLIENT-SIDE from the agent
+ * name (no backend field). A two-token name (split on `_`, `-`, or space) →
+ * first letter of each of the first two parts (engineering_manager → 'EM',
+ * code_reviewer → 'CR'); a single-token name → its first two letters
+ * (consultant → 'CO'). No per-agent hardcoded map — names are arbitrary.
+ */
+function agentInitials(name: string): string {
+  const parts = name.split(/[_\s-]+/).filter(Boolean);
+  const letters =
+    parts.length >= 2
+      ? parts[0][0] + parts[1][0]
+      : (parts[0] ?? name).slice(0, 2);
+  return letters.toUpperCase();
+}
+
+/**
+ * AGENTS-02: capitalized role label for the roster meta line. The
+ * Direction-A meta is `role · status`, but `status` is NOT a field on the
+ * AgentSummary roster payload — so the meta is built role-only: the absent
+ * half is omitted, never fabricated.
+ */
+function roleLabel(role: string | null): string {
+  if (role === 'manager') return 'Manager';
+  if (role === 'worker') return 'Worker';
+  return 'No role';
+}
 
 export function AgentsPage(): JSX.Element {
   const { agent_name: openAgentName } = useParams<{ agent_name?: string }>();
@@ -150,27 +179,43 @@ export function AgentsPage(): JSX.Element {
                               className="bg-accent absolute top-1 bottom-1 left-0 w-0.5 rounded-full"
                             />
                           )}
-                          <div className="flex items-center gap-2">
-                            <span className="font-display text-text-primary truncate text-sm font-medium">
-                              {a.name}
-                            </span>
+                          <div className="flex items-start gap-2.5">
+                            {/* AGENTS-02: role-colored avatar-initial chip,
+                                mirroring the existing led-dot role logic. */}
                             <span
                               aria-hidden="true"
-                              className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                              className={`text-text-inverse flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-semibold ${
                                 a.role === 'manager'
                                   ? 'bg-agent-manager'
                                   : 'bg-agent-worker'
                               }`}
-                            />
+                            >
+                              {agentInitials(a.name)}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-display text-text-primary truncate text-sm font-medium">
+                                  {a.name}
+                                </span>
+                                <span
+                                  aria-hidden="true"
+                                  className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                                    a.role === 'manager'
+                                      ? 'bg-agent-manager'
+                                      : 'bg-agent-worker'
+                                  }`}
+                                />
+                              </div>
+                              <div className="text-text-muted mt-0.5 text-xs">
+                                {roleLabel(a.role)}
+                              </div>
+                              {a.description && (
+                                <p className="text-text-muted mt-0.5 truncate text-xs leading-relaxed">
+                                  {a.description}
+                                </p>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-text-muted mt-0.5 text-xs tabular-nums">
-                            {a.team ?? 'No team'} · {a.executor ?? 'No executor'}
-                          </div>
-                          {a.description && (
-                            <p className="text-text-muted mt-0.5 truncate text-xs leading-relaxed">
-                              {a.description}
-                            </p>
-                          )}
                         </button>
                       </li>
                     );
