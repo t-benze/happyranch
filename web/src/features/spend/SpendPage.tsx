@@ -82,6 +82,32 @@ function pct(part: number, whole: number): string {
   return `${Math.round((part / whole) * 100)}%`;
 }
 
+const MONTHS = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+] as const;
+
+/**
+ * Human date-range label for the selected spend window, e.g. "Jun 17–24"
+ * (same month, en-dash) or "May 28 – Jun 3" (cross-month). Reads LOCAL date
+ * parts of the honest [since .. now] bounds the client already queried — the
+ * window is known client-side, so this is real data, never a hardcoded range.
+ * The eyebrow CSS upcases it ("JUN 17–24").
+ */
+export function fmtDateRange(start: Date, end: Date): string {
+  const sM = MONTHS[start.getMonth()];
+  const sD = start.getDate();
+  const eM = MONTHS[end.getMonth()];
+  const eD = end.getDate();
+  if (
+    start.getFullYear() === end.getFullYear() &&
+    start.getMonth() === end.getMonth()
+  ) {
+    return `${sM} ${sD}–${eD}`;
+  }
+  return `${sM} ${sD} – ${eM} ${eD}`;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Hero section — Pasture card w/ font-display burn numeral            */
 /* ------------------------------------------------------------------ */
@@ -92,6 +118,7 @@ function HeroCard({
   inputTokens,
   outputTokens,
   windowLabel,
+  dateRange,
   loading,
 }: {
   totalChurn: number;
@@ -99,6 +126,7 @@ function HeroCard({
   inputTokens: number;
   outputTokens: number;
   windowLabel: string;
+  dateRange: string;
   loading: boolean;
 }): JSX.Element {
   if (loading) {
@@ -117,7 +145,7 @@ function HeroCard({
     return (
       <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
         <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
-          Token burn · {windowLabel}
+          Token burn · {windowLabel} · {dateRange}
         </p>
         <p className="font-display text-display text-text-primary mt-2 font-medium tabular-nums">
           0
@@ -132,7 +160,7 @@ function HeroCard({
   return (
     <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
       <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
-        Token burn · {windowLabel}
+        Token burn · {windowLabel} · {dateRange}
       </p>
       <p className="font-display text-display text-text-primary mt-2 font-medium tabular-nums">
         {fmtNum(totalChurn)}
@@ -205,6 +233,9 @@ interface BreakdownRow {
   outputTokens: number;
   cacheReadTokens: number;
   totalTokens: number;
+  // SPEND-04: per-row model pill, or null/absent to omit (honesty fence). Only
+  // the rendered breakdown table sets it; the CSV export path doesn't use it.
+  modelPill?: string | null;
 }
 
 const SEGMENTS: { key: BreakdownSegment; label: string }[] = [
@@ -221,6 +252,21 @@ function buildModelLabel(row: TokenUsageRollup): string {
   // If NULL, render honestly — never a guessed correction.
   if (row.model == null) return '(unknown)';
   return row.model;
+}
+
+/**
+ * The model-pill label for a burn breakdown row, or null to OMIT the pill.
+ *
+ * Honesty fence: a pill is shown ONLY when the rollup carries at least one
+ * observed (non-NULL) model session — exactly the boundary where classifyModel
+ * yields a real model id or '(mixed)'. With no observed model (model_any null,
+ * or the rollup omits the classification primitives entirely), we return null
+ * so the caller renders nothing rather than fabricating a model. By-agent and
+ * by-thread rollups carry these fields; by-model omits them (its label already
+ * IS the model), so its rows naturally fall through to null.
+ */
+function modelPillFor(row: TokenUsageRollup): string | null {
+  return (row.non_null_sessions ?? 0) > 0 ? classifyModel(row) : null;
 }
 
 function BreakdownTable({
@@ -252,6 +298,7 @@ function BreakdownTable({
             outputTokens: r.output_tokens,
             cacheReadTokens: r.cache_read_tokens,
             totalTokens: r.total_tokens,
+            modelPill: modelPillFor(r),
           }))
           .sort((a, b) => b.totalTokens - a.totalTokens);
       case 'thread':
@@ -265,6 +312,7 @@ function BreakdownTable({
             outputTokens: r.output_tokens,
             cacheReadTokens: r.cache_read_tokens,
             totalTokens: r.total_tokens,
+            modelPill: modelPillFor(r),
           }))
           .sort((a, b) => b.totalTokens - a.totalTokens);
       case 'model':
@@ -278,6 +326,9 @@ function BreakdownTable({
             outputTokens: r.output_tokens,
             cacheReadTokens: r.cache_read_tokens,
             totalTokens: r.total_tokens,
+            // The by-model rollup's label already IS the model; modelPillFor
+            // returns null here (no classification primitives), so no pill.
+            modelPill: modelPillFor(r),
           }))
           .sort((a, b) => b.totalTokens - a.totalTokens);
     }
@@ -329,8 +380,15 @@ function BreakdownTable({
           <tbody>
             {rows.map((r) => (
               <tr key={r.key} className="border-border-default border-b last:border-0">
-                <td className="text-text-primary max-w-48 truncate py-2 pr-3" title={r.label}>
-                  {r.label}
+                <td className="max-w-48 py-2 pr-3">
+                  <span className="text-text-primary block truncate" title={r.label}>
+                    {r.label}
+                  </span>
+                  {r.modelPill != null && (
+                    <span className="bg-surface-raised text-text-muted text-2xs mt-1 inline-block rounded-full px-2 py-0.5">
+                      {r.modelPill}
+                    </span>
+                  )}
                 </td>
                 <td className="text-text-muted py-2 pr-3 text-right tabular-nums">{r.sessions}</td>
                 <td className="py-2 pr-3">
@@ -738,6 +796,12 @@ export function SpendPage(): JSX.Element {
     () => new Date(Date.now() - win.ms).toISOString(),
     [win.ms],
   );
+  // Honest date range for the eyebrow: the [since .. now] bounds the client
+  // already queried. Recomputes only when the window (and thus `since`) changes.
+  const dateRange = useMemo(
+    () => fmtDateRange(new Date(since), new Date(Date.now())),
+    [since],
+  );
 
   const agentQ = useSpendByAgent({ since });
   const threadQ = useSpendByThread({ since });
@@ -848,6 +912,7 @@ export function SpendPage(): JSX.Element {
             inputTokens={heroTotals.inputTokens}
             outputTokens={heroTotals.outputTokens}
             windowLabel={win.label}
+            dateRange={dateRange}
             loading={heroLoading}
           />
           {/* Positive cache-saved callout — suppressed only while the hero is a

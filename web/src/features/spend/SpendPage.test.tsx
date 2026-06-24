@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock the spend hooks so the page renders deterministically
 vi.mock('@/hooks/spend', () => ({
@@ -16,7 +16,7 @@ vi.mock('@/hooks/agents', () => ({
 
 import { useSpendByAgent, useSpendByThread, useSpendByModel } from '@/hooks/spend';
 import { useAgentsList } from '@/hooks/agents';
-import { SpendPage } from './SpendPage';
+import { SpendPage, fmtDateRange } from './SpendPage';
 
 // Stub URL.createObjectURL for CSV export tests
 const createObjectURL = vi.fn(() => 'blob:stub');
@@ -51,6 +51,12 @@ describe('SpendPage', () => {
     // Default: empty roster so the by-team card folds every burning agent into
     // the honest 'unattributed' bucket unless a test supplies a roster.
     mockAgentsList.mockReturnValue(agentsLoaded([]) as ReturnType<typeof useAgentsList>);
+  });
+
+  afterEach(() => {
+    // Some SPEND-04 eyebrow tests pin the clock with fake timers; restore real
+    // timers unconditionally so later tests use the wall clock.
+    vi.useRealTimers();
   });
 
   it('renders the header with window toggles', () => {
@@ -138,8 +144,10 @@ describe('SpendPage', () => {
     expect(caches.length).toBeGreaterThanOrEqual(1);
     // "not metered" caption
     expect(screen.getByText('$0.00 · not metered')).toBeDefined();
-    // Pasture: section label uses text-text-secondary + uppercase tracking
-    expect(screen.getByText('Token burn · 7d')).toBeDefined();
+    // Pasture: section label uses text-text-secondary + uppercase tracking.
+    // SPEND-04: the eyebrow keeps 'Token burn · {windowLabel}' and now appends
+    // the actual [since..now] date range, so match the window-label prefix.
+    expect(screen.getByText(/^Token burn · 7d · /)).toBeDefined();
   });
 
   it('renders breakdown table with agent data', () => {
@@ -734,5 +742,147 @@ describe('SpendPage', () => {
     expect(
       within(card).getByText("Couldn't load spend by team — retry"),
     ).toBeDefined();
+  });
+
+  // ---- SPEND-04: hero eyebrow date range ----
+
+  it('fmtDateRange formats a same-month window as "Mon D–D"', () => {
+    // Local-component constructor so the helper's local get* calls are TZ-stable.
+    const start = new Date(2026, 5, 17); // Jun 17 2026
+    const end = new Date(2026, 5, 24); // Jun 24 2026
+    expect(fmtDateRange(start, end)).toBe('Jun 17–24');
+  });
+
+  it('fmtDateRange formats a cross-month window as "Mon D – Mon D"', () => {
+    const start = new Date(2026, 4, 28); // May 28 2026
+    const end = new Date(2026, 5, 3); // Jun 3 2026
+    expect(fmtDateRange(start, end)).toBe('May 28 – Jun 3');
+  });
+
+  it('renders the actual [since..now] date range in the hero eyebrow', () => {
+    // Pin the clock: 7d window ending Jun 24 12:00 local → since Jun 17 12:00.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 24, 12, 0, 0));
+    mockAgentQ.mockReturnValue(
+      loaded([
+        {
+          agent: 'dev_agent',
+          sessions: 1,
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 100,
+          total_tokens: 1600,
+        },
+      ]),
+    );
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    // Eyebrow keeps 'Token burn · {windowLabel}' and appends the honest range.
+    expect(screen.getByText('Token burn · 7d · Jun 17–24')).toBeDefined();
+  });
+
+  it('renders the date range in the hero eyebrow zero state too', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 24, 12, 0, 0));
+    mockAgentQ.mockReturnValue(loaded([]));
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    expect(screen.getByText('Token burn · 7d · Jun 17–24')).toBeDefined();
+  });
+
+  // ---- SPEND-04: per-row model pill on the burn breakdown table ----
+
+  it('renders a model pill on a burn row when the rollup carries an observed model', () => {
+    mockAgentQ.mockReturnValue(
+      loaded([
+        {
+          agent: 'dev_agent',
+          sessions: 3,
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 100,
+          total_tokens: 1600,
+          model_any: 'claude-sonnet-4-5[1m]',
+          non_null_sessions: 3,
+          model_distinct: 1,
+        },
+      ]),
+    );
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    // The breakdown row (default 'agent' segment) carries the observed model as
+    // a small rounded pill — threadRollup is empty so this is the only source.
+    const pill = screen.getByText('claude-sonnet-4-5[1m]');
+    expect(pill.className).toContain('rounded-full');
+  });
+
+  it("renders a '(mixed)' model pill when a burn row spans >1 distinct model", () => {
+    mockAgentQ.mockReturnValue(
+      loaded([
+        {
+          agent: 'dev_agent',
+          sessions: 4,
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 100,
+          total_tokens: 1600,
+          model_any: 'claude-opus-4-8[1m]',
+          non_null_sessions: 4,
+          model_distinct: 2,
+        },
+      ]),
+    );
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    const pill = screen.getByText('(mixed)');
+    expect(pill.className).toContain('rounded-full');
+  });
+
+  it('omits the model pill on a burn row when there is no observed model (honesty fence)', () => {
+    // All sessions NULL-model (codex) → no observed model on the row. The pill
+    // must be OMITTED rather than fabricated; the classifyModel placeholder
+    // '(cli-unreported)' must NOT surface as a breakdown-row pill.
+    mockAgentQ.mockReturnValue(
+      loaded([
+        {
+          agent: 'dev_agent',
+          sessions: 3,
+          input_tokens: 500,
+          output_tokens: 200,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 0,
+          total_tokens: 700,
+          non_null_sessions: 0,
+          null_codex_sessions: 3,
+        },
+      ]),
+    );
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    // Row still renders (agent label present) but no fabricated model pill.
+    expect(screen.getByText('dev_agent')).toBeDefined();
+    expect(screen.queryByText('(cli-unreported)')).toBeNull();
   });
 });
