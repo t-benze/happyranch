@@ -26,6 +26,7 @@ import { useDensity } from '@/hooks/density';
 import { PendingEnrollmentsTab } from './PendingEnrollmentsTab';
 import { AgentDetailPane } from './AgentDetailPane';
 import { AddAgentDialog } from './AddAgentDialog';
+import { agentInitials } from './agent-initials';
 
 export function AgentsPage(): JSX.Element {
   const { agent_name: openAgentName } = useParams<{ agent_name?: string }>();
@@ -150,27 +151,36 @@ export function AgentsPage(): JSX.Element {
                               className="bg-accent absolute top-1 bottom-1 left-0 w-0.5 rounded-full"
                             />
                           )}
-                          <div className="flex items-center gap-2">
-                            <span className="font-display text-text-primary truncate text-sm font-medium">
-                              {a.name}
-                            </span>
+                          <div className="flex items-start gap-2.5">
+                            {/* Role-colored avatar-initial chip (THR-030
+                                AGENTS-02). Initials derive generically from
+                                the agent's dynamic name; the color carries
+                                the manager/worker role signal that the old
+                                led dot used to. */}
                             <span
                               aria-hidden="true"
-                              className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                              className={`font-display flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-medium text-white ${
                                 a.role === 'manager'
                                   ? 'bg-agent-manager'
                                   : 'bg-agent-worker'
                               }`}
-                            />
+                            >
+                              {agentInitials(a.name)}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <span className="font-display text-text-primary block truncate text-sm font-medium">
+                                {a.name}
+                              </span>
+                              <div className="text-text-muted mt-0.5 text-xs tabular-nums">
+                                {a.team ?? 'No team'} · {a.executor ?? 'No executor'}
+                              </div>
+                              {a.description && (
+                                <p className="text-text-muted mt-0.5 truncate text-xs leading-relaxed">
+                                  {a.description}
+                                </p>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-text-muted mt-0.5 text-xs tabular-nums">
-                            {a.team ?? 'No team'} · {a.executor ?? 'No executor'}
-                          </div>
-                          {a.description && (
-                            <p className="text-text-muted mt-0.5 truncate text-xs leading-relaxed">
-                              {a.description}
-                            </p>
-                          )}
                         </button>
                       </li>
                     );
