@@ -181,11 +181,25 @@ describe('DreamsPage', () => {
   /*  List rendering                                                   */
   /* ---------------------------------------------------------------- */
 
-  it('renders the page header', () => {
+  // DREAMS-03: Direction-A header — uppercase eyebrow + Newsreader serif <h1>.
+  it('renders the Direction-A header — uppercase eyebrow + Newsreader serif title', () => {
     mockDreamsList.mockReturnValue(loaded({ dreams: [] }));
     renderPage(<DreamsPage />);
-    expect(screen.getByText('Dreams')).toBeDefined();
+    // Serif <h1> load gate — font-display (Newsreader) + text-display.
+    const heading = screen.getByRole('heading', { level: 1, name: 'Where the org slept on it.' });
+    expect(heading.className).toContain('font-display');
+    expect(heading.className).toContain('text-display');
+    // Uppercase eyebrow (data-backed night count; 0 nights for an empty feed).
+    expect(screen.getByText('NIGHTLY REFLECTION · LAST 0 NIGHTS')).toBeDefined();
+    // Descriptive caption retained.
     expect(screen.getByText('Nightly agent reflections and knowledge proposals')).toBeDefined();
+  });
+
+  it('header eyebrow night count is data-backed (distinct local_date, not a fixed 3)', () => {
+    // QUIET_DREAM (2026-06-18) + FAILED_DREAM (2026-06-17) -> 2 distinct nights.
+    mockDreamsList.mockReturnValue(loaded({ dreams: [QUIET_DREAM, FAILED_DREAM] }));
+    renderPage(<DreamsPage />);
+    expect(screen.getByText('NIGHTLY REFLECTION · LAST 2 NIGHTS')).toBeDefined();
   });
 
   it('shows loading skeletons when data is loading', () => {

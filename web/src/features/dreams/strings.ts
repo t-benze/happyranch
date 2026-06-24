@@ -3,8 +3,17 @@
  * no duplicated magic strings across the feature.
  */
 export const DREAM_STRINGS = {
-  pageTitle: 'Dreams',
+  /** DREAMS-03: Direction-A Newsreader serif page title. */
+  pageTitle: 'Where the org slept on it.',
   pageSubtitle: 'Nightly agent reflections and knowledge proposals',
+  /**
+   * DREAMS-03 uppercase eyebrow. The night count is data-backed (distinct
+   * local_date in the loaded feed), mirroring the KbPage live-count eyebrow
+   * precedent — the feed is not fixed to 3 nights, so a static "3" would be a
+   * fabricated count per the honesty fence.
+   */
+  headerEyebrow: (nights: number) =>
+    `NIGHTLY REFLECTION · LAST ${nights} NIGHT${nights === 1 ? '' : 'S'}`,
   emptyTitle: 'No dreams yet',
   emptyBody: 'Dreams run on the schedule configured in Settings. First reflection will appear here.',
   errorTitle: "Couldn't load dreams",

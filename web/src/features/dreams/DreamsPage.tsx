@@ -12,7 +12,9 @@
  *
  * Pasture vocabulary:
  *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
- *   Heading: font-display serif (Newsreader) page heading + PageHeader
+ *   Heading: Direction-A header (DREAMS-03) — uppercase eyebrow + Newsreader
+ *     serif (font-display text-display) <h1>, matching the Schedule/KB/Audit
+ *     page-header precedent.
  *   Dream ID / timestamps / counts: font-mono tabular-nums
  *   Status pills: rounded-full bg-accent-soft/text-accent-text (completed),
  *     bg-danger-soft/text-feedback-danger (failed/timeout)
@@ -27,6 +29,13 @@
  * (dream_id, agent_name, local_date, status, summary, new_learnings_count,
  * kb_candidate_count, founder_thread_id, error). No fabricated provenance,
  * sub-states, scores, or schedule glance fields not on the model.
+ *
+ * DREAMS-03 (presentation-only): the Direction-A "Next run tonight · HH:MM"
+ * header pill is intentionally OMITTED. No web-consumed dreams payload exposes
+ * a next-run time (DreamRecord/DreamListResponse/DreamStatusResponse carry only
+ * per-(past)-dream fields; scheduled_for is a completed dream's slot, not the
+ * upcoming run), so per the HONESTY FENCE it is deferred rather than fabricated
+ * — consistent with the DREAMS-02 rail, which already omits the same time.
  */
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -35,7 +44,6 @@ import { useDreamsList } from '@/hooks/dreams';
 import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { cn } from '@/lib/utils';
 import { DreamDetailPane } from './DreamDetailPane';
 import { DREAM_STRINGS } from './strings';
@@ -261,15 +269,26 @@ export function DreamsPage(): JSX.Element {
   const [selectedDreamId, setSelectedDreamId] = useState<string | null>(null);
 
   const dreams = dreamsQ.data?.dreams ?? [];
+  // DREAMS-03: data-backed night count for the eyebrow (distinct local_date in
+  // the loaded feed) — no fabricated fixed count.
+  const nightsCount = new Set(dreams.map((d) => d.local_date)).size;
 
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-5xl px-4 py-6">
+        {/* Header — DREAMS-03: Direction-A uppercase eyebrow + Newsreader serif
+            title, matching the Schedule/KB/Audit page-header treatment. The
+            "Next run tonight · HH:MM" pill is omitted (no payload backs it). */}
         <header className="border-border-default mb-6 border-b pb-4">
-          <PageHeader
-            title={<span className="font-display">{DREAM_STRINGS.pageTitle}</span>}
-            meta={DREAM_STRINGS.pageSubtitle}
-          />
+          <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
+            {DREAM_STRINGS.headerEyebrow(nightsCount)}
+          </p>
+          <h1 className="font-display text-display text-text-primary mt-1 font-medium">
+            {DREAM_STRINGS.pageTitle}
+          </h1>
+          <p className="text-caption text-text-muted mt-1">
+            {DREAM_STRINGS.pageSubtitle}
+          </p>
         </header>
 
         {/* Single-column reflection feed + right-side rail (DREAMS-02) */}
