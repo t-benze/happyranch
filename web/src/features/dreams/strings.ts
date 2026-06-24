@@ -3,8 +3,15 @@
  * no duplicated magic strings across the feature.
  */
 export const DREAM_STRINGS = {
-  pageTitle: 'Dreams',
-  pageSubtitle: 'Nightly agent reflections and knowledge proposals',
+  /**
+   * DREAMS-03 Direction-A header — uppercase eyebrow (live distinct-night
+   * count derived from the loaded feed) + Newsreader serif statement title.
+   * The "Next run tonight" pill from the Direction-A mock is omitted: no
+   * next-run field is on the dreams payload the page loads (see completion).
+   */
+  headerEyebrow: (nights: number) =>
+    `NIGHTLY REFLECTION · ${nights} NIGHT${nights === 1 ? '' : 'S'}`,
+  headerStatement: 'Where the org slept on it.',
   emptyTitle: 'No dreams yet',
   emptyBody: 'Dreams run on the schedule configured in Settings. First reflection will appear here.',
   errorTitle: "Couldn't load dreams",

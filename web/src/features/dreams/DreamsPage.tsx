@@ -12,7 +12,8 @@
  *
  * Pasture vocabulary:
  *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
- *   Heading: font-display serif (Newsreader) page heading + PageHeader
+ *   Heading: DREAMS-03 Direction-A header — uppercase eyebrow (live night
+ *     count) + font-display serif (Newsreader) statement title
  *   Dream ID / timestamps / counts: font-mono tabular-nums
  *   Status pills: rounded-full bg-accent-soft/text-accent-text (completed),
  *     bg-danger-soft/text-feedback-danger (failed/timeout)
@@ -35,7 +36,6 @@ import { useDreamsList } from '@/hooks/dreams';
 import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { cn } from '@/lib/utils';
 import { DreamDetailPane } from './DreamDetailPane';
 import { DREAM_STRINGS } from './strings';
@@ -261,15 +261,24 @@ export function DreamsPage(): JSX.Element {
   const [selectedDreamId, setSelectedDreamId] = useState<string | null>(null);
 
   const dreams = dreamsQ.data?.dreams ?? [];
+  // Honest distinct-night count for the header eyebrow, derived client-side
+  // from the loaded feed's local_date values (mirrors KB-02 / THREADS-04).
+  const nightCount = new Set(dreams.map((d) => d.local_date)).size;
 
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-5xl px-4 py-6">
+        {/* DREAMS-03: Direction-A eyebrow (live night count) + Newsreader serif
+            statement title, mirroring the KB-02 / AUDIT-03 / THREADS-04 /
+            SCHED-02 header idiom. The "Next run tonight" pill is omitted: no
+            next-run field is on the dreams payload the page loads. */}
         <header className="border-border-default mb-6 border-b pb-4">
-          <PageHeader
-            title={<span className="font-display">{DREAM_STRINGS.pageTitle}</span>}
-            meta={DREAM_STRINGS.pageSubtitle}
-          />
+          <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
+            {DREAM_STRINGS.headerEyebrow(nightCount)}
+          </p>
+          <h1 className="font-display text-display text-text-primary mt-1 font-medium">
+            {DREAM_STRINGS.headerStatement}
+          </h1>
         </header>
 
         {/* Single-column reflection feed + right-side rail (DREAMS-02) */}
