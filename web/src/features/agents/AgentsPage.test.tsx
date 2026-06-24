@@ -68,7 +68,7 @@ function mountAt(route: string) {
 }
 
 describe('AgentsPage — two-pane roster list', () => {
-  test('renders the agent roster with team / executor / description in left pane', async () => {
+  test('renders the agent roster with role meta + description in left pane', async () => {
     stubBaseHandlers();
     // The first agent auto-selects on mount (AGENTS-01), so the detail pane
     // also queries — stub its endpoints to satisfy onUnhandledRequest:'error'.
@@ -80,8 +80,8 @@ describe('AgentsPage — two-pane roster list', () => {
     await waitFor(() =>
       expect(screen.getByText('support_agent')).toBeInTheDocument(),
     );
-    // "engineering"/"cx"/names/descriptions appear in the roster list inside
-    // the left-pane <aside> (there are 2 <aside> elements: sidebar + roster).
+    // Names/role-meta/descriptions appear in the roster list inside the
+    // left-pane <aside> (there are 2 <aside> elements: sidebar + roster).
     // The auto-selected first agent also renders its name + description in the
     // detail pane, so scope every roster assertion to the roster aside.
     const asides = document.querySelectorAll('aside');
@@ -89,12 +89,36 @@ describe('AgentsPage — two-pane roster list', () => {
     expect(rosterAside).toBeTruthy();
     expect(within(rosterAside!).getByText('engineering_head')).toBeInTheDocument();
     expect(within(rosterAside!).getByText('support_agent')).toBeInTheDocument();
-    const engMatches = within(rosterAside!).getAllByText(/engineering/);
-    expect(engMatches.length).toBeGreaterThan(0);
-    const cxMatches = within(rosterAside!).getAllByText(/cx/);
-    expect(cxMatches.length).toBeGreaterThan(0);
+    // AGENTS-02: meta line reconciled toward the Direction-A 'role · status'
+    // form. `role` is on the roster payload (→ Manager / Worker); `status` is
+    // NOT, so it is omitted rather than fabricated. The old 'team · executor'
+    // meta is gone — support_agent's executor ('codex') no longer appears.
+    expect(within(rosterAside!).getByText('Manager')).toBeInTheDocument();
+    expect(within(rosterAside!).getByText('Worker')).toBeInTheDocument();
+    expect(within(rosterAside!).queryByText(/codex/)).not.toBeInTheDocument();
     expect(within(rosterAside!).getByText('Owns engineering.')).toBeInTheDocument();
     expect(within(rosterAside!).getByText('Handles support.')).toBeInTheDocument();
+  });
+
+  test('AGENTS-02: each roster row renders a client-derived avatar-initial chip', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    mountAt(`/orgs/${SLUG}/agents`);
+
+    await waitFor(() =>
+      expect(screen.getByText('support_agent')).toBeInTheDocument(),
+    );
+    const rosterAside = document.querySelectorAll('aside')[1];
+    expect(rosterAside).toBeTruthy();
+    // Initials are derived client-side from the agent name (two-token →
+    // first letter of each of the first two parts): engineering_head → 'EH',
+    // support_agent → 'SA'. No backend field, no per-agent hardcoded map.
+    expect(within(rosterAside!).getByText('EH')).toBeInTheDocument();
+    expect(within(rosterAside!).getByText('SA')).toBeInTheDocument();
+    // Honesty fence: no fabricated status value (e.g. the prototype's
+    // 'active'/'idle') is invented for the absent `status` field.
+    expect(within(rosterAside!).queryByText('active')).not.toBeInTheDocument();
+    expect(within(rosterAside!).queryByText('idle')).not.toBeInTheDocument();
   });
 
   test('clicking an agent row loads detail in the right pane', async () => {
