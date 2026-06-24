@@ -14,7 +14,8 @@
  *
  * Pasture vocabulary:
  *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
- *   Page heading: font-display serif (Newsreader) via PageHeader
+ *   Page heading: uppercase eyebrow + font-display serif title (Newsreader),
+ *     Direction-A treatment (SCHED-02)
  *   Agent names: font-display
  *   IDs / times / counts: font-mono tabular-nums
  *   Status pills: rounded-full bg-accent-soft/text-accent-text (completed/running),
@@ -30,13 +31,15 @@
  * spawned_task_count, summary, error, session_id, transcript_path, created_at).
  * OMITTED (no backing field): week grid / 24h visual timeline /
  * "While you were away" feed / calm toggles / schedule-health metrics /
- * run history / next-run predictions — none of these fields exist on
- * WorkHourRecord. The a-schedule.html reference elements without data-model
- * backing are documented here per Confusion-Protocol, not fabricated.
+ * run history / next-run predictions / header timezone chip — none of these
+ * fields exist on WorkHourRecord or WorkHourListResponse. The a-schedule
+ * reference elements without data-model backing (incl. the timezone chip,
+ * which would need a working-hours timezone field on WorkHourListResponse —
+ * a web-contract change) are documented here per Confusion-Protocol, not
+ * fabricated.
  */
 import { useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { Button } from '@/design-system/primitives/Button';
@@ -255,12 +258,22 @@ export function SchedulePage(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header — Pasture PageHeader with font-display */}
+      {/* Header — SCHED-02: Direction-A treatment — small uppercase eyebrow +
+          Newsreader serif title, matching the a-schedule reference and the
+          Audit/KB surfaces shipped earlier this program.
+          Timezone chip OMITTED (honesty fence): no working-hours timezone field
+          is exposed on WorkHourListResponse / WorkHourRecord — rendering a real
+          one would require a web-contract/response_model change. Deferred. */}
       <header className="border-border-default border-b p-4">
-        <PageHeader
-          title={<span className="font-display">Schedule</span>}
-          meta="Per-agent working-hours wakes — when agents run and what they spawn."
-        />
+        <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
+          WORKING HOURS · WHEN THE ORG IS AWAKE
+        </p>
+        <h1 className="font-display text-display text-text-primary mt-1 font-medium">
+          Give your agents a rhythm.
+        </h1>
+        <p className="text-text-muted text-caption mt-1">
+          Per-agent working-hours wakes — when agents run and what they spawn.
+        </p>
         <p className="text-text-muted mt-2 text-xs">
           View-only. Creating named recurring wakes is not available in this release.
         </p>

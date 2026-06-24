@@ -94,13 +94,39 @@ describe('SchedulePage — Pasture fidelity read-only work-hours list', () => {
     mountAt(`/orgs/${SLUG}/schedule`);
 
     await waitFor(() => {
-      // 'Schedule' appears in both sidebar nav and page header
-      const scheduleElements = screen.getAllByText('Schedule');
-      expect(scheduleElements.length).toBeGreaterThanOrEqual(2);
+      // 'Schedule' still appears in the sidebar nav + topbar breadcrumb (the
+      // page title itself is now the Direction-A serif statement, asserted
+      // separately below).
+      expect(screen.getAllByText('Schedule').length).toBeGreaterThanOrEqual(1);
       expect(
         screen.getByText(/Per-agent working-hours wakes/),
       ).toBeInTheDocument();
     });
+  });
+
+  // SCHED-02: Direction-A header treatment — small uppercase eyebrow +
+  // Newsreader serif title, matching the a-schedule reference and the
+  // Audit/KB surfaces shipped earlier this program.
+  test('renders the SCHED-02 eyebrow and serif page title', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours();
+    mountAt(`/orgs/${SLUG}/schedule`);
+
+    const title = await screen.findByRole('heading', {
+      name: 'Give your agents a rhythm.',
+    });
+    expect(title).toBeInTheDocument();
+    expect(title).toHaveClass('font-display');
+
+    expect(
+      screen.getByText('WORKING HOURS · WHEN THE ORG IS AWAKE'),
+    ).toBeInTheDocument();
+
+    // The old plain "Schedule" page-title heading must be gone (the sidebar
+    // nav still has a "Schedule" link, so scope this to the heading role).
+    expect(
+      screen.queryByRole('heading', { name: 'Schedule' }),
+    ).not.toBeInTheDocument();
   });
 
   test('renders view-only notice', async () => {
@@ -229,8 +255,9 @@ describe('SchedulePage — Pasture fidelity read-only work-hours list', () => {
     mountAt(`/orgs/${SLUG}/schedule`);
 
     await waitFor(() => {
-      const scheduleElements = screen.getAllByText('Schedule');
-      expect(scheduleElements.length).toBeGreaterThanOrEqual(2);
+      expect(
+        screen.getByRole('heading', { name: 'Give your agents a rhythm.' }),
+      ).toBeInTheDocument();
     });
 
     // No "create", "new wake", "add wake" buttons present
