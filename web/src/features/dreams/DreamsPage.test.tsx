@@ -181,11 +181,28 @@ describe('DreamsPage', () => {
   /*  List rendering                                                   */
   /* ---------------------------------------------------------------- */
 
-  it('renders the page header', () => {
-    mockDreamsList.mockReturnValue(loaded({ dreams: [] }));
+  it('renders the Direction-A header — eyebrow (live night count) + serif statement title (DREAMS-03)', () => {
+    // 4 dreams across 2 distinct local_date nights -> honest "2 NIGHTS" count.
+    mockDreamsList.mockReturnValue(
+      loaded({ dreams: [QUIET_DREAM, DREAM_WITH_CANDIDATES, FAILED_DREAM, MISSED_DREAM] }),
+    );
     renderPage(<DreamsPage />);
-    expect(screen.getByText('Dreams')).toBeDefined();
-    expect(screen.getByText('Nightly agent reflections and knowledge proposals')).toBeDefined();
+
+    // Uppercase eyebrow with the live distinct-night count.
+    expect(screen.getByText('NIGHTLY REFLECTION · 2 NIGHTS')).toBeDefined();
+
+    // Newsreader serif statement title carries the font-display class.
+    const statement = screen.getByText('Where the org slept on it.');
+    expect(statement.className).toContain('font-display');
+
+    // The old plain 'Dreams' heading + subtitle are gone from the feature.
+    expect(screen.queryByText('Dreams')).toBeNull();
+    expect(
+      screen.queryByText('Nightly agent reflections and knowledge proposals'),
+    ).toBeNull();
+
+    // No fabricated next-run pill (next-run time is not on the dreams payload).
+    expect(screen.queryByText(/Next run tonight/i)).toBeNull();
   });
 
   it('shows loading skeletons when data is loading', () => {
