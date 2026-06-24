@@ -675,6 +675,45 @@ describe('KbPage — viewed Nx (CLI) usage label', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  Tests — leading glyph on entry cards (KB-04, THR-030)              */
+/* ------------------------------------------------------------------ */
+
+describe('KbPage — leading glyph on entry cards (KB-04)', () => {
+  test('each live KB entry card leads with a decorative file glyph before the slug', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A, ENTRY_B] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+
+    // The entry card is an anchor (Link); locate it via its slug text.
+    const slugEl = screen.getByText('policy/refund-thresholds');
+    const card = slugEl.closest('a');
+    expect(card).not.toBeNull();
+
+    // A leading glyph (inline svg) is present in the card header…
+    const glyph = card!.querySelector('svg');
+    expect(glyph).toBeTruthy();
+    // …it precedes the slug text in DOM order (the card LEADS with it)…
+    expect(
+      glyph!.compareDocumentPosition(slugEl) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // …and it is decorative, since the title/slug already convey meaning.
+    expect(glyph).toHaveAttribute('aria-hidden', 'true');
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /*  Tests — candidate resolution clears detail (Finding 2)             */
 /* ------------------------------------------------------------------ */
 

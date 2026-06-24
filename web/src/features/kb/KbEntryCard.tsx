@@ -5,6 +5,25 @@ import { KB_STRINGS } from './strings';
 
 type Density = 'comfortable' | 'compact';
 
+/* ------------------------------------------------------------------ */
+/*  File glyph — leads every entry card (KB-04)                         */
+/* ------------------------------------------------------------------ */
+
+function FileBadge({ className }: { className?: string }): JSX.Element {
+  return (
+    <svg
+      className={cn('text-text-muted inline-block shrink-0', className)}
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M6 2.75A1.75 1.75 0 0 0 4.25 4.5v15A1.75 1.75 0 0 0 6 21.25h12A1.75 1.75 0 0 0 19.75 19.5V9h-5.25A1.25 1.25 0 0 1 13.25 7.75V2.75H6Zm8.75.31V7.5h4.44L14.75 3.06Z" />
+    </svg>
+  );
+}
+
 function relativeAge(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   const min = Math.round(ms / 60000);
@@ -43,7 +62,10 @@ export function KbEntryCard({
         'hover:bg-surface-raised/80 transition-shadow hover:shadow-pasture',
       )}
     >
-      <div className="text-text-muted font-mono text-xs tabular-nums">{entry.slug}</div>
+      <div className="flex items-center gap-1.5">
+        <FileBadge className="h-3 w-3" />
+        <span className="text-text-muted font-mono text-xs tabular-nums">{entry.slug}</span>
+      </div>
       <div className="text-text-primary mt-0.5 flex items-baseline gap-2 flex-wrap">
         <span className="font-display font-medium">{entry.title}</span>
         <span className="text-text-muted text-xs">· {entry.type}</span>
