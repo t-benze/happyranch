@@ -104,6 +104,30 @@ describe('SettingsPage — sub-nav and routing', () => {
     expect(within(content).getByText('Usage')).toBeInTheDocument();
   });
 
+  test('SET-03: each sub-nav item renders a leading icon', async () => {
+    mountAt(`/orgs/${SLUG}/settings/assistant`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+
+    const content = screen.getByTestId('settings-content');
+    const subnav = within(content).getByRole('complementary');
+
+    for (const label of [
+      'Assistant',
+      'System',
+      'Organization',
+      'Agents',
+      'Executors',
+      'Usage',
+    ]) {
+      const link = within(subnav).getByRole('link', { name: label });
+      // Each sub-nav link carries a leading (decorative) icon SVG.
+      expect(link.querySelector('svg')).not.toBeNull();
+    }
+  });
+
   test('sub-nav switches panels via navigation', async () => {
     mountAt(`/orgs/${SLUG}/settings/assistant`);
 
