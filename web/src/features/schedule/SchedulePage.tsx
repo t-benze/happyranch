@@ -33,10 +33,17 @@
  * run history / next-run predictions — none of these fields exist on
  * WorkHourRecord. The a-schedule.html reference elements without data-model
  * backing are documented here per Confusion-Protocol, not fabricated.
+ *
+ * THR-030 SCHED-02 (presentation-only): header restyled to the Direction-A
+ * a-schedule reference — uppercase eyebrow + Newsreader serif title, matching
+ * the Tasks/KB/Audit page-header treatment. The a-schedule TIMEZONE chip is
+ * intentionally OMITTED: the working-hours timezone is not exposed on any
+ * web-consumed payload (the /work-hours list response carries no tz, and the
+ * only timezone on the wire is the *dreaming* schedule's, a different
+ * schedule), so per the HONESTY FENCE it is deferred rather than fabricated.
  */
 import { useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { Button } from '@/design-system/primitives/Button';
@@ -255,12 +262,18 @@ export function SchedulePage(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header — Pasture PageHeader with font-display */}
+      {/* Header — SCHED-02: Direction-A uppercase eyebrow + Newsreader serif
+          title (a-schedule reference), matching the Tasks/KB/Audit surfaces. */}
       <header className="border-border-default border-b p-4">
-        <PageHeader
-          title={<span className="font-display">Schedule</span>}
-          meta="Per-agent working-hours wakes — when agents run and what they spawn."
-        />
+        <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
+          Working hours · When the org is awake
+        </p>
+        <h1 className="font-display text-display text-text-primary mt-1 font-medium">
+          Give your agents a rhythm.
+        </h1>
+        <p className="text-caption text-text-muted mt-1">
+          Per-agent working-hours wakes — when agents run and what they spawn.
+        </p>
         <p className="text-text-muted mt-2 text-xs">
           View-only. Creating named recurring wakes is not available in this release.
         </p>

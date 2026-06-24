@@ -88,15 +88,20 @@ function defaultEntries(): WorkHourRecord[] {
 }
 
 describe('SchedulePage — Pasture fidelity read-only work-hours list', () => {
-  test('renders page header and description', async () => {
+  test('renders SCHED-02 Direction-A eyebrow + serif title and description', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedWorkHours();
     mountAt(`/orgs/${SLUG}/schedule`);
 
     await waitFor(() => {
-      // 'Schedule' appears in both sidebar nav and page header
-      const scheduleElements = screen.getAllByText('Schedule');
-      expect(scheduleElements.length).toBeGreaterThanOrEqual(2);
+      // SCHED-02: uppercase eyebrow + Newsreader serif title (a-schedule).
+      expect(
+        screen.getByText('Working hours · When the org is awake'),
+      ).toBeInTheDocument();
+      const title = screen.getByText('Give your agents a rhythm.');
+      expect(title.tagName).toBe('H1');
+      expect(title).toHaveClass('font-display');
+      // Description line is retained.
       expect(
         screen.getByText(/Per-agent working-hours wakes/),
       ).toBeInTheDocument();
@@ -229,8 +234,9 @@ describe('SchedulePage — Pasture fidelity read-only work-hours list', () => {
     mountAt(`/orgs/${SLUG}/schedule`);
 
     await waitFor(() => {
-      const scheduleElements = screen.getAllByText('Schedule');
-      expect(scheduleElements.length).toBeGreaterThanOrEqual(2);
+      expect(
+        screen.getByText('Give your agents a rhythm.'),
+      ).toBeInTheDocument();
     });
 
     // No "create", "new wake", "add wake" buttons present
