@@ -18,17 +18,30 @@ import {
   Routes,
   useParams,
 } from 'react-router-dom';
+import {
+  Sparkles,
+  LayoutGrid,
+  Home as HomeIcon,
+  Users,
+  Terminal,
+  BarChart3,
+  type LucideIcon,
+} from 'lucide-react';
 import { useSettings } from '@/hooks/settings';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 
 const SECTIONS = [
-  { key: 'assistant', label: 'Assistant' },
-  { key: 'system', label: 'System' },
-  { key: 'organization', label: 'Organization' },
-  { key: 'agents', label: 'Agents' },
-  { key: 'executors', label: 'Executors' },
-  { key: 'usage', label: 'Usage' },
-] as const;
+  { key: 'assistant', label: 'Assistant', icon: Sparkles },
+  { key: 'system', label: 'System', icon: LayoutGrid },
+  { key: 'organization', label: 'Organization', icon: HomeIcon },
+  { key: 'agents', label: 'Agents', icon: Users },
+  { key: 'executors', label: 'Executors', icon: Terminal },
+  { key: 'usage', label: 'Usage', icon: BarChart3 },
+] as const satisfies ReadonlyArray<{
+  key: string;
+  label: string;
+  icon: LucideIcon;
+}>;
 
 export type SettingsSection = (typeof SECTIONS)[number]['key'];
 
@@ -88,6 +101,7 @@ export function SettingsPage(): JSX.Element {
 /**
  * SettingsSubNav — sticky left rail of section links.
  * Each link navigates to /orgs/:slug/settings/:section.
+ * Each link carries a leading icon (per design ref `a-settings`).
  * Active link uses Pasture rounded-full pill style.
  */
 function SettingsSubNav(): JSX.Element {
@@ -104,14 +118,15 @@ function SettingsSubNav(): JSX.Element {
             <NavLink
               to={`/orgs/${slug}/settings/${s.key}`}
               className={({ isActive }) =>
-                `block w-full rounded-full px-3 py-1 text-left text-sm transition-colors ${
+                `flex w-full items-center gap-2 rounded-full px-3 py-1 text-left text-sm transition-colors ${
                   isActive
                     ? 'bg-accent-soft text-accent-text'
                     : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
                 }`
               }
             >
-              {s.label}
+              <s.icon size={16} aria-hidden="true" className="shrink-0" />
+              <span>{s.label}</span>
             </NavLink>
           </li>
         ))}
