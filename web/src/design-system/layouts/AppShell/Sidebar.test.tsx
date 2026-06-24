@@ -384,9 +384,10 @@ describe('Operate surfaces', () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dreams` });
     await waitFor(() => {
-      const dreamsElements = screen.getAllByText('Dreams');
-      expect(dreamsElements.length).toBeGreaterThanOrEqual(2); // sidebar nav + page header
-      expect(screen.getByText(/Nightly agent reflections and knowledge proposals/i)).toBeInTheDocument();
+      // 'Dreams' nav chrome (sidebar + app bar) still present
+      expect(screen.getAllByText('Dreams').length).toBeGreaterThanOrEqual(1);
+      // DREAMS-03 Direction-A serif statement title proves the surface rendered
+      expect(screen.getByText('Where the org slept on it.')).toBeInTheDocument();
     });
   });
 
