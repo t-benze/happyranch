@@ -309,33 +309,34 @@ describe('JobDetailPage — read path', () => {
     expect(within(rail).getByText('bash')).toBeInTheDocument();
   });
 
-  test('shows gated chip for review_required pending job', async () => {
+  test('shows gated notice for review_required pending job', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobDetail(JOB);
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
 
     await waitFor(() => {
-      expect(screen.getByText(/Needs your approval/)).toBeInTheDocument();
+      expect(screen.getByText(/This action is gated/)).toBeInTheDocument();
     });
-    // Gated chip now shows separate Approve + Reject buttons
-    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    // Direction-A: controls are hoisted to the top-right header — a "Reject"
+    // secondary action and an "Approve job" primary action.
+    expect(screen.getByRole('button', { name: 'Approve job' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
   });
 
-  test('gated chip shows BOTH Approve and Reject buttons', async () => {
+  test('gated job shows BOTH the Reject and Approve job header buttons', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobDetail(JOB);
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
 
     await waitFor(() => {
-      expect(screen.getByText(/Needs your approval/)).toBeInTheDocument();
+      expect(screen.getByText(/This action is gated/)).toBeInTheDocument();
     });
-    // Gated chip must show BOTH buttons
-    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    // Header must show BOTH actions
+    expect(screen.getByRole('button', { name: 'Approve job' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
   });
 
-  test('gated chip Approve routes through the uniform two-step run confirm', async () => {
+  test('gated Approve job routes through the uniform two-step run confirm', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobDetail(JOB);
     // Mock the run endpoint so RunJobDialog can initialize
@@ -349,11 +350,11 @@ describe('JobDetailPage — read path', () => {
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Approve job' })).toBeInTheDocument();
     });
 
-    // Click Approve → enters the SAME run two-step confirm
-    await user.click(screen.getByRole('button', { name: 'Approve' }));
+    // Click Approve job → enters the SAME run two-step confirm
+    await user.click(screen.getByRole('button', { name: 'Approve job' }));
 
     // Step 1: run prompt (same as non-gated Run path)
     await waitFor(() => {

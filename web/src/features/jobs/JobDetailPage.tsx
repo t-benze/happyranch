@@ -5,6 +5,22 @@
  * No standalone Jobs index — reached contextually from Audit timeline,
  * task detail, or artifact cards.
  *
+ * Direction-A alignment (TASK-912, a-job-detail.html): a serif job-TITLE
+ * headline with the JOB id + status as a compact eyebrow row, the action
+ * buttons hoisted top-right, a "Verbatim command · runs exactly this"
+ * command card, a carded "If approved" cascade, and a curated approval-
+ * context right-rail (Requested by / Created lead) with the execution
+ * telemetry kept present but secondary.
+ *
+ * Honesty fence — the design's curated `Routed via`, `Thread`, `Kind`,
+ * `File` rows and its `PR #NNN` chip have NO backing JobRecord field, so they
+ * are honestly omitted rather than fabricated; the back-link stays
+ * "← Back to {task_id}" (there is no originating-thread field to back to).
+ * The design's "Decline & revert code instead" implies a revert *behavior*
+ * we do not implement (TASK-414 fence) — the secondary action keeps the
+ * existing honest reject wiring (RejectJobDialog) and a "Reject" label.
+ * See TASK-912 completion report for the deferred data-field follow-up list.
+ *
  * Key behaviours:
  * - Verbatim command in monospace
  * - "If approved" cascade lists real tasks blocked on this job (DERIVE)
@@ -14,7 +30,6 @@
  */
 import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
@@ -31,17 +46,6 @@ import { OutputPanel } from './OutputPanel';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function relativeAge(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  const min = Math.round(ms / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h`;
-  const d = Math.round(hr / 24);
-  return `${d}d`;
-}
-
 function formatDateTime(iso: string | null | undefined): string | null {
   if (!iso) return null;
   return new Date(iso).toLocaleString();
@@ -49,12 +53,22 @@ function formatDateTime(iso: string | null | undefined): string | null {
 
 // ── Sub-components ───────────────────────────────────────────────────
 
+/** Section eyebrow — uppercase caption shared by the command + rail groups. */
+function Eyebrow({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+      {children}
+    </p>
+  );
+}
+
 /**
  * Command card styled with terminal chrome per the a-job-detail Direction-A
- * reference (JOBDET-02): a "›_ command" header bar above the verbatim script,
- * with an interpreter/cwd footer. Pure restyle of existing fields — interpreter
- * and cwd_hint come straight from the job payload; cwd is omitted honestly when
- * absent (no fabricated value).
+ * reference (JOBDET-02 + TASK-912): a "›_ command" header bar above the
+ * verbatim script with a leading "$" prompt glyph, and an interpreter/cwd
+ * footer. Pure restyle of existing fields — interpreter and cwd_hint come
+ * straight from the job payload; cwd is omitted honestly when absent (no
+ * fabricated value).
  */
 function ScriptBlock({ job }: { job: JobRecord }): JSX.Element {
   return (
@@ -66,6 +80,7 @@ function ScriptBlock({ job }: { job: JobRecord }): JSX.Element {
         <span className="text-text-muted text-xs font-medium tracking-wider uppercase">command</span>
       </div>
       <pre className="bg-surface-canvas text-text-primary overflow-x-auto p-3 font-mono text-xs whitespace-pre">
+        <span aria-hidden="true" className="text-accent-default select-none">$ </span>
         {job.script_text}
       </pre>
       <div className="bg-surface-sunken border-border-default text-text-muted border-t px-3 py-1.5 font-mono text-xs">
@@ -102,17 +117,18 @@ function MonoValue({ children }: { children: ReactNode }): JSX.Element {
 }
 
 /**
- * Metadata rail — right-rail card styled per the a-job-detail reference
- * (JOBDET-01). Agent identities (Requested by / Reviewed by) render via the
- * AgentChip avatar idiom; the Task id renders as an entity link. Every stored
- * field the prior inline "Details" grid showed is preserved here — no data is
- * dropped. The reference's curated Routed-via / Thread / Kind / File rows have
- * no backing value in the job payload, so they are honestly omitted rather
- * than fabricated.
+ * Metadata rail — right-rail card styled per the a-job-detail reference.
+ * LEADS with the curated approval-context fields (Requested by / Created)
+ * per the Direction-A design (TASK-912), with the Task entity link and any
+ * reviewer alongside. The shipped execution telemetry (interpreter, cwd,
+ * exit code, durations, …) is preserved below a divider as a secondary
+ * "Execution" group — present, not deleted. The reference's curated
+ * Routed-via / Thread / Kind / File rows have no backing value in the job
+ * payload, so they are honestly omitted rather than fabricated.
  */
 function PropertyRail({ job, slug }: { job: JobRecord; slug: string | undefined }): JSX.Element {
-  // Stored technical fields, in the prior grid's order; only non-null shown.
-  const stored: { label: string; value: string | null }[] = [
+  // Secondary execution-telemetry fields, in the prior grid's order; only non-null shown.
+  const telemetry: { label: string; value: string | null }[] = [
     { label: 'Interpreter', value: job.interpreter },
     { label: 'CWD hint', value: job.cwd_hint },
     { label: 'CWD resolved', value: job.cwd_resolved },
@@ -129,8 +145,8 @@ function PropertyRail({ job, slug }: { job: JobRecord; slug: string | undefined 
   return (
     <aside className="lg:w-72 lg:shrink-0">
       <div className="border-border-default bg-surface-raised rounded-xl border p-4">
+        {/* Curated approval-context — leads the rail per Direction-A. */}
         <dl className="space-y-3 text-sm">
-          {/* Agent identities — AgentChip avatar idiom */}
           <RailRow label="Requested by">
             <AgentChip name={job.agent_name} role={chipRole(job.agent_name)} />
           </RailRow>
@@ -139,7 +155,6 @@ function PropertyRail({ job, slug }: { job: JobRecord; slug: string | undefined 
               <AgentChip name={job.reviewed_by} role={chipRole(job.reviewed_by)} />
             </RailRow>
           )}
-          {/* Entity link — Task id deep-links to the task-detail route */}
           <RailRow label="Task">
             <IdBadge
               id={job.task_id}
@@ -148,23 +163,30 @@ function PropertyRail({ job, slug }: { job: JobRecord; slug: string | undefined 
             />
           </RailRow>
           <RailRow label="Created">
-            <MonoValue>{formatDateTime(job.created_at)}</MonoValue>
+            <span className="text-text-primary text-xs">{formatDateTime(job.created_at)}</span>
           </RailRow>
-          {/* Preserved stored fields — no data loss vs the prior grid */}
-          {stored.map(({ label, value }) =>
-            value !== null ? (
-              <RailRow key={label} label={label}>
-                <MonoValue>{value}</MonoValue>
-              </RailRow>
-            ) : null,
-          )}
         </dl>
+
+        {/* Execution telemetry — kept present, secondary to the curated context. */}
+        <div className="border-border-default mt-4 border-t pt-4">
+          <Eyebrow>Execution</Eyebrow>
+          <dl className="mt-3 space-y-3 text-sm">
+            {telemetry.map(({ label, value }) =>
+              value !== null ? (
+                <RailRow key={label} label={label}>
+                  <MonoValue>{value}</MonoValue>
+                </RailRow>
+              ) : null,
+            )}
+          </dl>
+        </div>
       </div>
     </aside>
   );
 }
 
-/** "If approved" cascade — DERIVE: lists tasks blocked on this job. */
+/** "If approved" cascade — DERIVE: lists tasks blocked on this job, carded
+ *  with impact dots per the Direction-A reference. */
 function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JSX.Element {
   const blockedTasksQuery = useQuery({
     queryKey: ['tasks-blocked-on-job', slug, jobId],
@@ -178,54 +200,57 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
 
   const tasks: TaskRecord[] = (blockedTasksQuery.data?.tasks as TaskRecord[]) ?? [];
 
+  function Card({ title, children }: { title: string; children: ReactNode }): JSX.Element {
+    return (
+      <section className="border-border-default bg-surface-raised rounded-xl border p-4">
+        <h3 className="text-text-primary mb-3 text-sm font-semibold">{title}</h3>
+        {children}
+      </section>
+    );
+  }
+
   if (blockedTasksQuery.isLoading) {
     return (
-      <section>
-        <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-          If approved
-        </h3>
+      <Card title="If approved">
         <p className="text-text-muted text-sm">Loading blocked tasks…</p>
-      </section>
+      </Card>
     );
   }
 
   if (blockedTasksQuery.isError) {
     return (
-      <section>
-        <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-          If approved
-        </h3>
+      <Card title="If approved">
         <p className="text-text-muted text-sm">Could not load blocked tasks.</p>
-      </section>
+      </Card>
     );
   }
 
   if (tasks.length === 0) {
     return (
-      <section>
-        <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-          If approved
-        </h3>
+      <Card title="If approved">
         <p className="text-text-muted text-sm">No tasks are currently blocked on this job.</p>
-      </section>
+      </Card>
     );
   }
 
   return (
-    <section>
-      <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-        If approved — {tasks.length} task{tasks.length !== 1 ? 's' : ''} unblocks
-      </h3>
-      <ul className="space-y-1">
+    <Card title={`If approved — ${tasks.length} task${tasks.length !== 1 ? 's' : ''} unblocks`}>
+      <ul className="space-y-2">
         {tasks.map((t) => (
-          <li key={t.task_id} className="flex items-center gap-2 text-sm">
+          <li key={t.task_id} className="flex items-center gap-2.5 text-sm">
+            <span
+              aria-hidden="true"
+              className="bg-accent-default h-2 w-2 shrink-0 rounded-full"
+            />
             <Link
               to={`/orgs/${slug}/tasks/${t.task_id}`}
               className="text-accent-default font-mono text-xs hover:underline"
             >
               {t.task_id}
             </Link>
-            <span className="text-text-primary truncate">{t.brief.slice(0, 80)}{t.brief.length > 80 ? '…' : ''}</span>
+            <span className="text-text-primary min-w-0 truncate">
+              {t.brief.slice(0, 80)}{t.brief.length > 80 ? '…' : ''}
+            </span>
             <StatusBadge
               status={t.status as 'blocked'}
               blockKind={(t as { block_kind?: string }).block_kind as 'escalated' | 'delegated' | null}
@@ -233,7 +258,7 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
           </li>
         ))}
       </ul>
-    </section>
+    </Card>
   );
 }
 
@@ -295,35 +320,26 @@ function TwoStepConfirm({
   );
 }
 
-/** Gated chip: review_required job routes to existing approve/reject.
- *  Same uniform two-step confirm + dialog pair as non-gated path:
- *  Approve → run two-step confirm → RunJobDialog; Reject → RejectJobDialog. */
-function GatedChip({
-  onApprove,
-  onReject,
-}: {
-  onApprove: () => void;
-  onReject: () => void;
-}): JSX.Element {
+/** Gated explanation card: a review_required job is approved/rejected from the
+ *  top-right action buttons. Copy aligned to the Direction-A approve-card; the
+ *  Approve/Reject controls live in the header and route to the EXISTING
+ *  two-step run confirm + RejectJobDialog. */
+function GatedNotice(): JSX.Element {
   return (
-    <div className="border-border-default bg-attention-soft shadow-pasture-sm mt-4 rounded-lg border p-4">
-      <div className="flex items-center gap-3">
-        <div className="flex-1">
-          <p className="text-text-primary text-sm font-medium">🔑 Needs your approval</p>
-          <p className="text-text-muted mt-0.5 text-xs">
-            This job was flagged for review by the requesting agent. Review the command
-            and approve or reject.
-          </p>
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button size="sm" onClick={onApprove}>
-            Approve
-          </Button>
-          <Button size="sm" variant="secondary" onClick={onReject}>
-            Reject
-          </Button>
-        </div>
+    <div className="bg-attention-soft mt-5 rounded-xl p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="bg-attention text-attention-text inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium">
+          <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
+          flagged for review
+        </span>
       </div>
+      <p className="text-attention-text text-sm font-semibold">
+        This action is gated — confirm from the buttons above.
+      </p>
+      <p className="text-attention-text/85 mt-1 text-xs leading-relaxed">
+        Every gated action uses the same two-step confirm — no risk tiers. The
+        assistant can propose this; only you approve it.
+      </p>
     </div>
   );
 }
@@ -389,10 +405,34 @@ export function JobDetailPage(): JSX.Element {
     );
   }
 
+  // ── Header actions — top-right per Direction-A. Relabel + relayout only;
+  // every handler is the EXISTING approve/reject/run/stop wiring. Hidden while
+  // the two-step confirm card is open (it carries its own controls). ──
+  let headerActions: ReactNode = null;
+  if (job.status === 'running') {
+    headerActions = (
+      <Button variant="destructive" size="sm" onClick={onStop} disabled={stop.isPending}>
+        {stop.isPending ? 'Stopping…' : 'Stop'}
+      </Button>
+    );
+  } else if (job.status === 'pending' && showTwoStep === null) {
+    headerActions = (
+      <>
+        <Button variant="secondary" size="sm" onClick={() => setOpenDialog('reject')}>
+          Reject
+        </Button>
+        <Button size="sm" onClick={() => setShowTwoStep('run')}>
+          {job.review_required ? 'Approve job' : 'Run'}
+        </Button>
+      </>
+    );
+  }
+
   // ── Normal render ──
   return (
     <div className="mx-auto max-w-5xl px-4 py-6">
-      {/* Breadcrumb: contextual back-link to spawning task */}
+      {/* Breadcrumb: contextual back-link to spawning task (honesty fence — no
+          originating-thread field, so we back to the task, not a thread). */}
       <nav className="mb-4">
         <Link
           to={`/orgs/${slug}/tasks/${job.task_id}`}
@@ -402,90 +442,68 @@ export function JobDetailPage(): JSX.Element {
         </Link>
       </nav>
 
-      {/* Two-column body: primary content + right-rail metadata card (JOBDET-01) */}
+      {/* Header — JOB id + status eyebrow row with actions top-right, then the
+          serif job-TITLE headline (Direction-A). */}
+      <header className="mb-6">
+        <div className="flex items-start justify-between gap-3">
+          <span className="flex items-center gap-2">
+            <span className="text-text-primary font-mono text-sm tabular-nums">{job.id}</span>
+            <StatusBadge status={job.status as 'pending'} />
+          </span>
+          {headerActions && (
+            <div className="flex shrink-0 items-center gap-2">{headerActions}</div>
+          )}
+        </div>
+        <h1 className="font-display text-h1 text-text-primary mt-3 font-medium">{job.title}</h1>
+      </header>
+
+      {/* Two-column body: primary content + right-rail metadata card */}
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-        <div className="min-w-0 flex-1">
-          {/* Header */}
-          <PageHeader
-            title={
-              <span className="flex items-center gap-2">
-                <span className="text-text-primary font-mono text-base tabular-nums">{job.id}</span>
-                <StatusBadge status={job.status as 'pending'} />
-              </span>
-            }
-            meta={
-              <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                <span>{job.agent_name}</span>
-                <span>·</span>
-                <IdBadge id={job.task_id} kind="task" to={`/orgs/${slug}/tasks/${job.task_id}`} />
-                <span>·</span>
-                <span>{relativeAge(job.created_at)}</span>
-              </span>
-            }
-          />
-
-          {/* Title */}
-          <h2 className="text-text-primary font-display mt-4 text-base font-semibold">{job.title}</h2>
-
+        <div className="min-w-0 flex-1 space-y-5">
           {/* Rationale */}
           {job.rationale && (
-            <section className="mt-5">
-              <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-                Rationale
-              </h3>
-              <p className="text-text-primary text-sm whitespace-pre-wrap">{job.rationale}</p>
-            </section>
+            <p className="text-text-primary text-sm leading-relaxed whitespace-pre-wrap">
+              {job.rationale}
+            </p>
           )}
 
           {/* Verbatim command */}
-          <div className="mt-5">
-            <ScriptBlock job={job} />
+          <div>
+            <Eyebrow>Verbatim command · runs exactly this</Eyebrow>
+            <div className="mt-3">
+              <ScriptBlock job={job} />
+            </div>
+            <p className="text-text-muted mt-2.5 text-xs leading-relaxed">
+              No diff is stored — what you approve is the exact command above. Its
+              effect is the downstream cascade below.
+            </p>
           </div>
 
           {/* Rejection reason */}
           {job.status === 'rejected' && job.reject_reason && (
-            <section className="mt-5">
-              <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-                Rejection reason
-              </h3>
-              <p className="text-text-primary text-sm whitespace-pre-wrap">{job.reject_reason}</p>
+            <section>
+              <Eyebrow>Rejection reason</Eyebrow>
+              <p className="text-text-primary mt-2 text-sm whitespace-pre-wrap">{job.reject_reason}</p>
             </section>
           )}
 
           {/* Failure reason */}
           {job.status === 'failed' && job.reason && (
-            <section className="mt-5">
-              <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-                Failure reason
-              </h3>
-              <p className="text-text-primary font-mono text-sm">{job.reason}</p>
+            <section>
+              <Eyebrow>Failure reason</Eyebrow>
+              <p className="text-text-primary mt-2 font-mono text-sm">{job.reason}</p>
             </section>
           )}
 
           {/* "If approved" cascade — always visible for pending jobs */}
           {job.status === 'pending' && slug && (
-            <div className="mt-5">
-              <IfApprovedCascade slug={slug} jobId={jobId ?? ''} />
-            </div>
+            <IfApprovedCascade slug={slug} jobId={jobId ?? ''} />
           )}
 
-          {/* ── Actions ── */}
-          {/* Gated (review_required) pending job → chip with Approve + Reject */}
+          {/* Gated (review_required) pending job → explanation card; the
+              Approve/Reject controls live in the header above. */}
           {job.status === 'pending' && job.review_required && showTwoStep === null && (
-            <GatedChip
-              onApprove={() => setShowTwoStep('run')}
-              onReject={() => setOpenDialog('reject')}
-            />
-          )}
-
-          {/* Pending, non-gated → uniform two-step confirm */}
-          {job.status === 'pending' && !job.review_required && showTwoStep === null && (
-            <div className="mt-4 flex gap-3">
-              <Button onClick={() => setShowTwoStep('run')}>Run</Button>
-              <Button variant="secondary" onClick={() => setOpenDialog('reject')}>
-                Reject
-              </Button>
-            </div>
+            <GatedNotice />
           )}
 
           {/* Two-step confirm for run (used by both gated and non-gated paths) */}
@@ -501,28 +519,13 @@ export function JobDetailPage(): JSX.Element {
             />
           )}
 
-          {/* Running job: Stop button */}
-          {job.status === 'running' && (
-            <div className="mt-4 flex flex-col gap-2">
-              <div className="flex gap-3">
-                <Button
-                  variant="destructive"
-                  onClick={onStop}
-                  disabled={stop.isPending}
-                >
-                  {stop.isPending ? 'Stopping…' : 'Stop'}
-                </Button>
-              </div>
-              {actionError && (
-                <p className="text-feedback-danger text-sm">{actionError}</p>
-              )}
-            </div>
+          {/* Running job: stop error feedback (Stop button is in the header) */}
+          {job.status === 'running' && actionError && (
+            <p className="text-feedback-danger text-sm">{actionError}</p>
           )}
 
           {/* Output panel */}
-          <div className="mt-5">
-            <OutputPanel job={job} slug={slug ?? ''} />
-          </div>
+          <OutputPanel job={job} slug={slug ?? ''} />
         </div>
 
         {/* Right-rail metadata card */}
