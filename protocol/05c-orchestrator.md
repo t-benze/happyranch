@@ -130,7 +130,7 @@ There are four types of permission blocks, each handled differently:
 **Example**: CX Manager tries to approve a $200 refund (above $150 limit). Ops Manager wants to agree to a 6-month partner contract (above 3-month limit).
 **Response**: Agent calls `escalate(category="budget", severity="medium", summary="Refund of $200 requested by tourist for cancelled tour. Exceeds my $150 authority.")`.
 **Task state**: Moves to `waiting_for_approval`. The agent completes all other work on the task and submits a completion report with the pending approval clearly noted.
-**Orchestrator action**: Routes the escalation per the 12 rules in `04-escalation-rules.md`. Creates a founder notification with the agent's summary and recommendation. Holds the specific blocked step (not the entire Team).
+**Orchestrator action**: Routes the escalation per the 12 rules in `04-escalation-rules.md`. Creates a founder notification with the agent's summary and recommendation. Holds the specific blocked step (not the entire Team). non-root tasks do not escalate directly to the founder.
 **Resolution**: Founder approves or denies via the dashboard. Orchestrator resumes the task with the decision injected into context.
 
 #### Type 3: Needs another agent's work
@@ -182,7 +182,7 @@ cascade-failed. Instead:
    subtasks in this delegation slot), the parent transitions to
    `blocked(ESCALATED)` via `db.try_escalate()`, carrying the last failure
    reason. The parent does NOT cascade-fail — the founder can resolve the
-   escalation per existing routes.
+   escalation per existing routes. non-root tasks never escalate directly — they fail and hand back to their parent; only the (root) parent escalates on exhaustion.
 
 4. **Chain-leg failure.** When a workflow chain leg fails (subtask is FAILED, not
    COMPLETED), the chain does NOT cascade-fail the parent. Instead, the
@@ -216,7 +216,7 @@ re-entry — no loops inside `run_step`.
 
 Budget: each `run_step` call increments `orchestration_step_count` persisted
 on the task. When the count exceeds `max_orchestration_steps` the task parks
-in `blocked(escalated)` for founder review.
+in `blocked(escalated)` for founder review (root tasks only; a non-root over-budget task fails and hands back to its parent).
 
 ### Timeout handling
 
