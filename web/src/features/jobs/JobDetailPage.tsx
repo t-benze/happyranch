@@ -24,7 +24,7 @@
  * Key behaviours:
  * - Verbatim command in monospace
  * - "If approved" cascade lists real tasks blocked on this job (DERIVE)
- * - Uniform two-step confirm for approve/run (NO danger tiers)
+ * - Single popup confirm for approve/run (one button → RunJobDialog → execute)
  * - Gated (review_required) chip routes to EXISTING approve/reject flow
  * - Calm/empty/loading/error states with retry
  */
@@ -35,7 +35,7 @@ import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { Button } from '@/design-system/primitives/Button';
-import { useJob, useRunJob, useStopJob } from '@/hooks/jobs';
+import { useJob, useStopJob } from '@/hooks/jobs';
 // eslint-disable-next-line no-restricted-imports -- need blocked_on_job_id filter not exposed via hooks; THR-011 option 3
 import { listTasks } from '@/lib/api/tasks';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -262,68 +262,10 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
   );
 }
 
-/** Uniform two-step confirm for approve/run — no danger tiers. */
-function TwoStepConfirm({
-  action,
-  onConfirm,
-  onCancel,
-  isPending,
-}: {
-  action: 'approve' | 'run';
-  onConfirm: () => void;
-  onCancel: () => void;
-  isPending: boolean;
-}): JSX.Element {
-  const [step, setStep] = useState<1 | 2>(1);
-
-  return (
-    <div className="border-border-default bg-surface-raised shadow-pasture-sm mt-4 rounded-lg border p-4">
-      {step === 1 ? (
-        <div className="flex items-center gap-3">
-          <p className="text-text-primary text-sm">
-            {action === 'approve'
-              ? 'Approve this job to allow the blocked tasks to proceed.'
-              : 'Run this script. It will execute immediately in the agent workspace.'}
-          </p>
-          <div className="flex shrink-0 gap-2">
-            <Button variant="ghost" size="sm" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button size="sm" onClick={() => setStep(2)}>
-              {action === 'approve' ? 'Approve…' : 'Run…'}
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <p className="text-attention-text text-sm font-medium">
-            Confirm: are you sure you want to {action} this job?
-          </p>
-          <div className="flex gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setStep(1)}>
-              Back
-            </Button>
-            <Button
-              size="sm"
-              onClick={onConfirm}
-              disabled={isPending}
-            >
-              {isPending ? 'Running…' : `Confirm ${action}`}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={onCancel}>
-              Cancel
-            </Button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** Gated explanation card: a review_required job is approved/rejected from the
  *  top-right action buttons. Copy aligned to the Direction-A approve-card; the
- *  Approve/Reject controls live in the header and route to the EXISTING
- *  two-step run confirm + RejectJobDialog. */
+ *  Approve & run / Reject controls live in the header and route to the EXISTING
+ *  single RunJobDialog confirm + RejectJobDialog. */
 function GatedNotice(): JSX.Element {
   return (
     <div className="bg-attention-soft mt-5 rounded-xl p-4">
@@ -334,10 +276,10 @@ function GatedNotice(): JSX.Element {
         </span>
       </div>
       <p className="text-attention-text text-sm font-semibold">
-        This action is gated — confirm from the buttons above.
+        This action is gated — use “Approve &amp; run” above.
       </p>
       <p className="text-attention-text/85 mt-1 text-xs leading-relaxed">
-        Every gated action uses the same two-step confirm — no risk tiers. The
+        One confirm shows the exact command before it runs — no risk tiers. The
         assistant can propose this; only you approve it.
       </p>
     </div>
@@ -352,10 +294,8 @@ export function JobDetailPage(): JSX.Element {
   const { slug, job_id: jobId } = useParams<{ slug: string; job_id: string }>();
   const query = useJob(jobId);
   const qc = useQueryClient();
-  const run = useRunJob();
   const stop = useStopJob();
   const [openDialog, setOpenDialog] = useState<OpenDialog>(null);
-  const [showTwoStep, setShowTwoStep] = useState<'run' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const job = query.data;
@@ -406,8 +346,10 @@ export function JobDetailPage(): JSX.Element {
   }
 
   // ── Header actions — top-right per Direction-A. Relabel + relayout only;
-  // every handler is the EXISTING approve/reject/run/stop wiring. Hidden while
-  // the two-step confirm card is open (it carries its own controls). ──
+  // every handler is the EXISTING approve/reject/run/stop wiring. The primary
+  // pending action opens the single RunJobDialog confirm directly (one button →
+  // one popup → execute); for a review_required job the founder /run IS the
+  // approve+run, so the label reads "Approve & run". ──
   let headerActions: ReactNode = null;
   if (job.status === 'running') {
     headerActions = (
@@ -415,14 +357,14 @@ export function JobDetailPage(): JSX.Element {
         {stop.isPending ? 'Stopping…' : 'Stop'}
       </Button>
     );
-  } else if (job.status === 'pending' && showTwoStep === null) {
+  } else if (job.status === 'pending') {
     headerActions = (
       <>
         <Button variant="secondary" size="sm" onClick={() => setOpenDialog('reject')}>
           Reject
         </Button>
-        <Button size="sm" onClick={() => setShowTwoStep('run')}>
-          {job.review_required ? 'Approve job' : 'Run'}
+        <Button size="sm" onClick={() => setOpenDialog('run')}>
+          {job.review_required ? 'Approve & run' : 'Run'}
         </Button>
       </>
     );
@@ -506,22 +448,9 @@ export function JobDetailPage(): JSX.Element {
             )}
 
             {/* Gated (review_required) pending job → explanation card; the
-                Approve/Reject controls live in the header above. */}
-            {job.status === 'pending' && job.review_required && showTwoStep === null && (
+                Approve & run / Reject controls live in the header above. */}
+            {job.status === 'pending' && job.review_required && (
               <GatedNotice />
-            )}
-
-            {/* Two-step confirm for run (used by both gated and non-gated paths) */}
-            {job.status === 'pending' && showTwoStep === 'run' && (
-              <TwoStepConfirm
-                action="run"
-                onConfirm={() => {
-                  setShowTwoStep(null);
-                  setOpenDialog('run');
-                }}
-                onCancel={() => setShowTwoStep(null)}
-                isPending={run.isPending}
-              />
             )}
 
             {/* Running job: stop error feedback (Stop button is in the header) */}
