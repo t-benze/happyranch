@@ -429,124 +429,130 @@ export function JobDetailPage(): JSX.Element {
   }
 
   // ── Normal render ──
+  // Outer scroll container — the shared AppShell <main> is `overflow-hidden`
+  // and delegates scrolling to each page, so a long brief clips (and the
+  // two-step confirm control becomes unreachable) without this wrapper.
+  // Mirrors TaskDetailPage and every other full page.
   return (
-    <div className="mx-auto max-w-5xl px-4 py-6">
-      {/* Breadcrumb: contextual back-link to spawning task (honesty fence — no
-          originating-thread field, so we back to the task, not a thread). */}
-      <nav className="mb-4">
-        <Link
-          to={`/orgs/${slug}/tasks/${job.task_id}`}
-          className="text-text-muted hover:text-text-primary text-xs transition-colors"
-        >
-          ← Back to {job.task_id}
-        </Link>
-      </nav>
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-5xl px-4 py-6">
+        {/* Breadcrumb: contextual back-link to spawning task (honesty fence — no
+            originating-thread field, so we back to the task, not a thread). */}
+        <nav className="mb-4">
+          <Link
+            to={`/orgs/${slug}/tasks/${job.task_id}`}
+            className="text-text-muted hover:text-text-primary text-xs transition-colors"
+          >
+            ← Back to {job.task_id}
+          </Link>
+        </nav>
 
-      {/* Header — JOB id + status eyebrow row with actions top-right, then the
-          serif job-TITLE headline (Direction-A). */}
-      <header className="mb-6">
-        <div className="flex items-start justify-between gap-3">
-          <span className="flex items-center gap-2">
-            <span className="text-text-primary font-mono text-sm tabular-nums">{job.id}</span>
-            <StatusBadge status={job.status as 'pending'} />
-          </span>
-          {headerActions && (
-            <div className="flex shrink-0 items-center gap-2">{headerActions}</div>
-          )}
-        </div>
-        <h1 className="font-display text-h1 text-text-primary mt-3 font-medium">{job.title}</h1>
-      </header>
+        {/* Header — JOB id + status eyebrow row with actions top-right, then the
+            serif job-TITLE headline (Direction-A). */}
+        <header className="mb-6">
+          <div className="flex items-start justify-between gap-3">
+            <span className="flex items-center gap-2">
+              <span className="text-text-primary font-mono text-sm tabular-nums">{job.id}</span>
+              <StatusBadge status={job.status as 'pending'} />
+            </span>
+            {headerActions && (
+              <div className="flex shrink-0 items-center gap-2">{headerActions}</div>
+            )}
+          </div>
+          <h1 className="font-display text-h1 text-text-primary mt-3 font-medium">{job.title}</h1>
+        </header>
 
-      {/* Two-column body: primary content + right-rail metadata card */}
-      <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-        <div className="min-w-0 flex-1 space-y-5">
-          {/* Rationale */}
-          {job.rationale && (
-            <p className="text-text-primary text-sm leading-relaxed whitespace-pre-wrap">
-              {job.rationale}
-            </p>
-          )}
+        {/* Two-column body: primary content + right-rail metadata card */}
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+          <div className="min-w-0 flex-1 space-y-5">
+            {/* Rationale */}
+            {job.rationale && (
+              <p className="text-text-primary text-sm leading-relaxed whitespace-pre-wrap">
+                {job.rationale}
+              </p>
+            )}
 
-          {/* Verbatim command */}
-          <div>
-            <Eyebrow>Verbatim command · runs exactly this</Eyebrow>
-            <div className="mt-3">
-              <ScriptBlock job={job} />
+            {/* Verbatim command */}
+            <div>
+              <Eyebrow>Verbatim command · runs exactly this</Eyebrow>
+              <div className="mt-3">
+                <ScriptBlock job={job} />
+              </div>
+              <p className="text-text-muted mt-2.5 text-xs leading-relaxed">
+                No diff is stored — what you approve is the exact command above. Its
+                effect is the downstream cascade below.
+              </p>
             </div>
-            <p className="text-text-muted mt-2.5 text-xs leading-relaxed">
-              No diff is stored — what you approve is the exact command above. Its
-              effect is the downstream cascade below.
-            </p>
+
+            {/* Rejection reason */}
+            {job.status === 'rejected' && job.reject_reason && (
+              <section>
+                <Eyebrow>Rejection reason</Eyebrow>
+                <p className="text-text-primary mt-2 text-sm whitespace-pre-wrap">{job.reject_reason}</p>
+              </section>
+            )}
+
+            {/* Failure reason */}
+            {job.status === 'failed' && job.reason && (
+              <section>
+                <Eyebrow>Failure reason</Eyebrow>
+                <p className="text-text-primary mt-2 font-mono text-sm">{job.reason}</p>
+              </section>
+            )}
+
+            {/* "If approved" cascade — always visible for pending jobs */}
+            {job.status === 'pending' && slug && (
+              <IfApprovedCascade slug={slug} jobId={jobId ?? ''} />
+            )}
+
+            {/* Gated (review_required) pending job → explanation card; the
+                Approve/Reject controls live in the header above. */}
+            {job.status === 'pending' && job.review_required && showTwoStep === null && (
+              <GatedNotice />
+            )}
+
+            {/* Two-step confirm for run (used by both gated and non-gated paths) */}
+            {job.status === 'pending' && showTwoStep === 'run' && (
+              <TwoStepConfirm
+                action="run"
+                onConfirm={() => {
+                  setShowTwoStep(null);
+                  setOpenDialog('run');
+                }}
+                onCancel={() => setShowTwoStep(null)}
+                isPending={run.isPending}
+              />
+            )}
+
+            {/* Running job: stop error feedback (Stop button is in the header) */}
+            {job.status === 'running' && actionError && (
+              <p className="text-feedback-danger text-sm">{actionError}</p>
+            )}
+
+            {/* Output panel */}
+            <OutputPanel job={job} slug={slug ?? ''} />
           </div>
 
-          {/* Rejection reason */}
-          {job.status === 'rejected' && job.reject_reason && (
-            <section>
-              <Eyebrow>Rejection reason</Eyebrow>
-              <p className="text-text-primary mt-2 text-sm whitespace-pre-wrap">{job.reject_reason}</p>
-            </section>
-          )}
-
-          {/* Failure reason */}
-          {job.status === 'failed' && job.reason && (
-            <section>
-              <Eyebrow>Failure reason</Eyebrow>
-              <p className="text-text-primary mt-2 font-mono text-sm">{job.reason}</p>
-            </section>
-          )}
-
-          {/* "If approved" cascade — always visible for pending jobs */}
-          {job.status === 'pending' && slug && (
-            <IfApprovedCascade slug={slug} jobId={jobId ?? ''} />
-          )}
-
-          {/* Gated (review_required) pending job → explanation card; the
-              Approve/Reject controls live in the header above. */}
-          {job.status === 'pending' && job.review_required && showTwoStep === null && (
-            <GatedNotice />
-          )}
-
-          {/* Two-step confirm for run (used by both gated and non-gated paths) */}
-          {job.status === 'pending' && showTwoStep === 'run' && (
-            <TwoStepConfirm
-              action="run"
-              onConfirm={() => {
-                setShowTwoStep(null);
-                setOpenDialog('run');
-              }}
-              onCancel={() => setShowTwoStep(null)}
-              isPending={run.isPending}
-            />
-          )}
-
-          {/* Running job: stop error feedback (Stop button is in the header) */}
-          {job.status === 'running' && actionError && (
-            <p className="text-feedback-danger text-sm">{actionError}</p>
-          )}
-
-          {/* Output panel */}
-          <OutputPanel job={job} slug={slug ?? ''} />
+          {/* Right-rail metadata card */}
+          <PropertyRail job={job} slug={slug} />
         </div>
 
-        {/* Right-rail metadata card */}
-        <PropertyRail job={job} slug={slug} />
+        {/* ── Dialogs ── */}
+        {openDialog === 'reject' && (
+          <RejectJobDialog
+            jobId={jobId ?? ''}
+            open
+            onClose={() => setOpenDialog(null)}
+          />
+        )}
+        {openDialog === 'run' && (
+          <RunJobDialog
+            job={job}
+            open
+            onClose={() => setOpenDialog(null)}
+          />
+        )}
       </div>
-
-      {/* ── Dialogs ── */}
-      {openDialog === 'reject' && (
-        <RejectJobDialog
-          jobId={jobId ?? ''}
-          open
-          onClose={() => setOpenDialog(null)}
-        />
-      )}
-      {openDialog === 'run' && (
-        <RunJobDialog
-          job={job}
-          open
-          onClose={() => setOpenDialog(null)}
-        />
-      )}
     </div>
   );
 }
