@@ -859,6 +859,8 @@ to **§A**.
 
 ### 4.13 Jobs — NO standalone surface (retired); RENDER-ONLY job *detail* + 1 DERIVE
 
+> **SUPERSEDED 2026-06-26 by founder ruling (THR-030 seq 91, TASK-907): the standalone Jobs surface is reinstated as the approval queue.**
+
 - **RULED — Q6.** The standalone **Jobs tab is retired** **[prototype nav-verified:
   no Jobs nav item]**. Jobs are: **rolled up on Home** (awaiting-you; §4.1),
   **historical in Audit** (§4.12), **reachable contextually** from the spawning
