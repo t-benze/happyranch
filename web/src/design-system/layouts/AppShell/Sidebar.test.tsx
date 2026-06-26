@@ -409,18 +409,21 @@ describe('Operate surfaces', () => {
   });
 });
 
-describe('/jobs is still reachable (not retired in Phase 1b)', () => {
-  test('navigating to /jobs renders the jobs page', async () => {
+describe('/jobs renders the reinstated approval-queue surface (TASK-907)', () => {
+  test('navigating to /jobs renders the approval-queue list', async () => {
     seedSidebarShell();
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/jobs`, () =>
-        HttpResponse.json({ jobs: [], total: 0 }),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [] }),
       ),
     );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/jobs` });
     await waitFor(() => {
-      // JobsPage renders contextual guidance (PRD §4.13 — no standalone index)
-      expect(screen.getByText(/Jobs are reachable contextually/)).toBeInTheDocument();
+      // Reinstated per founder ruling (THR-030 seq 91): the standalone Jobs
+      // surface is the approval queue. Empty queue → calm "nothing waiting".
+      expect(
+        screen.getByText(/Queue clear · nothing waiting on you/),
+      ).toBeInTheDocument();
     });
   });
 });

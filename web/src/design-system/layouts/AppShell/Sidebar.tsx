@@ -11,6 +11,7 @@ import {
   ScrollText,
   Settings,
   Sparkles,
+  Terminal,
   Users,
   Wallet,
   Home as HomeIcon,
@@ -29,6 +30,7 @@ import {
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
 import { useAgentsRoutes } from '@/hooks/agents';
 import { useDashboardSummary } from '@/hooks/dashboard';
+import { useJobsList } from '@/hooks/jobs';
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
 import { useTasksRoutes } from '@/hooks/tasks';
@@ -44,13 +46,14 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
  *    org switcher — restyled from the native footer `<select>` (BUG-01/08).
  *  - Primary group: Home, Threads, Tasks, Agents, Knowledge, Artifacts — each
  *    with a leading icon (BUG-03).
- *  - Operate group: Spend, Dreams, Schedule, Audit.
+ *  - Operate group: Spend, Dreams, Schedule, Audit, Jobs.
  *  - Footer: Settings as a labeled row above the account row (BUG-02), then an
  *    avatar + identity account row (BUG-07).
  *
  * Global search and the theme toggle moved to the AppBar (BUG-04/05/06).
  *
- * Jobs is NOT in the sidebar (still reachable via /jobs URL — retirement is P2).
+ * Jobs is reinstated as the approval queue per founder ruling (THR-030 seq 91,
+ * TASK-907), with a pending-count badge sourced from the real jobs list.
  */
 
 const ADD_ORG_VALUE = '__add_org__';
@@ -88,6 +91,12 @@ export function Sidebar(): JSX.Element {
   const summary = useDashboardSummary().data;
   const orgAgeDays = summary?.org_age_days;
   const counts = summary?.narrative_counts;
+
+  // Jobs nav badge = count of pending (founder-blocking) jobs. Sourced from the
+  // existing jobs list endpoint (GET /jobs/?status=pending); the hook self-gates
+  // on the active org slug, so non-org routes issue no fetch. narrative_counts
+  // carries no jobs field, so this is the honest source for the pending count.
+  const pendingJobsCount = useJobsList({ status: 'pending', limit: 200 }).data?.jobs.length;
 
   // Global jump chords — reused from TopBar verbatim
   useGlobalJump('d', () => {
@@ -248,6 +257,13 @@ export function Sidebar(): JSX.Element {
             badge={positiveCount(counts?.escalated_open)}
           >
             Audit
+          </SidebarNavItem>
+          <SidebarNavItem
+            {...sidebarLink('jobs', true)}
+            icon={Terminal}
+            badge={positiveCount(pendingJobsCount)}
+          >
+            Jobs
           </SidebarNavItem>
         </nav>
       </div>

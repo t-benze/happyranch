@@ -49,21 +49,147 @@ const JOB: JobRecord = {
 };
 
 // ---------------------------------------------------------------------------
-// JobsPage — index placeholder (Q6 retirement)
+// JobsPage — approval-queue LIST surface (TASK-907 reinstatement)
 // ---------------------------------------------------------------------------
 
-describe('JobsPage — index placeholder', () => {
-  test('renders contextual guidance instead of a standalone job list', async () => {
+function makeJob(overrides: Partial<JobRecord>): JobRecord {
+  return { ...JOB, ...overrides };
+}
+
+// A spread across all five JobStatus values; exactly one pending.
+const LIST_JOBS: JobRecord[] = [
+  makeJob({
+    id: 'JOB-0005',
+    status: 'pending',
+    review_required: true,
+    script_text: 'gh release create v0.41 --notes-file RELEASE_NOTES.md ./dist/*',
+    agent_name: 'senior_dev',
+    task_id: 'TASK-0548',
+    cwd_resolved: '/srv/grassland',
+  }),
+  makeJob({
+    id: 'JOB-0002',
+    status: 'running',
+    review_required: true,
+    script_text: 'data-pipeline upload-photos --type guides --target oss',
+    started_at: '2026-06-26T12:00:00Z',
+  }),
+  makeJob({
+    id: 'JOB-0001',
+    status: 'completed',
+    review_required: false,
+    exit_code: 0,
+    script_text: 'data-pipeline publish --stack local --type guides --all',
+  }),
+  makeJob({
+    id: 'JOB-0009',
+    status: 'failed',
+    review_required: true,
+    script_text: 'npm run build',
+  }),
+  makeJob({
+    id: 'JOB-0000',
+    status: 'rejected',
+    review_required: true,
+    script_text: "psql $DATABASE_URL -c 'TRUNCATE guides CASCADE;'",
+  }),
+];
+
+/** Stub GET /jobs/ — branches on the `status` query param (list asks for
+ *  status=all; the Sidebar badge asks for status=pending). */
+function stubJobsList(jobs: JobRecord[] = LIST_JOBS) {
+  server.use(
+    http.get('/api/v1/orgs', () =>
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/jobs/`, ({ request }) => {
+      const status = new URL(request.url).searchParams.get('status');
+      const out =
+        status && status !== 'all'
+          ? jobs.filter((j) => j.status === status)
+          : jobs;
+      return HttpResponse.json({ jobs: out });
+    }),
+  );
+}
+
+describe('JobsPage — approval-queue list', () => {
+  test('renders command heroes, status pills, and the "waiting on you" header', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobsList();
     mountAt(`/orgs/${SLUG}/jobs`);
-    // The AppBar page name and the page body both say "Jobs", so wait on the
-    // unique contextual-guidance copy to confirm the page rendered.
+
+    // Verbatim command is the hero of the row.
     await waitFor(() =>
-      expect(screen.getByText(/Jobs are reachable contextually/)).toBeInTheDocument(),
+      expect(
+        screen.getByText('data-pipeline publish --stack local --type guides --all'),
+      ).toBeInTheDocument(),
     );
-    // Should mention Audit and Dashboard as the surfaces where jobs live
-    // (getAllByText: sidebar also contains "Audit")
-    expect(screen.getByText(/Jobs are reachable contextually/)).toBeInTheDocument();
+
+    // N waiting on you = pending count (exactly one pending in the fixture).
+    expect(screen.getByText(/1 waiting on you/)).toBeInTheDocument();
+
+    // Status pills render for non-pending statuses StatusBadge can't express.
+    // (`running` pill is distinct from the `running…` static state; `rejected`
+    // appears as both the pill and the right-side static label, hence getAll.)
+    expect(screen.getByText('running')).toBeInTheDocument();
+    expect(screen.getAllByText('rejected').length).toBeGreaterThanOrEqual(1);
+    // Completed row shows its real exit code.
+    expect(screen.getByText('exit 0')).toBeInTheDocument();
+  });
+
+  test('status filter narrows the list to the chosen lifecycle state', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobsList();
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/jobs`);
+
+    await waitFor(() =>
+      expect(screen.getByText('npm run build')).toBeInTheDocument(),
+    );
+
+    // Click the "Completed" status filter → only the completed command remains.
+    await user.click(screen.getByRole('button', { name: /Completed/ }));
+
+    await waitFor(() =>
+      expect(screen.queryByText('npm run build')).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText('data-pipeline publish --stack local --type guides --all'),
+    ).toBeInTheDocument();
+  });
+
+  test('a job card links to the existing detail route', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobsList();
+    mountAt(`/orgs/${SLUG}/jobs`);
+
+    const link = await screen.findByRole('link', {
+      name: /data-pipeline publish --stack local --type guides --all/,
+    });
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/jobs/JOB-0001`);
+  });
+
+  test('shows the queue-clear state when nothing is pending', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobsList(LIST_JOBS.filter((j) => j.status !== 'pending'));
+    mountAt(`/orgs/${SLUG}/jobs`);
+
+    await waitFor(() =>
+      expect(screen.getByText(/Queue clear · nothing waiting on you/)).toBeInTheDocument(),
+    );
+  });
+
+  test('Sidebar Jobs nav item shows a pending-count badge', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobsList();
+    mountAt(`/orgs/${SLUG}/jobs`);
+
+    const jobsNav = await screen.findByRole('link', { name: 'Jobs' });
+    // Badge value = pending count (1) sourced from GET /jobs/?status=pending.
+    await waitFor(() =>
+      expect(within(jobsNav).getByText('1')).toBeInTheDocument(),
+    );
   });
 });
 
