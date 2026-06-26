@@ -9,7 +9,7 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 ### Orchestration core
 
 - **Orchestrator & task state machine.** The daemon-side loop that advances each task one step at a time, drives manager-decision turns, spawns children, and records terminal state. Spec `docs/superpowers/specs/2026-04-14-orchestrator-daemon-design.md`; current contract `docs/agent-guides/orchestrator-contracts.md`; impl `runtime/orchestrator/run_step.py`, `runtime/orchestrator/orchestrator.py`.
-- **Task-owner decision loop & completion contract.** Task owners (task_type='task') end every turn with a `decision` (`delegate`/`done`/`escalate`); subtask agents report a plain completion. Contract `protocol/00-completion-contract.md`; guide `docs/agent-guides/orchestrator-contracts.md`; impl in `runtime/orchestrator/run_step.py`.
+- **Task-owner decision loop & completion contract.** Task owners (task_type='task') end every turn with a `decision` (`delegate`/`done`/`escalate`); subtask agents report a plain completion. **Only root tasks (`parent_task_id is None`) escalate to the founder; a non-root task that would escalate (via `decision:escalate` or by exceeding the step budget) instead fails and hands back to its parent, and bounded failure-recovery carries it up (THR-033 Change A).** Contract `protocol/00-completion-contract.md`; guide `docs/agent-guides/orchestrator-contracts.md`; impl in `runtime/orchestrator/run_step.py`.
 - **Inline delegation chains.** A task owner can declare a multi-leg subtask chain inline via `then: [...]`; the orchestrator auto-advances routine legs on matching verdict without consuming orchestration steps. Spec `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md` (current); impl `runtime/orchestrator/chain.py`.
 - **Task status model.** The canonical task status vocabulary and transition rules (`in_progress`, `blocked`, `completed`, `failed`, etc.). Spec `docs/superpowers/specs/2026-04-19-task-status-redesign.md`; current vocabulary `docs/agent-guides/orchestrator-contracts.md`.
 - **Subtask / composite tasks.** Subtask agents spawn bounded subtasks under a parent task, for decomposing a single delegation into iterative steps. Spec `docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md`; impl in `runtime/orchestrator/run_step.py`.
@@ -142,7 +142,10 @@ Contract (founder-approved in THR-028):
    subtasks in this delegation slot), the parent transitions to
    `blocked(ESCALATED)` via `db.try_escalate()`, carrying the last failure
    reason. The parent does NOT cascade-fail — the founder can resolve the
-   escalation per existing routes.
+   escalation per existing routes. **The exhausting parent always has children,
+   so it is always a root; only a root escalates to the founder. The
+   `is_root(parent)` guard makes this explicit — were the parent itself a
+   non-root it would fail and route upward instead (THR-033 Change A).**
 
 4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
    COMPLETED) clears the active chain and hands the parent back to its

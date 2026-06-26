@@ -147,7 +147,7 @@ See `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.
 
 **Self-delegation (self-decomposition):** A non-manager owner may `delegate` only to **itself** — spawning the next sub-task in a sequence it owns and orchestrates, getting woken on each child terminal. Team managers may delegate to own-team agents or to themselves. Any attempt by a non-manager to delegate to a different agent is rejected with feedback; the task re-runs so the owner can revise its decision.
 
-**Escalation:** Routes to the founder unchanged (any agent role, any task type).
+**Escalation:** Only a **root** task (`task_type='task'`, no parent) escalates to the founder. A non-root subtask that would escalate instead **fails** and hands back to its parent; bounded failure-recovery (TASK-573) carries it up, and the root escalates if it cannot resolve.
 
 See `docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md` for the design rationale.
 

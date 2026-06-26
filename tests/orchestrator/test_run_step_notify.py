@@ -24,6 +24,7 @@ def test_max_steps_path_calls_notify_escalated():
     task = MagicMock(
         id="TASK-1", status=TaskStatus.PENDING, block_kind=None,
         cancelled_at=None, orchestration_step_count=1,
+        parent_task_id=None,  # root — only roots escalate over budget (THR-033 A)
     )
     fake._db.get_task.return_value = task
     run_step_mod.run_step_impl(fake, "TASK-1")

@@ -810,6 +810,34 @@ def test_resolve_escalation_approve_resumes_task(client_with_runtime):
     assert daemon.queue._queue.get_nowait() == ("alpha", "T-1", None)
 
 
+def test_resolve_escalation_approve_target_is_root(client_with_runtime):
+    """THR-033 Change A: escalation is root-only (run_step's three escalation
+    sites all gate on is_root; non-roots fail and route to their parent). So a
+    resolve-escalation approve ALWAYS lands on a root, where re-enqueue →
+    fresh decision step (re-author) is the correct disposition. Locks the
+    invariant that the approve target is structurally a root."""
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-ROOT", brief="x"))
+    state.db.update_task("T-ROOT", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.ESCALATED, note="halted")
+    # Precondition: an escalated task is structurally a root.
+    assert state.db.get_task("T-ROOT").parent_task_id is None
+    daemon = client.app.state.daemon
+    while not daemon.queue._queue.empty():
+        daemon.queue._queue.get_nowait()
+
+    r = client.post(
+        "/api/v1/orgs/alpha/tasks/T-ROOT/resolve-escalation",
+        json={"decision": "approve", "rationale": "ok"},
+    )
+    assert r.status_code == 200
+    t = state.db.get_task("T-ROOT")
+    assert t.status == TaskStatus.PENDING
+    assert t.parent_task_id is None  # approve target stays a root
+    assert daemon.queue._queue.get_nowait() == ("alpha", "T-ROOT", None)
+
+
 def test_resolve_escalation_reject_transitions_to_failed(client_with_runtime):
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime

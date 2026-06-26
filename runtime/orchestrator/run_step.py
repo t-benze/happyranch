@@ -21,6 +21,7 @@ from runtime.orchestrator.executors import is_rate_limit_signature
 from runtime.orchestrator.org_config import load_org_config
 
 if TYPE_CHECKING:
+    from runtime.models import TaskRecord
     from runtime.orchestrator.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,17 @@ logger = logging.getLogger(__name__)
 TERMINAL_STATES = frozenset({
     TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
 })
+
+
+def is_root(task: "TaskRecord") -> bool:
+    """Canonical structural root test (THR-033 Change A): a task with no parent.
+
+    Per the subtask/composite-task model this is equivalent to
+    ``task_type == "task"``, but ``parent_task_id`` is the direct fact the
+    escalation/walk code keys on. Only root tasks escalate to the founder; a
+    non-root task that would escalate instead fails and hands back to its parent.
+    """
+    return task.parent_task_id is None
 
 
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
@@ -89,6 +101,31 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     next_count = task.orchestration_step_count + 1
     if next_count > max_steps:
         reason = f"max steps ({max_steps}) exceeded"
+        if not is_root(task):
+            # THR-033 Change A: a NON-root task that hits the step budget must
+            # NOT escalate directly to the founder — it fails and hands back to
+            # its parent (bounded failure-recovery carries it up). The CAS is
+            # required for the same dup-delivery reason as the root path below:
+            # this guard runs BEFORE try_claim_for_step, so it has no upstream
+            # CAS. Only the first delivery wins and proceeds to wake the parent
+            # + post the followup exactly once.
+            if not db.try_fail_over_budget(
+                task_id,
+                expected_status=task.status,
+                expected_block_kind=task.block_kind,
+                note=reason,
+            ):
+                logger.debug(
+                    "run_step %s: lost over-budget fail race, dropping", task_id,
+                )
+                return
+            _enqueue_parent_if_waiting(orch, task_id)
+            _maybe_post_thread_followup(
+                orch, task_id,
+                status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            )
+            return
+        # Root: park in blocked(ESCALATED) for the founder (unchanged).
         # Atomic CAS on the eligible pre-state read at step 1. This guard runs
         # BEFORE try_claim_for_step, so without it two duplicate deliveries of
         # the same stale at-cap row would both escalate and double-post the
@@ -319,12 +356,29 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     if decision.action == "escalate":
+        reason = decision.reason or "Escalated"
+        if not is_root(task):
+            # THR-033 Change A defensive guard: a non-root task never escalates
+            # directly to the founder — it fails and hands back to its parent
+            # (bounded failure-recovery carries it up). Currently inert (only a
+            # task_type='task' parses a decision, and in production those are
+            # roots), but locks the invariant against future regressions.
+            _fail(
+                orch, task_id,
+                note=f"non-root escalation requested ({reason}); routed to parent",
+            )
+            _enqueue_parent_if_waiting(orch, task_id)
+            _maybe_post_thread_followup(
+                orch, task_id,
+                status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            )
+            return
+        # Root: park in blocked(ESCALATED) for the founder (unchanged).
         # Atomic CAS: transition to BLOCKED(ESCALATED) only if not cancelled
         # or terminal. Closes the post-_is_already_terminal race (Codex P2 on
         # PR #34) by serializing against /cancel via the Database RLock.
         # If False: founder cancellation landed between Guard B's re-fetch and
         # here. Drop the escalate silently — the founder's terminal state wins.
-        reason = decision.reason or "Escalated"
         if not db.try_escalate(task_id, reason=reason):
             logger.debug(
                 "run_step %s: cancelled between re-check and escalate, dropping",
@@ -1273,11 +1327,19 @@ def _enqueue_parent_if_waiting(
             )
             if parent.active_chain is not None:
                 orch._db.update_task_active_chain(parent.id, None)
-            if orch._db.try_escalate(parent.id, reason=reason):
-                orch._audit.log_escalation(parent.id, "orchestrator", reason)
-                _maybe_post_thread_escalation(
-                    orch, parent.id, reason=reason,
-                )
+            if is_root(parent):
+                # Root parent escalates to the founder (unchanged).
+                if orch._db.try_escalate(parent.id, reason=reason):
+                    orch._audit.log_escalation(parent.id, "orchestrator", reason)
+                    _maybe_post_thread_escalation(
+                        orch, parent.id, reason=reason,
+                    )
+            else:
+                # THR-033 Change A lock-in: a non-root parent never escalates
+                # directly (currently impossible — only roots have children).
+                # Fail it and recurse the failure up to its own parent.
+                _fail(orch, parent.id, note=reason)
+                _enqueue_parent_if_waiting(orch, parent.id)
             return
         # Within the bound: clear chain, enqueue parent for a fresh
         # manager decision step. Do NOT cascade-fail.

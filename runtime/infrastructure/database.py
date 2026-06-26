@@ -1693,6 +1693,54 @@ class Database:
         return cursor.rowcount == 1
 
     @_synchronized
+    def try_fail_over_budget(
+        self,
+        task_id: str,
+        *,
+        expected_status: TaskStatus,
+        expected_block_kind: BlockKind | None,
+        note: str,
+    ) -> bool:
+        """Atomic CAS for the run_step max-steps budget guard — non-root variant.
+
+        Mirror of ``try_escalate_over_budget`` (the root variant), but transitions
+        the row to FAILED (block_kind NULL, completed_at set — FAILED is terminal,
+        unlike the ESCALATED template) ONLY if it still matches
+        (expected_status, expected_block_kind). Returns True iff it transitioned.
+
+        Per THR-033 Change A a NON-root task that hits the step budget must not
+        escalate directly to the founder — it fails and hands back to its parent
+        (bounded failure-recovery carries it up). The CAS is required for the same
+        reason as ``try_escalate_over_budget``: the budget guard runs BEFORE
+        try_claim_for_step, so it has no upstream CAS. Two duplicate queue
+        deliveries can both read the same stale at-cap eligible row; the
+        conditional WHERE makes only the first writer win, so the parent enqueue +
+        thread followup fire exactly once. A /cancel landing in the window moves
+        the row out of the expected pre-state and the CAS rejects it for free.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        if expected_block_kind is None:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = ?,
+                       completed_at = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind IS NULL""",
+                (TaskStatus.FAILED.value, note, now, now,
+                 task_id, expected_status.value),
+            )
+        else:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = ?,
+                       completed_at = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind = ?""",
+                (TaskStatus.FAILED.value, note, now, now,
+                 task_id, expected_status.value, expected_block_kind.value),
+            )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
     def try_delegate(
         self, parent_id: str, child: TaskRecord, *, parent_note: str,
     ) -> bool:
