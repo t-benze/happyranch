@@ -247,6 +247,31 @@ describe('JobDetailPage — read path', () => {
     expect(within(screen.getByRole('complementary')).getByText('bash')).toBeInTheDocument();
   });
 
+  // TASK-928 regression: the AppShell <main> is `overflow-hidden` and delegates
+  // scrolling to each page. JobDetailPage's normal render was the lone full page
+  // missing an internal `h-full overflow-y-auto` scroll wrapper, so a long brief
+  // clipped and the two-step confirm control rendered below the clip, unreachable
+  // — making "Approve job" appear to do nothing. Assert the page owns the wrapper.
+  test('TASK-928: normal render is wrapped in an h-full overflow-y-auto scroll container', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobDetail();
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText('Clean up stale Docker images')).toBeInTheDocument();
+    });
+
+    // The page content's nearest scroll-container ancestor must scroll internally
+    // (h-full + overflow-y-auto) so long content is reachable inside the clipped
+    // shared <main>. Walking up from the title lands on the page's own wrapper.
+    const scroller = screen.getByText('Clean up stale Docker images').closest('.overflow-y-auto');
+    expect(scroller).not.toBeNull();
+    expect(scroller).toHaveClass('h-full', 'overflow-y-auto');
+    // …and it wraps the constrained content column, confirming it is the page-level
+    // wrapper rather than some inner panel's own scroll area.
+    expect(scroller!.querySelector('.mx-auto.max-w-5xl')).not.toBeNull();
+  });
+
   // JOBDET-02: the command card is styled with terminal chrome — a "›_ command"
   // header bar plus an interpreter/cwd footer — rather than a plain
   // "COMMAND (bash · cwd: …)" label above a bare command box.
