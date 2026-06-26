@@ -1145,6 +1145,75 @@ def test_try_escalate_over_budget_rejects_cancelled_task(db):
     assert t.note == "cancelled by founder"
 
 
+def test_try_fail_over_budget_succeeds_from_expected_state(db):
+    """THR-033 Change A: the non-root variant of the budget-guard CAS. An
+    eligible PENDING task at the step cap transitions to FAILED (block_kind
+    NULL, completed_at set) instead of BLOCKED(ESCALATED)."""
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    ok = db.try_fail_over_budget(
+        "T-1", expected_status=TaskStatus.PENDING, expected_block_kind=None,
+        note="max steps (3) exceeded",
+    )
+    assert ok is True
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.block_kind is None
+    assert t.note == "max steps (3) exceeded"
+    assert t.completed_at is not None
+
+
+def test_try_fail_over_budget_is_idempotent_under_duplicate_delivery(db):
+    """The CAS makes the non-root over-budget fail fire exactly once: two
+    duplicate deliveries read the same eligible at-cap row, only the first
+    writer wins, so the parent enqueue + thread followup fire once."""
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    first = db.try_fail_over_budget(
+        "T-1", expected_status=TaskStatus.PENDING, expected_block_kind=None,
+        note="max steps (3) exceeded",
+    )
+    second = db.try_fail_over_budget(
+        "T-1", expected_status=TaskStatus.PENDING, expected_block_kind=None,
+        note="max steps (3) exceeded",
+    )
+    assert first is True
+    assert second is False
+    assert db.get_task("T-1").status == TaskStatus.FAILED
+
+
+def test_try_fail_over_budget_rejects_cancelled_task(db):
+    """A /cancel landing between the step-1 read and the budget guard moves the
+    row out of the expected pre-state; the CAS rejects the fail for free."""
+    from datetime import datetime, timezone
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task("T-1", status=TaskStatus.FAILED, cancelled_at=now,
+                   completed_at=now, note="cancelled by founder")
+    ok = db.try_fail_over_budget(
+        "T-1", expected_status=TaskStatus.PENDING, expected_block_kind=None,
+        note="bogus",
+    )
+    assert ok is False
+    t = db.get_task("T-1")
+    assert t.note == "cancelled by founder"  # unchanged
+
+
+def test_try_fail_over_budget_succeeds_from_blocked_delegated(db):
+    """The budget guard can also fire from a BLOCKED(DELEGATED) eligible
+    pre-state (a resumed parent-style row); the CAS keys on the block_kind."""
+    from runtime.models import BlockKind
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    db.update_task("T-1", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    ok = db.try_fail_over_budget(
+        "T-1", expected_status=TaskStatus.BLOCKED,
+        expected_block_kind=BlockKind.DELEGATED, note="max steps (3) exceeded",
+    )
+    assert ok is True
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.block_kind is None
+
+
 def test_try_delegate_succeeds_on_pending_parent(db):
     """CAS happy path: parent transitions to BLOCKED(DELEGATED) AND child
     is inserted in one atomic RLock acquisition."""

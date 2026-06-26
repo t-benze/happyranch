@@ -188,10 +188,16 @@ def test_run_step_done_completes_task_and_enqueues_parent(
     assert q.get_nowait() == ("test", "T-PAR")
 
 
-def test_run_step_escalate_parks_blocked_and_leaves_parent_parked(
+def test_run_step_nonroot_escalate_fails_and_routes_to_parent(
     runtime, db, monkeypatch,
 ):
-    import asyncio
+    """THR-033 Change A: a NON-root task whose decision is `escalate` must NOT
+    escalate directly to the founder — it fails and hands back to its parent,
+    which is woken for a bounded-recovery decision step. Constructed with a
+    task_type='task' non-root so the decision pipeline is exercised (in
+    production, children are task_type='subtask' and never decide, so this
+    branch is defensive lock-in).
+    """
     import json
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -202,6 +208,7 @@ def test_run_step_escalate_parks_blocked_and_leaves_parent_parked(
     db.insert_task(TaskRecord(
         id="T-CHD", brief="c",
         assigned_agent="engineering_head", parent_task_id="T-PAR",
+        task_type="task",
     ))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -217,16 +224,52 @@ def test_run_step_escalate_parks_blocked_and_leaves_parent_parked(
     orch.run_step("T-CHD")
 
     child = db.get_task("T-CHD")
-    assert child.status == TaskStatus.BLOCKED
-    assert child.block_kind == BlockKind.ESCALATED
-    assert child.note == "needs founder"
+    # Non-root never reaches BLOCKED(ESCALATED) — it FAILS.
+    assert child.status == TaskStatus.FAILED
+    assert child.block_kind is None
+    assert "non-root escalation requested" in (child.note or "")
+    assert "needs founder" in (child.note or "")
 
-    # Parent stays parked — escalation is NOT a terminal for sibling-summing.
-    assert q.qsize() == 0
+    # No escalation audit row was written for the child.
+    escalations = [a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"]
+    assert escalations == []
+
+    # Parent woken for a bounded-recovery decision step (1 failed child < bound).
+    assert q.qsize() == 1
+    assert q.get_nowait() == ("test", "T-PAR")
     assert db.get_task("T-PAR").status == TaskStatus.BLOCKED
 
-    # Audit row
-    escalations = [a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"]
+
+def test_run_step_root_escalate_parks_blocked_escalated(
+    runtime, db, monkeypatch,
+):
+    """THR-033 Change A: a ROOT task whose decision is `escalate` still parks
+    in blocked(ESCALATED) for the founder — root escalation is unchanged."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-ROOT", brief="r",
+                              assigned_agent="engineering_head"))
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    q = _SlugQueue()
+    orch._queue = q
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "escalate", "reason": "needs founder"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-ROOT")
+
+    t = db.get_task("T-ROOT")
+    assert t.parent_task_id is None  # it is a root
+    assert t.status == TaskStatus.BLOCKED
+    assert t.block_kind == BlockKind.ESCALATED
+    assert t.note == "needs founder"
+
+    escalations = [a for a in db.get_audit_logs("T-ROOT") if a["action"] == "escalation"]
     assert any("needs founder" in e["payload"]["reason"] for e in escalations)
 
 
@@ -2099,3 +2142,182 @@ def test_regression_revise_verdict_chain_advance_unchanged(
     assert orch._queue.qsize() == 1
     slug, tid = orch._queue.get_nowait()
     assert tid == "T-PAR"
+
+
+def test_run_step_nonroot_over_budget_fails_and_routes_to_parent(runtime, db):
+    """THR-033 Change A — the one substantive behavioral fix: a NON-root task
+    that exceeds the step budget FAILS (block_kind=NULL) instead of parking in
+    blocked(ESCALATED), and hands back to its parent for bounded recovery."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    settings = Settings(max_orchestration_steps=3)
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="p",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHD", brief="c", assigned_agent="dev_agent",
+        parent_task_id="T-PAR", task_type="subtask",
+    ))
+    db.update_task("T-CHD", orchestration_step_count=3)  # already at the cap
+
+    orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    q = _SlugQueue()
+    orch._queue = q
+
+    orch.run_step("T-CHD")
+
+    child = db.get_task("T-CHD")
+    assert child.status == TaskStatus.FAILED
+    assert child.block_kind is None
+    assert child.note and "max steps" in child.note
+    assert child.completed_at is not None  # terminal row carries completed_at
+
+    # Never escalated — no escalation audit row for the child.
+    escalations = [
+        a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"
+    ]
+    assert escalations == []
+
+    # Parent woken (1 failed child < bound).
+    assert q.qsize() == 1
+    assert q.get_nowait() == ("test", "T-PAR")
+
+
+def test_run_step_nonroot_over_budget_idempotent_single_parent_wake(runtime, db):
+    """Duplicate delivery of the same at-cap non-root row wakes the parent
+    exactly once. The CAS in try_fail_over_budget (and the entry-state guard)
+    makes the second delivery a no-op."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    settings = Settings(max_orchestration_steps=3)
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="p",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHD", brief="c", assigned_agent="dev_agent",
+        parent_task_id="T-PAR", task_type="subtask",
+    ))
+    db.update_task("T-CHD", orchestration_step_count=3)
+
+    orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    q = _SlugQueue()
+    orch._queue = q
+
+    orch.run_step("T-CHD")
+    orch.run_step("T-CHD")  # duplicate delivery
+
+    assert db.get_task("T-CHD").status == TaskStatus.FAILED
+    assert q.qsize() == 1  # parent enqueued exactly once
+
+
+def test_run_step_root_over_budget_still_escalates(runtime, db):
+    """THR-033 Change A: a ROOT task that exceeds the step budget still parks
+    in blocked(ESCALATED) for the founder — unchanged."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    settings = Settings(max_orchestration_steps=3)
+    db.insert_task(TaskRecord(
+        id="T-ROOT", brief="x", assigned_agent="engineering_head",
+    ))
+    db.update_task("T-ROOT", orchestration_step_count=3)
+
+    orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch.run_step("T-ROOT")
+
+    t = db.get_task("T-ROOT")
+    assert t.parent_task_id is None
+    assert t.status == TaskStatus.BLOCKED
+    assert t.block_kind == BlockKind.ESCALATED
+    assert t.note and "max steps" in t.note
+
+
+def test_run_step_nonroot_self_block_never_escalated(runtime, db, monkeypatch):
+    """Regression (THR-033 Change A confirm-no-change): a NON-root self-block
+    (report.status=blocked, empty waiting_on_job_ids) fails through the parent
+    and is NEVER escalated."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="p",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHD", brief="c", assigned_agent="dev_agent",
+        parent_task_id="T-PAR", task_type="subtask",
+    ))
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    q = _SlugQueue()
+    orch._queue = q
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary="cannot proceed", status="blocked",
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-CHD")
+
+    child = db.get_task("T-CHD")
+    assert child.status == TaskStatus.FAILED
+    assert child.block_kind is None
+    assert child.block_kind != BlockKind.ESCALATED
+    escalations = [
+        a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"
+    ]
+    assert escalations == []
+    # Parent woken via bounded recovery.
+    assert q.qsize() == 1
+    assert q.get_nowait() == ("test", "T-PAR")
+
+
+def test_enqueue_parent_exhaustion_nonroot_parent_routes_upward(runtime, db):
+    """THR-033 Change A lock-in: if an exhausted-bound parent were itself a
+    NON-root (impossible in production today — only roots have children), it
+    must NOT escalate directly. It fails and routes the failure to its own
+    parent. Locks the defensive is_root(parent) guard in
+    _enqueue_parent_if_waiting."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    # Grandparent (root), delegated + waiting.
+    db.insert_task(TaskRecord(id="T-GP", brief="gp",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-GP", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    # Middle parent: NON-root (child of T-GP) but itself delegating + blocked.
+    db.insert_task(TaskRecord(
+        id="T-MID", brief="mid", assigned_agent="engineering_head",
+        parent_task_id="T-GP", task_type="task",
+    ))
+    db.update_task("T-MID", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    # Two failed children of T-MID → bound exhausted.
+    db.insert_task(TaskRecord(
+        id="T-F1", brief="f1", assigned_agent="dev_agent",
+        parent_task_id="T-MID", task_type="subtask",
+    ))
+    db.update_task("T-F1", status=TaskStatus.FAILED, note="first failure")
+    db.insert_task(TaskRecord(
+        id="T-F2", brief="f2", assigned_agent="dev_agent",
+        parent_task_id="T-MID", task_type="subtask",
+    ))
+    db.update_task("T-F2", status=TaskStatus.FAILED,
+                   note="second failure — bound exhausted")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    _enqueue_parent_if_waiting(orch, "T-F2")
+
+    mid = db.get_task("T-MID")
+    # Non-root parent must NOT escalate — it fails and routes upward.
+    assert mid.status == TaskStatus.FAILED
+    assert mid.block_kind is None
+    assert mid.block_kind != BlockKind.ESCALATED
+
+    # Grandparent (root) woken for bounded recovery (1 failed child < bound).
+    assert orch._queue.qsize() == 1
+    assert orch._queue.get_nowait() == ("test", "T-GP")
