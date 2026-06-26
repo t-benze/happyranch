@@ -343,12 +343,13 @@ describe('JobDetailPage — read path', () => {
       expect(screen.getByText(/This action is gated/)).toBeInTheDocument();
     });
     // Direction-A: controls are hoisted to the top-right header — a "Reject"
-    // secondary action and an "Approve job" primary action.
-    expect(screen.getByRole('button', { name: 'Approve job' })).toBeInTheDocument();
+    // secondary action and a single "Approve & run" primary action (the founder
+    // /run IS the approve+run; there is no separate approve step).
+    expect(screen.getByRole('button', { name: 'Approve & run' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
   });
 
-  test('gated job shows BOTH the Reject and Approve job header buttons', async () => {
+  test('gated job shows BOTH the Reject and Approve & run header buttons', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobDetail(JOB);
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
@@ -357,48 +358,46 @@ describe('JobDetailPage — read path', () => {
       expect(screen.getByText(/This action is gated/)).toBeInTheDocument();
     });
     // Header must show BOTH actions
-    expect(screen.getByRole('button', { name: 'Approve job' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve & run' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
   });
 
-  test('gated Approve job routes through the uniform two-step run confirm', async () => {
+  test('gated "Approve & run" opens the single confirm and fires exactly ONE run mutation', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobDetail(JOB);
-    // Mock the run endpoint so RunJobDialog can initialize
+    // Count the founder /run calls — the single confirm must fire exactly one,
+    // and the founder /run IS the approve+run (no separate approve endpoint).
+    let runCalls = 0;
     server.use(
-      http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/run`, () =>
-        HttpResponse.json({ id: 'JOB-0001', status: 'running', started_at: '2026-05-23T12:01:00Z', cwd_resolved: '/x', timeout_seconds: 300, events_url: '' }),
-      ),
+      http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/run`, () => {
+        runCalls += 1;
+        return HttpResponse.json({ id: 'JOB-0001', status: 'running', started_at: '2026-05-23T12:01:00Z', cwd_resolved: '/x', timeout_seconds: 300, events_url: '' });
+      }),
     );
 
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Approve job' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Approve & run' })).toBeInTheDocument();
     });
 
-    // Click Approve job → enters the SAME run two-step confirm
-    await user.click(screen.getByRole('button', { name: 'Approve job' }));
+    // ONE button → ONE popup confirm (no intermediate two-step card).
+    await user.click(screen.getByRole('button', { name: 'Approve & run' }));
 
-    // Step 1: run prompt (same as non-gated Run path)
-    await waitFor(() => {
-      expect(screen.getByText(/Run this script/)).toBeInTheDocument();
-    });
+    const dialog = await screen.findByRole('dialog');
+    // The popup shows the VERBATIM command and is titled for the gated approve+run.
+    expect(within(dialog).getByText('docker image prune -af')).toBeInTheDocument();
+    expect(within(dialog).getByText(/Approve & run JOB-0001/)).toBeInTheDocument();
 
-    // Click Run… → step 2
-    await user.click(screen.getByRole('button', { name: 'Run…' }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Confirm: are you sure you want to run/)).toBeInTheDocument();
-    });
-
-    // Confirm → opens RunJobDialog
-    await user.click(screen.getByRole('button', { name: 'Confirm run' }));
+    // Confirm inside the popup → exactly one /run call (no double-submit).
+    await user.click(within(dialog).getByRole('button', { name: 'Approve & run' }));
 
     await waitFor(() => {
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(runCalls).toBe(1);
     });
+    // Give any erroneous second submission a chance to land, then re-assert.
+    expect(runCalls).toBe(1);
   });
 
   test('gated chip Reject opens RejectJobDialog', async () => {
@@ -576,13 +575,15 @@ describe('JobDetailPage — reject dialog', () => {
 });
 
 describe('JobDetailPage — run dialog', () => {
-  test('RunJobDialog opens for non-gated pending job', async () => {
+  test('non-gated "Run" opens the single confirm directly (no two-step)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     const nonGated: JobRecord = { ...JOB, review_required: false };
     stubJobDetail(nonGated);
 
+    let runCalls = 0;
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/run`, async () => {
+        runCalls += 1;
         return HttpResponse.json({ id: 'JOB-0001', status: 'running', started_at: '2026-05-23T12:01:00Z', cwd_resolved: '/x', timeout_seconds: 300, events_url: '' });
       }),
     );
@@ -594,25 +595,20 @@ describe('JobDetailPage — run dialog', () => {
       expect(screen.getByRole('button', { name: 'Run' })).toBeInTheDocument();
     });
 
-    // Click Run → two-step confirm
+    // ONE button → the popup confirm opens directly (no intermediate two-step).
     await user.click(screen.getByRole('button', { name: 'Run' }));
 
-    await waitFor(() => {
-      expect(screen.getByText(/Run this script/)).toBeInTheDocument();
-    });
+    const dialog = await screen.findByRole('dialog');
+    // Non-gated popup shows the verbatim command and the plain "Run" title.
+    expect(within(dialog).getByText('docker image prune -af')).toBeInTheDocument();
+    expect(within(dialog).getByText(/Run JOB-0001/)).toBeInTheDocument();
 
-    // Step 2
-    await user.click(screen.getByRole('button', { name: 'Run…' }));
+    // Confirm inside the popup → exactly one /run call (no double-submit).
+    await user.click(within(dialog).getByRole('button', { name: 'Run' }));
     await waitFor(() => {
-      expect(screen.getByText(/Confirm: are you sure/)).toBeInTheDocument();
+      expect(runCalls).toBe(1);
     });
-
-    // Confirm → dialog opens
-    await user.click(screen.getByRole('button', { name: 'Confirm run' }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
-    });
+    expect(runCalls).toBe(1);
   });
 });
 

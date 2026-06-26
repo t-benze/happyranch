@@ -78,7 +78,9 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle className="font-display">Run {job.id}</DialogTitle>
+          <DialogTitle className="font-display">
+            {job.review_required ? `Approve & run ${job.id}` : `Run ${job.id}`}
+          </DialogTitle>
           <DialogDescription className="sr-only">
             Approve and run this job. The script will execute immediately.
           </DialogDescription>
@@ -135,7 +137,7 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
             onClick={submit}
             disabled={run.isPending || timeoutInvalid}
           >
-            {run.isPending ? 'Running…' : 'Run'}
+            {run.isPending ? 'Running…' : job.review_required ? 'Approve & run' : 'Run'}
           </Button>
         </DialogFooter>
       </DialogContent>
