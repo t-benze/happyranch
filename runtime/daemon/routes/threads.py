@@ -683,11 +683,13 @@ async def get_thread_endpoint(
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
     d = _thread_row_to_dict(t)
     d["participants"] = participants
+    # Pass responders unconditionally: the grouped query returns reply
+    # invocations (which hang off MESSAGE rows) and task_followup invocations
+    # (which hang off the SYSTEM row that wakes a dispatched agent). The two are
+    # disjoint by triggering-row kind, so a blanket lookup surfaces the followup
+    # in-flight strip on its system row without contaminating message rows.
     d["messages"] = [
-        _msg_to_dict(
-            m,
-            responders=responders_by_seq.get(m.seq) if m.kind == ThreadMessageKind.MESSAGE else None,
-        )
+        _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
         for m in msgs
     ]
     return d
@@ -706,14 +708,12 @@ async def list_thread_messages_endpoint(
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=min(limit, 1000))
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
+    # Unconditional responders lookup — see get_thread_endpoint: reply and
+    # task_followup invocations are disjoint by triggering-row kind, so the
+    # blanket lookup surfaces the followup in-flight strip on its system row.
     return {
         "messages": [
-            _msg_to_dict(
-                m,
-                responders=responders_by_seq.get(m.seq)
-                if m.kind == ThreadMessageKind.MESSAGE
-                else None,
-            )
+            _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
             for m in msgs
         ]
     }
