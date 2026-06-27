@@ -133,8 +133,8 @@ def test_build_claude_md_contains_persistent_file_pointers(test_settings, tmp_di
         system_prompt="You are the Dev Agent.",
     )
     content = (workspace / "CLAUDE.md").read_text()
-    # Brand-new workspace: no learnings state, so _index.md pointer is shown.
-    assert "learnings/_index.md" in content
+    # Brand-new workspace: no memory state, so _index.md pointer is shown.
+    assert "memory/_index.md" in content
     assert "scorecard.md" not in content
     assert "task_history.md" in content
     assert "recent_tasks.md" not in content
@@ -148,8 +148,8 @@ def test_ensure_workspace_ready_creates_persistent_files(test_settings, tmp_dir,
         agent_name="dev_agent",
         system_prompt="You are the Dev Agent.",
     )
-    assert (workspace / "learnings").is_dir()
-    assert (workspace / "learnings" / "_index.md").exists()
+    assert (workspace / "memory").is_dir()
+    assert (workspace / "memory" / "_index.md").exists()
     assert not (workspace / "learnings.md").exists()
     assert not (workspace / "scorecard.md").exists()
     assert (workspace / "task_history.md").exists()

@@ -646,7 +646,7 @@ def test_cmd_learning_posts_with_session_id():
     with patch("cli.main.OpcClient.from_env", return_value=fake):
         cmd_learning(args)
     args_pos, kwargs = fake.post.call_args
-    assert args_pos[0] == "/api/v1/orgs/alpha/agents/dev_agent/learnings"
+    assert args_pos[0] == "/api/v1/orgs/alpha/agents/dev_agent/memory"
     assert kwargs["json"]["session_id"] == "sess-1"
 
 

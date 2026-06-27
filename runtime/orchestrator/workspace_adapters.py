@@ -79,56 +79,58 @@ def _copy_skill_file(src: Path, dst: Path, *, slug: str) -> None:
         shutil.copy2(src, dst)
 
 
-def _learnings_bootstrap_section(workspace: Path) -> list[str]:
-    """Returns the 'Persistent Files' + 'Your Learnings' block.
+def _memory_bootstrap_section(workspace: Path) -> list[str]:
+    """Returns the 'Persistent Files' + 'Your Memory' block.
 
-    Branches on workspace state: flat learnings.md vs migrated learnings/.
+    Branches on workspace state: legacy flat learnings.md vs migrated memory/.
     """
     flat = workspace / "learnings.md"
-    learnings_dir = workspace / "learnings"
-    index = learnings_dir / "_index.md"
+    memory_dir = workspace / "memory"
+    index = memory_dir / "_index.md"
 
-    if learnings_dir.exists() and index.exists():
+    if memory_dir.exists() and index.exists():
         index_body = index.read_text()
         return [
             "## Persistent Files\n",
-            "- `learnings/_index.md` -- index of your operational learnings",
-            "  (full bodies via `happyranch learning get`)",
+            "- `memory/_index.md` -- index of your operational memory",
+            "  (full bodies via `happyranch memory get`)",
             "- `task_history.md` -- read-only, updated by orchestrator\n",
-            "## Your Learnings\n",
+            "## Your Memory\n",
             index_body,
             "\nFetch any entry's body:",
             "```",
-            "happyranch learning get --org <slug> --agent <you> <LRN-NNN-or-slug>",
+            "happyranch memory get --org <slug> --agent <you> <MEM-NNN-or-slug>",
             "```",
-            "Write a new learning (file payload with slug/title/topic/tags/body):",
+            "Write a new memory item (file payload with slug/title/topic/tags/body):",
             "```",
-            "happyranch learning add --org <slug> --agent <you> --from-file <path>",
+            "happyranch memory add --org <slug> --agent <you> --from-file <path>",
             "```",
-            "Update an existing learning:",
+            "Update an existing memory item:",
             "```",
-            "happyranch learning update --org <slug> --agent <you> <LRN-NNN> --from-file <path>",
+            "happyranch memory update --org <slug> --agent <you> <MEM-NNN> --from-file <path>",
             "```",
             "Promote a durable cross-agent rule to the shared KB (one-way):",
             "```",
-            "happyranch learning promote --org <slug> --agent <you> <LRN-NNN> --kb-slug <slug>",
+            "happyranch memory promote --org <slug> --agent <you> <MEM-NNN> --kb-slug <slug>",
             "```\n",
+            "_Old `LRN-` ids and `happyranch learning …` still resolve "
+            "(`learning` is a deprecated alias of `memory`)._\n",
         ]
     if flat.exists():
         flat_body = flat.read_text()
         return [
             "## Persistent Files\n",
-            "- `learnings.md` -- your accumulated operational learnings (legacy flat-file format)",
+            "- `learnings.md` -- your accumulated operational memory (legacy flat-file format)",
             "- `task_history.md` -- read-only, updated by orchestrator\n",
-            "## Your Learnings\n",
+            "## Your Memory\n",
             flat_body + "\n",
-            "Append a new line via `happyranch learning --agent <you> --text \"...\"`.",
+            "Append a new line via `happyranch memory --agent <you> --text \"...\"`.",
             "_The structured per-entry format is available once this workspace is migrated._\n",
         ]
-    # Brand-new workspace, ensure() should have created learnings/ already.
+    # Brand-new workspace, ensure() should have created memory/ already.
     return [
         "## Persistent Files\n",
-        "- `learnings/_index.md` -- index of your operational learnings (empty)",
+        "- `memory/_index.md` -- index of your operational memory (empty)",
         "- `task_history.md` -- read-only, updated by orchestrator\n",
     ]
 
@@ -436,25 +438,30 @@ class PersistentWorkspaceSetup:
         if not history_path.exists():
             history_path.write_text(f"# Task History: {agent_name}\n\n")
 
-        # learnings: state-aware migration safety
+        # memory: state-aware, idempotent, lazy learnings/ -> memory/ migration
+        # (THR-032 Phase R) + _index.md safety. Lazy imports avoid a hard infra
+        # dep at module top.
+        from runtime.infrastructure.learnings_store import MemoryStore
+        from runtime.infrastructure.memory_migration import migrate_workspace
+
+        # Idempotent + lossless: moves a legacy learnings/ dir to memory/ if
+        # present, no-op once memory/ exists, leaves flat learnings.md alone.
+        migrate_workspace(workspace)
+
         flat_path = workspace / "learnings.md"
-        learnings_dir = workspace / "learnings"
-        if learnings_dir.exists():
-            # Post-migration: idempotently ensure _index.md exists.
-            # Lazy import to avoid a hard infra dep at module top.
-            from runtime.infrastructure.learnings_store import LearningsStore
-            store = LearningsStore(learnings_dir)
-            if not (learnings_dir / "_index.md").exists():
+        memory_dir = workspace / "memory"
+        if memory_dir.exists():
+            # Migrated or natively-new layout: idempotently ensure _index.md.
+            store = MemoryStore(memory_dir)
+            if not (memory_dir / "_index.md").exists():
                 store.regenerate_index()
         elif flat_path.exists():
-            # Pre-migration legacy workspace: leave both untouched.
+            # Pre-migration legacy flat-file workspace: leave untouched.
             pass
         else:
-            # Brand-new workspace: create learnings/ on the new layout.
-            from runtime.infrastructure.learnings_store import LearningsStore
-            learnings_dir.mkdir(parents=True, exist_ok=True)
-            store = LearningsStore(learnings_dir)
-            store.regenerate_index()
+            # Brand-new workspace: create memory/ on the new layout.
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            MemoryStore(memory_dir).regenerate_index()
 
         return self.detect_repo_names(workspace)
 
@@ -526,7 +533,7 @@ class ClaudeWorkspaceAdapter:
             workflow_section=[
                 "Every task arrives via the orchestrator's prompt. Use the **start-task** skill",
                 "(in `.claude/skills/start-task/`) to parse parameters and report completion via",
-                "`happyranch report-completion`. Mid-task learnings go through `happyranch learning`.\n",
+                "`happyranch report-completion`. Mid-task memory items go through `happyranch memory`.\n",
             ],
         )
         (workspace / "CLAUDE.md").write_text("\n".join(sections))
@@ -549,7 +556,7 @@ class ClaudeWorkspaceAdapter:
             "## Available Repositories\n",
             "See `agent.yaml` in this workspace for the authoritative list of",
             repo_refresh_note + "\n",
-            *_learnings_bootstrap_section(workspace),
+            *_memory_bootstrap_section(workspace),
             "## Knowledge Base (shared across agents)\n",
             "Path: `<runtime>/kb/`. Read: everyone. Write: any agent (via `--from-file`).",
             "Delete: any team manager (audited); founder via `--as-founder`. Full rules: `protocol/06-knowledge-base.md`.",
@@ -651,7 +658,7 @@ class CodexWorkspaceAdapter:
         """
         _assert_no_reserved_headers_in_body(agent_name, system_prompt)
         workspace.mkdir(parents=True, exist_ok=True)
-        # Shared bootstrap sections (KB, learnings, artifacts) are assembled in
+        # Shared bootstrap sections (KB, memory, artifacts) are assembled in
         # Claude's _build_sections and flow through here unchanged.
         sections = ClaudeWorkspaceAdapter(self._settings, self._paths, slug=self._slug)._build_sections(
             agent_name,
@@ -670,7 +677,7 @@ class CodexWorkspaceAdapter:
             workflow_section=[
                 "Every task arrives via the orchestrator's prompt. Use the **start-task** skill",
                 "(in `.agents/skills/start-task/`) to parse parameters and report completion via",
-                "`happyranch report-completion`. Mid-task learnings go through `happyranch learning`.\n",
+                "`happyranch report-completion`. Mid-task memory items go through `happyranch memory`.\n",
             ],
         )
         (workspace / "AGENTS.md").write_text("\n".join(sections))
