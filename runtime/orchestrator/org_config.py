@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -344,6 +345,36 @@ def resolve_dreaming_timezone(org_config: OrgConfig) -> tzinfo:
     if effective is None:
         effective = org_config.timezone
     return _resolve_timezone(effective)[0]
+
+
+def resolve_dreaming_timezone_display(org_config: OrgConfig) -> tuple[tzinfo, str]:
+    """Effective dreaming timezone plus its display name. Precedence mirrors
+    ``resolve_dreaming_timezone``: ``dreaming.timezone`` (explicit) ->
+    ``org.timezone`` -> machine-local -> UTC."""
+    effective = org_config.dreaming.timezone
+    if effective is None:
+        effective = org_config.timezone
+    return _resolve_timezone(effective)
+
+
+def render_current_time_line(
+    tz: tzinfo, label: str, now: Callable[[], datetime] | None = None,
+) -> str:
+    """Render the localized current-time value injected into EVERY agent session
+    prompt (task/subtask, wake, thread, dream): ISO-8601 with offset plus the
+    zone label, e.g. ``2026-06-27T12:47+08:00 (Asia/Shanghai)`` or, when only an
+    offset is derivable, ``2026-06-27T12:47+08:00 (UTC+08:00)``.
+
+    This is the single shared renderer reused by every prompt builder so the
+    line is identical across harnesses and session types. ``tz``/``label`` come
+    from the caller's effective-timezone resolver
+    (``resolve_org_timezone_display`` for task/wake/thread sessions,
+    ``resolve_dreaming_timezone_display`` for dreams). ``now`` is injectable so
+    prompt snapshot tests can freeze the wall clock; it must return a tz-aware
+    UTC datetime (default ``datetime.now(timezone.utc)``)."""
+    now_fn = now or (lambda: datetime.now(timezone.utc))
+    local = now_fn().astimezone(tz)
+    return f"{local.isoformat(timespec='minutes')} ({label})"
 
 
 def _validate_window_time(value: object, label: str, path: str) -> str:

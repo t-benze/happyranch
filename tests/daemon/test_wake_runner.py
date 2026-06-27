@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from runtime.daemon.wake_runner import build_wake_prompt
+from runtime.orchestrator.org_config import OrgConfig
 
 
 def _prompt(**overrides) -> str:
@@ -15,6 +16,7 @@ def _prompt(**overrides) -> str:
         mode="windowed",
         preamble="Run these every wake; phrase briefs relative to the last wake.",
         routines=["- Triage open customer tickets.", "- Send overdue follow-ups."],
+        org_config=OrgConfig(),
     )
     base.update(overrides)
     return build_wake_prompt(**base)

@@ -32,7 +32,11 @@ from runtime.orchestrator.executors import (
     OpencodeExecutor,
     PiExecutor,
 )
-from runtime.orchestrator.org_config import load_org_config, resolve_org_timezone_display
+from runtime.orchestrator.org_config import (
+    load_org_config,
+    render_current_time_line,
+    resolve_org_timezone_display,
+)
 from runtime.orchestrator.teams import TeamsRegistry
 
 logger = logging.getLogger(__name__)
@@ -312,11 +316,10 @@ class Orchestrator:
 
         ``now`` is injectable so prompt snapshot tests can freeze the wall
         clock; it must return a tz-aware UTC datetime. The zone is resolved from
-        org config (org.timezone -> machine-local -> UTC)."""
-        now_fn = now or (lambda: datetime.now(timezone.utc))
+        org config (org.timezone -> machine-local -> UTC), then rendered by the
+        shared ``render_current_time_line`` reused across every prompt builder."""
         tz, label = resolve_org_timezone_display(load_org_config(self._paths))
-        local = now_fn().astimezone(tz)
-        return f"{local.isoformat(timespec='minutes')} ({label})"
+        return render_current_time_line(tz, label, now)
 
     def _build_agent_prompt(
         self,

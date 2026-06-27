@@ -10,6 +10,13 @@ from runtime.config import Settings, settings as global_settings
 from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import DreamRecord, DreamStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.org_config import (
+    OrgConfig,
+    load_org_config,
+    render_current_time_line,
+    resolve_dreaming_timezone_display,
+)
 
 # Cap on the agent's window audit rows folded into the dream prompt. The most
 # recent N (chronological); keeps the prompt bounded on busy agents.
@@ -31,12 +38,24 @@ def build_dream_prompt(
     workspace: Path,
     recent_audit: list[dict],
     task_history: str,
+    org_config: OrgConfig,
+    now: Callable[[], datetime] | None = None,
 ) -> str:
+    """Compose the private dream-session prompt.
+
+    ``current_time`` is injected (fresh per dream) via the shared renderer using
+    the DREAMING effective timezone (dreaming.timezone -> org.timezone ->
+    machine-local -> UTC), so dream sessions carry the same local wall clock as
+    every other agent session. ``now`` is injectable for tests.
+    """
+    tz, label = resolve_dreaming_timezone_display(org_config)
+    current_time = render_current_time_line(tz, label, now)
     return f"""# Private Nightly Dream
 
 You are {dream.agent_name}. This is private reflection for HappyRanch org `{org_slug}`.
 This is not a task or thread. Do not call report-completion.
 
+current_time: {current_time}
 Dream id: {dream.id}
 Window start: {dream.window_start.isoformat() if dream.window_start else "last 24 hours"}
 Window end: {dream.window_end.isoformat()}
@@ -97,12 +116,17 @@ async def run_dream(
         recent_audit = org_state.db.query_audit_logs(
             agent=dream.agent_name, limit=_AUDIT_WINDOW_CAP,
         )
+    try:
+        org_config = load_org_config(OrgPaths(root=org_state.root))
+    except Exception:
+        org_config = OrgConfig()
     prompt = build_dream_prompt(
         org_slug=org_state.slug,
         dream=dream,
         workspace=workspace,
         recent_audit=recent_audit,
         task_history=_load_task_history(workspace),
+        org_config=org_config,
     )
 
     executor_name = _executor_name(workspace)

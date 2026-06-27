@@ -13,6 +13,7 @@ from runtime.models import (
     ThreadParticipant,
     ThreadRecord,
 )
+from runtime.orchestrator.org_config import OrgConfig
 
 DOCTRINE_HEADER = "Decline-by-Default in Threads"
 
@@ -51,6 +52,7 @@ def _build(purpose: str, **overrides):
         "invoked_agent": "alpha",
         "purpose": purpose,
         "triggering_seq": 1,
+        "org_config": OrgConfig(),
     }
     defaults.update(overrides)
     return build_thread_prompt(**defaults)

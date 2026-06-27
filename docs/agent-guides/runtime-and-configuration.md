@@ -85,13 +85,27 @@ local zone. It is optional; an explicit value must be a valid IANA name
    displayed as `UTC±HH:MM`;
 3. ultimate fallback → UTC.
 
-`Orchestrator._build_agent_prompt` injects a `current_time:` line into the
-SHARED `Parameters:` block of **every** agent prompt — all providers (claude,
-codex, opencode, pi), fresh on every spawn and wake. Format: ISO-8601 with
-offset plus the zone label, e.g. `2026-06-27T12:47+08:00 (Asia/Shanghai)`, or
-`2026-06-27T12:47+08:00 (UTC+08:00)` when only an offset is derivable. The
-wall clock is an injectable `now` callable (default `datetime.now(timezone.utc)`)
-so prompt snapshot tests are deterministic.
+A `current_time:` line is injected into **every** executor-backed agent session
+prompt — across all providers (claude, codex, opencode, pi), fresh on every
+spawn, wake, and turn. The single shared renderer `org_config.render_current_time_line(tz, label, now)`
+produces the line; each prompt builder resolves its own effective zone and
+calls it, so the line is identical everywhere. The four session types and their
+builders are:
+
+- **task / subtask** — `Orchestrator._build_agent_prompt` (the shared
+  `Parameters:` block), zone via `resolve_org_timezone_display`. `run_step._build_agent_prompt`
+  is **not** a separate path: it builds only the inner `role_guidance` body,
+  which is wrapped by `Orchestrator._build_agent_prompt`.
+- **working-hours wake** — `wake_runner.build_wake_prompt`, zone via `resolve_org_timezone_display`.
+- **thread reply/bootstrap** — `thread_runner.build_thread_prompt` (full) and
+  `build_thread_delta_prompt` (resumed-turn delta), zone via `resolve_org_timezone_display`.
+- **private dream** — `dream_runner.build_dream_prompt`, zone via the dreaming
+  precedence `resolve_dreaming_timezone_display` (`dreaming.timezone → org.timezone → machine-local → UTC`).
+
+Format: ISO-8601 with offset plus the zone label, e.g.
+`2026-06-27T12:47+08:00 (Asia/Shanghai)`, or `2026-06-27T12:47+08:00 (UTC+08:00)`
+when only an offset is derivable. The wall clock is an injectable `now` callable
+(default `datetime.now(timezone.utc)`) so prompt snapshot tests are deterministic.
 
 ## Org Config: Dreaming
 

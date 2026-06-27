@@ -5,6 +5,7 @@ from pathlib import Path
 
 from runtime.daemon.dream_runner import build_dream_prompt, run_dream
 from runtime.models import DreamRecord, DreamStatus
+from runtime.orchestrator.org_config import OrgConfig
 
 
 def _dt(hour: int) -> datetime:
@@ -25,6 +26,7 @@ def test_build_dream_prompt_contains_private_contract(tmp_path):
         workspace=tmp_path,
         recent_audit=[],
         task_history="TASK-001 completed\n",
+        org_config=OrgConfig(),
     )
 
     assert "private reflection" in prompt
