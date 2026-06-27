@@ -107,16 +107,16 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/work-hours/{work_hour_id}',
   // dashboard — founder-facing summary rollup
   'GET /api/v1/orgs/{slug}/dashboard/summary',
-  // agents — founder-facing (enrollment + read-only learnings)
+  // agents — founder-facing (enrollment + read-only memory)
   'GET /api/v1/orgs/{slug}/agents',
   'POST /api/v1/orgs/{slug}/agents',
   'POST /api/v1/orgs/{slug}/agents/init',
   'GET /api/v1/orgs/{slug}/agents/enrollments',
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/approve',
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/reject',
-  'GET /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/',
-  'GET /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/{id_or_slug}',
-  'POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/search',
+  'GET /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/',
+  'GET /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id_or_slug}',
+  'POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/search',
   // teams — founder-facing
   'GET /api/v1/orgs/{slug}/teams',
   // system assistant — founder-facing setup surfaced in the SPA
@@ -152,12 +152,12 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/repos', 'agent manage-repo callback'],
   // founder set-executor — CLI-only (happyranch set-executor); not wired into the SPA
   ['PUT /api/v1/orgs/{slug}/agents/{agent_name}/executor', 'founder CLI set-executor only; not in SPA'],
-  // learnings writes (legacy + structured)
-  ['POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings', 'legacy agent learning append'],
-  ['POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/', 'agent-only write'],
-  ['PUT /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/{id}', 'agent-only write'],
-  ['POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/{id}/promote', 'agent-only write'],
-  ['POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/reindex', 'agent-only'],
+  // memory writes (legacy + structured)
+  ['POST /api/v1/orgs/{slug}/agents/{agent_name}/memory', 'legacy agent memory append'],
+  ['POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/', 'agent-only write'],
+  ['PUT /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}', 'agent-only write'],
+  ['POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}/promote', 'agent-only write'],
+  ['POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/reindex', 'agent-only'],
   // thread agent callbacks (require invocation tokens)
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/reply', 'agent invocation token only'],
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/decline', 'agent invocation token only'],

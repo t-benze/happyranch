@@ -135,7 +135,7 @@ These are invoked by skills inside agent sessions. Do not invoke them by hand; d
 
 - `happyranch report-completion`
 - `happyranch progress`
-- `happyranch learning {add,update,promote,reindex}`
+- `happyranch memory {add,update,promote,reindex}`
 - `happyranch manage-agent`
 - `happyranch manage-repo`
 - `happyranch dispatch`

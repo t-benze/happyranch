@@ -204,21 +204,21 @@ happyranch kb reindex   --org <slug>
 
 Any agent reads/writes; team managers delete (audited); the founder overrides delete via `--as-founder`. Founder rulings on escalated tasks are written through plain `happyranch kb add` — set `source_task: TASK-XXX` in the frontmatter to keep the link to the escalation.
 
-### Per-agent learnings
+### Per-agent memory
 
-Each agent has its own private learnings under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one markdown file per entry with YAML frontmatter (`id`, `slug`, `title`, `topic`, `tags`, `related_to`, `supersedes`, `promoted_to`). The bootstrap doc inlines the regenerated `_index.md` so agents see their accumulated rules at session start.
+Each agent has its own private learnings under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one markdown file per entry with YAML frontmatter (`id`, `slug`, `title`, `topic`, `tags`, `related_to`, `supersedes`, `promoted_to`). The bootstrap doc inlines the regenerated `_index.md` so agents see their accumulated rules at session start.
 
 ```bash
-happyranch learning list     --org <slug> --agent <you> [--topic T --tag T --promoted|--not-promoted --json]
-happyranch learning get      --org <slug> --agent <you> <LRN-NNN-or-slug> [--json]
-happyranch learning search   --org <slug> --agent <you> "<query>" [--limit N --include-promoted --json]
-happyranch learning add      --org <slug> --agent <you> --from-file /tmp/lrn-<slug>.yaml
-happyranch learning update   --org <slug> --agent <you> <LRN-NNN> --from-file /tmp/lrn-<slug>.yaml
-happyranch learning promote  --org <slug> --agent <you> <LRN-NNN> --kb-slug <kb-slug>
-happyranch learning reindex  --org <slug> --agent <you>
+happyranch memory list     --org <slug> --agent <you> [--topic T --tag T --promoted|--not-promoted --json]
+happyranch memory get      --org <slug> --agent <you> <MEM-NNN-or-slug> [--json]
+happyranch memory search   --org <slug> --agent <you> "<query>" [--limit N --include-promoted --json]
+happyranch memory add      --org <slug> --agent <you> --from-file /tmp/lrn-<slug>.yaml
+happyranch memory update   --org <slug> --agent <you> <MEM-NNN> --from-file /tmp/lrn-<slug>.yaml
+happyranch memory promote  --org <slug> --agent <you> <MEM-NNN> --kb-slug <kb-slug>
+happyranch memory reindex  --org <slug> --agent <you>
 ```
 
-`add`/`update` take a YAML payload with `slug`, `title`, `topic`, `body`, and optional `tags`/`source_task`/`related_to`/`supersedes`. Promotion is one-way: the body becomes a 2-line pointer stub and the entry locks against further edits — use `supersedes:` on a new entry to evolve a rule that has already been promoted. Workspaces that predate this layout still use a flat `learnings.md` (legacy `happyranch learning --agent X --text "..."` form); the founder dispatches a one-shot migration task per agent when ready.
+`add`/`update` take a YAML payload with `slug`, `title`, `topic`, `body`, and optional `tags`/`source_task`/`related_to`/`supersedes`. Promotion is one-way: the body becomes a 2-line pointer stub and the entry locks against further edits — use `supersedes:` on a new entry to evolve a rule that has already been promoted. Workspaces that predate this layout still use a flat `learnings.md` (legacy `happyranch memory --agent X --text "..."` form); the founder dispatches a one-shot migration task per agent when ready.
 
 ### Threads
 
@@ -567,7 +567,7 @@ Each agent runs in its own persistent workspace inside the org directory. After 
 - `opencode.json` (opencode only) — `permission.bash` map
 - Pi has no HappyRanch-managed sandbox or permission file; use external containment for Pi-backed agents when command/tool restriction matters.
 - `repos/` — git clones of repositories from `agent.yaml` (auto-pulled before each task)
-- `learnings/` — agent-written insights from past tasks, one file per entry (`LRN-NNN-<slug>.md`) with YAML frontmatter. A regenerated `_index.md` is inlined into the bootstrap doc. Write via `happyranch learning add --from-file <path>`; read via `happyranch learning list|get|search`; promote durable cross-agent rules to the shared KB via `happyranch learning promote <LRN-NNN> --kb-slug <slug>`. Workspaces created before this layout existed continue to use a flat `learnings.md`; the founder runs a one-shot migration task to switch a workspace over.
+- `memory/` — agent-written insights from past tasks, one file per entry (`MEM-NNN-<slug>.md`) with YAML frontmatter. A regenerated `_index.md` is inlined into the bootstrap doc. Write via `happyranch memory add --from-file <path>`; read via `happyranch memory list|get|search`; promote durable cross-agent rules to the shared KB via `happyranch memory promote <MEM-NNN> --kb-slug <slug>`. Workspaces created before this layout existed continue to use a flat `learnings.md`; the founder runs a one-shot migration task to switch a workspace over.
 - `task_history.md` — rolling per-agent task history
 
 ## Roadmap
