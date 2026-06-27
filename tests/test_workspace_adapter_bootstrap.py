@@ -31,10 +31,10 @@ def test_bootstrap_inlines_legacy_learnings_md(adapter, tmp_path: Path):
 
 def test_bootstrap_inlines_index_after_migration(adapter, tmp_path: Path):
     a, ws = adapter
-    (ws / "learnings").mkdir()
-    (ws / "learnings" / "_index.md").write_text("# Learnings Index\n\n## workflow (1)\n\n- `LRN-001` — sample\n")
+    (ws / "memory").mkdir()
+    (ws / "memory" / "_index.md").write_text("# Memory Index\n\n## workflow (1)\n\n- `MEM-001` — sample\n")
     a.write_claude_md(ws, agent_name="agent_x", system_prompt="prompt")
     body = (ws / "CLAUDE.md").read_text()
-    assert "LRN-001" in body
+    assert "MEM-001" in body
     assert "sample" in body
-    assert "happyranch learning get" in body  # references new CLI
+    assert "happyranch memory get" in body  # references new canonical CLI

@@ -593,9 +593,9 @@ the enrollments list so the post-action UI flips immediately.
   `?assigned_agent=<name>` on the tasks endpoint. Empty state when the
   agent has never been the assigned manager.
 - Learnings: read-only list of summaries from
-  `GET /agents/{name}/learnings/entries/`. Surfaces a 412
+  `GET /agents/{name}/memory/entries/`. Surfaces a 412
   (`workspace_not_migrated`) error with a hint to run
-  `happyranch learning reindex` rather than silently failing.
+  `happyranch memory reindex` rather than silently failing.
 - Writes (creating a learning) stay agent-callback-only — the umbrella
   spec §5.7 reserves this surface for the CLI.
 

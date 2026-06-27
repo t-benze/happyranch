@@ -55,7 +55,7 @@ happyranch set-executor --org <org> <agent> --executor pi --clean
 
 ## Permission Model
 
-Agents call the orchestrator CLI as their sanctioned side-effect channel: `happyranch report-completion`, `happyranch learning`, `happyranch manage-repo`, `happyranch manage-agent`, `happyranch dispatch`, and related callbacks. Baseline allow rule for every agent: `happyranch`.
+Agents call the orchestrator CLI as their sanctioned side-effect channel: `happyranch report-completion`, `happyranch memory`, `happyranch manage-repo`, `happyranch manage-agent`, `happyranch dispatch`, and related callbacks. Baseline allow rule for every agent: `happyranch`.
 
 Per-agent extras are declared in agent frontmatter under `allow_rules:`. Keep extras narrow; each prefix can mutate shared external state on future tasks.
 

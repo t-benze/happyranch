@@ -2,7 +2,7 @@
  *
  * Agent-subprocess-only routes (task_id/session_id auth) excluded:
  * POST /agents/manage (enroll/update/terminate via team-manager session),
- * POST /agents/{a}/learnings (legacy + entries add/update/promote, reindex).
+ * POST /agents/{a}/memory (legacy + entries add/update/promote, reindex).
  *
  * Founder-facing write routes included for the Agents surface reshape:
  * PUT /agents/{name}/executor, POST /agents/{name}/repos.
@@ -15,8 +15,8 @@ import { request } from './client';
 import type {
   AgentEnrollment,
   AgentSummary,
-  LearningEntry,
-  LearningEntrySummary,
+  MemoryEntry,
+  MemoryEntrySummary,
 } from './types';
 
 // Re-export for callers that import from this module by name (the
@@ -24,8 +24,8 @@ import type {
 export type {
   AgentEnrollment,
   AgentSummary,
-  LearningEntry,
-  LearningEntrySummary,
+  MemoryEntry,
+  MemoryEntrySummary,
 } from './types';
 
 export const listAgents = (
@@ -77,10 +77,10 @@ export const rejectAgent = (
   request(`/orgs/${slug}/agents/${agentName}/reject`, { method: 'POST', body });
 
 // ---------------------------------------------------------------------------
-// Per-agent learnings — READ ONLY (writes are agent-subprocess only)
+// Per-agent memory — READ ONLY (writes are agent-subprocess only)
 // ---------------------------------------------------------------------------
 
-export const listLearnings = (
+export const listMemory = (
   slug: string,
   agentName: string,
   params?: {
@@ -88,22 +88,22 @@ export const listLearnings = (
     tag?: string;
     promoted?: boolean;
   },
-): Promise<{ entries: LearningEntrySummary[] }> =>
-  request(`/orgs/${slug}/agents/${agentName}/learnings/entries/`, { params });
+): Promise<{ entries: MemoryEntrySummary[] }> =>
+  request(`/orgs/${slug}/agents/${agentName}/memory/entries/`, { params });
 
-export const getLearning = (
+export const getMemory = (
   slug: string,
   agentName: string,
   idOrSlug: string,
-): Promise<LearningEntry> =>
-  request(`/orgs/${slug}/agents/${agentName}/learnings/entries/${idOrSlug}`);
+): Promise<MemoryEntry> =>
+  request(`/orgs/${slug}/agents/${agentName}/memory/entries/${idOrSlug}`);
 
-export const searchLearnings = (
+export const searchMemory = (
   slug: string,
   agentName: string,
   body: { query: string; limit?: number; include_promoted?: boolean },
 ): Promise<{ hits: { id: string; slug: string; title: string; snippet: string; score: number }[] }> =>
-  request(`/orgs/${slug}/agents/${agentName}/learnings/entries/search`, {
+  request(`/orgs/${slug}/agents/${agentName}/memory/entries/search`, {
     method: 'POST',
     body,
   });

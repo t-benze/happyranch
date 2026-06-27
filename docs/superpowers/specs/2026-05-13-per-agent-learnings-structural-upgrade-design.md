@@ -5,6 +5,8 @@
 **Relates to:** `protocol/05b-agent-runtime.md` §2 (Agent Memory Architecture); `protocol/06-knowledge-base.md`; existing flat `learnings.md` written by `src/daemon/routes/agents.py::append_learning`.
 
 > **Extended by THR-032 harness-agnostic memory layer (Phase 1 — additive store generalization).** See `artifacts/TASK-949/2026-06-27-harness-agnostic-memory-layer-design.md`. Phase 1 generalizes this store (`LearningsStore`→`MemoryStore` / `LearningEntry`→`MemoryItem`, with back-compat aliases) and adds four additive frontmatter fields (`provenance`, `scope`, `lifecycle`, `salience`) on the same reindex/validation/atomic-write machinery — non-breaking, no SQL change. It extends this spec's "no deletion in v1" non-goal into *soft eviction* (`lifecycle: evicted` leaves the index but is retained on disk); the no-vector / no-auto-extraction / agent-authored stances are retained.
+>
+> **THR-032 Phase R (thorough rename).** This store's surfaces are renamed learnings→memory: dir `learnings/`→`memory/`, CLI `happyranch learning`→`happyranch memory` (one-cycle `learning` deprecation alias), routes `…/learnings/…`→`…/memory/…` (hidden legacy forwarders), ids `LRN-NNN`→`MEM-NNN` (with a permanent `LRN-` resolution shim so old ids resolve forever), audit `log_learning_*`→`log_memory_*` (forward-only; historical rows immutable). The flat legacy `learnings.md` filename and this spec's historical text are deliberately left as-is (append-only history).
 
 ## 1. Goal
 

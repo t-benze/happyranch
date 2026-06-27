@@ -14,20 +14,50 @@ def _run(args: list[str], cwd: Path = None) -> subprocess.CompletedProcess:
     )
 
 
-def test_learning_help_shows_verbs():
-    r = _run(["learning", "--help"])
+def test_memory_help_shows_verbs():
+    r = _run(["memory", "--help"])
     assert r.returncode == 0
     out = r.stdout
     for verb in ("list", "get", "search", "add", "update", "promote", "reindex"):
         assert verb in out
 
 
-def test_learning_list_help_shows_filters():
-    r = _run(["learning", "list", "--help"])
+def test_memory_list_help_shows_filters():
+    r = _run(["memory", "list", "--help"])
     assert r.returncode == 0
     assert "--topic" in r.stdout
     assert "--tag" in r.stdout
     assert "--promoted" in r.stdout
+
+
+def test_learning_alias_still_registered():
+    """The deprecated `learning` verb still exists for one rollout cycle."""
+    r = _run(["learning", "--help"])
+    assert r.returncode == 0
+    for verb in ("list", "get", "search", "add", "update", "promote", "reindex"):
+        assert verb in r.stdout
+
+
+def test_learning_alias_dispatch_warns(monkeypatch, capsys):
+    from cli import main as cli
+
+    class FakeResponse:
+        status_code = 200
+        def json(self): return {"entries": []}
+
+    class FakeClient:
+        def get(self, path, params=None): return FakeResponse()
+        def close(self): pass
+
+    monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["o"])
+    from cli.commands.learning import _deprecation_wrapper, cmd_learning_list
+    args = type("A", (), dict(
+        org="o", agent="dev_agent",
+        topic=None, tag=None, promoted=False, not_promoted=False, json=False,
+    ))()
+    _deprecation_wrapper(cmd_learning_list)(args)
+    assert "deprecated" in capsys.readouterr().err
 
 
 def test_cmd_learning_list_calls_correct_route(monkeypatch):
@@ -52,7 +82,7 @@ def test_cmd_learning_list_calls_correct_route(monkeypatch):
         topic="workflow", tag=None, promoted=False, not_promoted=False, json=False,
     ))()
     cli.cmd_learning_list(args)
-    assert captured["path"] == "/api/v1/orgs/my-org/agents/dev_agent/learnings/entries/"
+    assert captured["path"] == "/api/v1/orgs/my-org/agents/dev_agent/memory/entries/"
     assert captured["params"]["topic"] == "workflow"
 
 
@@ -61,7 +91,7 @@ def test_cmd_learning_add_reads_yaml_and_posts(monkeypatch, tmp_path):
 
     class FakeResponse:
         status_code = 200
-        def json(self): return {"id": "LRN-001", "path": "learnings/LRN-001-x.md"}
+        def json(self): return {"id": "MEM-001", "path": "memory/MEM-001-x.md"}
 
     class FakeClient:
         def post(self, path, json=None):
@@ -87,7 +117,7 @@ def test_cmd_learning_add_reads_yaml_and_posts(monkeypatch, tmp_path):
         org="o", agent="dev_agent", from_file=str(payload_path),
     ))()
     cli.cmd_learning_add(args)
-    assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/learnings/entries/"
+    assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/memory/entries/"
     assert captured["json"]["slug"] == "x"
     assert captured["json"]["tags"] == ["a", "b"]
     assert "body line 2" in captured["json"]["body"]
@@ -98,7 +128,7 @@ def test_cmd_learning_promote_posts_correct_path(monkeypatch):
 
     class FakeResponse:
         status_code = 200
-        def json(self): return {"id": "LRN-001", "promoted_to": "kb-x", "body": "..."}
+        def json(self): return {"id": "MEM-001", "promoted_to": "kb-x", "body": "..."}
 
     class FakeClient:
         def post(self, path, json=None):
@@ -111,11 +141,109 @@ def test_cmd_learning_promote_posts_correct_path(monkeypatch):
     monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
     monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["o"])
     args = type("A", (), dict(
-        org="o", agent="dev_agent", id="LRN-001", kb_slug="kb-x",
+        org="o", agent="dev_agent", id="MEM-001", kb_slug="kb-x",
     ))()
     cli.cmd_learning_promote(args)
-    assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/learnings/entries/LRN-001/promote"
+    assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/memory/entries/MEM-001/promote"
     assert captured["json"] == {"kb_slug": "kb-x"}
+
+
+# ---------------------------------------------------------------------------
+# REVISE TASK-974 F2: real documented command forms must PARSE through the
+# actual build_parser() (exit 0) and DISPATCH to the correct handler/route —
+# not merely render help text. Prior bug: a required parent --org plus a
+# colliding subcommand --org made `memory get --org o --agent a MEM-001`
+# fail argparse (exit 2), and `memory --org o get ...` silently clobber org.
+# ---------------------------------------------------------------------------
+
+def _parse(argv):
+    from cli import main as cli
+    return cli.build_parser().parse_args(argv)
+
+
+def _install_fake_client(monkeypatch, captured):
+    class FakeResponse:
+        status_code = 200
+        def json(self):
+            return {
+                "entries": [], "hits": [],
+                "id": "MEM-001", "slug": "s", "title": "T", "topic": "t",
+                "body": "b", "path": "memory/MEM-001-s.md",
+            }
+
+    class FakeClient:
+        def get(self, path, params=None):
+            captured["path"] = path
+            return FakeResponse()
+
+        def post(self, path, json=None):
+            captured["path"] = path
+            captured["json"] = json
+            return FakeResponse()
+
+        def request(self, method, path, json=None):
+            captured["path"] = path
+            return FakeResponse()
+
+        def close(self):
+            pass
+
+    from cli import main as cli
+    monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["o"])
+
+
+def test_memory_get_form_parses_and_dispatches(monkeypatch):
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    args = _parse(["memory", "get", "--org", "o", "--agent", "a", "MEM-001"])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/MEM-001"
+
+
+def test_memory_org_before_verb_form_does_not_clobber_org(monkeypatch):
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    # Parent --org before the verb must survive (subparser must not reset it).
+    args = _parse(["memory", "--org", "o", "get", "--agent", "a", "MEM-001"])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/MEM-001"
+
+
+def test_memory_add_form_parses_and_dispatches(monkeypatch, tmp_path):
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    payload = tmp_path / "p.yaml"
+    payload.write_text("slug: x\ntitle: T\ntopic: w\nbody: hi\n")
+    args = _parse(["memory", "add", "--org", "o", "--agent", "a", "--from-file", str(payload)])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/"
+    assert captured["json"]["slug"] == "x"
+
+
+def test_memory_search_form_parses_and_dispatches(monkeypatch):
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    args = _parse(["memory", "search", "--org", "o", "--agent", "a", "rename gotchas"])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/search"
+    assert captured["json"]["query"] == "rename gotchas"
+
+
+def test_learning_alias_get_form_parses_and_dispatches(monkeypatch, capsys):
+    """The one-cycle `learning` deprecation alias must parse + dispatch the
+    same real forms as `memory`, accepting a legacy LRN- id."""
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    args = _parse(["learning", "get", "--org", "o", "--agent", "a", "LRN-001"])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/LRN-001"
+    assert "deprecated" in capsys.readouterr().err
 
 
 def test_read_yaml_payload_rejects_non_dict(tmp_path, capsys):

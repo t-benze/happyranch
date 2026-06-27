@@ -148,8 +148,8 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
             <p className="text-fg-muted text-xs">Loading learnings…</p>
           ) : learningsError?.status === 412 ? (
             <p className="text-fg-muted text-xs">
-              This workspace hasn't been migrated to the per-entry learnings
-              layout yet. Run <code>happyranch learning reindex</code> from the
+              This workspace hasn't been migrated to the per-entry memory
+              layout yet. Run <code>happyranch memory reindex</code> from the
               CLI to upgrade.
             </p>
           ) : learningsError ? (

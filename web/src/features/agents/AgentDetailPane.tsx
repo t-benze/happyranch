@@ -7,7 +7,7 @@
  *
  * Sections: Header (agent identity), executor segmented control, repo/tool
  * chips, system prompt collapsible, accountability metrics, recent
- * tasks/learnings/jobs. Sticky save bar at bottom.
+ * tasks/memory/jobs. Sticky save bar at bottom.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -487,8 +487,8 @@ export function AgentDetailPane({ agentName, onClose }: AgentDetailPaneProps): J
             <p className="text-text-muted text-xs">Loading learnings…</p>
           ) : learningsError?.status === 412 ? (
             <p className="text-text-muted text-xs">
-              This workspace hasn't been migrated to the per-entry learnings
-              layout yet. Run <code>happyranch learning reindex</code> from the
+              This workspace hasn't been migrated to the per-entry memory
+              layout yet. Run <code>happyranch memory reindex</code> from the
               CLI to upgrade.
             </p>
           ) : learningsError ? (

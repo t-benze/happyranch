@@ -33,7 +33,9 @@ Contribute when any is true:
 
 ## What does not belong
 
-- **Agent-private operational learnings** → `learnings/` in your workspace.
+- **Agent-private memory (operational learnings)** → `memory/` in your workspace
+  (the legacy `learnings/` path and `happyranch learning` CLI remain as deprecation
+  aliases for one rollout cycle).
 - **Task progress notes or drafts** → `output/<task_id>/`.
 - **Mirrors of `protocol/` docs.** The authoritative copy is in `protocol/`;
   the KB complements, never duplicates.

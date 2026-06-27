@@ -17,9 +17,31 @@ from typing import Optional
 import yaml
 
 
-ID_RE = re.compile(r"^LRN-\d{3,}$")
+# THR-032 Phase R (thorough rename): ids move LRN-NNN -> MEM-NNN. New items
+# allocate the canonical MEM- prefix; the legacy LRN- prefix stays a permanent,
+# never-removed resolution alias (§3.3, §7.2(b)) so any old LRN- reference —
+# un-rewritten body ref, historical artifact, KB source_task, founder typing a
+# remembered id — resolves forever. ID_RE accepts both; the two prefixes are
+# aliases of the same opaque number.
+CANONICAL_ID_PREFIX = "MEM"
+LEGACY_ID_PREFIX = "LRN"
+_ID_PREFIXES = (CANONICAL_ID_PREFIX, LEGACY_ID_PREFIX)
+ID_RE = re.compile(r"^(?:LRN|MEM)-\d{3,}$")
+_ID_PARTS_RE = re.compile(r"^(LRN|MEM)-(\d{3,})$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_BODY_BYTES = 32 * 1024
+
+
+def _id_variants(id: str) -> list[str]:
+    """Return the id and its prefix-swapped alias (the permanent LRN-/MEM-
+    resolution shim). For a non-id string, return it unchanged. The id as
+    given comes first so a same-prefix file is preferred when both exist."""
+    m = _ID_PARTS_RE.match(id)
+    if not m:
+        return [id]
+    prefix, num = m.group(1), m.group(2)
+    other = CANONICAL_ID_PREFIX if prefix == LEGACY_ID_PREFIX else LEGACY_ID_PREFIX
+    return [id, f"{other}-{num}"]
 
 # THR-032 Phase 1 (harness-agnostic memory layer): additive frontmatter enums.
 PROVENANCE_VALUES = {"experiential", "reflective", "directive"}
@@ -138,7 +160,26 @@ class MemoryStore:
         if not SLUG_RE.match(slug):
             raise InvalidLearningEntry("invalid_slug", f"slug {slug!r} fails regex")
 
-    _ID_FILE_RE = re.compile(r"^LRN-(\d{3,})-")
+    _ID_FILE_RE = re.compile(r"^(?:LRN|MEM)-(\d{3,})-")
+
+    def _entry_paths(self) -> list["Path"]:
+        """All entry files under either prefix, numeric-suffix ordered.
+
+        Globbing both MEM-*.md and LRN-*.md lets a store hold a mix of migrated
+        (MEM-) and not-yet-migrated (LRN-) files and still list/search/index
+        them all — the permanent resolution shim at the directory level."""
+        paths = [
+            p
+            for prefix in _ID_PREFIXES
+            for p in self._root.glob(f"{prefix}-*.md")
+            if p.name != "_index.md"
+        ]
+
+        def _num(p: "Path") -> int:
+            m = self._ID_FILE_RE.match(p.name)
+            return int(m.group(1)) if m else 0
+
+        return sorted(paths, key=_num)
 
     def _validate_entry_structure(self, entry: MemoryItem) -> None:
         # Required fields (excluding id, which is server-allocated on add)
@@ -175,26 +216,33 @@ class MemoryStore:
         entry.salience = _clamp_salience(entry.salience)
 
     def next_id(self) -> str:
+        # Continue the single per-agent number line across BOTH prefixes so the
+        # first post-rename id is MEM-<max+1> (e.g. MEM-074 follows LRN-073) —
+        # never a reset to 1 (§3.3).
         max_n = 0
-        for path in self._root.glob("LRN-*.md"):
+        for path in self._entry_paths():
             m = self._ID_FILE_RE.match(path.name)
             if m:
                 n = int(m.group(1))
                 if n > max_n:
                     max_n = n
-        return f"LRN-{max_n + 1:03d}"
+        return f"{CANONICAL_ID_PREFIX}-{max_n + 1:03d}"
 
     def path_for(self, id: str, slug: str) -> Path:
         return self._root / f"{id}-{slug}.md"
 
     def _find_by_id(self, id: str) -> Optional[Path]:
-        for path in self._root.glob(f"{id}-*.md"):
-            return path
+        # Permanent shim: try the id as given, then its prefix-swapped alias,
+        # so `read LRN-061` resolves a migrated MEM-061 file forever (§7.2(b)).
+        for variant in _id_variants(id):
+            for path in self._root.glob(f"{variant}-*.md"):
+                return path
         return None
 
     def _find_by_slug(self, slug: str) -> Optional[Path]:
-        for path in self._root.glob(f"LRN-*-{slug}.md"):
-            return path
+        for prefix in _ID_PREFIXES:
+            for path in self._root.glob(f"{prefix}-*-{slug}.md"):
+                return path
         return None
 
     def _validate_cross_refs(self, entry: MemoryItem) -> None:
@@ -245,8 +293,13 @@ class MemoryStore:
         existing = self._parse(existing_path.read_text())
         if existing.promoted_to is not None:
             raise PromotedLocked(id, existing.promoted_to)
-        # Force id consistency (positional arg wins)
-        entry.id = id
+        # Canonicalize the WRITE id to the resolved item's own on-disk id.
+        # The LRN-/MEM- shim accepts a legacy id at the resolve boundary (`id`
+        # may be LRN-061), but a migrated item must stay canonical MEM forever:
+        # updating via the LRN- alias must NOT rewrite MEM-061 back to LRN-061
+        # (§3.3/§7.2(b)). existing.id is the parsed canonical id, so this is
+        # pure id-normalization — never a prefix flip.
+        entry.id = existing.id
         entry.promoted_to = existing.promoted_to  # always None at this point
         self._validate_entry_structure(entry)
         self._validate_cross_refs(entry)
@@ -344,7 +397,7 @@ class MemoryStore:
         promoted: Optional[bool] = None,
     ) -> list[LearningSummary]:
         out: list[LearningSummary] = []
-        for path in sorted(self._root.glob("LRN-*.md")):
+        for path in self._entry_paths():
             try:
                 entry = self._parse(path.read_text())
             except InvalidLearningEntry:
@@ -378,7 +431,7 @@ class MemoryStore:
         if not q:
             return []
         hits: list[LearningSearchHit] = []
-        for path in sorted(self._root.glob("LRN-*.md")):
+        for path in self._entry_paths():
             try:
                 entry = self._parse(path.read_text())
             except InvalidLearningEntry:
@@ -450,7 +503,7 @@ class MemoryStore:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         total = sum(len(v) for v in groups.values())
         lines = [
-            f"# Learnings Index",
+            f"# Memory Index",
             "",
             f"_Generated {now} — {total} entries_",
             "",

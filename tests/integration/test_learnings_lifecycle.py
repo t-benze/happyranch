@@ -32,13 +32,13 @@ def _base(port: str, slug: str = "test") -> str:
     return f"http://127.0.0.1:{port}/api/v1/orgs/{slug}"
 
 
-def _seed_learnings_dir(org_root: Path, agent: str) -> Path:
-    """Create workspace + learnings/ dir to simulate a migrated workspace."""
+def _seed_memory_dir(org_root: Path, agent: str) -> Path:
+    """Create workspace + memory/ dir to simulate a migrated workspace."""
     ws = org_root / "workspaces" / agent
     ws.mkdir(parents=True, exist_ok=True)
-    learnings = ws / "learnings"
-    learnings.mkdir(exist_ok=True)
-    return learnings
+    memory = ws / "memory"
+    memory.mkdir(exist_ok=True)
+    return memory
 
 
 def _seed_kb_entry(base: str, headers: dict, *, kb_slug: str) -> None:
@@ -72,8 +72,8 @@ def test_learnings_full_lifecycle(live_daemon, runtime):
     headers = _auth_headers()
     agent = "dev_agent"
 
-    # Step 1: simulate a migrated workspace by creating the learnings/ dir
-    _seed_learnings_dir(runtime, agent)
+    # Step 1: simulate a migrated workspace by creating the memory/ dir
+    _seed_memory_dir(runtime, agent)
 
     # Step 2: seed a KB entry the promote step will reference
     kb_slug = "test-precedent-for-learnings"
@@ -89,7 +89,7 @@ def test_learnings_full_lifecycle(live_daemon, runtime):
         "source_task": None,
     }
     r = httpx.post(
-        f"{base}/agents/{agent}/learnings/entries/",
+        f"{base}/agents/{agent}/memory/entries/",
         json=add_payload,
         headers=headers,
         timeout=5.0,
@@ -97,12 +97,12 @@ def test_learnings_full_lifecycle(live_daemon, runtime):
     assert r.status_code == 201, f"add failed: {r.text}"
     add_resp = r.json()
     learning_id = add_resp["id"]
-    assert learning_id.startswith("LRN-"), f"expected LRN-NNN, got {learning_id!r}"
+    assert learning_id.startswith("MEM-"), f"expected MEM-NNN, got {learning_id!r}"
     assert "path" in add_resp
 
     # Step 4: list -> verify entry shows
     r = httpx.get(
-        f"{base}/agents/{agent}/learnings/entries/",
+        f"{base}/agents/{agent}/memory/entries/",
         headers=headers,
         timeout=5.0,
     )
@@ -114,7 +114,7 @@ def test_learnings_full_lifecycle(live_daemon, runtime):
 
     # Step 5: get by ID -> verify body content
     r = httpx.get(
-        f"{base}/agents/{agent}/learnings/entries/{learning_id}",
+        f"{base}/agents/{agent}/memory/entries/{learning_id}",
         headers=headers,
         timeout=5.0,
     )
@@ -127,7 +127,7 @@ def test_learnings_full_lifecycle(live_daemon, runtime):
 
     # Step 6: search -> verify hit
     r = httpx.post(
-        f"{base}/agents/{agent}/learnings/entries/search",
+        f"{base}/agents/{agent}/memory/entries/search",
         json={"query": "from-payload-keyword", "limit": 10},
         headers=headers,
         timeout=5.0,
@@ -147,7 +147,7 @@ def test_learnings_full_lifecycle(live_daemon, runtime):
         "tags": ["integration", "test", "updated"],
     }
     r = httpx.put(
-        f"{base}/agents/{agent}/learnings/entries/{learning_id}",
+        f"{base}/agents/{agent}/memory/entries/{learning_id}",
         json=update_payload,
         headers=headers,
         timeout=5.0,
@@ -159,7 +159,7 @@ def test_learnings_full_lifecycle(live_daemon, runtime):
 
     # Step 8: promote -> link to KB entry
     r = httpx.post(
-        f"{base}/agents/{agent}/learnings/entries/{learning_id}/promote",
+        f"{base}/agents/{agent}/memory/entries/{learning_id}/promote",
         json={"kb_slug": kb_slug},
         headers=headers,
         timeout=5.0,
@@ -172,7 +172,7 @@ def test_learnings_full_lifecycle(live_daemon, runtime):
 
     # Step 9: get again -> verify promoted_to is set
     r = httpx.get(
-        f"{base}/agents/{agent}/learnings/entries/{learning_id}",
+        f"{base}/agents/{agent}/memory/entries/{learning_id}",
         headers=headers,
         timeout=5.0,
     )
@@ -182,7 +182,7 @@ def test_learnings_full_lifecycle(live_daemon, runtime):
 
     # Step 10: update after promote -> must be rejected with promoted_locked
     r = httpx.put(
-        f"{base}/agents/{agent}/learnings/entries/{learning_id}",
+        f"{base}/agents/{agent}/memory/entries/{learning_id}",
         json=update_payload,
         headers=headers,
         timeout=5.0,

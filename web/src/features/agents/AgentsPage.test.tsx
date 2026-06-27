@@ -53,7 +53,7 @@ function stubDetailHandlers(agentTasks: unknown[] = []) {
       HttpResponse.json({ tasks: agentTasks }),
     ),
     http.get(
-      `/api/v1/orgs/${SLUG}/agents/:agentName/learnings/entries/`,
+      `/api/v1/orgs/${SLUG}/agents/:agentName/memory/entries/`,
       () => HttpResponse.json({ entries: [] }),
     ),
     http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
@@ -489,7 +489,7 @@ describe('AgentsPage — route collision regression', () => {
         HttpResponse.json({ tasks: [] }),
       ),
       http.get(
-        `/api/v1/orgs/${SLUG}/agents/pending/learnings/entries/`,
+        `/api/v1/orgs/${SLUG}/agents/pending/memory/entries/`,
         () => HttpResponse.json({ entries: [] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
@@ -634,7 +634,7 @@ describe('AgentDetailPane — recent jobs cross-link', () => {
         HttpResponse.json({ tasks: [] }),
       ),
       http.get(
-        `/api/v1/orgs/${SLUG}/agents/engineering_head/learnings/entries/`,
+        `/api/v1/orgs/${SLUG}/agents/engineering_head/memory/entries/`,
         () => HttpResponse.json({ entries: [] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
@@ -666,7 +666,7 @@ describe('AgentDetailPane — recent jobs cross-link', () => {
         HttpResponse.json({ tasks: [] }),
       ),
       http.get(
-        `/api/v1/orgs/${SLUG}/agents/engineering_head/learnings/entries/`,
+        `/api/v1/orgs/${SLUG}/agents/engineering_head/memory/entries/`,
         () => HttpResponse.json({ entries: [] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>

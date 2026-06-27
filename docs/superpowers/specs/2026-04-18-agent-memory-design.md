@@ -4,6 +4,8 @@
 **Status:** Approved, ready for implementation plan
 
 > **Extended by THR-032 harness-agnostic memory layer (Phase 1 — additive store generalization).** See `artifacts/TASK-949/2026-06-27-harness-agnostic-memory-layer-design.md`. Phase 1 generalizes `LearningsStore`→`MemoryStore` / `LearningEntry`→`MemoryItem` (with back-compat aliases) and adds four additive frontmatter fields (`provenance`, `scope`, `lifecycle`, `salience`) — non-breaking, no SQL change. The PUSH digest that reverses this spec's "no automatic prompt injection" non-goal lands in a later, founder-gated phase.
+>
+> **THR-032 Phase R (thorough rename).** The "learnings" concept is renamed to "memory" across the runtime: dir `learnings/`→`memory/`, CLI `happyranch learning`→`happyranch memory` (one-cycle `learning` deprecation alias), routes `/agents/{name}/learnings/…`→`/memory/…` (hidden legacy forwarders), ids `LRN-NNN`→`MEM-NNN` (permanent `LRN-` resolution shim), audit `log_learning_*`→`log_memory_*` (forward-only; historical rows untouched).
 
 ## Problem
 

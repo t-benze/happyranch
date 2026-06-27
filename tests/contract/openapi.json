@@ -256,7 +256,7 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/agents/{agent_name}/learnings": {
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory": {
       "POST": {
         "params": [
           [
@@ -278,7 +278,7 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/": {
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/": {
       "GET": {
         "params": [
           [
@@ -332,7 +332,7 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/reindex": {
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/reindex": {
       "POST": {
         "params": [
           [
@@ -354,7 +354,7 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/search": {
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/search": {
       "POST": {
         "params": [
           [
@@ -376,7 +376,7 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/{id_or_slug}": {
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id_or_slug}": {
       "GET": {
         "params": [
           [
@@ -402,7 +402,7 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/{id}": {
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}": {
       "PUT": {
         "params": [
           [
@@ -428,7 +428,7 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/{id}/promote": {
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}/promote": {
       "POST": {
         "params": [
           [
