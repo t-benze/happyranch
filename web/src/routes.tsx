@@ -27,6 +27,8 @@ import { SpendPage } from '@/features/spend/SpendPage';
 import { SystemAssistantPage } from '@/features/system-assistant/SystemAssistantPage';
 import { DreamsPage } from '@/features/dreams/DreamsPage';
 import { SchedulePage } from '@/features/schedule/SchedulePage';
+import { OverviewPage as WorkHoursOverviewPage } from '@/features/work-hours-config/OverviewPage';
+import { AgentDetailPage as WorkHoursAgentDetailPage } from '@/features/work-hours-config/AgentDetailPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
@@ -105,6 +107,8 @@ export function AppRoutes(): JSX.Element {
           <Route path="spend" element={<SpendPage />} />
           <Route path="dreams" element={<DreamsPage />} />
           <Route path="schedule" element={<SchedulePage />} />
+          <Route path="work-hours" element={<WorkHoursOverviewPage />} />
+          <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
           <Route path="artifacts" element={<ArtifactsPage />} />
           <Route path="assistant" element={<SystemAssistantPage />} />
           <Route path="settings/*" element={<SettingsPage />} />

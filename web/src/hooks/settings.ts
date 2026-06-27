@@ -14,3 +14,8 @@ export const useUpdateOrgSettings: ReturnType<
   typeof useData
 >['settings']['useUpdateOrgSettings'] = () =>
   useData().settings.useUpdateOrgSettings();
+
+export const useNextWakes: ReturnType<
+  typeof useData
+>['settings']['useNextWakes'] = (agent, count) =>
+  useData().settings.useNextWakes(agent, count);
