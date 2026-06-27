@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 from runtime.config import settings as global_settings
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
+from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
@@ -118,21 +119,79 @@ class ThreadsSettingsView(BaseModel):
     invocation_timeout_seconds: int | None
 
 
+class WorkHoursWindowView(BaseModel):
+    """Read-only window leaf of a working-hours schedule layer. Any leaf may be
+    ``None`` — it is inherited from a lower-precedence tier."""
+    start: str | None
+    end: str | None
+    timezone: str | None
+
+
+class WorkHoursLayerView(BaseModel):
+    """Read-only RAW per-tier working-hours layer (default / a team / an agent
+    override). ``None`` leaves are unset at this tier and inherit downward; the
+    client derives per-leaf provenance + the effective schedule from these raw
+    tiers (THR-035 §4.3 reconciliation view)."""
+    mode: str | None
+    window: WorkHoursWindowView
+    interval: str | None
+    days: list[str] | None
+    catch_up_on_startup: bool | None
+
+
+class WorkHoursAgentsView(BaseModel):
+    """Read-only eligibility selector — a single org-level gate (not per-tier)."""
+    mode: str
+    include: list[str]
+    exclude: list[str]
+
+
+class WorkingHoursSettingsView(BaseModel):
+    """Read-only RAW per-tier working-hours configuration.
+
+    ``enabled`` is the single feature-level on/off switch (NOT a per-tier leaf).
+    ``agents`` is the single org-level eligibility gate. ``default`` / ``teams``
+    / ``overrides`` are the raw tiers the reconciliation UI merges client-side
+    to show per-leaf provenance and the effective schedule.
+    """
+    enabled: bool
+    agents: WorkHoursAgentsView
+    default: WorkHoursLayerView
+    teams: dict[str, WorkHoursLayerView]
+    overrides: dict[str, WorkHoursLayerView]
+
+
+def _layer_to_view(layer) -> WorkHoursLayerView:
+    return WorkHoursLayerView(
+        mode=layer.mode,
+        window=WorkHoursWindowView(
+            start=layer.window_start,
+            end=layer.window_end,
+            timezone=layer.timezone,
+        ),
+        interval=layer.interval,
+        days=list(layer.days) if layer.days is not None else None,
+        catch_up_on_startup=layer.catch_up_on_startup,
+    )
+
+
 class OrgSettingsView(BaseModel):
     """Read-only view of selected org-level settings.
 
-    ALLOW-LIST: only session_timeout_seconds, dreaming, and threads.
-    feishu_notifications and any other OrgConfig field are excluded by
-    construction — they have NO attribute on this model.
+    ALLOW-LIST: only session_timeout_seconds, dreaming, threads, and
+    working_hours. feishu_notifications and any other OrgConfig field are
+    excluded by construction — they have NO attribute on this model.
     """
 
     session_timeout_seconds: int | None
     dreaming: DreamingSettingsView
     threads: ThreadsSettingsView
+    working_hours: WorkingHoursSettingsView
 
 
 def _org_config_to_view(cfg) -> OrgSettingsView:
     """Pure function: map OrgConfig → OrgSettingsView (allow-list)."""
+    wh = cfg.working_hours
     return OrgSettingsView(
         session_timeout_seconds=cfg.session_timeout_seconds,
         dreaming=DreamingSettingsView(
@@ -152,6 +211,17 @@ def _org_config_to_view(cfg) -> OrgSettingsView:
             enabled=cfg.threads_enabled,
             default_turn_cap=cfg.threads_default_turn_cap,
             invocation_timeout_seconds=cfg.threads_invocation_timeout_seconds,
+        ),
+        working_hours=WorkingHoursSettingsView(
+            enabled=wh.enabled,
+            agents=WorkHoursAgentsView(
+                mode=wh.agent_mode,
+                include=list(wh.include_agents),
+                exclude=list(wh.exclude_agents),
+            ),
+            default=_layer_to_view(wh.default),
+            teams={name: _layer_to_view(layer) for name, layer in wh.teams.items()},
+            overrides={name: _layer_to_view(layer) for name, layer in wh.overrides.items()},
         ),
     )
 
@@ -265,20 +335,77 @@ class ThreadsPatch(BaseModel):
         return v
 
 
+class WorkHoursWindowPatch(BaseModel):
+    """Optional window leaf override of a working-hours schedule layer."""
+    model_config = ConfigDict(extra="forbid")
+
+    start: str | None = None
+    end: str | None = None
+    timezone: str | None = None
+
+
+class WorkHoursLayerPatch(BaseModel):
+    """Optional RAW per-tier schedule-layer override. Authoritative validation
+    (divides-24h, window completeness, start<end, interval≤window) runs
+    server-side in ``_build_org_config`` at save — NOT here. ``extra='forbid'``
+    only rejects unknown leaf names."""
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str | None = None
+    window: WorkHoursWindowPatch | None = None
+    interval: str | None = None
+    days: list[str] | None = None
+    catch_up_on_startup: bool | None = None
+
+
+class WorkHoursAgentsPatch(BaseModel):
+    """Optional eligibility-selector override (single org-level gate)."""
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str | None = None
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+
+    @field_validator("mode")
+    @classmethod
+    def _mode_must_be_valid(cls, v: str | None) -> str | None:
+        if v is not None and v not in {"all", "whitelist"}:
+            raise ValueError(
+                f"working_hours.agents.mode must be 'all' or 'whitelist', got {v!r}"
+            )
+        return v
+
+
+class WorkingHoursPatch(BaseModel):
+    """Optional working-hours configuration override.
+
+    ``enabled`` is the single feature-level switch (NOT a per-tier leaf).
+    ``agents`` is the single org-level eligibility gate. ``teams`` / ``overrides``
+    are keyed by team / agent name; the deep-merge preserves sibling entries.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    agents: WorkHoursAgentsPatch | None = None
+    default: WorkHoursLayerPatch | None = None
+    teams: dict[str, WorkHoursLayerPatch] | None = None
+    overrides: dict[str, WorkHoursLayerPatch] | None = None
+
+
 class OrgSettingsPatch(BaseModel):
     """Partial update of non-sensitive OrgConfig fields.
 
     EVERY field is optional — absent keys leave the current on-disk value
     untouched. ``extra='forbid'`` rejects any unknown or sensitive key
-    (feishu_notifications, working_hours, permission_mode, etc.) with a
-    422 so the GUI client gets immediate feedback rather than a silent
-    no-op.
+    (feishu_notifications, permission_mode, etc.) with a 422 so the GUI client
+    gets immediate feedback rather than a silent no-op.
     """
     model_config = ConfigDict(extra="forbid")
 
     session_timeout_seconds: int | None = None
     dreaming: DreamingPatch | None = None
     threads: ThreadsPatch | None = None
+    working_hours: WorkingHoursPatch | None = None
 
     @field_validator("session_timeout_seconds")
     @classmethod
@@ -353,7 +480,69 @@ def _patch_to_raw_dict(patch: OrgSettingsPatch) -> dict:
         if threads:
             result["threads"] = threads
 
+    if patch.working_hours is not None:
+        result["working_hours"] = _working_hours_patch_to_raw(patch.working_hours)
+
     return result
+
+
+def _layer_patch_to_raw(layer: WorkHoursLayerPatch) -> dict:
+    """Convert one schedule-layer patch to its raw YAML dict, mirroring the
+    on-disk shape ``_parse_schedule_layer`` expects (window nested, timezone
+    under window). Uses ``model_fields_set`` so an explicit ``null`` clears a
+    leaf (reset-to-inherited) while an omitted leaf is left untouched."""
+    raw: dict = {}
+    lf = layer.model_fields_set or set()
+    if "mode" in lf:
+        raw["mode"] = layer.mode
+    if layer.window is not None:
+        window: dict = {}
+        wf = layer.window.model_fields_set or set()
+        if "start" in wf:
+            window["start"] = layer.window.start
+        if "end" in wf:
+            window["end"] = layer.window.end
+        if "timezone" in wf:
+            window["timezone"] = layer.window.timezone
+        if window:
+            raw["window"] = window
+    if "interval" in lf:
+        raw["interval"] = layer.interval
+    if "days" in lf:
+        raw["days"] = layer.days
+    if "catch_up_on_startup" in lf:
+        raw["catch_up_on_startup"] = layer.catch_up_on_startup
+    return raw
+
+
+def _working_hours_patch_to_raw(w: WorkingHoursPatch) -> dict:
+    """Convert the working_hours patch to a raw dict for ``save_org_config``
+    deep-merge. teams/overrides are keyed dicts — sending one key deep-merges
+    into the existing tier without dropping siblings."""
+    wh: dict = {}
+    wf = w.model_fields_set or set()
+    if "enabled" in wf:
+        wh["enabled"] = w.enabled
+    if w.agents is not None:
+        agents: dict = {}
+        af = w.agents.model_fields_set or set()
+        if "mode" in af:
+            agents["mode"] = w.agents.mode
+        if "include" in af:
+            agents["include"] = w.agents.include
+        if "exclude" in af:
+            agents["exclude"] = w.agents.exclude
+        if agents:
+            wh["agents"] = agents
+    if w.default is not None:
+        wh["default"] = _layer_patch_to_raw(w.default)
+    if w.teams is not None:
+        wh["teams"] = {name: _layer_patch_to_raw(layer) for name, layer in w.teams.items()}
+    if w.overrides is not None:
+        wh["overrides"] = {
+            name: _layer_patch_to_raw(layer) for name, layer in w.overrides.items()
+        }
+    return wh
 
 
 def _resolve_agent_names(paths: OrgPaths) -> set[str]:
@@ -381,13 +570,69 @@ def _validate_agent_names(
     return errors
 
 
+def _validate_working_hours_names(
+    wh_block: dict, known_agents: set[str], known_teams: set[str],
+) -> list[str]:
+    """Pre-flight name validation for a working_hours patch against the live
+    roster (mirrors ``_validate_agent_names``). Agent names appear in
+    ``agents.include`` / ``agents.exclude`` and as ``overrides.<agent>`` keys;
+    team names appear as ``teams.<team>`` keys. Unknown names → 422 before any
+    write, so a stale reference can never reach disk."""
+    errors: list[str] = []
+    agents_block = wh_block.get("agents")
+    if isinstance(agents_block, dict):
+        for label in ("include", "exclude"):
+            names = agents_block.get(label)
+            if names:
+                unknown = sorted(set(names) - known_agents)
+                if unknown:
+                    errors.append(
+                        f"working_hours.agents.{label} references unknown agent(s): "
+                        + ", ".join(unknown)
+                    )
+    teams_block = wh_block.get("teams")
+    if isinstance(teams_block, dict):
+        unknown_teams = sorted(set(teams_block) - known_teams)
+        if unknown_teams:
+            errors.append(
+                "working_hours.teams references unknown team(s): "
+                + ", ".join(unknown_teams)
+            )
+    overrides_block = wh_block.get("overrides")
+    if isinstance(overrides_block, dict):
+        unknown = sorted(set(overrides_block) - known_agents)
+        if unknown:
+            errors.append(
+                "working_hours.overrides references unknown agent(s): "
+                + ", ".join(unknown)
+            )
+    return errors
+
+
+def _read_raw_working_hours(paths: OrgPaths) -> dict:
+    """Read the raw ``working_hours`` block from org/config.yaml (``{}`` if the
+    file or key is absent). Used to snapshot before→after for the audit row."""
+    import yaml
+    path = paths.org_config_path
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    block = data.get("working_hours", {})
+    return block if isinstance(block, dict) else {}
+
+
 @router.put("/settings/org", response_model=SettingsResponse)
 def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> SettingsResponse:
     """Partial-update editable org settings.
 
-    Only allow-listed keys (dreaming, threads, session_timeout_seconds)
-    are written — ``feishu_notifications``, ``working_hours``, and any
-    other unknown key are carried through verbatim.
+    Only allow-listed keys (dreaming, threads, session_timeout_seconds,
+    working_hours) are written — ``feishu_notifications`` and any other unknown
+    key are carried through verbatim.
 
     Returns the updated settings snapshot so the client can invalidate
     and re-render in a single round-trip.
@@ -408,10 +653,36 @@ def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> Setting
                 detail = {"errors": errors}
                 raise HTTPException(status_code=422, detail=detail)
 
+    # Pre-flight: validate working_hours agent/team names against the live
+    # roster so a stale reference is rejected (422) before reaching disk.
+    if "working_hours" in patch_raw:
+        known_agents = _resolve_agent_names(paths)
+        known_teams = set(org.teams.teams()) if getattr(org, "teams", None) else set()
+        wh_errors = _validate_working_hours_names(
+            patch_raw["working_hours"], known_agents, known_teams,
+        )
+        if wh_errors:
+            raise HTTPException(status_code=422, detail={"errors": wh_errors})
+
+    # Snapshot working_hours before the write so the audit row records before→after.
+    wh_before = _read_raw_working_hours(paths) if "working_hours" in patch_raw else None
+
     try:
         save_org_config(paths, patch_raw)
     except OrgConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Audit the working_hours config write (who/when/before→after/tiers). Scoped
+    # to a dedicated ``config:working_hours`` scope value — no audit_log.task_id
+    # overload of a real TASK id, no schema change.
+    if wh_before is not None:
+        wh_after = _read_raw_working_hours(paths)
+        AuditLogger(org.db).log_org_config_write(
+            section="working_hours",
+            tiers=sorted(patch_raw["working_hours"].keys()),
+            before=wh_before,
+            after=wh_after,
+        )
 
     # Return updated snapshot
     cfg = load_org_config(paths)

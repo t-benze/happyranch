@@ -403,6 +403,12 @@ export interface SettingsApi {
     import('@/lib/api/types').OrgSettingsPatch,
     import('@/lib/api/types').SettingsSnapshot
   >;
+  /** Next-wakes preview for an agent's resolved effective schedule
+   *  (work-hours config UI, THR-035). Self-gates when `agent` is undefined. */
+  useNextWakes: (
+    agent: string | undefined,
+    count?: number,
+  ) => QueryLike<import('@/lib/api/types').NextWakesResponse>;
 }
 
 // ---------------------------------------------------------------------------

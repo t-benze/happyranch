@@ -104,6 +104,7 @@ const INCLUDED_PATHS = new Set<string>([
   // work-hours — founder-facing list/show/status; spawn is agent callback
   'GET /api/v1/orgs/{slug}/work-hours/status',
   'GET /api/v1/orgs/{slug}/work-hours',
+  'GET /api/v1/orgs/{slug}/work-hours/next-wakes',
   'GET /api/v1/orgs/{slug}/work-hours/{work_hour_id}',
   // dashboard — founder-facing summary rollup
   'GET /api/v1/orgs/{slug}/dashboard/summary',

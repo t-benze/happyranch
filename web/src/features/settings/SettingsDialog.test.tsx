@@ -35,6 +35,19 @@ const mockOrg: OrgSettings = {
     default_turn_cap: 500,
     invocation_timeout_seconds: null,
   },
+  working_hours: {
+    enabled: true,
+    agents: { mode: 'all', include: [], exclude: [] },
+    default: {
+      mode: 'windowed',
+      window: { start: '09:00', end: '17:00', timezone: 'UTC' },
+      interval: '2h',
+      days: ['mon', 'tue', 'wed', 'thu', 'fri'],
+      catch_up_on_startup: false,
+    },
+    teams: {},
+    overrides: {},
+  },
 };
 
 const mockSnapshot: SettingsSnapshot = {

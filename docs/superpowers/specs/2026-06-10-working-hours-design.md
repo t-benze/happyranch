@@ -309,6 +309,8 @@ happyranch work-hours show   --org <slug> WORKHOUR-001 [--json]
 
 Web mirror: browser-callable `work-hours` list/show routes get TypeScript mirrors under `web/src/lib/api/`. A dashboard "working hours" card is a later follow-up; v1 only needs list/show plus the audit rows that make a future card straightforward.
 
+> **Update (THR-035, implemented):** the web surface went past read-only list/show. The **Work-Hours Config UI** (Settings → Work Hours) is now a founder-only *authoring* surface: a single global on/off switch, the org-level eligibility selector, a 3-tier reconciliation view with per-leaf provenance, reusable tier editors (`default` / `teams` / `overrides`), an eligibility editor, and a next-wakes preview (`GET /work-hours/next-wakes`). Writes reuse `save_org_config`'s validate-then-atomic-write (invalid config never reaches disk) and validation stays server-authoritative (`_build_org_config`); the client does format hints only. Each successful config write emits an `org_config_write` audit row keyed `task_id="config:<section>"` (e.g. `config:working_hours`) — the same mandatory scope-prefix convention used for `artifact:<name>`/`THR-`/`WORKHOUR-` (load-bearing invariant; additive, no schema migration, no column change). Routine-task editing remains read-only in this MVP. Current behavior: `docs/agent-guides/web-and-cli.md` (Settings dialog + Work-Hours Config) and `README.md` (Working hours).
+
 ## Audit And Token Usage
 
 Audit actions (mirroring the dreaming action set):

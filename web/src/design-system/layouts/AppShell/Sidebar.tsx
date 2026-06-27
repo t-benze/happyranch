@@ -4,6 +4,7 @@ import {
   BookOpen,
   Calendar,
   ChevronDown,
+  Clock,
   type LucideIcon,
   ListChecks,
   MessageSquare,
@@ -250,6 +251,9 @@ export function Sidebar(): JSX.Element {
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('schedule', true)} icon={Calendar}>
             Schedule
+          </SidebarNavItem>
+          <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
+            Work Hours
           </SidebarNavItem>
           <SidebarNavItem
             {...sidebarLink('audit', true)}

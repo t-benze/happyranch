@@ -556,6 +556,18 @@ happyranch work-hours list   --org <slug> [--agent <name>] [--limit 20] [--json]
 happyranch work-hours show   --org <slug> WORKHOUR-NNN [--json]
 ```
 
+Web UI (founder-only): **Settings → Work Hours** edits the same `working_hours`
+block in the browser. The overview lists every agent with a read-only **On**
+status (derived from the single global switch **and** eligibility — there is no
+per-agent toggle); the per-agent detail shows a 3-tier reconciliation
+(org `default` → team → agent override → effective, winning tier highlighted),
+mode-aware tier editors with ghosted inherited values and reset-to-inherited,
+an org-level eligibility editor, a read-only routine-tasks panel, and a
+next-wakes preview. Validation is server-authoritative — the same
+`_build_org_config` path that loads the YAML validates every save, so an
+invalid edit is rejected and the last-known-good config keeps running; the
+client only hints field formats. Each save records an audit row.
+
 ## Agent Workspaces
 
 Each agent runs in its own persistent workspace inside the org directory. After `happyranch init-agent`, each workspace contains:

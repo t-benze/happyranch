@@ -530,10 +530,50 @@ export interface ThreadsSettings {
   invocation_timeout_seconds: number | null;
 }
 
+// ---------------------------------------------------------------------------
+// Work-hours config (schedule surface) — RAW per-tier blocks.
+//
+// Mirror of the daemon `WorkingHoursSettingsView` (routes/settings.py). The
+// client derives per-leaf provenance + the effective schedule from these raw
+// tiers (THR-035 §4.3 reconciliation view) — a `null` leaf is unset at that
+// tier and inherits from a lower-precedence tier.
+// ---------------------------------------------------------------------------
+
+export interface WorkHoursWindow {
+  start: string | null;
+  end: string | null;
+  timezone: string | null;
+}
+
+export interface WorkHoursLayer {
+  mode: string | null;
+  window: WorkHoursWindow;
+  interval: string | null;
+  days: string[] | null;
+  catch_up_on_startup: boolean | null;
+}
+
+/** Single org-level eligibility gate (not per-tier). */
+export interface WorkHoursAgents {
+  mode: string; // 'all' | 'whitelist'
+  include: string[];
+  exclude: string[];
+}
+
+export interface WorkingHoursSettings {
+  /** Single feature-level on/off switch (NOT a per-tier leaf). */
+  enabled: boolean;
+  agents: WorkHoursAgents;
+  default: WorkHoursLayer;
+  teams: Record<string, WorkHoursLayer>;
+  overrides: Record<string, WorkHoursLayer>;
+}
+
 export interface OrgSettings {
   session_timeout_seconds: number | null;
   dreaming: DreamingSettings;
   threads: ThreadsSettings;
+  working_hours: WorkingHoursSettings;
 }
 
 export interface SettingsSnapshot {
@@ -569,10 +609,58 @@ export interface ThreadsPatch {
   invocation_timeout_seconds?: number | null;
 }
 
+// ---------------------------------------------------------------------------
+// Work-hours config PATCH — partial; an explicit `null` leaf clears the
+// override (reset-to-inherited). teams/overrides are keyed dicts: sending one
+// key deep-merges without dropping siblings.
+// ---------------------------------------------------------------------------
+
+export interface WorkHoursWindowPatch {
+  start?: string | null;
+  end?: string | null;
+  timezone?: string | null;
+}
+
+export interface WorkHoursLayerPatch {
+  mode?: string | null;
+  window?: WorkHoursWindowPatch;
+  interval?: string | null;
+  days?: string[] | null;
+  catch_up_on_startup?: boolean | null;
+}
+
+export interface WorkHoursAgentsPatch {
+  mode?: string | null;
+  include?: string[] | null;
+  exclude?: string[] | null;
+}
+
+export interface WorkingHoursPatch {
+  enabled?: boolean;
+  agents?: WorkHoursAgentsPatch;
+  default?: WorkHoursLayerPatch;
+  teams?: Record<string, WorkHoursLayerPatch>;
+  overrides?: Record<string, WorkHoursLayerPatch>;
+}
+
 export interface OrgSettingsPatch {
   session_timeout_seconds?: number | null;
   dreaming?: DreamingPatch;
   threads?: ThreadsPatch;
+  working_hours?: WorkingHoursPatch;
+}
+
+// ---------------------------------------------------------------------------
+// Next-wakes preview (GET /work-hours/next-wakes)
+// ---------------------------------------------------------------------------
+
+export interface NextWakesResponse {
+  agent: string;
+  enabled: boolean;
+  timezone: string | null;
+  mode: string | null;
+  next_wakes: string[]; // ISO-8601
+  error: string | null;
 }
 
 // ---------------------------------------------------------------------------
