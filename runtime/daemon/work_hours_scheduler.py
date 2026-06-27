@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from runtime.daemon.wake_queue import WakeJob
@@ -130,6 +130,46 @@ def current_due_slot(
         hour=slot_minutes // 60, minute=slot_minutes % 60, second=0, microsecond=0,
     )
     return local_now.date().isoformat(), _hhmm(slot_minutes), scheduled_for
+
+
+def next_wake_slots(
+    schedule: WorkHoursSchedule, now: datetime, count: int,
+) -> list[datetime]:
+    """The next ``count`` wake datetimes strictly after ``now`` for a resolved
+    effective schedule, in the schedule's timezone.
+
+    Forward dual of ``current_due_slot`` — it walks the same slot grids
+    (``continuous_slot_minutes`` / ``windowed_slot_minutes``) day-by-day,
+    skipping unconfigured days for windowed schedules. Powers the Work-Hours
+    Config UI "Next wakes" preview (read-only; no scheduling side effects).
+    Bounded to ~1 year of look-ahead so a windowed schedule with no matching
+    day can never loop forever.
+    """
+    if count <= 0:
+        return []
+    tz = ZoneInfo(schedule.timezone)
+    local_now = now.astimezone(tz)
+    out: list[datetime] = []
+    day = local_now.date()
+    for _ in range(366):
+        if schedule.mode == "continuous":
+            slots = continuous_slot_minutes(schedule)
+        else:
+            weekday = _WEEKDAYS[day.weekday()]
+            if schedule.days is None or weekday not in schedule.days:
+                day = day + timedelta(days=1)
+                continue
+            slots = windowed_slot_minutes(schedule)
+        for m in slots:
+            candidate = datetime(
+                day.year, day.month, day.day, m // 60, m % 60, tzinfo=tz,
+            )
+            if candidate > local_now:
+                out.append(candidate)
+                if len(out) >= count:
+                    return out
+        day = day + timedelta(days=1)
+    return out
 
 
 @dataclass(frozen=True)

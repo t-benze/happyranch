@@ -1003,3 +1003,33 @@ class AuditLogger:
             action="work_hour_timeout",
             payload={"reason": reason},
         )
+
+    # --- Org config writes (Settings GUI) ---
+    #
+    # THR-035 / TASK-967. Like artifacts/threads/dreams, ``audit_log.task_id``
+    # carries a generic *scope id* here — the namespaced ``config:<section>``
+    # value (e.g. ``config:working_hours``). This reuses the established
+    # generic-scope-id convention; it does NOT co-opt a real TASK-/JOB- id and
+    # adds no column. The before→after snapshot + touched tiers make a
+    # config-write fully reconstructable from the audit trail.
+
+    def log_org_config_write(
+        self,
+        *,
+        section: str,
+        tiers: list[str],
+        before: dict,
+        after: dict,
+        actor: str = "founder",
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=f"config:{section}",
+            agent=actor,
+            action="org_config_write",
+            payload={
+                "section": section,
+                "tiers": tiers,
+                "before": before,
+                "after": after,
+            },
+        )
