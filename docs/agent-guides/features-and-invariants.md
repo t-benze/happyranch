@@ -88,6 +88,7 @@ Traps:
 
 - Agent access is CLI-only by design; sandboxed executors block direct writes outside the workspace.
 - `artifact_put` **and** `artifact_delete` audit rows use `task_id="artifact:<name>"`; the prefix is mandatory (artifact names are user-controlled and would otherwise collide with `TASK-`/`TALK-`/`SR-` scopes).
+- Org config writes (the web Settings PUT — e.g. working_hours under THR-035) emit an `org_config_write` audit row keyed `task_id="config:<section>"` (e.g. `config:working_hours`). Same mandatory scope-prefix convention for non-task actors as `artifact:<name>` above: the `config:` prefix is chosen so the value cannot collide with `TASK-`/`TALK-`/`SR-`/`JOB-` ids. Additive — no schema migration, no column change (`audit_log.task_id` already doubles as the generic scope id).
 - Artifacts are blobs, not KB entries. Do not dump markdown that belongs in KB into `artifacts/`.
 
 ## Revisit

@@ -1011,7 +1011,9 @@ class AuditLogger:
     # value (e.g. ``config:working_hours``). This reuses the established
     # generic-scope-id convention; it does NOT co-opt a real TASK-/JOB- id and
     # adds no column. The before→after snapshot + touched tiers make a
-    # config-write fully reconstructable from the audit trail.
+    # config-write fully reconstructable from the audit trail. The scope-prefix
+    # convention is a load-bearing invariant — do NOT reinterpret (see the same
+    # note over ``_THREAD_SCOPE_PREFIX`` in runtime/daemon/routes/audit.py).
 
     def log_org_config_write(
         self,
@@ -1023,7 +1025,7 @@ class AuditLogger:
         actor: str = "founder",
     ) -> None:
         self._db.insert_audit_log(
-            task_id=f"config:{section}",
+            task_id=f"config:{section}",  # namespaced to avoid collision with TASK-/TALK-/SR-/JOB- ids in get_audit_logs(task_id)
             agent=actor,
             action="org_config_write",
             payload={
