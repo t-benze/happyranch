@@ -2038,6 +2038,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/work-hours/next-wakes": {
+      "GET": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "count",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/work-hours/status": {
       "GET": {
         "params": [

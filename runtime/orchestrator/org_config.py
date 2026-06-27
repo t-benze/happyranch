@@ -512,10 +512,15 @@ def load_org_config(paths: OrgPaths) -> OrgConfig:
 # ------------------------------------------------------------------
 # ALLOW-LIST keys that the Settings GUI can mutate via PUT /settings/org.
 # Every other top-level key in org/config.yaml is carried through verbatim
-# (feishu_notifications, working_hours, unknown future keys, etc.).
+# (feishu_notifications, unknown future keys, etc.).
 # ------------------------------------------------------------------
 
-_ORG_WRITABLE_KEYS = {"dreaming", "threads", "session_timeout_seconds"}
+_ORG_WRITABLE_KEYS = {
+    "dreaming",
+    "threads",
+    "session_timeout_seconds",
+    "working_hours",  # THR-035: Work-Hours Config UI write surface (TASK-967)
+}
 
 
 def _deep_merge(base: dict, overrides: dict) -> dict:

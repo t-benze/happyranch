@@ -187,7 +187,8 @@ def test_settings_system_only_has_allow_listed_fields(
 def test_settings_org_only_has_allow_listed_fields(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """OrgSettingsView must contain ONLY session_timeout_seconds, dreaming, threads."""
+    """OrgSettingsView must contain ONLY session_timeout_seconds, dreaming,
+    threads, working_hours."""
     client = TestClient(app)
     r = client.get(
         f"/api/v1/orgs/{org_state.slug}/settings",
@@ -196,7 +197,7 @@ def test_settings_org_only_has_allow_listed_fields(
     assert r.status_code == 200
     org_keys = set(r.json()["org"].keys())
 
-    expected = {"session_timeout_seconds", "dreaming", "threads"}
+    expected = {"session_timeout_seconds", "dreaming", "threads", "working_hours"}
     assert org_keys == expected, (
         f"Org settings keys: {sorted(org_keys)}\n"
         f"Expected: {sorted(expected)}"
@@ -309,12 +310,15 @@ def test_put_org_settings_rejects_feishu_key(
 def test_put_org_settings_rejects_unknown_key(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """extra='forbid' must reject any unknown key (e.g. working_hours) with 422."""
+    """extra='forbid' must reject any unknown key with 422.
+
+    (``working_hours`` is now an allow-listed writable key — THR-035/TASK-967 —
+    so a different unknown key is used here.)"""
     client = TestClient(app)
     r = client.put(
         f"/api/v1/orgs/{org_state.slug}/settings/org",
         headers=auth_headers,
-        json={"working_hours": {"enabled": True}},
+        json={"permission_mode": "acceptAll"},
     )
     assert r.status_code == 422
 

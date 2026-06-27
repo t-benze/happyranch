@@ -25,8 +25,11 @@ from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
+from runtime.daemon.work_hours_scheduler import next_wake_slots
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import TaskRecord, WorkHourRecord, WorkHourStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.org_config import OrgConfigError, load_org_config
 from runtime.orchestrator.routine_parser import MAX_ROUTINES_PER_WAKE
 
 router = APIRouter(dependencies=[require_token()])
@@ -98,6 +101,44 @@ def work_hours_status(slug: str, org: OrgDep, agent: str | None = None) -> dict:
 def list_work_hours(slug: str, org: OrgDep, agent: str | None = None, limit: int = 50) -> dict:
     rows = org.db.work_hours.list(agent=agent, limit=limit)
     return {"work_hours": [_wh_to_dict(w) for w in rows]}
+
+
+@router.get("/work-hours/next-wakes")
+def work_hours_next_wakes(
+    slug: str, org: OrgDep, agent: str, count: int = 5,
+) -> dict:
+    """Preview the next N wake timestamps for an agent's RESOLVED effective
+    schedule (THR-035 / TASK-967). Additive, read-only: reuses the scheduler's
+    slot grid via ``next_wake_slots`` — no scheduling side effects.
+
+    Registered BEFORE ``/work-hours/{work_hour_id}`` so the literal ``next-wakes``
+    path is not captured by the id route. An incomplete/invalid schedule is
+    surfaced as a 200 with ``error`` set + empty ``next_wakes`` (a preview, not
+    a client fault).
+    """
+    count = max(1, min(count, 50))
+    cfg = load_org_config(OrgPaths(root=org.root)).working_hours
+    team = None
+    registry = getattr(org, "teams", None)
+    if registry is not None:
+        team = registry.team_for_agent(agent) or registry.team_for_manager(agent)
+    try:
+        schedule = cfg.resolve_for(agent, team)
+    except OrgConfigError as exc:
+        return {
+            "agent": agent, "enabled": cfg.enabled, "timezone": None, "mode": None,
+            "next_wakes": [], "error": str(exc),
+        }
+    now = datetime.now(timezone.utc)
+    slots = next_wake_slots(schedule, now, count)
+    return {
+        "agent": agent,
+        "enabled": cfg.enabled,
+        "timezone": schedule.timezone,
+        "mode": schedule.mode,
+        "next_wakes": [dt.isoformat() for dt in slots],
+        "error": None,
+    }
 
 
 @router.get("/work-hours/{work_hour_id}")
