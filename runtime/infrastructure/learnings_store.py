@@ -293,8 +293,13 @@ class MemoryStore:
         existing = self._parse(existing_path.read_text())
         if existing.promoted_to is not None:
             raise PromotedLocked(id, existing.promoted_to)
-        # Force id consistency (positional arg wins)
-        entry.id = id
+        # Canonicalize the WRITE id to the resolved item's own on-disk id.
+        # The LRN-/MEM- shim accepts a legacy id at the resolve boundary (`id`
+        # may be LRN-061), but a migrated item must stay canonical MEM forever:
+        # updating via the LRN- alias must NOT rewrite MEM-061 back to LRN-061
+        # (§3.3/§7.2(b)). existing.id is the parsed canonical id, so this is
+        # pure id-normalization — never a prefix flip.
+        entry.id = existing.id
         entry.promoted_to = existing.promoted_to  # always None at this point
         self._validate_entry_structure(entry)
         self._validate_cross_refs(entry)

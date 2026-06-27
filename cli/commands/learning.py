@@ -211,8 +211,14 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     p = sub.add_parser(name, help=help_text)
     verb_sub = p.add_subparsers(dest=f"{name}_verb")
 
-    # Agent callback: `happyranch memory --org <slug> --agent X --text "..."`
-    p.add_argument("--org", required=True)
+    # Agent callback: `happyranch memory --org <slug> --agent X --text "..."`.
+    # NOT argparse-required: a real verb form (`memory get --org o ...`) puts
+    # --org AFTER the verb, where the subparser consumes it, so requiring it on
+    # the parent would reject the documented forms (exit 2). cmd_learning
+    # enforces --org for the bare-callback path instead. Keep the default None
+    # (not SUPPRESS) so args.org always exists for cmd_learning's check; the
+    # subparser --org uses SUPPRESS so it never clobbers a parent-provided org.
+    p.add_argument("--org", required=False)
     p.add_argument("--agent", required=False)
     p.add_argument("--text", required=False)
     p.add_argument("--task-id", required=False)
@@ -220,7 +226,7 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     p.set_defaults(func=wrap(cmd_learning))
 
     pl = verb_sub.add_parser("list", help=f"List {noun}")
-    pl.add_argument("--org", required=False)
+    pl.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pl.add_argument("--agent", required=True)
     pl.add_argument("--topic")
     pl.add_argument("--tag")
@@ -230,14 +236,14 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     pl.set_defaults(func=wrap(cmd_learning_list))
 
     pg = verb_sub.add_parser("get", help="Get a memory item by ID or slug")
-    pg.add_argument("--org", required=False)
+    pg.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pg.add_argument("--agent", required=True)
     pg.add_argument("id_or_slug")
     pg.add_argument("--json", action="store_true")
     pg.set_defaults(func=wrap(cmd_learning_get))
 
     ps = verb_sub.add_parser("search", help=f"Substring search over {noun}")
-    ps.add_argument("--org", required=False)
+    ps.add_argument("--org", required=False, default=argparse.SUPPRESS)
     ps.add_argument("--agent", required=True)
     ps.add_argument("query")
     ps.add_argument("--limit", type=int, default=20)
@@ -246,27 +252,27 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     ps.set_defaults(func=wrap(cmd_learning_search))
 
     pa = verb_sub.add_parser("add", help="Add a new memory item (file payload)")
-    pa.add_argument("--org", required=False)
+    pa.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pa.add_argument("--agent", required=True)
     pa.add_argument("--from-file", required=True)
     pa.set_defaults(func=wrap(cmd_learning_add))
 
     pu = verb_sub.add_parser("update", help="Update an existing memory item by ID")
-    pu.add_argument("--org", required=False)
+    pu.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pu.add_argument("--agent", required=True)
     pu.add_argument("id")
     pu.add_argument("--from-file", required=True)
     pu.set_defaults(func=wrap(cmd_learning_update))
 
     pp = verb_sub.add_parser("promote", help="Promote a memory item to a KB precedent")
-    pp.add_argument("--org", required=False)
+    pp.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pp.add_argument("--agent", required=True)
     pp.add_argument("id")
     pp.add_argument("--kb-slug", required=True)
     pp.set_defaults(func=wrap(cmd_learning_promote))
 
     pr = verb_sub.add_parser("reindex", help="Regenerate _index.md")
-    pr.add_argument("--org", required=False)
+    pr.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pr.add_argument("--agent", required=True)
     pr.set_defaults(func=wrap(cmd_learning_reindex))
 

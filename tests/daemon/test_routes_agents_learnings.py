@@ -94,6 +94,58 @@ def test_update_preserves_authored_at(client_with_migrated_workspace):
     assert r.json()["title"] == "v2"
 
 
+def test_update_via_legacy_lrn_id_stays_canonical_mem(client_with_migrated_workspace):
+    """REVISE TASK-974 F1: PUT .../memory/entries/LRN-001 on a migrated MEM
+    item must canonicalize to MEM and NOT resurrect an LRN- file (§3.3/§7.2(b))."""
+    client, token, slug, agent, ws = client_with_migrated_workspace
+    h = {"Authorization": f"Bearer {token}"}
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+        headers=h, json={"slug": "a", "title": "v1", "topic": "w", "body": "old\n"},
+    )
+    r = client.put(
+        f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/LRN-001",
+        headers=h, json={"slug": "a", "title": "v2", "topic": "w", "body": "new\n"},
+    )
+    assert r.status_code == 200
+    assert r.json()["id"] == "MEM-001"  # canonical, not LRN-001
+    files = sorted(
+        p.name for p in (ws / "memory").glob("*.md") if p.name != "_index.md"
+    )
+    assert files == ["MEM-001-a.md"]
+    assert not (ws / "memory" / "LRN-001-a.md").exists()
+    # Both ids still resolve to the same canonical MEM item.
+    via_lrn = client.get(
+        f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/LRN-001", headers=h,
+    )
+    via_mem = client.get(
+        f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001", headers=h,
+    )
+    assert via_lrn.json()["id"] == via_mem.json()["id"] == "MEM-001"
+    assert via_lrn.json()["body"] == via_mem.json()["body"] == "new\n"
+
+
+def test_update_via_legacy_learnings_forwarder_stays_canonical_mem(client_with_migrated_workspace):
+    """The hidden /learnings/ forwarder shares the handler, so it must also
+    canonicalize a legacy-id update to the on-disk MEM id."""
+    client, token, slug, agent, ws = client_with_migrated_workspace
+    h = {"Authorization": f"Bearer {token}"}
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+        headers=h, json={"slug": "a", "title": "v1", "topic": "w", "body": "old\n"},
+    )
+    r = client.put(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/LRN-001",
+        headers=h, json={"slug": "a", "title": "v2", "topic": "w", "body": "new\n"},
+    )
+    assert r.status_code == 200
+    assert r.json()["id"] == "MEM-001"
+    files = sorted(
+        p.name for p in (ws / "memory").glob("*.md") if p.name != "_index.md"
+    )
+    assert files == ["MEM-001-a.md"]
+
+
 def test_list_returns_404_for_unknown_agent(client_with_migrated_workspace):
     client, token, slug, agent, _ = client_with_migrated_workspace
     r = client.get(

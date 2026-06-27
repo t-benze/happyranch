@@ -8,7 +8,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import type {
   AgentEnrollment,
   AgentSummary,
-  LearningEntrySummary,
+  MemoryEntrySummary,
 } from '@/lib/api/agents';
 import type { TaskRecord } from '@/lib/api/types';
 import { MOCK_AGENTS, MOCK_ENROLLMENTS } from '@/mocks';
@@ -36,7 +36,7 @@ export const mockAgentsApi: AgentsApi = {
   useAgentLearnings: (agentName) =>
     useQuery({
       queryKey: ['mock-agent-learnings', agentName],
-      queryFn: async (): Promise<{ entries: LearningEntrySummary[] }> => ({
+      queryFn: async (): Promise<{ entries: MemoryEntrySummary[] }> => ({
         entries: [],
       }),
       enabled: !!agentName,
