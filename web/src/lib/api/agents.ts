@@ -2,7 +2,7 @@
  *
  * Agent-subprocess-only routes (task_id/session_id auth) excluded:
  * POST /agents/manage (enroll/update/terminate via team-manager session),
- * POST /agents/{a}/learnings (legacy + entries add/update/promote, reindex).
+ * POST /agents/{a}/memory (legacy + entries add/update/promote, reindex).
  *
  * Founder-facing write routes included for the Agents surface reshape:
  * PUT /agents/{name}/executor, POST /agents/{name}/repos.
@@ -89,21 +89,21 @@ export const listLearnings = (
     promoted?: boolean;
   },
 ): Promise<{ entries: LearningEntrySummary[] }> =>
-  request(`/orgs/${slug}/agents/${agentName}/learnings/entries/`, { params });
+  request(`/orgs/${slug}/agents/${agentName}/memory/entries/`, { params });
 
 export const getLearning = (
   slug: string,
   agentName: string,
   idOrSlug: string,
 ): Promise<LearningEntry> =>
-  request(`/orgs/${slug}/agents/${agentName}/learnings/entries/${idOrSlug}`);
+  request(`/orgs/${slug}/agents/${agentName}/memory/entries/${idOrSlug}`);
 
 export const searchLearnings = (
   slug: string,
   agentName: string,
   body: { query: string; limit?: number; include_promoted?: boolean },
 ): Promise<{ hits: { id: string; slug: string; title: string; snippet: string; score: number }[] }> =>
-  request(`/orgs/${slug}/agents/${agentName}/learnings/entries/search`, {
+  request(`/orgs/${slug}/agents/${agentName}/memory/entries/search`, {
     method: 'POST',
     body,
   });

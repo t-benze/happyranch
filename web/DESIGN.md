@@ -632,7 +632,7 @@ See the frontmatter for the full palette. The opinion behind it:
   the design-system equivalent of shouting; it is reserved for "INBOX",
   "ARCHIVED", "PARTICIPANTS" — column headers, not field labels.
 - **Mono carries machine identity.** Every ID (`THR-1234`, `TASK-87`,
-  `LRN-005`), every timestamp, every keycap, every token in the audit log
+  `MEM-005`), every timestamp, every keycap, every token in the audit log
   uses `mono_sm` or `mono_md`. This is the visual answer to the question
   "is this string a label for a human or a handle for a machine?"
 
