@@ -62,12 +62,15 @@ def test_sweep_in_progress_to_failed(tmp_path: Path) -> None:
     assert t.note and "daemon restart" in t.note
 
 
-def test_sweep_blocked_delegated_with_all_children_terminal_reenqueues(tmp_path):
+def test_sweep_parked_delegated_with_all_children_terminal_reenqueues(tmp_path):
+    """Path B Branch 2 (the landmine): a parent parked on its children is stored
+    in_progress(delegated) — NOT blocked. The sweep MUST re-enqueue it when all
+    children are terminal, and MUST NOT force-fail it as a 'running' task."""
     db = _seed_org(tmp_path)
-    # Parent blocked(DELEGATED), child completed — lost the wake-up signal
+    # Parent in_progress(DELEGATED), child completed — lost the wake-up signal
     # to the daemon crash.
     db.insert_task(TaskRecord(id="T-PAR", brief="p"))
-    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+    db.update_task("T-PAR", status=TaskStatus.IN_PROGRESS,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(id="T-CHD", brief="c", parent_task_id="T-PAR"))
     db.update_task("T-CHD", status=TaskStatus.COMPLETED, note="done")
@@ -75,7 +78,85 @@ def test_sweep_blocked_delegated_with_all_children_terminal_reenqueues(tmp_path)
     queue = TaskQueue()
     _sweep_on_startup(db, queue, "test")
 
+    # Parent survives (not failed) AND is re-enqueued for its next decision step.
+    assert db.get_task("T-PAR").status == TaskStatus.IN_PROGRESS
+    assert db.get_task("T-PAR").block_kind == BlockKind.DELEGATED
     assert queue._queue.get_nowait() == ("test", "T-PAR", None)
+
+
+def _seed_job(db: Database, job_id: str, task_id: str, status: str) -> None:
+    """Insert a job row in the given status (bypasses the runner)."""
+    from datetime import datetime, timezone
+
+    from runtime.models import JobInterpreter, JobRecord
+    db.insert_job(JobRecord(
+        id=job_id, task_id=task_id, agent_name="dev_agent",
+        title="t", rationale="r", script_text="echo x",
+        interpreter=JobInterpreter.BASH,
+        created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    ))
+    db._conn.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
+    db._conn.commit()
+
+
+def test_sweep_blocked_on_job_with_live_job_survives_restart(tmp_path):
+    """Path B Branch 3 (THE LANDMINE, #1 reviewer focus): a task parked on a
+    still-in-flight job is stored in_progress(blocked_on_job) with NO live
+    subprocess. The pre-Path-B sweep had no branch for it (it was status=blocked
+    and simply skipped); Path B makes it in_progress, so without the explicit
+    Branch-3 exclusion it would fall into Branch 1 and be WRONGLY FAILED on
+    every restart. Assert it SURVIVES untouched."""
+    db = _seed_org(tmp_path)
+    _seed_job(db, "JOB-1", "T-JOB", status="running")  # still in-flight
+    db.insert_task(TaskRecord(id="T-JOB", brief="j"))
+    db.update_task("T-JOB", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.BLOCKED_ON_JOB,
+                   blocked_on_job_ids='["JOB-1"]', note="waiting on jobs")
+
+    queue = TaskQueue()
+    _sweep_on_startup(db, queue, "test")
+
+    # SURVIVES: not failed, still parked, NOT re-enqueued (job still in flight).
+    t = db.get_task("T-JOB")
+    assert t.status == TaskStatus.IN_PROGRESS
+    assert t.block_kind == BlockKind.BLOCKED_ON_JOB
+    assert queue._queue.empty()
+
+
+def test_sweep_blocked_on_job_with_terminal_job_reenqueues(tmp_path):
+    """Path B Branch 3: when every blocking job is terminal at restart (the job
+    finished while the daemon was down), the parked task is re-enqueued — the
+    orphaned wake-up the live jobs_runner hook missed."""
+    db = _seed_org(tmp_path)
+    _seed_job(db, "JOB-1", "T-JOB", status="completed")  # finished while down
+    db.insert_task(TaskRecord(id="T-JOB", brief="j"))
+    db.update_task("T-JOB", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.BLOCKED_ON_JOB,
+                   blocked_on_job_ids='["JOB-1"]', note="waiting on jobs")
+
+    queue = TaskQueue()
+    _sweep_on_startup(db, queue, "test")
+
+    # Not failed; re-enqueued for its resume step.
+    assert db.get_task("T-JOB").status == TaskStatus.IN_PROGRESS
+    assert queue._queue.get_nowait() == ("test", "T-JOB", None)
+
+
+def test_sweep_leaves_escalated_alone(tmp_path):
+    """Path B Branch 5: an escalated task (top-level status, founder-owned) is
+    visited by the sweep — get_nonterminal_task_ids now yields it — and left
+    untouched, mirroring the pre-Path-B blocked(escalated) fall-through."""
+    db = _seed_org(tmp_path)
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None,
+                   note="needs founder")
+
+    queue = TaskQueue()
+    _sweep_on_startup(db, queue, "test")
+
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.ESCALATED
+    assert queue._queue.empty()
 
 
 def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_path):

@@ -402,7 +402,8 @@ def _payload(row: dict) -> dict:
     (TaskStatus.COMPLETED, False, False, True),   # row 1: normal completion
     (TaskStatus.FAILED,    True,  False, False),  # row 2: revisit will run
     (TaskStatus.FAILED,    False, False, True),   # row 3: chain dead
-    (TaskStatus.FAILED,    False, True,  True),   # row 4: founder-cancelled
+    (TaskStatus.FAILED,    False, True,  True),   # row 4: founder-cancelled (historical failed+cancelled_at)
+    (TaskStatus.CANCELLED, False, True,  True),   # row 5: Path B stored CANCELLED terminal (THR-037)
 ])
 def test_fire_predicate_truth_table(orch_with_db, status, spawned, cancelled, should_fire):
     from runtime.orchestrator.run_step import _maybe_post_thread_followup
@@ -597,6 +598,12 @@ def test_cancel_in_progress_thread_dispatched_task_fires_followup(orch_with_thre
     invs = orch._db.list_thread_invocations("THR-1")
     followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
     assert len(followups) == 1
+    # Backward-compat: a historical failed+cancelled_at row replays as task_failed.
+    sys_msgs = [m for m in orch._db.list_thread_messages("THR-1")
+                if m.kind == ThreadMessageKind.SYSTEM]
+    assert sys_msgs[-1].system_payload["kind_tag"] == "task_failed"
+    assert sys_msgs[-1].system_payload["status"] == "failed"
+    assert sys_msgs[-1].system_payload["cancelled"] is True
 
 
 def test_cancel_blocked_thread_dispatched_task_fires_followup(orch_with_thread_queue):
@@ -616,6 +623,46 @@ def test_cancel_blocked_thread_dispatched_task_fires_followup(orch_with_thread_q
     invs = orch._db.list_thread_invocations("THR-1")
     followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
     assert len(followups) == 1
+    # Backward-compat: a historical failed+cancelled_at row replays as task_failed.
+    sys_msgs = [m for m in orch._db.list_thread_messages("THR-1")
+                if m.kind == ThreadMessageKind.SYSTEM]
+    assert sys_msgs[-1].system_payload["kind_tag"] == "task_failed"
+    assert sys_msgs[-1].system_payload["status"] == "failed"
+    assert sys_msgs[-1].system_payload["cancelled"] is True
+
+
+def test_cancelled_thread_dispatched_root_mints_task_failed_followup(orch_with_thread_queue):
+    """THR-037 Change B (Path B): a thread-dispatched root cancelled to the stored
+    terminal CANCELLED status must still mint a TASK_FOLLOWUP and replay in the
+    task_failed class with status='cancelled'/cancelled=true.
+
+    Regression for the §C.3 finding: /cancel writes TaskStatus.CANCELLED then calls
+    this helper with the legacy FAILED caller hint. The helper trusts DB-actual
+    status, so before the fix CANCELLED was short-circuited as non-terminal and
+    produced 0 followups — breaking the thread task-followup terminal contract.
+    """
+    orch, thread_queue, main_loop = orch_with_thread_queue
+    _seed_dispatched_root(orch)
+    from datetime import datetime, timezone
+    # Path B: /cancel writes the dedicated terminal CANCELLED (+ cancelled_at).
+    orch._db.update_task("TASK-1",
+                         status=TaskStatus.CANCELLED,
+                         block_kind=None,
+                         cancelled_at=datetime.now(timezone.utc).isoformat())
+    # The cancel route still passes the legacy FAILED caller hint; the helper
+    # must terminate on the DB-actual CANCELLED row, not the hint.
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
+    _maybe_post_thread_followup(orch, "TASK-1",
+                                status=TaskStatus.FAILED, auto_revisit_spawned=False)
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+    # Failure-class replay carrying the precise cancelled label (spec §A / org_state).
+    sys_msgs = [m for m in orch._db.list_thread_messages("THR-1")
+                if m.kind == ThreadMessageKind.SYSTEM]
+    assert sys_msgs[-1].system_payload["kind_tag"] == "task_failed"
+    assert sys_msgs[-1].system_payload["status"] == "cancelled"
+    assert sys_msgs[-1].system_payload["cancelled"] is True
 
 
 def test_lineage_too_deep_skips_with_audit(orch_with_db):

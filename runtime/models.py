@@ -9,23 +9,56 @@ from pydantic import BaseModel, Field
 
 
 class TaskStatus(StrEnum):
+    # THR-037 Change B (Path B, stored source-of-truth): the surfaced `blocked`
+    # vocabulary collapses into a model that stores what is actually true. A
+    # parent waiting on its own children/jobs is IN_PROGRESS, not BLOCKED; the
+    # waiting reason is preserved in the `block_kind` discriminant. See
+    # docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md.
     PENDING = "pending"
+    # Two-valued, discriminated by `block_kind` (see BlockKind):
+    #   block_kind IS NULL                       ⟺ a subprocess is running now.
+    #   block_kind IN (delegated, blocked_on_job) ⟺ parked, no subprocess,
+    #     waiting on children/jobs it manages internally.
     IN_PROGRESS = "in_progress"
-    BLOCKED = "blocked"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    # Terminal. A blocked(escalated|delegated) task whose follow-up work moved
-    # to a human-authorized continuation (founder `revisit` / thread-dispatch)
-    # is closed here instead of re-running — distinct from COMPLETED so the
-    # audit trail shows it was superseded, not finished by an agent. Joins
-    # every terminal predicate (TERMINAL_STATES, _TERMINAL_TASK_STATUSES,
+    # NEW (Path B), non-terminal. A task that needs a founder decision (genuine
+    # agent escalation, failure-round-bound exhaustion, or budget exhaustion).
+    # Was the legacy blocked(escalated) state; `block_kind` is cleared. The
+    # founder resolves it via resolve-escalation (approve → pending / reject →
+    # failed). NOT in any terminal predicate.
+    ESCALATED = "escalated"
+    COMPLETED = "completed"              # terminal
+    FAILED = "failed"                   # terminal
+    # NEW (Path B), terminal. A founder-initiated stop (was failed + cancelled_at
+    # set). Distinct from FAILED so the audit/event trail shows a deliberate
+    # cancellation, not an agent/executor failure. `cancelled_at` is still set.
+    # Replays as a failure-class terminal event with outcome="cancelled" (see
+    # OrgState._TERMINAL_STATUS_TO_EVENT). Joins every terminal predicate.
+    CANCELLED = "cancelled"
+    # Terminal. An escalated|delegated task whose follow-up work moved to a
+    # human-authorized continuation (founder `revisit` / thread-dispatch) is
+    # closed here instead of re-running — distinct from COMPLETED so the audit
+    # trail shows it was superseded, not finished by an agent. Joins every
+    # terminal predicate (TERMINAL_STATES, _TERMINAL_TASK_STATUSES,
     # _TERMINAL_STATUS_TO_EVENT). See protocol/05c-orchestrator.md and
     # docs/agent-guides/features-and-invariants.md (escalation).
     RESOLVED_SUPERSEDED = "resolved_superseded"
+    # DEPRECATED (Path B transition). No new write produces `blocked`; the live
+    # rows were migrated to in_progress(delegated|blocked_on_job)/escalated at
+    # boot. Kept defined (not deleted) so a lingering/downgrade DB row valued
+    # 'blocked' still parses instead of raising ValueError on TaskRecord
+    # construction (the strand risk). Removed in a later cleanup phase after a
+    # soak — see the Path-B spec §I Phase 3.
+    BLOCKED = "blocked"
 
 
 class BlockKind(StrEnum):
+    # Path B: the waiting-reason discriminant for an IN_PROGRESS task —
+    # "what this task is internally waiting on (NULL = a subprocess is running
+    # now)". Live domain narrowed to {DELEGATED, BLOCKED_ON_JOB}.
     DELEGATED = "delegated"
+    # DEPRECATED (Path B): escalated is now the top-level TaskStatus.ESCALATED,
+    # not a block_kind. Kept defined for the transition window + reverse
+    # migration; no new write pairs it with a task row.
     ESCALATED = "escalated"
     BLOCKED_ON_JOB = "blocked_on_job"
 
@@ -72,6 +105,11 @@ class TaskRecord(BaseModel):
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
     completed_at: datetime | None = None
+    # Founder-initiated cancellation marker. Under Path B a new cancellation
+    # sets status=CANCELLED alongside this timestamp; historical rows left
+    # as-is carry the old status=FAILED + cancelled_at shape, so derivations
+    # that must classify cancellation (e.g. _classify_predecessor_status) read
+    # `cancelled_at` presence rather than the status label for backward compat.
     cancelled_at: datetime | None = None
     last_heartbeat: datetime | None = None
 

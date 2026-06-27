@@ -100,13 +100,19 @@ _TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
 
 
 def _is_eligible(db: Database, tid: str) -> bool:
-    """Return True if run_step would accept this task (mirrors run_step entry check)."""
+    """Return True if run_step would accept this task (mirrors run_step entry check).
+
+    Path B: a parked-delegated parent is in_progress(delegated); the legacy
+    blocked(delegated) shape is accepted too (dual-read), matching the real
+    entry gate's _PARKED_CARRIER_STATUSES.
+    """
     task = db.get_task(tid)
     if task is None:
         return False
     if task.status == TaskStatus.PENDING:
         return True
-    if task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.DELEGATED:
+    if (task.status in (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED)
+            and task.block_kind == BlockKind.DELEGATED):
         children = [db.get_task(cid) for cid in db.get_children(tid)]
         return all(c is not None and c.status in _TERMINAL for c in children)
     return False
@@ -139,7 +145,11 @@ def run_task_to_completion(orch: Orchestrator, task_id: str, max_steps: int = 20
             return
         if root.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
             return
-        if root.status == TaskStatus.BLOCKED and root.block_kind == BlockKind.ESCALATED:
+        # Path B: an escalated root is the top-level ESCALATED status (legacy
+        # blocked(escalated) accepted too — dual-read).
+        if root.status == TaskStatus.ESCALATED or (
+            root.status == TaskStatus.BLOCKED and root.block_kind == BlockKind.ESCALATED
+        ):
             return
         # Find next eligible task in tree (leaves first so children run before parents resume).
         eligible = _find_eligible_in_tree(orch._db, task_id)

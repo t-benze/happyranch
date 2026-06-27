@@ -25,11 +25,11 @@ Fields: `name`, `team`, `role`, `executor`, `description`, `allow_rules`, `repos
 
 ## Task Status Vocabularies
 
-Agents self-report `status="completed"|"blocked"` via `happyranch report-completion`. The orchestrator-owned `TaskStatus` on the `tasks` row is distinct: `pending`, `in_progress`, `blocked`, `completed`, `failed`, or `resolved_superseded`.
+Agents self-report `status="completed"|"blocked"` via `happyranch report-completion` (the report verb is unchanged — an agent still self-reports "blocked on jobs"). The orchestrator-owned `TaskStatus` on the `tasks` row is distinct, and under THR-037 Change B (Path B) is: `pending`, `in_progress`, `escalated`, `completed`, `failed`, `cancelled`, or `resolved_superseded`. (`blocked` is a deprecated transition-only member — see the Path-B spec.)
 
-`block_kind` specifies why a task is blocked: `delegated`, `escalated`, or `blocked_on_job`.
+`block_kind` is the waiting-reason discriminant for an `in_progress` task — *what it is internally waiting on*: `delegated` (waiting on child subtasks) or `blocked_on_job` (waiting on background jobs). `block_kind IS NULL` ⟺ a subprocess is running now. A parent waiting on its children/jobs stays `in_progress` (not `blocked`); the await-founder state is the top-level `escalated`.
 
-`resolved_superseded` is a terminal state, peer to `completed`/`failed`. A `blocked(escalated|delegated)` task transitions here when a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) names it in lineage: the predecessor is closed (block_kind cleared, audit cites the continuation root task_id) instead of being re-run. The close never re-enqueues the superseded task; it still wakes a delegated parent via the normal parent-wake path, and the delegated close is gated on all children being terminal so no live sibling is abandoned or SIGTERM'd. It joins every terminal predicate (`TERMINAL_STATES`, `_TERMINAL_TASK_STATUSES`, `_TERMINAL_STATUS_TO_EVENT`) and is completion-class for the thread task-followup: a thread-originated task that is superseded emits its `_maybe_post_thread_followup` system message (`task_completed` kind) just like a normal completion. The thread-dispatch supersede is manager-authorized only — a worker self-dispatch naming `resolves` is rejected (`403 thread_supersede_not_authorized`); the predecessor is never auto-closed by an unauthorized dispatch. Query the backlog with `happyranch tasks --status blocked --block-kind escalated|delegated`.
+`resolved_superseded` is a terminal state, peer to `completed`/`failed`. An `escalated` / `in_progress(delegated)` task transitions here when a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) names it in lineage: the predecessor is closed (block_kind cleared, audit cites the continuation root task_id) instead of being re-run. The close never re-enqueues the superseded task; it still wakes a delegated parent via the normal parent-wake path, and the delegated close is gated on all children being terminal so no live sibling is abandoned or SIGTERM'd. It joins every terminal predicate (`TERMINAL_STATES`, `_TERMINAL_TASK_STATUSES`, `_TERMINAL_STATUS_TO_EVENT`) and is completion-class for the thread task-followup: a thread-originated task that is superseded emits its `_maybe_post_thread_followup` system message (`task_completed` kind) just like a normal completion. The thread-dispatch supersede is manager-authorized only — a worker self-dispatch naming `resolves` is rejected (`403 thread_supersede_not_authorized`); the predecessor is never auto-closed by an unauthorized dispatch. Query the backlog with `happyranch tasks --status escalated` or `happyranch tasks --status in_progress --block-kind delegated`.
 
 ## Manager Decision Contract
 
@@ -95,7 +95,7 @@ Contract (founder-approved in THR-028):
 
 3. **Escalation on exhaustion.** When the bound is exhausted (> 2 FAILED
    subtasks in this delegation slot), the parent transitions to
-   `blocked(ESCALATED)` via `try_escalate()`. The parent does NOT cascade-fail.
+   `escalated` via `try_escalate()`. The parent does NOT cascade-fail.
 
 4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
    COMPLETED) clears the active chain and hands the parent back to its

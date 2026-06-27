@@ -142,16 +142,17 @@ def test_unload_org_refuses_with_active_tasks(tmp_path: Path, auth) -> None:
 
 
 def test_unload_org_refuses_with_blocked_tasks(tmp_path: Path, auth) -> None:
-    """blocked is non-terminal — a blocked-escalated task is waiting on the
-    founder. Unloading the org would make `happyranch resolve-escalation` hit a 404."""
-    from runtime.models import BlockKind, TaskRecord, TaskStatus
+    """escalated is non-terminal — an escalated task is waiting on the founder.
+    Unloading the org would make `happyranch resolve-escalation` hit a 404.
+    (Path B: the awaiting-founder state is the top-level ESCALATED status.)"""
+    from runtime.models import TaskRecord, TaskStatus
     rt = RuntimeDir.init(tmp_path / "rt")
     _seed_org(rt.orgs_dir / "alpha")
     state = DaemonState.from_runtime(rt, Settings())
     state.orgs["alpha"].db.insert_task(
         TaskRecord(
             id="TASK-007", brief="x",
-            status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+            status=TaskStatus.ESCALATED, block_kind=None,
         )
     )
     client = TestClient(create_app(state))

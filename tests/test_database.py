@@ -388,24 +388,31 @@ def test_update_task_can_clear_block_kind_to_none(tmp_path):
     assert t.note is None
 
 
-def test_get_nonterminal_task_ids_includes_blocked(tmp_path):
+def test_get_nonterminal_task_ids_path_b(tmp_path):
+    """Path B: the restart-sweep iterator yields {pending, in_progress,
+    escalated}. Parked carriers are in_progress(delegated|blocked_on_job);
+    escalated is its own top-level non-terminal status. blocked is dropped
+    (no live row is `blocked` after the boot migration). cancelled is terminal
+    → excluded alongside completed/failed."""
     from runtime.infrastructure.database import Database
     from runtime.models import TaskRecord, TaskStatus, BlockKind
 
     db = Database(tmp_path / "happyranch.db")
     for tid, status, bk in [
         ("T-PEN", TaskStatus.PENDING, None),
-        ("T-INP", TaskStatus.IN_PROGRESS, None),
-        ("T-BKD", TaskStatus.BLOCKED, BlockKind.DELEGATED),
-        ("T-BKE", TaskStatus.BLOCKED, BlockKind.ESCALATED),
+        ("T-RUN", TaskStatus.IN_PROGRESS, None),                  # running subprocess
+        ("T-DEL", TaskStatus.IN_PROGRESS, BlockKind.DELEGATED),   # parked on children
+        ("T-JOB", TaskStatus.IN_PROGRESS, BlockKind.BLOCKED_ON_JOB),  # parked on jobs
+        ("T-ESC", TaskStatus.ESCALATED, None),                    # awaiting founder
         ("T-CMP", TaskStatus.COMPLETED, None),
         ("T-FAI", TaskStatus.FAILED, None),
+        ("T-CAN", TaskStatus.CANCELLED, None),
     ]:
         db.insert_task(TaskRecord(id=tid, brief="x"))
         db.update_task(tid, status=status, block_kind=bk)
 
     ids = set(db.get_nonterminal_task_ids())
-    assert ids == {"T-PEN", "T-INP", "T-BKD", "T-BKE"}
+    assert ids == {"T-PEN", "T-RUN", "T-DEL", "T-JOB", "T-ESC"}
 
 
 def test_list_blocked_with_kind(tmp_path):
@@ -1049,14 +1056,14 @@ def test_get_latest_notification_for_sr_finds_consumed_rows(tmp_path):
 # leaving a microsecond-window race. These methods close it at the SQL layer.
 
 def test_try_escalate_succeeds_on_pending_task(db):
-    """CAS happy path: PENDING task transitions to BLOCKED(ESCALATED)."""
-    from runtime.models import BlockKind
+    """CAS happy path (Path B): PENDING task transitions to ESCALATED
+    (top-level status, block_kind cleared)."""
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     ok = db.try_escalate("T-1", reason="needs founder")
     assert ok is True
     t = db.get_task("T-1")
-    assert t.status == TaskStatus.BLOCKED
-    assert t.block_kind == BlockKind.ESCALATED
+    assert t.status == TaskStatus.ESCALATED
+    assert t.block_kind is None
     assert t.note == "needs founder"
 
 
@@ -1094,8 +1101,8 @@ def test_try_escalate_rejects_missing_task(db):
 
 
 def test_try_escalate_over_budget_succeeds_from_expected_state(db):
-    """CAS happy path: an eligible PENDING task at the step cap escalates."""
-    from runtime.models import BlockKind
+    """CAS happy path (Path B): an eligible PENDING task at the step cap
+    escalates to the top-level ESCALATED status (block_kind cleared)."""
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     ok = db.try_escalate_over_budget(
         "T-1", expected_status=TaskStatus.PENDING, expected_block_kind=None,
@@ -1103,8 +1110,8 @@ def test_try_escalate_over_budget_succeeds_from_expected_state(db):
     )
     assert ok is True
     t = db.get_task("T-1")
-    assert t.status == TaskStatus.BLOCKED
-    assert t.block_kind == BlockKind.ESCALATED
+    assert t.status == TaskStatus.ESCALATED
+    assert t.block_kind is None
     assert t.note == "max steps (3) exceeded"
 
 
@@ -1215,8 +1222,10 @@ def test_try_fail_over_budget_succeeds_from_blocked_delegated(db):
 
 
 def test_try_delegate_succeeds_on_pending_parent(db):
-    """CAS happy path: parent transitions to BLOCKED(DELEGATED) AND child
-    is inserted in one atomic RLock acquisition."""
+    """CAS happy path (Path B): parent transitions to IN_PROGRESS(DELEGATED)
+    — a parent waiting on its own children is in progress, with the waiting
+    reason kept in block_kind — AND child is inserted in one atomic RLock
+    acquisition."""
     from runtime.models import BlockKind
     db.insert_task(TaskRecord(id="T-PAR", brief="parent",
                               assigned_agent="engineering_head"))
@@ -1228,12 +1237,73 @@ def test_try_delegate_succeeds_on_pending_parent(db):
     assert ok is True
 
     par = db.get_task("T-PAR")
-    assert par.status == TaskStatus.BLOCKED
+    assert par.status == TaskStatus.IN_PROGRESS
     assert par.block_kind == BlockKind.DELEGATED
     assert par.note == "Delegated to dev_agent (child=T-CHILD)"
     ch = db.get_task("T-CHILD")
     assert ch is not None
     assert ch.parent_task_id == "T-PAR"
+
+
+def test_try_claim_for_step_parked_delegated_clears_discriminant(db):
+    """Path B §C.2: try_claim_for_step is representation-agnostic — claiming a
+    parked in_progress(delegated) task (the pickup after all children terminal)
+    transitions it to in_progress(block_kind NULL) via the SAME (status,
+    block_kind) CAS, with NO SQL change. Exactly one claim wins; a stale
+    duplicate delivery carrying the old expected pair loses."""
+    from runtime.models import BlockKind
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    db.update_task("T-1", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED)
+    ok = db.try_claim_for_step(
+        "T-1", expected_status=TaskStatus.IN_PROGRESS,
+        expected_block_kind=BlockKind.DELEGATED, new_count=3,
+    )
+    assert ok is True
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.IN_PROGRESS
+    assert t.block_kind is None
+    assert t.orchestration_step_count == 3
+    # Duplicate delivery with the now-stale expected pair matches zero rows.
+    assert db.try_claim_for_step(
+        "T-1", expected_status=TaskStatus.IN_PROGRESS,
+        expected_block_kind=BlockKind.DELEGATED, new_count=4,
+    ) is False
+    assert db.get_task("T-1").orchestration_step_count == 3
+
+
+def test_path_b_migration_flips_live_blocked_rows(tmp_path):
+    """Path B §D.3: the idempotent boot migration flips LIVE blocked(...) rows
+    into the stored model on the next startup. Historical terminal rows
+    (failed + cancelled_at) are LEFT AS-IS — only new cancels write
+    status='cancelled'."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
+    dbp = tmp_path / "happyranch.db"
+    db = Database(dbp)
+    for tid in ("T-DEL", "T-ESC", "T-JOB", "T-CAN"):
+        db.insert_task(TaskRecord(id=tid, brief="x"))
+    # Seed pre-migration shapes via raw SQL (bypass the enum write path).
+    db._conn.execute("UPDATE tasks SET status='blocked', block_kind='delegated' WHERE id='T-DEL'")
+    db._conn.execute("UPDATE tasks SET status='blocked', block_kind='escalated' WHERE id='T-ESC'")
+    db._conn.execute("UPDATE tasks SET status='blocked', block_kind='blocked_on_job' WHERE id='T-JOB'")
+    db._conn.execute("UPDATE tasks SET status='failed', cancelled_at='2026-01-01T00:00:00Z' WHERE id='T-CAN'")
+    db._conn.commit()
+    db.close()
+
+    # Re-open → the startup ALTER-ladder + Path-B UPDATEs run over the rows.
+    db2 = Database(dbp)
+    assert db2.get_task("T-DEL").status == TaskStatus.IN_PROGRESS
+    assert db2.get_task("T-DEL").block_kind == BlockKind.DELEGATED
+    assert db2.get_task("T-ESC").status == TaskStatus.ESCALATED
+    assert db2.get_task("T-ESC").block_kind is None
+    assert db2.get_task("T-JOB").status == TaskStatus.IN_PROGRESS
+    assert db2.get_task("T-JOB").block_kind == BlockKind.BLOCKED_ON_JOB
+    # Historical terminal cancellation LEFT AS-IS (still failed + cancelled_at).
+    can = db2.get_task("T-CAN")
+    assert can.status == TaskStatus.FAILED
+    assert can.cancelled_at is not None
+    db2.close()
 
 
 def test_try_delegate_rejects_cancelled_parent_and_inserts_no_child(db):

@@ -54,6 +54,13 @@ class OrgState:
         # completion-class event; `_synthesize_terminal_event` carries the
         # precise label in `outcome` ("resolved_superseded").
         TaskStatus.RESOLVED_SUPERSEDED: "task_complete",
+        # Path B: cancellation is a non-success terminal, so it replays as a
+        # failure-class event — mirroring how RESOLVED_SUPERSEDED rides the
+        # completion class — with the precise label in `outcome` ("cancelled").
+        # Avoids inventing a new EventBus event type. (The founder-facing record
+        # is the distinct `log_task_cancelled` audit row; this map only governs
+        # terminal-event replay synthesis.)
+        TaskStatus.CANCELLED: "task_failed",
     }
 
     def __post_init__(self) -> None:
@@ -77,7 +84,13 @@ class OrgState:
                 "outcome": task.status.value,
                 "synthesized": True,
             }
-        if task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.ESCALATED:
+        # Path B: escalated is now a top-level status. Tolerate the legacy
+        # blocked(escalated) shape during the transition window so a late
+        # subscriber still gets the right synthesized event for either form.
+        if task.status == TaskStatus.ESCALATED or (
+            task.status == TaskStatus.BLOCKED
+            and task.block_kind == BlockKind.ESCALATED
+        ):
             return {
                 "type": "task_blocked",
                 "outcome": "escalated",

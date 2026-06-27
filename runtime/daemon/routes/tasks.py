@@ -29,6 +29,7 @@ router = APIRouter(dependencies=[require_token()])
 # so it lives at module scope rather than next to its first use.
 _TERMINAL_TASK_STATUSES = frozenset({
     TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+    TaskStatus.CANCELLED,  # Path B: founder-initiated terminal stop.
 })
 
 
@@ -231,8 +232,13 @@ def get_task(task_id: str, org: OrgDep) -> dict:
 
     # When a task is blocked waiting for jobs, include the id+status of each
     # blocking job so `happyranch details` can show the founder what to act on.
+    # Path B: a task waiting on jobs is in_progress(blocked_on_job); the
+    # block_kind discriminant identifies the parked state regardless of whether
+    # the status is the new in_progress or the legacy blocked (dual-read).
     blocked_on_jobs: list[dict] | None = None
-    if task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.BLOCKED_ON_JOB:
+    if task.block_kind == BlockKind.BLOCKED_ON_JOB and task.status in (
+        TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED
+    ):
         job_ids = _json.loads(task.blocked_on_job_ids or "[]")
         blocked_on_jobs = [
             {"job_id": jid, "status": org.db.get_job_status(jid) or "unknown"}
@@ -541,7 +547,12 @@ async def resolve_escalation_in_process(
     task = org.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    if task.status != TaskStatus.BLOCKED or task.block_kind != BlockKind.ESCALATED:
+    # Path B: an escalated task is status=ESCALATED; the legacy blocked(escalated)
+    # shape is accepted too (dual-read).
+    is_escalated = task.status == TaskStatus.ESCALATED or (
+        task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.ESCALATED
+    )
+    if not is_escalated:
         raise HTTPException(
             status_code=409,
             detail={"code": "task_not_escalated", "current_status": task.status.value},
@@ -659,18 +670,29 @@ class RevisitResult:
 def _classify_predecessor_status(task: TaskRecord) -> str | None:
     """Return the normalized prior_status label, or None if ineligible.
 
-    Maps DB shape → the 4-valued spec vocabulary:
-      failed + cancelled_at != NULL  → 'failed-cancelled'
-      failed + cancelled_at == NULL  → 'failed'
-      blocked(escalated)             → 'blocked-escalated'
+    Maps DB shape → the 4-valued spec vocabulary (preserved for revisit/
+    supersede audit-citation compat):
+      cancelled_at != NULL           → 'failed-cancelled'
+      failed (no cancelled_at)       → 'failed'
+      escalated                      → 'blocked-escalated'
       completed                      → 'completed'
+
+    Path B: read ``cancelled_at`` FIRST (before the status label) so this
+    classifies BOTH the new CANCELLED status and the historical
+    failed+cancelled_at rows left as-is by the migration. The escalated case
+    reads the new top-level ESCALATED status, accepting the legacy
+    blocked(escalated) shape too (dual-read).
     """
     from runtime.models import BlockKind
+    if task.cancelled_at is not None:
+        return "failed-cancelled"
     if task.status == TaskStatus.FAILED:
-        return "failed-cancelled" if task.cancelled_at is not None else "failed"
+        return "failed"
     if task.status == TaskStatus.COMPLETED:
         return "completed"
-    if task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.ESCALATED:
+    if task.status == TaskStatus.ESCALATED or (
+        task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.ESCALATED
+    ):
         return "blocked-escalated"
     return None
 
@@ -699,13 +721,19 @@ def _eligible_supersede_block_kind(org, predecessor: TaskRecord) -> str | None:
     thread-dispatch supersede path, which names its predecessor explicitly via
     `resolves`; the revisit path derives the same eligibility from its lineage
     walk + `_classify_predecessor_status`. THR-018 tier #3 §3a.
+
+    Path B: an escalated predecessor is status=ESCALATED; a delegating
+    predecessor is in_progress(delegated). The legacy blocked(escalated|
+    delegated) shapes are accepted too (dual-read).
     """
-    if predecessor.status != TaskStatus.BLOCKED:
-        return None
-    if predecessor.block_kind == BlockKind.ESCALATED:
+    if predecessor.status == TaskStatus.ESCALATED or (
+        predecessor.status == TaskStatus.BLOCKED
+        and predecessor.block_kind == BlockKind.ESCALATED
+    ):
         return "escalated"
     if (
-        predecessor.block_kind == BlockKind.DELEGATED
+        predecessor.status in (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED)
+        and predecessor.block_kind == BlockKind.DELEGATED
         and _delegated_children_all_terminal(org, predecessor.id)
     ):
         return "delegated"
@@ -809,7 +837,7 @@ async def revisit_from_notification(
     # all-terminal gate is the safety boundary for the non-cascading close.
     if (
         prior_status is None
-        and predecessor.status == TaskStatus.BLOCKED
+        and predecessor.status in (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED)
         and predecessor.block_kind == BlockKind.DELEGATED
         and _delegated_children_all_terminal(org, predecessor.id)
     ):
@@ -972,6 +1000,11 @@ async def cancel_task(
     # PENDING-only followup calls without a second DB round-trip.
     to_cancel: list[str] = []
     prior_statuses: dict[str, TaskStatus] = {}
+    # Path B: capture the prior block_kind too. A parked task is now
+    # in_progress(delegated|blocked_on_job) with no live subprocess; the
+    # discriminant is what tells "parked" apart from "running" so Phase 1b
+    # fires the thread followup for exactly the right set (see below).
+    prior_block_kinds: dict[str, BlockKind | None] = {}
     stack = [task_id]
     while stack:
         tid = stack.pop()
@@ -980,6 +1013,7 @@ async def cancel_task(
             continue
         to_cancel.append(tid)
         prior_statuses[tid] = t.status
+        prior_block_kinds[tid] = t.block_kind
         if body.cascade:
             stack.extend(org.db.get_children(tid))
 
@@ -994,9 +1028,12 @@ async def cancel_task(
     audit = AuditLogger(org.db)
     async with org.db_lock:
         for tid in to_cancel:
+            # Path B: a founder cancel writes the dedicated terminal CANCELLED
+            # status (was FAILED + cancelled_at). cancelled_at is still set so
+            # the cancel-race guards and cancellation derivations are unchanged.
             org.db.update_task(
                 tid,
-                status=TaskStatus.FAILED,
+                status=TaskStatus.CANCELLED,
                 block_kind=None,
                 note=note,
                 cancelled_at=now,
@@ -1008,22 +1045,31 @@ async def cancel_task(
                 task_id=tid, rationale=rationale, cascade=body.cascade, actor=actor,
             )
 
-    # Phase 1b: fire thread followup for PENDING and BLOCKED tasks.
+    # Phase 1b: fire thread followup for every cancelled task that had NO live
+    # subprocess at cancel time.
     #
     # Two-site coverage (disjoint conditions, no double-fire risk):
-    #   • PENDING + BLOCKED → cancel route owns the followup here, because these
-    #     tasks have no live subprocess — SIGTERM is never sent so run_step never
-    #     runs and the cancel-race guard in run_step never triggers.
-    #   • IN_PROGRESS → cancel route sends SIGTERM (Phase 2 below); the
-    #     subprocess eventually exits with rc=-15; run_step's cancel-race guard
-    #     (``refetch.cancelled_at is not None → return``) fires _before_ Site B,
-    #     so run_step's cancel-race guard fires the helper there instead.
+    #   • No live subprocess → cancel route owns the followup here, because
+    #     SIGTERM is never sent so run_step never runs and the cancel-race guard
+    #     in run_step never triggers. Under Path B that set is: PENDING,
+    #     ESCALATED, the parked carriers in_progress(delegated|blocked_on_job),
+    #     and the legacy BLOCKED(...) shapes.
+    #   • Live subprocess (in_progress + block_kind IS NULL) → cancel route sends
+    #     SIGTERM (Phase 2 below); the subprocess exits with rc=-15; run_step's
+    #     cancel-race guard (``refetch.cancelled_at is not None → return``) fires
+    #     the helper there instead.
     #
-    # The disjoint condition ensures we never fire twice for the same task.
-    _CANCEL_ROUTE_FIRES_FOR = {TaskStatus.PENDING, TaskStatus.BLOCKED}
+    # The discriminant `block_kind IS NULL` is exactly what tells a running task
+    # from a parked one under Path B, so this stays disjoint and never
+    # double-fires.
     from runtime.orchestrator.run_step import _maybe_post_thread_followup
     for tid in to_cancel:
-        if prior_statuses.get(tid) in _CANCEL_ROUTE_FIRES_FOR:
+        prior_status = prior_statuses.get(tid)
+        had_live_subprocess = (
+            prior_status == TaskStatus.IN_PROGRESS
+            and prior_block_kinds.get(tid) is None
+        )
+        if not had_live_subprocess:
             _maybe_post_thread_followup(
                 org.orchestrator, tid,
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,

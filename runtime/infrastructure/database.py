@@ -953,6 +953,31 @@ class Database:
             )
             # Normalize dead legacy values.
             self._conn.execute("UPDATE tasks SET status='failed' WHERE status='in_review'")
+            # --- THR-037 Change B (Path B) live-row migration ---
+            # Collapse the surfaced `blocked` vocabulary into the stored model:
+            #   blocked(escalated)    → escalated (top-level), block_kind cleared
+            #   blocked(delegated)    → in_progress, reason kept in block_kind
+            #   blocked(blocked_on_job) → in_progress, reason kept in block_kind
+            # Idempotent: each UPDATE's WHERE matches zero rows on re-run.
+            # LIVE rows only — historical terminal rows (failed + cancelled_at)
+            # are LEFT AS-IS; only new cancellations write status='cancelled'
+            # (derivations read cancelled_at, not the status label). Forward-only
+            # posture; the reverse migration is published in the Path-B spec
+            # (docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md).
+            # No DDL: neither status nor block_kind has a CHECK constraint, so
+            # the new values are application-enum-only.
+            self._conn.execute(
+                "UPDATE tasks SET status='escalated', block_kind=NULL "
+                "WHERE status='blocked' AND block_kind='escalated'"
+            )
+            self._conn.execute(
+                "UPDATE tasks SET status='in_progress' "
+                "WHERE status='blocked' AND block_kind='delegated'"
+            )
+            self._conn.execute(
+                "UPDATE tasks SET status='in_progress' "
+                "WHERE status='blocked' AND block_kind='blocked_on_job'"
+            )
             self._conn.commit()
 
     def _migrate_session_token_usage_scope_columns(self) -> None:
@@ -1196,10 +1221,14 @@ class Database:
             # Mirror jobs_runner.py canonic pred: status + block_kind + LIKE.
             # Without the status/block_kind guard a task that was once
             # blocked on JOB-X but is now done/running leaks into the
-            # "if approved" cascade.
-            conditions.append("status = ? AND block_kind = ? AND blocked_on_job_ids LIKE ?")
+            # "if approved" cascade. Path B flipped the parked carrier from
+            # `blocked` to `in_progress`; accept BOTH (dual-read).
+            conditions.append(
+                "status IN (?, ?) AND block_kind = ? AND blocked_on_job_ids LIKE ?"
+            )
             params.extend([
                 TaskStatus.BLOCKED.value,
+                TaskStatus.IN_PROGRESS.value,
                 BlockKind.BLOCKED_ON_JOB.value,
                 f'%"{blocked_on_job_id}"%',
             ])
@@ -1620,8 +1649,8 @@ class Database:
 
     @_synchronized
     def try_escalate(self, task_id: str, *, reason: str) -> bool:
-        """Atomic CAS: transition task to BLOCKED(ESCALATED) only if it isn't
-        cancelled or already terminal.
+        """Atomic CAS: transition task to ESCALATED (Path B top-level status,
+        block_kind cleared) only if it isn't cancelled or already terminal.
 
         Closes the post-_is_already_terminal race in the escalate decision
         branch — the Python-level check + UPDATE pair was non-atomic with the
@@ -1640,11 +1669,11 @@ class Database:
         now = datetime.now(timezone.utc).isoformat()
         cursor = self._conn.execute(
             """UPDATE tasks
-               SET status = ?, block_kind = ?, note = ?, updated_at = ?
+               SET status = ?, block_kind = NULL, note = ?, updated_at = ?
                WHERE id = ?
                  AND cancelled_at IS NULL
-                 AND status NOT IN ('completed', 'failed', 'resolved_superseded')""",
-            (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now, task_id),
+                 AND status NOT IN ('completed', 'failed', 'resolved_superseded', 'cancelled')""",
+            (TaskStatus.ESCALATED.value, reason, now, task_id),
         )
         self._conn.commit()
         return cursor.rowcount == 1
@@ -1660,9 +1689,10 @@ class Database:
     ) -> bool:
         """Atomic CAS for the run_step max-steps budget guard.
 
-        Transitions the row to BLOCKED(ESCALATED) with note=reason, but ONLY if
-        it still matches (expected_status, expected_block_kind) — the eligible
-        pre-state observed at run_step step 1. Returns True iff it transitioned.
+        Transitions the row to ESCALATED (Path B top-level status, block_kind
+        cleared) with note=reason, but ONLY if it still matches
+        (expected_status, expected_block_kind) — the eligible pre-state observed
+        at run_step step 1. Returns True iff it transitioned.
 
         Why this exists: the budget guard runs BEFORE try_claim_for_step, so it
         has no upstream CAS. Two duplicate queue deliveries can both read the
@@ -1676,17 +1706,17 @@ class Database:
         if expected_block_kind is None:
             cursor = self._conn.execute(
                 """UPDATE tasks
-                   SET status = ?, block_kind = ?, note = ?, updated_at = ?
+                   SET status = ?, block_kind = NULL, note = ?, updated_at = ?
                    WHERE id = ? AND status = ? AND block_kind IS NULL""",
-                (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now,
+                (TaskStatus.ESCALATED.value, reason, now,
                  task_id, expected_status.value),
             )
         else:
             cursor = self._conn.execute(
                 """UPDATE tasks
-                   SET status = ?, block_kind = ?, note = ?, updated_at = ?
+                   SET status = ?, block_kind = NULL, note = ?, updated_at = ?
                    WHERE id = ? AND status = ? AND block_kind = ?""",
-                (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now,
+                (TaskStatus.ESCALATED.value, reason, now,
                  task_id, expected_status.value, expected_block_kind.value),
             )
         self._conn.commit()
@@ -1744,8 +1774,10 @@ class Database:
     def try_delegate(
         self, parent_id: str, child: TaskRecord, *, parent_note: str,
     ) -> bool:
-        """Atomic CAS: insert child task + transition parent to BLOCKED(DELEGATED),
-        rejecting if parent is cancelled or already terminal.
+        """Atomic CAS: insert child task + transition parent to
+        IN_PROGRESS(DELEGATED) (Path B: a parent waiting on its own children is
+        in progress, with the waiting reason kept in block_kind), rejecting if
+        parent is cancelled or already terminal.
 
         Closes the spawn-new-work race documented in
         docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
@@ -1779,7 +1811,7 @@ class Database:
             """UPDATE tasks
                SET status = ?, block_kind = ?, note = ?, updated_at = ?
                WHERE id = ?""",
-            (TaskStatus.BLOCKED.value, BlockKind.DELEGATED.value, parent_note,
+            (TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value, parent_note,
              now, parent_id),
         )
         self._conn.commit()
@@ -1807,10 +1839,14 @@ class Database:
 
     @_synchronized
     def get_nonterminal_task_ids(self) -> list[str]:
+        # Path B: blocked dropped (no live row is `blocked` after the boot
+        # migration); escalated added so the restart sweep visits escalated
+        # rows to leave them alone (§B Branch 5). cancelled is terminal →
+        # excluded.
         nonterminal = (
             TaskStatus.PENDING.value,
             TaskStatus.IN_PROGRESS.value,
-            TaskStatus.BLOCKED.value,
+            TaskStatus.ESCALATED.value,
         )
         cursor = self._conn.execute(
             f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(nonterminal))})",
@@ -1820,24 +1856,35 @@ class Database:
 
     @_synchronized
     def list_blocked_with_kind(self, kind) -> list[str]:
-        """Return IDs of tasks in status=blocked with the given block_kind."""
+        """Return IDs of parked tasks with the given block_kind.
+
+        Path B: the parked carrier flipped from `blocked` to `in_progress`;
+        accept BOTH so this is dual-read tolerant during the transition window
+        (the boot migration converts live rows, but in-memory/edge rows may
+        still carry the legacy status).
+        """
         kind_value = kind.value if hasattr(kind, "value") else kind
         cursor = self._conn.execute(
-            "SELECT id FROM tasks WHERE status = 'blocked' AND block_kind = ?",
+            "SELECT id FROM tasks "
+            "WHERE status IN ('blocked', 'in_progress') AND block_kind = ?",
             (kind_value,),
         )
         return [row["id"] for row in cursor.fetchall()]
 
     @_synchronized
     def list_tasks_blocked_on_jobs(self) -> list[str]:
-        """Return ids of tasks currently in BLOCKED + BLOCKED_ON_JOB state.
+        """Return ids of tasks currently parked waiting on jobs (BLOCKED_ON_JOB).
 
         Used by startup recovery (spec §5.7) to re-evaluate the predicate after
-        `recover_orphaned_running_jobs` force-fails any leftovers.
+        `recover_orphaned_running_jobs` force-fails any leftovers. Path B: the
+        carrier flipped from `blocked` to `in_progress`; accept BOTH (dual-read)
+        so a task parked on jobs is still found after the migration.
         """
         rows = self._conn.execute(
-            "SELECT id FROM tasks WHERE status = ? AND block_kind = ?",
-            (TaskStatus.BLOCKED.value, BlockKind.BLOCKED_ON_JOB.value),
+            "SELECT id FROM tasks "
+            "WHERE status IN (?, ?) AND block_kind = ?",
+            (TaskStatus.BLOCKED.value, TaskStatus.IN_PROGRESS.value,
+             BlockKind.BLOCKED_ON_JOB.value),
         ).fetchall()
         return [row["id"] for row in rows]
 

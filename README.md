@@ -188,7 +188,7 @@ The CLI does not take a runtime path — every command operates on whichever con
 | `happyranch approve-agent --org <slug> <name>` | Approve a pending enrollment and bootstrap workspace |
 | `happyranch reject-agent --org <slug> <name>` | Reject a pending enrollment |
 
-`happyranch revisit` walks any task's lineage to its root and — if the root ended `failed`, `failed-cancelled`, `blocked(escalated)`, or `completed` — spawns a fresh root inheriting the original brief and team. The old tree stays frozen (read-only history); the new root's manager gets a prompt-header pointer back to it so it can inspect what happened via `happyranch details` / `happyranch audit` / `happyranch recall`. Only humans can trigger it.
+`happyranch revisit` walks any task's lineage to its root and — if the root ended `failed`, `cancelled`, `escalated`, or `completed` — spawns a fresh root inheriting the original brief and team. The old tree stays frozen (read-only history); the new root's manager gets a prompt-header pointer back to it so it can inspect what happened via `happyranch details` / `happyranch audit` / `happyranch recall`. Only humans can trigger it.
 
 ### Knowledge base
 

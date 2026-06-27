@@ -4,6 +4,8 @@
 **Date:** 2026-04-19
 **Branch:** `feature/task-status-redesign`
 
+> **Superseded (vocabulary) by THR-037 Change B (Path B, stored source-of-truth):** the `blocked`-discriminated model below was collapsed — a parent waiting on its children/jobs is now `in_progress` (reason kept in `block_kind`), the await-founder state is the top-level `escalated`, and founder cancels write `cancelled`. See `docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md`.
+
 ## Problem
 
 The current task lifecycle has three shortcomings that have shown up in practice:

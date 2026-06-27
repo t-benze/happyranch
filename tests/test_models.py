@@ -135,9 +135,12 @@ def test_completion_report_output_dir_defaults_to_none():
 
 def test_task_status_values():
     from runtime.models import TaskStatus
+    # Path B (THR-037 Change B): + escalated (non-terminal) + cancelled
+    # (terminal). `blocked` retained as a DEPRECATED member for the transition
+    # window / reverse migration (strand-safety) — see models.py docstring.
     assert {s.value for s in TaskStatus} == {
-        "pending", "in_progress", "blocked", "completed", "failed",
-        "resolved_superseded",
+        "pending", "in_progress", "escalated", "completed", "failed",
+        "cancelled", "resolved_superseded", "blocked",
     }
 
 
@@ -152,6 +155,26 @@ def test_resolved_superseded_joins_every_terminal_predicate():
     assert TaskStatus.RESOLVED_SUPERSEDED in TERMINAL_STATES
     assert TaskStatus.RESOLVED_SUPERSEDED in _TERMINAL_TASK_STATUSES
     assert TaskStatus.RESOLVED_SUPERSEDED in OrgState._TERMINAL_STATUS_TO_EVENT
+
+
+def test_path_b_lockstep_terminal_predicates():
+    """Path B (THR-037 Change B): CANCELLED is terminal in ALL THREE lockstep
+    predicates; ESCALATED is non-terminal in NONE of the terminal sets. A
+    missed predicate would make a cancelled task look non-terminal (re-admitted
+    by the scheduler) or an escalated task look terminal (founder never sees
+    it) — so lock the wiring."""
+    from runtime.models import TaskStatus
+    from runtime.orchestrator.run_step import TERMINAL_STATES
+    from runtime.daemon.routes.tasks import _TERMINAL_TASK_STATUSES
+    from runtime.daemon.org_state import OrgState
+    # CANCELLED ∈ all three terminal predicates.
+    assert TaskStatus.CANCELLED in TERMINAL_STATES
+    assert TaskStatus.CANCELLED in _TERMINAL_TASK_STATUSES
+    assert TaskStatus.CANCELLED in OrgState._TERMINAL_STATUS_TO_EVENT
+    # ESCALATED ∉ any terminal predicate (it is non-terminal — founder resolves).
+    assert TaskStatus.ESCALATED not in TERMINAL_STATES
+    assert TaskStatus.ESCALATED not in _TERMINAL_TASK_STATUSES
+    assert TaskStatus.ESCALATED not in OrgState._TERMINAL_STATUS_TO_EVENT
 
 
 def test_block_kind_has_delegated_and_escalated():

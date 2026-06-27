@@ -32,22 +32,40 @@ def _sweep_on_startup(
     db: Database, queue: TaskQueue, slug: str,
     orchestrator: Orchestrator | None = None,
 ) -> None:
-    """Post-restart recovery for a single org:
-      - in_progress rows → failed (we killed the subprocess); route through
-        the unified auto-revisit primitive with failure_kind="daemon_restart"
-        — same machinery that handles session_timeout / executor_error etc.
-        The cascade-fail propagates upward; founder notification is suppressed
-        when an auto-revisit covers the work.
-      - pending rows → re-enqueue (lost the original POST enqueue)
-      - blocked(DELEGATED) with all children terminal → re-enqueue parent
-        (orphaned wake-up: the daemon died after a child terminated but
-        before the parent saw the signal — distinct from the in_progress
-        path above)
-      - blocked(ESCALATED) → leave alone (founder owns these)
+    """Post-restart recovery for a single org (Path B — THR-037 Change B).
+
+    Under Path B ``in_progress`` is two-valued, discriminated by ``block_kind``:
+    a NULL discriminant means a subprocess was running (killed by the restart);
+    a non-NULL discriminant (delegated/blocked_on_job) means the task was
+    *parked* with no subprocess. Branching on ``status`` alone — as the pre-Path-B
+    sweep did — would force-fail every parked parent and every blocked-on-job
+    task on each restart (silent cascade corruption). The discriminant is what
+    saves it:
+
+      - Branch 1 — in_progress + block_kind IS NULL → failed (we killed the
+        subprocess); route through the unified auto-revisit primitive with
+        failure_kind="daemon_restart" — same machinery that handles
+        session_timeout / executor_error etc. The cascade propagates upward;
+        founder notification is suppressed when an auto-revisit covers the work.
+      - Branch 2 — in_progress + block_kind=DELEGATED with all children terminal
+        → re-enqueue parent (orphaned wake-up: the daemon died after a child
+        terminated but before the parent saw the signal). Else leave (children
+        still live).
+      - Branch 3 — in_progress + block_kind=BLOCKED_ON_JOB with all jobs terminal
+        → re-enqueue (orphaned wake-up: jobs finished while the daemon was down).
+        Else leave alone. This branch MUST exist: without it a parked-on-job
+        task falls into Branch 1 and is wrongly failed on every restart.
+      - Branch 4 — pending rows → re-enqueue (lost the original POST enqueue).
+      - Branch 5 — escalated → leave alone (founder owns these); mirrors the
+        pre-Path-B blocked(ESCALATED) fall-through.
+
+    The legacy ``blocked(...)`` shapes are accepted alongside ``in_progress(...)``
+    (dual-read) — though in production the boot migration has already flipped
+    live rows before the sweep runs.
 
     When ``orchestrator`` is None (test harnesses that don't construct one),
-    the in_progress branch degrades to mark-failed-and-audit only; no auto-
-    revisit, no cascade, no notify. Production always passes an orchestrator.
+    Branch 1 degrades to mark-failed-and-audit only; no auto-revisit, no
+    cascade, no notify. Production always passes an orchestrator.
     """
     # Imported lazily to avoid a startup-time cycle (run_step → daemon types).
     from runtime.orchestrator.run_step import (
@@ -66,11 +84,20 @@ def _sweep_on_startup(
     # founder isn't pinged multiple times.
     revisited_roots: set[str] = set()
 
+    import json as _json
+    # Path B: parked carriers are in_progress(...); the legacy blocked(...)
+    # shapes are accepted too (dual-read). A live subprocess is in_progress +
+    # block_kind IS NULL (Branch 1).
+    _PARKED = {TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED}
+    _TERMINAL_JOB_STATES = {"completed", "failed", "rejected"}
+
     for task_id in db.get_nonterminal_task_ids():
         t = db.get_task(task_id)
         if t is None:
             continue
-        if t.status == TaskStatus.IN_PROGRESS:
+
+        # Branch 1 — genuinely running, killed by the restart.
+        if t.status == TaskStatus.IN_PROGRESS and t.block_kind is None:
             db.update_task(task_id, status=TaskStatus.FAILED, note="daemon restart")
             audit.log_daemon_restart_failure(task_id, t.assigned_agent or "daemon")
             if orchestrator is None:
@@ -93,14 +120,38 @@ def _sweep_on_startup(
                 orchestrator, task_id,
                 root_auto_revisit_spawned=spawned,
             )
-        elif t.status == TaskStatus.PENDING:
-            queue.enqueue(slug, task_id)
-        elif t.status == TaskStatus.BLOCKED and t.block_kind == BlockKind.DELEGATED:
+
+        # Branch 2 — parked on children (delegated). Re-enqueue only when all
+        # children are terminal (orphaned wake-up); else leave it parked.
+        elif t.status in _PARKED and t.block_kind == BlockKind.DELEGATED:
             children = [db.get_task(cid) for cid in db.get_children(task_id)]
             if all(c is not None and c.status in TERMINAL_STATES
                    for c in children):
                 queue.enqueue(slug, task_id)
-        # blocked(ESCALATED) falls through: founder owns the transition.
+
+        # Branch 3 — parked on jobs (blocked_on_job). Re-enqueue only when all
+        # blocking jobs are terminal (jobs finished while the daemon was down);
+        # else leave alone. MUST exist or these fall into Branch 1 and get
+        # wrongly failed on every restart (the #1 reviewer-focus item).
+        elif t.status in _PARKED and t.block_kind == BlockKind.BLOCKED_ON_JOB:
+            try:
+                job_ids = _json.loads(t.blocked_on_job_ids or "[]")
+            except _json.JSONDecodeError:
+                job_ids = []
+            if job_ids and all(
+                db.get_job_status(j) in _TERMINAL_JOB_STATES for j in job_ids
+            ):
+                queue.enqueue(slug, task_id)
+
+        # Branch 4 — pending: re-enqueue (lost the original POST enqueue).
+        elif t.status == TaskStatus.PENDING:
+            queue.enqueue(slug, task_id)
+
+        # Branch 5 — escalated: leave alone (founder owns the transition).
+        # Reached only because get_nonterminal_task_ids now yields escalated.
+        elif t.status == TaskStatus.ESCALATED:
+            pass
+        # Any legacy blocked(escalated) row likewise falls through untouched.
 
 
 def _build_state(settings: Settings) -> DaemonState:

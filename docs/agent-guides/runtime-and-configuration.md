@@ -104,7 +104,7 @@ Contract (founder-approved in THR-028):
 
 3. **Escalation on exhaustion.** When the bound is exhausted (> 2 FAILED
    subtasks in this delegation slot), the parent transitions to
-   `blocked(ESCALATED)` via `try_escalate()`, carrying the last failure
+   `escalated` via `try_escalate()`, carrying the last failure
    reason. The parent does NOT cascade-fail — the founder can resolve the
    escalation per existing routes.
 

@@ -212,7 +212,8 @@ def test_reject_path_escalates(paths: OrgPaths, db: Database, monkeypatch) -> No
 
     task = db.get_task(tid)
     assert task is not None
-    assert task.status == TaskStatus.BLOCKED, f"expected BLOCKED, got {task.status}"
-    assert task.block_kind is not None and task.block_kind.value == "escalated", (
-        f"expected block_kind='escalated', got {task.block_kind!r}"
+    # Path B: escalation is the top-level ESCALATED status; block_kind cleared.
+    assert task.status == TaskStatus.ESCALATED, f"expected ESCALATED, got {task.status}"
+    assert task.block_kind is None, (
+        f"expected block_kind cleared on escalate, got {task.block_kind!r}"
     )

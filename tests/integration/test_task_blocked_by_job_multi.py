@@ -237,10 +237,11 @@ def test_multi_job_resume_waits_for_all(
     assert job_a.startswith("JOB-"), f"unexpected job_a id: {job_a!r}"
     assert job_b.startswith("JOB-"), f"unexpected job_b id: {job_b!r}"
 
-    # Wait for the task to reach blocked state before acting as founder.
+    # Wait for the task to reach the parked-on-jobs state before acting as
+    # founder. Path B: a task waiting on jobs is in_progress(blocked_on_job).
     _wait_for_task_status(
         base, task_id,
-        terminal=("blocked",),
+        terminal=("in_progress",),
         timeout=20.0,
     )
 
@@ -288,11 +289,11 @@ def test_multi_job_resume_waits_for_all(
     # the helper is a fast DB query + conditional enqueue.
     time.sleep(1.0)
 
-    # Now assert the task is STILL blocked (predicate unsatisfied because JOB-B
-    # is still pending).
+    # Now assert the task is STILL parked on jobs (predicate unsatisfied because
+    # JOB-B is still pending). Path B: parked = in_progress(blocked_on_job).
     current_status = _get_task_status(base, task_id)
-    assert current_status == "blocked", (
-        f"task should still be blocked after only JOB-A completes, "
+    assert current_status == "in_progress", (
+        f"task should still be parked on jobs after only JOB-A completes, "
         f"but status is {current_status!r}. "
         f"The all-terminal predicate must have fired prematurely."
     )

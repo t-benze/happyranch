@@ -55,9 +55,11 @@ def _wait_for_terminal(
         task = body["task"]
         status = task["status"]
         block_kind = task.get("block_kind")
-        if status in ("completed", "failed"):
+        if status in ("completed", "failed", "cancelled"):
             return body
-        if status == "blocked" and block_kind == "escalated":
+        # Path B: escalated is the top-level status (legacy blocked(escalated)
+        # accepted too for transition-window robustness).
+        if status == "escalated" or (status == "blocked" and block_kind == "escalated"):
             return body
         time.sleep(0.3)
     raise AssertionError(
@@ -335,9 +337,10 @@ def test_chain_aborts_on_verdict_mismatch_e2e(
     body = _wait_for_terminal(base, task_id, timeout=60.0)
     task = body["task"]
 
-    # Parent ends blocked(escalated) because manager chose escalate after mismatch.
-    assert task["status"] == "blocked" and task.get("block_kind") == "escalated", (
-        f"expected blocked(escalated), got status={task['status']!r} "
+    # Parent ends escalated because manager chose escalate after mismatch.
+    # Path B: escalated is the top-level status, block_kind cleared.
+    assert task["status"] == "escalated" and task.get("block_kind") is None, (
+        f"expected escalated, got status={task['status']!r} "
         f"block_kind={task.get('block_kind')!r} (note={task.get('note')!r})"
     )
 
@@ -458,11 +461,12 @@ def test_chain_aborts_on_founder_cancel_e2e(
     cancel_body = r.json()
     assert cancel_body["ok"] is True
 
-    # Parent should end up failed (with cancelled_at set = "failed-cancelled").
+    # Parent should end up cancelled (Path B: founder cancel writes the
+    # dedicated terminal CANCELLED status, with cancelled_at set).
     body = _wait_for_terminal(base, task_id, timeout=30.0)
     task = body["task"]
-    assert task["status"] == "failed", (
-        f"expected failed (failed-cancelled), got {task['status']!r}"
+    assert task["status"] == "cancelled", (
+        f"expected cancelled, got {task['status']!r}"
     )
     assert task.get("cancelled_at") is not None, (
         "parent task should have cancelled_at set (failed-cancelled)"
