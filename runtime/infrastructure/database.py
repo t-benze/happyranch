@@ -1279,14 +1279,22 @@ class Database:
         return [row["id"] for row in cursor.fetchall()]
 
     # Severity ranking for subtree rollup: lower = worse.
-    # blocked is the attention-grabbing worst; resolved_superseded is the calmest.
+    # escalated is the attention-grabbing worst (genuine founder attention);
+    # resolved_superseded is the calmest. Under the Path-B stored model
+    # (THR-037 Change B) a delegating/parked parent is in_progress (rank 2),
+    # so a healthy delegating parent NO LONGER dominates its subtree to amber —
+    # only a real escalated (0) or failed (1) descendant pulls the rollup up.
+    # cancelled is a deliberate terminal stop with no pending work, so it ranks
+    # calmer than completed. The deprecated 'blocked' value is intentionally
+    # absent: any lingering blocked row falls to the default rank (99, calmest).
     _SEVERITY_RANK: dict[str, int] = {
-        "blocked": 0,
+        "escalated": 0,
         "failed": 1,
         "in_progress": 2,
         "pending": 3,
         "completed": 4,
-        "resolved_superseded": 5,
+        "cancelled": 5,
+        "resolved_superseded": 6,
     }
 
     @_synchronized

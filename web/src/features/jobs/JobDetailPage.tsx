@@ -251,10 +251,7 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
             <span className="text-text-primary min-w-0 truncate">
               {t.brief.slice(0, 80)}{t.brief.length > 80 ? '…' : ''}
             </span>
-            <StatusBadge
-              status={t.status as 'blocked'}
-              blockKind={(t as { block_kind?: string }).block_kind as 'escalated' | 'delegated' | null}
-            />
+            <StatusBadge status={t.status} blockKind={t.block_kind} />
           </li>
         ))}
       </ul>

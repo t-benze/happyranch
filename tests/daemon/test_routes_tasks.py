@@ -1898,10 +1898,11 @@ def test_list_roots_includes_severity_rollup_field(
     assert task["severity_rollup"] == "completed"
 
 
-def test_list_roots_severity_rollup_reflects_blocked_child(
+def test_list_roots_severity_rollup_reflects_escalated_child(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """A root with a blocked child shows 'blocked' in severity_rollup."""
+    """A root with an escalated child shows 'escalated' in severity_rollup
+    (Path B: escalated is the worst rollup severity; blocked is retired)."""
     from datetime import datetime, timezone
     from runtime.models import TaskRecord, TaskStatus
 
@@ -1914,7 +1915,7 @@ def test_list_roots_severity_rollup_reflects_blocked_child(
     org_state.db.insert_task(TaskRecord(
         id="CHILD-B", brief="child", team="engineering",
         assigned_agent="dev_agent", parent_task_id="ROOT-A",
-        status=TaskStatus.BLOCKED,
+        status=TaskStatus.ESCALATED,
         created_at=now, updated_at=now,
     ))
 
@@ -1923,7 +1924,7 @@ def test_list_roots_severity_rollup_reflects_blocked_child(
     )
     assert r.status_code == 200
     task = r.json()["tasks"][0]
-    assert task["severity_rollup"] == "blocked"
+    assert task["severity_rollup"] == "escalated"
 
 
 def test_list_roots_supports_status_filter(

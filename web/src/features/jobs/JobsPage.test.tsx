@@ -422,8 +422,10 @@ describe('JobDetailPage — read path', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     const blockedTask = {
       id: 'TASK-0099',
-      status: 'blocked',
-      block_kind: 'escalated',
+      // Path B (THR-037 Change B): a task waiting on a job is in_progress with
+      // block_kind=blocked_on_job (was blocked/escalated).
+      status: 'in_progress',
+      block_kind: 'blocked_on_job',
       blocked_on_job_ids: '["JOB-0001"]',
       assigned_agent: 'dev_agent',
       team: 'engineering',

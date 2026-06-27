@@ -12,17 +12,27 @@
 // Enums
 // ---------------------------------------------------------------------------
 
+// THR-037 Change B (Path B, stored source-of-truth): `blocked` is gone from
+// the surfaced vocabulary. A parent waiting on its own children/jobs is
+// `in_progress` with a `block_kind` discriminant; an agent waiting on the
+// founder is the top-level `escalated`; a founder-cancelled task is the
+// terminal `cancelled` (distinct from `failed`).
 export type TaskStatus =
   | 'pending'
   | 'in_progress'
-  | 'blocked'
+  // Non-terminal: an agent (root) needs a founder decision (was blocked+escalated).
+  | 'escalated'
   | 'completed'
   | 'failed'
-  // Terminal: blocked task closed because its follow-up moved to a
-  // human-authorized continuation (revisit / thread-dispatch).
+  // Terminal: founder-initiated stop, distinct from failed.
+  | 'cancelled'
+  // Terminal: task closed because its follow-up moved to a human-authorized
+  // continuation (revisit / thread-dispatch).
   | 'resolved_superseded';
 
-export type BlockKind = 'delegated' | 'escalated' | 'blocked_on_job';
+// What an `in_progress` task is internally waiting on (escalated left the
+// discriminant and became a top-level status under Path B).
+export type BlockKind = 'delegated' | 'blocked_on_job';
 
 export type ReviewVerdict =
   | 'accept'
@@ -421,6 +431,10 @@ export interface DashboardEscalationRow {
   question: string;
   raised_at: string;
   age_seconds: number;
+  /** THR-037 Change B §G: DERIVED display flavor for the single stored
+   *  `escalated` status ("needs-decision" | "exhausted" | "over-budget"),
+   *  or null when the escalation reason is absent/unrecognized. */
+  flavor?: string | null;
 }
 
 export interface ActiveByTeamRow {

@@ -125,7 +125,9 @@ interface ChainTimelineBlockInfo {
 
 type BlockedJobEntry = { job_id: string; status: string };
 
-/** Derive a human-readable blocker name from the task block context. */
+/** Derive a human-readable blocker name from the task block context.
+ *  THR-037 Change B: escalation is a top-level status now (not a block_kind),
+ *  so it no longer appears here — only the in_progress waiting reasons do. */
 function deriveBlockerName(
   blockKind: string | null | undefined,
   blockedOnJobs: BlockedJobEntry[] | null | undefined,
@@ -134,10 +136,41 @@ function deriveBlockerName(
     const jobIds = blockedOnJobs.map((e) => e.job_id);
     return `job(s) ${jobIds.join(', ')}`;
   }
-  if (blockKind === 'escalated') return 'escalation';
   if (blockKind === 'delegated') return 'delegation';
   if (blockKind === 'blocked_on_job') return 'blocked on job';
   return blockKind ?? undefined;
+}
+
+/**
+ * THR-037 Change B §G: derive the escalated display flavor from the latest
+ * escalation audit reason. Mirrors the daemon-side classifier
+ * (dashboard_summary.classify_escalation_flavor). Best-effort: returns null
+ * when no reason is recoverable, so the surface shows plain "escalated".
+ */
+function classifyEscalationFlavor(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  const low = reason.toLowerCase();
+  if (low.includes('failure-round bound') && low.includes('exhausted')) {
+    return 'exhausted';
+  }
+  if (low.includes('max steps') && low.includes('exceeded')) {
+    return 'over-budget';
+  }
+  return 'needs-decision';
+}
+
+/** Pull the most recent escalation reason from an audit-log array (DERIVE). */
+function latestEscalationReason(auditLog: unknown[] | undefined): string | null {
+  if (!Array.isArray(auditLog)) return null;
+  for (let i = auditLog.length - 1; i >= 0; i--) {
+    const entry = auditLog[i] as { action?: unknown; payload?: unknown };
+    if (entry?.action === 'escalation') {
+      const payload = entry.payload as { reason?: unknown } | null | undefined;
+      const reason = payload?.reason;
+      return typeof reason === 'string' ? reason : null;
+    }
+  }
+  return null;
 }
 
 function WorkflowChainTimeline({
@@ -315,6 +348,8 @@ function BriefSection({ brief }: { brief: string }): JSX.Element {
 interface ChainWithBlock {
   chain: ActiveChainResponse | null;
   blockedOnJobs: BlockedJobEntry[] | null;
+  /** THR-037 §G: derived escalated flavor from the latest escalation audit. */
+  escalationFlavor: string | null;
 }
 
 function useChainWithBlock(slug: string | undefined, taskId: string | undefined) {
@@ -335,6 +370,9 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
       return {
         chain: r.active_chain ?? null,
         blockedOnJobs,
+        escalationFlavor: classifyEscalationFlavor(
+          latestEscalationReason(r.audit_log),
+        ),
       };
     },
     enabled: !!slug && !!taskId,
@@ -467,22 +505,32 @@ export function TaskDetailPage(): JSX.Element {
   const chainQuery = useChainWithBlock(slug, taskId);
   const [dialog, setDialog] = useState<null | 'cancel' | 'revisit' | 'resolve'>(null);
 
-  const isEscalated = task.data?.status === 'blocked' && task.data?.block_kind === 'escalated';
+  // THR-037 Change B: escalation is the top-level `escalated` status.
+  const isEscalated = task.data?.status === 'escalated';
   const isTerminal = task.data ? TERMINAL_STATUSES.has(task.data.status) : false;
   const isFailed = task.data?.status === 'failed';
   const note = task.data ? (task.data as { note?: unknown }).note : undefined;
   const failureNote = isFailed && typeof note === 'string' && note ? note : null;
   const brief = task.data?.brief ?? '';
+  // §G derived escalated flavor (graceful: null → plain "escalated").
+  const escalationFlavor = isEscalated ? chainQuery.data?.escalationFlavor ?? null : null;
 
-  // Build block info for the chain timeline
+  // Build block info for the chain timeline. The red "blocked" timeline node
+  // fires for a genuine escalation OR a parked in_progress task waiting on its
+  // children/jobs (THR-037 §F.2) — `blocked` as a status is retired.
   const blockInfo: ChainTimelineBlockInfo | undefined = useMemo(() => {
     if (!task.data) return undefined;
-    const isBlocked = task.data.status === 'blocked';
+    const isBlocked =
+      task.data.status === 'escalated' ||
+      (task.data.status === 'in_progress' && !!task.data.block_kind);
     if (!isBlocked) return { isBlocked: false };
-    const blockerName = deriveBlockerName(
-      task.data.block_kind,
-      chainQuery.data?.blockedOnJobs ?? null,
-    );
+    const blockerName =
+      task.data.status === 'escalated'
+        ? 'escalation'
+        : deriveBlockerName(
+            task.data.block_kind,
+            chainQuery.data?.blockedOnJobs ?? null,
+          );
     return { isBlocked: true, blockerName };
   }, [task.data, chainQuery.data]);
 
@@ -514,6 +562,11 @@ export function TaskDetailPage(): JSX.Element {
                   status={task.data.status}
                   blockKind={task.data.block_kind}
                 />
+              )}
+              {escalationFlavor && (
+                <span className="text-text-muted text-xs font-medium">
+                  · {escalationFlavor}
+                </span>
               )}
             </h1>
             {task.data && (

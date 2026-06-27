@@ -184,23 +184,24 @@ async def test_manual_resolve_escalation_approve_does_not_supersede(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_unruled_escalation_with_no_continuation_stays_blocked(tmp_path: Path):
+async def test_unruled_escalation_with_no_continuation_stays_escalated(tmp_path: Path):
     """The escalation backlog only auto-closes via the revisit/dispatch
-    forcing function. With no continuation created, a blocked(escalated) task
-    is never transitioned by any aggregation/read path."""
-    from runtime.orchestrator.dashboard_summary import compute_stale_blocked_escalations
+    forcing function. With no continuation created, an `escalated` task
+    is never transitioned by any aggregation/read path (Path B: escalations
+    are the stored top-level status='escalated')."""
+    from runtime.orchestrator.dashboard_summary import compute_stale_escalations
 
     org, state, db = _build_org(tmp_path)
     old = datetime(2026, 1, 1, tzinfo=timezone.utc)
     db._conn.execute(
-        "INSERT INTO tasks (id, brief, assigned_agent, team, status, block_kind, created_at, updated_at) "
-        "VALUES ('TASK-1', 'b', 'm', 'engineering', 'blocked', 'escalated', ?, ?)",
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at) "
+        "VALUES ('TASK-1', 'b', 'm', 'engineering', 'escalated', ?, ?)",
         (old.isoformat(), old.isoformat()),
     )
     db._conn.commit()
     now = datetime(2026, 1, 3, tzinfo=timezone.utc)
-    rows = compute_stale_blocked_escalations(db, now=now)
+    rows = compute_stale_escalations(db, now=now)
     assert [r.task_id for r in rows] == ["TASK-1"]
     # Read paths never transition it.
-    assert db.get_task("TASK-1").status == TaskStatus.BLOCKED
-    assert db.get_task("TASK-1").block_kind == BlockKind.ESCALATED
+    assert db.get_task("TASK-1").status == TaskStatus.ESCALATED
+    assert db.get_task("TASK-1").block_kind is None

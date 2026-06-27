@@ -4,7 +4,7 @@ import time
 import pytest
 
 from runtime.infrastructure.database import Database, LineageTooDeep
-from runtime.models import TaskRecord, TaskStatus
+from runtime.models import BlockKind, TaskRecord, TaskStatus
 
 
 def test_init_creates_tables(db):
@@ -1587,14 +1587,14 @@ def test_list_roots_includes_severity_rollup(db):
     db.insert_task(TaskRecord(id="ROOT-1", brief="ok", status=TaskStatus.COMPLETED))
     db.insert_task(TaskRecord(
         id="CHILD-1", brief="c1", parent_task_id="ROOT-1",
-        status=TaskStatus.BLOCKED,
+        status=TaskStatus.ESCALATED,
     ))
     result = db.list_roots()
     assert len(result) == 1
     root = result[0]
     assert hasattr(root, '_severity_rollup')
-    # blocked child → root rollup should be 'blocked'
-    assert root._severity_rollup == 'blocked'
+    # escalated child → root rollup should be 'escalated' (worst severity, Path B)
+    assert root._severity_rollup == 'escalated'
 
 
 def test_list_roots_severity_rollup_root_without_subtree_is_own_status(db):
@@ -1619,19 +1619,43 @@ def test_list_roots_severity_rollup_failed_wins_over_completed(db):
     assert result[0]._severity_rollup == 'failed'
 
 
-def test_list_roots_severity_rollup_blocked_wins_over_failed(db):
-    """Blocked is the worst severity — blocked > failed > in_progress > pending > completed."""
+def test_list_roots_severity_rollup_escalated_wins_over_failed(db):
+    """Escalated is the worst severity (Path B) — escalated > failed >
+    in_progress > pending > completed > cancelled > resolved_superseded."""
     db.insert_task(TaskRecord(id="ROOT-1", brief="ok", status=TaskStatus.COMPLETED))
     db.insert_task(TaskRecord(
         id="CHILD-1", brief="c1", parent_task_id="ROOT-1",
-        status=TaskStatus.BLOCKED,
+        status=TaskStatus.ESCALATED,
     ))
     db.insert_task(TaskRecord(
         id="CHILD-2", brief="c2", parent_task_id="ROOT-1",
         status=TaskStatus.FAILED,
     ))
     result = db.list_roots()
-    assert result[0]._severity_rollup == 'blocked'
+    assert result[0]._severity_rollup == 'escalated'
+
+
+def test_list_roots_severity_rollup_delegating_parent_does_not_dominate(db):
+    """Path B (THR-037 §F.4): a delegating parent is stored `in_progress`
+    (rank 2), so a healthy delegating subtree NO LONGER rolls up to the
+    attention-grabbing worst — only a real `escalated`/`failed` descendant
+    pulls it up. Here an in_progress(delegated) root with completed children
+    rolls up to plain `in_progress`, not to amber/red."""
+    db.insert_task(TaskRecord(
+        id="ROOT-1", brief="parent", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    ))
+    db.insert_task(TaskRecord(
+        id="CHILD-1", brief="c1", parent_task_id="ROOT-1",
+        status=TaskStatus.COMPLETED,
+    ))
+    db.insert_task(TaskRecord(
+        id="CHILD-2", brief="c2", parent_task_id="ROOT-1",
+        status=TaskStatus.COMPLETED,
+    ))
+    result = db.list_roots()
+    root = [r for r in result if r.id == "ROOT-1"][0]
+    assert root._severity_rollup == 'in_progress'
 
 
 def test_list_roots_filters_by_status(db):

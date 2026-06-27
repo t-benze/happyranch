@@ -178,12 +178,12 @@ describe('TasksPage — read path (roots endpoint)', () => {
 
   test('renders severity_rollup badge in TaskCard (worst subtree status)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    // Root is pending but has a blocked child → severity_rollup = 'blocked'
-    // Use a brief that doesn't contain 'blocked' to avoid ambiguity with badge text
+    // Root is pending but has an escalated child → severity_rollup = 'escalated'
+    // (Path B: escalated is the worst rollup severity).
     const taskWithRollup = rootTask({
       task_id: 'TASK-0100',
       status: 'pending',
-      severity_rollup: 'blocked',
+      severity_rollup: 'escalated',
       brief: 'Root task that has a stuck child',
     });
     server.use(
@@ -193,8 +193,8 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
-      // The badge should show 'blocked' from severity_rollup, not 'pending'
-      expect(screen.getByText('blocked')).toBeInTheDocument();
+      // The badge should show 'escalated' from severity_rollup, not 'pending'
+      expect(screen.getByText('escalated')).toBeInTheDocument();
       expect(screen.getByText(/Root task that has a stuck child/)).toBeInTheDocument();
     });
   });
@@ -206,11 +206,11 @@ describe('TasksPage — read path (roots endpoint)', () => {
   // subtask counts that the roots payload does not carry — deferred).
   test('surfaces worst-child subtask rollup inline on root rows (TASKS-05)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    // Root is in_progress but a descendant is blocked → severity_rollup='blocked'.
+    // Root is in_progress but a descendant is escalated → severity_rollup='escalated'.
     const worseChild = rootTask({
       task_id: 'TASK-0500',
       status: 'in_progress',
-      severity_rollup: 'blocked',
+      severity_rollup: 'escalated',
       brief: 'Root in progress with a stuck child',
     });
     // Root with no worse descendant (rollup === own status) → no inline rollup.
@@ -227,9 +227,9 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     // The worse-child root names the worst descendant status inline, colored
-    // with the blocked token.
-    const rollup = await screen.findByText('subtask blocked');
-    expect(rollup).toHaveClass('text-status-blocked');
+    // with the escalated token.
+    const rollup = await screen.findByText('subtask escalated');
+    expect(rollup).toHaveClass('text-status-escalated');
     // The healthy root surfaces no inline rollup (no fabricated subtask state).
     expect(screen.queryByText('subtask in progress')).not.toBeInTheDocument();
   });
@@ -310,6 +310,98 @@ describe('TasksPage — read path (roots endpoint)', () => {
   });
 });
 
+// THR-037 Change B Phase 2: the status-GROUP header maps must speak the Path-B
+// vocabulary. `escalated` is a first-class attention group (red dot, surfaced
+// early); `cancelled` is a calm terminal group (muted dot, dimmed/terminal set);
+// `blocked` is fully retired from this presentation surface.
+describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2)', () => {
+  function mountStatuses(tasks: TaskRecord[]) {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks }),
+      ),
+    );
+    return mountAt(`/orgs/${SLUG}/tasks`);
+  }
+
+  test('escalated group renders the red attention dot + a proper label and sorts early', async () => {
+    const running = rootTask({
+      task_id: 'TASK-0600',
+      status: 'in_progress',
+      severity_rollup: 'in_progress',
+      brief: 'A healthy running root',
+    });
+    const escalated = rootTask({
+      task_id: 'TASK-0601',
+      status: 'escalated',
+      severity_rollup: 'escalated',
+      brief: 'A root escalated to the founder',
+    });
+    mountStatuses([running, escalated]);
+
+    // Proper display label (not a raw-lowercase fallback).
+    const escalatedHeading = await screen.findByRole('heading', {
+      name: /Escalated/,
+    });
+    // Red attention dot — the SAME token StatusBadge uses for escalated.
+    const dot = escalatedHeading.querySelector('span[aria-hidden="true"]');
+    expect(dot).not.toBeNull();
+    expect(dot).toHaveClass('text-status-escalated');
+
+    // Sorts EARLY: the escalated attention group precedes the in_progress group
+    // in document order (first-class attention, surfaced near the top).
+    const inProgressHeading = screen.getByRole('heading', { name: /In progress/ });
+    expect(
+      escalatedHeading.compareDocumentPosition(inProgressHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // Escalated is an ATTENTION state, NOT dimmed/terminal.
+    expect(escalatedHeading.closest('section')).not.toHaveClass('opacity-60');
+  });
+
+  test('cancelled group renders the muted/terminal treatment and is in the dimmed set', async () => {
+    const cancelled = rootTask({
+      task_id: 'TASK-0602',
+      status: 'cancelled',
+      severity_rollup: 'cancelled',
+      brief: 'A cancelled root',
+    });
+    mountStatuses([cancelled]);
+
+    const cancelledHeading = await screen.findByRole('heading', {
+      name: /Cancelled/,
+    });
+    // Muted/terminal dot — the SAME token StatusBadge uses for cancelled
+    // (mirrors resolved_superseded).
+    const dot = cancelledHeading.querySelector('span[aria-hidden="true"]');
+    expect(dot).not.toBeNull();
+    expect(dot).toHaveClass('text-status-archived');
+
+    // Cancelled sits in the terminal/dimmed set (calmer than completed).
+    expect(cancelledHeading.closest('section')).toHaveClass('opacity-60');
+  });
+
+  test('no `blocked` group label or dot path remains on this surface', async () => {
+    // Render the full Path-B vocabulary; no surface should fall back to the
+    // retired `blocked` label or its dot token.
+    const tasks = [
+      rootTask({ task_id: 'TASK-0610', status: 'in_progress', severity_rollup: 'in_progress' }),
+      rootTask({ task_id: 'TASK-0611', status: 'escalated', severity_rollup: 'escalated' }),
+      rootTask({ task_id: 'TASK-0612', status: 'cancelled', severity_rollup: 'cancelled' }),
+      rootTask({ task_id: 'TASK-0613', status: 'completed', severity_rollup: 'completed' }),
+    ];
+    mountStatuses(tasks);
+
+    await screen.findByRole('heading', { name: /In progress/ });
+    // No retired `blocked` group heading.
+    expect(screen.queryByRole('heading', { name: /Blocked/ })).toBeNull();
+    // No retired blocked dot token anywhere in the rendered surface.
+    expect(document.querySelector('.text-status-blocked')).toBeNull();
+  });
+});
+
 describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () => {
   function mountTasks(tasks: TaskRecord[]) {
     sessionStorage.setItem('happyranch.token', 'tok');
@@ -330,9 +422,8 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
     });
     const escalated = rootTask({
       task_id: 'TASK-0401',
-      status: 'blocked',
-      block_kind: 'escalated',
-      severity_rollup: 'blocked',
+      status: 'escalated',
+      severity_rollup: 'escalated',
     });
     const failed = rootTask({
       task_id: 'TASK-0402',
@@ -558,11 +649,12 @@ describe('TaskDetailPage — workflow chain timeline', () => {
     expect(screen.queryByText(/Workflow chain/i)).not.toBeInTheDocument();
   });
 
-  test('renders blocked chain node when task is blocked with block_kind', async () => {
+  test('renders blocked chain node when task is escalated', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    // Path B: a genuine escalation is the top-level `escalated` status.
     stubHandlers(
       { ...ACTIVE_CHAIN, step_index: 0 },
-      { status: 'blocked', block_kind: 'escalated' },
+      { status: 'escalated', block_kind: null },
     );
     renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
@@ -575,9 +667,10 @@ describe('TaskDetailPage — workflow chain timeline', () => {
 
   test('renders blocked chain node with job IDs from blocked_on_jobs', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    // Path B: a task waiting on a job is in_progress + blocked_on_job.
     stubHandlers(
       { ...ACTIVE_CHAIN, step_index: 1 },
-      { status: 'blocked', block_kind: 'blocked_on_job' },
+      { status: 'in_progress', block_kind: 'blocked_on_job' },
       [{ job_id: 'JOB-0042', status: 'pending' }],
     );
     renderWithProviders(<AppRoutes />, {
