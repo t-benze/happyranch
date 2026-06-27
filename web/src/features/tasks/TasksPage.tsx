@@ -161,12 +161,12 @@ export function TasksPage(): JSX.Element {
 
   // Page eyebrow — derived ONLY from already-loaded roots-list fields
   // (no extra fetch, no fabrication). "Waiting on you" = roots escalated to
-  // the founder (status blocked + block_kind escalated); "Failed" uses the
-  // same severity rollup the rows display. "Subtasks roll up" is a static,
-  // honest descriptor of the roots payload (it carries severity_rollup).
+  // the founder (THR-037 Change B: the top-level `escalated` status); "Failed"
+  // uses the same severity rollup the rows display. "Subtasks roll up" is a
+  // static, honest descriptor of the roots payload (it carries severity_rollup).
   const eyebrow = useMemo(() => {
     const waitingOnYou = allTasks.filter(
-      (t) => t.status === 'blocked' && t.block_kind === 'escalated',
+      (t) => t.status === 'escalated',
     ).length;
     const failed = allTasks.filter(
       (t) => severityRollupStatus(t) === 'failed',

@@ -178,12 +178,12 @@ describe('TasksPage — read path (roots endpoint)', () => {
 
   test('renders severity_rollup badge in TaskCard (worst subtree status)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    // Root is pending but has a blocked child → severity_rollup = 'blocked'
-    // Use a brief that doesn't contain 'blocked' to avoid ambiguity with badge text
+    // Root is pending but has an escalated child → severity_rollup = 'escalated'
+    // (Path B: escalated is the worst rollup severity).
     const taskWithRollup = rootTask({
       task_id: 'TASK-0100',
       status: 'pending',
-      severity_rollup: 'blocked',
+      severity_rollup: 'escalated',
       brief: 'Root task that has a stuck child',
     });
     server.use(
@@ -193,8 +193,8 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
-      // The badge should show 'blocked' from severity_rollup, not 'pending'
-      expect(screen.getByText('blocked')).toBeInTheDocument();
+      // The badge should show 'escalated' from severity_rollup, not 'pending'
+      expect(screen.getByText('escalated')).toBeInTheDocument();
       expect(screen.getByText(/Root task that has a stuck child/)).toBeInTheDocument();
     });
   });
@@ -206,11 +206,11 @@ describe('TasksPage — read path (roots endpoint)', () => {
   // subtask counts that the roots payload does not carry — deferred).
   test('surfaces worst-child subtask rollup inline on root rows (TASKS-05)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    // Root is in_progress but a descendant is blocked → severity_rollup='blocked'.
+    // Root is in_progress but a descendant is escalated → severity_rollup='escalated'.
     const worseChild = rootTask({
       task_id: 'TASK-0500',
       status: 'in_progress',
-      severity_rollup: 'blocked',
+      severity_rollup: 'escalated',
       brief: 'Root in progress with a stuck child',
     });
     // Root with no worse descendant (rollup === own status) → no inline rollup.
@@ -227,9 +227,9 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     // The worse-child root names the worst descendant status inline, colored
-    // with the blocked token.
-    const rollup = await screen.findByText('subtask blocked');
-    expect(rollup).toHaveClass('text-status-blocked');
+    // with the escalated token.
+    const rollup = await screen.findByText('subtask escalated');
+    expect(rollup).toHaveClass('text-status-escalated');
     // The healthy root surfaces no inline rollup (no fabricated subtask state).
     expect(screen.queryByText('subtask in progress')).not.toBeInTheDocument();
   });
@@ -330,9 +330,8 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
     });
     const escalated = rootTask({
       task_id: 'TASK-0401',
-      status: 'blocked',
-      block_kind: 'escalated',
-      severity_rollup: 'blocked',
+      status: 'escalated',
+      severity_rollup: 'escalated',
     });
     const failed = rootTask({
       task_id: 'TASK-0402',
@@ -558,11 +557,12 @@ describe('TaskDetailPage — workflow chain timeline', () => {
     expect(screen.queryByText(/Workflow chain/i)).not.toBeInTheDocument();
   });
 
-  test('renders blocked chain node when task is blocked with block_kind', async () => {
+  test('renders blocked chain node when task is escalated', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    // Path B: a genuine escalation is the top-level `escalated` status.
     stubHandlers(
       { ...ACTIVE_CHAIN, step_index: 0 },
-      { status: 'blocked', block_kind: 'escalated' },
+      { status: 'escalated', block_kind: null },
     );
     renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
@@ -575,9 +575,10 @@ describe('TaskDetailPage — workflow chain timeline', () => {
 
   test('renders blocked chain node with job IDs from blocked_on_jobs', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    // Path B: a task waiting on a job is in_progress + blocked_on_job.
     stubHandlers(
       { ...ACTIVE_CHAIN, step_index: 1 },
-      { status: 'blocked', block_kind: 'blocked_on_job' },
+      { status: 'in_progress', block_kind: 'blocked_on_job' },
       [{ job_id: 'JOB-0042', status: 'pending' }],
     );
     renderWithProviders(<AppRoutes />, {

@@ -892,13 +892,13 @@ def register(sub) -> None:
     p_tasks.add_argument("--limit", type=int, default=20, help="Max tasks to show")
     p_tasks.add_argument(
         "--status", default=None,
-        help="Filter by task status (e.g. blocked, in_progress, completed, "
-             "failed, pending, resolved_superseded)",
+        help="Filter by task status (e.g. in_progress, escalated, completed, "
+             "failed, pending, cancelled, resolved_superseded)",
     )
     p_tasks.add_argument(
         "--block-kind", dest="block_kind", default=None,
-        help="Filter by block kind (escalated, delegated, blocked_on_job); "
-             "most useful with --status blocked",
+        help="Filter by block kind (delegated, blocked_on_job); "
+             "most useful with --status in_progress",
     )
     p_tasks.set_defaults(func=cmd_tasks)
 

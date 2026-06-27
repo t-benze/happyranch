@@ -76,9 +76,10 @@ export function severityRollupStatus(task: TaskRecord): TaskStatus {
 const ROLLUP_COLOR: Record<TaskStatus, string> = {
   pending: 'text-status-archiving',
   in_progress: 'text-status-open',
-  blocked: 'text-status-blocked',
+  escalated: 'text-status-escalated',
   completed: 'text-status-open',
   failed: 'text-status-abandoned',
+  cancelled: 'text-status-archived',
   resolved_superseded: 'text-status-archived',
 };
 

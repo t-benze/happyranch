@@ -85,6 +85,11 @@ export function EscalationInboxRow({
           </Link>
           {' · '}{row.team}{' · '}{relativeAge(row.age_seconds)}
         </span>
+        {row.flavor && (
+          <span className="text-status-escalated text-xs font-medium">
+            · {row.flavor}
+          </span>
+        )}
       </div>
       <p className="text-text-primary mt-1 text-sm">{row.question}</p>
 

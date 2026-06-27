@@ -39,13 +39,17 @@ class EscalationRow(BaseModel):
     question: str
     raised_at: datetime
     age_seconds: int
+    # THR-037 Change B §G: a DERIVED display flavor for the single stored
+    # `escalated` status, classified from the escalation audit reason. One of
+    # "needs-decision" / "exhausted" / "over-budget", or None when the reason
+    # is absent/unrecognized (surface falls back to plain "escalated").
+    flavor: str | None = None
 
 
-class StaleBlockedRow(BaseModel):
+class StaleEscalationRow(BaseModel):
     task_id: str
     agent: str
     team: str
-    block_kind: Literal["escalated", "delegated"]
     age_seconds: int
 
 
@@ -84,7 +88,7 @@ class DashboardSummaryResponse(BaseModel):
     heartbeat: list[HeartbeatBucket]
     narrative_counts: NarrativeCounts
     escalations: list[EscalationRow]
-    stale_blocked_escalations: list[StaleBlockedRow]
+    stale_escalations: list[StaleEscalationRow]
     active_by_team: list[ActiveByTeam]
     recent_activity: list[ActivityRow]
     updates_this_week: list[UpdateRow]
@@ -150,9 +154,10 @@ def compute_narrative_counts_today(
     )
     failed = int(failed_row["n"]) if failed_row else 0
 
+    # Path B (THR-037 Change B): escalations are the stored top-level
+    # status='escalated' (block_kind cleared), no longer blocked+escalated.
     escalated_row = db.fetch_one_readonly(
-        "SELECT COUNT(*) AS n FROM tasks "
-        "WHERE status = 'blocked' AND block_kind = 'escalated'",
+        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'escalated'",
     )
     escalated = int(escalated_row["n"]) if escalated_row else 0
 
@@ -367,20 +372,47 @@ def compute_updates_this_week(
     return items[:n]
 
 
+def classify_escalation_flavor(reason: str | None) -> str | None:
+    """THR-037 Change B §G: derive a display sub-label for the single stored
+    `escalated` status from the escalation audit reason — NO new stored status,
+    NO new column. The three escalation paths all land in one `escalated`
+    status; their flavor is recoverable losslessly from the reason text:
+
+      - failure-recovery exhaustion ("failure-round bound (N) exhausted: …")
+        → "exhausted"
+      - orchestration-budget exhaustion ("max steps (N) exceeded") → "over-budget"
+      - a genuine agent escalate (free-text reason) → "needs-decision"
+
+    Best-effort / graceful: an absent or unrecognized-but-empty reason returns
+    None so the surface falls back to plain "escalated" (never blanks the badge).
+    """
+    if not reason:
+        return None
+    low = reason.lower()
+    if "failure-round bound" in low and "exhausted" in low:
+        return "exhausted"
+    if "max steps" in low and "exceeded" in low:
+        return "over-budget"
+    return "needs-decision"
+
+
 def compute_escalations_open(db: Database, *, now: datetime) -> list[EscalationRow]:
-    """Currently-escalated tasks with the question text from audit payload."""
+    """Currently-escalated tasks with the question text from audit payload.
+
+    Path B (THR-037 Change B): escalations are the stored top-level
+    status='escalated' (block_kind cleared)."""
     rows = db.fetch_all_readonly(
         "SELECT t.id, t.assigned_agent, t.team, t.updated_at, "
         "       a.payload AS escalation_payload, a.timestamp AS escalation_ts "
         "FROM tasks t "
         "LEFT JOIN audit_log a ON a.task_id = t.id AND a.action = 'escalation' "
-        "WHERE t.status = 'blocked' AND t.block_kind = 'escalated' "
+        "WHERE t.status = 'escalated' "
         "ORDER BY t.updated_at DESC"
     )
     result: list[EscalationRow] = []
     for r in rows:
         payload = json.loads(r["escalation_payload"] or "{}")
-        question = payload.get("reason") or payload.get("question") or ""
+        reason = payload.get("reason") or payload.get("question") or ""
         raised = datetime.fromisoformat(r["escalation_ts"] or r["updated_at"])
         if raised.tzinfo is None:
             raised = raised.replace(tzinfo=timezone.utc)
@@ -390,56 +422,63 @@ def compute_escalations_open(db: Database, *, now: datetime) -> list[EscalationR
             task_id=r["id"],
             agent=r["assigned_agent"],
             team=r["team"],
-            question=question,
+            question=reason,
             raised_at=raised,
             age_seconds=max(0, age),
+            flavor=classify_escalation_flavor(reason),
         ))
     return result
 
 
-# Tasks blocked(escalated|delegated) longer than this are "stale" — they look
-# open but the follow-up work has almost certainly moved elsewhere (a thread
-# ruling + fresh dispatch). Surfaced as a recurring visible metric so the
+# Tasks in the stored `escalated` status longer than this are "stale" — they
+# look open but the follow-up work has almost certainly moved elsewhere (a
+# thread ruling + fresh dispatch). Surfaced as a recurring visible metric so the
 # backlog can never silently rot again (THR-018 tier #3, §3c). 24h sits at the
 # low end of the spec's 24–48h window so a forgotten escalation shows up within
 # a working day.
-_STALE_BLOCKED_THRESHOLD_HOURS = 24
+_STALE_ESCALATION_THRESHOLD_HOURS = 24
 
 
-def compute_stale_blocked_escalations(
-    db: Database, *, now: datetime, threshold_hours: int = _STALE_BLOCKED_THRESHOLD_HOURS,
-) -> list[StaleBlockedRow]:
-    """Tasks in blocked(escalated|delegated) older than `threshold_hours`.
+def compute_stale_escalations(
+    db: Database, *, now: datetime, threshold_hours: int = _STALE_ESCALATION_THRESHOLD_HOURS,
+) -> list[StaleEscalationRow]:
+    """Tasks in the stored `escalated` status older than `threshold_hours`.
+
+    Path B (THR-037 Change B): a delegating parent is now a healthy
+    `in_progress` task, NOT a stale-blocked row, so the old delegated bucketing
+    is dropped — only genuine open `escalated` items are stale-worthy.
 
     Age is measured from ``updated_at`` (the last transition, i.e. when the
-    task entered its blocked state). Oldest first. Read-only aggregation."""
+    task entered the escalated state). Oldest first. Read-only aggregation."""
     cutoff = (now - timedelta(hours=threshold_hours)).isoformat()
     rows = db.fetch_all_readonly(
-        "SELECT id, assigned_agent, team, block_kind, updated_at FROM tasks "
-        "WHERE status = 'blocked' AND block_kind IN ('escalated', 'delegated') "
-        "  AND updated_at < ? "
+        "SELECT id, assigned_agent, team, updated_at FROM tasks "
+        "WHERE status = 'escalated' AND updated_at < ? "
         "ORDER BY updated_at ASC",
         (cutoff,),
     )
     moment = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
-    result: list[StaleBlockedRow] = []
+    result: list[StaleEscalationRow] = []
     for r in rows:
         updated = datetime.fromisoformat(r["updated_at"])
         if updated.tzinfo is None:
             updated = updated.replace(tzinfo=timezone.utc)
         age = int((moment - updated).total_seconds())
-        result.append(StaleBlockedRow(
+        result.append(StaleEscalationRow(
             task_id=r["id"],
             agent=r["assigned_agent"],
             team=r["team"],
-            block_kind=r["block_kind"],
             age_seconds=max(0, age),
         ))
     return result
 
 
 def compute_active_by_team(db: Database) -> list[ActiveByTeam]:
-    """tasks with status='in_progress' grouped by team."""
+    """tasks with status='in_progress' grouped by team.
+
+    Path B (THR-037 Change B, ratified #5): `in_progress` now also covers
+    parked parents (block_kind delegated/blocked_on_job) — the founder's ruling
+    is that a delegating parent IS in-progress, so it belongs in active-by-team."""
     rows = db.fetch_all_readonly(
         "SELECT team, id FROM tasks WHERE status = 'in_progress' "
         "ORDER BY team, updated_at DESC"
@@ -529,7 +568,7 @@ def compose_dashboard_summary(
         heartbeat=compute_heartbeat_24h(db, now=now),
         narrative_counts=compute_narrative_counts_today(db, now=now, kb_store=kb_store),
         escalations=compute_escalations_open(db, now=now),
-        stale_blocked_escalations=compute_stale_blocked_escalations(db, now=now),
+        stale_escalations=compute_stale_escalations(db, now=now),
         active_by_team=compute_active_by_team(db),
         recent_activity=compute_recent_activity(db, n=6),
         updates_this_week=compute_updates_this_week(db, now=now, kb_store=kb_store, n=12),
