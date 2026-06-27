@@ -38,18 +38,20 @@ const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
 type GroupDot =
   | 'in_progress'
   | 'pending'
-  | 'blocked'
+  | 'escalated'
   | 'completed'
   | 'failed'
+  | 'cancelled'
   | 'resolved_superseded'
   | 'neutral';
 
 const DOT_COLOR: Record<GroupDot, string> = {
   in_progress: 'text-status-open',
   pending: 'text-status-archiving',
-  blocked: 'text-status-blocked',
+  escalated: 'text-status-escalated',
   completed: 'text-status-open',
   failed: 'text-status-abandoned',
+  cancelled: 'text-status-archived',
   resolved_superseded: 'text-status-archived',
   neutral: 'text-text-muted',
 };
@@ -57,9 +59,10 @@ const DOT_COLOR: Record<GroupDot, string> = {
 const STATUS_DOT_KEYS = new Set<string>([
   'in_progress',
   'pending',
-  'blocked',
+  'escalated',
   'completed',
   'failed',
+  'cancelled',
   'resolved_superseded',
 ]);
 
@@ -123,9 +126,10 @@ function groupLabel(key: string, by: GroupBy): string {
     const map: Record<string, string> = {
       pending: 'Pending',
       in_progress: 'In progress',
-      blocked: 'Blocked',
+      escalated: 'Escalated',
       completed: 'Completed',
       failed: 'Failed',
+      cancelled: 'Cancelled',
       resolved_superseded: 'Resolved',
     };
     return map[key] ?? key;
@@ -135,18 +139,26 @@ function groupLabel(key: string, by: GroupBy): string {
 
 function isResolvedGroup(key: string, by: GroupBy): boolean {
   if (by === 'status') {
-    return key === 'completed' || key === 'failed' || key === 'resolved_superseded';
+    // Terminal/dimmed set. `cancelled` is terminal (muted, calmer than
+    // completed); `escalated` is an attention state and stays undimmed.
+    return (
+      key === 'completed' ||
+      key === 'failed' ||
+      key === 'cancelled' ||
+      key === 'resolved_superseded'
+    );
   }
   return false;
 }
 
 const GROUP_ORDER_STATUS: Record<string, number> = {
-  in_progress: 0,
-  pending: 1,
-  blocked: 2,
+  escalated: 0,
+  in_progress: 1,
+  pending: 2,
   completed: 3,
   failed: 4,
-  resolved_superseded: 5,
+  cancelled: 5,
+  resolved_superseded: 6,
 };
 
 export function TasksPage(): JSX.Element {

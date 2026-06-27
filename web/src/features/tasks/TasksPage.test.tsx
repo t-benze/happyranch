@@ -310,6 +310,98 @@ describe('TasksPage — read path (roots endpoint)', () => {
   });
 });
 
+// THR-037 Change B Phase 2: the status-GROUP header maps must speak the Path-B
+// vocabulary. `escalated` is a first-class attention group (red dot, surfaced
+// early); `cancelled` is a calm terminal group (muted dot, dimmed/terminal set);
+// `blocked` is fully retired from this presentation surface.
+describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2)', () => {
+  function mountStatuses(tasks: TaskRecord[]) {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks }),
+      ),
+    );
+    return mountAt(`/orgs/${SLUG}/tasks`);
+  }
+
+  test('escalated group renders the red attention dot + a proper label and sorts early', async () => {
+    const running = rootTask({
+      task_id: 'TASK-0600',
+      status: 'in_progress',
+      severity_rollup: 'in_progress',
+      brief: 'A healthy running root',
+    });
+    const escalated = rootTask({
+      task_id: 'TASK-0601',
+      status: 'escalated',
+      severity_rollup: 'escalated',
+      brief: 'A root escalated to the founder',
+    });
+    mountStatuses([running, escalated]);
+
+    // Proper display label (not a raw-lowercase fallback).
+    const escalatedHeading = await screen.findByRole('heading', {
+      name: /Escalated/,
+    });
+    // Red attention dot — the SAME token StatusBadge uses for escalated.
+    const dot = escalatedHeading.querySelector('span[aria-hidden="true"]');
+    expect(dot).not.toBeNull();
+    expect(dot).toHaveClass('text-status-escalated');
+
+    // Sorts EARLY: the escalated attention group precedes the in_progress group
+    // in document order (first-class attention, surfaced near the top).
+    const inProgressHeading = screen.getByRole('heading', { name: /In progress/ });
+    expect(
+      escalatedHeading.compareDocumentPosition(inProgressHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // Escalated is an ATTENTION state, NOT dimmed/terminal.
+    expect(escalatedHeading.closest('section')).not.toHaveClass('opacity-60');
+  });
+
+  test('cancelled group renders the muted/terminal treatment and is in the dimmed set', async () => {
+    const cancelled = rootTask({
+      task_id: 'TASK-0602',
+      status: 'cancelled',
+      severity_rollup: 'cancelled',
+      brief: 'A cancelled root',
+    });
+    mountStatuses([cancelled]);
+
+    const cancelledHeading = await screen.findByRole('heading', {
+      name: /Cancelled/,
+    });
+    // Muted/terminal dot — the SAME token StatusBadge uses for cancelled
+    // (mirrors resolved_superseded).
+    const dot = cancelledHeading.querySelector('span[aria-hidden="true"]');
+    expect(dot).not.toBeNull();
+    expect(dot).toHaveClass('text-status-archived');
+
+    // Cancelled sits in the terminal/dimmed set (calmer than completed).
+    expect(cancelledHeading.closest('section')).toHaveClass('opacity-60');
+  });
+
+  test('no `blocked` group label or dot path remains on this surface', async () => {
+    // Render the full Path-B vocabulary; no surface should fall back to the
+    // retired `blocked` label or its dot token.
+    const tasks = [
+      rootTask({ task_id: 'TASK-0610', status: 'in_progress', severity_rollup: 'in_progress' }),
+      rootTask({ task_id: 'TASK-0611', status: 'escalated', severity_rollup: 'escalated' }),
+      rootTask({ task_id: 'TASK-0612', status: 'cancelled', severity_rollup: 'cancelled' }),
+      rootTask({ task_id: 'TASK-0613', status: 'completed', severity_rollup: 'completed' }),
+    ];
+    mountStatuses(tasks);
+
+    await screen.findByRole('heading', { name: /In progress/ });
+    // No retired `blocked` group heading.
+    expect(screen.queryByRole('heading', { name: /Blocked/ })).toBeNull();
+    // No retired blocked dot token anywhere in the rendered surface.
+    expect(document.querySelector('.text-status-blocked')).toBeNull();
+  });
+});
+
 describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () => {
   function mountTasks(tasks: TaskRecord[]) {
     sessionStorage.setItem('happyranch.token', 'tok');
