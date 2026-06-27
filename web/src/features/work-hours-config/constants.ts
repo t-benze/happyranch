@@ -2,24 +2,11 @@
  * Static UI constants for the Work-Hours Config editors.
  *
  * These drive PICKERS only — the SERVER is the single validation authority. The
- * interval divisor list and timezone list are conveniences so the founder
- * can't easily type an obviously-bad value; an out-of-list value (e.g. typed
- * elsewhere) is still rejected server-side with a 422.
+ * timezone list is a convenience so the founder can pick a common zone; an
+ * out-of-list value (e.g. typed elsewhere) is still rejected server-side with a
+ * 422. The interval is a free-form text input in BOTH modes — the divides-24h
+ * rule lives only in the server (_build_org_config), never on the client.
  */
-
-/** Divisors of 24h offered in continuous mode (spec §5 guardrail). */
-export const INTERVAL_DIVISORS = [
-  '15m',
-  '30m',
-  '1h',
-  '2h',
-  '3h',
-  '4h',
-  '6h',
-  '8h',
-  '12h',
-  '24h',
-] as const;
 
 export const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 export type Day = (typeof DAYS)[number];

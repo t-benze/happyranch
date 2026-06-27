@@ -43,7 +43,7 @@ import {
   type LayerDraft,
   reconcile,
 } from './merge';
-import { DAYS, INTERVAL_DIVISORS, ianaTimezones } from './constants';
+import { DAYS, ianaTimezones } from './constants';
 
 export type Tier =
   | { kind: 'org' }
@@ -370,32 +370,16 @@ export function TierEditorDialog({
               ghost={showGhosts && interval === null ? `inherited: ${inherited.interval ?? '—'} (${inherited.sourceLabel('interval')})` : undefined}
               onReset={showGhosts && interval !== null ? () => setInterval(null) : undefined}
             >
-              {isContinuous ? (
-                <Select
-                  value={interval ?? UNSET}
-                  onValueChange={(v) => setInterval(v === UNSET ? null : v)}
-                >
-                  <SelectTrigger className="w-32">
-                    <SelectValue placeholder="inherited" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {showGhosts && <SelectItem value={UNSET}>inherited</SelectItem>}
-                    {INTERVAL_DIVISORS.map((iv) => (
-                      <SelectItem key={iv} value={iv}>
-                        {iv}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  type="text"
-                  className="w-32"
-                  placeholder="2h"
-                  value={interval ?? ''}
-                  onChange={(e) => setInterval(e.target.value || null)}
-                />
-              )}
+              {/* Free-form in BOTH modes — the server is the sole authority on
+                  the divides-24h / interval≤window rules; the client only hints
+                  the '2h / 30m' shape and surfaces the PUT 422 if it's bad. */}
+              <Input
+                type="text"
+                className="w-32"
+                placeholder="2h"
+                value={interval ?? ''}
+                onChange={(e) => setInterval(e.target.value || null)}
+              />
             </Row>
 
             <Row
