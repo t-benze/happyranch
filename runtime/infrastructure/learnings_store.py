@@ -21,6 +21,16 @@ ID_RE = re.compile(r"^LRN-\d{3,}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_BODY_BYTES = 32 * 1024
 
+# THR-032 Phase 1 (harness-agnostic memory layer): additive frontmatter enums.
+PROVENANCE_VALUES = {"experiential", "reflective", "directive"}
+SCOPE_VALUES = {"agent", "team", "org"}
+LIFECYCLE_VALUES = {"valid", "superseded", "evicted"}
+
+
+def _clamp_salience(value: object) -> int:
+    """Clamp salience into [0, 100]; both reads and writes normalize."""
+    return max(0, min(100, int(value)))
+
 
 class InvalidLearningId(ValueError):
     pass
@@ -64,6 +74,9 @@ class LearningSummary:
     tags: list[str]
     promoted_to: Optional[str]
     updated_at: Optional[str]
+    lifecycle: str
+    provenance: str
+    salience: int
 
 
 @dataclass
@@ -76,7 +89,7 @@ class LearningSearchHit:
 
 
 @dataclass
-class LearningEntry:
+class MemoryItem:
     id: str
     slug: str
     title: str
@@ -91,6 +104,11 @@ class LearningEntry:
     authored_at: Optional[str] = None
     updated_by: Optional[str] = None
     updated_at: Optional[str] = None
+    # THR-032 Phase 1 additive frontmatter (defaults reproduce pre-rename behavior).
+    provenance: str = "experiential"
+    scope: str = "agent"
+    lifecycle: str = "valid"
+    salience: int = 50
 
 
 def _lrn_numeric_suffix(s: "LearningSummary") -> int:
@@ -101,7 +119,7 @@ def _lrn_numeric_suffix(s: "LearningSummary") -> int:
     return int(s.id.split("-", 1)[1])
 
 
-class LearningsStore:
+class MemoryStore:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._root.mkdir(parents=True, exist_ok=True)
@@ -122,7 +140,7 @@ class LearningsStore:
 
     _ID_FILE_RE = re.compile(r"^LRN-(\d{3,})-")
 
-    def _validate_entry_structure(self, entry: LearningEntry) -> None:
+    def _validate_entry_structure(self, entry: MemoryItem) -> None:
         # Required fields (excluding id, which is server-allocated on add)
         for required in ("slug", "title", "topic"):
             val = getattr(entry, required, None)
@@ -140,6 +158,21 @@ class LearningsStore:
             raise InvalidLearningEntry(
                 "entry_too_large", f"body exceeds {MAX_BODY_BYTES}B"
             )
+        # THR-032 additive fields: enum-validate the three enums; clamp salience
+        # (clamp, never reject) so the stored value is always in [0, 100].
+        if entry.provenance not in PROVENANCE_VALUES:
+            raise InvalidLearningEntry(
+                "invalid_provenance", f"provenance {entry.provenance!r} not allowed"
+            )
+        if entry.scope not in SCOPE_VALUES:
+            raise InvalidLearningEntry(
+                "invalid_scope", f"scope {entry.scope!r} not allowed"
+            )
+        if entry.lifecycle not in LIFECYCLE_VALUES:
+            raise InvalidLearningEntry(
+                "invalid_lifecycle", f"lifecycle {entry.lifecycle!r} not allowed"
+            )
+        entry.salience = _clamp_salience(entry.salience)
 
     def next_id(self) -> str:
         max_n = 0
@@ -164,7 +197,7 @@ class LearningsStore:
             return path
         return None
 
-    def _validate_cross_refs(self, entry: LearningEntry) -> None:
+    def _validate_cross_refs(self, entry: MemoryItem) -> None:
         for ref in entry.related_to:
             if ref == entry.id:
                 raise InvalidLearningEntry(
@@ -184,7 +217,7 @@ class LearningsStore:
                     "unknown_supersedes", f"supersedes references unknown id: {entry.supersedes!r}",
                 )
 
-    def write_entry(self, entry: LearningEntry, agent: str) -> LearningEntry:
+    def write_entry(self, entry: MemoryItem, agent: str) -> MemoryItem:
         self.validate_id(entry.id)
         self._validate_entry_structure(entry)
         self._validate_cross_refs(entry)
@@ -193,7 +226,7 @@ class LearningsStore:
         if self._find_by_slug(entry.slug) is not None:
             raise LearningSlugExists(entry.slug)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        stamped = LearningEntry(**{**entry.__dict__})
+        stamped = MemoryItem(**{**entry.__dict__})
         stamped.authored_by = agent
         stamped.authored_at = now
         stamped.updated_by = agent
@@ -203,8 +236,8 @@ class LearningsStore:
         return stamped
 
     def update_entry(
-        self, id: str, entry: LearningEntry, agent: str,
-    ) -> LearningEntry:
+        self, id: str, entry: MemoryItem, agent: str,
+    ) -> MemoryItem:
         self.validate_id(id)
         existing_path = self._find_by_id(id)
         if existing_path is None:
@@ -222,7 +255,7 @@ class LearningsStore:
             if self._find_by_slug(entry.slug) is not None:
                 raise LearningSlugExists(entry.slug)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        stamped = LearningEntry(**{**entry.__dict__})
+        stamped = MemoryItem(**{**entry.__dict__})
         stamped.authored_by = existing.authored_by
         stamped.authored_at = existing.authored_at
         stamped.updated_by = agent
@@ -234,7 +267,7 @@ class LearningsStore:
             existing_path.unlink()
         return stamped
 
-    def read_entry(self, id_or_slug: str) -> LearningEntry:
+    def read_entry(self, id_or_slug: str) -> MemoryItem:
         path = (
             self._find_by_id(id_or_slug) if ID_RE.match(id_or_slug)
             else self._find_by_slug(id_or_slug)
@@ -243,7 +276,7 @@ class LearningsStore:
             raise LearningNotFound(id_or_slug)
         return self._parse(path.read_text())
 
-    def _serialize(self, entry: LearningEntry) -> str:
+    def _serialize(self, entry: MemoryItem) -> str:
         fm: dict = {
             "id": entry.id,
             "slug": entry.slug,
@@ -261,11 +294,21 @@ class LearningsStore:
                 fm[key] = val
         if entry.related_to:
             fm["related_to"] = entry.related_to
+        # THR-032 additive keys — omit when equal to default so existing
+        # files (which carry none of these keys) round-trip byte-identically.
+        if entry.provenance != "experiential":
+            fm["provenance"] = entry.provenance
+        if entry.scope != "agent":
+            fm["scope"] = entry.scope
+        if entry.lifecycle != "valid":
+            fm["lifecycle"] = entry.lifecycle
+        if entry.salience != 50:
+            fm["salience"] = entry.salience
         fm_text = yaml.safe_dump(fm, sort_keys=False).strip()
         body = entry.body if entry.body.endswith("\n") else entry.body + "\n"
         return f"---\n{fm_text}\n---\n\n{body}"
 
-    def _parse(self, text: str) -> LearningEntry:
+    def _parse(self, text: str) -> MemoryItem:
         if not text.startswith("---"):
             raise InvalidLearningEntry("missing_frontmatter", "no leading frontmatter")
         parts = text.split("---", 2)
@@ -273,7 +316,7 @@ class LearningsStore:
             raise InvalidLearningEntry("missing_frontmatter", "malformed frontmatter")
         fm = yaml.safe_load(parts[1]) or {}
         body = parts[2].lstrip("\n")
-        return LearningEntry(
+        return MemoryItem(
             id=fm.get("id", ""),
             slug=fm.get("slug", ""),
             title=fm.get("title", ""),
@@ -287,6 +330,10 @@ class LearningsStore:
             authored_at=fm.get("authored_at"),
             updated_by=fm.get("updated_by"),
             updated_at=fm.get("updated_at"),
+            provenance=fm.get("provenance", "experiential"),
+            scope=fm.get("scope", "agent"),
+            lifecycle=fm.get("lifecycle", "valid"),
+            salience=_clamp_salience(fm.get("salience", 50)),
             body=body,
         )
 
@@ -318,6 +365,9 @@ class LearningsStore:
                 tags=entry.tags,
                 promoted_to=entry.promoted_to,
                 updated_at=entry.updated_at,
+                lifecycle=entry.lifecycle,
+                provenance=entry.provenance,
+                salience=entry.salience,
             ))
         return out
 
@@ -363,7 +413,7 @@ class LearningsStore:
         end = min(len(body), idx + width // 2)
         return body[start:end].replace("\n", " ")
 
-    def promote(self, id: str, kb_slug: str, agent: str) -> LearningEntry:
+    def promote(self, id: str, kb_slug: str, agent: str) -> MemoryItem:
         self.validate_id(id)
         if not kb_slug:
             raise InvalidLearningEntry("kb_slug_missing", "kb_slug required")
@@ -380,7 +430,7 @@ class LearningsStore:
             f"See KB precedent: `{kb_slug}`.\n\n"
             f"_Promoted from local learning {id} on {now}._\n"
         )
-        stamped = LearningEntry(**{**existing.__dict__})
+        stamped = MemoryItem(**{**existing.__dict__})
         stamped.promoted_to = kb_slug
         stamped.body = stub_body
         stamped.updated_by = agent
@@ -390,7 +440,8 @@ class LearningsStore:
         return stamped
 
     def regenerate_index(self) -> None:
-        summaries = self.list_entries()
+        # THR-032: evicted items stay on disk for audit/undo but leave the index.
+        summaries = [s for s in self.list_entries() if s.lifecycle != "evicted"]
         groups: dict[str, list[LearningSummary]] = {}
         for s in summaries:
             groups.setdefault(s.topic, []).append(s)
@@ -411,7 +462,10 @@ class LearningsStore:
             for s in groups[topic]:
                 tags_part = f"  [tags: {', '.join(s.tags)}]" if s.tags else ""
                 promo_part = f" ↗ promoted: {s.promoted_to}" if s.promoted_to else ""
-                lines.append(f"- `{s.id}` — {s.title}{tags_part}{promo_part}")
+                lines.append(
+                    f"- `{s.id}` — {s.title}{tags_part}{promo_part}"
+                    f"  ({s.provenance}, salience {s.salience})"
+                )
             lines.append("")
         index_path = self._root / "_index.md"
         self._atomic_write(index_path, "\n".join(lines).rstrip() + "\n")
@@ -430,3 +484,11 @@ class LearningsStore:
             except FileNotFoundError:
                 pass
             raise
+
+
+# Back-compat aliases (THR-032 Phase 1). The class + dataclass are renamed to
+# MemoryStore / MemoryItem; these aliases keep all current importers
+# (workspace_adapters.py, dreams.py, agents.py, tests) resolving the pre-rename
+# names with zero signature change. Retired in a later cleanup, not in Phase 1.
+LearningsStore = MemoryStore
+LearningEntry = MemoryItem

@@ -4,6 +4,8 @@
 **Status:** Draft, pending implementation plan.
 **Relates to:** `protocol/05b-agent-runtime.md` §2 (Agent Memory Architecture); `protocol/06-knowledge-base.md`; existing flat `learnings.md` written by `src/daemon/routes/agents.py::append_learning`.
 
+> **Extended by THR-032 harness-agnostic memory layer (Phase 1 — additive store generalization).** See `artifacts/TASK-949/2026-06-27-harness-agnostic-memory-layer-design.md`. Phase 1 generalizes this store (`LearningsStore`→`MemoryStore` / `LearningEntry`→`MemoryItem`, with back-compat aliases) and adds four additive frontmatter fields (`provenance`, `scope`, `lifecycle`, `salience`) on the same reindex/validation/atomic-write machinery — non-breaking, no SQL change. It extends this spec's "no deletion in v1" non-goal into *soft eviction* (`lifecycle: evicted` leaves the index but is retained on disk); the no-vector / no-auto-extraction / agent-authored stances are retained.
+
 ## 1. Goal
 
 Replace the flat append-only `learnings.md` with a per-entry structured store under each agent's workspace. Each learning becomes its own markdown file with YAML frontmatter (stable id, tags, topic, cross-references, optional promotion stamp). A regenerated index file replaces the file body in the agent's bootstrap doc, so the bootstrap stays compact even as the corpus grows.
