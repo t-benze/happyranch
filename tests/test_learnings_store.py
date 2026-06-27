@@ -7,6 +7,8 @@ import pytest
 from runtime.infrastructure.learnings_store import (
     LearningEntry,
     LearningsStore,
+    MemoryItem,
+    MemoryStore,
     InvalidLearningId,
     InvalidLearningEntry,
     LearningIdExists,
@@ -333,3 +335,156 @@ def test_update_entry_rejects_self_reference_in_supersedes(store: LearningsStore
     with pytest.raises(InvalidLearningEntry) as exc:
         store.update_entry("LRN-001", updated, agent="z")
     assert exc.value.code == "self_reference"
+
+
+# --- THR-032 Phase 1: harness-agnostic memory layer (additive store generalization) ---
+
+# A REAL pre-Phase-1 entry (workspace LRN-001) — carries NONE of the four new
+# frontmatter keys. Used as the golden corpus for the no-churn round-trip proof.
+GOLDEN_RAW_ENTRY = """---
+id: LRN-001
+slug: rename-gotchas-and-gitnexus-worktree-blindspot
+title: Package-rename safety + gitnexus_detect_changes is blind to worktrees
+topic: refactoring
+tags:
+- rename
+- gitnexus
+- worktree
+- imports
+authored_by: dev_agent
+authored_at: '2026-06-02T14:22:27Z'
+updated_by: dev_agent
+updated_at: '2026-06-02T14:22:27Z'
+---
+
+Two durable facts confirmed during THR-001 Phase 1 (src/ -> runtime/ rename,
+TASK-011, commit 298c751).
+"""
+
+
+def test_alias_exports_resolve_to_renamed_symbols():
+    """The two back-compat aliases must cover every importer's old names."""
+    assert LearningsStore is MemoryStore
+    assert LearningEntry is MemoryItem
+
+
+def test_golden_entry_round_trips_with_no_new_key_churn(store: LearningsStore):
+    """A real existing entry (none of the 4 new keys) must serialize identically
+    under the new code — all-default new fields are omitted, so no byte churn."""
+    # Capture the canonical (fixpoint) form: serialize(parse(raw)). This avoids a
+    # false failure if the raw file's key order isn't already canonical.
+    canonical = store._serialize(store._parse(GOLDEN_RAW_ENTRY))
+    # None of the four additive keys leak into the serialization (all at default).
+    for key in ("provenance:", "scope:", "lifecycle:", "salience:"):
+        assert key not in canonical
+    # Fixpoint: re-parsing then re-serializing the canonical form is byte-identical.
+    assert store._serialize(store._parse(canonical)) == canonical
+
+
+def test_parse_defaults_new_fields_when_absent(store: LearningsStore):
+    parsed = store._parse(GOLDEN_RAW_ENTRY)
+    assert parsed.provenance == "experiential"
+    assert parsed.scope == "agent"
+    assert parsed.lifecycle == "valid"
+    assert parsed.salience == 50
+
+
+def test_validate_rejects_bad_provenance(store: LearningsStore):
+    with pytest.raises(InvalidLearningEntry) as exc:
+        store._validate_entry_structure(_make_entry(provenance="bogus"))
+    assert exc.value.code == "invalid_provenance"
+
+
+def test_validate_rejects_bad_scope(store: LearningsStore):
+    with pytest.raises(InvalidLearningEntry) as exc:
+        store._validate_entry_structure(_make_entry(scope="bogus"))
+    assert exc.value.code == "invalid_scope"
+
+
+def test_validate_rejects_bad_lifecycle(store: LearningsStore):
+    with pytest.raises(InvalidLearningEntry) as exc:
+        store._validate_entry_structure(_make_entry(lifecycle="bogus"))
+    assert exc.value.code == "invalid_lifecycle"
+
+
+def test_salience_clamped_high_on_write_and_read(store: LearningsStore):
+    written = store.write_entry(
+        _make_entry(id="LRN-001", slug="a", salience=150), agent="z",
+    )
+    assert written.salience == 100  # clamped on write
+    assert store.read_entry("LRN-001").salience == 100  # normalized on read
+
+
+def test_salience_clamped_low_on_write_and_read(store: LearningsStore):
+    written = store.write_entry(
+        _make_entry(id="LRN-002", slug="b", salience=-5), agent="z",
+    )
+    assert written.salience == 0  # clamped on write
+    assert store.read_entry("LRN-002").salience == 0  # normalized on read
+
+
+def test_parse_clamps_out_of_range_salience(store: LearningsStore):
+    raw_high = (
+        "---\nid: LRN-009\nslug: hi\ntitle: t\ntopic: w\nsalience: 150\n---\n\nbody\n"
+    )
+    raw_low = (
+        "---\nid: LRN-010\nslug: lo\ntitle: t\ntopic: w\nsalience: -5\n---\n\nbody\n"
+    )
+    assert store._parse(raw_high).salience == 100
+    assert store._parse(raw_low).salience == 0
+
+
+def test_regenerate_index_excludes_evicted(store: LearningsStore):
+    store.write_entry(
+        _make_entry(id="LRN-001", slug="a", title="kept entry", topic="w"), agent="z",
+    )
+    store.write_entry(
+        _make_entry(
+            id="LRN-002", slug="b", title="gone entry", topic="w", lifecycle="evicted",
+        ),
+        agent="z",
+    )
+    store.regenerate_index()
+    idx = (store.root / "_index.md").read_text()
+    assert "LRN-001" in idx
+    assert "LRN-002" not in idx
+    assert "gone entry" not in idx
+    # Header count reflects only the one non-evicted entry.
+    assert "1 entries" in idx
+
+
+def test_regenerate_index_line_is_superset_with_salience_provenance(
+    store: LearningsStore,
+):
+    store.write_entry(
+        _make_entry(
+            id="LRN-001", slug="a", title="My Title", topic="w",
+            salience=88, provenance="directive",
+        ),
+        agent="z",
+    )
+    store.regenerate_index()
+    idx = (store.root / "_index.md").read_text()
+    # Still starts with today's exact line shape …
+    assert "- `LRN-001` — My Title" in idx
+    # … plus the appended salience + provenance superset.
+    assert "(directive, salience 88)" in idx
+
+
+def test_list_entries_populates_new_summary_fields_and_returns_all(
+    store: LearningsStore,
+):
+    store.write_entry(
+        _make_entry(id="LRN-001", slug="a", topic="w", provenance="directive", salience=70),
+        agent="z",
+    )
+    store.write_entry(
+        _make_entry(id="LRN-002", slug="b", topic="w", lifecycle="evicted"), agent="z",
+    )
+    summaries = {s.id: s for s in store.list_entries()}
+    # list_entries returns ALL entries (evicted included) — the list route is unaffected.
+    assert set(summaries) == {"LRN-001", "LRN-002"}
+    assert summaries["LRN-001"].provenance == "directive"
+    assert summaries["LRN-001"].salience == 70
+    assert summaries["LRN-001"].lifecycle == "valid"
+    assert summaries["LRN-002"].lifecycle == "evicted"

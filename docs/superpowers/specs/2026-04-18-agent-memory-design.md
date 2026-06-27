@@ -3,6 +3,8 @@
 **Date:** 2026-04-18
 **Status:** Approved, ready for implementation plan
 
+> **Extended by THR-032 harness-agnostic memory layer (Phase 1 — additive store generalization).** See `artifacts/TASK-949/2026-06-27-harness-agnostic-memory-layer-design.md`. Phase 1 generalizes `LearningsStore`→`MemoryStore` / `LearningEntry`→`MemoryItem` (with back-compat aliases) and adds four additive frontmatter fields (`provenance`, `scope`, `lifecycle`, `salience`) — non-breaking, no SQL change. The PUSH digest that reverses this spec's "no automatic prompt injection" non-goal lands in a later, founder-gated phase.
+
 ## Problem
 
 Agents today have fragmented persistence:
