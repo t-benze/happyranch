@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import pytest
 
+from runtime.models import ThreadMessageKind
+
 
 def _seed_agent(org_state, name: str, *, team: str = "engineering", role: str = "worker") -> None:
     """Create the agent's frontmatter file and workspace dir."""
@@ -174,3 +176,107 @@ def test_messages_endpoint_has_responder_parity_with_detail(
     kickoff = r.json()["messages"][0]
     assert kickoff["kind"] == "message"
     assert len(kickoff["responder_status"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# TASK-966 (THR-038): a task-followup / escalation-followup re-invocation hangs
+# off a SYSTEM row (task_completed / task_failed / task_escalated), not a
+# MESSAGE row. The TypingBubble must surface for the woken agent. This requires
+# (A) the grouped query to return purpose='task_followup' invocations, and
+# (B) the GET endpoints to NOT null responders on non-MESSAGE rows.
+# ---------------------------------------------------------------------------
+
+
+def _post_followup_system_row(db, thread_id: str, *, agent: str, kind_tag: str) -> str:
+    """Append a SYSTEM row (kind_tag) and mint a pending TASK_FOLLOWUP invocation
+    hanging off its seq — the exact shape run_step._append_followup_system_and_reinvoke
+    produces when an agent is woken by a completion/escalation followup. Returns
+    the minted invocation_token."""
+    sys_seq = db.append_thread_message(
+        thread_id=thread_id,
+        speaker=agent,
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": kind_tag, "status": "completed"},
+    )
+    inv, _ = db.mint_followup_invocation_with_cap_extend(
+        thread_id, agent_name=agent, triggering_seq=sys_seq,
+    )
+    return inv.invocation_token
+
+
+def test_followup_system_row_surfaces_working_responder_on_detail(
+    client, org_slug, three_agent_thread, db,
+):
+    """A task_completed SYSTEM row carrying a pending+started TASK_FOLLOWUP
+    invocation surfaces a `working` responder on GET /threads/{id}."""
+    thread_id = three_agent_thread
+    token = _post_followup_system_row(db, thread_id, agent="alpha", kind_tag="task_completed")
+    db.stamp_invocation_started(token, session_id=None)
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    assert r.status_code == 200, r.text
+    sys_msg = next(m for m in r.json()["messages"] if m["kind"] == "system")
+    statuses = {s["agent_name"]: s for s in sys_msg["responder_status"]}
+    assert statuses["alpha"]["status"] == "working"
+    assert statuses["alpha"]["started_at"] is not None
+
+
+def test_followup_system_row_surfaces_queued_responder_on_messages(
+    client, org_slug, three_agent_thread, db,
+):
+    """A task_completed SYSTEM row carrying a pending (no started_at)
+    TASK_FOLLOWUP invocation surfaces a `queued` responder on
+    GET /threads/{id}/messages (the strip's primary source)."""
+    thread_id = three_agent_thread
+    _post_followup_system_row(db, thread_id, agent="alpha", kind_tag="task_completed")
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}/messages")
+    assert r.status_code == 200, r.text
+    sys_msg = next(m for m in r.json()["messages"] if m["kind"] == "system")
+    statuses = {s["agent_name"]: s for s in sys_msg["responder_status"]}
+    assert statuses["alpha"]["status"] == "queued"
+    assert statuses["alpha"]["started_at"] is None
+
+
+def test_escalation_followup_system_row_surfaces_working_responder(
+    client, org_slug, three_agent_thread, db,
+):
+    """Escalation followup reuses purpose=TASK_FOLLOWUP off a task_escalated
+    SYSTEM row (run_step._maybe_post_thread_escalation) — the same widening must
+    surface its in-flight responder."""
+    thread_id = three_agent_thread
+    token = _post_followup_system_row(db, thread_id, agent="alpha", kind_tag="task_escalated")
+    db.stamp_invocation_started(token, session_id=None)
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    sys_msg = next(m for m in r.json()["messages"] if m["kind"] == "system")
+    statuses = {s["agent_name"]: s for s in sys_msg["responder_status"]}
+    assert statuses["alpha"]["status"] == "working"
+
+
+def test_settled_followup_serializes_terminal_not_inflight(
+    client, org_slug, three_agent_thread, db,
+):
+    """A SETTLED followup (DB status=consumed) maps to a terminal wire status
+    (`replied`), NOT working/queued — so the web in-flight set is empty and the
+    bubble clears. Confirms clears-correctly end-to-end at the serialization
+    boundary on both endpoints."""
+    thread_id = three_agent_thread
+    token = _post_followup_system_row(db, thread_id, agent="alpha", kind_tag="task_completed")
+    db.stamp_invocation_started(token, session_id=None)
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='consumed', "
+        "consumed_at=datetime('now') WHERE invocation_token=?",
+        (token,),
+    )
+    db._conn.commit()
+
+    for path in (f"/threads/{thread_id}", f"/threads/{thread_id}/messages"):
+        r = client.get(f"/api/v1/orgs/{org_slug}{path}")
+        sys_msg = next(m for m in r.json()["messages"] if m["kind"] == "system")
+        alpha = next(s for s in sys_msg["responder_status"] if s["agent_name"] == "alpha")
+        assert alpha["status"] == "replied"
+        # Mirrors web selectInFlightResponders: only working/queued are in-flight.
+        in_flight = [s for s in sys_msg["responder_status"]
+                     if s["status"] in ("working", "queued")]
+        assert in_flight == []

@@ -3301,11 +3301,18 @@ class Database:
         self, thread_id: str
     ) -> dict[int, list[dict[str, object]]]:
         """Return {triggering_seq: [{agent_name, status, consumed_at}, ...]}
-        for every REPLY invocation in this thread.
+        for every REPLY and TASK_FOLLOWUP invocation in this thread.
 
         Used by GET /threads/{id} to build the per-message responder_status
         strip. Status values are the raw DB values (pending/consumed/declined/
         failed); the route's response builder renames consumed → replied.
+
+        REPLY invocations hang off MESSAGE rows; TASK_FOLLOWUP invocations hang
+        off the SYSTEM row (task_completed / task_failed / task_escalated) that
+        wakes a thread-dispatched agent (run_step._append_followup_system_and_reinvoke).
+        Including TASK_FOLLOWUP lets the in-flight strip surface the woken agent
+        on its system row. BOOTSTRAP is deliberately excluded — it has no
+        triggering message row to attach a responder strip to.
 
         Note: ``consumed_at`` is set by both reply (``status='consumed'``) and
         decline (``status='declined'``) paths — the schema has no separate
@@ -3315,7 +3322,7 @@ class Database:
         rows = self._conn.execute(
             "SELECT triggering_seq, agent_name, status, consumed_at, started_at "
             "FROM thread_invocations "
-            "WHERE thread_id = ? AND purpose = 'reply' "
+            "WHERE thread_id = ? AND purpose IN ('reply', 'task_followup') "
             "ORDER BY triggering_seq, agent_name",
             (thread_id,),
         ).fetchall()
