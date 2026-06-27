@@ -15,7 +15,8 @@ from runtime.daemon.routes.threads import (
 )
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.dream_store import DreamStore
-from runtime.infrastructure.learnings_store import LearningEntry, LearningsStore
+from runtime.infrastructure.learnings_store import MemoryItem, MemoryStore
+from runtime.infrastructure.memory_migration import migrate_workspace
 from runtime.models import DreamKbCandidate, DreamStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import load_org_config
@@ -155,11 +156,15 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
                 composed_from_dream_id=dream_id,
             )
 
-        learnings_dir = org.root / "workspaces" / dream.agent_name / "learnings"
-        learnings_dir.mkdir(parents=True, exist_ok=True)
-        store = LearningsStore(learnings_dir)
+        # THR-032 Phase R: dream reflections are memory items. Migrate a legacy
+        # learnings/ workspace forward first (idempotent), then write to memory/.
+        workspace = org.root / "workspaces" / dream.agent_name
+        migrate_workspace(workspace)
+        memory_dir = workspace / "memory"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        store = MemoryStore(memory_dir)
         for learning in body.learnings:
-            store.write_entry(LearningEntry(
+            store.write_entry(MemoryItem(
                 id=store.next_id(),
                 slug=learning.slug,
                 title=learning.title,

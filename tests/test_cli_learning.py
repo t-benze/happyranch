@@ -14,20 +14,50 @@ def _run(args: list[str], cwd: Path = None) -> subprocess.CompletedProcess:
     )
 
 
-def test_learning_help_shows_verbs():
-    r = _run(["learning", "--help"])
+def test_memory_help_shows_verbs():
+    r = _run(["memory", "--help"])
     assert r.returncode == 0
     out = r.stdout
     for verb in ("list", "get", "search", "add", "update", "promote", "reindex"):
         assert verb in out
 
 
-def test_learning_list_help_shows_filters():
-    r = _run(["learning", "list", "--help"])
+def test_memory_list_help_shows_filters():
+    r = _run(["memory", "list", "--help"])
     assert r.returncode == 0
     assert "--topic" in r.stdout
     assert "--tag" in r.stdout
     assert "--promoted" in r.stdout
+
+
+def test_learning_alias_still_registered():
+    """The deprecated `learning` verb still exists for one rollout cycle."""
+    r = _run(["learning", "--help"])
+    assert r.returncode == 0
+    for verb in ("list", "get", "search", "add", "update", "promote", "reindex"):
+        assert verb in r.stdout
+
+
+def test_learning_alias_dispatch_warns(monkeypatch, capsys):
+    from cli import main as cli
+
+    class FakeResponse:
+        status_code = 200
+        def json(self): return {"entries": []}
+
+    class FakeClient:
+        def get(self, path, params=None): return FakeResponse()
+        def close(self): pass
+
+    monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["o"])
+    from cli.commands.learning import _deprecation_wrapper, cmd_learning_list
+    args = type("A", (), dict(
+        org="o", agent="dev_agent",
+        topic=None, tag=None, promoted=False, not_promoted=False, json=False,
+    ))()
+    _deprecation_wrapper(cmd_learning_list)(args)
+    assert "deprecated" in capsys.readouterr().err
 
 
 def test_cmd_learning_list_calls_correct_route(monkeypatch):
@@ -52,7 +82,7 @@ def test_cmd_learning_list_calls_correct_route(monkeypatch):
         topic="workflow", tag=None, promoted=False, not_promoted=False, json=False,
     ))()
     cli.cmd_learning_list(args)
-    assert captured["path"] == "/api/v1/orgs/my-org/agents/dev_agent/learnings/entries/"
+    assert captured["path"] == "/api/v1/orgs/my-org/agents/dev_agent/memory/entries/"
     assert captured["params"]["topic"] == "workflow"
 
 
@@ -61,7 +91,7 @@ def test_cmd_learning_add_reads_yaml_and_posts(monkeypatch, tmp_path):
 
     class FakeResponse:
         status_code = 200
-        def json(self): return {"id": "LRN-001", "path": "learnings/LRN-001-x.md"}
+        def json(self): return {"id": "MEM-001", "path": "memory/MEM-001-x.md"}
 
     class FakeClient:
         def post(self, path, json=None):
@@ -87,7 +117,7 @@ def test_cmd_learning_add_reads_yaml_and_posts(monkeypatch, tmp_path):
         org="o", agent="dev_agent", from_file=str(payload_path),
     ))()
     cli.cmd_learning_add(args)
-    assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/learnings/entries/"
+    assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/memory/entries/"
     assert captured["json"]["slug"] == "x"
     assert captured["json"]["tags"] == ["a", "b"]
     assert "body line 2" in captured["json"]["body"]
@@ -98,7 +128,7 @@ def test_cmd_learning_promote_posts_correct_path(monkeypatch):
 
     class FakeResponse:
         status_code = 200
-        def json(self): return {"id": "LRN-001", "promoted_to": "kb-x", "body": "..."}
+        def json(self): return {"id": "MEM-001", "promoted_to": "kb-x", "body": "..."}
 
     class FakeClient:
         def post(self, path, json=None):
@@ -111,10 +141,10 @@ def test_cmd_learning_promote_posts_correct_path(monkeypatch):
     monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
     monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["o"])
     args = type("A", (), dict(
-        org="o", agent="dev_agent", id="LRN-001", kb_slug="kb-x",
+        org="o", agent="dev_agent", id="MEM-001", kb_slug="kb-x",
     ))()
     cli.cmd_learning_promote(args)
-    assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/learnings/entries/LRN-001/promote"
+    assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/memory/entries/MEM-001/promote"
     assert captured["json"] == {"kb_slug": "kb-x"}
 
 

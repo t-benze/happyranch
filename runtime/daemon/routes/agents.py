@@ -32,13 +32,14 @@ from runtime.infrastructure.kb_store import KBStore, InvalidSlug
 from runtime.infrastructure.learnings_store import (
     InvalidLearningEntry,
     InvalidLearningId,
-    LearningEntry,
     LearningIdExists,
     LearningNotFound,
     LearningSlugExists,
-    LearningsStore,
+    MemoryItem,
+    MemoryStore,
     PromotedLocked,
 )
+from runtime.infrastructure.memory_migration import migrate_workspace
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
@@ -972,17 +973,20 @@ async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
     return {"ok": True}
 
 
-@router.post("/agents/{agent_name}/learnings")
+# THR-032 Phase R: canonical path is /memory; /learnings is kept as a hidden
+# forwarder for one rollout cycle so in-flight callers don't break.
+@router.post("/agents/{agent_name}/memory")
+@router.post("/agents/{agent_name}/learnings", include_in_schema=False)
 async def append_learning(
     slug: str, agent_name: str, body: LearningBody, org: OrgDep,
 ) -> dict:
     workspace = org.root / "workspaces" / agent_name
-    if (workspace / "learnings").exists():
+    if (workspace / "memory").exists() or (workspace / "learnings").exists():
         raise HTTPException(
             status_code=410,
             detail={
                 "error": "endpoint_deprecated_for_migrated_workspace",
-                "migrate_to": f"POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries",
+                "migrate_to": f"POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries",
             },
         )
     expected = org.sessions.get_active(body.task_id, agent_name)
@@ -1007,15 +1011,17 @@ async def append_learning(
 
 
 # ---------------------------------------------------------------------------
-# Learnings read routes + 412 pre-migration guard
+# Memory read routes + 412 pre-migration guard
 # ---------------------------------------------------------------------------
 
 
-def _workspace_learnings_store(org: OrgState, agent_name: str) -> LearningsStore:
-    """Return the per-agent LearningsStore.
+def _workspace_memory_store(org: OrgState, agent_name: str) -> MemoryStore:
+    """Return the per-agent MemoryStore.
 
     Raises 404 if the agent workspace doesn't exist, 412 if it exists but
-    hasn't been migrated to the new per-entry layout.
+    hasn't been migrated to the structured per-entry layout. A legacy
+    ``learnings/`` workspace is moved forward to ``memory/`` lazily here
+    (idempotent + lossless, THR-032 Phase R) so first memory access migrates it.
     """
     workspace = org.root / "workspaces" / agent_name
     if not workspace.exists():
@@ -1023,16 +1029,17 @@ def _workspace_learnings_store(org: OrgState, agent_name: str) -> LearningsStore
             status_code=404,
             detail={"error": "agent_not_found", "agent": agent_name},
         )
-    learnings_dir = workspace / "learnings"
-    if not learnings_dir.exists():
+    migrate_workspace(workspace)
+    memory_dir = workspace / "memory"
+    if not memory_dir.exists():
         raise HTTPException(
             status_code=412,
             detail={"error": "workspace_not_migrated", "migrate_first": True},
         )
-    return LearningsStore(learnings_dir)
+    return MemoryStore(memory_dir)
 
 
-def _entry_to_dict(entry: LearningEntry) -> dict:
+def _entry_to_dict(entry: MemoryItem) -> dict:
     return {
         "id": entry.id,
         "slug": entry.slug,
@@ -1051,7 +1058,10 @@ def _entry_to_dict(entry: LearningEntry) -> dict:
     }
 
 
-@router.get("/agents/{agent_name}/learnings/entries/")
+@router.get("/agents/{agent_name}/memory/entries/")
+
+
+@router.get("/agents/{agent_name}/learnings/entries/", include_in_schema=False)
 async def list_learnings(
     slug: str,
     agent_name: str,
@@ -1060,7 +1070,7 @@ async def list_learnings(
     tag: str | None = None,
     promoted: bool | None = None,
 ) -> dict:
-    store = _workspace_learnings_store(org, agent_name)
+    store = _workspace_memory_store(org, agent_name)
     summaries = store.list_entries(topic=topic, tag=tag, promoted=promoted)
     return {
         "entries": [
@@ -1078,9 +1088,12 @@ async def list_learnings(
     }
 
 
-@router.get("/agents/{agent_name}/learnings/entries/{id_or_slug}")
+@router.get("/agents/{agent_name}/memory/entries/{id_or_slug}")
+
+
+@router.get("/agents/{agent_name}/learnings/entries/{id_or_slug}", include_in_schema=False)
 async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep) -> dict:
-    store = _workspace_learnings_store(org, agent_name)
+    store = _workspace_memory_store(org, agent_name)
     try:
         entry = store.read_entry(id_or_slug)
     except LearningNotFound:
@@ -1097,11 +1110,14 @@ class LearningSearchBody(BaseModel):
     include_promoted: bool = False
 
 
-@router.post("/agents/{agent_name}/learnings/entries/search")
+@router.post("/agents/{agent_name}/memory/entries/search")
+
+
+@router.post("/agents/{agent_name}/learnings/entries/search", include_in_schema=False)
 async def search_learnings(
     slug: str, agent_name: str, body: LearningSearchBody, org: OrgDep,
 ) -> dict:
-    store = _workspace_learnings_store(org, agent_name)
+    store = _workspace_memory_store(org, agent_name)
     hits = store.search(body.query, limit=body.limit, include_promoted=body.include_promoted)
     return {
         "hits": [
@@ -1142,14 +1158,17 @@ def _invalid_entry_to_http(err: InvalidLearningEntry) -> HTTPException:
     return HTTPException(status_code=400, detail={"error": err.code, "message": str(err)})
 
 
-@router.post("/agents/{agent_name}/learnings/entries/", status_code=201)
+@router.post("/agents/{agent_name}/memory/entries/", status_code=201)
+
+
+@router.post("/agents/{agent_name}/learnings/entries/", status_code=201, include_in_schema=False)
 async def add_learning(
     slug: str, agent_name: str, body: LearningAddBody, org: OrgDep,
 ) -> dict:
-    store = _workspace_learnings_store(org, agent_name)
+    store = _workspace_memory_store(org, agent_name)
     async with org.db_lock:
         new_id = store.next_id()
-        entry = LearningEntry(
+        entry = MemoryItem(
             id=new_id,
             slug=body.slug,
             title=body.title,
@@ -1169,7 +1188,7 @@ async def add_learning(
         except LearningSlugExists as e:
             raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
         store.regenerate_index()
-        AuditLogger(org.db).log_learning_added(
+        AuditLogger(org.db).log_memory_added(
             agent=agent_name,
             id=written.id,
             slug=written.slug,
@@ -1177,16 +1196,19 @@ async def add_learning(
             tags=written.tags,
             source_task=written.source_task,
         )
-    rel_path = f"learnings/{written.id}-{written.slug}.md"
+    rel_path = f"memory/{written.id}-{written.slug}.md"
     return {"id": written.id, "path": rel_path, "authored_at": written.authored_at}
 
 
-@router.put("/agents/{agent_name}/learnings/entries/{id}")
+@router.put("/agents/{agent_name}/memory/entries/{id}")
+
+
+@router.put("/agents/{agent_name}/learnings/entries/{id}", include_in_schema=False)
 async def update_learning(
     slug: str, agent_name: str, id: str, body: LearningUpdateBody, org: OrgDep,
 ) -> dict:
-    store = _workspace_learnings_store(org, agent_name)
-    entry = LearningEntry(
+    store = _workspace_memory_store(org, agent_name)
+    entry = MemoryItem(
         id=id,
         slug=body.slug,
         title=body.title,
@@ -1215,7 +1237,7 @@ async def update_learning(
         except LearningSlugExists as e:
             raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
         store.regenerate_index()
-        AuditLogger(org.db).log_learning_updated(
+        AuditLogger(org.db).log_memory_updated(
             agent=agent_name,
             id=written.id,
             slug_changed=prior_slug is not None and prior_slug != written.slug,
@@ -1227,15 +1249,21 @@ class LearningPromoteBody(BaseModel):
     kb_slug: str
 
 
-@router.post("/agents/{agent_name}/learnings/entries/reindex")
+@router.post("/agents/{agent_name}/memory/entries/reindex")
+
+
+@router.post("/agents/{agent_name}/learnings/entries/reindex", include_in_schema=False)
 async def reindex_learnings(slug: str, agent_name: str, org: OrgDep) -> dict:
-    store = _workspace_learnings_store(org, agent_name)
+    store = _workspace_memory_store(org, agent_name)
     async with org.db_lock:
         store.regenerate_index()
     return {"ok": True}
 
 
-@router.post("/agents/{agent_name}/learnings/entries/{id}/promote")
+@router.post("/agents/{agent_name}/memory/entries/{id}/promote")
+
+
+@router.post("/agents/{agent_name}/learnings/entries/{id}/promote", include_in_schema=False)
 async def promote_learning(
     slug: str, agent_name: str, id: str, body: LearningPromoteBody, org: OrgDep,
 ) -> dict:
@@ -1253,7 +1281,7 @@ async def promote_learning(
             status_code=404,
             detail={"error": "kb_slug_not_found", "kb_slug": body.kb_slug},
         )
-    store = _workspace_learnings_store(org, agent_name)
+    store = _workspace_memory_store(org, agent_name)
     async with org.db_lock:
         try:
             written = store.promote(id, kb_slug=body.kb_slug, agent=agent_name)
@@ -1266,7 +1294,7 @@ async def promote_learning(
         except InvalidLearningEntry as e:
             raise _invalid_entry_to_http(e)
         store.regenerate_index()
-        AuditLogger(org.db).log_learning_promoted(
+        AuditLogger(org.db).log_memory_promoted(
             agent=agent_name,
             id=written.id,
             kb_slug=body.kb_slug,

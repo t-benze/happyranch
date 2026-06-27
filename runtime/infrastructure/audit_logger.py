@@ -439,6 +439,56 @@ class AuditLogger:
             payload={"id": id, "kb_slug": kb_slug},
         )
 
+    # THR-032 Phase R — memory event names, emitted FORWARD ONLY. New writes use
+    # these; the log_learning_* methods above remain so historical rows stay
+    # truthful and any reader can still parse them (§7.2(a) audit immutability).
+    # Additive event-name variants only — no column added/altered/dropped, and
+    # audit_log.task_id scope-prefix overloading is untouched.
+    def log_memory_added(
+        self,
+        *,
+        agent: str,
+        id: str,
+        slug: str,
+        topic: str,
+        tags: list[str],
+        source_task: str | None,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=source_task if source_task is not None else f"AGENT-{agent}",
+            agent=agent,
+            action="memory_added",
+            payload={"id": id, "slug": slug, "topic": topic, "tags": tags, "source_task": source_task},
+        )
+
+    def log_memory_updated(
+        self,
+        *,
+        agent: str,
+        id: str,
+        slug_changed: bool,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=f"AGENT-{agent}",
+            agent=agent,
+            action="memory_updated",
+            payload={"id": id, "slug_changed": slug_changed},
+        )
+
+    def log_memory_promoted(
+        self,
+        *,
+        agent: str,
+        id: str,
+        kb_slug: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=f"AGENT-{agent}",
+            agent=agent,
+            action="memory_promoted",
+            payload={"id": id, "kb_slug": kb_slug},
+        )
+
     # NOTE: audit_log.task_id doubles as a generic scope id. Thread events store
     # the thread id (THR-NNN) in that column, matching the talk_* pattern above.
 
