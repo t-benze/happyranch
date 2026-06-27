@@ -295,7 +295,7 @@ export interface AgentsApi {
   /** Read-only learnings list for the agent detail drawer. */
   useAgentLearnings: (
     agentName: string | undefined,
-  ) => QueryLike<{ entries: import('@/lib/api/agents').LearningEntrySummary[] }>;
+  ) => QueryLike<{ entries: import('@/lib/api/agents').MemoryEntrySummary[] }>;
   /** Tasks where this agent was the assigned (manager) agent. */
   useAgentTasks: (
     agentName: string | undefined,

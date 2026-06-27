@@ -51,7 +51,7 @@ export const realAgentsApi: AgentsApi = {
     const slug = useRealOrgSlug();
     return useQuery({
       queryKey: ['agent-learnings', slug, agentName],
-      queryFn: () => agentsApi.listLearnings(slug, agentName as string),
+      queryFn: () => agentsApi.listMemory(slug, agentName as string),
       enabled: !!slug && !!agentName,
       // 412 (workspace_not_migrated) is a legitimate state — let the
       // caller render an empty-state hint rather than retrying forever.

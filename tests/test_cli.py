@@ -1628,14 +1628,21 @@ def test_cmd_details_renders_workflow_chain(capsys):
 
 
 def test_cmd_learning_parser_requires_org():
+    """REVISE TASK-974 F2: the bare agent-callback form still requires --org,
+    but enforcement moved from argparse (a required parent --org) to
+    cmd_learning at dispatch — otherwise the real verb forms (`memory get
+    --org o ...`, where --org follows the verb) would fail to parse. So the
+    bare form now PARSES (org defaults to None) and the handler exits 1."""
     from cli.main import build_parser
     parser = build_parser()
+    args = parser.parse_args([
+        "learning",
+        "--task-id", "TASK-1", "--session-id", "s",
+        "--agent", "a", "--text", "x",
+    ])
+    assert args.org is None
     with pytest.raises(SystemExit):
-        parser.parse_args([
-            "learning",
-            "--task-id", "TASK-1", "--session-id", "s",
-            "--agent", "a", "--text", "x",
-        ])
+        args.func(args)
 
 
 def test_cmd_tasks_suffixes_revisit_rows(capsys):

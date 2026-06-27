@@ -148,6 +148,104 @@ def test_cmd_learning_promote_posts_correct_path(monkeypatch):
     assert captured["json"] == {"kb_slug": "kb-x"}
 
 
+# ---------------------------------------------------------------------------
+# REVISE TASK-974 F2: real documented command forms must PARSE through the
+# actual build_parser() (exit 0) and DISPATCH to the correct handler/route —
+# not merely render help text. Prior bug: a required parent --org plus a
+# colliding subcommand --org made `memory get --org o --agent a MEM-001`
+# fail argparse (exit 2), and `memory --org o get ...` silently clobber org.
+# ---------------------------------------------------------------------------
+
+def _parse(argv):
+    from cli import main as cli
+    return cli.build_parser().parse_args(argv)
+
+
+def _install_fake_client(monkeypatch, captured):
+    class FakeResponse:
+        status_code = 200
+        def json(self):
+            return {
+                "entries": [], "hits": [],
+                "id": "MEM-001", "slug": "s", "title": "T", "topic": "t",
+                "body": "b", "path": "memory/MEM-001-s.md",
+            }
+
+    class FakeClient:
+        def get(self, path, params=None):
+            captured["path"] = path
+            return FakeResponse()
+
+        def post(self, path, json=None):
+            captured["path"] = path
+            captured["json"] = json
+            return FakeResponse()
+
+        def request(self, method, path, json=None):
+            captured["path"] = path
+            return FakeResponse()
+
+        def close(self):
+            pass
+
+    from cli import main as cli
+    monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["o"])
+
+
+def test_memory_get_form_parses_and_dispatches(monkeypatch):
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    args = _parse(["memory", "get", "--org", "o", "--agent", "a", "MEM-001"])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/MEM-001"
+
+
+def test_memory_org_before_verb_form_does_not_clobber_org(monkeypatch):
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    # Parent --org before the verb must survive (subparser must not reset it).
+    args = _parse(["memory", "--org", "o", "get", "--agent", "a", "MEM-001"])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/MEM-001"
+
+
+def test_memory_add_form_parses_and_dispatches(monkeypatch, tmp_path):
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    payload = tmp_path / "p.yaml"
+    payload.write_text("slug: x\ntitle: T\ntopic: w\nbody: hi\n")
+    args = _parse(["memory", "add", "--org", "o", "--agent", "a", "--from-file", str(payload)])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/"
+    assert captured["json"]["slug"] == "x"
+
+
+def test_memory_search_form_parses_and_dispatches(monkeypatch):
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    args = _parse(["memory", "search", "--org", "o", "--agent", "a", "rename gotchas"])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/search"
+    assert captured["json"]["query"] == "rename gotchas"
+
+
+def test_learning_alias_get_form_parses_and_dispatches(monkeypatch, capsys):
+    """The one-cycle `learning` deprecation alias must parse + dispatch the
+    same real forms as `memory`, accepting a legacy LRN- id."""
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    args = _parse(["learning", "get", "--org", "o", "--agent", "a", "LRN-001"])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/LRN-001"
+    assert "deprecated" in capsys.readouterr().err
+
+
 def test_read_yaml_payload_rejects_non_dict(tmp_path, capsys):
     from cli import main as cli
     bad = tmp_path / "list.yaml"

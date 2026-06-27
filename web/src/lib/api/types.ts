@@ -285,8 +285,8 @@ export interface AgentEnrollment {
   created_at: string | null;
 }
 
-/** Summary shape returned by the learnings list endpoint. */
-export interface LearningEntrySummary {
+/** Summary shape returned by the memory list endpoint. */
+export interface MemoryEntrySummary {
   id: string;
   slug: string;
   title: string;
@@ -296,8 +296,8 @@ export interface LearningEntrySummary {
   updated_at: string;
 }
 
-/** Full entry as returned by the learnings get / search endpoints. */
-export interface LearningEntry extends LearningEntrySummary {
+/** Full entry as returned by the memory get / search endpoints. */
+export interface MemoryEntry extends MemoryEntrySummary {
   body: string;
   source_task: string | null;
   related_to: string[];

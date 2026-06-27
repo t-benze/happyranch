@@ -206,6 +206,37 @@ def test_lrn_shim_resolves_even_without_migration(tmp_path: Path) -> None:
     assert store.read_entry("MEM-007").id == "MEM-007"
 
 
+def test_update_via_lrn_id_keeps_item_canonical_mem(tmp_path: Path) -> None:
+    """REVISE TASK-974 F1 (§3.3/§7.2(b)): updating a migrated MEM item through
+    its legacy LRN- alias must NOT resurrect an LRN- file — the LRN-/MEM- shim
+    is a pure read-side normalization; the WRITE id stays the canonical on-disk
+    MEM id. Repro: update via LRN-061 used to rewrite MEM-061 back to LRN-061."""
+    store = MemoryStore(tmp_path / "memory")
+    store.write_entry(
+        MemoryItem(id="MEM-061", slug="x", title="T", topic="t", body="orig"),
+        agent="dev_agent",
+    )
+    updated = store.update_entry(
+        "LRN-061",
+        MemoryItem(id="LRN-061", slug="x", title="T2", topic="t", body="changed"),
+        agent="dev_agent",
+    )
+    # (b) write id canonicalized to the on-disk MEM id, never the caller's LRN-
+    assert updated.id == "MEM-061"
+    # (a) only the MEM-061 file remains; no LRN-061 file created/resurrected
+    files = sorted(
+        p.name for p in (tmp_path / "memory").glob("*.md") if p.name != "_index.md"
+    )
+    assert files == ["MEM-061-x.md"]
+    assert not (tmp_path / "memory" / "LRN-061-x.md").exists()
+    # (c) both ids resolve to the SAME canonical MEM item carrying the new body
+    via_lrn = store.read_entry("LRN-061")
+    via_mem = store.read_entry("MEM-061")
+    assert via_lrn.id == via_mem.id == "MEM-061"
+    assert via_lrn.body == via_mem.body  # same canonical item on disk
+    assert via_mem.body.strip() == updated.body.strip() == "changed"
+
+
 # --------------------------------------------------------------------------
 # Safeguard (4): re-running the migration is a no-op (idempotent).
 # --------------------------------------------------------------------------
