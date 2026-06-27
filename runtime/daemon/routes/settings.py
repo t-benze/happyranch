@@ -89,7 +89,10 @@ class SystemSettingsView(BaseModel):
 class DreamingScheduleView(BaseModel):
     """Read-only dreaming schedule detail."""
     time: str
-    timezone: str
+    # None = inherited (omitted in config); resolved to org.timezone ->
+    # machine-local -> UTC at dream-scheduling time. The write-side view
+    # (DreamingScheduleUpdate) already accepts None.
+    timezone: str | None
 
 
 class DreamingAgentsView(BaseModel):

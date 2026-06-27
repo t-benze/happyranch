@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,7 +32,11 @@ from runtime.orchestrator.executors import (
     OpencodeExecutor,
     PiExecutor,
 )
-from runtime.orchestrator.org_config import load_org_config
+from runtime.orchestrator.org_config import (
+    load_org_config,
+    render_current_time_line,
+    resolve_org_timezone_display,
+)
 from runtime.orchestrator.teams import TeamsRegistry
 
 logger = logging.getLogger(__name__)
@@ -303,6 +308,19 @@ class Orchestrator:
             paths=self._paths,
         )
 
+    def _current_time_line(self, now: Callable[[], datetime] | None) -> str:
+        """Render the localized current-time value injected into every agent
+        prompt: ISO-8601 with offset plus the zone label, e.g.
+        ``2026-06-27T12:47+08:00 (Asia/Shanghai)`` or, when only an offset is
+        derivable, ``2026-06-27T12:47+08:00 (UTC+08:00)``.
+
+        ``now`` is injectable so prompt snapshot tests can freeze the wall
+        clock; it must return a tz-aware UTC datetime. The zone is resolved from
+        org config (org.timezone -> machine-local -> UTC), then rendered by the
+        shared ``render_current_time_line`` reused across every prompt builder."""
+        tz, label = resolve_org_timezone_display(load_org_config(self._paths))
+        return render_current_time_line(tz, label, now)
+
     def _build_agent_prompt(
         self,
         provider: str,
@@ -311,6 +329,7 @@ class Orchestrator:
         session_id: str,
         brief: str,
         prompt: str,
+        now: Callable[[], datetime] | None = None,
     ) -> str:
         if provider == "codex":
             intro = (
@@ -333,12 +352,17 @@ class Orchestrator:
             if prompt and prompt.strip()
             else ""
         )
+        # current_time sits in the SHARED block so all providers (claude,
+        # codex, opencode, pi) receive the local wall-clock + zone on every
+        # spawn and wake.
+        current_time = self._current_time_line(now)
         return (
             f"{intro}"
             f"\n"
             f"Parameters:\n"
             f"  task_id: {task_id}\n"
             f"  session_id: {session_id}\n"
+            f"  current_time: {current_time}\n"
             f"  brief: {brief}\n"
             f"{role_guidance_block}"
         )

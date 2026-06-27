@@ -19,6 +19,7 @@ from runtime.models import (
     ThreadRecord,
     TokenUsage,
 )
+from runtime.orchestrator.org_config import OrgConfig
 
 
 def test_render_message_includes_attachments() -> None:
@@ -65,6 +66,7 @@ def test_build_prompt_includes_token_and_history():
         thread=thread, participants=participants, messages=msgs,
         invocation_token="TOK-ABC",
         invoked_agent="alice", purpose="reply", triggering_seq=1,
+        org_config=OrgConfig(),
     )
     assert "THR-001" in prompt
     assert "Refund policy" in prompt
@@ -459,6 +461,7 @@ def test_build_delta_prompt_excludes_old_history_includes_new():
         thread=thread, new_messages=new_msgs,
         invocation_token="TOK-XYZ", invoked_agent="alice",
         purpose="reply", triggering_seq=12, triggering_message=triggering,
+        org_config=OrgConfig(),
     )
     assert "brand new point" in prompt
     assert "TOK-XYZ" in prompt

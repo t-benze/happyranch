@@ -71,9 +71,52 @@ allowlist, no absolute-path requirement, no `$PATH` guard) — then auto-configu
 with no separate approval. `happyranch assistant` tells the user to run
 `happyranch assistant init` when no assistant config exists.
 
+## Org Config: Timezone and `current_time` Prompt Injection
+
+Top-level `timezone:` in `<runtime>/orgs/<slug>/org/config.yaml` is the org-wide
+local zone. It is optional; an explicit value must be a valid IANA name
+(validated at load). `None` (the default) means **inherit machine-local**.
+
+`org_config.resolve_org_timezone[_display]` resolves the effective zone:
+
+1. explicit IANA name → `ZoneInfo(value)` (a bad value falls through, never crashes);
+2. `None` → machine-local: the IANA name derived from `/etc/localtime` when
+   possible, else a fixed offset from `datetime.now().astimezone()`
+   displayed as `UTC±HH:MM`;
+3. ultimate fallback → UTC.
+
+A `current_time:` line is injected into **every** executor-backed agent session
+prompt — across all providers (claude, codex, opencode, pi), fresh on every
+spawn, wake, and turn. The single shared renderer `org_config.render_current_time_line(tz, label, now)`
+produces the line; each prompt builder resolves its own effective zone and
+calls it, so the line is identical everywhere. The four session types and their
+builders are:
+
+- **task / subtask** — `Orchestrator._build_agent_prompt` (the shared
+  `Parameters:` block), zone via `resolve_org_timezone_display`. `run_step._build_agent_prompt`
+  is **not** a separate path: it builds only the inner `role_guidance` body,
+  which is wrapped by `Orchestrator._build_agent_prompt`.
+- **working-hours wake** — `wake_runner.build_wake_prompt`, zone via `resolve_org_timezone_display`.
+- **thread reply/bootstrap** — `thread_runner.build_thread_prompt` (full) and
+  `build_thread_delta_prompt` (resumed-turn delta), zone via `resolve_org_timezone_display`.
+- **private dream** — `dream_runner.build_dream_prompt`, zone via the dreaming
+  precedence `resolve_dreaming_timezone_display` (`dreaming.timezone → org.timezone → machine-local → UTC`).
+
+Format: ISO-8601 with offset plus the zone label, e.g.
+`2026-06-27T12:47+08:00 (Asia/Shanghai)`, or `2026-06-27T12:47+08:00 (UTC+08:00)`
+when only an offset is derivable. The wall clock is an injectable `now` callable
+(default `datetime.now(timezone.utc)`) so prompt snapshot tests are deterministic.
+
 ## Org Config: Dreaming
 
 Per-org `dreaming:` config controls the private nightly reflection scheduler: enablement, local schedule time/timezone, catch-up behavior, and agent include/exclude selection.
+
+`dreaming.schedule.timezone` is **inherit-by-default**: an omitted value resolves
+`dreaming.timezone (explicit) → org.timezone → machine-local → UTC` via
+`resolve_dreaming_timezone`, threaded into `dream_scheduler._scheduled_datetime`
+before any `ZoneInfo()` call. (Pre-TASK-976 an omitted value defaulted to the
+literal `UTC`; orgs relying on that implicit default now schedule on
+machine-local time — host-local night, as intended.)
 
 ## Session Timeout Resolution
 

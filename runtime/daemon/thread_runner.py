@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 from runtime.config import Settings
@@ -25,6 +27,11 @@ from runtime.orchestrator.executors import (
     CodexExecutor,
     OpencodeExecutor,
     PiExecutor,
+)
+from runtime.orchestrator.org_config import (
+    OrgConfig,
+    render_current_time_line,
+    resolve_org_timezone_display,
 )
 
 logger = logging.getLogger(__name__)
@@ -239,6 +246,8 @@ def build_thread_prompt(
     invoked_agent: str,
     purpose: str,          # 'reply' | 'bootstrap'
     triggering_seq: int,
+    org_config: OrgConfig,
+    now: Callable[[], datetime] | None = None,
 ) -> str:
     triggering = next((m for m in messages if m.seq == triggering_seq), None)
     parts_str = ", ".join(p.agent_name for p in participants)
@@ -252,10 +261,16 @@ def build_thread_prompt(
         triggering_message=triggering,
     )
     doctrine = _decline_by_default_doctrine() if purpose == "reply" else ""
+    # current_time is injected (fresh per turn) via the shared renderer using
+    # the org's effective timezone, so thread sessions carry the same local
+    # wall clock as every other agent session.
+    tz, label = resolve_org_timezone_display(org_config)
+    current_time = render_current_time_line(tz, label, now)
     return (
         f"{doctrine}"
         f"You are participating in thread {thread.id}: \"{thread.subject}\".\n\n"
         f"Participants: {parts_str}.\n"
+        f"current_time: {current_time}\n"
         f"Started: {thread.started_at.isoformat()}. {forwarded}\n\n"
         f"Full message history follows. Most recent message is at the bottom.\n\n"
         f"---\n{history}\n\n"
@@ -277,6 +292,8 @@ def build_thread_delta_prompt(
     purpose: str,
     triggering_seq: int,
     triggering_message: "ThreadMessage | None",
+    org_config: OrgConfig,
+    now: Callable[[], datetime] | None = None,
 ) -> str:
     """Turn 2+ prompt for a resumed agent session (issue #53).
 
@@ -285,6 +302,10 @@ def build_thread_delta_prompt(
     than the stored watermark plus the per-turn doctrine, purpose note, and
     single-use invocation token. ``new_messages`` is the delta the caller
     computed (seq > last_resumed_seq).
+
+    ``current_time`` is re-injected on this resumed turn (fresh per turn) so the
+    agent sees the current local wall clock even mid-thread. ``now`` is
+    injectable for tests.
     """
     note = _purpose_note(
         purpose, triggering_seq, invoked_agent,
@@ -292,10 +313,13 @@ def build_thread_delta_prompt(
     )
     doctrine = _decline_by_default_doctrine() if purpose == "reply" else ""
     delta = "\n".join(_render_message(m) for m in new_messages)
+    tz, label = resolve_org_timezone_display(org_config)
+    current_time = render_current_time_line(tz, label, now)
     return (
         f"{doctrine}"
         f"Continuing thread {thread.id}: \"{thread.subject}\". "
         f"New activity since your last turn follows.\n\n"
+        f"current_time: {current_time}\n\n"
         f"---\n{delta}\n\n"
         f"You have been invoked because:\n  {note}\n\n"
         f"Your invocation_token for this turn is: {invocation_token}\n"
@@ -411,16 +435,20 @@ async def run_invocation(
 
     executor = _build_executor_for_provider(executor_name, settings, paths)
 
+    # Load org config once: it feeds both the timeout override and the
+    # current_time injection on every thread prompt below. A malformed/missing
+    # config falls back to defaults (which resolve to machine-local/UTC).
+    from runtime.orchestrator._paths import OrgPaths as _OrgPaths
+    from runtime.orchestrator.org_config import load_org_config
+    try:
+        org_config = load_org_config(_OrgPaths(root=org_state.root))
+    except Exception:
+        org_config = OrgConfig()
+
     # Resolve timeout (org override → code default).
     timeout: int = settings.session_timeout_seconds
-    try:
-        from runtime.orchestrator.org_config import load_org_config
-        from runtime.orchestrator._paths import OrgPaths as _OrgPaths
-        cfg = load_org_config(_OrgPaths(root=org_state.root))
-        if cfg.threads_invocation_timeout_seconds is not None:
-            timeout = cfg.threads_invocation_timeout_seconds
-    except Exception:
-        pass
+    if org_config.threads_invocation_timeout_seconds is not None:
+        timeout = org_config.threads_invocation_timeout_seconds
 
     # --- Agent session resume (issue #53) ---
     # Only Claude supports --resume; other executors always run full-context.
@@ -447,7 +475,7 @@ async def run_invocation(
                 thread=thread, new_messages=new_messages,
                 invocation_token=invocation_token, invoked_agent=inv.agent_name,
                 purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
-                triggering_message=triggering,
+                triggering_message=triggering, org_config=org_config,
             )
             resume_sid = stored_sid
             shown_seqs = [m.seq for m in new_messages]
@@ -456,6 +484,7 @@ async def run_invocation(
                 thread=thread, participants=participants, messages=messages,
                 invocation_token=invocation_token, invoked_agent=inv.agent_name,
                 purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
+                org_config=org_config,
             )
             shown_seqs = [m.seq for m in messages]
 
@@ -500,6 +529,7 @@ async def run_invocation(
                     thread=thread, participants=participants, messages=messages,
                     invocation_token=invocation_token, invoked_agent=inv.agent_name,
                     purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
+                    org_config=org_config,
                 )
                 shown_seqs = [m.seq for m in messages]
                 resume_sid = None

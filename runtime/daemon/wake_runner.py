@@ -23,6 +23,12 @@ from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import WorkHourStatus
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.org_config import (
+    OrgConfig,
+    load_org_config,
+    render_current_time_line,
+    resolve_org_timezone_display,
+)
 from runtime.orchestrator.prompt_loader import load_agent
 from runtime.orchestrator.routine_parser import parse_routines
 
@@ -39,7 +45,9 @@ def build_wake_prompt(
     mode: str,
     preamble: str,
     routines: list[str],
+    org_config: OrgConfig,
     dropped: int = 0,
+    now: Callable[[], datetime] | None = None,
 ) -> str:
     """Compose the wake-session prompt.
 
@@ -49,7 +57,13 @@ def build_wake_prompt(
     ``## Routine Tasks`` section (preamble + list) is injected verbatim, and the
     cadence (local_date, slot, mode) is stated so briefs can be phrased relative
     to the last wake.
+
+    ``current_time`` is injected (fresh per wake) via the shared renderer using
+    the org's effective timezone, so wake sessions carry the same local wall
+    clock as every other agent session. ``now`` is injectable for tests.
     """
+    tz, label = resolve_org_timezone_display(org_config)
+    current_time = render_current_time_line(tz, label, now)
     routine_block = "\n".join(routines) if routines else "(none)"
     preamble_block = f"{preamble}\n\n" if preamble else ""
     # No silent truncation: if routines were dropped past the cap, tell the
@@ -67,6 +81,7 @@ routines. It is NOT the work itself, and it is NOT a reflection. The real work
 happens in the root tasks you spawn — do not perform the routines here.
 
 Cadence: local_date {local_date}, slot {slot}, mode {mode}.
+current_time: {current_time}
 
 Turn EACH routine below into ONE concrete root-task brief (phrased for the work
 due since the last wake at this cadence), then submit them ALL in a SINGLE
@@ -124,6 +139,10 @@ async def run_wake(
 
     parsed = parse_routines(agent_def.system_prompt)
     workspace = org_state.root / "workspaces" / record.agent_name
+    try:
+        org_config = load_org_config(paths)
+    except Exception:
+        org_config = OrgConfig()
     prompt = build_wake_prompt(
         org_slug=org_state.slug,
         work_hour_id=work_hour_id,
@@ -135,6 +154,7 @@ async def run_wake(
         mode=record.mode.value,
         preamble=parsed.preamble,
         routines=parsed.routines,
+        org_config=org_config,
         dropped=parsed.dropped,
     )
 
