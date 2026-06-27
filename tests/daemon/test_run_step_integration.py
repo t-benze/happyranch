@@ -173,11 +173,10 @@ async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
     queue.enqueue("test", "TASK-001")
     await queue.drain_sync(dispatcher)
 
-    # Task should now be blocked(escalated)
+    # Task should now be escalated (Path B: top-level status, block_kind cleared)
     t = db.get_task("TASK-001")
-    assert t.status == TaskStatus.BLOCKED
-    from runtime.models import BlockKind
-    assert t.block_kind == BlockKind.ESCALATED
+    assert t.status == TaskStatus.ESCALATED
+    assert t.block_kind is None
     assert t.note == "needs founder"
 
     # Founder resolves directly via update_task (no HTTP here)

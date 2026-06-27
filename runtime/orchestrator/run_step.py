@@ -2,14 +2,18 @@
 a task one subprocess call at a time. Separate from orchestrator.py so the
 algorithm has its own test surface.
 
-Entry contract: task MUST be one of:
+Entry contract (Path B): task MUST be one of:
   (a) status=pending, or
-  (b) status=blocked AND block_kind=DELEGATED AND all children are terminal, or
-  (c) status=blocked AND block_kind=BLOCKED_ON_JOB AND all blocking jobs are terminal.
-Any other state = stale enqueue, silent no-op.
+  (b) status=in_progress AND block_kind=DELEGATED AND all children are terminal, or
+  (c) status=in_progress AND block_kind=BLOCKED_ON_JOB AND all blocking jobs are terminal.
+Any other state = stale enqueue, silent no-op — in particular
+in_progress + block_kind IS NULL is a LIVE subprocess and must NOT be admitted
+(it would double-spawn). The legacy blocked(delegated|blocked_on_job) shapes are
+also accepted during the transition window (dual-read).
 
 Exit contract: task ends in exactly one of {in_progress-then-crashed,
-completed, failed, blocked(DELEGATED), blocked(ESCALATED)}.
+completed, failed, in_progress(DELEGATED), in_progress(BLOCKED_ON_JOB),
+escalated}.
 """
 from __future__ import annotations
 
@@ -28,7 +32,16 @@ logger = logging.getLogger(__name__)
 
 TERMINAL_STATES = frozenset({
     TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+    TaskStatus.CANCELLED,  # Path B: founder-initiated terminal stop.
 })
+
+# Path B: parked-but-in_progress carriers. A task in one of these
+# (status, block_kind) pairs runs no subprocess — it is waiting on children/
+# jobs it manages. The legacy `blocked` status is accepted alongside
+# `in_progress` so scheduler/sweep/fan-in predicates are dual-read tolerant
+# during the transition window. `block_kind IS NULL` (a live subprocess) is
+# deliberately NOT a parked carrier.
+_PARKED_CARRIER_STATUSES = frozenset({TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED})
 
 
 def is_root(task: "TaskRecord") -> bool:
@@ -52,7 +65,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     # Cancellation short-circuit. Once /cancel marks a task FAILED + sets
     # cancelled_at, any late queue event (e.g., the parent auto-resume after
     # the SIGTERM'd child's audit arrives) must be a no-op. Checking status
-    # alone isn't enough — blocked(DELEGATED) parents get cancelled too, and
+    # alone isn't enough — in_progress(delegated) parents get cancelled too, and
     # the terminal-state test runs in step 1 below. Re-check before returning
     # so we don't enter the in_progress transition.
     if task.cancelled_at is not None:
@@ -60,14 +73,18 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     # ---- 1. Verify entry state ----
+    # Path B: parked carriers are in_progress(delegated|blocked_on_job). The
+    # legacy blocked(...) shapes are accepted too (dual-read). A live subprocess
+    # is in_progress + block_kind IS NULL — it falls to the `else: skip` and is
+    # never re-admitted (admitting it would double-spawn).
     if task.status == TaskStatus.PENDING:
         pass  # eligible
-    elif task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.DELEGATED:
+    elif task.status in _PARKED_CARRIER_STATUSES and task.block_kind == BlockKind.DELEGATED:
         children = [db.get_task(cid) for cid in db.get_children(task_id)]
         if any(c is None or c.status not in TERMINAL_STATES for c in children):
             logger.debug("run_step %s: child still running, skipping", task_id)
             return
-    elif task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.BLOCKED_ON_JOB:
+    elif task.status in _PARKED_CARRIER_STATUSES and task.block_kind == BlockKind.BLOCKED_ON_JOB:
         # Blocked-on-job task: re-check live job table to see whether all
         # blocking jobs have reached a terminal state. Spec §5.1.
         import json as _json
@@ -125,7 +142,8 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
             return
-        # Root: park in blocked(ESCALATED) for the founder (unchanged).
+        # Root: park in escalated for the founder (try_escalate* now writes the
+        # top-level ESCALATED status; behavior otherwise unchanged).
         # Atomic CAS on the eligible pre-state read at step 1. This guard runs
         # BEFORE try_claim_for_step, so without it two duplicate deliveries of
         # the same stale at-cap row would both escalate and double-post the
@@ -169,7 +187,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     # Spec §5.2: write task_resumed_from_jobs audit row immediately after the
     # CAS wins on a BLOCKED+BLOCKED_ON_JOB → IN_PROGRESS transition. The
     # prompt-build at step 4 reads this row to inject BLOCKED-JOBS-RESULTS.
-    if (task.status == TaskStatus.BLOCKED
+    if (task.status in _PARKED_CARRIER_STATUSES
             and task.block_kind == BlockKind.BLOCKED_ON_JOB):
         import json as _json
         try:
@@ -296,9 +314,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                         status=TaskStatus.FAILED, auto_revisit_spawned=False,
                     )
                     return
+            # Path B: a task waiting on jobs it submitted is in_progress, with
+            # the waiting reason kept in block_kind (NOT blocked).
             db.update_task(
                 task_id,
-                status=TaskStatus.BLOCKED,
+                status=TaskStatus.IN_PROGRESS,
                 block_kind=BlockKind.BLOCKED_ON_JOB,
                 blocked_on_job_ids=_json.dumps(deduped),
                 note=report.output_summary,
@@ -373,8 +393,9 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
             return
-        # Root: park in blocked(ESCALATED) for the founder (unchanged).
-        # Atomic CAS: transition to BLOCKED(ESCALATED) only if not cancelled
+        # Root: park in escalated for the founder (try_escalate* now writes the
+        # top-level ESCALATED status; behavior otherwise unchanged).
+        # Atomic CAS: transition to ESCALATED only if not cancelled
         # or terminal. Closes the post-_is_already_terminal race (Codex P2 on
         # PR #34) by serializing against /cancel via the Database RLock.
         # If False: founder cancellation landed between Guard B's re-fetch and
@@ -391,7 +412,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             last_summary=getattr(report, "output_summary", "") or "",
         )
         _maybe_post_thread_escalation(orch, task_id, reason=reason)
-        # parent stays blocked(DELEGATED) until this task reaches a terminal.
+        # parent stays in_progress(delegated) until this task reaches a terminal.
         return
 
     if decision.action == "delegate":
@@ -476,7 +497,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             session_timeout_seconds=task.session_timeout_seconds,
             task_type="subtask",
         )
-        # Atomic CAS: insert child + transition parent to BLOCKED(DELEGATED)
+        # Atomic CAS: insert child + transition parent to IN_PROGRESS(DELEGATED)
         # under the same RLock acquisition. Serializes against /cancel via
         # Database RLock — closes the spawn-new-work race (Codex P1 on PR #34).
         # If False: cancel landed between Guard B's re-fetch and here. No child
@@ -1263,7 +1284,7 @@ def _enqueue_parent_if_waiting(
         for a bounded manager-wake decision step. The parent receives the
         failed subtask's reason so it can author an updated brief.
       - a subtask FAILED and 2+ prior failed subtasks already exist (bound
-        exhausted) → escalate the parent to blocked(ESCALATED) via
+        exhausted) → escalate the parent to escalated via
         try_escalate, carrying the last failure reason. The parent does NOT
         cascade-fail — the founder can resolve the escalation per existing
         routes. The round count is derived from the count of FAILED subtask
@@ -1284,7 +1305,10 @@ def _enqueue_parent_if_waiting(
     if task is None or task.parent_task_id is None:
         return
     parent = orch._db.get_task(task.parent_task_id)
-    if parent is None or parent.status != TaskStatus.BLOCKED:
+    # Path B: a delegating parent is in_progress(delegated); the legacy
+    # blocked(delegated) shape is accepted too (dual-read). The non-cascading
+    # failure-recovery contract (TASK-573/THR-028) below is otherwise unchanged.
+    if parent is None or parent.status not in _PARKED_CARRIER_STATUSES:
         return
     if parent.block_kind != BlockKind.DELEGATED:
         return
@@ -1300,7 +1324,7 @@ def _enqueue_parent_if_waiting(
                 orch=orch, parent_task_id=parent.id, child_task_id=task_id,
             )
             if outcome == "advance":
-                return  # next leg spawned; parent stays blocked-delegated
+                return  # next leg spawned; parent stays in_progress(delegated)
             # outcome == "wake" → chain cleared; fall through to sibling-check
             # + parent-wake path below.
         else:
@@ -1607,7 +1631,9 @@ def _maybe_resume_blocked_task(
     task = db.get_task(task_id)
     if task is None:
         return False
-    if task.status != TaskStatus.BLOCKED or task.block_kind != BlockKind.BLOCKED_ON_JOB:
+    # Path B: a task parked on jobs is in_progress(blocked_on_job); legacy
+    # blocked(blocked_on_job) accepted too (dual-read).
+    if task.status not in _PARKED_CARRIER_STATUSES or task.block_kind != BlockKind.BLOCKED_ON_JOB:
         return False  # silent — steady state
 
     try:
@@ -1736,7 +1762,7 @@ def _maybe_post_thread_escalation(
 
     Unlike `_maybe_post_thread_followup` (terminal-only, root-only because
     terminals cascade up to the parent), escalations do NOT cascade
-    (run_step escalate branch: "parent stays blocked(DELEGATED)") and a team
+    (run_step escalate branch: "parent stays in_progress(delegated)") and a team
     manager can escalate at any depth. So we walk ancestors to the chain root,
     then the revisit chain, to find the originating thread.
 
@@ -1749,9 +1775,12 @@ def _maybe_post_thread_escalation(
     if task is None:
         return
     # Re-read persisted state: the founder may have resolved/cancelled the
-    # escalation in the window between try_escalate and this call.
-    if not (task.status == TaskStatus.BLOCKED
-            and task.block_kind == BlockKind.ESCALATED):
+    # escalation in the window between try_escalate and this call. Path B:
+    # an escalated task is status=ESCALATED; the legacy blocked(escalated)
+    # shape is accepted too (dual-read).
+    if not (task.status == TaskStatus.ESCALATED or (
+            task.status == TaskStatus.BLOCKED
+            and task.block_kind == BlockKind.ESCALATED)):
         return
 
     # Resolve the originating thread. Escalation can fire on a child, so walk

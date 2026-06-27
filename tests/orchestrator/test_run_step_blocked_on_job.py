@@ -199,7 +199,9 @@ def test_block_on_jobs_branch_transitions_in_place(db_and_orch):
     run_step_impl(orch, "TASK-1")
 
     after = db.get_task("TASK-1")
-    assert after.status == TaskStatus.BLOCKED
+    # Path B: a task waiting on jobs it submitted is in_progress(blocked_on_job),
+    # NOT blocked — the waiting reason is the block_kind discriminant.
+    assert after.status == TaskStatus.IN_PROGRESS
     assert after.block_kind == BlockKind.BLOCKED_ON_JOB
     assert after.blocked_on_job_ids == '["JOB-1"]'
 

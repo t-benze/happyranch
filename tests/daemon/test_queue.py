@@ -71,9 +71,11 @@ def test_daemon_state_carries_a_task_queue(daemon_state):
 
 
 def test_org_state_terminal_event_map_covers_new_statuses():
-    """BLOCKED is intentionally absent — block_kind decides whether it reads
-    as terminal for a late subscriber (ESCALATED yes, DELEGATED no). The map
-    moved to OrgState in the multi-org refactor (per-org event bus)."""
+    """Path B: ESCALATED is intentionally absent (non-terminal — synthesized
+    as a task_blocked/outcome=escalated event by _synthesize_terminal_event,
+    not via this map). Legacy BLOCKED is likewise absent. CANCELLED replays as
+    a failure-class terminal with the precise label in the synthesized event's
+    `outcome`. The map moved to OrgState in the multi-org refactor."""
     from runtime.daemon.org_state import OrgState
     from runtime.models import TaskStatus
     assert OrgState._TERMINAL_STATUS_TO_EVENT == {
@@ -82,6 +84,8 @@ def test_org_state_terminal_event_map_covers_new_statuses():
         # resolved_superseded replays as a completion-class terminal; the
         # precise label rides in the synthesized event's `outcome`.
         TaskStatus.RESOLVED_SUPERSEDED: "task_complete",
+        # Path B: cancellation replays as failure-class; outcome="cancelled".
+        TaskStatus.CANCELLED: "task_failed",
     }
 
 

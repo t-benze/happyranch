@@ -964,7 +964,7 @@ def test_cancel_409_when_already_terminal(client_with_runtime):
     assert r.json()["detail"]["code"] == "task_already_terminal"
 
 
-def test_cancel_marks_task_failed_with_cancelled_at_and_note(client_with_runtime):
+def test_cancel_marks_task_cancelled_with_cancelled_at_and_note(client_with_runtime):
     from runtime.models import TaskRecord, TaskStatus
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
@@ -979,7 +979,7 @@ def test_cancel_marks_task_failed_with_cancelled_at_and_note(client_with_runtime
     assert body["killed"] == []
 
     t = state.db.get_task("T-1")
-    assert t.status == TaskStatus.FAILED
+    assert t.status == TaskStatus.CANCELLED  # Path B: dedicated terminal status
     assert t.cancelled_at is not None
     assert t.completed_at is not None
     assert t.note == "cancelled by founder: rerouting"
@@ -1015,9 +1015,9 @@ def test_cancel_cascades_down_subtree(client_with_runtime):
     cancelled = set(r.json()["cancelled"])
     assert cancelled == {"T-P", "T-C1", "T-G"}
 
-    assert state.db.get_task("T-P").status == TaskStatus.FAILED
-    assert state.db.get_task("T-C1").status == TaskStatus.FAILED
-    assert state.db.get_task("T-G").status == TaskStatus.FAILED
+    assert state.db.get_task("T-P").status == TaskStatus.CANCELLED
+    assert state.db.get_task("T-C1").status == TaskStatus.CANCELLED
+    assert state.db.get_task("T-G").status == TaskStatus.CANCELLED
     # Sibling that was already terminal is untouched.
     t_c2 = state.db.get_task("T-C2")
     assert t_c2.status == TaskStatus.COMPLETED
@@ -1040,7 +1040,7 @@ def test_cancel_no_cascade_cancels_only_target(client_with_runtime):
     )
     assert r.status_code == 200
     assert r.json()["cancelled"] == ["T-P"]
-    assert state.db.get_task("T-P").status == TaskStatus.FAILED
+    assert state.db.get_task("T-P").status == TaskStatus.CANCELLED
     # Child must NOT be cancelled.
     assert state.db.get_task("T-C").status == TaskStatus.PENDING
 

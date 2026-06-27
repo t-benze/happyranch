@@ -206,7 +206,7 @@ def test_review_required_founder_approves_then_resumes(
     # we act as founder, to avoid the task resuming before it's fully blocked).
     _wait_for_task_status(
         base, task_id,
-        terminal=("blocked",),
+        terminal=("in_progress",),  # Path B: parked on jobs = in_progress(blocked_on_job)
         timeout=20.0,
     )
 
@@ -429,7 +429,7 @@ def test_review_required_founder_rejects_then_resumes(
     # Wait for the task to reach blocked state.
     _wait_for_task_status(
         base, task_id,
-        terminal=("blocked",),
+        terminal=("in_progress",),  # Path B: parked on jobs = in_progress(blocked_on_job)
         timeout=20.0,
     )
 

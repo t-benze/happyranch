@@ -151,16 +151,16 @@ There are four types of permission blocks, each handled differently:
 
 ### Task state machine
 
-#### States (6)
+#### States (7)
 - **pending** — created; no agent subprocess started yet.
-- **in_progress** — an agent subprocess is running *right now* for this task.
-- **blocked** — suspended, awaiting an external event. Requires `block_kind`:
-  - `delegated` — waiting on one or more child subtasks to terminate.
-  - `escalated` — waiting on the founder (via `happyranch resolve-escalation`).
-  - `blocked_on_job` — waiting on one or more background jobs to reach a terminal state; set when a completion report carries a non-empty `waiting_on_job_ids`.
+- **in_progress** — an agent subprocess is running, OR the task is a parent waiting on its own children/jobs. A parent waiting on its own children/jobs stays `in_progress`; the waiting reason is recorded in `block_kind` (`delegated` = waiting on one or more child subtasks to terminate; `blocked_on_job` = waiting on one or more background jobs to reach a terminal state, set when a completion report carries a non-empty `waiting_on_job_ids`); `block_kind IS NULL` ⟺ a subprocess is running now.
+- **escalated** — waiting on the founder (via `happyranch resolve-escalation`); was `blocked(escalated)`.
 - **completed** — terminal, success.
 - **failed** — terminal, unsuccessful.
-- **resolved_superseded** — terminal. A `blocked(escalated|delegated)` task closed because a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) superseded it; the close cites the successor task and does **not** re-run the work.
+- **cancelled** — terminal; founder-initiated stop, distinct from `failed`.
+- **resolved_superseded** — terminal. An `escalated` / `in_progress(delegated)` task closed because a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) superseded it; the close cites the successor task and does **not** re-run the work.
+
+> **Deprecated — `blocked`.** Before THR-037 Change B (Path B, stored source-of-truth), the surfaced vocabulary used a single `blocked` state discriminated by `block_kind` (`delegated`/`escalated`/`blocked_on_job`). Path B collapsed it: a parent waiting on its children/jobs is `in_progress` (reason kept in `block_kind`), and the await-founder state is the top-level `escalated`. No new write produces `blocked`; live rows were migrated at boot. The value is retained for the transition window + reverse migration, removed after a soak.
 
 #### Failure-recovery contract (TASK-573, THR-028)
 
@@ -180,7 +180,7 @@ cascade-failed. Instead:
 
 3. **Exhaustion escalation.** When the round bound is exhausted (> 2 FAILED
    subtasks in this delegation slot), the parent transitions to
-   `blocked(ESCALATED)` via `db.try_escalate()`, carrying the last failure
+   `escalated` via `db.try_escalate()`, carrying the last failure
    reason. The parent does NOT cascade-fail — the founder can resolve the
    escalation per existing routes. non-root tasks never escalate directly — they fail and hand back to their parent; only the (root) parent escalates on exhaustion.
 
@@ -196,27 +196,30 @@ cascade-failed. Instead:
 #### Transitions
 
 ```
-pending → (run_step pickup) → in_progress → { completed | failed | blocked(delegated) | blocked(escalated) }
+pending → (run_step pickup) → in_progress → { completed | failed | cancelled | in_progress(delegated) | in_progress(blocked_on_job) | escalated }
 
-blocked(delegated) → (child terminates, sibling sweep clears) → in_progress (re-entry)
-blocked(escalated) → (POST /resolve-escalation approve) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
-blocked(escalated) → (POST /resolve-escalation reject)  → failed (cascade-fails the parent if any)
-blocked(blocked_on_job) → (all blocking jobs reach terminal state; _maybe_resume_blocked_task enqueues while the row stays blocked) → in_progress (run_step CAS admits exactly one on pickup, clearing block_kind)
-blocked(escalated|delegated) → (revisit / thread-dispatch names it in lineage) → resolved_superseded (terminal; block_kind cleared, audit cites the continuation root task_id; NO re-enqueue. The delegated close is gated on all children being terminal and never cascade-SIGTERMs live siblings)
-blocked(ESCALATED) → (POST /resolve-escalation approve on exhaustion escalation) → pending (re-enqueued; parent carries the exhaustion context + failure reason from the failed subtask — manager can re-ground and re-delegate)
+in_progress(delegated) → (all children terminal) → in_progress (re-entry, block_kind cleared on claim)
+in_progress(blocked_on_job) → (all blocking jobs reach terminal state; _maybe_resume_blocked_task enqueues while the row stays in_progress) → in_progress (run_step CAS admits exactly one on pickup, clearing block_kind)
+escalated → (POST /resolve-escalation approve) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
+escalated → (POST /resolve-escalation reject)  → failed (cascade-fails the parent if any)
+escalated | in_progress(delegated) → (revisit / thread-dispatch names it in lineage) → resolved_superseded (terminal; block_kind cleared, audit cites the continuation root task_id; NO re-enqueue. The delegated close is gated on all children being terminal and never cascade-SIGTERMs live siblings)
+escalated → (POST /resolve-escalation approve on exhaustion escalation) → pending (re-enqueued; parent carries the exhaustion context + failure reason from the failed subtask — manager can re-ground and re-delegate)
+(any non-terminal) → (founder cancel) → cancelled
 ```
 
 #### Execution model
 
 The orchestrator exposes exactly one primitive: `Orchestrator.run_step(task_id)`.
-It picks up a task that is `pending` or `blocked(delegated)` with all children
+It picks up a task that is `pending` or `in_progress(delegated)` with all children
 terminal, invokes its `assigned_agent` once, classifies the result, persists
 the transition, and enqueues the next task to advance. Recursion is via queue
-re-entry — no loops inside `run_step`.
+re-entry — no loops inside `run_step`. A task that is `in_progress` with
+`block_kind IS NULL` is a *live subprocess* and is never re-admitted (admitting
+it would double-spawn).
 
 Budget: each `run_step` call increments `orchestration_step_count` persisted
 on the task. When the count exceeds `max_orchestration_steps` the task parks
-in `blocked(escalated)` for founder review (root tasks only; a non-root over-budget task fails and hands back to its parent).
+in `escalated` for founder review (root tasks only; a non-root over-budget task fails and hands back to its parent).
 
 ### Timeout handling
 

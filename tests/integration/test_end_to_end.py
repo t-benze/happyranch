@@ -90,9 +90,17 @@ def _wait_for_terminal_status(
         task = body["task"]
         status = task["status"]
         block_kind = task.get("block_kind")
-        if status in ("completed", "failed"):
+        if status in ("completed", "failed", "cancelled"):
             return status
-        if status == "blocked" and (allow_blocked or block_kind == "escalated"):
+        # Path B: escalated is the top-level await-founder status (legacy
+        # blocked(escalated) accepted too during the transition window).
+        if status == "escalated" or (status == "blocked" and block_kind == "escalated"):
+            return status
+        # Parked carriers (delegated / blocked_on_job) are in_progress(kind)
+        # under Path B; legacy blocked(kind) accepted too. Opt-in via allow_blocked.
+        if (allow_blocked
+                and block_kind in ("delegated", "blocked_on_job")
+                and status in ("in_progress", "blocked")):
             return status
         time.sleep(0.2)
     raise AssertionError(f"task {task_id} did not reach a terminal state (last body={body})")
@@ -346,13 +354,13 @@ def test_mixed_fleet_roundtrip_uses_claude_and_codex(
     outcome = _wait_for_terminal_status(
         base, task_id, headers=headers, allow_blocked=True,
     )
-    assert outcome == "blocked"
+    assert outcome == "in_progress"  # Path B: delegating parent is in_progress(delegated)
 
     db = Database(runtime / "happyranch.db")
     root = db.get_task(task_id)
     children = db.get_children(task_id)
     assert root is not None
-    assert root.status.value == "blocked"
+    assert root.status.value == "in_progress"
     assert root.block_kind.value == "delegated"
     assert len(children) == 1
 
@@ -424,11 +432,12 @@ def test_cancel_sigterms_running_subprocess_and_marks_task_failed(
     # its pid via SessionTracker and delivered a signal to it.
     assert len(body["killed"]) >= 1, body
 
-    # Final task row: founder's note + cancelled_at, status failed.
-    assert _wait_for_terminal_status(base, task_id, timeout=15.0) == "failed"
+    # Final task row: founder's note + cancelled_at, status cancelled.
+    # Path B: a founder cancel writes the dedicated terminal CANCELLED status.
+    assert _wait_for_terminal_status(base, task_id, timeout=15.0) == "cancelled"
     r = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=2.0)
     task_body = r.json()["task"]
-    assert task_body["status"] == "failed"
+    assert task_body["status"] == "cancelled"
     assert task_body.get("cancelled_at") is not None
     assert task_body.get("note", "").startswith("cancelled by founder:"), task_body
     # Pin the race-lock invariant: the run_step classifier's post-Popen
@@ -478,9 +487,9 @@ def test_revisit_roundtrip_creates_new_root_and_completes(
 
     seed_workspace(runtime, "engineering_head")
 
-    # Step 1: predecessor escalates -> blocked(escalated).
+    # Step 1: predecessor escalates -> escalated (Path B: top-level status).
     task_id = _submit_task(base, brief="Revisit me")
-    assert _wait_for_terminal_status(base, task_id, timeout=30.0) == "blocked"
+    assert _wait_for_terminal_status(base, task_id, timeout=30.0) == "escalated"
 
     # Step 2: revisit via HTTP (integration harness is non-TTY).
     r = httpx.post(

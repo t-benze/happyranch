@@ -70,8 +70,8 @@ def test_run_step_over_budget_parks_escalated(runtime, db):
     orch.run_step("T-1")
 
     t = db.get_task("T-1")
-    assert t.status == TaskStatus.BLOCKED
-    assert t.block_kind == BlockKind.ESCALATED
+    assert t.status == TaskStatus.ESCALATED  # Path B: top-level status
+    assert t.block_kind is None
     assert t.note and "max steps" in t.note
     # Audit row
     escalations = [
@@ -265,8 +265,8 @@ def test_run_step_root_escalate_parks_blocked_escalated(
 
     t = db.get_task("T-ROOT")
     assert t.parent_task_id is None  # it is a root
-    assert t.status == TaskStatus.BLOCKED
-    assert t.block_kind == BlockKind.ESCALATED
+    assert t.status == TaskStatus.ESCALATED  # Path B: top-level status
+    assert t.block_kind is None
     assert t.note == "needs founder"
 
     escalations = [a for a in db.get_audit_logs("T-ROOT") if a["action"] == "escalation"]
@@ -300,9 +300,10 @@ def test_run_step_delegate_spawns_child_and_blocks_self(
 
     orch.run_step("T-1")
 
-    # Parent now blocked(DELEGATED)
+    # Parent now in_progress(DELEGATED) — Path B: a parent waiting on its own
+    # child is in progress, with the waiting reason kept in block_kind.
     parent = db.get_task("T-1")
-    assert parent.status == TaskStatus.BLOCKED
+    assert parent.status == TaskStatus.IN_PROGRESS
     assert parent.block_kind == BlockKind.DELEGATED
     assert "dev_agent" in (parent.note or "")
 
@@ -1669,7 +1670,7 @@ def test_run_step_escalate_surfaces_in_thread(runtime, db, monkeypatch):
     orch.run_step("T-1")
 
     t = db.get_task("T-1")
-    assert t.status == TaskStatus.BLOCKED and t.block_kind == BlockKind.ESCALATED
+    assert t.status == TaskStatus.ESCALATED and t.block_kind is None  # Path B
     msgs = db.list_thread_messages("THR-9")
     esc = [m for m in msgs if m.system_payload
            and m.system_payload.get("kind_tag") == "task_escalated"]
@@ -1984,11 +1985,11 @@ def test_two_failed_children_escalates_parent_not_fail(runtime, db, monkeypatch)
     _enqueue_parent_if_waiting(orch, "T-F2")
 
     parent = db.get_task("T-PAR")
-    assert parent.status == TaskStatus.BLOCKED, (
-        f"parent should go to BLOCKED(ESCALATED), got {parent.status}"
+    assert parent.status == TaskStatus.ESCALATED, (  # Path B: top-level status
+        f"parent should go to ESCALATED, got {parent.status}"
     )
-    assert parent.block_kind == BlockKind.ESCALATED, (
-        f"exhausted bound must escalate parent, got block_kind={parent.block_kind}"
+    assert parent.block_kind is None, (
+        f"exhausted bound escalates parent (block_kind cleared), got {parent.block_kind}"
     )
     assert "T-F2" in (parent.note or "")
 
@@ -2227,8 +2228,8 @@ def test_run_step_root_over_budget_still_escalates(runtime, db):
 
     t = db.get_task("T-ROOT")
     assert t.parent_task_id is None
-    assert t.status == TaskStatus.BLOCKED
-    assert t.block_kind == BlockKind.ESCALATED
+    assert t.status == TaskStatus.ESCALATED  # Path B: top-level status
+    assert t.block_kind is None
     assert t.note and "max steps" in t.note
 
 
