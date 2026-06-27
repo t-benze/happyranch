@@ -10,6 +10,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -25,7 +26,10 @@ class OrgConfigError(ValueError):
 class DreamingConfig:
     enabled: bool = False
     schedule_time: str = "02:00"
-    timezone: str = "UTC"
+    # None means "inherit" — resolved (dreaming.timezone -> org.timezone ->
+    # machine-local -> UTC) via ``resolve_dreaming_timezone``. A None here must
+    # never reach ``ZoneInfo`` directly.
+    timezone: str | None = None
     catch_up_on_startup: bool = True
     agent_mode: str = "all"
     include_agents: list[str] = field(default_factory=list)
@@ -139,6 +143,10 @@ class WorkingHoursConfig:
 @dataclass(frozen=True)
 class OrgConfig:
     session_timeout_seconds: int | None = None
+    # Org-wide local timezone. None (the default) means "inherit machine-local"
+    # — resolved via ``resolve_org_timezone``. An explicit value must be a valid
+    # IANA name (validated at load).
+    timezone: str | None = None
     dreaming: DreamingConfig = field(default_factory=DreamingConfig)
     working_hours: WorkingHoursConfig = field(default_factory=WorkingHoursConfig)
     threads_enabled: bool = True
@@ -200,13 +208,16 @@ def _parse_dreaming(block: dict, path: str) -> DreamingConfig:
     hour = int(schedule_time[:2])
     if hour > 23:
         raise OrgConfigError(f"{path}: dreaming.schedule.time must be HH:MM")
-    timezone = schedule.get("timezone", "UTC")
-    if not isinstance(timezone, str):
-        raise OrgConfigError(f"{path}: dreaming.schedule.timezone must be a string")
-    try:
-        ZoneInfo(timezone)
-    except ZoneInfoNotFoundError as exc:
-        raise OrgConfigError(f"{path}: unknown dreaming.schedule.timezone {timezone!r}") from exc
+    # Omitted -> None (inherit org.timezone -> machine-local -> UTC at resolve
+    # time). An explicit value is validated as a real IANA name.
+    timezone = schedule.get("timezone")
+    if timezone is not None:
+        if not isinstance(timezone, str):
+            raise OrgConfigError(f"{path}: dreaming.schedule.timezone must be a string")
+        try:
+            ZoneInfo(timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise OrgConfigError(f"{path}: unknown dreaming.schedule.timezone {timezone!r}") from exc
     catch_up = schedule.get("catch_up_on_startup", True)
     if not isinstance(catch_up, bool):
         raise OrgConfigError(f"{path}: dreaming.schedule.catch_up_on_startup must be a boolean")
@@ -250,6 +261,89 @@ def _validate_timezone(value: object, label: str, path: str) -> str:
     except ZoneInfoNotFoundError as exc:
         raise OrgConfigError(f"{path}: unknown {label} {value!r}") from exc
     return value
+
+
+def _machine_local_iana() -> str | None:
+    """Best-effort IANA zone name for the host, stdlib-only (POSIX).
+
+    Reads the ``/etc/localtime`` symlink and parses its ``zoneinfo/`` suffix —
+    how darwin and linux expose the configured zone. Returns None when the link
+    is absent/unreadable, unparseable, or names a zone ``ZoneInfo`` can't load.
+    """
+    try:
+        link = os.readlink("/etc/localtime")
+    except OSError:
+        return None
+    marker = "zoneinfo/"
+    idx = link.rfind(marker)
+    if idx == -1:
+        return None
+    name = link[idx + len(marker):].strip("/")
+    if not name:
+        return None
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    return name
+
+
+def _resolve_timezone(value: str | None) -> tuple[tzinfo, str]:
+    """Resolve a timezone string-or-None to an effective ``(tzinfo, display)``.
+
+    Precedence:
+      1. explicit IANA name -> ``ZoneInfo(value)``; an invalid value falls
+         through gracefully (never crashes);
+      2. None -> machine-local: the IANA name from ``/etc/localtime`` when
+         derivable, else a fixed offset from ``datetime.now().astimezone()``
+         displayed as ``UTC±HH:MM``;
+      3. ultimate fallback -> UTC.
+    """
+    if value is not None:
+        try:
+            return ZoneInfo(value), value
+        except (ZoneInfoNotFoundError, ValueError):
+            pass  # graceful fall-through to machine-local
+    iana = _machine_local_iana()
+    if iana is not None:
+        return ZoneInfo(iana), iana
+    try:
+        local = datetime.now().astimezone()
+        offset = local.utcoffset()
+        if offset is not None:
+            fixed = timezone(offset)
+            # timezone.tzname(None) renders "UTC", "UTC+08:00", etc.
+            return fixed, fixed.tzname(None)
+    except (OSError, ValueError):
+        pass
+    return timezone.utc, "UTC"
+
+
+def resolve_timezone_or_local(value: str | None) -> tzinfo:
+    """Resolve an explicit-or-None IANA timezone string to an effective tzinfo
+    (machine-local then UTC fallback). For call sites that only hold a bare
+    timezone string rather than a full ``OrgConfig``."""
+    return _resolve_timezone(value)[0]
+
+
+def resolve_org_timezone(org_config: OrgConfig) -> tzinfo:
+    """Effective org timezone as a tzinfo. See ``_resolve_timezone``."""
+    return _resolve_timezone(org_config.timezone)[0]
+
+
+def resolve_org_timezone_display(org_config: OrgConfig) -> tuple[tzinfo, str]:
+    """Effective org timezone plus its display name (e.g. ``Asia/Shanghai`` or
+    ``UTC+08:00``)."""
+    return _resolve_timezone(org_config.timezone)
+
+
+def resolve_dreaming_timezone(org_config: OrgConfig) -> tzinfo:
+    """Effective dreaming timezone as a tzinfo. Precedence: ``dreaming.timezone``
+    (explicit) -> ``org.timezone`` -> machine-local -> UTC."""
+    effective = org_config.dreaming.timezone
+    if effective is None:
+        effective = org_config.timezone
+    return _resolve_timezone(effective)[0]
 
 
 def _validate_window_time(value: object, label: str, path: str) -> str:
@@ -466,6 +560,11 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
                 f"got {timeout!r}"
             )
 
+    # Top-level org timezone. None (default) -> machine-local at resolve time.
+    org_timezone = data.get("timezone")
+    if org_timezone is not None:
+        org_timezone = _validate_timezone(org_timezone, "timezone", path)
+
     # feishu_notifications is tolerated but ignored — Feishu was removed
     # (TASK-302/THR-022). Legacy configs with this key load without error.
     _feishu_block = data.get("feishu_notifications")
@@ -487,6 +586,7 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
 
     return OrgConfig(
         session_timeout_seconds=timeout,
+        timezone=org_timezone,
         dreaming=dreaming_cfg,
         working_hours=working_hours_cfg,
         **threads_kwargs,

@@ -4,15 +4,20 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone, tzinfo
 
 from runtime.daemon.dream_queue import DreamJob
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import DreamRecord, DreamStatus
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import DreamingConfig, OrgConfigError, load_org_config
+from runtime.orchestrator.org_config import (
+    DreamingConfig,
+    OrgConfigError,
+    load_org_config,
+    resolve_dreaming_timezone,
+    resolve_timezone_or_local,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +63,15 @@ class DreamScheduleDecision:
     reason: str | None = None
 
 
-def _scheduled_datetime(now: datetime, config: DreamingConfig) -> tuple[str, datetime]:
-    tz = ZoneInfo(config.timezone)
+def _scheduled_datetime(
+    now: datetime, config: DreamingConfig, tz: tzinfo | None = None,
+) -> tuple[str, datetime]:
+    # ``tz`` is the effective zone resolved by the caller (which has the full
+    # OrgConfig for the org.timezone inheritance step). When absent, resolve
+    # from this DreamingConfig's own timezone (a None there falls back to
+    # machine-local -> UTC) so a None never reaches ``ZoneInfo`` directly.
+    if tz is None:
+        tz = resolve_timezone_or_local(config.timezone)
     local_now = now.astimezone(tz)
     hour, minute = [int(part) for part in config.schedule_time.split(":", 1)]
     scheduled = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -72,8 +84,9 @@ def should_schedule_for_agent(
     now: datetime,
     config: DreamingConfig,
     existing_for_date: DreamRecord | None,
+    tz: tzinfo | None = None,
 ) -> DreamScheduleDecision:
-    local_date, scheduled = _scheduled_datetime(now, config)
+    local_date, scheduled = _scheduled_datetime(now, config, tz)
     if existing_for_date is not None:
         return DreamScheduleDecision(False, local_date, scheduled, "already_exists")
     if now.astimezone(scheduled.tzinfo) < scheduled:
@@ -110,17 +123,22 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
     recorded so the steady-state loop will not pick it up later the same day.
     The steady-state loop (``startup=False``) always enqueues due dreams.
     """
-    cfg = load_org_config(OrgPaths(root=org.root)).dreaming
+    org_cfg = load_org_config(OrgPaths(root=org.root))
+    cfg = org_cfg.dreaming
+    # Resolve the effective zone ONCE here, the only point with the full
+    # OrgConfig: dreaming.timezone -> org.timezone -> machine-local -> UTC.
+    tz = resolve_dreaming_timezone(org_cfg)
     selected = select_dream_agents(_available_agents(org), cfg)
     count = 0
     for agent in selected:
-        local_date, _scheduled = _scheduled_datetime(now, cfg)
+        local_date, _scheduled = _scheduled_datetime(now, cfg, tz)
         existing = org.db.get_dream_for_agent_date(agent, local_date)
         decision = should_schedule_for_agent(
             agent_name=agent,
             now=now,
             config=cfg,
             existing_for_date=existing,
+            tz=tz,
         )
         if not decision.should_schedule:
             continue

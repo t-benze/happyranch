@@ -71,9 +71,38 @@ allowlist, no absolute-path requirement, no `$PATH` guard) — then auto-configu
 with no separate approval. `happyranch assistant` tells the user to run
 `happyranch assistant init` when no assistant config exists.
 
+## Org Config: Timezone and `current_time` Prompt Injection
+
+Top-level `timezone:` in `<runtime>/orgs/<slug>/org/config.yaml` is the org-wide
+local zone. It is optional; an explicit value must be a valid IANA name
+(validated at load). `None` (the default) means **inherit machine-local**.
+
+`org_config.resolve_org_timezone[_display]` resolves the effective zone:
+
+1. explicit IANA name → `ZoneInfo(value)` (a bad value falls through, never crashes);
+2. `None` → machine-local: the IANA name derived from `/etc/localtime` when
+   possible, else a fixed offset from `datetime.now().astimezone()`
+   displayed as `UTC±HH:MM`;
+3. ultimate fallback → UTC.
+
+`Orchestrator._build_agent_prompt` injects a `current_time:` line into the
+SHARED `Parameters:` block of **every** agent prompt — all providers (claude,
+codex, opencode, pi), fresh on every spawn and wake. Format: ISO-8601 with
+offset plus the zone label, e.g. `2026-06-27T12:47+08:00 (Asia/Shanghai)`, or
+`2026-06-27T12:47+08:00 (UTC+08:00)` when only an offset is derivable. The
+wall clock is an injectable `now` callable (default `datetime.now(timezone.utc)`)
+so prompt snapshot tests are deterministic.
+
 ## Org Config: Dreaming
 
 Per-org `dreaming:` config controls the private nightly reflection scheduler: enablement, local schedule time/timezone, catch-up behavior, and agent include/exclude selection.
+
+`dreaming.schedule.timezone` is **inherit-by-default**: an omitted value resolves
+`dreaming.timezone (explicit) → org.timezone → machine-local → UTC` via
+`resolve_dreaming_timezone`, threaded into `dream_scheduler._scheduled_datetime`
+before any `ZoneInfo()` call. (Pre-TASK-976 an omitted value defaulted to the
+literal `UTC`; orgs relying on that implicit default now schedule on
+machine-local time — host-local night, as intended.)
 
 ## Session Timeout Resolution
 
