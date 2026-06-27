@@ -1881,10 +1881,13 @@ def _maybe_post_thread_followup(
     Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
     # Predicate gate — first pass using caller's claim (cheap early-out).
+    # CANCELLED is a terminal followup status (Path B, THR-037): a founder cancel
+    # writes the stored terminal CANCELLED and replays in the task_failed class.
     if status == TaskStatus.FAILED and auto_revisit_spawned:
         return
     if status not in (
         TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+        TaskStatus.CANCELLED,
     ):
         return
 
@@ -1895,12 +1898,17 @@ def _maybe_post_thread_followup(
         return
 
     # Re-read the persisted status. Site D's caller passes COMPLETED, but
-    # /cancel may have raced past Guard B and flipped the row to
-    # failed+cancelled_at; _complete() short-circuits in that race, leaving
-    # the row at FAILED. Trust the DB, not the caller's claim.
+    # /cancel may have raced past Guard B and flipped the row to a terminal
+    # state; _complete() short-circuits in that race. Under Path B (THR-037) a
+    # founder cancel now writes the stored terminal CANCELLED (was
+    # failed+cancelled_at), and both cancel callers still pass the legacy FAILED
+    # hint — so CANCELLED must be honored here or a cancelled root is silently
+    # dropped (no task_failed system message, no TASK_FOLLOWUP). Trust the DB,
+    # not the caller's claim.
     actual_status = terminal_task.status
     if actual_status not in (
         TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+        TaskStatus.CANCELLED,
     ):
         # Row isn't terminal yet — caller raced ahead of the DB write.
         # Bail; the eventual real terminal will re-enter this helper.
@@ -1969,8 +1977,14 @@ def _maybe_post_thread_followup(
     # Build system payload using DB-actual status (not the caller's claim) so
     # a cancel race at Site D doesn't emit task_completed for a FAILED row.
     # Completion-class terminals (COMPLETED, RESOLVED_SUPERSEDED) → task_completed;
-    # only FAILED (incl. cancelled) maps to task_failed.
-    kind_tag = "task_failed" if actual_status == TaskStatus.FAILED else "task_completed"
+    # failure-class terminals (FAILED, and the Path B stored CANCELLED) → task_failed.
+    # The payload's status field carries the precise label (status='cancelled' +
+    # cancelled=true for a CANCELLED row), mirroring org_state._TERMINAL_STATUS_TO_EVENT.
+    kind_tag = (
+        "task_failed"
+        if actual_status in (TaskStatus.FAILED, TaskStatus.CANCELLED)
+        else "task_completed"
+    )
     system_payload = {
         "kind_tag": kind_tag,
         "task_id": task_id,
