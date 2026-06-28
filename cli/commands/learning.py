@@ -109,16 +109,22 @@ def cmd_learning_get(args: argparse.Namespace) -> None:
 def cmd_learning_search(args: argparse.Namespace) -> None:
     client = _learning_client()
     org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+    # Build payload: only include fields the user explicitly supplied.
+    # Omitted fields let the daemon apply org config defaults.
+    payload: dict = {"query": args.query}
+    if args.limit is not None:
+        payload["limit"] = args.limit
+    if args.include_promoted:
+        payload["include_promoted"] = True
+    if args.include_evicted is not None:
+        payload["include_evicted"] = args.include_evicted
+    if args.include_superseded is not None:
+        payload["include_superseded"] = args.include_superseded
+    if args.include_kb is not None:
+        payload["include_kb"] = args.include_kb
     r = client.post(
         f"/api/v1/orgs/{org}/agents/{args.agent}/memory/entries/search",
-        json={
-            "query": args.query,
-            "limit": args.limit,
-            "include_promoted": args.include_promoted,
-            "include_evicted": args.include_evicted,
-            "include_superseded": args.include_superseded,
-            "include_kb": args.include_kb,
-        },
+        json=payload,
     )
     if not _ok(r):
         return
@@ -314,11 +320,11 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     ps.add_argument("--org", required=False, default=argparse.SUPPRESS)
     ps.add_argument("--agent", required=True)
     ps.add_argument("query")
-    ps.add_argument("--limit", type=int, default=20)
+    ps.add_argument("--limit", type=int, default=None)
     ps.add_argument("--include-promoted", action="store_true")
-    ps.add_argument("--include-evicted", action="store_true")
-    ps.add_argument("--include-superseded", action="store_true")
-    ps.add_argument("--include-kb", action="store_true")
+    ps.add_argument("--include-evicted", action=argparse.BooleanOptionalAction, default=None)
+    ps.add_argument("--include-superseded", action=argparse.BooleanOptionalAction, default=None)
+    ps.add_argument("--include-kb", action=argparse.BooleanOptionalAction, default=None)
     ps.add_argument("--json", action="store_true")
     ps.set_defaults(func=wrap(cmd_learning_search))
 

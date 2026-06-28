@@ -472,3 +472,90 @@ def test_memory_search_new_flags(monkeypatch):
     assert captured["body"]["include_superseded"] is True
     assert captured["body"]["include_kb"] is True
     assert captured["body"]["query"] == "test query"
+
+
+# ── Tri-state search flags ──
+
+def test_memory_search_omits_fields_when_not_provided(monkeypatch):
+    """When no --limit or include flags are given, the JSON payload
+    contains only the query field, letting the daemon apply org config."""
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "bare query",
+    ])
+    args.func(args)
+    body = captured["body"]
+    assert body == {"query": "bare query"}
+    assert "limit" not in body
+    assert "include_promoted" not in body
+    assert "include_evicted" not in body
+    assert "include_superseded" not in body
+    assert "include_kb" not in body
+
+
+def test_memory_search_explicit_true_include_serialized(monkeypatch):
+    """--include-kb (and siblings) serialize True when provided."""
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "--include-kb", "--include-evicted",
+        "query",
+    ])
+    args.func(args)
+    body = captured["body"]
+    assert body["include_kb"] is True
+    assert body["include_evicted"] is True
+    assert "query" in body
+
+
+def test_memory_search_explicit_false_include_serialized(monkeypatch):
+    """--no-include-kb (and siblings) serialize False when provided."""
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "--no-include-kb", "--no-include-evicted",
+        "query",
+    ])
+    args.func(args)
+    body = captured["body"]
+    assert body["include_kb"] is False
+    assert body["include_evicted"] is False
+    assert "query" in body
+
+
+def test_memory_search_explicit_limit_serialized(monkeypatch):
+    """--limit serializes when provided."""
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "--limit", "5",
+        "query",
+    ])
+    args.func(args)
+    body = captured["body"]
+    assert body["limit"] == 5
+    assert "include_kb" not in body  # flags still omitted
+
+
+def test_memory_search_include_promoted_still_sends_true(monkeypatch):
+    """--include-promoted keeps its compatible behavior: only sends True."""
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "--include-promoted",
+        "query",
+    ])
+    args.func(args)
+    body = captured["body"]
+    assert body["include_promoted"] is True

@@ -1147,7 +1147,7 @@ async def search_learnings(
     if include_kb:
         kb_store = KBStore(org.root / "kb")
         try:
-            kb_hits = kb_store.search(body.query, limit=body.limit)
+            kb_hits = kb_store.search(body.query, limit=limit)
             for kh in kb_hits:
                 hits.append(LearningSearchHit(
                     id=kh.slug, slug=kh.slug, title=kh.title,
@@ -1158,6 +1158,9 @@ async def search_learnings(
                 ))
         except Exception as exc:
             warnings.append(f"KB search failed: {exc}")
+    # THR-032 P4b: merge + sort combined memory+KB hits, then truncate
+    hits.sort(key=lambda h: (-h.score, h.updated_at or "", h.title, h.id))
+    hits = hits[:limit]
     result: dict = {
         "hits": [
             {

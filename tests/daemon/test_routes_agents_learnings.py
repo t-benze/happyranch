@@ -767,3 +767,111 @@ class TestSearchImproved:
         )
         assert r2.status_code == 200
         assert len(r2.json()["hits"]) == 0
+
+    def test_search_kb_merged_sorted_truncated_by_config_defaults(
+        self, client_with_migrated_workspace,
+    ):
+        """When include_kb_by_default=true and limit is omitted, combined
+        memory+KB hits are merged, sorted by score desc, and truncated
+        to config default_limit."""
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        org_root = ws.parent.parent
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True, exist_ok=True)
+        org_config_path = org_config_dir / "config.yaml"
+        org_config_path.write_text(
+            "memory_search:\n"
+            "  default_limit: 2\n"
+            "  include_kb_by_default: true\n"
+        )
+        # Seed a KB entry matching "combined"
+        client.post(
+            f"/api/v1/orgs/{slug}/kb/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "slug": "combined-pattern",
+                "title": "Combined Pattern",
+                "type": "precedent",
+                "topic": "engineering",
+                "body": "combined search pattern details\n",
+                "agent": agent,
+            },
+        )
+        # Seed several memory entries matching "combined"
+        for i in range(3):
+            client.post(
+                f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "slug": f"combined-mem-{i}",
+                    "title": f"Combined Memory {i}",
+                    "topic": "testing",
+                    "body": f"combined term body {i}\n",
+                },
+            )
+        # Omit limit + include_kb — config defaults apply
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "combined"},
+        )
+        assert r.status_code == 200
+        hits = r.json()["hits"]
+        # Combined results truncated to config default_limit=2
+        assert len(hits) <= 2
+        # Results sorted by score descending
+        scores = [h["score"] for h in hits]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_search_kb_explicit_limit_overrides_and_truncates_combined(
+        self, client_with_migrated_workspace,
+    ):
+        """Explicit request limit overrides config default and truncates
+        combined memory+KB hits."""
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        org_root = ws.parent.parent
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True, exist_ok=True)
+        org_config_path = org_config_dir / "config.yaml"
+        org_config_path.write_text(
+            "memory_search:\n"
+            "  default_limit: 50\n"
+            "  include_kb_by_default: false\n"
+        )
+        # Seed a KB entry matching "explicit"
+        client.post(
+            f"/api/v1/orgs/{slug}/kb/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "slug": "explicit-pattern",
+                "title": "Explicit Pattern",
+                "type": "precedent",
+                "topic": "engineering",
+                "body": "explicit combined details\n",
+                "agent": agent,
+            },
+        )
+        # Seed memory entries
+        for i in range(5):
+            client.post(
+                f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "slug": f"explicit-mem-{i}",
+                    "title": f"Explicit Memory {i}",
+                    "topic": "testing",
+                    "body": f"explicit body {i}\n",
+                },
+            )
+        # Explicit limit=2 overrides config default_limit=50
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "explicit", "limit": 2, "include_kb": True},
+        )
+        assert r.status_code == 200
+        hits = r.json()["hits"]
+        assert len(hits) <= 2
+        # Score list is descending
+        scores = [h["score"] for h in hits]
+        assert scores == sorted(scores, reverse=True)
