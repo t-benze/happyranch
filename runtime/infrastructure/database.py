@@ -1221,8 +1221,8 @@ class Database:
             # Mirror jobs_runner.py canonic pred: status + block_kind + LIKE.
             # Without the status/block_kind guard a task that was once
             # blocked on JOB-X but is now done/running leaks into the
-            # "if approved" cascade. Path B flipped the parked carrier from
-            # Filter by blocked_on_job_ids LIKE match.
+            # "if approved" cascade. Path B changed the parked carrier
+            # from blocked(blocked_on_job) to in_progress(blocked_on_job).
             conditions.append(
                 "status = ? AND block_kind = ? AND blocked_on_job_ids LIKE ?"
             )

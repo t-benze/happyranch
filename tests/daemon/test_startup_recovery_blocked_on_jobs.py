@@ -92,7 +92,7 @@ def test_startup_recovery_resumes_tasks_with_completed_jobs():
 
 
 def test_startup_recovery_no_resume_for_running_jobs():
-    """Tasks blocked on jobs that are STILL running stay blocked."""
+    """Tasks blocked on jobs that are STILL running remain parked as in_progress(blocked_on_job)."""
     with tempfile.TemporaryDirectory() as tmp:
         db = Database(Path(tmp) / "t.db")
         _insert_task_blocked_on_job(db, "TASK-1", ["JOB-1"])
