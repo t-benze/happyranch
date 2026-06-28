@@ -192,7 +192,9 @@ def validate_fanout_decision(
         return "fanout with a single child: use delegate instead"
     if n > MAX_FANOUT_WIDTH:
         return f"fanout width {n} exceeds max {MAX_FANOUT_WIDTH}"
-    if decision.width_cap_ack is not None and decision.width_cap_ack != n:
+    if decision.width_cap_ack is None:
+        return "fanout requires width_cap_ack to match child count"
+    if decision.width_cap_ack != n:
         return (
             f"width_cap_ack ({decision.width_cap_ack}) does not match "
             f"actual child count ({n})"

@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TaskStatus(StrEnum):
@@ -137,13 +137,24 @@ class FanoutChild(BaseModel):
 
 class NextStep(BaseModel):
     """Decision returned by a task owner for what the orchestrator should do next."""
-    action: Literal["delegate", "done", "escalate", "fanout"]
+    action: Literal["delegate", "done", "escalate", "fanout", "parallel"]
     agent: str | None = None
     prompt: str | None = None
     expect_verdict: str | None = None
     then: list[ChainLeg] = Field(default_factory=list)
     children: list[FanoutChild] = Field(default_factory=list)
     width_cap_ack: int | None = None
+
+    @field_validator('action')
+    @classmethod
+    def _normalize_parallel_alias(cls, v: str) -> str:
+        """Accept ``parallel`` as an alias for ``fanout``.
+
+        Downstream code always sees ``fanout`` after validation so no
+        dispatch changes are needed."""
+        if v == "parallel":
+            return "fanout"
+        return v
     join_summary: str | None = None
     summary: str | None = None
     reason: str | None = None

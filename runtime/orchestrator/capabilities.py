@@ -53,7 +53,8 @@ def build_capabilities_prompt(
             "```json",
             '{"action": "escalate", "reason": "<why>"}',
             "```\n",
-            "**fanout / parallel** -- NOT available in self-only mode. "
+            "**fanout** (`parallel` accepted as alias) -- NOT available in "
+            "self-only mode. "
             "Fan-out (spawning N parallel sub-tasks across multiple agents, "
             "width 2–8, read-only Phase 1) is a team-manager-only capability. "
             "If you need parallel work, delegate sequentially or escalate to "
@@ -124,7 +125,7 @@ def build_capabilities_prompt(
         "```json",
         '{"action": "escalate", "reason": "<why this needs escalation>"}',
         "```\n",
-        "**fanout / parallel** -- Spawn N parallel read-only sub-tasks "
+        "**fanout** (`parallel` accepted as alias) -- Spawn N parallel read-only sub-tasks "
         "(Phase 1, team-manager only):\n",
         "```json\n",
         '{"action": "fanout",',
@@ -145,7 +146,7 @@ def build_capabilities_prompt(
         "- Children spawn through the normal child/session path; the parent "
         "parks `in_progress(delegated)` with `active_fanout` set and wakes "
         "once when all children are terminal.\n",
-        "- Full shape: `protocol/00-completion-contract.md` \u00a7 Fan-out.\n",
+        "- Action token: `fanout` (the alias `parallel` is also accepted).\n",
         "#### Example completion payload\n",
         "Write `/tmp/completion-<task_id>.json` with BOTH fields set:",
         "```json",

@@ -78,6 +78,7 @@ class TestFanoutValidation:
                 FanoutChild(agent="a", prompt="1"),
                 FanoutChild(agent="b", prompt="2"),
             ],
+            width_cap_ack=2,
         )
         assert validate_fanout_decision(decision) is None
 
@@ -115,12 +116,28 @@ class TestFanoutValidation:
         assert err is not None
         assert "does not match" in err
 
-    def test_accepts_width_cap_ack_none(self):
-        """width_cap_ack=None is allowed (omit it)."""
+    def test_rejects_missing_width_cap_ack(self):
+        """width_cap_ack is mandatory for fan-out decisions."""
         decision = NextStep(
             action="fanout",
             children=[FanoutChild(agent="a", prompt="1"), FanoutChild(agent="b", prompt="2")],
         )
+        err = validate_fanout_decision(decision)
+        assert err is not None
+        assert "width_cap_ack" in err.lower() or "match" in err.lower()
+
+    def test_accepts_parallel_action_alias(self):
+        """action='parallel' is accepted and normalized to 'fanout'."""
+        decision = NextStep(
+            action="parallel",
+            children=[
+                FanoutChild(agent="a", prompt="1"),
+                FanoutChild(agent="b", prompt="2"),
+            ],
+            width_cap_ack=2,
+        )
+        # The field_validator normalizes 'parallel' → 'fanout' after parsing.
+        assert decision.action == "fanout"
         assert validate_fanout_decision(decision) is None
 
     def test_rejects_per_child_then_phase1(self):
@@ -130,6 +147,7 @@ class TestFanoutValidation:
                 FanoutChild(agent="a", prompt="1"),
                 FanoutChild(agent="b", prompt="2", then=[ChainLeg(agent="c", prompt="review")]),
             ],
+            width_cap_ack=2,
         )
         err = validate_fanout_decision(decision)
         assert err is not None
@@ -142,6 +160,7 @@ class TestFanoutValidation:
                 FanoutChild(agent="a", prompt="1"),
                 FanoutChild(agent="b", prompt="2", expect_verdict="APPROVE"),
             ],
+            width_cap_ack=2,
         )
         err = validate_fanout_decision(decision)
         assert err is not None
@@ -402,6 +421,92 @@ class TestFanoutDatabase:
         assert '"width":2' in p.active_fanout
 
 
+    def test_active_fanout_migration_compat_v0_upgrade(self, tmp_path):
+        """v0 enrollment upgrade: a pre-existing DB (no active_fanout column)
+        tolerates the additive migration and existing rows get NULL default."""
+        import sqlite3
+        from runtime.infrastructure.database import Database
+
+        db_path = tmp_path / "v0_upgrade.db"
+        conn = sqlite3.connect(db_path)
+        # Pre-existing schema — same as what v0 enrollment created before
+        # the active_fanout migration shipped.
+        conn.execute(
+            """CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'pending',
+                assigned_agent TEXT,
+                team TEXT NOT NULL DEFAULT 'engineering',
+                brief TEXT NOT NULL,
+                revision_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                parent_task_id TEXT,
+                final_output_dir TEXT,
+                block_kind TEXT,
+                blocked_on_job_ids TEXT
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, status, team, brief, created_at, updated_at) "
+            "VALUES ('V0-T1', 'pending', 'engineering', 'v0 legacy', '2026-01-01', '2026-01-01')"
+        )
+        conn.commit()
+        conn.close()
+
+        db = Database(db_path)
+        cols = db._conn.execute("PRAGMA table_info(tasks)").fetchall()
+        col_names = {row["name"] for row in cols}
+        assert "active_fanout" in col_names  # migration added it
+        t = db.get_task("V0-T1")
+        assert t.active_fanout is None  # existing row gets NULL default
+        db.close()
+
+    def test_active_fanout_migration_compat_v1_flat_single_org(self, tmp_path):
+        """v1 flat single-org upgrade: a legacy single-org DB (no active_fanout)
+        tolerates the additive migration."""
+        import sqlite3
+        from runtime.infrastructure.database import Database
+
+        db_path = tmp_path / "v1_upgrade.db"
+        conn = sqlite3.connect(db_path)
+        # v1-style flat single-org schema (before fan-out migration).
+        conn.execute(
+            """CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'pending',
+                assigned_agent TEXT,
+                team TEXT NOT NULL DEFAULT 'engineering',
+                brief TEXT NOT NULL,
+                revision_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                parent_task_id TEXT,
+                final_output_dir TEXT,
+                note TEXT,
+                block_kind TEXT,
+                blocked_on_job_ids TEXT,
+                task_type TEXT NOT NULL DEFAULT 'task'
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, status, team, brief, created_at, updated_at) "
+            "VALUES ('V1-T1', 'pending', 'engineering', 'v1 legacy', '2026-01-01', '2026-01-01')"
+        )
+        conn.commit()
+        conn.close()
+
+        db = Database(db_path)
+        cols = db._conn.execute("PRAGMA table_info(tasks)").fetchall()
+        col_names = {row["name"] for row in cols}
+        assert "active_fanout" in col_names  # migration added it
+        t = db.get_task("V1-T1")
+        assert t.active_fanout is None  # existing row gets NULL default
+        db.close()
+
+
 # --- Join context verdict/confidence tests ---
 
 
@@ -657,6 +762,7 @@ class TestFanoutRunStep:
                         {"agent": "dev_agent", "prompt": "ok"},
                         {"agent": "other_agent", "prompt": "off-team"},
                     ],
+                    "width_cap_ack": 2,
                 }),
             )
         monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
@@ -694,6 +800,7 @@ class TestFanoutRunStep:
                         {"agent": "dev_agent", "prompt": "t1", "then": [{"agent": "qa", "prompt": "review"}]},
                         {"agent": "qa_engineer", "prompt": "t2"},
                     ],
+                    "width_cap_ack": 2,
                 }),
             )
         monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
@@ -765,6 +872,7 @@ class TestFanoutRunStep:
                 output_summary=json.dumps({
                     "action": "fanout",
                     "children": children,
+                    "width_cap_ack": 5,
                 }),
             )
         monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
@@ -824,6 +932,7 @@ class TestFanoutRunStep:
                         {"agent": "dev_agent", "prompt": "t1"},
                         {"agent": "qa_engineer", "prompt": "t2"},
                     ],
+                    "width_cap_ack": 2,
                     "join_summary": "Review both",
                 }),
             )

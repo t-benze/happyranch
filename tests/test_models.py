@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from runtime.models import (
     ChainLeg,
     CompletionReport,
@@ -377,6 +381,71 @@ def test_task_record_has_active_fanout():
     from runtime.models import TaskRecord
     t = TaskRecord(id="TASK-001", brief="x")
     assert t.active_fanout is None
+
+
+def test_next_step_accepts_parallel_action_alias():
+    """action='parallel' is accepted and normalized to 'fanout' by the field_validator."""
+    from runtime.models import NextStep, FanoutChild
+    ns = NextStep(
+        action="parallel",
+        children=[
+            FanoutChild(agent="dev_agent", prompt="task 1"),
+            FanoutChild(agent="qa_engineer", prompt="task 2"),
+        ],
+        width_cap_ack=2,
+    )
+    assert ns.action == "fanout"  # normalized
+    assert len(ns.children) == 2
+    assert ns.width_cap_ack == 2
+
+
+def test_next_step_parallel_normalized_by_model():
+    """NextStep action='parallel' is normalized to 'fanout' by field_validator.
+
+    This is the key invariant: Pydantic validation normalizes the alias so
+    every downstream consumer only sees ``fanout``."""
+    from runtime.models import NextStep, FanoutChild
+    ns = NextStep(
+        action="parallel",
+        children=[
+            FanoutChild(agent="dev_agent", prompt="task 1"),
+            FanoutChild(agent="qa_engineer", prompt="task 2"),
+        ],
+        width_cap_ack=2,
+    )
+    assert ns.action == "fanout"  # normalized
+
+
+def test_next_step_parallel_alias_validates_through_validate_fanout_decision():
+    """validate_fanout_decision sees 'fanout' after normalization, so parallel
+    passes validation."""
+    from runtime.models import NextStep, FanoutChild
+    from runtime.orchestrator.fanout import validate_fanout_decision
+    ns = NextStep(
+        action="parallel",
+        children=[
+            FanoutChild(agent="dev_agent", prompt="task 1"),
+            FanoutChild(agent="qa_engineer", prompt="task 2"),
+        ],
+        width_cap_ack=2,
+    )
+    assert ns.action == "fanout"
+    assert validate_fanout_decision(ns) is None
+
+
+def test_next_step_rejects_unknown_action():
+    """An unknown action (not in Literal) is caught by Pydantic validation."""
+    from pydantic import ValidationError
+    from runtime.models import NextStep, FanoutChild
+    with pytest.raises(ValidationError):
+        NextStep(
+            action="invalid_action",
+            children=[
+                FanoutChild(agent="a", prompt="1"),
+                FanoutChild(agent="b", prompt="2"),
+            ],
+            width_cap_ack=2,
+        )
 
 
 def test_task_record_accepts_active_fanout():

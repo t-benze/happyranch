@@ -196,7 +196,7 @@ def test_manager_prompt_advertises_fanout_shape():
         manager_name="engineering_head",
     )
     assert "fanout" in p
-    assert "parallel" in p
+    assert "parallel" in p  # alias mentioned
     assert '"action": "fanout"' in p
     assert '"children":' in p
 
@@ -265,7 +265,7 @@ def test_self_only_prompt_advertises_fanout_as_unavailable():
         manager_name="dev_agent", self_only=True,
     )
     assert "fanout" in p.lower()
-    assert "parallel" in p.lower()
+    assert "parallel" in p.lower()  # alias mentioned
     # Must say it's NOT available in self-only mode
     assert "not available" in p.lower() or "NOT available" in p
     assert "team-manager-only" in p.lower() or "team manager" in p.lower()
