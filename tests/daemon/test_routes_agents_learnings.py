@@ -379,3 +379,499 @@ def test_promote_writes_memory_promoted_audit_row(client_with_migrated_workspace
     ).json()
     rows = audit.get("entries", [])
     assert any(r["action"] == "memory_promoted" for r in rows)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# THR-032 P3a — PATCH /memory/entries/{id}/lifecycle
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestLifecycleRoute:
+    """THR-032 P3a: PATCH lifecycle endpoint."""
+
+    def test_patch_lifecycle_success(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        # Seed an entry
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "to-evict", "title": "To Evict", "topic": "w", "body": "b\n"},
+        )
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "obsolete info"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["id"] == "MEM-001"
+        assert body["lifecycle"] == "evicted"
+        assert body["previous_lifecycle"] == "valid"
+
+    def test_patch_lifecycle_missing_reason(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "x", "title": "x", "topic": "w", "body": "b\n"},
+        )
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted"},
+        )
+        assert r.status_code == 400
+        assert "reason_required" in r.json()["detail"]["error"]
+
+    def test_patch_lifecycle_invalid_lifecycle(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "x", "title": "x", "topic": "w", "body": "b\n"},
+        )
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "frobnicated", "reason": "test"},
+        )
+        assert r.status_code == 400
+        assert "invalid_lifecycle" in r.json()["detail"]["error"]
+
+    def test_patch_lifecycle_not_found(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-999/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "test"},
+        )
+        assert r.status_code == 404
+
+    def test_patch_lifecycle_promoted_locked(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        # Write a promoted entry directly (bypass the store to set promoted_to)
+        import yaml
+        mem_dir = _ / "memory"
+        content = """---
+id: MEM-001
+slug: locked-entry
+title: Locked Entry
+topic: w
+promoted_to: kb-rule
+lifecycle: valid
+---
+body
+"""
+        (mem_dir / "MEM-001-locked-entry.md").write_text(content)
+        # Also need to rebuild index so the entry is findable
+        from runtime.infrastructure.learnings_store import MemoryStore
+        store = MemoryStore(mem_dir)
+        store.regenerate_index()
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "test"},
+        )
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "promoted_locked"
+
+    def test_patch_lifecycle_lrn_alias_resolves_to_mem(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "alias-test", "title": "Alias", "topic": "w", "body": "b\n"},
+        )
+        # Resolve via LRN alias
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/LRN-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "via alias"},
+        )
+        assert r.status_code == 200
+        assert r.json()["id"] == "MEM-001"
+        assert r.json()["lifecycle"] == "evicted"
+
+    def test_patch_lifecycle_audit_row_emitted(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "audit-me", "title": "Audit Me", "topic": "w", "body": "b\n"},
+        )
+        client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "superseded", "reason": "replaced by MEM-099"},
+        )
+        audit = client.get(
+            f"/api/v1/orgs/{slug}/audit?action=memory_lifecycle_changed",
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()
+        rows = audit.get("entries", [])
+        assert len(rows) >= 1
+        row = rows[0]
+        assert row["action"] == "memory_lifecycle_changed"
+        assert row["agent"] == agent
+        payload = row["payload"]
+        assert payload["id"] == "MEM-001"
+        assert payload["from_lifecycle"] == "valid"
+        assert payload["to_lifecycle"] == "superseded"
+        assert payload["reason"] == "replaced by MEM-099"
+        assert payload["source"] == "manual"
+
+    def test_patch_lifecycle_index_regenerated_after_evict(self, client_with_migrated_workspace):
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "evict-me", "title": "Evict Me", "topic": "w", "body": "b\n"},
+        )
+        client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "test index regen"},
+        )
+        idx = (ws / "memory" / "_index.md").read_text()
+        assert "MEM-001" not in idx  # evicted → excluded from index
+
+    def test_patch_lifecycle_hidden_learnings_forwarder_works(self, client_with_migrated_workspace):
+        """The hidden /learnings forwarder still resolves the PATCH lifecycle."""
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "fwd", "title": "Fwd", "topic": "w", "body": "b\n"},
+        )
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "superseded", "reason": "via forwarder"},
+        )
+        assert r.status_code == 200
+        assert r.json()["lifecycle"] == "superseded"
+
+
+class TestCompactRoute:
+    """THR-032 P3b: memory compaction route."""
+
+    def test_compact_dry_run(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        # Add a stale entry
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "stale", "title": "Stale", "topic": "w", "body": "b\n"},
+        )
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/compact",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"dry_run": True},
+        )
+        assert r.status_code == 200
+        resp = r.json()
+        assert resp["dry_run"] is True
+        assert "candidates" in resp
+        assert "skipped" in resp
+        assert resp["evicted"] == []
+
+    def test_compact_apply(self, client_with_migrated_workspace):
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        # Enable compaction in org config so apply is allowed
+        org_root = ws.parent.parent
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True, exist_ok=True)
+        (org_config_dir / "config.yaml").write_text(
+            "memory_compaction:\n  enabled: true\n"
+        )
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "stale2", "title": "Stale2", "topic": "w", "body": "b\n"},
+        )
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/compact",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"dry_run": False},
+        )
+        assert r.status_code == 200
+        resp = r.json()
+        assert resp["dry_run"] is False
+        # Apply should return the result structure
+        assert "evicted" in resp
+        assert "skipped" in resp
+
+    def test_compact_apply_disabled_by_config(self, client_with_migrated_workspace):
+        """When memory_compaction.enabled is false, apply returns 403;
+        dry-run is still allowed."""
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        # Write org config with compaction disabled
+        org_root = ws.parent.parent  # happyranch-runtime/orgs/<slug>
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True, exist_ok=True)
+        org_config_path = org_config_dir / "config.yaml"
+        org_config_path.write_text(
+            "memory_compaction:\n  enabled: false\n  salience_floor: 5\n"
+        )
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "stale-cfg", "title": "Stale Config", "topic": "w", "body": "b\n"},
+        )
+        # Dry-run must still work when disabled
+        r_dry = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/compact",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"dry_run": True},
+        )
+        assert r_dry.status_code == 200
+        assert r_dry.json()["dry_run"] is True
+        # Apply must be rejected
+        r_apply = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/compact",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"dry_run": False},
+        )
+        assert r_apply.status_code == 403
+        assert r_apply.json()["detail"]["error"] == "compaction_disabled"
+
+
+class TestSearchImproved:
+    """THR-032 P4a: improved search route with new flags."""
+
+    def test_search_includes_additive_fields(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "searchme", "title": "Search Me", "topic": "testing",
+                   "body": "find me\n", "salience": 72, "provenance": "reflective"},
+        )
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "search", "limit": 5},
+        )
+        assert r.status_code == 200
+        hits = r.json()["hits"]
+        assert len(hits) >= 1
+        hit = hits[0]
+        assert "source" in hit
+        assert "lifecycle" in hit
+        assert "provenance" in hit
+        assert "salience" in hit
+        assert "updated_at" in hit
+        assert hit["source"] == "memory"
+
+    def test_search_include_evicted_flag(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "ev", "title": "Ev", "topic": "w", "body": "b\n"},
+        )
+        client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "test"},
+        )
+        # Default: excluded
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Ev"},
+        )
+        assert r.status_code == 200
+        assert len(r.json()["hits"]) == 0
+        # With flag: included
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Ev", "include_evicted": True},
+        )
+        assert r.status_code == 200
+        assert len(r.json()["hits"]) == 1
+
+    def test_search_empty_query(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": ""},
+        )
+        assert r.status_code == 200
+        assert r.json()["hits"] == []
+
+    def test_search_include_kb_federates(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        # Add a memory entry
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "unique-search", "title": "Unique Search Term",
+                   "topic": "testing", "body": "body body\n"},
+        )
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "unique", "include_kb": True},
+        )
+        assert r.status_code == 200
+        hits = r.json()["hits"]
+        assert len(hits) >= 1
+        # At least one result is a memory hit
+        mem_hits = [h for h in hits if h["source"] == "memory"]
+        assert len(mem_hits) >= 1
+
+    def test_search_uses_org_config_defaults(self, client_with_migrated_workspace):
+        """Search limit and include flags default from org config
+        memory_search when the request omits them."""
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        # Write org config with custom search defaults
+        org_root = ws.parent.parent
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True, exist_ok=True)
+        org_config_path = org_config_dir / "config.yaml"
+        org_config_path.write_text(
+            "memory_search:\n"
+            "  default_limit: 3\n"
+            "  include_evicted_by_default: true\n"
+        )
+        # Create an evicted entry that would be excluded by non-config defaults
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "ev-config", "title": "Ev Config", "topic": "w", "body": "b\n"},
+        )
+        client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "test config"},
+        )
+        # Omit include_evicted from request — config default (true) applies
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "ev"},
+        )
+        assert r.status_code == 200
+        hits = r.json()["hits"]
+        # Evicted entry should appear because config default includes it
+        assert len(hits) >= 1
+        assert any(h["lifecycle"] == "evicted" for h in hits)
+        # Explicit request field overrides config
+        r2 = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "ev", "include_evicted": False},
+        )
+        assert r2.status_code == 200
+        assert len(r2.json()["hits"]) == 0
+
+    def test_search_kb_merged_sorted_truncated_by_config_defaults(
+        self, client_with_migrated_workspace,
+    ):
+        """When include_kb_by_default=true and limit is omitted, combined
+        memory+KB hits are merged, sorted by score desc, and truncated
+        to config default_limit."""
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        org_root = ws.parent.parent
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True, exist_ok=True)
+        org_config_path = org_config_dir / "config.yaml"
+        org_config_path.write_text(
+            "memory_search:\n"
+            "  default_limit: 2\n"
+            "  include_kb_by_default: true\n"
+        )
+        # Seed a KB entry matching "combined"
+        client.post(
+            f"/api/v1/orgs/{slug}/kb/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "slug": "combined-pattern",
+                "title": "Combined Pattern",
+                "type": "precedent",
+                "topic": "engineering",
+                "body": "combined search pattern details\n",
+                "agent": agent,
+            },
+        )
+        # Seed several memory entries matching "combined"
+        for i in range(3):
+            client.post(
+                f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "slug": f"combined-mem-{i}",
+                    "title": f"Combined Memory {i}",
+                    "topic": "testing",
+                    "body": f"combined term body {i}\n",
+                },
+            )
+        # Omit limit + include_kb — config defaults apply
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "combined"},
+        )
+        assert r.status_code == 200
+        hits = r.json()["hits"]
+        # Combined results truncated to config default_limit=2
+        assert len(hits) <= 2
+        # Results sorted by score descending
+        scores = [h["score"] for h in hits]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_search_kb_explicit_limit_overrides_and_truncates_combined(
+        self, client_with_migrated_workspace,
+    ):
+        """Explicit request limit overrides config default and truncates
+        combined memory+KB hits."""
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        org_root = ws.parent.parent
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True, exist_ok=True)
+        org_config_path = org_config_dir / "config.yaml"
+        org_config_path.write_text(
+            "memory_search:\n"
+            "  default_limit: 50\n"
+            "  include_kb_by_default: false\n"
+        )
+        # Seed a KB entry matching "explicit"
+        client.post(
+            f"/api/v1/orgs/{slug}/kb/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "slug": "explicit-pattern",
+                "title": "Explicit Pattern",
+                "type": "precedent",
+                "topic": "engineering",
+                "body": "explicit combined details\n",
+                "agent": agent,
+            },
+        )
+        # Seed memory entries
+        for i in range(5):
+            client.post(
+                f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "slug": f"explicit-mem-{i}",
+                    "title": f"Explicit Memory {i}",
+                    "topic": "testing",
+                    "body": f"explicit body {i}\n",
+                },
+            )
+        # Explicit limit=2 overrides config default_limit=50
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "explicit", "limit": 2, "include_kb": True},
+        )
+        assert r.status_code == 200
+        hits = r.json()["hits"]
+        assert len(hits) <= 2
+        # Score list is descending
+        scores = [h["score"] for h in hits]
+        assert scores == sorted(scores, reverse=True)

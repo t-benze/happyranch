@@ -489,6 +489,35 @@ class AuditLogger:
             payload={"id": id, "kb_slug": kb_slug},
         )
 
+    def log_memory_lifecycle_changed(
+        self,
+        *,
+        agent: str,
+        id: str,
+        from_lifecycle: str,
+        to_lifecycle: str,
+        reason: str,
+        source: str = "manual",
+    ) -> None:
+        """THR-032 P3a: audit a lifecycle transition.
+
+        Row shape: ``task_id="AGENT-{agent}"``, ``action="memory_lifecycle_changed"``,
+        ``payload`` includes id, from_lifecycle, to_lifecycle, reason, source.
+        No column added; no historical row rewritten.
+        """
+        self._db.insert_audit_log(
+            task_id=f"AGENT-{agent}",
+            agent=agent,
+            action="memory_lifecycle_changed",
+            payload={
+                "id": id,
+                "from_lifecycle": from_lifecycle,
+                "to_lifecycle": to_lifecycle,
+                "reason": reason,
+                "source": source,
+            },
+        )
+
     # NOTE: audit_log.task_id doubles as a generic scope id. Thread events store
     # the thread id (THR-NNN) in that column, matching the talk_* pattern above.
 
