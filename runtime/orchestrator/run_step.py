@@ -202,12 +202,24 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             job_outcomes=job_outcomes,
         )
 
-    # Fan-out join: if the parent was parked on a fan-out (active_fanout set),
-    # clear it now that the CAS has been won — the manager's next prompt will
-    # include the join context. The state MUST be cleared here so a stale
-    # join context isn't re-injected on a later wake. The fan-out join header
-    # is rendered from the audit row written below.
+    # Fan-out dispatch: active_fanout can be "pending_review" (review gate
+    # just cleared — spawn children now without re-running the agent) or
+    # "spawned" (all children terminal — inject join context).
     if task.active_fanout is not None:
+        from runtime.orchestrator.fanout import FanoutState as _FanoutState
+        fanout_state = _FanoutState.deserialize(task.active_fanout)
+        if fanout_state.status == "pending_review":
+            # Review gate cleared: spawn children directly from the stored
+            # plan, then return without re-running the agent.
+            _spawn_fanout_children(
+                orch, task, task_id, next_count,
+                children=fanout_state.children_details,
+                width=fanout_state.width,
+                manager_agent=fanout_state.manager_agent,
+                join_summary=fanout_state.join_summary,
+            )
+            return
+        # status == "spawned" → all children terminal; inject join context.
         _inject_fanout_join_context(orch, task_id, task.active_fanout)
         db.update_task_active_fanout(task_id, None)
 
@@ -510,81 +522,70 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
 
         # Review gate: width > threshold → self-block via review_required.
         # Mutating fan-out is always review_required but is out of scope.
+        # Reuse the existing jobs review-gate pattern: create a review_required
+        # job and park the parent on BLOCKED_ON_JOB. On re-entry after founder
+        # approval, the CAS-winner detects active_fanout status="pending_review"
+        # and proceeds directly to child spawn without re-running the agent.
         width = len(decision.children)
         if fanout_needs_review(width):
+            import json as _json
+            from datetime import datetime as _dt, timezone as _tz
+            from runtime.models import JobRecord, JobStatus, JobInterpreter
             note = (
                 f"fan-out width {width} exceeds review threshold "
                 f"({FANOUT_REVIEW_THRESHOLD}); requires founder review"
             )
-            _fail(orch, task_id, note=note)
-            _enqueue_parent_if_waiting(orch, task_id)
-            _maybe_post_thread_followup(
-                orch, task_id,
-                status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            # Build the pending fan-out state so it survives the review cycle.
+            child_details = [
+                {"agent": c.agent, "prompt": c.prompt}
+                for c in decision.children
+            ]
+            pending_fanout = FanoutState(
+                children_ids=[],  # allocated on spawn, not now
+                children_details=child_details,
+                width=width,
+                manager_agent=agent,
+                join_summary=decision.join_summary,
+                status="pending_review",
+            )
+            # Create a review_required job to gate founder approval.
+            job_id = db.next_job_id()
+            now = _dt.now(_tz.utc).isoformat()
+            db.insert_job(JobRecord(
+                id=job_id,
+                task_id=task_id,
+                agent_name=agent,
+                title=f"Review fan-out (width={width}) for {task_id}",
+                rationale=note,
+                script_text="",
+                interpreter=JobInterpreter.BASH,
+                status=JobStatus.PENDING,
+                review_required=True,
+                created_at=now,
+            ))
+            # Park the parent on BLOCKED_ON_JOB waiting for founder review.
+            db.update_task(
+                task_id,
+                status=TaskStatus.IN_PROGRESS,
+                block_kind=BlockKind.BLOCKED_ON_JOB,
+                blocked_on_job_ids=_json.dumps([job_id]),
+                note=note,
+            )
+            db.update_task_active_fanout(task_id, pending_fanout.serialize())
+            orch._audit.log_orchestration_step(
+                task_id, next_count,
+                {"action": "fanout_review_required", "reason": note},
             )
             return
 
-        # Allocate child IDs and build TaskRecords.
-        # NOTE: next_task_id() reads MAX(id) from DB, so we must insert
-        # between calls or manually allocate sequential IDs. We read the base
-        # ID once and then allocate sequential suffixes.
-        from runtime.models import FanoutChild as _FanoutChildModel, TaskRecord
-        child_records: list[TaskRecord] = []
-        children_ids: list[str] = []
-        base_id = db.next_task_id()
-        # Parse the numeric suffix from e.g. "TASK-005"
-        base_num = int(base_id.split("-")[-1])
-        for i, child in enumerate(decision.children):
-            cid = f"TASK-{base_num + i:03d}"
-            children_ids.append(cid)
-            child_records.append(TaskRecord(
-                id=cid,
-                team=task.team,
-                brief=child.prompt or "",
-                assigned_agent=child.agent,
-                parent_task_id=task_id,
-                status=TaskStatus.PENDING,
-                session_timeout_seconds=task.session_timeout_seconds,
-                task_type="subtask",
-            ))
-
-        # Build FanoutState BEFORE the atomic insert so it's ready to persist.
-        fanout_state = FanoutState(
-            children_ids=children_ids,
+        # Spawn children via shared helper (also used by review-gate re-entry).
+        _spawn_fanout_children(
+            orch, task, task_id, next_count,
+            children=[{"agent": c.agent, "prompt": c.prompt} for c in decision.children],
             width=width,
             manager_agent=agent,
             join_summary=decision.join_summary,
         )
-        parent_note = (
-            f"Fan-out to {width} children: "
-            + ", ".join(f"{c.agent}={cid}" for c, cid in zip(decision.children, children_ids))
-        )
-
-        # Atomic insert-N + parent transition under a single explicit SQL
-        # transaction. active_fanout is written in the same transaction as
-        # child inserts + parent park — no crash gap between spawn and
-        # metadata persistence.
-        if not db.try_delegate_many(
-            task_id, child_records, parent_note=parent_note,
-            active_fanout_json=fanout_state.serialize(),
-        ):
-            logger.debug(
-                "run_step %s: cancelled between re-check and fanout spawn, dropping",
-                task_id,
-            )
-            return
-
-        orch._audit.log_fanout_spawned(
-            task_id=task_id,
-            agent=agent,
-            width=width,
-            children_ids=children_ids,
-        )
-
-        # Enqueue all children.
-        if orch._queue is not None:
-            for cid in children_ids:
-                orch._queue.put_nowait(orch._slug, cid)
         return
 
     if decision.action == "delegate":
@@ -1545,10 +1546,12 @@ def _enqueue_parent_if_waiting(
             return
         # Within the bound: clear chain, enqueue parent for a fresh
         # manager decision step. Do NOT cascade-fail.
+        # NOTE: active_fanout is NOT cleared here — the CAS-winner needs
+        # it to inject structured join context (child verdict, confidence,
+        # output_dir, failure note) via _inject_fanout_join_context. The
+        # CAS-winner clears active_fanout after injecting join context.
         if parent.active_chain is not None:
             orch._db.update_task_active_chain(parent.id, None)
-        if parent.active_fanout is not None:
-            orch._db.update_task_active_fanout(parent.id, None)
         queue = getattr(orch, "_queue", None)
         if queue is not None:
             queue.put_nowait(orch._slug, parent.id)
@@ -2220,7 +2223,93 @@ def _session_failed_note(result, report) -> str:
     return f"agent session failed ({'; '.join(bits)})"
 
 
-# --- Fan-out join context helpers ---
+# --- Fan-out spawn + join context helpers ---
+
+
+def _spawn_fanout_children(
+    orch: "Orchestrator",
+    parent: "TaskRecord",
+    task_id: str,
+    next_count: int,
+    *,
+    children: list[dict],
+    width: int,
+    manager_agent: str,
+    join_summary: str | None = None,
+) -> None:
+    """Allocate child IDs, build TaskRecords, atomically insert all N children
+    and park the parent in in_progress(delegated) with active_fanout set.
+    Shared by the fresh dispatch path and the review-gate re-entry path.
+
+    On cancel-race (try_delegate_many returns False), logs and returns
+    silently — the parent was cancelled between validation and spawn.
+    """
+    from runtime.models import TaskRecord
+    from runtime.orchestrator.fanout import FanoutState
+
+    db = orch._db
+
+    # Allocate sequential child IDs.
+    child_records: list[TaskRecord] = []
+    children_ids: list[str] = []
+    base_id = db.next_task_id()
+    base_num = int(base_id.split("-")[-1])
+    for i, child_info in enumerate(children):
+        cid = f"TASK-{base_num + i:03d}"
+        children_ids.append(cid)
+        child_records.append(TaskRecord(
+            id=cid,
+            team=parent.team,
+            brief=child_info["prompt"] or "",
+            assigned_agent=child_info["agent"],
+            parent_task_id=task_id,
+            status=TaskStatus.PENDING,
+            session_timeout_seconds=parent.session_timeout_seconds,
+            task_type="subtask",
+        ))
+
+    # Build FanoutState BEFORE the atomic insert so it's ready to persist.
+    fanout_state = FanoutState(
+        children_ids=children_ids,
+        children_details=children,
+        width=width,
+        manager_agent=manager_agent,
+        join_summary=join_summary,
+        status="spawned",
+    )
+    parent_note = (
+        f"Fan-out to {width} children: "
+        + ", ".join(
+            f"{c['agent']}={cid}"
+            for c, cid in zip(children, children_ids)
+        )
+    )
+
+    # Atomic insert-N + parent transition under a single explicit SQL
+    # transaction. active_fanout is written in the same transaction as
+    # child inserts + parent park — no crash gap between spawn and
+    # metadata persistence.
+    if not db.try_delegate_many(
+        task_id, child_records, parent_note=parent_note,
+        active_fanout_json=fanout_state.serialize(),
+    ):
+        logger.debug(
+            "run_step %s: cancelled between re-check and fanout spawn, dropping",
+            task_id,
+        )
+        return
+
+    orch._audit.log_fanout_spawned(
+        task_id=task_id,
+        agent=manager_agent,
+        width=width,
+        children_ids=children_ids,
+    )
+
+    # Enqueue all children.
+    if orch._queue is not None:
+        for cid in children_ids:
+            orch._queue.put_nowait(orch._slug, cid)
 
 
 def _inject_fanout_join_context(

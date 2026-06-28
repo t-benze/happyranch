@@ -35,18 +35,30 @@ class FanoutState:
     or terminal parent close. Exists so the manager's wake prompt can
     reconstruct structured join context without re-deriving it from raw
     task records.
+
+    Status transitions:
+    - ``"pending_review"`` — fan-out plan stored but children NOT yet
+      spawned; parent is parked on BLOCKED_ON_JOB awaiting founder approval
+      of the review_required gate job. The CAS-winner on resume skips
+      agent re-run and proceeds directly to child spawn.
+    - ``"spawned"`` — children have been atomically inserted; parent
+      is in_progress(delegated) waiting for all children to become terminal.
     """
     children_ids: list[str]
+    children_details: list[dict]  # [{"agent": ..., "prompt": ...}, ...]
     width: int
     manager_agent: str
     join_summary: str | None = None
+    status: str = "spawned"       # "spawned" | "pending_review"
 
     def serialize(self) -> str:
         return json.dumps({
             "children_ids": self.children_ids,
+            "children_details": self.children_details,
             "width": self.width,
             "manager_agent": self.manager_agent,
             "join_summary": self.join_summary,
+            "status": self.status,
         })
 
     @classmethod
@@ -54,9 +66,11 @@ class FanoutState:
         data = json.loads(payload)
         return cls(
             children_ids=list(data["children_ids"]),
+            children_details=list(data.get("children_details", [])),
             width=data["width"],
             manager_agent=data["manager_agent"],
             join_summary=data.get("join_summary"),
+            status=data.get("status", "spawned"),
         )
 
 

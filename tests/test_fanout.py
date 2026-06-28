@@ -38,6 +38,7 @@ def db(runtime: OrgPaths) -> Database:
 from runtime.models import (
     ChainLeg,
     FanoutChild,
+    JobStatus,
     NextStep,
     TaskRecord,
     TaskStatus,
@@ -154,9 +155,11 @@ class TestFanoutState:
     def test_serialize_roundtrip(self):
         fs = FanoutState(
             children_ids=["TASK-100", "TASK-101"],
+            children_details=[],
             width=2,
             manager_agent="eng_mgr",
             join_summary="Review both",
+            status="spawned",
         )
         serialized = fs.serialize()
         fs2 = FanoutState.deserialize(serialized)
@@ -166,7 +169,7 @@ class TestFanoutState:
         assert fs2.join_summary == "Review both"
 
     def test_serialize_omits_none_join_summary(self):
-        fs = FanoutState(children_ids=["T-1"], width=1, manager_agent="m")
+        fs = FanoutState(children_ids=["T-1"], children_details=[], width=1, manager_agent="m", status="spawned")
         s = fs.serialize()
         fs2 = FanoutState.deserialize(s)
         assert fs2.join_summary is None
@@ -177,7 +180,7 @@ class TestFanoutState:
 
 class TestFanoutJoinContext:
     def test_build_join_context_includes_all_children(self):
-        fs = FanoutState(children_ids=["T-1", "T-2"], width=2, manager_agent="mgr")
+        fs = FanoutState(children_ids=["T-1", "T-2"], children_details=[], width=2, manager_agent="mgr", status="spawned")
         # Create mock child join info
         infos = [
             type("_CJI", (), {
@@ -208,8 +211,9 @@ class TestFanoutJoinContext:
 
     def test_join_context_includes_join_summary(self):
         fs = FanoutState(
-            children_ids=["T-1"], width=1, manager_agent="mgr",
+            children_ids=["T-1"], children_details=[], width=1, manager_agent="mgr",
             join_summary="Combine results",
+            status="spawned",
         )
         infos = [type("_CJI", (), {
             "id": "T-1", "agent": "dev", "status": "completed",
@@ -734,11 +738,12 @@ class TestFanoutRunStep:
         assert parent.status == TaskStatus.FAILED
         assert parent.active_fanout is None  # never set
 
-    def test_fanout_review_threshold_fails(self, runtime, db, monkeypatch):
-        """Width > FANOUT_REVIEW_THRESHOLD → task fails with review note."""
+    def test_fanout_review_threshold_parks_for_review(self, runtime, db, monkeypatch):
+        """Width > FANOUT_REVIEW_THRESHOLD → parks on BLOCKED_ON_JOB with review_required job."""
         import json
         from runtime.orchestrator.orchestrator import Orchestrator
         from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.fanout import FanoutState
 
         for i in range(5):
             (runtime.workspaces_dir / f"agent{i}").mkdir(parents=True)
@@ -767,8 +772,28 @@ class TestFanoutRunStep:
         orch.run_step("T-FANOUT-REVIEW")
 
         parent = db.get_task("T-FANOUT-REVIEW")
-        assert parent.status == TaskStatus.FAILED
+        # Should be parked on BLOCKED_ON_JOB, NOT failed.
+        assert parent.status == TaskStatus.IN_PROGRESS
+        assert parent.block_kind == BlockKind.BLOCKED_ON_JOB
+        assert parent.blocked_on_job_ids is not None
+        job_ids = json.loads(parent.blocked_on_job_ids)
+        assert len(job_ids) == 1
         assert "review threshold" in (parent.note or "").lower()
+        # active_fanout should be set to pending_review state.
+        assert parent.active_fanout is not None
+        fs = FanoutState.deserialize(parent.active_fanout)
+        assert fs.status == "pending_review"
+        assert fs.width == 5
+        assert len(fs.children_details) == 5
+        assert fs.children_ids == []  # not allocated yet
+        # The review job should exist and be review_required.
+        job = db.get_job(job_ids[0])
+        assert job is not None
+        assert job.review_required is True
+        assert job.status == JobStatus.PENDING
+        # No children should have been spawned.
+        children = db.get_children("T-FANOUT-REVIEW")
+        assert len(children) == 0
 
     def test_fanout_active_fanout_set_after_spawn(self, runtime, db, monkeypatch):
         """active_fanout is set with correct FanoutState after spawn."""
@@ -813,3 +838,195 @@ class TestFanoutRunStep:
         assert fs.manager_agent == "engineering_head"
         assert fs.join_summary == "Review both"
         assert len(fs.children_ids) == 2
+
+    def test_fanout_review_gate_reentry_spawns_children(self, runtime, db, monkeypatch):
+        """After review job is approved, re-entry spawns children from stored plan."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.fanout import FanoutState
+
+        for i in range(5):
+            (runtime.workspaces_dir / f"agent{i}").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-FANOUT-REENTRY", brief="re-entry test",
+            assigned_agent="engineering_head",
+        ))
+
+        # Simulate: task is already parked on BLOCKED_ON_JOB after review gate,
+        # with pending_review active_fanout and a completed review job.
+        job_id = db.next_job_id()
+        now_iso = "2026-06-28T00:00:00+00:00"
+        from runtime.models import JobRecord, JobStatus, JobInterpreter
+        db.insert_job(JobRecord(
+            id=job_id, task_id="T-FANOUT-REENTRY", agent_name="engineering_head",
+            title="Review fan-out", rationale="review", script_text="",
+            interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED,
+            review_required=True, created_at=now_iso,
+        ))
+        pending = FanoutState(
+            children_ids=[],
+            children_details=[
+                {"agent": f"agent{i}", "prompt": f"task {i}"} for i in range(5)
+            ],
+            width=5, manager_agent="engineering_head",
+            status="pending_review",
+        )
+        db.update_task(
+            "T-FANOUT-REENTRY",
+            status=TaskStatus.IN_PROGRESS,
+            block_kind=BlockKind.BLOCKED_ON_JOB,
+            blocked_on_job_ids=json.dumps([job_id]),
+            note="pending review",
+        )
+        db.update_task_active_fanout("T-FANOUT-REENTRY", pending.serialize())
+
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        orch._queue = _SlugQueue()
+
+        # Re-entry: run_step should detect pending_review, spawn children,
+        # and return without running the agent.
+        orch.run_step("T-FANOUT-REENTRY")
+
+        parent = db.get_task("T-FANOUT-REENTRY")
+        assert parent.status == TaskStatus.IN_PROGRESS
+        assert parent.block_kind == BlockKind.DELEGATED
+        assert parent.active_fanout is not None
+        fs = FanoutState.deserialize(parent.active_fanout)
+        assert fs.status == "spawned"
+        assert len(fs.children_ids) == 5
+        # Children should exist.
+        children = db.get_children("T-FANOUT-REENTRY")
+        assert len(children) == 5
+        for cid in children:
+            child = db.get_task(cid)
+            assert child is not None
+            assert child.task_type == "subtask"
+
+    def test_fanout_over_cap_still_hard_fails(self, runtime, db, monkeypatch):
+        """Width > MAX_FANOUT_WIDTH still hard-fails (parse rejection before review gate)."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+
+        for i in range(10):
+            (runtime.workspaces_dir / f"agent{i}").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-FANOUT-OVERCAP", brief="over cap",
+            assigned_agent="engineering_head",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        orch._queue = _SlugQueue()
+
+        def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            children = [{"agent": f"agent{i}", "prompt": f"task {i}"} for i in range(9)]
+            return _make_result(), _make_report(
+                output_summary=json.dumps({
+                    "action": "fanout",
+                    "children": children,
+                }),
+            )
+        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+        orch.run_step("T-FANOUT-OVERCAP")
+
+        parent = db.get_task("T-FANOUT-OVERCAP")
+        # Over-cap still hard-fails (parse rejection).
+        assert parent.status == TaskStatus.FAILED
+        assert "exceeds max" in (parent.note or "").lower()
+
+    def test_fanout_failed_child_join_context_preserved(self, runtime, db, monkeypatch):
+        """Mixed completed + failed fan-out children within bound: parent
+        re-enqueues once, active_fanout survives for join injection, fanout_join
+        audit occurs, then active_fanout clears."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.fanout import FanoutState
+
+        (runtime.workspaces_dir / "eng_mgr").mkdir(parents=True)
+        (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+        (runtime.workspaces_dir / "qa_engineer").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-FANOUT-MIXED", brief="mixed test",
+            assigned_agent="eng_mgr",
+        ))
+
+        # Simulate: parent already spawned 2 children. Child 1 completed,
+        # Child 2 failed. Parent is in_progress(delegated) with active_fanout.
+        fanout = FanoutState(
+            children_ids=["T-FANOUT-MIXED-C1", "T-FANOUT-MIXED-C2"],
+            children_details=[
+                {"agent": "dev_agent", "prompt": "task 1"},
+                {"agent": "qa_engineer", "prompt": "task 2"},
+            ],
+            width=2, manager_agent="eng_mgr",
+            status="spawned",
+        )
+        db.update_task(
+            "T-FANOUT-MIXED",
+            status=TaskStatus.IN_PROGRESS,
+            block_kind=BlockKind.DELEGATED,
+            note="fan-out in flight",
+        )
+        db.update_task_active_fanout("T-FANOUT-MIXED", fanout.serialize())
+
+        # Child 1: completed.
+        db.insert_task(TaskRecord(
+            id="T-FANOUT-MIXED-C1", brief="task 1",
+            assigned_agent="dev_agent", parent_task_id="T-FANOUT-MIXED",
+            status=TaskStatus.COMPLETED, task_type="subtask",
+        ))
+        # Child 2: failed (within bound).
+        db.insert_task(TaskRecord(
+            id="T-FANOUT-MIXED-C2", brief="task 2",
+            assigned_agent="qa_engineer", parent_task_id="T-FANOUT-MIXED",
+            status=TaskStatus.FAILED, task_type="subtask",
+            note="test failure",
+        ))
+        # Add completion report for child 1.
+        db.insert_task_result(
+            task_id="T-FANOUT-MIXED-C1", agent="dev_agent", session_id="",
+            status="completed", confidence_score=90, output_summary="Done",
+            risks_flagged=[],
+        )
+
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        orch._queue = _SlugQueue()
+
+        # Run step — should detect all children terminal, within bound,
+        # inject join context (not clear active_fanout prematurely).
+        orch.run_step("T-FANOUT-MIXED")
+
+        parent = db.get_task("T-FANOUT-MIXED")
+        # Parent should have been re-enqueued (still in_progress(delegated) for
+        # fresh manager decision). active_fanout should be cleared by the
+        # CAS-winner after join injection.
+        assert parent.active_fanout is None
+        # The fanout_join audit row should exist.
+        logs = db.get_audit_logs("T-FANOUT-MIXED")
+        join_actions = [e for e in logs if e["action"] == "fanout_join"]
+        assert len(join_actions) == 1
+        # Join context should include both children.
+        payload = join_actions[0].get("payload", {})
+        ctx = payload.get("context_markdown", "")
+        assert "T-FANOUT-MIXED-C1" in ctx
+        assert "T-FANOUT-MIXED-C2" in ctx
+        assert "completed" in ctx
+        assert "failed" in ctx
+        assert "test failure" in ctx
