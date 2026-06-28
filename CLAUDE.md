@@ -49,6 +49,7 @@ scripts/local_ci.sh python       # Python unit only
 scripts/local_ci.sh web          # Web CI (lint + typecheck + build + vitest run)
 scripts/local_ci.sh integration  # Python integration tests
 scripts/local_ci.sh help         # List targets and caveats
+# Full guide: docs/local-ci.md
 ```
 
 Integration tests spawn a real daemon and fake CLIs. Run them before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.

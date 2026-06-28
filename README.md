@@ -39,7 +39,7 @@ uv run pytest tests/ -v
 
 ## Local CI
 
-A dependency-light local CI wrapper mirrors GitHub Actions commands as closely as practical. Use it for pre-push feedback; **GitHub CI remains authoritative** (full Python 3.12/3.13/3.14 matrix, Node 20, nightly integration).
+A dependency-light local CI wrapper mirrors GitHub Actions commands as closely as practical. Use it for pre-push feedback; **GitHub CI remains authoritative** (full Python 3.12/3.13/3.14 matrix, Node 20, nightly integration). See [`docs/local-ci.md`](docs/local-ci.md) for the full guide.
 
 ```bash
 scripts/local_ci.sh           # default: python + web (mirrors GitHub PR CI)
