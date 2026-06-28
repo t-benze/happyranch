@@ -2479,7 +2479,15 @@ class Database:
                         COALESCE(SUM(reasoning_tokens), 0)      AS reasoning_tokens,
                         COALESCE(SUM(input_tokens), 0)
                           + COALESCE(SUM(output_tokens), 0)
-                          + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens
+                          + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens,
+                        COALESCE(SUM(input_tokens), 0)
+                          + COALESCE(SUM(output_tokens), 0)
+                          + COALESCE(SUM(reasoning_tokens), 0)  AS churn_tokens,
+                        COALESCE(SUM(input_tokens), 0)
+                          + COALESCE(SUM(output_tokens), 0)
+                          + COALESCE(SUM(reasoning_tokens), 0)
+                          + COALESCE(SUM(cache_read_tokens), 0)
+                          + COALESCE(SUM(cache_creation_tokens), 0)  AS context_tokens
                  FROM session_token_usage"""
         if where:
             sql += " WHERE " + " AND ".join(where)

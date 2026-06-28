@@ -314,6 +314,8 @@ def test_tokens_group_by_scope_returns_scope_rollup(
         "cache_creation_tokens": 0,
         "reasoning_tokens": 0,
         "total_tokens": 35,
+        "churn_tokens": 35,
+        "context_tokens": 35,
     }]
 
 
