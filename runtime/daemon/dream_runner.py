@@ -148,7 +148,7 @@ async def run_dream(
             agent=dream.agent_name,
             session_id=getattr(result, "agent_session_id", None) or getattr(result, "session_id", None) or dream_id,
             executor=executor_name,
-            usage=result.token_usage,
+            token_usage=result.token_usage,
             scope_type="dream",
             scope_id=dream_id,
         )

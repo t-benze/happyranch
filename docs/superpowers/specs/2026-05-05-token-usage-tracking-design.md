@@ -407,3 +407,29 @@ The fake-Codex and fake-opencode binaries get parallel updates so tests cover al
 ## 11. Implementation Order Reminder
 
 Per CLAUDE.md "Implementation Order (system features)", token tracking is *not* one of the listed milestones (10–13). It's a smaller diagnostic feature that lands as a single PR rather than a milestone-level effort. Should still be tracked in the next CLAUDE.md update once shipped, perhaps as a sub-bullet under "Audit logging" or its own line ("~~Token usage tracking~~ done").
+
+## 12. Post-Landing Clarification (Issue #216, 2026-06-28)
+
+### Metric semantics: churn vs context
+
+The original `total_tokens` was defined as `input + output + reasoning`, excluding cache columns. This is renamed in CLI/API presentation to **churn** (`churn_tokens`) — the fresh, non-cache work a session performed. A new complementary computed column **context_tokens** = `churn + cache_read + cache_creation` captures the cache-inclusive total of all recorded token fields. Both are computed columns (no schema migration), exposed in every rollup and the per-session listing.
+
+- `total_tokens` is retained for backward compatibility (identical to `churn_tokens`).
+- CLI column headers renamed from "Total" to "Churn"; an "AllTokens" column shows `context_tokens`.
+- Rankings and thresholds (--top, --over-threshold) continue to use churn only — cache is never folded into ranking.
+
+### Dream-runner token persistence bug
+
+`dream_runner.py` passed `usage=result.token_usage` to `Database.insert_session_token_usage`, but the parameter name is `token_usage=`. This caused `TypeError: unexpected keyword argument 'usage'` on every dream session that returned token usage. Fixed to `token_usage=result.token_usage`.
+
+### Codex `input_tokens` vs `cached_input_tokens` ambiguity
+
+Codex CLI emits both `input_tokens` and `cached_input_tokens` on the terminal `turn.completed` event. It is NOT confirmed whether `input_tokens` already includes `cached_input_tokens` (as some OpenAI API endpoints do). If it does, then `churn_tokens` for Codex sessions double-counts cache reads relative to Claude (where cache is tracked in a separate column). Until confirmed, no normalization is applied; both fields are stored as-is. Historical rows are ambiguous.
+
+### Opencode command shape and parser update
+
+Opencode >= 1.14.31 rejects the `--prompt` flag (now positional). The executor command was updated to pass the prompt positionally. The parser now handles both the old single-JSON-object format (`messages[].usage`) and the new JSONL format (`step_finish.part.tokens`).
+
+### Pi structured token parsing
+
+Pi >= current emits usage fields on assistant JSONL events (`usage.input`, `usage.output`, `usage.cacheRead`, `usage.cacheWrite`). The parser now extracts these into a structured `TokenUsage` instead of preserving only raw JSON.

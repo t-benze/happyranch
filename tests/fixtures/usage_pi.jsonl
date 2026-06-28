@@ -1,0 +1,1 @@
+{"type":"assistant","model":"pi-model-v1","content":"OK","usage":{"input":500,"output":200,"cacheRead":100,"cacheWrite":50,"totalTokens":850}}

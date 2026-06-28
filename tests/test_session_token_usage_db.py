@@ -249,6 +249,8 @@ def test_aggregate_by_thread(db: Database):
         "cache_creation_tokens": 0,
         "reasoning_tokens": 0,
         "total_tokens": 35,
+        "churn_tokens": 35,
+        "context_tokens": 35,
         "model_distinct": 0,
         "model_any": None,
         "non_null_sessions": 0,
