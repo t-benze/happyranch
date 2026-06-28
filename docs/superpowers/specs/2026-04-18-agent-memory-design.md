@@ -8,6 +8,8 @@
 > **THR-032 Phase R (thorough rename).** The "learnings" concept is renamed to "memory" across the runtime: dir `learnings/`→`memory/`, CLI `happyranch learning`→`happyranch memory` (one-cycle `learning` deprecation alias), routes `/agents/{name}/learnings/…`→`/memory/…` (hidden legacy forwarders), ids `LRN-NNN`→`MEM-NNN` (permanent `LRN-` resolution shim), audit `log_learning_*`→`log_memory_*` (forward-only; historical rows untouched).
 >
 > **THR-032 Phase 2 (PUSH memory digest — mechanism A).** The `=== MEMORY-DIGEST (system) ===` block is now injected into every agent spawn prompt by `Orchestrator._build_agent_prompt`. It is salience-ranked, pointer-only, and char-budgeted (org-configurable, default ~1,500). This **reverses the "no automatic prompt injection" non-goal below** — ratified by the founder at THR-032 seq 48. The digest is harness-agnostic (one literal string shared by claude/codex/opencode/pi).
+>
+> **THR-032 P3a (explicit lifecycle transition API).** The `MemoryStore.set_lifecycle()` method supports manual lifecycle transitions (valid ↔ superseded ↔ evicted) with audit-only reason, promoted-lock enforcement, permanent `LRN-` id resolution, and no hard delete. The `PATCH /memory/entries/{id}/lifecycle` route and `happyranch memory lifecycle` CLI command enable explicit eviction, supersession, and restoration. The audit `log_memory_lifecycle_changed()` row records `from`/`to`/`reason`/`source` per transition. No compaction sweeps, search-ranking changes, or KB federation are included in P3a.
 
 ## Problem
 

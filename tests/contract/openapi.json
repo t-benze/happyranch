@@ -428,6 +428,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}/lifecycle": {
+      "PATCH": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}/promote": {
       "POST": {
         "params": [

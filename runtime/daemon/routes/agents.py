@@ -1055,6 +1055,9 @@ def _entry_to_dict(entry: MemoryItem) -> dict:
         "authored_at": entry.authored_at,
         "updated_by": entry.updated_by,
         "updated_at": entry.updated_at,
+        "lifecycle": entry.lifecycle,
+        "provenance": entry.provenance,
+        "salience": entry.salience,
     }
 
 
@@ -1300,3 +1303,52 @@ async def promote_learning(
             kb_slug=body.kb_slug,
         )
     return _entry_to_dict(written)
+
+
+class LifecyclePatchBody(BaseModel):
+    lifecycle: str
+    reason: str | None = None
+
+
+@router.patch("/agents/{agent_name}/memory/entries/{id}/lifecycle")
+@router.patch(
+    "/agents/{agent_name}/learnings/entries/{id}/lifecycle",
+    include_in_schema=False,
+)
+async def patch_lifecycle(
+    slug: str, agent_name: str, id: str, body: LifecyclePatchBody, org: OrgDep,
+) -> dict:
+    if not body.reason or not body.reason.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "reason_required", "message": "reason must be non-empty"},
+        )
+    store = _workspace_memory_store(org, agent_name)
+    async with org.db_lock:
+        try:
+            updated, prior = store.set_lifecycle(
+                id, body.lifecycle, agent=agent_name, reason=body.reason.strip(),
+            )
+        except InvalidLearningId:
+            raise HTTPException(status_code=400, detail={"error": "invalid_id", "id": id})
+        except LearningNotFound:
+            raise HTTPException(status_code=404, detail={"error": "id_not_found", "id": id})
+        except PromotedLocked as e:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "promoted_locked", "id": e.id, "kb_slug": e.kb_slug},
+            )
+        except InvalidLearningEntry as e:
+            raise _invalid_entry_to_http(e)
+        store.regenerate_index()
+        AuditLogger(org.db).log_memory_lifecycle_changed(
+            agent=agent_name,
+            id=updated.id,
+            from_lifecycle=prior,
+            to_lifecycle=updated.lifecycle,
+            reason=body.reason.strip(),
+            source="manual",
+        )
+    result = _entry_to_dict(updated)
+    result["previous_lifecycle"] = prior
+    return result

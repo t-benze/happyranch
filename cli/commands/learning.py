@@ -138,6 +138,22 @@ def cmd_learning_reindex(args: argparse.Namespace) -> None:
     print("ok: reindexed")
 
 
+def cmd_memory_lifecycle(args: argparse.Namespace) -> None:
+    """THR-032 P3a: transition a memory item's lifecycle."""
+    client = _learning_client()
+    org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+    r = client.patch(
+        f"/api/v1/orgs/{org}/agents/{args.agent}/memory/entries/{args.id}/lifecycle",
+        json={"lifecycle": getattr(args, "set"), "reason": args.reason},
+    )
+    if not _ok(r):
+        return
+    resp = r.json()
+    print(
+        f"ok: {resp['id']} lifecycle {resp['previous_lifecycle']} → {resp['lifecycle']}"
+    )
+
+
 
 def cmd_learning_add(args: argparse.Namespace) -> None:
     client = _learning_client()
@@ -275,6 +291,16 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     pr.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pr.add_argument("--agent", required=True)
     pr.set_defaults(func=wrap(cmd_learning_reindex))
+
+    # THR-032 P3a: lifecycle command
+    plc = verb_sub.add_parser("lifecycle", help="Transition a memory item's lifecycle")
+    plc.add_argument("--org", required=False, default=argparse.SUPPRESS)
+    plc.add_argument("--agent", required=True)
+    plc.add_argument("id")
+    plc.add_argument("--set", required=True, choices=["valid", "superseded", "evicted"],
+                      help="Target lifecycle state")
+    plc.add_argument("--reason", required=True, help="Non-empty reason for the transition")
+    plc.set_defaults(func=wrap(cmd_memory_lifecycle))
 
 
 def register(sub) -> None:

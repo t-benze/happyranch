@@ -379,3 +379,174 @@ def test_promote_writes_memory_promoted_audit_row(client_with_migrated_workspace
     ).json()
     rows = audit.get("entries", [])
     assert any(r["action"] == "memory_promoted" for r in rows)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# THR-032 P3a — PATCH /memory/entries/{id}/lifecycle
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestLifecycleRoute:
+    """THR-032 P3a: PATCH lifecycle endpoint."""
+
+    def test_patch_lifecycle_success(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        # Seed an entry
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "to-evict", "title": "To Evict", "topic": "w", "body": "b\n"},
+        )
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "obsolete info"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["id"] == "MEM-001"
+        assert body["lifecycle"] == "evicted"
+        assert body["previous_lifecycle"] == "valid"
+
+    def test_patch_lifecycle_missing_reason(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "x", "title": "x", "topic": "w", "body": "b\n"},
+        )
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted"},
+        )
+        assert r.status_code == 400
+        assert "reason_required" in r.json()["detail"]["error"]
+
+    def test_patch_lifecycle_invalid_lifecycle(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "x", "title": "x", "topic": "w", "body": "b\n"},
+        )
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "frobnicated", "reason": "test"},
+        )
+        assert r.status_code == 400
+        assert "invalid_lifecycle" in r.json()["detail"]["error"]
+
+    def test_patch_lifecycle_not_found(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-999/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "test"},
+        )
+        assert r.status_code == 404
+
+    def test_patch_lifecycle_promoted_locked(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        # Write a promoted entry directly (bypass the store to set promoted_to)
+        import yaml
+        mem_dir = _ / "memory"
+        content = """---
+id: MEM-001
+slug: locked-entry
+title: Locked Entry
+topic: w
+promoted_to: kb-rule
+lifecycle: valid
+---
+body
+"""
+        (mem_dir / "MEM-001-locked-entry.md").write_text(content)
+        # Also need to rebuild index so the entry is findable
+        from runtime.infrastructure.learnings_store import MemoryStore
+        store = MemoryStore(mem_dir)
+        store.regenerate_index()
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "test"},
+        )
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "promoted_locked"
+
+    def test_patch_lifecycle_lrn_alias_resolves_to_mem(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "alias-test", "title": "Alias", "topic": "w", "body": "b\n"},
+        )
+        # Resolve via LRN alias
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/LRN-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "via alias"},
+        )
+        assert r.status_code == 200
+        assert r.json()["id"] == "MEM-001"
+        assert r.json()["lifecycle"] == "evicted"
+
+    def test_patch_lifecycle_audit_row_emitted(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "audit-me", "title": "Audit Me", "topic": "w", "body": "b\n"},
+        )
+        client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "superseded", "reason": "replaced by MEM-099"},
+        )
+        audit = client.get(
+            f"/api/v1/orgs/{slug}/audit?action=memory_lifecycle_changed",
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()
+        rows = audit.get("entries", [])
+        assert len(rows) >= 1
+        row = rows[0]
+        assert row["action"] == "memory_lifecycle_changed"
+        assert row["agent"] == agent
+        payload = row["payload"]
+        assert payload["id"] == "MEM-001"
+        assert payload["from_lifecycle"] == "valid"
+        assert payload["to_lifecycle"] == "superseded"
+        assert payload["reason"] == "replaced by MEM-099"
+        assert payload["source"] == "manual"
+
+    def test_patch_lifecycle_index_regenerated_after_evict(self, client_with_migrated_workspace):
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "evict-me", "title": "Evict Me", "topic": "w", "body": "b\n"},
+        )
+        client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "test index regen"},
+        )
+        idx = (ws / "memory" / "_index.md").read_text()
+        assert "MEM-001" not in idx  # evicted → excluded from index
+
+    def test_patch_lifecycle_hidden_learnings_forwarder_works(self, client_with_migrated_workspace):
+        """The hidden /learnings forwarder still resolves the PATCH lifecycle."""
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "fwd", "title": "Fwd", "topic": "w", "body": "b\n"},
+        )
+        r = client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "superseded", "reason": "via forwarder"},
+        )
+        assert r.status_code == 200
+        assert r.json()["lifecycle"] == "superseded"

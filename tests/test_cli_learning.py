@@ -262,3 +262,98 @@ def test_read_yaml_payload_empty_file_returns_empty_dict(tmp_path):
     empty = tmp_path / "empty.yaml"
     empty.write_text("")
     assert cli._read_yaml_payload(str(empty)) == {}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# THR-032 P3a — lifecycle command
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _fake_client_for_lifecycle(monkeypatch, captured):
+    """Install a fake OPC client that captures PATCH calls."""
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "id": "MEM-001",
+                "lifecycle": "evicted",
+                "previous_lifecycle": "valid",
+                "slug": "x", "title": "x", "topic": "w",
+            }
+
+    class FakeClient:
+        def patch(self, path, json=None):
+            captured["path"] = path
+            captured["json"] = json
+            return FakeResponse()
+
+        def close(self):
+            pass
+
+    from cli import main as cli
+
+    monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["o"])
+
+
+def test_memory_help_includes_lifecycle():
+    r = _run(["memory", "--help"])
+    assert r.returncode == 0
+    assert "lifecycle" in r.stdout
+
+
+def test_memory_lifecycle_parses_and_dispatches(monkeypatch):
+    captured = {}
+    _fake_client_for_lifecycle(monkeypatch, captured)
+    args = _parse([
+        "memory", "lifecycle",
+        "--org", "o", "--agent", "a",
+        "MEM-001",
+        "--set", "evicted",
+        "--reason", "obsolete info",
+    ])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/MEM-001/lifecycle"
+    assert captured["json"] == {"lifecycle": "evicted", "reason": "obsolete info"}
+
+
+def test_memory_lifecycle_missing_reason_fails_before_http(monkeypatch):
+    """Missing --reason should fail argparse, not reach HTTP."""
+    with pytest.raises(SystemExit):
+        _parse([
+            "memory", "lifecycle",
+            "--org", "o", "--agent", "a",
+            "MEM-001",
+            "--set", "evicted",
+        ])
+
+
+def test_memory_lifecycle_missing_set_fails_before_http(monkeypatch):
+    """Missing --set should fail argparse, not reach HTTP."""
+    with pytest.raises(SystemExit):
+        _parse([
+            "memory", "lifecycle",
+            "--org", "o", "--agent", "a",
+            "MEM-001",
+            "--reason", "test",
+        ])
+
+
+def test_learning_lifecycle_alias_warns_and_dispatches(monkeypatch, capsys):
+    """The deprecated `learning lifecycle` alias warns and dispatches."""
+    captured = {}
+    _fake_client_for_lifecycle(monkeypatch, captured)
+    args = _parse([
+        "learning", "lifecycle",
+        "--org", "o", "--agent", "a",
+        "MEM-001",
+        "--set", "evicted",
+        "--reason", "test alias",
+    ])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/MEM-001/lifecycle"
+    assert "deprecated" in capsys.readouterr().err

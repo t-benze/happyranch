@@ -534,6 +534,13 @@ class MemoryStore:
     _DIRECTIVE_BOOST = 10          # provenance == directive
     _DEFAULT_BUDGET = 1500
 
+    # ── THR-032 P3a: allowed lifecycle transitions ──
+    _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+        "valid": {"superseded", "evicted"},
+        "superseded": {"evicted", "valid"},
+        "evicted": {"valid"},
+    }
+
     _DIGEST_HEADER = "=== MEMORY-DIGEST (system) ==="
     _DIGEST_INTRO = (
         "Relevant memory (pointers only — "
@@ -763,6 +770,63 @@ class MemoryStore:
             except FileNotFoundError:
                 pass
             raise
+
+    # ── THR-032 P3a: explicit lifecycle transitions ──
+
+    def set_lifecycle(
+        self,
+        id: str,
+        lifecycle: str,
+        *,
+        agent: str,
+        reason: str,
+    ) -> tuple[MemoryItem, str]:
+        """Transition a memory entry to a new lifecycle state.
+
+        Returns ``(updated_item, prior_lifecycle)``.
+
+        Raises:
+            InvalidLearningId, LearningNotFound, InvalidLearningEntry,
+            PromotedLocked
+        """
+        self.validate_id(id)
+        if not reason or not reason.strip():
+            raise InvalidLearningEntry(
+                "reason_required", "reason must be non-empty"
+            )
+        reason = reason.strip()
+        if lifecycle not in LIFECYCLE_VALUES:
+            raise InvalidLearningEntry(
+                "invalid_lifecycle",
+                f"lifecycle {lifecycle!r} not in {LIFECYCLE_VALUES}",
+            )
+        existing_path = self._find_by_id(id)
+        if existing_path is None:
+            raise LearningNotFound(id)
+        existing = self._parse(existing_path.read_text())
+        if existing.promoted_to is not None:
+            raise PromotedLocked(id, existing.promoted_to)
+        prior = existing.lifecycle
+        if prior == lifecycle:
+            raise InvalidLearningEntry(
+                "noop_transition",
+                f"lifecycle is already {lifecycle!r}",
+            )
+        allowed = self._ALLOWED_TRANSITIONS.get(prior, set())
+        if lifecycle not in allowed:
+            raise InvalidLearningEntry(
+                "unsupported_transition",
+                f"cannot transition from {prior!r} to {lifecycle!r}",
+            )
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamped = MemoryItem(**{**existing.__dict__})
+        stamped.lifecycle = lifecycle
+        stamped.updated_by = agent
+        stamped.updated_at = now
+        # Write to the canonical on-disk id file (never resurrect LRN)
+        target = self.path_for(existing.id, existing.slug)
+        self._atomic_write(target, self._serialize(stamped))
+        return stamped, prior
 
 
 # Back-compat aliases (THR-032 Phase 1). The class + dataclass are renamed to

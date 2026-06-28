@@ -1010,3 +1010,187 @@ class TestBuildMemoryDigest:
         assert digest is not None
         assert len(digest) < 500
         assert "Pull the long tail" not in digest  # single item fits, no nudge
+
+
+# ═══════════════════════════════════════════════════════════════════
+# THR-032 P3a — explicit lifecycle transitions (set_lifecycle)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestSetLifecycle:
+    """THR-032 P3a: set_lifecycle — explicit lifecycle transition API."""
+
+    @pytest.fixture
+    def mem_store(self, tmp_path: Path) -> MemoryStore:
+        return MemoryStore(tmp_path / "memory")
+
+    # ── Allowed transitions ──
+
+    def test_valid_to_superseded(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T", lifecycle="valid")
+        updated, prior = mem_store.set_lifecycle(
+            "MEM-001", "superseded", agent="dev_agent", reason="superseded by MEM-002",
+        )
+        assert prior == "valid"
+        assert updated.lifecycle == "superseded"
+        assert updated.updated_by == "dev_agent"
+        assert updated.updated_at is not None
+        # Disk file reflects the change
+        re_read = mem_store.read_entry("MEM-001")
+        assert re_read.lifecycle == "superseded"
+
+    def test_valid_to_evicted(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T", lifecycle="valid")
+        updated, prior = mem_store.set_lifecycle(
+            "MEM-001", "evicted", agent="dev_agent", reason="no longer relevant",
+        )
+        assert prior == "valid"
+        assert updated.lifecycle == "evicted"
+
+    def test_superseded_to_evicted(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T", lifecycle="superseded")
+        updated, prior = mem_store.set_lifecycle(
+            "MEM-001", "evicted", agent="dev_agent", reason="compaction candidate",
+        )
+        assert prior == "superseded"
+        assert updated.lifecycle == "evicted"
+
+    def test_evicted_to_valid(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T", lifecycle="evicted")
+        updated, prior = mem_store.set_lifecycle(
+            "MEM-001", "valid", agent="dev_agent", reason="restored after review",
+        )
+        assert prior == "evicted"
+        assert updated.lifecycle == "valid"
+
+    def test_superseded_to_valid(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T", lifecycle="superseded")
+        updated, prior = mem_store.set_lifecycle(
+            "MEM-001", "valid", agent="dev_agent", reason="correction — not actually superseded",
+        )
+        assert prior == "superseded"
+        assert updated.lifecycle == "valid"
+
+    # ── Rejections ──
+
+    def test_rejects_invalid_lifecycle_name(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T")
+        with pytest.raises(InvalidLearningEntry) as exc:
+            mem_store.set_lifecycle("MEM-001", "deleted", agent="x", reason="test")
+        assert "invalid_lifecycle" in exc.value.code
+
+    def test_rejects_unsupported_transition_evicted_to_superseded(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T", lifecycle="evicted")
+        with pytest.raises(InvalidLearningEntry) as exc:
+            mem_store.set_lifecycle("MEM-001", "superseded", agent="x", reason="test")
+        assert "unsupported_transition" in exc.value.code
+
+    def test_rejects_unsupported_transition_superseded_to_valid_when_promoted(self, mem_store: MemoryStore):
+        # superseded->valid IS supported; this test is about promoted lock
+        pass
+
+    def test_rejects_noop_transition(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T", lifecycle="valid")
+        with pytest.raises(InvalidLearningEntry) as exc:
+            mem_store.set_lifecycle("MEM-001", "valid", agent="x", reason="test")
+        assert "noop_transition" in exc.value.code
+
+    def test_rejects_missing_reason(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T")
+        with pytest.raises(InvalidLearningEntry) as exc:
+            mem_store.set_lifecycle("MEM-001", "evicted", agent="x", reason="")
+        assert "reason_required" in exc.value.code
+
+        with pytest.raises(InvalidLearningEntry) as exc:
+            mem_store.set_lifecycle("MEM-001", "evicted", agent="x", reason="   ")
+        assert "reason_required" in exc.value.code
+
+    def test_rejects_promoted_locked(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T", promoted_to="kb-rule")
+        with pytest.raises(PromotedLocked) as exc:
+            mem_store.set_lifecycle("MEM-001", "evicted", agent="x", reason="test")
+        assert exc.value.id == "MEM-001"
+
+    def test_rejects_not_found(self, mem_store: MemoryStore):
+        with pytest.raises(LearningNotFound):
+            mem_store.set_lifecycle("MEM-999", "evicted", agent="x", reason="test")
+
+    def test_rejects_invalid_id_format(self, mem_store: MemoryStore):
+        with pytest.raises(InvalidLearningId):
+            mem_store.set_lifecycle("bad-id", "evicted", agent="x", reason="test")
+
+    # ── LRN alias canonicalization ──
+
+    def test_lrn_alias_input_writes_canonical_mem_file(self, mem_store: MemoryStore):
+        """LRN-NNN input resolves to the on-disk MEM-NNN file and writes there."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T")
+        updated, prior = mem_store.set_lifecycle(
+            "LRN-001", "evicted", agent="dev_agent", reason="alias test",
+        )
+        assert prior == "valid"
+        assert updated.id == "MEM-001"
+        assert updated.lifecycle == "evicted"
+        # File still on disk as MEM-001, never resurrected as LRN-001
+        assert (mem_store.root / "MEM-001-a.md").exists()
+        assert not (mem_store.root / "LRN-001-a.md").exists()
+        re_read = mem_store.read_entry("MEM-001")
+        assert re_read.lifecycle == "evicted"
+
+    # ── No frontmatter lifecycle_reason churn ──
+
+    def test_no_lifecycle_reason_in_frontmatter(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T")
+        mem_store.set_lifecycle(
+            "MEM-001", "evicted", agent="dev_agent", reason="should be audit-only",
+        )
+        file_text = (mem_store.root / "MEM-001-a.md").read_text()
+        assert "lifecycle_reason" not in file_text
+
+    # ── Updated timestamp and agent tracking ──
+
+    def test_updates_updated_at_and_updated_by(self, mem_store: MemoryStore):
+        import time
+        entry = _make_memory_item(mem_store, id="MEM-001", slug="a", title="T")
+        original_updated_by = entry.updated_by
+        # Small sleep to ensure timestamp changes
+        time.sleep(1.1)
+        updated, prior = mem_store.set_lifecycle(
+            "MEM-001", "evicted", agent="new-agent", reason="test",
+        )
+        assert updated.updated_by == "new-agent"
+        assert updated.updated_at is not None
+        assert updated.updated_at != entry.updated_at
+        assert updated.authored_by == original_updated_by
+        assert updated.authored_at == entry.authored_at  # authored fields preserved
+
+    # ── Evicted stays on disk ──
+
+    def test_evicted_stays_on_disk(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="T")
+        file_path = mem_store.root / "MEM-001-a.md"
+        assert file_path.exists()
+        mem_store.set_lifecycle("MEM-001", "evicted", agent="x", reason="test")
+        assert file_path.exists()  # still exists — no hard delete
+
+    # ── Index regeneration after evict/restore ──
+
+    def test_index_excludes_evicted_after_set_lifecycle(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="Kept", topic="w")
+        _make_memory_item(mem_store, id="MEM-002", slug="b", title="Gone", topic="w")
+        mem_store.set_lifecycle("MEM-002", "evicted", agent="x", reason="test")
+        # The set_lifecycle call does NOT auto-regenerate index;
+        # regenerate_index must be called separately (as the route does).
+        mem_store.regenerate_index()
+        idx = (mem_store.root / "_index.md").read_text()
+        assert "MEM-001" in idx
+        assert "MEM-002" not in idx
+
+    def test_index_includes_restored_after_set_lifecycle(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="Restored", topic="w", lifecycle="evicted")
+        mem_store.regenerate_index()
+        idx = (mem_store.root / "_index.md").read_text()
+        assert "MEM-001" not in idx  # evicted → excluded
+        mem_store.set_lifecycle("MEM-001", "valid", agent="x", reason="restore")
+        mem_store.regenerate_index()
+        idx2 = (mem_store.root / "_index.md").read_text()
+        assert "MEM-001" in idx2  # restored → included
