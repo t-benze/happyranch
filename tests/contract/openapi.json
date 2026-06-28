@@ -332,6 +332,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/compact": {
+      "POST": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/reindex": {
       "POST": {
         "params": [

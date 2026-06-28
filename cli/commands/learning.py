@@ -111,21 +111,40 @@ def cmd_learning_search(args: argparse.Namespace) -> None:
     org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
     r = client.post(
         f"/api/v1/orgs/{org}/agents/{args.agent}/memory/entries/search",
-        json={"query": args.query, "limit": args.limit, "include_promoted": args.include_promoted},
+        json={
+            "query": args.query,
+            "limit": args.limit,
+            "include_promoted": args.include_promoted,
+            "include_evicted": args.include_evicted,
+            "include_superseded": args.include_superseded,
+            "include_kb": args.include_kb,
+        },
     )
     if not _ok(r):
         return
-    hits = r.json().get("hits", [])
+    resp = r.json()
+    hits = resp.get("hits", [])
+    warnings = resp.get("warnings", [])
     if args.json:
         import json
-        print(json.dumps(hits, indent=2))
+        print(json.dumps({"hits": hits, "warnings": warnings}, indent=2))
         return
     if not hits:
         print("(no matches)")
+        if warnings:
+            for w in warnings:
+                print(f"warning: {w}")
         return
     for h in hits:
-        print(f"  {h['id']}  score={h['score']}  {h['title']}")
+        source = h.get("source", "memory")
+        src_label = f"[{source}]" if source != "memory" else ""
+        lifecycle = h.get("lifecycle", "")
+        lc_label = f" ({lifecycle})" if lifecycle and lifecycle != "valid" else ""
+        print(f"  {h['id']}  score={h['score']}  {h['title']}{src_label}{lc_label}")
         print(f"      {h['snippet']}")
+    if warnings:
+        for w in warnings:
+            print(f"warning: {w}")
 
 
 
@@ -152,6 +171,39 @@ def cmd_memory_lifecycle(args: argparse.Namespace) -> None:
     print(
         f"ok: {resp['id']} lifecycle {resp['previous_lifecycle']} → {resp['lifecycle']}"
     )
+
+
+def cmd_memory_compact(args: argparse.Namespace) -> None:
+    """THR-032 P3b: manual memory compaction dry-run or apply."""
+    client = _learning_client()
+    org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+    dry_run = not getattr(args, "apply", False)
+    r = client.post(
+        f"/api/v1/orgs/{org}/agents/{args.agent}/memory/entries/compact",
+        json={"dry_run": dry_run},
+    )
+    if not _ok(r):
+        return
+    resp = r.json()
+    if resp["dry_run"]:
+        print(f"DRY RUN — {len(resp['candidates'])} candidates, {len(resp['skipped'])} skipped")
+        if resp["candidates"]:
+            print()
+            for c in resp["candidates"]:
+                print(f"  {c['id']}  {c['reason']}  ({c['current_lifecycle']})  {c['title']}")
+        if resp["skipped"]:
+            print()
+            print("Skipped:")
+            for s in resp["skipped"]:
+                print(f"  {s['id']}: {s['reason']}")
+    else:
+        print(f"APPLIED — {len(resp['evicted'])} evicted, {len(resp['skipped'])} skipped")
+        if resp["evicted"]:
+            for eid in resp["evicted"]:
+                print(f"  evicted: {eid}")
+        if resp["errors"]:
+            for err in resp["errors"]:
+                print(f"  error: {err}")
 
 
 
@@ -264,6 +316,9 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     ps.add_argument("query")
     ps.add_argument("--limit", type=int, default=20)
     ps.add_argument("--include-promoted", action="store_true")
+    ps.add_argument("--include-evicted", action="store_true")
+    ps.add_argument("--include-superseded", action="store_true")
+    ps.add_argument("--include-kb", action="store_true")
     ps.add_argument("--json", action="store_true")
     ps.set_defaults(func=wrap(cmd_learning_search))
 
@@ -301,6 +356,15 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
                       help="Target lifecycle state")
     plc.add_argument("--reason", required=True, help="Non-empty reason for the transition")
     plc.set_defaults(func=wrap(cmd_memory_lifecycle))
+
+    # THR-032 P3b: compaction command
+    pc = verb_sub.add_parser("compact", help="Manual memory compaction (dry-run or apply)")
+    pc.add_argument("--org", required=False, default=argparse.SUPPRESS)
+    pc.add_argument("--agent", required=True)
+    pc_group = pc.add_mutually_exclusive_group(required=True)
+    pc_group.add_argument("--dry-run", action="store_true", dest="dry_run", help="Report candidates only (no writes)")
+    pc_group.add_argument("--apply", action="store_true", help="Evict eligible candidates")
+    pc.set_defaults(func=wrap(cmd_memory_compact))
 
 
 def register(sub) -> None:

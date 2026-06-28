@@ -1111,6 +1111,9 @@ class LearningSearchBody(BaseModel):
     query: str
     limit: int = 20
     include_promoted: bool = False
+    include_evicted: bool = False
+    include_superseded: bool = False
+    include_kb: bool = False
 
 
 @router.post("/agents/{agent_name}/memory/entries/search")
@@ -1121,13 +1124,49 @@ async def search_learnings(
     slug: str, agent_name: str, body: LearningSearchBody, org: OrgDep,
 ) -> dict:
     store = _workspace_memory_store(org, agent_name)
-    hits = store.search(body.query, limit=body.limit, include_promoted=body.include_promoted)
-    return {
+    hits = store.search(
+        body.query,
+        limit=body.limit,
+        include_promoted=body.include_promoted,
+        include_evicted=body.include_evicted,
+        include_superseded=body.include_superseded,
+    )
+    warnings: list[str] = []
+    # THR-032 P4b: opt-in read-only KB federation
+    if body.include_kb:
+        kb_store = KBStore(org.root / "kb")
+        try:
+            kb_hits = kb_store.search(body.query, limit=body.limit)
+            for kh in kb_hits:
+                hits.append(LearningSearchHit(
+                    id=kh.slug, slug=kh.slug, title=kh.title,
+                    snippet=kh.snippet, score=kh.score,
+                    source="kb",
+                    lifecycle="valid", provenance="experiential",
+                    salience=50, updated_at=None,
+                ))
+        except Exception as exc:
+            warnings.append(f"KB search failed: {exc}")
+    result: dict = {
         "hits": [
-            {"id": h.id, "slug": h.slug, "title": h.title, "snippet": h.snippet, "score": h.score}
+            {
+                "id": h.id,
+                "slug": h.slug,
+                "title": h.title,
+                "snippet": h.snippet,
+                "score": h.score,
+                "source": h.source,
+                "lifecycle": h.lifecycle,
+                "provenance": h.provenance,
+                "salience": h.salience,
+                "updated_at": h.updated_at,
+            }
             for h in hits
         ],
     }
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1190,7 +1229,18 @@ async def add_learning(
             raise HTTPException(status_code=409, detail={"error": "id_exists", "id": e.id})
         except LearningSlugExists as e:
             raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
+        # THR-032 P3b: audit supersede lifecycle transition if it occurred
+        sup_target = getattr(written, '_superseded_target_id', None)
         store.regenerate_index()
+        if sup_target is not None:
+            AuditLogger(org.db).log_memory_lifecycle_changed(
+                agent=agent_name,
+                id=sup_target,
+                from_lifecycle="valid",
+                to_lifecycle="superseded",
+                reason=f"superseded by {written.id}",
+                source="supersedes",
+            )
         AuditLogger(org.db).log_memory_added(
             agent=agent_name,
             id=written.id,
@@ -1239,7 +1289,18 @@ async def update_learning(
             raise _invalid_entry_to_http(e)
         except LearningSlugExists as e:
             raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
+        # THR-032 P3b: audit supersede lifecycle transition if it occurred
+        sup_target = getattr(written, '_superseded_target_id', None)
         store.regenerate_index()
+        if sup_target is not None:
+            AuditLogger(org.db).log_memory_lifecycle_changed(
+                agent=agent_name,
+                id=sup_target,
+                from_lifecycle="valid",
+                to_lifecycle="superseded",
+                reason=f"superseded by {written.id}",
+                source="supersedes",
+            )
         AuditLogger(org.db).log_memory_updated(
             agent=agent_name,
             id=written.id,
@@ -1352,3 +1413,39 @@ async def patch_lifecycle(
     result = _entry_to_dict(updated)
     result["previous_lifecycle"] = prior
     return result
+
+
+class CompactBody(BaseModel):
+    dry_run: bool = True
+
+
+@router.post("/agents/{agent_name}/memory/entries/compact")
+async def compact_memory(
+    slug: str, agent_name: str, body: CompactBody, org: OrgDep,
+) -> dict:
+    store = _workspace_memory_store(org, agent_name)
+    async with org.db_lock:
+        result = store.compact(dry_run=body.dry_run)
+        # Audit each eviction
+        if not body.dry_run:
+            for evicted_id in result.evicted:
+                AuditLogger(org.db).log_memory_lifecycle_changed(
+                    agent=agent_name,
+                    id=evicted_id,
+                    from_lifecycle="valid" if evicted_id not in {
+                        c.id for c in result.candidates if c.current_lifecycle == "superseded"
+                    } else "superseded",
+                    to_lifecycle="evicted",
+                    reason=f"compaction (dry_run={body.dry_run})",
+                    source="compaction",
+                )
+        return {
+            "dry_run": result.dry_run,
+            "candidates": [
+                {"id": c.id, "title": c.title, "reason": c.reason, "current_lifecycle": c.current_lifecycle}
+                for c in result.candidates
+            ],
+            "evicted": result.evicted,
+            "skipped": result.skipped,
+            "errors": result.errors,
+        }

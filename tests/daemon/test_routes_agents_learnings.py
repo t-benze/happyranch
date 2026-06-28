@@ -550,3 +550,134 @@ body
         )
         assert r.status_code == 200
         assert r.json()["lifecycle"] == "superseded"
+
+
+class TestCompactRoute:
+    """THR-032 P3b: memory compaction route."""
+
+    def test_compact_dry_run(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        # Add a stale entry
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "stale", "title": "Stale", "topic": "w", "body": "b\n"},
+        )
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/compact",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"dry_run": True},
+        )
+        assert r.status_code == 200
+        resp = r.json()
+        assert resp["dry_run"] is True
+        assert "candidates" in resp
+        assert "skipped" in resp
+        assert resp["evicted"] == []
+
+    def test_compact_apply(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "stale2", "title": "Stale2", "topic": "w", "body": "b\n"},
+        )
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/compact",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"dry_run": False},
+        )
+        assert r.status_code == 200
+        resp = r.json()
+        assert resp["dry_run"] is False
+        # Apply should return the result structure
+        assert "evicted" in resp
+        assert "skipped" in resp
+
+
+class TestSearchImproved:
+    """THR-032 P4a: improved search route with new flags."""
+
+    def test_search_includes_additive_fields(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "searchme", "title": "Search Me", "topic": "testing",
+                   "body": "find me\n", "salience": 72, "provenance": "reflective"},
+        )
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "search", "limit": 5},
+        )
+        assert r.status_code == 200
+        hits = r.json()["hits"]
+        assert len(hits) >= 1
+        hit = hits[0]
+        assert "source" in hit
+        assert "lifecycle" in hit
+        assert "provenance" in hit
+        assert "salience" in hit
+        assert "updated_at" in hit
+        assert hit["source"] == "memory"
+
+    def test_search_include_evicted_flag(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "ev", "title": "Ev", "topic": "w", "body": "b\n"},
+        )
+        client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "test"},
+        )
+        # Default: excluded
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Ev"},
+        )
+        assert r.status_code == 200
+        assert len(r.json()["hits"]) == 0
+        # With flag: included
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Ev", "include_evicted": True},
+        )
+        assert r.status_code == 200
+        assert len(r.json()["hits"]) == 1
+
+    def test_search_empty_query(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": ""},
+        )
+        assert r.status_code == 200
+        assert r.json()["hits"] == []
+
+    def test_search_include_kb_federates(self, client_with_migrated_workspace):
+        client, token, slug, agent, _ = client_with_migrated_workspace
+        # Add a memory entry
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "unique-search", "title": "Unique Search Term",
+                   "topic": "testing", "body": "body body\n"},
+        )
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "unique", "include_kb": True},
+        )
+        assert r.status_code == 200
+        hits = r.json()["hits"]
+        assert len(hits) >= 1
+        # At least one result is a memory hit
+        mem_hits = [h for h in hits if h["source"] == "memory"]
+        assert len(mem_hits) >= 1

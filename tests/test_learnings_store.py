@@ -1194,3 +1194,322 @@ class TestSetLifecycle:
         mem_store.regenerate_index()
         idx2 = (mem_store.root / "_index.md").read_text()
         assert "MEM-001" in idx2  # restored → included
+
+
+class TestMemoryCompaction:
+    """THR-032 P3b: manual memory compaction — dry-run, apply, protections."""
+
+    @pytest.fixture
+    def mem_store(self, tmp_path: Path) -> MemoryStore:
+        return MemoryStore(tmp_path / "memory")
+
+    def _seed_old_entry(self, store: MemoryStore, id: str, slug: str, title: str,
+                        **overrides) -> MemoryItem:
+        """Write an entry, then patch its updated_at to an old date so it
+        looks stale for compaction eligibility."""
+        entry = _make_memory_item(store, id=id, slug=slug, title=title, **overrides)
+        # Manually rewrite with an old timestamp
+        path = store._find_by_id(id)
+        text = path.read_text()
+        text = text.replace(
+            "updated_at:", "updated_at: 2025-01-01T00:00:00Z\n_authored_at:"
+        )
+        # Actually just rewrite with old timestamp
+        import yaml
+        parts = text.split("---", 2)
+        fm = yaml.safe_load(parts[1]) or {}
+        fm["updated_at"] = "2025-01-01T00:00:00Z"
+        body = parts[2].lstrip("\n")
+        fm["updated_by"] = fm.get("updated_by", "test")
+        new_text = f"---\n{yaml.safe_dump(fm, sort_keys=False).strip()}\n---\n\n{body}"
+        path.write_text(new_text)
+        return store.read_entry(id)
+
+    # ── Dry-run writes nothing ──
+
+    def test_dry_run_writes_nothing(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "old", "Old Entry", salience=5)
+        mtimes_before = {
+            p.name: p.stat().st_mtime
+            for p in mem_store._entry_paths()
+        }
+        result = mem_store.compact(dry_run=True)
+        assert result.dry_run is True
+        assert len(result.evicted) == 0
+        # No files should have been written
+        for p in mem_store._entry_paths():
+            assert p.stat().st_mtime == mtimes_before[p.name], f"{p.name} was modified"
+
+    def test_dry_run_returns_candidates(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "old", "Old Entry", salience=5)
+        result = mem_store.compact(dry_run=True)
+        assert len(result.candidates) > 0
+        assert result.candidates[0].id == "MEM-001"
+
+    # ── Apply evicts eligible entries ──
+
+    def test_apply_evicts_eligible(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "old", "Old Entry", salience=5)
+        result = mem_store.compact(dry_run=False)
+        assert result.dry_run is False
+        assert "MEM-001" in result.evicted
+        entry = mem_store.read_entry("MEM-001")
+        assert entry.lifecycle == "evicted"
+
+    # ── Idempotency ──
+
+    def test_compact_idempotent(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "old", "Old Entry", salience=5)
+        result1 = mem_store.compact(dry_run=False)
+        assert "MEM-001" in result1.evicted
+        result2 = mem_store.compact(dry_run=False)
+        assert len(result2.evicted) == 0  # idempotent
+
+    # ── Protected items skip ──
+
+    def test_promoted_skips(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "prom", "Promoted",
+                             salience=5, promoted_to="some-kb")
+        result = mem_store.compact(dry_run=True)
+        assert len(result.candidates) == 0
+        assert any(s["id"] == "MEM-001" and s["reason"] == "promoted" for s in result.skipped)
+
+    def test_directive_skips(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "dir", "Directive",
+                             provenance="directive", salience=5)
+        result = mem_store.compact(dry_run=True)
+        assert len(result.candidates) == 0
+        assert any(s["id"] == "MEM-001" and s["reason"] == "directive" for s in result.skipped)
+
+    def test_team_scope_skips(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "team", "Team Scope",
+                             scope="team", salience=5)
+        result = mem_store.compact(dry_run=True)
+        assert len(result.candidates) == 0
+        assert any(s["id"] == "MEM-001" and s["reason"] == "scope:team" for s in result.skipped)
+
+    def test_org_scope_skips(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "org", "Org Scope",
+                             scope="org", salience=5)
+        result = mem_store.compact(dry_run=True)
+        assert len(result.candidates) == 0
+        assert any(s["id"] == "MEM-001" and s["reason"] == "scope:org" for s in result.skipped)
+
+    def test_referenced_by_related_to_skips(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "target", "Target",
+                             salience=5)
+        self._seed_old_entry(mem_store, "MEM-002", "referrer", "Referrer",
+                             related_to=["MEM-001"], salience=50)
+        result = mem_store.compact(dry_run=True)
+        assert all(c.id != "MEM-001" for c in result.candidates)
+
+    def test_referenced_by_supersedes_skips(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "target", "Target",
+                             salience=5)
+        self._seed_old_entry(mem_store, "MEM-002", "referrer", "Referrer",
+                             supersedes="MEM-001", salience=50)
+        result = mem_store.compact(dry_run=True)
+        assert all(c.id != "MEM-001" for c in result.candidates)
+
+    def test_referenced_by_body_token_skips(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "target", "Target",
+                             salience=5)
+        self._seed_old_entry(mem_store, "MEM-002", "referrer", "Referrer",
+                             body="see also MEM-001 for details\n", salience=50)
+        result = mem_store.compact(dry_run=True)
+        assert all(c.id != "MEM-001" for c in result.candidates)
+
+    def test_referenced_by_lrn_body_token_skips(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "target", "Target",
+                             salience=5)
+        self._seed_old_entry(mem_store, "MEM-002", "referrer", "Referrer",
+                             body="see also LRN-001 for details\n", salience=50)
+        result = mem_store.compact(dry_run=True)
+        assert all(c.id != "MEM-001" for c in result.candidates)
+
+    # ── No hard delete ──
+
+    def test_evicted_stays_on_disk_after_compact(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "old", "Old Entry", salience=5)
+        mem_store.compact(dry_run=False)
+        path = mem_store._find_by_id("MEM-001")
+        assert path is not None
+        assert path.exists()
+
+    # ── Index regenerated ──
+
+    def test_index_regenerated_after_compact(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "old", "Old Entry", salience=5)
+        self._seed_old_entry(mem_store, "MEM-002", "keep", "Keep This", salience=90)
+        mem_store.compact(dry_run=False)
+        idx = (mem_store.root / "_index.md").read_text()
+        assert "MEM-001" not in idx  # evicted
+        assert "MEM-002" in idx      # still valid
+
+    # ── Superseded grace period ──
+
+    def test_superseded_beyond_grace_eligible(self, mem_store: MemoryStore):
+        self._seed_old_entry(mem_store, "MEM-001", "super", "Superseded",
+                             lifecycle="superseded", salience=80)
+        result = mem_store.compact(dry_run=True)
+        assert len(result.candidates) > 0
+        assert result.candidates[0].current_lifecycle == "superseded"
+
+    # ── Max evictions cap ──
+
+    def test_max_evictions_cap(self, mem_store: MemoryStore):
+        from runtime.infrastructure.learnings_store import MemoryCompactionPolicy
+        for i in range(30):
+            self._seed_old_entry(
+                mem_store,
+                id=f"MEM-{i+1:03d}", slug=f"old-{i}",
+                title=f"Old Entry {i}",
+                salience=2,
+            )
+        policy = MemoryCompactionPolicy(max_evictions_per_run=5)
+        result = mem_store.compact(dry_run=False, policy=policy)
+        assert len(result.evicted) <= 5
+        assert len(result.candidates) <= 5
+
+
+class TestSupersedeMarking:
+    """THR-032 P3b: supersede marking on write_entry."""
+
+    @pytest.fixture
+    def mem_store(self, tmp_path: Path) -> MemoryStore:
+        return MemoryStore(tmp_path / "memory")
+
+    def test_write_with_supersedes_marks_target_superseded(self, mem_store: MemoryStore):
+        old = _make_memory_item(mem_store, "MEM-001", "old", "Old", lifecycle="valid")
+        assert old.lifecycle == "valid"
+        new = _make_memory_item(mem_store, "MEM-002", "new", "New", supersedes="MEM-001")
+        # The old entry should now be superseded
+        target = mem_store.read_entry("MEM-001")
+        assert target.lifecycle == "superseded"
+        assert new._superseded_target_id == "MEM-001"
+
+    def test_supersede_already_superseded_is_noop(self, mem_store: MemoryStore):
+        old = _make_memory_item(mem_store, "MEM-001", "old", "Old", lifecycle="superseded")
+        new = _make_memory_item(mem_store, "MEM-002", "new", "New", supersedes="MEM-001")
+        target = mem_store.read_entry("MEM-001")
+        assert target.lifecycle == "superseded"  # unchanged
+        assert new._superseded_target_id is None  # no transition
+
+    def test_supersede_lrn_alias_works(self, mem_store: MemoryStore):
+        # Write with LRN id, supersede via LRN alias
+        (mem_store.root / "LRN-001-old.md").write_text(
+            "---\nid: LRN-001\nslug: old\ntitle: Old\ntopic: test\nlifecycle: valid\n---\n\nbody\n"
+        )
+        new = _make_memory_item(mem_store, "MEM-002", "new", "New", supersedes="LRN-001")
+        target = mem_store._parse(
+            mem_store._find_by_id("LRN-001").read_text()
+        )
+        assert target.lifecycle == "superseded"
+        assert new._superseded_target_id == "LRN-001"
+
+    def test_supersede_promoted_noop(self, mem_store: MemoryStore):
+        old = _make_memory_item(mem_store, "MEM-001", "old", "Old",
+                                promoted_to="some-kb", lifecycle="valid")
+        new = _make_memory_item(mem_store, "MEM-002", "new", "New", supersedes="MEM-001")
+        target = mem_store.read_entry("MEM-001")
+        assert target.lifecycle == "valid"  # promoted, unchanged
+        assert new._superseded_target_id is None
+
+
+class TestImprovedSearch:
+    """THR-032 P4a: improved multi-term search ranking."""
+
+    @pytest.fixture
+    def mem_store(self, tmp_path: Path) -> MemoryStore:
+        return MemoryStore(tmp_path / "memory")
+
+    def test_title_exact_match_scores_highest(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Workflow Patterns", body="some text\n")
+        _make_memory_item(mem_store, "MEM-002", "b", "Other Thing", body="workflow patterns are nice\n")
+        hits = mem_store.search("workflow patterns")
+        assert hits[0].id == "MEM-001"  # title exact > body
+
+    def test_multi_term_scoring(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Workflow Bug", topic="testing", body="some body\n")
+        _make_memory_item(mem_store, "MEM-002", "b", "Other", body="workflow bug fix\n")
+        hits = mem_store.search("workflow bug")
+        # MEM-001 has both terms in title -> high score
+        assert hits[0].id == "MEM-001"
+
+    def test_provenance_boost_directive(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing Rules", provenance="directive")
+        _make_memory_item(mem_store, "MEM-002", "b", "Testing Rules", provenance="experiential")
+        hits = mem_store.search("testing")
+        assert hits[0].id == "MEM-001"  # directive beats experiential
+
+    def test_superseded_penalty(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing Rules", lifecycle="superseded")
+        _make_memory_item(mem_store, "MEM-002", "b", "Testing Rules", lifecycle="valid")
+        hits = mem_store.search("testing", include_superseded=True)
+        assert hits[0].id == "MEM-002"  # valid beats superseded
+
+    def test_evicted_excluded_by_default(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing", lifecycle="evicted")
+        hits = mem_store.search("testing")
+        assert len(hits) == 0
+
+    def test_evicted_included_with_flag(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing", lifecycle="evicted")
+        hits = mem_store.search("testing", include_evicted=True)
+        assert len(hits) == 1
+        assert hits[0].id == "MEM-001"
+
+    def test_superseded_excluded_by_default(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing", lifecycle="superseded")
+        hits = mem_store.search("testing")
+        assert len(hits) == 0
+
+    def test_superseded_included_with_flag(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing", lifecycle="superseded")
+        hits = mem_store.search("testing", include_superseded=True)
+        assert len(hits) == 1
+
+    def test_empty_query_returns_no_hits(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing")
+        hits = mem_store.search("")
+        assert hits == []
+
+    def test_hit_includes_additive_fields(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing", provenance="reflective", salience=72)
+        hits = mem_store.search("testing")
+        assert hits[0].source == "memory"
+        assert hits[0].lifecycle == "valid"
+        assert hits[0].provenance == "reflective"
+        assert hits[0].salience == 72
+
+    def test_promoted_excluded_by_default(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing", promoted_to="some-kb")
+        hits = mem_store.search("testing")
+        assert len(hits) == 0
+
+    def test_promoted_included_with_flag(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing", promoted_to="some-kb")
+        hits = mem_store.search("testing", include_promoted=True)
+        assert len(hits) == 1
+
+    def test_malformed_file_skipped(self, mem_store: MemoryStore):
+        # Write a malformed markdown file
+        (mem_store.root / "MEM-001-bad.md").write_text("not valid yaml")
+        _make_memory_item(mem_store, "MEM-002", "good", "Testing Good")
+        hits = mem_store.search("testing")
+        assert len(hits) == 1
+        assert hits[0].id == "MEM-002"
+
+    def test_salience_contributes_to_score(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Testing", salience=90)
+        _make_memory_item(mem_store, "MEM-002", "b", "Testing", salience=10)
+        hits = mem_store.search("testing")
+        assert hits[0].id == "MEM-001"  # higher salience
+        assert hits[0].score > hits[1].score
+
+    def test_tag_match_contributes(self, mem_store: MemoryStore):
+        _make_memory_item(mem_store, "MEM-001", "a", "Never Match", tags=["workflow"])
+        _make_memory_item(mem_store, "MEM-002", "b", "Something Else")
+        hits = mem_store.search("workflow")
+        assert len(hits) >= 1
+        assert hits[0].id == "MEM-001"

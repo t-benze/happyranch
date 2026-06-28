@@ -357,3 +357,118 @@ def test_learning_lifecycle_alias_warns_and_dispatches(monkeypatch, capsys):
     args.func(args)
     assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/MEM-001/lifecycle"
     assert "deprecated" in capsys.readouterr().err
+
+
+# ── Compact tests ──
+
+def _fake_client_for_compact(monkeypatch, captured: dict):
+    class FakeResp:
+        status_code = 200
+        @staticmethod
+        def json():
+            return {"dry_run": captured["dry_run"], "candidates": [],
+                    "evicted": [], "skipped": [], "errors": []}
+
+    class FakeClient:
+        @staticmethod
+        def from_env():
+            return FakeClient()
+        def post(self, path, json=None):
+            captured["path"] = path
+            captured["dry_run"] = json.get("dry_run")
+            return FakeResp()
+
+    monkeypatch.setattr("cli.commands.learning.OpcClient", FakeClient)
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+
+
+def test_memory_help_includes_compact():
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        _parse(["memory", "compact", "--help"])
+
+
+def test_memory_compact_dry_run_parses_and_dispatches(monkeypatch):
+    captured = {}
+    _fake_client_for_compact(monkeypatch, captured)
+    args = _parse([
+        "memory", "compact",
+        "--org", "o", "--agent", "a",
+        "--dry-run",
+    ])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/compact"
+    assert captured["dry_run"] is True
+
+
+def test_memory_compact_apply_parses_and_dispatches(monkeypatch):
+    captured = {}
+    _fake_client_for_compact(monkeypatch, captured)
+    args = _parse([
+        "memory", "compact",
+        "--org", "o", "--agent", "a",
+        "--apply",
+    ])
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/compact"
+    assert captured["dry_run"] is False
+
+
+def test_memory_compact_mutually_exclusive(monkeypatch):
+    """--dry-run and --apply are mutually exclusive."""
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        _parse([
+            "memory", "compact",
+            "--org", "o", "--agent", "a",
+            "--dry-run", "--apply",
+        ])
+
+
+def test_memory_compact_requires_one_mode(monkeypatch):
+    """Either --dry-run or --apply must be provided."""
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        _parse([
+            "memory", "compact",
+            "--org", "o", "--agent", "a",
+        ])
+
+
+# ── Search with new flags ──
+
+def _fake_client_for_search(monkeypatch, captured: dict):
+    class FakeResp:
+        status_code = 200
+        @staticmethod
+        def json():
+            return {"hits": [], "warnings": []}
+
+    class FakeClient:
+        @staticmethod
+        def from_env():
+            return FakeClient()
+        def post(self, path, json=None):
+            captured["path"] = path
+            captured["body"] = json
+            return FakeResp()
+
+    monkeypatch.setattr("cli.commands.learning.OpcClient", FakeClient)
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+
+
+def test_memory_search_new_flags(monkeypatch):
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "--include-evicted", "--include-superseded", "--include-kb",
+        "test query",
+    ])
+    args.func(args)
+    assert captured["body"]["include_evicted"] is True
+    assert captured["body"]["include_superseded"] is True
+    assert captured["body"]["include_kb"] is True
+    assert captured["body"]["query"] == "test query"
