@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from runtime.daemon.wake_runner import build_wake_prompt
+from datetime import datetime, timezone
+
+from runtime.config import Settings
+from runtime.daemon.wake_runner import build_wake_prompt, run_wake
+from runtime.models import WorkHourMode, WorkHourRecord, WorkHourStatus
+from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import OrgConfig
 
 
@@ -78,3 +83,57 @@ def test_prompt_surfaces_dropped_routine_count() -> None:
 def test_prompt_omits_dropped_line_when_none() -> None:
     prompt = _prompt(dropped=0)
     assert "dropped" not in prompt.lower()
+
+
+class _FakeResult:
+    success = True
+    error = None
+    returncode = 0
+    session_id = "executor-session"
+    agent_session_id = "agent-session"
+    token_usage = None
+
+
+class _FakeExecutor:
+    def run(self, **_kwargs):
+        return _FakeResult()
+
+
+async def test_run_wake_passes_org_paths_to_executor_factory(org_state) -> None:
+    (org_state.root / "org" / "agents").mkdir(parents=True, exist_ok=True)
+    (org_state.root / "org" / "agents" / "dev_agent.md").write_text(
+        "---\n"
+        "name: dev_agent\n"
+        "team: engineering\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "---\n\n"
+        "## Routine Tasks\n\n"
+        "- Triage open tickets.\n"
+    )
+    (org_state.root / "workspaces" / "dev_agent").mkdir(parents=True, exist_ok=True)
+    org_state.db.work_hours.insert(WorkHourRecord(
+        id="WORKHOUR-001",
+        agent_name="dev_agent",
+        local_date="2026-06-11",
+        slot="09:00",
+        mode=WorkHourMode.WINDOWED,
+        scheduled_for=datetime(2026, 6, 11, 1, 0, tzinfo=timezone.utc),
+        status=WorkHourStatus.PENDING,
+        routine_count=1,
+    ))
+    captured = {}
+
+    def factory(executor_name, settings, paths):
+        captured["paths"] = paths
+        return _FakeExecutor()
+
+    await run_wake(
+        org_state=org_state,
+        work_hour_id="WORKHOUR-001",
+        settings=Settings(),
+        executor_factory=factory,
+    )
+
+    assert isinstance(captured["paths"], OrgPaths)
+    assert captured["paths"].root == org_state.root

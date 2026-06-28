@@ -374,9 +374,10 @@
           "archived",
           "pending",
           "in_progress",
-          "blocked",
+          "escalated",
           "completed",
           "failed",
+          "cancelled",
           "resolved_superseded"
         ]
       },
