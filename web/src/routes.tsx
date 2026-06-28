@@ -5,6 +5,7 @@ import {
   Routes,
   useLocation,
   useParams,
+  useSearchParams,
 } from 'react-router-dom';
 import { AppBar } from '@/design-system/layouts/AppShell/AppBar';
 import { ErrorBoundary } from '@/design-system/layouts/AppShell/ErrorBoundary';
@@ -26,8 +27,8 @@ import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { SpendPage } from '@/features/spend/SpendPage';
 import { SystemAssistantPage } from '@/features/system-assistant/SystemAssistantPage';
 import { DreamsPage } from '@/features/dreams/DreamsPage';
-import { SchedulePage } from '@/features/schedule/SchedulePage';
 import { OverviewPage as WorkHoursOverviewPage } from '@/features/work-hours-config/OverviewPage';
+import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/WakesView';
 import { AgentDetailPage as WorkHoursAgentDetailPage } from '@/features/work-hours-config/AgentDetailPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
@@ -106,8 +107,11 @@ export function AppRoutes(): JSX.Element {
           <Route path="jobs/:job_id" element={<JobDetailPage />} />
           <Route path="spend" element={<SpendPage />} />
           <Route path="dreams" element={<DreamsPage />} />
-          <Route path="schedule" element={<SchedulePage />} />
-          <Route path="work-hours" element={<WorkHoursOverviewPage />} />
+          {/* THR-035: the standalone Schedule surface folded into Work Hours.
+              Old bookmarks redirect to the Wakes view; the wake list now lives
+              as the `?view=wakes` tab of the Work Hours surface. */}
+          <Route path="schedule" element={<ScheduleRedirect />} />
+          <Route path="work-hours" element={<WorkHoursSurface />} />
           <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
           <Route path="artifacts" element={<ArtifactsPage />} />
           <Route path="assistant" element={<SystemAssistantPage />} />
@@ -122,6 +126,28 @@ export function AppRoutes(): JSX.Element {
 function NavigateToHome(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   return <Navigate to={`/orgs/${slug}/dashboard`} replace />;
+}
+
+/**
+ * Work Hours surface (THR-035): one route hosting two in-page tabs. The `Wakes`
+ * tab (the wake-execution list folded in from the retired Schedule surface) is
+ * selected by `?view=wakes`; everything else shows the config Overview. Using a
+ * query param rather than a `work-hours/wakes` sub-route avoids any ranking
+ * dependency against the sibling `work-hours/:agent` detail route.
+ */
+function WorkHoursSurface(): JSX.Element {
+  const [searchParams] = useSearchParams();
+  return searchParams.get('view') === 'wakes' ? (
+    <WorkHoursWakesView />
+  ) : (
+    <WorkHoursOverviewPage />
+  );
+}
+
+/** Redirect the retired /schedule surface to the Work Hours Wakes view. */
+function ScheduleRedirect(): JSX.Element {
+  const { slug } = useParams<{ slug: string }>();
+  return <Navigate to={`/orgs/${slug}/work-hours?view=wakes`} replace />;
 }
 
 function NotFound(): JSX.Element {

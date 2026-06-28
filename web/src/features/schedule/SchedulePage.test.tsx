@@ -62,7 +62,7 @@ function defaultEntries(): WorkHourRecord[] {
       summary: null,
       transcript_path: null,
       session_id: null,
-      error: null,
+      error: 'Agent code_reviewer is not enrolled in any team',
       created_at: '2026-06-18T13:00:00Z',
     },
     {
@@ -87,7 +87,21 @@ function defaultEntries(): WorkHourRecord[] {
   ];
 }
 
-describe('SchedulePage — Pasture fidelity read-only work-hours list', () => {
+describe('THR-035: wake-execution list (consolidated into Work Hours Wakes view)', () => {
+  test('/schedule redirects to work-hours Wakes view (no 404)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours();
+    mountAt(`/orgs/${SLUG}/schedule`);
+
+    await waitFor(() => {
+      // After the redirect, we're on the Work Hours page — not a 404.
+      // The sidebar and AppBar show 'Work Hours', not 'Schedule'.
+      const workHoursLinks = screen.getAllByText('Work Hours');
+      expect(workHoursLinks.length).toBeGreaterThanOrEqual(1);
+      expect(screen.queryByText('Schedule')).toBeNull();
+    });
+  });
+
   test('renders SCHED-02 Direction-A eyebrow + serif title and description', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedWorkHours();
@@ -245,6 +259,31 @@ describe('SchedulePage — Pasture fidelity read-only work-hours list', () => {
     expect(screen.queryByRole('button', { name: /add wake/i })).toBeNull();
     // No form inputs for editing
     expect(screen.queryByPlaceholderText(/type a message/i)).toBeNull();
+  });
+
+  test('renders per-wake summary when present', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours();
+    mountAt(`/orgs/${SLUG}/schedule`);
+
+    await waitFor(() => {
+      // WORKHOUR-001 and WORKHOUR-003 both have summary: 'Morning routines completed.'
+      const summaries = screen.getAllByText('Morning routines completed.');
+      expect(summaries.length).toBe(2);
+    });
+  });
+
+  test('renders per-wake error when present', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours();
+    mountAt(`/orgs/${SLUG}/schedule`);
+
+    await waitFor(() => {
+      // WORKHOUR-002 has error: 'Agent code_reviewer is not enrolled in any team'
+      expect(
+        screen.getByText('Agent code_reviewer is not enrolled in any team'),
+      ).toBeInTheDocument();
+    });
   });
 
   test('shows wake count per agent in card headers', async () => {

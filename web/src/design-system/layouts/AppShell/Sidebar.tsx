@@ -2,7 +2,6 @@ import { useState } from 'react';
 import * as SelectPrimitive from '@radix-ui/react-select';
 import {
   BookOpen,
-  Calendar,
   ChevronDown,
   Clock,
   type LucideIcon,
@@ -47,7 +46,7 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
  *    org switcher — restyled from the native footer `<select>` (BUG-01/08).
  *  - Primary group: Home, Threads, Tasks, Agents, Knowledge, Artifacts — each
  *    with a leading icon (BUG-03).
- *  - Operate group: Spend, Dreams, Schedule, Audit, Jobs.
+ *  - Operate group: Spend, Dreams, Work Hours, Audit, Jobs.
  *  - Footer: Settings as a labeled row above the account row (BUG-02), then an
  *    avatar + identity account row (BUG-07).
  *
@@ -248,9 +247,6 @@ export function Sidebar(): JSX.Element {
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('dreams', true)} icon={Sparkles}>
             Dreams
-          </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('schedule', true)} icon={Calendar}>
-            Schedule
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
             Work Hours

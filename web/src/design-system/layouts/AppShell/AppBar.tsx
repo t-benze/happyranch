@@ -24,7 +24,7 @@ const SECTION_TITLES: Record<string, string> = {
   artifacts: 'Artifacts',
   spend: 'Spend',
   dreams: 'Dreams',
-  schedule: 'Schedule',
+  'work-hours': 'Work Hours',
   audit: 'Audit',
   settings: 'Settings',
   jobs: 'Jobs',
