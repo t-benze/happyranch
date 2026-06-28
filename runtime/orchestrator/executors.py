@@ -133,15 +133,31 @@ def _parse_codex_usage(stdout: str) -> TokenUsage | None:
 
     Walks events, picks the last `turn.completed` — the terminal event that
     carries the cumulative ``usage`` object in Codex >= 0.137 (confirmed
-    against codex-cli 0.137.0 live output). Returns None on empty stdout,
-    TokenUsage with NULL token fields if no terminal usage event is found
-    (forensic preservation), populated TokenUsage on success.
+    against codex-cli 0.137.0 and 0.139.0 live output). Returns None on empty
+    stdout, TokenUsage with NULL token fields if no terminal usage event is
+    found (forensic preservation), populated TokenUsage on success.
 
     Note: Codex `exec --json` v0.137.0 emits no model field on any event, so
     ``model`` stays NULL (read defensively in case a later version adds it).
     Verify the terminal event name/keys against the running Codex CLI version
     during integration testing — if the schema changes, only this function
     needs updating.
+
+    **Codex ``input_tokens`` vs ``cached_input_tokens`` ambiguity (issue #216).**
+    The Codex CLI emits both fields on the ``turn.completed`` event. It is
+    NOT yet confirmed whether ``input_tokens`` already includes
+    ``cached_input_tokens`` (as some OpenAI API endpoints do where
+    ``prompt_tokens`` is the total including cached). If ``input_tokens``
+    includes ``cached_input_tokens``, then the current
+    ``total_tokens``/``churn_tokens`` metric (input + output + reasoning)
+    double-counts cached tokens for Codex sessions, inflating the Codex churn
+    relative to Claude (where cache is tracked in a separate column).
+    Conversely, if ``input_tokens`` is net *fresh* input (cache excluded),
+    then ``total_tokens``/``churn_tokens`` is apples-to-apples across
+    executors. Until this is confirmed against the Codex provider
+    documentation or live instrumentation, this function stores both fields
+    as-is without normalization. Historical rows are ambiguous; any
+    normalization applied later would not be retroactive.
     """
     if not stdout or not stdout.strip():
         return None
@@ -175,54 +191,146 @@ def _parse_codex_usage(stdout: str) -> TokenUsage | None:
 def _parse_opencode_usage(stdout: str) -> TokenUsage | None:
     """Parse opencode `--format json` stdout into TokenUsage.
 
-    Sums assistant-role message usage. Model taken from last assistant
-    message (sessions can span multiple models for tool use; last is the
-    canonical 'this session ran on' answer).
+    Supports two output shapes:
+    - **Old format** (opencode < 1.14): A single JSON object with
+      ``messages[].usage`` per assistant turn. Sums assistant-role message
+      usage; model from the last assistant message.
+    - **New JSONL format** (opencode >= 1.14.31): NDJSON stream of events.
+      Walks lines, picks the last ``step_finish`` event whose ``part`` carries
+      ``tokens`` (``step_finish.part.tokens``). Falls back to the last
+      assistant message event with ``usage`` if no step_finish tokens found.
     """
     if not stdout or not stdout.strip():
         return None
+    stripped = stdout.strip()
+
+    # --- Path A: Old single-JSON-object format ---
+    # Try parsing as a single JSON object first (old format). If the stdout
+    # starts with '{' but isn't a single JSON object (e.g., JSONL), fall
+    # through to Path B instead of returning a raw-only TokenUsage.
     try:
-        obj = json.loads(stdout.strip())
+        obj = json.loads(stripped)
     except json.JSONDecodeError:
-        logger.warning("opencode usage parser: stdout is not valid JSON")
-        return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
-    if not isinstance(obj, dict):
-        return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
-    messages = obj.get("messages") or []
-    assistant_msgs = [
-        m
-        for m in messages
-        if isinstance(m, dict) and m.get("role") == "assistant" and isinstance(m.get("usage"), dict)
-    ]
-    if not assistant_msgs:
-        return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
+        pass  # not a single JSON object; try JSONL below
+    else:
+        if isinstance(obj, dict):
+            messages = obj.get("messages") or []
+            assistant_msgs = [
+                m for m in messages
+                if isinstance(m, dict) and m.get("role") == "assistant"
+                and isinstance(m.get("usage"), dict)
+            ]
+            if assistant_msgs:
+                def _sum(field: str) -> int | None:
+                    vals = [m["usage"].get(field) for m in assistant_msgs]
+                    nums = [v for v in vals if isinstance(v, int) and not isinstance(v, bool)]
+                    return sum(nums) if nums else None
+                last_model = next(
+                    (m.get("model") for m in reversed(assistant_msgs) if m.get("model")),
+                    None,
+                )
+                return TokenUsage(
+                    input_tokens=_sum("input_tokens"),
+                    output_tokens=_sum("output_tokens"),
+                    cache_read_tokens=_sum("cache_read_tokens"),
+                    cache_creation_tokens=_sum("cache_write_tokens"),
+                    reasoning_tokens=_sum("reasoning_tokens"),
+                    model=last_model,
+                    usage_raw_json=json.dumps([m["usage"] for m in assistant_msgs]),
+                )
+        # Single JSON but not the expected shape; fall through to JSONL.
 
-    def _sum(field: str) -> int | None:
-        vals = [m["usage"].get(field) for m in assistant_msgs]
-        nums = [v for v in vals if isinstance(v, int) and not isinstance(v, bool)]
-        return sum(nums) if nums else None
+    # --- Path B: New JSONL format (opencode >= 1.14.31) ---
+    # Walk lines, collect step_finish tokens and assistant usage events.
+    step_finish_tokens: dict | None = None
+    assistant_usages: list[dict] = []
+    last_model: str | None = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        # Track model from any event that carries it.
+        if isinstance(event.get("model"), str):
+            last_model = event["model"]
+        etype = event.get("type")
+        if etype == "step_finish":
+            part = event.get("part")
+            if isinstance(part, dict) and "tokens" in part:
+                step_finish_tokens = part["tokens"]
+        elif etype == "assistant" and isinstance(event.get("usage"), dict):
+            assistant_usages.append(event["usage"])
 
-    last_model = next((m.get("model") for m in reversed(assistant_msgs) if m.get("model")), None)
-    return TokenUsage(
-        input_tokens=_sum("input_tokens"),
-        output_tokens=_sum("output_tokens"),
-        cache_read_tokens=_sum("cache_read_tokens"),
-        cache_creation_tokens=_sum("cache_write_tokens"),
-        reasoning_tokens=_sum("reasoning_tokens"),
-        model=last_model,
-        usage_raw_json=json.dumps([m["usage"] for m in assistant_msgs]),
-    )
+    if isinstance(step_finish_tokens, dict):
+        tokens = step_finish_tokens
+        return TokenUsage(
+            input_tokens=tokens.get("input_tokens"),
+            output_tokens=tokens.get("output_tokens"),
+            cache_read_tokens=tokens.get("cache_read_tokens"),
+            cache_creation_tokens=tokens.get("cache_write_tokens"),
+            reasoning_tokens=tokens.get("reasoning_tokens"),
+            model=last_model,
+            usage_raw_json=json.dumps(tokens),
+        )
+    if assistant_usages:
+        # Fallback: sum assistant usage events from JSONL format.
+        def _sum_field(field: str) -> int | None:
+            vals = [u.get(field) for u in assistant_usages]
+            nums = [v for v in vals if isinstance(v, int) and not isinstance(v, bool)]
+            return sum(nums) if nums else None
+        return TokenUsage(
+            input_tokens=_sum_field("input_tokens"),
+            output_tokens=_sum_field("output_tokens"),
+            cache_read_tokens=_sum_field("cache_read_tokens"),
+            cache_creation_tokens=_sum_field("cache_write_tokens"),
+            reasoning_tokens=_sum_field("reasoning_tokens"),
+            model=last_model,
+            usage_raw_json=stdout[:_TAIL_BYTES],
+        )
+    return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
 
 
 def _parse_pi_usage(stdout: str) -> TokenUsage | None:
-    """Preserve Pi JSON output for token-usage forensics.
+    """Parse Pi `--mode json` stdout into TokenUsage.
 
-    Pi's headless JSON schema is not pinned by this project yet. Store the
-    raw JSON payload so successful sessions still leave an auditable usage row
-    without pretending we know the token field mapping.
+    Pi >= current emits JSONL events. The assistant message event carries a
+    ``usage`` object with camelCase keys:
+    ``input``, ``output``, ``cacheRead``, ``cacheWrite``, ``totalTokens``.
+
+    Falls back to raw-only preservation when the stdout cannot be parsed
+    (original behavior), so successful Pi sessions still leave an auditable
+    usage row for forensics.
     """
     if not stdout or not stdout.strip():
         return None
+    # Walk JSONL lines for an assistant event with usage.
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "assistant" and isinstance(event.get("usage"), dict):
+            usage = event["usage"]
+            return TokenUsage(
+                input_tokens=usage.get("input"),
+                output_tokens=usage.get("output"),
+                cache_read_tokens=usage.get("cacheRead"),
+                cache_creation_tokens=usage.get("cacheWrite"),
+                reasoning_tokens=usage.get("reasoning"),
+                model=event.get("model"),
+                usage_raw_json=json.dumps(usage),
+            )
+    # Fall back to raw-only preservation (original behavior).
     return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
 
 
@@ -508,6 +616,7 @@ class OpencodeExecutor:
         on_throttle_event: "OnThrottleEvent | None" = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+        # opencode >= 1.14.0 rejects --prompt; use positional prompt (issue #216).
         cmd = [
             self._cli_path,
             "run",
@@ -515,7 +624,6 @@ class OpencodeExecutor:
             str(workspace),
             "--format",
             "json",
-            "--prompt",
             prompt,
         ]
         return _run_command(

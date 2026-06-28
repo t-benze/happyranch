@@ -309,12 +309,16 @@ MODEL_FIX_CUTOVER_TS = "2026-06-12T15:38:50Z"
 
 
 def _churn(row: dict) -> int:
-    """A rollup row's churn = ``total_tokens`` (input + output + reasoning).
+    """A rollup row's churn = ``churn_tokens`` (input + output + reasoning).
 
-    The churn invariant in one place: ``cache_read``/``cache_creation`` never
-    participate in ranking, thresholds, or sort. Falls back to recomputing
-    from the component sums if the route ever omits ``total_tokens``.
+    The churn invariant lives in one place: ``cache_read``/``cache_creation``
+    never participate in ranking, thresholds, or sort. Prefers the explicit
+    ``churn_tokens`` computed column; falls back to ``total_tokens`` for
+    backward compat with older daemon responses.
     """
+    churn = row.get("churn_tokens")
+    if churn is not None:
+        return churn
     total = row.get("total_tokens")
     if total is not None:
         return total
@@ -397,10 +401,18 @@ def cmd_tokens(args: argparse.Namespace) -> None:
     N`` keeps only groups whose churn strictly exceeds N (applied before
     ``--top``). The by-agent/by-thread rollups gain a ``Model`` column
     classified from Leg A's primitives (``--by-purpose``/``--by-task`` have
-    none). ``--json`` emits raw JSON for any view. ``total = (input or 0) +
-    (output or 0) + (reasoning or 0)`` — cache reads are reported separately,
-    never folded into ``total`` (the churn invariant).
-    """
+    none). ``--json`` emits raw JSON for any view.
+
+    Two complementary metrics are displayed:
+
+    * **Churn** (``churn_tokens``) = input + output + reasoning — the cache-
+      excluded "fresh work" cost. This is what rankings, thresholds, and the
+      ``--top`` / ``--over-threshold`` flags use. Cache reads are a cache-
+      effectiveness signal, not fresh consumption.
+    * **AllTokens** (``context_tokens``) = churn + cache_read + cache_creation —
+      the cache-inclusive total of all recorded token fields, useful for
+      cross-executor comparisons where Claude separates cache from input while
+      Codex includes it."""
     import json as _json
 
     try:
@@ -477,32 +489,35 @@ def cmd_tokens(args: argparse.Namespace) -> None:
             model_width = 22
             print(
                 f"{header_label:<{label_width}} {'Model':<{model_width}} {'Sessions':>8} "
-                f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Total':>14}"
+                f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Churn':>14} {'AllTokens':>14}"
             )
-            print("-" * (label_width + 1 + model_width + 1 + 8 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14))
+            print("-" * (label_width + 1 + model_width + 1 + 8 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14 + 1 + 14))
         else:
             print(
                 f"{header_label:<{label_width}} {'Sessions':>8} "
-                f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Total':>14}"
+                f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Churn':>14} {'AllTokens':>14}"
             )
-            print("-" * (label_width + 1 + 8 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14))
+            print("-" * (label_width + 1 + 8 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14 + 1 + 14))
         for r in rollup:
             inp = r.get("input_tokens") or 0
             out = r.get("output_tokens") or 0
-            rea = r.get("reasoning_tokens") or 0
             cr = r.get("cache_read_tokens") or 0
-            total = inp + out + rea
+            churn = _churn(r)
+            ctx = r.get("context_tokens")
+            if ctx is None:
+                ccr = r.get("cache_creation_tokens") or 0
+                ctx = churn + cr + ccr
             label = r.get(key) or "-"
             if show_model:
                 print(
                     f"{label:<{label_width}} {classify_model(r):<{model_width}} "
                     f"{r['sessions']:>8} "
-                    f"{inp:>12,} {out:>12,} {cr:>12,} {total:>14,}"
+                    f"{inp:>12,} {out:>12,} {cr:>12,} {churn:>14,} {ctx:>14,}"
                 )
             else:
                 print(
                     f"{label:<{label_width}} {r['sessions']:>8} "
-                    f"{inp:>12,} {out:>12,} {cr:>12,} {total:>14,}"
+                    f"{inp:>12,} {out:>12,} {cr:>12,} {churn:>14,} {ctx:>14,}"
                 )
         return
 
@@ -521,20 +536,24 @@ def cmd_tokens(args: argparse.Namespace) -> None:
         return
     print(
         f"{'Created':<20} {'Task':<10} {'Agent':<22} {'Exec':<10} "
-        f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Total':>14}"
+        f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Churn':>14} {'AllTokens':>14}"
     )
-    print("-" * (20 + 1 + 10 + 1 + 22 + 1 + 10 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14))
+    print("-" * (20 + 1 + 10 + 1 + 22 + 1 + 10 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14 + 1 + 14))
     for r in rows:
         ts = _fmt_ts(r.get("created_at"))
         inp = r.get("input_tokens") or 0
         out = r.get("output_tokens") or 0
         rea = r.get("reasoning_tokens") or 0
         cr = r.get("cache_read_tokens") or 0
-        total = inp + out + rea
+        ccr = r.get("cache_creation_tokens") or 0
+        churn = _churn(r)
+        ctx = r.get("context_tokens")
+        if ctx is None:
+            ctx = inp + out + rea + cr + ccr
         print(
             f"{ts:<20} {(r.get('task_id') or '-'):<10} "
             f"{(r.get('agent') or '-'):<22} {(r.get('executor') or '-'):<10} "
-            f"{inp:>12,} {out:>12,} {cr:>12,} {total:>14,}"
+            f"{inp:>12,} {out:>12,} {cr:>12,} {churn:>14,} {ctx:>14,}"
         )
 
 

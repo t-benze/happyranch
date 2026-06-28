@@ -271,6 +271,8 @@ def test_tokens_group_by_thread_returns_rollups(
         "cache_creation_tokens": 0,
         "reasoning_tokens": 0,
         "total_tokens": 42,
+        "churn_tokens": 42,
+        "context_tokens": 42,
         "model_distinct": 0,
         "model_any": None,
         "non_null_sessions": 0,

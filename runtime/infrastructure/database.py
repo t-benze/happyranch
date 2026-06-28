@@ -2277,7 +2277,15 @@ class Database:
                          COALESCE(SUM(reasoning_tokens), 0)      AS reasoning_tokens,
                          COALESCE(SUM(input_tokens), 0)
                            + COALESCE(SUM(output_tokens), 0)
-                           + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens{model_cols}
+                           + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens,
+                         COALESCE(SUM(input_tokens), 0)
+                           + COALESCE(SUM(output_tokens), 0)
+                           + COALESCE(SUM(reasoning_tokens), 0)  AS churn_tokens,
+                         COALESCE(SUM(input_tokens), 0)
+                           + COALESCE(SUM(output_tokens), 0)
+                           + COALESCE(SUM(reasoning_tokens), 0)
+                           + COALESCE(SUM(cache_read_tokens), 0)
+                           + COALESCE(SUM(cache_creation_tokens), 0)  AS context_tokens{model_cols}
                   FROM session_token_usage"""
 
     @_synchronized
@@ -2307,7 +2315,15 @@ class Database:
                         COALESCE(scope_id, task_id) AS scope_id,
                         COALESCE(input_tokens, 0)
                           + COALESCE(output_tokens, 0)
-                          + COALESCE(reasoning_tokens, 0) AS total_tokens
+                          + COALESCE(reasoning_tokens, 0) AS total_tokens,
+                        COALESCE(input_tokens, 0)
+                          + COALESCE(output_tokens, 0)
+                          + COALESCE(reasoning_tokens, 0) AS churn_tokens,
+                        COALESCE(input_tokens, 0)
+                          + COALESCE(output_tokens, 0)
+                          + COALESCE(reasoning_tokens, 0)
+                          + COALESCE(cache_read_tokens, 0)
+                          + COALESCE(cache_creation_tokens, 0) AS context_tokens
                  FROM session_token_usage"""
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -2415,7 +2431,15 @@ class Database:
                          COALESCE(SUM(s.reasoning_tokens), 0)      AS reasoning_tokens,
                          COALESCE(SUM(s.input_tokens), 0)
                            + COALESCE(SUM(s.output_tokens), 0)
-                           + COALESCE(SUM(s.reasoning_tokens), 0)  AS total_tokens
+                           + COALESCE(SUM(s.reasoning_tokens), 0)  AS total_tokens,
+                         COALESCE(SUM(s.input_tokens), 0)
+                           + COALESCE(SUM(s.output_tokens), 0)
+                           + COALESCE(SUM(s.reasoning_tokens), 0)  AS churn_tokens,
+                         COALESCE(SUM(s.input_tokens), 0)
+                           + COALESCE(SUM(s.output_tokens), 0)
+                           + COALESCE(SUM(s.reasoning_tokens), 0)
+                           + COALESCE(SUM(s.cache_read_tokens), 0)
+                           + COALESCE(SUM(s.cache_creation_tokens), 0)  AS context_tokens
                   FROM ({subquery}) s
                   JOIN tasks t ON t.id = s.task_id
                   WHERE t.status = ?
