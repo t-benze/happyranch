@@ -538,6 +538,8 @@ def test_parse_next_step_prose_without_decision_still_escalates(orchestrator):
     decision = orchestrator._parse_next_step(report)
     assert decision.action == "escalate"
     assert "decision" in (decision.reason or "").lower()
+    assert "fanout" in (decision.reason or "").lower()
+    assert "delegate" in (decision.reason or "").lower()
 
 
 def test_read_completion_from_db_tolerates_garbage_decision_json(orchestrator):

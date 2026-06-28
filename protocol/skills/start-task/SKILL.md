@@ -150,18 +150,28 @@ Parameters:
    `summary`, a team-manager session must include a top-level `decision`
    object that the orchestrator will execute. Workers omit it. Omitting it
    from a manager session escalates the task. See the response-format
-   section of your role_guidance for the exact shapes. The `action` must be
-   one of `delegate`, `done`, or `escalate`:
+   section of your role_guidance for the exact shapes. The canonical
+   contract is `protocol/00-completion-contract.md` — this skill restates
+   the valid actions:
 
    - `delegate` — hand the next subtask to a worker; requires `agent` and `prompt`.
      Note the field is `prompt`, **not** `brief` — the orchestrator silently
      drops unknown keys, so writing `"brief"` produces a child task with an
      empty brief. Managers can declare a multi-leg workflow chain inline by
      adding `"then": [...]` to a delegate decision. The orchestrator
-     auto-advances routine legs without consuming orchestration steps. Full
-     shape: see `protocol/00-completion-contract.md`.
+     auto-advances routine legs without consuming orchestration steps.
+   - `fanout` (or `parallel`) — spawn N child tasks in parallel (2 ≤ N ≤ 8,
+     read-only Phase 1). Requires `children` (array of `{agent, prompt}` objects).
+     Optional `width_cap_ack` (must exactly match child count) and `join_summary`
+     (prose directive for the join prompt). Per-child `then`/`expect_verdict`
+     are rejected in Phase 1. Width > 4 requires founder `review_required`.
+     The parent parks in `in_progress(delegated)` with `active_fanout` metadata
+     and wakes once when all children are terminal. Children follow the normal
+     child/session path. Team-manager gated.
    - `done` — the task is complete; requires `summary` of the outcome.
    - `escalate` — the task needs founder intervention; requires `reason`.
+
+   Full shapes and examples: `protocol/00-completion-contract.md`.
 
    Example (delegation):
 

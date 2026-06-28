@@ -67,7 +67,7 @@ Example:
 The data model uses `task_type` `Literal['task','subtask']`:
 
 - **Task** (`task_type='task'`): the task owner — holds the decision-making
-  loop and produces `decision` blocks (`delegate`/`done`/`escalate`).
+  loop and produces `decision` blocks (`delegate`/`fanout`/`parallel`/`done`/`escalate`).
 - **Subtask** (`task_type='subtask'`): the delegated agent — executes a
   bounded unit of work and reports a plain completion (no `decision` field).
 
