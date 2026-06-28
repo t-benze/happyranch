@@ -7,6 +7,8 @@
 > **Extended by THR-032 harness-agnostic memory layer (Phase 1 — additive store generalization).** See `artifacts/TASK-949/2026-06-27-harness-agnostic-memory-layer-design.md`. Phase 1 generalizes this store (`LearningsStore`→`MemoryStore` / `LearningEntry`→`MemoryItem`, with back-compat aliases) and adds four additive frontmatter fields (`provenance`, `scope`, `lifecycle`, `salience`) on the same reindex/validation/atomic-write machinery — non-breaking, no SQL change. It extends this spec's "no deletion in v1" non-goal into *soft eviction* (`lifecycle: evicted` leaves the index but is retained on disk); the no-vector / no-auto-extraction / agent-authored stances are retained.
 >
 > **THR-032 Phase R (thorough rename).** This store's surfaces are renamed learnings→memory: dir `learnings/`→`memory/`, CLI `happyranch learning`→`happyranch memory` (one-cycle `learning` deprecation alias), routes `…/learnings/…`→`…/memory/…` (hidden legacy forwarders), ids `LRN-NNN`→`MEM-NNN` (with a permanent `LRN-` resolution shim so old ids resolve forever), audit `log_learning_*`→`log_memory_*` (forward-only; historical rows immutable). The flat legacy `learnings.md` filename and this spec's historical text are deliberately left as-is (append-only history).
+>
+> **THR-032 Phase 2 (PUSH memory digest — mechanism A).** The `MemoryStore.build_memory_digest()` method produces a salience-ranked, pointer-only, char-budgeted digest; `Orchestrator._build_agent_prompt` injects it as a `=== MEMORY-DIGEST (system) ===` block into every agent spawn prompt (harness-agnostic). The `memory_digest_budget` field (default 1500, org-configurable) controls the budget; 0 disables the digest. Founder-ratified at THR-032 seq 48.
 
 ## 1. Goal
 

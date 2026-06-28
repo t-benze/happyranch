@@ -3,9 +3,11 @@
 **Date:** 2026-04-18
 **Status:** Approved, ready for implementation plan
 
-> **Extended by THR-032 harness-agnostic memory layer (Phase 1 — additive store generalization).** See `artifacts/TASK-949/2026-06-27-harness-agnostic-memory-layer-design.md`. Phase 1 generalizes `LearningsStore`→`MemoryStore` / `LearningEntry`→`MemoryItem` (with back-compat aliases) and adds four additive frontmatter fields (`provenance`, `scope`, `lifecycle`, `salience`) — non-breaking, no SQL change. The PUSH digest that reverses this spec's "no automatic prompt injection" non-goal lands in a later, founder-gated phase.
+> **Extended by THR-032 harness-agnostic memory layer (Phase 1 — additive store generalization).** See `artifacts/TASK-949/2026-06-27-harness-agnostic-memory-layer-design.md`. Phase 1 generalizes `LearningsStore`→`MemoryStore` / `LearningEntry`→`MemoryItem` (with back-compat aliases) and adds four additive frontmatter fields (`provenance`, `scope`, `lifecycle`, `salience`) — non-breaking, no SQL change.
 >
 > **THR-032 Phase R (thorough rename).** The "learnings" concept is renamed to "memory" across the runtime: dir `learnings/`→`memory/`, CLI `happyranch learning`→`happyranch memory` (one-cycle `learning` deprecation alias), routes `/agents/{name}/learnings/…`→`/memory/…` (hidden legacy forwarders), ids `LRN-NNN`→`MEM-NNN` (permanent `LRN-` resolution shim), audit `log_learning_*`→`log_memory_*` (forward-only; historical rows untouched).
+>
+> **THR-032 Phase 2 (PUSH memory digest — mechanism A).** The `=== MEMORY-DIGEST (system) ===` block is now injected into every agent spawn prompt by `Orchestrator._build_agent_prompt`. It is salience-ranked, pointer-only, and char-budgeted (org-configurable, default ~1,500). This **reverses the "no automatic prompt injection" non-goal below** — ratified by the founder at THR-032 seq 48. The digest is harness-agnostic (one literal string shared by claude/codex/opencode/pi).
 
 ## Problem
 
@@ -31,7 +33,7 @@ Concrete failure case: the founder asks the Engineering Head to review project s
 ## Non-goals
 
 - Semantic / vector-based retrieval (defer until enough history accumulates to need it).
-- Automatic prompt injection of unrelated past tasks (keeps prompts clean).
+- Automatic prompt injection of unrelated past tasks (keeps prompts clean). **[REVERSED by THR-032 Phase 2 — the pointer-only, salience-ranked, budget-capped MEMORY-DIGEST block is now injected into every agent spawn prompt. Founder-ratified at THR-032 seq 48.]**
 - Cross-agent shared memory (each agent sees only its own history; cross-agent access goes through `opc recall`).
 - Rewriting the learnings / scorecard mechanisms — they stay as-is.
 
