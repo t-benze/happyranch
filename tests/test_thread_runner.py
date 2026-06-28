@@ -530,8 +530,8 @@ async def test_run_invocation_publishes_started_and_settled(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_same_participant_invocations_serialize(tmp_path, monkeypatch):
     """Two pending invocations for the same Claude participant must NOT run
-    their subprocesses concurrently — the per-(thread, agent) lock serializes
-    the read→run→update path so resumed-session state can't race (Codex P2)."""
+    their subprocesses concurrently — the per-(thread, agent) invocation lock
+    serializes all providers, and the Claude read→run→update path can't race."""
     import asyncio
     import threading
     import time
@@ -667,3 +667,169 @@ async def test_runner_crash_publishes_settled_event(tmp_path, monkeypatch):
     # And the invocation is recorded failed.
     after = db.get_invocation_any_status(inv.invocation_token)
     assert after.status.value == "failed"
+
+
+@pytest.mark.asyncio
+async def test_codex_invocations_serialize(tmp_path, monkeypatch):
+    """Two pending invocations for the same Codex participant must NOT run
+    concurrently — the provider-agnostic per-(thread, agent) lock serializes
+    all executors, not just Claude."""
+    import asyncio
+    import threading
+    import time
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m2")
+    inv1 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    inv2 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                     triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: codex\n")
+
+    counter = {"now": 0, "max": 0}
+    clock = threading.Lock()
+
+    class _SlowExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            with clock:
+                counter["now"] += 1
+                counter["max"] = max(counter["max"], counter["now"])
+            time.sleep(0.1)
+            with clock:
+                counter["now"] -= 1
+            return FakeExecutorResult(success=True)
+
+    import runtime.daemon.thread_runner as runner_mod
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: _SlowExec())
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await asyncio.gather(
+        run_invocation(org_state=org, invocation_token=inv1.invocation_token, settings=Settings()),
+        run_invocation(org_state=org, invocation_token=inv2.invocation_token, settings=Settings()),
+    )
+    # Serialized: at most one subprocess in flight for (THR-001, alice) at a time.
+    assert counter["max"] == 1
+
+
+@pytest.mark.asyncio
+async def test_distinct_agents_same_thread_can_overlap(tmp_path, monkeypatch):
+    """Two different agents on the same thread can run concurrently —
+    the lock key includes agent_name, so distinct agents do not block each other."""
+    import asyncio
+    import threading
+    import time
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.add_thread_participant("THR-001", "bob", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    inv1 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    inv2 = db.mint_thread_invocation(thread_id="THR-001", agent_name="bob",
+                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    for agent in ("alice", "bob"):
+        ws = tmp_path / "workspaces" / agent
+        ws.mkdir(parents=True)
+        (ws / "agent.yaml").write_text("executor: claude\n")
+
+    counter = {"now": 0, "max": 0}
+    clock = threading.Lock()
+    barrier = threading.Barrier(2, timeout=2)
+
+    class _SlowExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            with clock:
+                counter["now"] += 1
+                counter["max"] = max(counter["max"], counter["now"])
+            # Wait for both to enter so we confirm overlap.
+            barrier.wait()
+            time.sleep(0.1)
+            with clock:
+                counter["now"] -= 1
+            r = FakeExecutorResult(success=True)
+            r.agent_session_id = "sess-x"
+            return r
+
+    import runtime.daemon.thread_runner as runner_mod
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: _SlowExec())
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await asyncio.gather(
+        run_invocation(org_state=org, invocation_token=inv1.invocation_token, settings=Settings()),
+        run_invocation(org_state=org, invocation_token=inv2.invocation_token, settings=Settings()),
+    )
+    # Distinct agents on the same thread can overlap.
+    assert counter["max"] == 2
+
+
+@pytest.mark.asyncio
+async def test_same_agent_distinct_threads_can_overlap(tmp_path, monkeypatch):
+    """The same agent on two different threads can run concurrently —
+    the lock key includes thread_id, so distinct threads do not block each other."""
+    import asyncio
+    import threading
+    import time
+
+    db = Database(tmp_path / "happyranch.db")
+    for thread_id in ("THR-001", "THR-002"):
+        db.insert_thread(ThreadRecord(id=thread_id, subject="x"))
+        db.add_thread_participant(thread_id, "alice", added_by="founder")
+        db.append_thread_message(thread_id=thread_id, speaker="founder",
+                                 kind=ThreadMessageKind.MESSAGE, body_markdown="hi")
+    inv1 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    inv2 = db.mint_thread_invocation(thread_id="THR-002", agent_name="alice",
+                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    counter = {"now": 0, "max": 0}
+    clock = threading.Lock()
+    barrier = threading.Barrier(2, timeout=2)
+
+    class _SlowExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            with clock:
+                counter["now"] += 1
+                counter["max"] = max(counter["max"], counter["now"])
+            # Wait for both to enter so we confirm overlap.
+            barrier.wait()
+            time.sleep(0.1)
+            with clock:
+                counter["now"] -= 1
+            r = FakeExecutorResult(success=True)
+            r.agent_session_id = "sess-x"
+            return r
+
+    import runtime.daemon.thread_runner as runner_mod
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: _SlowExec())
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await asyncio.gather(
+        run_invocation(org_state=org, invocation_token=inv1.invocation_token, settings=Settings()),
+        run_invocation(org_state=org, invocation_token=inv2.invocation_token, settings=Settings()),
+    )
+    # Same agent on distinct threads can overlap.
+    assert counter["max"] == 2
