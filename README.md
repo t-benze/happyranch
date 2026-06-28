@@ -37,6 +37,42 @@ uv sync
 uv run pytest tests/ -v
 ```
 
+## Local CI
+
+A dependency-light local CI wrapper mirrors GitHub Actions commands as closely as practical. Use it for pre-push feedback; **GitHub CI remains authoritative** (full Python 3.12/3.13/3.14 matrix, Node 20, nightly integration).
+
+```bash
+scripts/local_ci.sh           # default: python + web (mirrors GitHub PR CI)
+scripts/local_ci.sh python    # Python unit tests only
+scripts/local_ci.sh web       # Web CI (lint + typecheck + build + vitest run)
+scripts/local_ci.sh integration  # Python integration tests (spawns daemon + fake CLIs)
+scripts/local_ci.sh help      # List targets and caveats
+```
+
+**Targets and what they run:**
+
+| Target | Equivalent GHA job | Commands |
+|--------|-------------------|----------|
+| `all` (default) | `python-unit` (3.x) + `web` | `uv sync --frozen; uv run pytest tests/ -v` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
+| `python` | `python-unit` (single Python) | `uv sync --frozen; uv run pytest tests/ -v` |
+| `web` | `web` (Node 20) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
+| `integration` | `nightly-integration` | `uv sync --frozen; uv run pytest tests/ -v -m integration` |
+
+**Caveats:**
+- Python tests use your local installed Python/uv interpreter; they do **not** reproduce the GHA 3.12/3.13/3.14 matrix.
+- `uv sync --frozen` requires an up-to-date lockfile. Run `uv lock` first if you've changed `pyproject.toml`.
+- Integration tests spawn a real daemon on port 8765. Stop any running daemon first (`scripts/daemon.sh stop`).
+- Web CI runs `vitest run` (non-watch mode) — do not use bare `vitest` which is watch mode.
+
+### Optional pre-push hook
+
+A sample pre-push hook that runs the local PR CI target is at `scripts/hooks/pre-push.local-ci.sample`. It is **opt-in only** — copy it to `.git/hooks/pre-push` to enable:
+
+```bash
+cp scripts/hooks/pre-push.local-ci.sample .git/hooks/pre-push
+chmod +x .git/hooks/pre-push
+```
+
 ## Quick Start
 
 This walks through setting up a runtime container and materializing the canonical HK/Macau tourism sample org.
