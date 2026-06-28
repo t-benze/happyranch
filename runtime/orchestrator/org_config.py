@@ -668,7 +668,6 @@ _ORG_WRITABLE_KEYS = {
     "threads",
     "session_timeout_seconds",
     "working_hours",  # THR-035: Work-Hours Config UI write surface (TASK-967)
-    "memory_digest_budget",  # THR-032 Phase 2: char budget for per-task MEMORY-DIGEST
 }
 
 

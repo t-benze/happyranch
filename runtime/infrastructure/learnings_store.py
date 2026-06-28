@@ -550,6 +550,8 @@ class MemoryStore:
         brief_lower: str,
         ancestor_ids: set[str] | None,
         now_dt: datetime,
+        *,
+        scope: str = "agent",
     ) -> int:
         """Compute effective salience at digest time (read-only).
 
@@ -611,8 +613,11 @@ class MemoryStore:
             if entry.source_task in ancestor_ids:
                 effective += self._ANCESTOR_BOOST
 
-        # Directive provenance boost
-        if entry.provenance == "directive":
+        # Directive provenance boost — only for matching scope.
+        # Per-agent MemoryStore digests boost agent-scope directives;
+        # team/org-scoped directives do not boost in per-agent digests.
+        # (Team/org scoped memory store is later/founder-gated per §11.5.)
+        if entry.provenance == "directive" and entry.scope == scope:
             effective += self._DIRECTIVE_BOOST
 
         return effective
@@ -623,26 +628,26 @@ class MemoryStore:
         *,
         budget: int | None = None,
         ancestor_task_ids: set[str] | None = None,
+        scope: str = "agent",
     ) -> str | None:
         """Build a salience-ranked, pointer-only, budgeted push digest.
 
         Returns the ``=== MEMORY-DIGEST (system) ===`` block as a string,
-        or ``None`` when no candidate memories exist.
+        or ``None`` when no candidate memories exist or the budget is too
+        small to fit any valid digest content.
 
         Candidate set: ``lifecycle == valid`` AND ``promoted_to is None``.
         Ranking: effective salience (base - age decay + boosts) descending,
                  then title alphabetically for deterministic tie-breaking.
         Budget: char-capped (default ~1500); includes header + nudge when
-                the candidate set overflows.
+                the candidate set overflows. For budgets too small to fit
+                even the header + intro, returns None cleanly.
         Pointer-only: id, title, provenance, effective salience — NEVER body.
         Read-only: no files are written, no mtimes/timestamps are churned.
         """
         if budget is None:
             budget = self._DEFAULT_BUDGET
 
-        # Build candidate set from list_entries (returns LearningSummary,
-        # which carries provenance/salience/lifecycle but not title/body).
-        # For scoring we need the full MemoryItem — iterate directly.
         now_dt = datetime.now(timezone.utc)
         brief_lower = brief.lower().strip() if brief else ""
 
@@ -661,7 +666,7 @@ class MemoryStore:
                 continue
 
             score = self._effective_salience(
-                entry, brief_lower, ancestor_task_ids, now_dt,
+                entry, brief_lower, ancestor_task_ids, now_dt, scope=scope,
             )
             candidates.append((score, entry.title.lower(), entry))
 
@@ -672,64 +677,75 @@ class MemoryStore:
         # deterministic tie-breaking.
         candidates.sort(key=lambda c: (-c[0], c[2].title))
 
-        # Assemble digest with budget enforcement
-        lines: list[str] = [self._DIGEST_HEADER, self._DIGEST_INTRO, ""]
-        header_overhead = len("\n".join(lines)) + 1  # +1 for trailing newline
-        nudge_line = self._DIGEST_NUDGE
-        nudge_overhead = len(nudge_line) + 1
+        # Fixed header block — always emitted first when any output is produced.
+        header = f"{self._DIGEST_HEADER}\n{self._DIGEST_INTRO}\n\n"
+        header_len = len(header)
 
-        # Find how many pointer lines fit within budget.
-        pointer_lines: list[str] = []
-        used = header_overhead
-        nudge_appended = False
+        # If budget can't even fit the header, return None cleanly.
+        if budget < header_len:
+            return None
 
-        for score, _title_lower, entry in candidates:
+        nudge_line = f"{self._DIGEST_NUDGE}\n"
+        nudge_len = len(nudge_line)
+
+        # Build the digest: add pointer lines and nudge, tracking exact length.
+        result_parts: list[str] = [header]
+        used = header_len
+        nudged = False
+
+        for i, (score, _title_lower, entry) in enumerate(candidates):
             line = self._DIGEST_LINE_FMT.format(
                 id=entry.id,
                 title=entry.title,
                 provenance=entry.provenance,
                 salience=score,
-            )
-            line_len = len(line) + 1  # +1 for newline
+            ) + "\n"
+            line_len = len(line)
+            remaining = len(candidates) - i - 1
 
-            # Check if adding this line + possible nudge exceeds budget
-            nudge_needed = (len(pointer_lines) + 1 < len(candidates))
-            extra = nudge_overhead if nudge_needed and not nudge_appended else 0
-            if used + line_len + extra > budget:
-                # Include nudge and stop
-                if nudge_needed and not nudge_appended:
-                    if used + nudge_overhead <= budget:
-                        pointer_lines.append(nudge_line)
-                        nudge_appended = True
-                break
+            if remaining == 0 or nudged:
+                # Last item or nudge already emitted — just check line fit.
+                if used + line_len <= budget:
+                    result_parts.append(line)
+                    used += line_len
+                else:
+                    break
+            else:
+                # More candidates follow: try to reserve for nudge.
+                if used + line_len + nudge_len <= budget:
+                    # Both line + future nudge fit — add line, continue.
+                    result_parts.append(line)
+                    used += line_len
+                elif used + nudge_len <= budget:
+                    # Line + nudge don't fit, but nudge alone fits — emit nudge.
+                    result_parts.append(nudge_line)
+                    nudged = True
+                    break
+                elif used + line_len <= budget:
+                    # Even nudge alone doesn't fit, but the line does — add it
+                    # and stop (no nudge will be emitted).
+                    result_parts.append(line)
+                    used += line_len
+                    break
+                else:
+                    # Nothing fits — stop.
+                    break
 
-            pointer_lines.append(line)
-            used += line_len
+        # If we didn't emit a nudge but there ARE remaining items and the
+        # last added line left room, emit nudge now.
+        if not nudged and len(result_parts) - 1 < len(candidates):
+            if used + nudge_len <= budget:
+                result_parts.append(nudge_line)
 
-            # If this was the last line, no nudge needed
-            if len(pointer_lines) >= len(candidates):
-                break
-            # Check if nudge is now needed for remaining items
-            remaining = len(candidates) - len(pointer_lines)
-            if remaining > 0 and not nudge_appended:
-                if used + nudge_overhead > budget:
-                    # Need to drop the last line to make room for nudge,
-                    # but that's overly complex. Instead, check if we
-                    # can fit nudge with remaining budget.
-                    pass  # handled in next iteration
+        result = "".join(result_parts)
 
-        # Add nudge if there are more items and budget allows
-        if len(pointer_lines) < len(candidates) and not nudge_appended:
-            if used + nudge_overhead <= budget:
-                pointer_lines.append(nudge_line)
+        # If output is header-only (no pointer lines or nudge), return None.
+        if len(result_parts) <= 1:
+            return None
 
-        lines.extend(pointer_lines)
-        result = "\n".join(lines) + "\n"
-
-        # Final budget enforcement — if somehow exceeded (shouldn't happen),
-        # truncate to budget chars and re-add final newline.
+        # Final safety: result must never exceed budget.
         if len(result) > budget:
-            result = result[:budget].rstrip("\n") + "\n"
+            return None
 
         return result
 

@@ -547,6 +547,7 @@ class Orchestrator:
                     brief=brief,
                     budget=budget,
                     ancestor_task_ids=ancestor_ids,
+                    scope="agent",
                 )
 
         full_prompt = self._build_agent_prompt(

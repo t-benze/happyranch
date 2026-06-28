@@ -90,3 +90,48 @@ feishu_notifications:
     cfg = load_org_config(runtime)
     # Config loaded without error; feishu_notifications block is ignored.
     assert cfg.session_timeout_seconds is None
+
+
+# ── THR-032 Phase 2: memory_digest_budget config parsing ──
+
+def test_memory_digest_budget_default_1500(tmp_path: Path) -> None:
+    """Default is 1500 when not present in config."""
+    runtime = _runtime(tmp_path)
+    cfg = load_org_config(runtime)
+    assert cfg.memory_digest_budget == 1500
+
+
+def test_memory_digest_budget_explicit_0_disables(tmp_path: Path) -> None:
+    """Explicit 0 disables the digest."""
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, "memory_digest_budget: 0\n")
+    cfg = load_org_config(runtime)
+    assert cfg.memory_digest_budget == 0
+
+
+def test_memory_digest_budget_positive_value(tmp_path: Path) -> None:
+    """Explicit positive values are accepted."""
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, "memory_digest_budget: 2000\n")
+    cfg = load_org_config(runtime)
+    assert cfg.memory_digest_budget == 2000
+
+
+@pytest.mark.parametrize(
+    "bad_value,err_fragment",
+    [
+        ("memory_digest_budget: -1\n", ">= 0"),
+        ("memory_digest_budget: true\n", "must be an integer"),
+        ("memory_digest_budget: false\n", "must be an integer"),
+        ("memory_digest_budget: '1500'\n", "must be an integer"),
+        ("memory_digest_budget: 1.5\n", "must be an integer"),
+    ],
+)
+def test_memory_digest_budget_rejects_invalid(
+    tmp_path: Path, bad_value: str, err_fragment: str,
+) -> None:
+    """Negative values, bools, strings, and floats are rejected."""
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, bad_value)
+    with pytest.raises(OrgConfigError, match=err_fragment):
+        load_org_config(runtime)
