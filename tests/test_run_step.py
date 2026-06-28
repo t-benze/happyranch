@@ -1199,7 +1199,7 @@ def test_run_step_concurrent_claim_spawns_only_one_agent(
                         paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
 
     # Barrier-sync the two threads AFTER each has read the parent row at the
-    # top of run_step_impl — both then observe BLOCKED+DELEGATED before either
+    # top of run_step_impl — both then observe in_progress(delegated) before either
     # writes IN_PROGRESS. This is the exact race window we're closing.
     barrier = threading.Barrier(2, timeout=5.0)
     original_get_task = db.get_task

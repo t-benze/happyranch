@@ -160,8 +160,8 @@ def test_sweep_leaves_escalated_alone(tmp_path):
 
 
 def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_path):
-    """TASK-573: when sweep force-fails an in-progress child of a
-    BLOCKED+DELEGATED parent, the parent gets a bounded-wake decision step
+    """TASK-573: when sweep force-fails an in-progress child of an
+    in_progress(delegated) parent, the parent gets a bounded-wake decision step
     (enqueued, NOT cascade-failed). The auto-revisit is still spawned."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     db.insert_task(TaskRecord(
@@ -249,11 +249,11 @@ def test_sweep_works_without_orchestrator_arg(tmp_path):
 def test_sweep_in_progress_spawns_auto_revisit(tmp_path):
     """TASK-573: in-progress task at restart routes through the
     unified auto-revisit primitive. A fresh root is spawned with
-    revisit_of_task_id=root; parent gets bounded-wake (BLOCKED+DELEGATED),
+    revisit_of_task_id=root; parent gets bounded-wake (in_progress+delegated),
     not cascade-failed. notify_failed is suppressed because the work
     is being retried."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
-    # Root parent task is BLOCKED+DELEGATED waiting on its in-flight child.
+    # Root parent task is in_progress+delegated waiting on its in-flight child.
     db.insert_task(TaskRecord(
         id="T-ROOT", brief="root work", team="engineering",
         assigned_agent="engineering_head",

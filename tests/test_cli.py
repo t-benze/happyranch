@@ -1203,7 +1203,7 @@ def test_kb_write_parsers_require_org():
 
 
 def test_cmd_tasks_shows_block_kind_when_present(capsys):
-    """A blocked task should show its block_kind alongside status."""
+    """An in_progress(delegated) task should show its block_kind alongside status."""
     from cli.main import cmd_tasks
     from argparse import Namespace
     from unittest.mock import MagicMock, patch
@@ -1212,7 +1212,7 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
     response = MagicMock()
     response.status_code = 200
     response.json.return_value = {"tasks": [
-        {"task_id": "T-1", "team": "engineering", "status": "blocked",
+        {"task_id": "T-1", "team": "engineering", "status": "in_progress",
          "assigned_agent": "engineering_head", "brief": "waiting",
          "block_kind": "delegated"},
         {"task_id": "T-2", "team": "engineering", "status": "completed",
@@ -1224,7 +1224,7 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_tasks(Namespace(org=None, limit=10))
     out = capsys.readouterr().out
-    assert "blocked(delegated)" in out or "blocked (delegated)" in out
+    assert "in_progress(delegated)" in out or "in_progress (delegated)" in out
     assert "completed" in out
 
 

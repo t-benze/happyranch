@@ -170,7 +170,7 @@ Traps:
   subtasks as well as COMPLETED: FAILED subtasks clear the chain and fall
   through to the bounded-wake sibling check.
 - `test_cascade_fail_*` tests updated: they now assert parent stays
-  BLOCKED(DELEGATED) for the bounded-wake, not FAILED.
+  in_progress(delegated) for the bounded-wake, not FAILED.
 ## Thread Broadcast Routing
 
 Every `kind=message` thread row mints a `REPLY` invocation for every participant except the speaker. There is no `addressed_to`, `@all`, or `@founder` token. Founder participates through the web UI; Feishu is not used for ongoing thread conversation. Spec: `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md`.
