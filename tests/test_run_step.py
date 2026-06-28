@@ -153,7 +153,7 @@ def test_run_step_done_completes_task_and_enqueues_parent(
     import json
     from runtime.orchestrator.orchestrator import Orchestrator
 
-    # Parent in blocked(DELEGATED), child in pending.
+    # Parent in in_progress(delegated), child in pending.
     db.insert_task(TaskRecord(id="T-PAR", brief="parent",
                               assigned_agent="engineering_head"))
     db.update_task("T-PAR", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED, note="waiting")

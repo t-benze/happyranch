@@ -76,10 +76,11 @@ def _wait_for_terminal_status(
 ) -> str:
     """Poll /tasks/{id} until a terminal state is reached.
 
-    `blocked(DELEGATED)` is not terminal for normal end-to-end flows because the
+    `in_progress(delegated)` is not terminal for normal end-to-end flows because the
     parent should resume after the child finishes. Tests that explicitly assert
-    a delegated block, such as mixed-fleet handoff coverage, can opt into
-    `allow_blocked=True`.
+    a delegated park, such as mixed-fleet handoff coverage, can opt into
+    `allow_blocked=True` (the parked task is in_progress with block_kind delegated
+    or blocked_on_job).
     """
     headers = headers or _auth_headers()
     deadline = time.monotonic() + timeout

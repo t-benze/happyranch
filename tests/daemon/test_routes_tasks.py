@@ -1210,8 +1210,9 @@ def test_revisit_handles_escalated_predecessor(
     assert r.status_code == 200
     body = r.json()
     assert body["predecessor_status"] == "blocked-escalated"
-    # THR-018 tier #3 §3a: revisit now auto-resolves a blocked(escalated)
-    # predecessor to the terminal RESOLVED_SUPERSEDED, citing the continuation.
+    # THR-018 tier #3 §3a: revisit now auto-resolves an escalated
+    # predecessor (legacy response label "blocked-escalated") to the terminal
+    # RESOLVED_SUPERSEDED, citing the continuation.
     pre = db.get_task("TASK-052")
     assert pre.status == TaskStatus.RESOLVED_SUPERSEDED
     assert pre.block_kind is None
