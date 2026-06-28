@@ -183,3 +183,89 @@ def test_self_only_prompt_omits_roster_and_names_self():
     assert '"action": "delegate"' in p
     assert '"action": "done"' in p
     assert '"action": "escalate"' in p
+
+
+# ── Fan-out capabilities prompt tests ──────────────────────────────────────
+
+def test_manager_prompt_advertises_fanout_shape():
+    """The manager prompt must include the fanout/parallel decision shape
+    so managers know how to invoke native fan-out from their capabilities block."""
+    p = build_capabilities_prompt(
+        agents=[{"name": "dev_agent", "description": "Implements features"}],
+        step_number=1, max_steps=10,
+        manager_name="engineering_head",
+    )
+    assert "fanout" in p
+    assert "parallel" in p
+    assert '"action": "fanout"' in p
+    assert '"children":' in p
+
+
+def test_manager_prompt_shows_fanout_required_fields():
+    """The manager prompt must show the required fan-out fields and constraints."""
+    p = build_capabilities_prompt(
+        agents=[{"name": "dev_agent", "description": "Implements features"}],
+        step_number=1, max_steps=10,
+        manager_name="engineering_head",
+    )
+    # Required fields advertised
+    assert "width_cap_ack" in p
+    assert "join_summary" in p
+
+
+def test_manager_prompt_shows_fanout_constraints():
+    """The manager prompt must surface Phase 1 fan-out constraints."""
+    p = build_capabilities_prompt(
+        agents=[{"name": "dev_agent", "description": "Implements features"}],
+        step_number=1, max_steps=10,
+        manager_name="engineering_head",
+    )
+    # Width constraints
+    assert "2" in p and "8" in p  # width range mentioned
+    assert "hard cap" in p.lower() or "rejects" in p.lower()
+    # width_cap_ack must match
+    assert "exactly match" in p.lower() or "exact" in p.lower()
+    # review_required for width > 4
+    assert "review_required" in p
+    # Read-only Phase 1 — no per-child then/expect_verdict
+    assert "Phase 1" in p
+    assert "then" in p.lower() or "expect_verdict" in p  # should mention they are rejected
+    # Parent parks in_progress(delegated)
+    assert "delegated" in p.lower()
+    # Wakes once when all children terminal
+    assert "terminal" in p.lower()
+
+
+def test_manager_prompt_no_longer_claims_only_delegate_done_escalate():
+    """The manager prompt must NOT claim the decision field is limited to
+    only delegate/done/escalate — the contradiction the reviewer flagged."""
+    p = build_capabilities_prompt(
+        agents=[{"name": "dev_agent", "description": "Implements features"}],
+        step_number=1, max_steps=10,
+        manager_name="engineering_head",
+    )
+    # The old contradictory phrase must be gone
+    assert "still has to be one of delegate/done/escalate" not in p
+    assert "one of the three decision shapes" not in p
+    # The manage-agent section must now list fanout alongside the others
+    # Find the manage-agent section
+    manage_section_start = p.find("manage-agent")
+    assert manage_section_start != -1
+    # Within a reasonable range after manage-agent, the decision field listing
+    # must include fanout
+    tail = p[manage_section_start:]
+    assert "fanout" in tail.lower()
+
+
+def test_self_only_prompt_advertises_fanout_as_unavailable():
+    """The self-only prompt must mention fanout exists but is unavailable
+    in self-only mode, so non-manager owners are not confused by its absence."""
+    p = build_capabilities_prompt(
+        agents=[], step_number=1, max_steps=10,
+        manager_name="dev_agent", self_only=True,
+    )
+    assert "fanout" in p.lower()
+    assert "parallel" in p.lower()
+    # Must say it's NOT available in self-only mode
+    assert "not available" in p.lower() or "NOT available" in p
+    assert "team-manager-only" in p.lower() or "team manager" in p.lower()

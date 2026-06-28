@@ -53,6 +53,11 @@ def build_capabilities_prompt(
             "```json",
             '{"action": "escalate", "reason": "<why>"}',
             "```\n",
+            "**fanout / parallel** -- NOT available in self-only mode. "
+            "Fan-out (spawning N parallel sub-tasks across multiple agents, "
+            "width 2–8, read-only Phase 1) is a team-manager-only capability. "
+            "If you need parallel work, delegate sequentially or escalate to "
+            "your parent.\n",
             "### Constraints\n",
             f"- This is step {step_number} of maximum {max_steps}",
             "- Org-specific authority limits come from your role_guidance / "
@@ -119,6 +124,28 @@ def build_capabilities_prompt(
         "```json",
         '{"action": "escalate", "reason": "<why this needs escalation>"}',
         "```\n",
+        "**fanout / parallel** -- Spawn N parallel read-only sub-tasks "
+        "(Phase 1, team-manager only):\n",
+        "```json\n",
+        '{"action": "fanout",',
+        ' "children": [',
+        '   {"agent": "dev_agent",    "prompt": "Investigate module A"},',
+        '   {"agent": "qa_engineer",   "prompt": "Investigate module B"},',
+        '   {"agent": "product_manager", "prompt": "Investigate module C"}',
+        ' ],',
+        ' "width_cap_ack": 3,',
+        ' "join_summary": "Synthesize findings into a unified plan"}',
+        "```\n",
+        "Constraints:\n",
+        "- Width: 2\u20138 children (hard cap; single-child or >8 rejects at parse-time).\n",
+        "- `width_cap_ack` MUST exactly match the child count.\n",
+        "- `join_summary` is optional prose for the rejoin prompt.\n",
+        "- Width > 4 enters founder `review_required` before children spawn.\n",
+        "- Read-only Phase 1 only; per-child `then` / `expect_verdict` are REJECTED.\n",
+        "- Children spawn through the normal child/session path; the parent "
+        "parks `in_progress(delegated)` with `active_fanout` set and wakes "
+        "once when all children are terminal.\n",
+        "- Full shape: `protocol/00-completion-contract.md` \u00a7 Fan-out.\n",
         "#### Example completion payload\n",
         "Write `/tmp/completion-<task_id>.json` with BOTH fields set:",
         "```json",
@@ -153,8 +180,8 @@ def build_capabilities_prompt(
         "**manage-agent** -- Enroll, update, or terminate an agent:",
         "Use the manage-agent skill to write a JSON file and call `happyranch manage-agent --from-file <path>`.",
         "Enrollment requires founder approval before the agent becomes active. "
-        "This is a side-channel capability, not one of the three decision shapes above — "
-        "your `decision` field still has to be one of delegate/done/escalate.\n",
+        "This is a side-channel capability, not one of the decision shapes above — "
+        "your `decision` field must be one of delegate/done/escalate/fanout.\n",
         "### Constraints\n",
         f"- This is step {step_number} of maximum {max_steps}",
         "- Org-specific authority limits (budget, jurisdictional, content)"
