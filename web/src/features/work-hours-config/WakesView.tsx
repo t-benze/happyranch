@@ -199,7 +199,7 @@ function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.
       {/* Summary */}
       {entry.summary && (
         <span
-          className="text-text-secondary shrink-0 max-w-[16rem] truncate text-xs"
+          className="text-text-secondary shrink-0 max-w-64 truncate text-xs"
           title={entry.summary}
         >
           {entry.summary}
@@ -209,7 +209,7 @@ function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.
       {/* Error */}
       {entry.error && (
         <span
-          className="text-feedback-danger shrink-0 max-w-[16rem] truncate text-xs"
+          className="text-feedback-danger shrink-0 max-w-64 truncate text-xs"
           title={entry.error}
         >
           {entry.error}
