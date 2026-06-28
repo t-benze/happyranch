@@ -3,7 +3,34 @@
  * Props-in/JSX-out; no data fetching.
  */
 import { AlertTriangle } from 'lucide-react';
+import { SubTabBar } from '@/design-system/primitives/SubTabBar';
 import type { Provenance } from './merge';
+
+/**
+ * Sub-nav strip for the Work Hours surface: Overview (config roster) vs Wakes
+ * (read-only wake-execution list, folded in from the retired Schedule surface).
+ * The Wakes view is an in-page tab driven by the `?view=wakes` query param —
+ * no sibling route, so it never collides with the `work-hours/:agent` detail
+ * route. Parents derive `active` from the URL.
+ */
+export function WorkHoursTabs({
+  slug,
+  active,
+}: {
+  slug: string | undefined;
+  active: 'overview' | 'wakes';
+}): JSX.Element {
+  const base = `/orgs/${slug ?? ''}/work-hours`;
+  return (
+    <SubTabBar
+      active={active}
+      tabs={[
+        { value: 'overview', label: 'Overview', to: base },
+        { value: 'wakes', label: 'Wakes', to: `${base}?view=wakes` },
+      ]}
+    />
+  );
+}
 
 const PROVENANCE_LABEL: Record<Provenance, string> = {
   org: 'Org default',

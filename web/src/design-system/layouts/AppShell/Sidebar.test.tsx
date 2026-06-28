@@ -106,7 +106,7 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       // Operate nav items
       expect(screen.getByText('Spend')).toBeInTheDocument();
       expect(screen.getByText('Dreams')).toBeInTheDocument();
-      expect(screen.getByText('Schedule')).toBeInTheDocument();
+      expect(screen.getByText('Work Hours')).toBeInTheDocument();
       expect(screen.getByText('Audit')).toBeInTheDocument();
     });
   });
@@ -355,10 +355,10 @@ describe('IA-10: Nav grouping (Primary / Operate)', () => {
     await waitFor(() => {
       const spendLink = screen.getByText('Spend');
       const dreamsLink = screen.getByText('Dreams');
-      const scheduleLink = screen.getByText('Schedule');
+      const workHoursLink = screen.getByText('Work Hours');
       expect(spendLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/spend`);
       expect(dreamsLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dreams`);
-      expect(scheduleLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/schedule`);
+      expect(workHoursLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/work-hours`);
     });
   });
 });
@@ -391,7 +391,7 @@ describe('Operate surfaces', () => {
     });
   });
 
-  test('renders Schedule surface', async () => {
+  test('THR-035: /schedule redirects to work-hours Wakes view', async () => {
     seedSidebarShell();
     // Seed work-hours endpoint with empty list
     server.use(
@@ -400,12 +400,14 @@ describe('Operate surfaces', () => {
       ),
     );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/schedule` });
+    // The wake-list empty state confirms the redirect completed and WakesView
+    // rendered (the former Schedule content now lives inside Work Hours).
     await waitFor(() => {
-      // 'Schedule' appears in both sidebar nav and page header
-      const scheduleElements = screen.getAllByText('Schedule');
-      expect(scheduleElements.length).toBeGreaterThanOrEqual(2);
       expect(screen.getByText(/No scheduled wakes/i)).toBeInTheDocument();
     });
+    // 'Schedule' must NOT appear in the sidebar or app bar after redirect —
+    // the nav item is removed and the 'schedule' route redirects away.
+    expect(screen.queryByText('Schedule')).toBeNull();
   });
 });
 

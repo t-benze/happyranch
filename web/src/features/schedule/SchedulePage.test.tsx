@@ -87,7 +87,21 @@ function defaultEntries(): WorkHourRecord[] {
   ];
 }
 
-describe('SchedulePage — Pasture fidelity read-only work-hours list', () => {
+describe('THR-035: wake-execution list (consolidated into Work Hours Wakes view)', () => {
+  test('/schedule redirects to work-hours Wakes view (no 404)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours();
+    mountAt(`/orgs/${SLUG}/schedule`);
+
+    await waitFor(() => {
+      // After the redirect, we're on the Work Hours page — not a 404.
+      // The sidebar and AppBar show 'Work Hours', not 'Schedule'.
+      const workHoursLinks = screen.getAllByText('Work Hours');
+      expect(workHoursLinks.length).toBeGreaterThanOrEqual(1);
+      expect(screen.queryByText('Schedule')).toBeNull();
+    });
+  });
+
   test('renders SCHED-02 Direction-A eyebrow + serif title and description', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedWorkHours();
