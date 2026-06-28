@@ -114,8 +114,8 @@ def test_list_tasks_blocked_on_jobs_filters_correctly():
         assert set(result) == {"TASK-A"}
 
 
-def test_list_tasks_blocked_on_job_id_filter_requires_blocked_status():
-    """list_tasks(blocked_on_job_id=...) MUST constrain status=blocked AND
+def test_list_tasks_blocked_on_job_id_filter_requires_in_progress_and_blocked_on_job():
+    """list_tasks(blocked_on_job_id=...) MUST constrain status=in_progress AND
     block_kind=blocked_on_job — non-blocked (e.g., done) tasks with the same
     job in blocked_on_job_ids must NOT appear.
 
@@ -141,7 +141,7 @@ def test_list_tasks_blocked_on_job_id_filter_requires_blocked_status():
             blocked_on_job_ids=json.dumps(["JOB-X"]),
         )
 
-        # (b) A genuinely BLOCKED + BLOCKED_ON_JOB task on JOB-X — MUST appear.
+        # (b) A genuinely in_progress + blocked_on_job task on JOB-X — MUST appear.
         blocked_task = TaskRecord(
             id="TASK-BLOCKED", team="engineering", brief="blocked",
             status=TaskStatus.IN_PROGRESS, parent_task_id=None,
@@ -175,7 +175,7 @@ def test_list_tasks_blocked_on_job_id_filter_requires_blocked_status():
             f"got {result_ids}"
         )
 
-        # (b) Blocked task MUST appear.
+        # (b) in_progress(blocked_on_job) task MUST appear.
         assert "TASK-BLOCKED" in result_ids, (
             f"TASK-BLOCKED (in_progress+blocked_on_job) missing from blocked_on_job_id filter; "
             f"got {result_ids}"
