@@ -963,7 +963,10 @@ class TestFanoutRunStep:
 
         # Monkeypatch _run_agent so the rejected path can fall through to
         # agent re-run; agent decides "done" so the task completes cleanly.
+        # Capture the prompt so we can assert BLOCKED-JOBS-RESULTS is present.
+        captured_prompt: list[str] = []
         def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            captured_prompt.append(prompt)
             return _make_result(), _make_report(output_summary="done")
         monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
 
@@ -977,19 +980,29 @@ class TestFanoutRunStep:
         # Zero children spawned.
         children = db.get_children("T-FANOUT-REJECT")
         assert len(children) == 0
-        # Audit log must include fanout_review_not_approved decision
-        # (logged as an orchestration_step with decision.action).
+        # Audit log must include a dedicated fanout_review_not_approved entry
+        # (not an orchestration_step — uses its own action so it does not
+        # suppress BLOCKED-JOBS-RESULTS).
         logs = db.get_audit_logs("T-FANOUT-REJECT")
         not_approved = [
             e for e in logs
-            if e["action"] == "orchestration_step"
-            and isinstance(e.get("payload"), dict)
-            and e["payload"].get("decision", {}).get("action") == "fanout_review_not_approved"
+            if e["action"] == "fanout_review_not_approved"
         ]
         assert len(not_approved) == 1
-        # Agent re-ran (orchestration_step for the done decision after rejection).
+        # Agent re-ran: the prompt must include BLOCKED-JOBS-RESULTS with
+        # the rejected job status so the manager can decide next steps.
+        assert len(captured_prompt) == 1
+        prompt_text = captured_prompt[0]
+        assert "=== BLOCKED-JOBS-RESULTS" in prompt_text, (
+            "rejected review must show BLOCKED-JOBS-RESULTS header"
+        )
+        assert "rejected" in prompt_text, (
+            "rejected review must include job status in prompt"
+        )
+        # Exactly one orchestration_step (the "done" agent decision)
+        # — the fanout_review_not_approved no longer writes as orchestration_step.
         orch_steps = [e for e in logs if e["action"] == "orchestration_step"]
-        assert len(orch_steps) >= 2
+        assert len(orch_steps) == 1
 
     def test_fanout_review_gate_reentry_failed_spawns_zero_children(
         self, runtime, db, monkeypatch,
@@ -1041,7 +1054,9 @@ class TestFanoutRunStep:
         )
         orch._queue = _SlugQueue()
 
+        captured_prompt: list[str] = []
         def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            captured_prompt.append(prompt)
             return _make_result(), _make_report(output_summary="done")
         monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
 
@@ -1051,14 +1066,23 @@ class TestFanoutRunStep:
         assert parent.active_fanout is None
         children = db.get_children("T-FANOUT-FAILRVW")
         assert len(children) == 0
+        # Audit uses dedicated action (not orchestration_step) so it does not
+        # suppress BLOCKED-JOBS-RESULTS.
         logs = db.get_audit_logs("T-FANOUT-FAILRVW")
         not_approved = [
             e for e in logs
-            if e["action"] == "orchestration_step"
-            and isinstance(e.get("payload"), dict)
-            and e["payload"].get("decision", {}).get("action") == "fanout_review_not_approved"
+            if e["action"] == "fanout_review_not_approved"
         ]
         assert len(not_approved) == 1
+        # Prompt must include BLOCKED-JOBS-RESULTS with the failed job status.
+        assert len(captured_prompt) == 1
+        prompt_text = captured_prompt[0]
+        assert "=== BLOCKED-JOBS-RESULTS" in prompt_text, (
+            "failed review must show BLOCKED-JOBS-RESULTS header"
+        )
+        assert "failed" in prompt_text, (
+            "failed review must include job status in prompt"
+        )
 
     def test_fanout_over_cap_still_hard_fails(self, runtime, db, monkeypatch):
         """Width > MAX_FANOUT_WIDTH still hard-fails (parse rejection before review gate)."""

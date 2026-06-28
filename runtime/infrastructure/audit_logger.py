@@ -246,6 +246,27 @@ class AuditLogger:
             },
         )
 
+    def log_fanout_review_not_approved(
+        self,
+        task_id: str,
+        *,
+        reason: str,
+    ) -> None:
+        """Written when a pending-review fan-out re-enters and the review
+        job was rejected or failed — children will NOT be spawned.
+
+        Uses its own action so it does not suppress BLOCKED-JOBS-RESULTS
+        (unlike ``log_orchestration_step``, which always writes
+        ``action="orchestration_step"`` and would hide the job-outcome
+        header from the manager prompt).
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="orchestrator",
+            action="fanout_review_not_approved",
+            payload={"reason": reason},
+        )
+
     def log_fanout_join(
         self,
         task_id: str,

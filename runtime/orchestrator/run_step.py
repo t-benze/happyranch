@@ -237,12 +237,14 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             # Review was rejected or failed: clear the pending fan-out and
             # fall through to agent re-run so the manager sees the
             # BLOCKED-JOBS-RESULTS header and decides next steps.
+            # Use a dedicated audit action (NOT orchestration_step) so the
+            # BLOCKED-JOBS-RESULTS header is not suppressed —
+            # _blocked_jobs_resume_header_if_applicable only masks on
+            # action="orchestration_step" entries.
             db.update_task_active_fanout(task_id, None)
-            orch._audit.log_orchestration_step(
-                task_id, next_count,
-                {"action": "fanout_review_not_approved", "reason": (
-                    f"review job(s) {job_ids} not approved"
-                )},
+            orch._audit.log_fanout_review_not_approved(
+                task_id,
+                reason=f"review job(s) {job_ids} not approved",
             )
             # Fall through to agent run (step 4).
         elif fanout_state.status == "spawned":
