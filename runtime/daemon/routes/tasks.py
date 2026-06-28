@@ -575,7 +575,7 @@ async def resolve_escalation_in_process(
         # Re-enqueue self. The manager's next step sees the rationale via the
         # escalation-resolved prompt header (see
         # ``_resolved_escalation_header_if_applicable`` in run_step.py).
-        # Parent (if any) stays blocked (DELEGATED) and will be woken when
+        # Parent (if any) stays in_progress (delegated) and will be woken when
         # this task next reaches a true terminal — no immediate wake here.
         if state.queue is not None:
             state.queue.put_nowait(org.slug, task_id)
@@ -738,7 +738,7 @@ def _supersede_predecessor_locked(
     note_suffix: str | None = None,
     thread_id: str | None = None,
 ) -> None:
-    """Transition a blocked(escalated|delegated) predecessor to the terminal
+    """Transition an escalated or in_progress(delegated) predecessor to the terminal
     RESOLVED_SUPERSEDED status — block_kind cleared, audit citing the concrete
     successor root (the maker-checker evidence) and, on the thread path, the
     dispatching thread ruling.
@@ -879,7 +879,7 @@ async def revisit_from_notification(
         audit.log_revisit_spawned(
             predecessor_task_id=predecessor.id, new_root=new_id,
         )
-        # §3(a) forcing function: a blocked(escalated|delegated) predecessor is
+        # §3(a) forcing function: an escalated or in_progress(delegated) predecessor is
         # auto-resolved to the terminal RESOLVED_SUPERSEDED — block_kind
         # cleared, audit citing the new continuation root (the maker-checker
         # evidence). It is NOT re-enqueued (that would spawn a wasted manager

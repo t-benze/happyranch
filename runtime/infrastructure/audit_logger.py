@@ -325,7 +325,7 @@ class AuditLogger:
         founder_note: str | None = None,
         thread_id: str | None = None,
     ) -> None:
-        """Record that a blocked(escalated|delegated) task was auto-resolved to
+        """Record that an escalated or in_progress(delegated) task was auto-resolved to
         RESOLVED_SUPERSEDED because a human-authorized continuation
         (`successor_root`) superseded it.
 

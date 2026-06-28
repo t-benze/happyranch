@@ -1,6 +1,6 @@
 """§3(a) auto-resolve forcing function + Gap-B delegated close (THR-018 tier #3).
 
-A founder `revisit` (or Feishu-reply revisit) of a blocked(escalated|delegated)
+A founder `revisit` (or Feishu-reply revisit) of an escalated or in_progress(delegated)
 predecessor auto-transitions that predecessor to the terminal
 RESOLVED_SUPERSEDED status — block_kind cleared, audit citing the new
 continuation root (the maker-checker evidence) — without re-enqueuing it.
