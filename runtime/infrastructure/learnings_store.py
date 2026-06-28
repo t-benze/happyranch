@@ -1172,6 +1172,7 @@ class MemoryStore:
                 continue
 
             score = 0
+            matched = False
             title_l = entry.title.lower()
             topic_l = entry.topic.lower()
             tags_l = [t.lower() for t in entry.tags]
@@ -1180,21 +1181,31 @@ class MemoryStore:
             # Title exact match
             if q in title_l:
                 score += self._SEARCH_TITLE_EXACT
+                matched = True
 
             # Term-level scoring
             for term in terms:
                 if term in title_l:
                     score += self._SEARCH_TITLE_TERM
+                    matched = True
                 if term in topic_l or any(term in t for t in tags_l):
                     score += self._SEARCH_TAG_TOPIC_TERM
+                    matched = True
 
             # Body term match (capped)
             body_points = 0
             for term in terms:
                 if term in body_l:
                     body_points += self._SEARCH_BODY_TERM
+                    matched = True
             body_points = min(body_points, self._SEARCH_BODY_CAP)
             score += body_points
+
+            # Only include entries with at least one actual query-term match.
+            # Provenance, salience, and lifecycle modifiers only rank matched
+            # entries — they never cause an unrelated entry to appear.
+            if not matched:
+                continue
 
             # Provenance boost
             score += self._SEARCH_PROVENANCE_BOOST.get(entry.provenance, 0)
@@ -1226,22 +1237,19 @@ class MemoryStore:
                 updated_at=entry.updated_at,
             )))
 
-        # Sort: score desc, then salience desc, then updated_at desc, then
-        # title asc, then id asc for deterministic tie-breaking
-        hits.sort(key=lambda item: (
-            -item[0],
-            -item[1].salience,
-            item[1].updated_at or "",
-            item[1].title,
-            item[1].id,
-        ), reverse=False)
-        # Actually for descending sort:
-        hits.sort(key=lambda item: (
-            -item[0],
-            -(item[1].salience or 0),
-            # updated_at descending so newer first: invert string sort
-            # (ISO-8601 strings sort lexicographically matching time order)
-        ), reverse=False)
+        # Deterministic sort: score desc, salience desc, updated_at desc,
+        # title asc, id asc. Multi-pass stable sort with least-significant
+        # key first so most-significant key wins on ties.
+        hits.sort(key=lambda item: item[1].id)                     # id asc
+        hits.sort(key=lambda item: item[1].title)                   # title asc
+        # updated_at desc: None/empty → last; ISO 8601 lexicographic = chronological
+        hits.sort(
+            key=lambda item: (1 if (item[1].updated_at or "") else 0,
+                              item[1].updated_at or ""),
+            reverse=True,
+        )
+        hits.sort(key=lambda item: (item[1].salience or 0,), reverse=True)   # salience desc
+        hits.sort(key=lambda item: (item[0],), reverse=True)                  # score desc
 
         return [h[1] for h in hits[:limit]]
 

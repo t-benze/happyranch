@@ -576,7 +576,14 @@ class TestCompactRoute:
         assert resp["evicted"] == []
 
     def test_compact_apply(self, client_with_migrated_workspace):
-        client, token, slug, agent, _ = client_with_migrated_workspace
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        # Enable compaction in org config so apply is allowed
+        org_root = ws.parent.parent
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True, exist_ok=True)
+        (org_config_dir / "config.yaml").write_text(
+            "memory_compaction:\n  enabled: true\n"
+        )
         client.post(
             f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
             headers={"Authorization": f"Bearer {token}"},
@@ -593,6 +600,40 @@ class TestCompactRoute:
         # Apply should return the result structure
         assert "evicted" in resp
         assert "skipped" in resp
+
+    def test_compact_apply_disabled_by_config(self, client_with_migrated_workspace):
+        """When memory_compaction.enabled is false, apply returns 403;
+        dry-run is still allowed."""
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        # Write org config with compaction disabled
+        org_root = ws.parent.parent  # happyranch-runtime/orgs/<slug>
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True, exist_ok=True)
+        org_config_path = org_config_dir / "config.yaml"
+        org_config_path.write_text(
+            "memory_compaction:\n  enabled: false\n  salience_floor: 5\n"
+        )
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "stale-cfg", "title": "Stale Config", "topic": "w", "body": "b\n"},
+        )
+        # Dry-run must still work when disabled
+        r_dry = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/compact",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"dry_run": True},
+        )
+        assert r_dry.status_code == 200
+        assert r_dry.json()["dry_run"] is True
+        # Apply must be rejected
+        r_apply = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/compact",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"dry_run": False},
+        )
+        assert r_apply.status_code == 403
+        assert r_apply.json()["detail"]["error"] == "compaction_disabled"
 
 
 class TestSearchImproved:
@@ -681,3 +722,48 @@ class TestSearchImproved:
         # At least one result is a memory hit
         mem_hits = [h for h in hits if h["source"] == "memory"]
         assert len(mem_hits) >= 1
+
+    def test_search_uses_org_config_defaults(self, client_with_migrated_workspace):
+        """Search limit and include flags default from org config
+        memory_search when the request omits them."""
+        client, token, slug, agent, ws = client_with_migrated_workspace
+        # Write org config with custom search defaults
+        org_root = ws.parent.parent
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True, exist_ok=True)
+        org_config_path = org_config_dir / "config.yaml"
+        org_config_path.write_text(
+            "memory_search:\n"
+            "  default_limit: 3\n"
+            "  include_evicted_by_default: true\n"
+        )
+        # Create an evicted entry that would be excluded by non-config defaults
+        client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"slug": "ev-config", "title": "Ev Config", "topic": "w", "body": "b\n"},
+        )
+        client.patch(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001/lifecycle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"lifecycle": "evicted", "reason": "test config"},
+        )
+        # Omit include_evicted from request — config default (true) applies
+        r = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "ev"},
+        )
+        assert r.status_code == 200
+        hits = r.json()["hits"]
+        # Evicted entry should appear because config default includes it
+        assert len(hits) >= 1
+        assert any(h["lifecycle"] == "evicted" for h in hits)
+        # Explicit request field overrides config
+        r2 = client.post(
+            f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "ev", "include_evicted": False},
+        )
+        assert r2.status_code == 200
+        assert len(r2.json()["hits"]) == 0

@@ -34,7 +34,9 @@ from runtime.infrastructure.learnings_store import (
     InvalidLearningId,
     LearningIdExists,
     LearningNotFound,
+    LearningSearchHit,
     LearningSlugExists,
+    MemoryCompactionPolicy,
     MemoryItem,
     MemoryStore,
     PromotedLocked,
@@ -42,6 +44,7 @@ from runtime.infrastructure.learnings_store import (
 from runtime.infrastructure.memory_migration import migrate_workspace
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
 from runtime.orchestrator.context_builder import ContextBuilder
 
@@ -1109,11 +1112,11 @@ async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep)
 
 class LearningSearchBody(BaseModel):
     query: str
-    limit: int = 20
-    include_promoted: bool = False
-    include_evicted: bool = False
-    include_superseded: bool = False
-    include_kb: bool = False
+    limit: int | None = None
+    include_promoted: bool | None = None
+    include_evicted: bool | None = None
+    include_superseded: bool | None = None
+    include_kb: bool | None = None
 
 
 @router.post("/agents/{agent_name}/memory/entries/search")
@@ -1123,17 +1126,25 @@ class LearningSearchBody(BaseModel):
 async def search_learnings(
     slug: str, agent_name: str, body: LearningSearchBody, org: OrgDep,
 ) -> dict:
+    org_cfg = load_org_config(OrgPaths(root=org.root))
+    sc = org_cfg.memory_search
     store = _workspace_memory_store(org, agent_name)
+    # Merge: explicit request fields override org config defaults
+    limit = body.limit if body.limit is not None else sc.default_limit
+    include_promoted = body.include_promoted if body.include_promoted is not None else False
+    include_evicted = body.include_evicted if body.include_evicted is not None else sc.include_evicted_by_default
+    include_superseded = body.include_superseded if body.include_superseded is not None else sc.include_superseded_by_default
+    include_kb = body.include_kb if body.include_kb is not None else sc.include_kb_by_default
     hits = store.search(
         body.query,
-        limit=body.limit,
-        include_promoted=body.include_promoted,
-        include_evicted=body.include_evicted,
-        include_superseded=body.include_superseded,
+        limit=limit,
+        include_promoted=include_promoted,
+        include_evicted=include_evicted,
+        include_superseded=include_superseded,
     )
     warnings: list[str] = []
     # THR-032 P4b: opt-in read-only KB federation
-    if body.include_kb:
+    if include_kb:
         kb_store = KBStore(org.root / "kb")
         try:
             kb_hits = kb_store.search(body.query, limit=body.limit)
@@ -1417,15 +1428,37 @@ async def patch_lifecycle(
 
 class CompactBody(BaseModel):
     dry_run: bool = True
+    # Optional per-request overrides for compaction policy knobs.
+    # When absent, org config defaults apply.
+    salience_floor: int | None = None
+    stale_days: int | None = None
+    superseded_grace_days: int | None = None
+    max_evictions_per_run: int | None = None
 
 
 @router.post("/agents/{agent_name}/memory/entries/compact")
 async def compact_memory(
     slug: str, agent_name: str, body: CompactBody, org: OrgDep,
 ) -> dict:
+    org_cfg = load_org_config(OrgPaths(root=org.root))
+    cc = org_cfg.memory_compaction
+    # Dry-runs are always allowed (read-only). Apply requires config enablement.
+    if not body.dry_run and not cc.enabled:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "compaction_disabled",
+                    "message": "memory compaction apply is disabled in org config"},
+        )
+    # Build policy: org config defaults, with explicit request-field overrides
+    policy = MemoryCompactionPolicy(
+        salience_floor=body.salience_floor if body.salience_floor is not None else cc.salience_floor,
+        stale_days=body.stale_days if body.stale_days is not None else cc.stale_days,
+        superseded_grace_days=body.superseded_grace_days if body.superseded_grace_days is not None else cc.superseded_grace_days,
+        max_evictions_per_run=body.max_evictions_per_run if body.max_evictions_per_run is not None else cc.max_evictions_per_run,
+    )
     store = _workspace_memory_store(org, agent_name)
     async with org.db_lock:
-        result = store.compact(dry_run=body.dry_run)
+        result = store.compact(dry_run=body.dry_run, policy=policy)
         # Audit each eviction
         if not body.dry_run:
             for evicted_id in result.evicted:

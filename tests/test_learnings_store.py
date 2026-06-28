@@ -1513,3 +1513,89 @@ class TestImprovedSearch:
         hits = mem_store.search("workflow")
         assert len(hits) >= 1
         assert hits[0].id == "MEM-001"
+
+    def test_unrelated_query_returns_no_hits(self, mem_store: MemoryStore):
+        """Query 'zzzz' matches nothing — even with default salience/provenance,
+        no entries should appear. Provenance/salience only rank matched entries."""
+        _make_memory_item(mem_store, "MEM-001", "a", "Workflow", provenance="directive", salience=100)
+        _make_memory_item(mem_store, "MEM-002", "b", "Testing", provenance="reflective", salience=80)
+        _make_memory_item(mem_store, "MEM-003", "c", "Database Tips", tags=["sql"], salience=50)
+        hits = mem_store.search("zzzz")
+        assert hits == []
+        # Also verify that the entries exist and are searchable by their content
+        hits_workflow = mem_store.search("workflow")
+        assert len(hits_workflow) >= 1
+        hits_testing = mem_store.search("testing")
+        assert len(hits_testing) >= 1
+
+    def test_recency_tiebreaker_newest_first(self, mem_store: MemoryStore):
+        """Entries with equal score/salience sort newest updated_at first."""
+        # Write entries with identical titles (same score) directly to control timestamps
+        older = """---
+id: MEM-001
+slug: a
+title: Shared Title
+topic: workflow
+authored_by: test-agent
+authored_at: 2026-01-01T00:00:00Z
+updated_by: test-agent
+updated_at: 2026-01-01T00:00:00Z
+---
+
+body text with matching content here
+"""
+        newer = """---
+id: MEM-002
+slug: b
+title: Shared Title
+topic: workflow
+authored_by: test-agent
+authored_at: 2026-06-28T00:00:00Z
+updated_by: test-agent
+updated_at: 2026-06-28T00:00:00Z
+---
+
+body text with matching content here
+"""
+        (mem_store.root / "MEM-001-a.md").write_text(older)
+        (mem_store.root / "MEM-002-b.md").write_text(newer)
+        hits = mem_store.search("shared title")
+        assert len(hits) == 2
+        # Both have equal score and salience — newer updated_at should sort first
+        assert hits[0].id == "MEM-002"  # 2026-06-28 > 2026-01-01
+        assert hits[1].id == "MEM-001"
+
+    def test_recency_missing_updated_at_sorts_last(self, mem_store: MemoryStore):
+        """Entries missing updated_at sort after those with timestamps."""
+        with_date = """---
+id: MEM-001
+slug: a
+title: Shared Title
+topic: workflow
+authored_by: test-agent
+authored_at: 2026-01-01T00:00:00Z
+updated_by: test-agent
+updated_at: 2026-01-01T00:00:00Z
+---
+
+body text with matching content here
+"""
+        without_date = """---
+id: MEM-002
+slug: b
+title: Shared Title
+topic: workflow
+authored_by: test-agent
+authored_at: 2026-01-01T00:00:00Z
+updated_by: test-agent
+---
+
+body text with matching content here
+"""
+        (mem_store.root / "MEM-001-a.md").write_text(with_date)
+        (mem_store.root / "MEM-002-b.md").write_text(without_date)
+        hits = mem_store.search("shared title")
+        assert len(hits) == 2
+        # Entry with updated_at should sort before entry without
+        assert hits[0].id == "MEM-001"
+        assert hits[1].id == "MEM-002"
