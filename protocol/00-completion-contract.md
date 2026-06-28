@@ -62,6 +62,7 @@ Team-manager sessions must additionally include a structured `decision` object a
 - `"delegate"` — spawn a child task on another agent. Requires `agent` (target agent name) and `prompt` (child task brief).
 - `"done"` — terminal; the root task finishes here. Optional `summary` for a final outcome note.
 - `"escalate"` — surface to the founder for resolution. Requires `reason`.
+- `"fanout"` — spawn N child tasks in parallel (2 ≤ N ≤ 8, read-only Phase 1). Requires `children` (array of `{agent, prompt}` objects). Optional `width_cap_ack` (must match child count) and `join_summary` (prose directive for the join prompt). Per-child `then`/`expect_verdict` are rejected in Phase 1. Width > 4 requires founder review.
 
 **Field-name note:** the child task's brief lives in `decision.prompt`, not `decision.brief`. The schema silently ignores unknown keys, so writing `"brief"` produces a child task with an empty brief. Use `"prompt"`.
 
@@ -140,6 +141,39 @@ Step-budget effect: declaring a chain consumes one orchestration step; auto-adva
 Cross-team validation runs on every leg at decision-parse time; any off-team agent rejects the whole decision via the feedback mechanism.
 
 See `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.
+
+### Fan-out (parallel delegation, Phase 1)
+
+A manager can spawn N child tasks in parallel:
+
+```json
+{
+  "task_id": "...",
+  "session_id": "...",
+  "agent": "engineering_head",
+  "status": "completed",
+  "summary": "Dispatching parallel read-only investigation across 3 agents.",
+  "decision": {
+    "action": "fanout",
+    "children": [
+      {"agent": "dev_agent",    "prompt": "Investigate module A"},
+      {"agent": "qa_engineer",   "prompt": "Investigate module B"},
+      {"agent": "product_manager", "prompt": "Investigate module C"}
+    ],
+    "width_cap_ack": 3,
+    "join_summary": "Synthesize findings into a unified plan"
+  }
+}
+```
+
+Constraints: 2 ≤ N ≤ 8 (hard cap); per-child `then`/`expect_verdict` are rejected
+(read-only Phase 1); width > 4 requires founder `review_required`.
+The parent parks in `in_progress(delegated)` with `active_fanout` metadata
+and wakes once when all children are terminal. The manager receives a
+structured join context block with each child's outcome.
+
+See KB `fanout-primitive-founder-ratification` and
+`output/TASK-1101/native-fanout-phase1-refresh.md`.
 
 ### Who emits a decision, and delegation scope
 

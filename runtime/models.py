@@ -88,6 +88,10 @@ class TaskRecord(BaseModel):
     # chain is active on this parent. See docs/superpowers/specs/2026-05-30-inline-
     # delegation-chain-design.md.
     active_chain: str | None = None
+    # In-flight fan-out metadata (JSON-serialized FanoutState). NULL when no
+    # fan-out is active on this parent. Set atomically with child spawns;
+    # cleared on successful join claim or terminal parent close.
+    active_fanout: str | None = None
     note: str | None = None
     final_output_dir: str | None = None
     orchestration_step_count: int = 0
@@ -119,13 +123,28 @@ class ChainLeg(BaseModel):
     expect_verdict: str | None = None
 
 
+class FanoutChild(BaseModel):
+    """One child in a fanout/parallel NextStep. Phase 1: read-only children only —
+    each carries agent + prompt. ``then`` and ``expect_verdict`` are NOT allowed in
+    Phase 1 and are parse-rejected (mutating fan-out is out of scope).
+    """
+    agent: str
+    prompt: str
+    # Phase 1 rejects these fields — they exist only for Phase 2+ forward compat.
+    then: list[ChainLeg] = Field(default_factory=list)
+    expect_verdict: str | None = None
+
+
 class NextStep(BaseModel):
     """Decision returned by a task owner for what the orchestrator should do next."""
-    action: Literal["delegate", "done", "escalate"]
+    action: Literal["delegate", "done", "escalate", "fanout"]
     agent: str | None = None
     prompt: str | None = None
     expect_verdict: str | None = None
     then: list[ChainLeg] = Field(default_factory=list)
+    children: list[FanoutChild] = Field(default_factory=list)
+    width_cap_ack: int | None = None
+    join_summary: str | None = None
     summary: str | None = None
     reason: str | None = None
 
