@@ -132,8 +132,7 @@ def test_startup_recovery_enqueues_blocked_task_after_job_crash(
         brief="deploy service",
         team="engineering",
         assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
     ))
     db.update_task("TASK-1", blocked_on_job_ids=json.dumps(["JOB-1"]))
 
@@ -235,8 +234,7 @@ def test_startup_recovery_multi_job_all_crashed(tmp_path: Path) -> None:
         brief="multi-job crash test",
         team="engineering",
         assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
     ))
     db.update_task("TASK-2", blocked_on_job_ids=json.dumps(["JOB-A", "JOB-B"]))
     db.insert_job(_make_job("JOB-A", "TASK-2", status=JobStatus.RUNNING))
@@ -317,8 +315,7 @@ def test_startup_recovery_run_step_writes_resumed_audit_row(
         brief="restart audit row test",
         team="engineering",
         assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
     ))
     db.update_task("TASK-3", blocked_on_job_ids=json.dumps(["JOB-C"]))
     db.insert_job(_make_job("JOB-C", "TASK-3", status=JobStatus.RUNNING))

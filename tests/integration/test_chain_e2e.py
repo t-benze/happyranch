@@ -57,9 +57,8 @@ def _wait_for_terminal(
         block_kind = task.get("block_kind")
         if status in ("completed", "failed", "cancelled"):
             return body
-        # Path B: escalated is the top-level status (legacy blocked(escalated)
-        # accepted too for transition-window robustness).
-        if status == "escalated" or (status == "blocked" and block_kind == "escalated"):
+        # Path B: escalated is the top-level status.
+        if status == "escalated":
             return body
         time.sleep(0.3)
     raise AssertionError(

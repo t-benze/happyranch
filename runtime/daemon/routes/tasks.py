@@ -232,13 +232,8 @@ def get_task(task_id: str, org: OrgDep) -> dict:
 
     # When a task is blocked waiting for jobs, include the id+status of each
     # blocking job so `happyranch details` can show the founder what to act on.
-    # Path B: a task waiting on jobs is in_progress(blocked_on_job); the
-    # block_kind discriminant identifies the parked state regardless of whether
-    # the status is the new in_progress or the legacy blocked (dual-read).
     blocked_on_jobs: list[dict] | None = None
-    if task.block_kind == BlockKind.BLOCKED_ON_JOB and task.status in (
-        TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED
-    ):
+    if task.block_kind == BlockKind.BLOCKED_ON_JOB and task.status == TaskStatus.IN_PROGRESS:
         job_ids = _json.loads(task.blocked_on_job_ids or "[]")
         blocked_on_jobs = [
             {"job_id": jid, "status": org.db.get_job_status(jid) or "unknown"}
@@ -547,11 +542,8 @@ async def resolve_escalation_in_process(
     task = org.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    # Path B: an escalated task is status=ESCALATED; the legacy blocked(escalated)
-    # shape is accepted too (dual-read).
-    is_escalated = task.status == TaskStatus.ESCALATED or (
-        task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.ESCALATED
-    )
+    # Path B: an escalated task is status=ESCALATED.
+    is_escalated = task.status == TaskStatus.ESCALATED
     if not is_escalated:
         raise HTTPException(
             status_code=409,
@@ -690,9 +682,7 @@ def _classify_predecessor_status(task: TaskRecord) -> str | None:
         return "failed"
     if task.status == TaskStatus.COMPLETED:
         return "completed"
-    if task.status == TaskStatus.ESCALATED or (
-        task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.ESCALATED
-    ):
+    if task.status == TaskStatus.ESCALATED:
         return "blocked-escalated"
     return None
 
@@ -726,13 +716,10 @@ def _eligible_supersede_block_kind(org, predecessor: TaskRecord) -> str | None:
     predecessor is in_progress(delegated). The legacy blocked(escalated|
     delegated) shapes are accepted too (dual-read).
     """
-    if predecessor.status == TaskStatus.ESCALATED or (
-        predecessor.status == TaskStatus.BLOCKED
-        and predecessor.block_kind == BlockKind.ESCALATED
-    ):
+    if predecessor.status == TaskStatus.ESCALATED:
         return "escalated"
     if (
-        predecessor.status in (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED)
+        predecessor.status == TaskStatus.IN_PROGRESS
         and predecessor.block_kind == BlockKind.DELEGATED
         and _delegated_children_all_terminal(org, predecessor.id)
     ):
@@ -837,7 +824,7 @@ async def revisit_from_notification(
     # all-terminal gate is the safety boundary for the non-cascading close.
     if (
         prior_status is None
-        and predecessor.status in (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED)
+        and predecessor.status == TaskStatus.IN_PROGRESS
         and predecessor.block_kind == BlockKind.DELEGATED
         and _delegated_children_all_terminal(org, predecessor.id)
     ):

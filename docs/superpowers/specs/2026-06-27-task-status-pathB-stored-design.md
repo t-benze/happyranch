@@ -126,5 +126,11 @@ before anything queries; the dual-read is belt-and-suspenders for in-memory reco
 - **Phase 1 (this PR):** core model + migration + scheduler/sweep/CAS + protocol/doc parity.
 - **Phase 2 (separate chain):** display/derivation — `StatusBadge.tsx`, `types.ts`, CLI
   status rendering, dashboard `compute_*` / `_SEVERITY_RANK`, derived escalated sub-label.
-- **Phase 3 (after soak, founder-gated):** remove the deprecated `BLOCKED` /
-  `BlockKind.ESCALATED` members + the Phase-1a dual-read tolerance.
+- **Phase 3 ✅ DONE (TASK-1036):** removed the deprecated `BLOCKED` /
+  `BlockKind.ESCALATED` members + the Phase-1a dual-read tolerance. The
+  idempotent boot-time migration `UPDATE` in `database.py` is retained.
+  **Post-Phase-3 reverse migration note:** downgrade code to Phase 2 first
+  (which still carries the deprecated members), then run the reverse migration
+  SQL, then downgrade to pre-Path-B. Running post-Phase-3 code after a reverse
+  migration strands the runtime (`StrEnum` from a `'blocked'` DB row raises
+  `ValueError`).

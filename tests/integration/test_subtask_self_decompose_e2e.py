@@ -64,7 +64,7 @@ def _wait_for_terminal(
         block_kind = task.get("block_kind")
         if status in ("completed", "failed"):
             return body
-        if status == "blocked" and block_kind == "escalated":
+        if status == "escalated":
             return body
         time.sleep(0.3)
     raise AssertionError(

@@ -52,12 +52,11 @@ def test_blocked_on_job_ids_round_trips_through_update_and_read():
         db.insert_task(task)
         db.update_task(
             "TASK-001",
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.BLOCKED_ON_JOB,
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
             blocked_on_job_ids=json.dumps(["JOB-12", "JOB-13"]),
         )
         loaded = db.get_task("TASK-001")
-        assert loaded.status == TaskStatus.BLOCKED
+        assert loaded.status == TaskStatus.IN_PROGRESS
         assert loaded.block_kind == BlockKind.BLOCKED_ON_JOB
         assert loaded.blocked_on_job_ids == '["JOB-12", "JOB-13"]'
 
@@ -97,10 +96,10 @@ def test_list_tasks_blocked_on_jobs_filters_correctly():
         db_path = Path(tmp) / "test.db"
         db = Database(db_path)
 
-        # Three tasks: one blocked-on-job, one blocked-escalated, one in_progress.
+        # Three tasks: one blocked-on-job, one escalated, one in_progress.
         for tid, status, bk, jids in (
-            ("TASK-A", TaskStatus.BLOCKED, BlockKind.BLOCKED_ON_JOB, '["JOB-1"]'),
-            ("TASK-B", TaskStatus.BLOCKED, BlockKind.ESCALATED,     None),
+            ("TASK-A", TaskStatus.IN_PROGRESS, BlockKind.BLOCKED_ON_JOB, '["JOB-1"]'),
+            ("TASK-B", TaskStatus.ESCALATED, None,     None),
             ("TASK-C", TaskStatus.IN_PROGRESS, None,                None),
         ):
             db.insert_task(TaskRecord(
@@ -145,26 +144,24 @@ def test_list_tasks_blocked_on_job_id_filter_requires_blocked_status():
         # (b) A genuinely BLOCKED + BLOCKED_ON_JOB task on JOB-X — MUST appear.
         blocked_task = TaskRecord(
             id="TASK-BLOCKED", team="engineering", brief="blocked",
-            status=TaskStatus.BLOCKED, parent_task_id=None,
+            status=TaskStatus.IN_PROGRESS, parent_task_id=None,
         )
         db.insert_task(blocked_task)
         db.update_task(
             "TASK-BLOCKED",
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.BLOCKED_ON_JOB,
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
             blocked_on_job_ids=json.dumps(["JOB-X"]),
         )
 
         # (c) A task blocked on JOB-12 — must NOT match JOB-1.
         wrong_job_task = TaskRecord(
             id="TASK-JOB12", team="engineering", brief="wrong",
-            status=TaskStatus.BLOCKED, parent_task_id=None,
+            status=TaskStatus.IN_PROGRESS, parent_task_id=None,
         )
         db.insert_task(wrong_job_task)
         db.update_task(
             "TASK-JOB12",
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.BLOCKED_ON_JOB,
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
             blocked_on_job_ids=json.dumps(["JOB-12"]),
         )
 

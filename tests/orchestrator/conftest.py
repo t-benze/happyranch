@@ -111,7 +111,7 @@ def _is_eligible(db: Database, tid: str) -> bool:
         return False
     if task.status == TaskStatus.PENDING:
         return True
-    if (task.status in (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED)
+    if (task.status == TaskStatus.IN_PROGRESS
             and task.block_kind == BlockKind.DELEGATED):
         children = [db.get_task(cid) for cid in db.get_children(tid)]
         return all(c is not None and c.status in _TERMINAL for c in children)
@@ -145,11 +145,8 @@ def run_task_to_completion(orch: Orchestrator, task_id: str, max_steps: int = 20
             return
         if root.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
             return
-        # Path B: an escalated root is the top-level ESCALATED status (legacy
-        # blocked(escalated) accepted too — dual-read).
-        if root.status == TaskStatus.ESCALATED or (
-            root.status == TaskStatus.BLOCKED and root.block_kind == BlockKind.ESCALATED
-        ):
+        # Path B: an escalated root is the top-level ESCALATED status.
+        if root.status == TaskStatus.ESCALATED:
             return
         # Find next eligible task in tree (leaves first so children run before parents resume).
         eligible = _find_eligible_in_tree(orch._db, task_id)

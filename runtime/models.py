@@ -41,14 +41,13 @@ class TaskStatus(StrEnum):
     # terminal predicate (TERMINAL_STATES, _TERMINAL_TASK_STATUSES,
     # _TERMINAL_STATUS_TO_EVENT). See protocol/05c-orchestrator.md and
     # docs/agent-guides/features-and-invariants.md (escalation).
+    #
+    # Phase 3 (THR-037): BLOCKED and BlockKind.ESCALATED were fully retired
+    # after the transition soak. No live row carries 'blocked' after the
+    # idempotent boot migration. See
+    # docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md §I.
     RESOLVED_SUPERSEDED = "resolved_superseded"
-    # DEPRECATED (Path B transition). No new write produces `blocked`; the live
-    # rows were migrated to in_progress(delegated|blocked_on_job)/escalated at
-    # boot. Kept defined (not deleted) so a lingering/downgrade DB row valued
-    # 'blocked' still parses instead of raising ValueError on TaskRecord
-    # construction (the strand risk). Removed in a later cleanup phase after a
-    # soak — see the Path-B spec §I Phase 3.
-    BLOCKED = "blocked"
+
 
 
 class BlockKind(StrEnum):
@@ -56,10 +55,6 @@ class BlockKind(StrEnum):
     # "what this task is internally waiting on (NULL = a subprocess is running
     # now)". Live domain narrowed to {DELEGATED, BLOCKED_ON_JOB}.
     DELEGATED = "delegated"
-    # DEPRECATED (Path B): escalated is now the top-level TaskStatus.ESCALATED,
-    # not a block_kind. Kept defined for the transition window + reverse
-    # migration; no new write pairs it with a task row.
-    ESCALATED = "escalated"
     BLOCKED_ON_JOB = "blocked_on_job"
 
 

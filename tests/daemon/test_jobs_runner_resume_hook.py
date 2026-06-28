@@ -43,8 +43,7 @@ def _insert_task_blocked_on_job(db: Database, task_id: str, job_id: str) -> None
     ))
     db.update_task(
         task_id,
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
         blocked_on_job_ids=json.dumps([job_id]),
     )
 
@@ -151,8 +150,7 @@ def test_fire_resume_skips_task_when_sibling_job_still_running(tmp_path):
     ))
     db.update_task(
         "TASK-2",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
         blocked_on_job_ids=json.dumps(["JOB-1", "JOB-2"]),
     )
     # JOB-1 terminal, JOB-2 still pending.

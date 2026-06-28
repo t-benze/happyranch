@@ -160,7 +160,7 @@ There are four types of permission blocks, each handled differently:
 - **cancelled** — terminal; founder-initiated stop, distinct from `failed`.
 - **resolved_superseded** — terminal. An `escalated` / `in_progress(delegated)` task closed because a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) superseded it; the close cites the successor task and does **not** re-run the work.
 
-> **Deprecated — `blocked`.** Before THR-037 Change B (Path B, stored source-of-truth), the surfaced vocabulary used a single `blocked` state discriminated by `block_kind` (`delegated`/`escalated`/`blocked_on_job`). Path B collapsed it: a parent waiting on its children/jobs is `in_progress` (reason kept in `block_kind`), and the await-founder state is the top-level `escalated`. No new write produces `blocked`; live rows were migrated at boot. The value is retained for the transition window + reverse migration, removed after a soak.
+> **Deprecated — `blocked` (fully retired Phase 3).** Before THR-037 Change B (Path B, stored source-of-truth), the surfaced vocabulary used a single `blocked` state discriminated by `block_kind` (`delegated`/`escalated`/`blocked_on_job`). Path B collapsed it; the value was retained for the transition window + reverse migration and was fully retired in Phase 3 after a soak.
 
 #### Failure-recovery contract (TASK-573, THR-028)
 

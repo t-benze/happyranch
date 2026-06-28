@@ -45,9 +45,9 @@ def test_list_tasks_returns_most_recent_first(db):
 
 def test_list_tasks_filters_by_status(db):
     db.insert_task(TaskRecord(id="TASK-001", brief="a", status=TaskStatus.PENDING))
-    db.insert_task(TaskRecord(id="TASK-002", brief="b", status=TaskStatus.BLOCKED))
+    db.insert_task(TaskRecord(id="TASK-002", brief="b", status=TaskStatus.IN_PROGRESS))
     db.insert_task(TaskRecord(id="TASK-003", brief="c", status=TaskStatus.COMPLETED))
-    blocked = db.list_tasks(status=TaskStatus.BLOCKED)
+    blocked = db.list_tasks(status=TaskStatus.IN_PROGRESS)
     assert [t.id for t in blocked] == ["TASK-002"]
     # Raw string value also accepted (CLI/query-param path).
     assert [t.id for t in db.list_tasks(status="completed")] == ["TASK-003"]
@@ -56,14 +56,12 @@ def test_list_tasks_filters_by_status(db):
 def test_list_tasks_filters_by_block_kind(db):
     from runtime.models import BlockKind
     db.insert_task(TaskRecord(
-        id="TASK-001", brief="a", status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.ESCALATED,
+        id="TASK-001", brief="a", status=TaskStatus.ESCALATED, block_kind=None,
     ))
     db.insert_task(TaskRecord(
-        id="TASK-002", brief="b", status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.DELEGATED,
+        id="TASK-002", brief="b", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
     ))
-    escalated = db.list_tasks(status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED)
+    escalated = db.list_tasks(status=TaskStatus.ESCALATED, block_kind=None)
     assert [t.id for t in escalated] == ["TASK-001"]
     delegated = db.list_tasks(block_kind="delegated")
     assert [t.id for t in delegated] == ["TASK-002"]
@@ -71,12 +69,12 @@ def test_list_tasks_filters_by_block_kind(db):
 
 def test_list_tasks_status_filter_composes_with_agent(db):
     db.insert_task(TaskRecord(
-        id="TASK-001", brief="a", status=TaskStatus.BLOCKED, assigned_agent="dev_agent",
+        id="TASK-001", brief="a", status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent",
     ))
     db.insert_task(TaskRecord(
-        id="TASK-002", brief="b", status=TaskStatus.BLOCKED, assigned_agent="qa_engineer",
+        id="TASK-002", brief="b", status=TaskStatus.IN_PROGRESS, assigned_agent="qa_engineer",
     ))
-    rows = db.list_tasks(status=TaskStatus.BLOCKED, assigned_agent="dev_agent")
+    rows = db.list_tasks(status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent")
     assert [t.id for t in rows] == ["TASK-001"]
 
 
@@ -359,13 +357,12 @@ def test_update_task_writes_block_kind_and_note(tmp_path):
     db.insert_task(TaskRecord(id="TASK-001", brief="x"))
     db.update_task(
         "TASK-001",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
         note="Delegated to dev_agent",
         orchestration_step_count=2,
     )
     t = db.get_task("TASK-001")
-    assert t.status == TaskStatus.BLOCKED
+    assert t.status == TaskStatus.IN_PROGRESS
     assert t.block_kind == BlockKind.DELEGATED
     assert t.note == "Delegated to dev_agent"
     assert t.orchestration_step_count == 2
@@ -379,8 +376,7 @@ def test_update_task_can_clear_block_kind_to_none(tmp_path):
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(id="TASK-001", brief="x"))
-    db.update_task("TASK-001", status=TaskStatus.BLOCKED,
-                   block_kind=BlockKind.DELEGATED, note="x")
+    db.update_task("TASK-001", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED, note="x")
     db.update_task("TASK-001", status=TaskStatus.IN_PROGRESS,
                    block_kind=None, note=None)
     t = db.get_task("TASK-001")
@@ -422,13 +418,11 @@ def test_list_blocked_with_kind(tmp_path):
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     db.insert_task(TaskRecord(id="T-2", brief="y"))
-    db.update_task("T-1", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED)
-    db.update_task("T-2", status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED)
+    db.update_task("T-1", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED)
+    db.update_task("T-2", status=TaskStatus.ESCALATED, block_kind=None)
 
     ids = set(db.list_blocked_with_kind(BlockKind.DELEGATED))
     assert ids == {"T-1"}
-    ids = set(db.list_blocked_with_kind(BlockKind.ESCALATED))
-    assert ids == {"T-2"}
 
 
 def test_walk_ancestors_leaf_to_root_returns_chain(db):
@@ -834,7 +828,7 @@ def test_task_type_backfill_classifies_existing_children_as_subtask(tmp_path):
     # A root (no parent) and a delegated child (has parent) — no task_type col.
     conn.execute(
         "INSERT INTO tasks (id, status, team, brief, created_at, updated_at) "
-        "VALUES ('TASK-1', 'blocked', 'engineering', 'root', '2026-01-01', '2026-01-01')"
+        "VALUES ('TASK-1', 'in_progress', 'engineering', 'root', '2026-01-01', '2026-01-01')"
     )
     conn.execute(
         "INSERT INTO tasks (id, status, team, brief, parent_task_id, created_at, updated_at) "
@@ -1209,10 +1203,9 @@ def test_try_fail_over_budget_succeeds_from_blocked_delegated(db):
     pre-state (a resumed parent-style row); the CAS keys on the block_kind."""
     from runtime.models import BlockKind
     db.insert_task(TaskRecord(id="T-1", brief="x"))
-    db.update_task("T-1", status=TaskStatus.BLOCKED,
-                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.update_task("T-1", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED, note="waiting")
     ok = db.try_fail_over_budget(
-        "T-1", expected_status=TaskStatus.BLOCKED,
+        "T-1", expected_status=TaskStatus.IN_PROGRESS,
         expected_block_kind=BlockKind.DELEGATED, note="max steps (3) exceeded",
     )
     assert ok is True
@@ -1502,14 +1495,14 @@ def test_get_subtree_statuses_returns_direct_child_statuses(db):
     db.insert_task(TaskRecord(id="ROOT-1", brief="root"))
     db.insert_task(TaskRecord(
         id="CHILD-1", brief="c1", parent_task_id="ROOT-1",
-        status=TaskStatus.BLOCKED,
+        status=TaskStatus.IN_PROGRESS,
     ))
     db.insert_task(TaskRecord(
         id="CHILD-2", brief="c2", parent_task_id="ROOT-1",
         status=TaskStatus.COMPLETED,
     ))
     result = db.get_subtree_statuses("ROOT-1")
-    assert sorted(result) == sorted(["blocked", "completed"])
+    assert sorted(result) == sorted(["in_progress", "completed"])
 
 
 def test_get_subtree_statuses_walks_deeply_nested_subtree(db):
@@ -1547,12 +1540,12 @@ def test_get_subtree_statuses_multiple_branches(db):
     # Branch B: child only
     db.insert_task(TaskRecord(
         id="CHILD-B", brief="cb", parent_task_id="ROOT-1",
-        status=TaskStatus.BLOCKED,
+        status=TaskStatus.IN_PROGRESS,
     ))
     # Branch C: child -> grandchild with subtask
     db.insert_task(TaskRecord(
         id="CHILD-C", brief="cc", parent_task_id="ROOT-1",
-        status=TaskStatus.IN_PROGRESS, task_type="subtask",
+        status=TaskStatus.ESCALATED, task_type="subtask",
     ))
     db.insert_task(TaskRecord(
         id="GRAND-C", brief="gc", parent_task_id="CHILD-C",
@@ -1560,7 +1553,7 @@ def test_get_subtree_statuses_multiple_branches(db):
     ))
     result = db.get_subtree_statuses("ROOT-1")
     assert sorted(result) == sorted([
-        "completed", "failed", "blocked", "in_progress", "resolved_superseded",
+        "completed", "failed", "in_progress", "resolved_superseded", "escalated",
     ])
 
 
@@ -1660,9 +1653,9 @@ def test_list_roots_severity_rollup_delegating_parent_does_not_dominate(db):
 
 def test_list_roots_filters_by_status(db):
     """Status filter applied to the root itself, rollup computed on full subtree."""
-    db.insert_task(TaskRecord(id="ROOT-1", brief="r1", status=TaskStatus.BLOCKED))
+    db.insert_task(TaskRecord(id="ROOT-1", brief="r1", status=TaskStatus.IN_PROGRESS))
     db.insert_task(TaskRecord(id="ROOT-2", brief="r2", status=TaskStatus.COMPLETED))
-    result = db.list_roots(status=TaskStatus.BLOCKED)
+    result = db.list_roots(status=TaskStatus.IN_PROGRESS)
     assert len(result) == 1
     assert result[0].id == "ROOT-1"
 

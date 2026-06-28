@@ -612,7 +612,7 @@ def test_cancel_blocked_thread_dispatched_task_fires_followup(orch_with_thread_q
     _seed_dispatched_root(orch)
     # Walk through: prior_status=BLOCKED → cancel sets FAILED + cancelled_at → fire.
     from datetime import datetime, timezone
-    orch._db.update_task("TASK-1", status=TaskStatus.BLOCKED, block_kind="delegated")
+    orch._db.update_task("TASK-1", status=TaskStatus.IN_PROGRESS, block_kind="delegated")
     # Mirror cancel route's Phase 1b shape:
     orch._db.update_task("TASK-1",
                          status=TaskStatus.FAILED,
@@ -933,8 +933,7 @@ def test_escalation_root_fires_and_carries_reason(orch_with_db):
     from runtime.orchestrator.run_step import _maybe_post_thread_escalation
     orch = orch_with_db
     _seed_dispatched_root(orch)
-    orch._db.update_task("TASK-1", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.ESCALATED, note="needs founder auth")
+    orch._db.update_task("TASK-1", status=TaskStatus.ESCALATED, block_kind=None, note="needs founder auth")
 
     _maybe_post_thread_escalation(orch, "TASK-1", reason="needs founder auth")
 
@@ -960,8 +959,7 @@ def test_escalation_child_depth_surfaces_via_ancestors(orch_with_db):
         id="TASK-2", brief="b", team="ops", assigned_agent="alice",
         parent_task_id="TASK-1",
     ))
-    orch._db.update_task("TASK-2", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.ESCALATED, note="deep blocker")
+    orch._db.update_task("TASK-2", status=TaskStatus.ESCALATED, block_kind=None, note="deep blocker")
 
     _maybe_post_thread_escalation(orch, "TASK-2", reason="deep blocker")
 
@@ -997,8 +995,7 @@ def test_escalation_non_thread_task_noop(orch_with_db):
     orch._db.insert_task(TaskRecord(
         id="TASK-N", brief="b", team="ops", assigned_agent="alice",
     ))
-    orch._db.update_task("TASK-N", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.ESCALATED, note="x")
+    orch._db.update_task("TASK-N", status=TaskStatus.ESCALATED, block_kind=None, note="x")
 
     _maybe_post_thread_escalation(orch, "TASK-N", reason="x")
 
@@ -1011,8 +1008,7 @@ def test_escalation_thread_not_open_skips_with_audit(orch_with_db):
     orch = orch_with_db
     _seed_dispatched_root(orch)
     orch._db.set_thread_status("THR-1", status=ThreadStatus.ARCHIVED)
-    orch._db.update_task("TASK-1", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.ESCALATED, note="x")
+    orch._db.update_task("TASK-1", status=TaskStatus.ESCALATED, block_kind=None, note="x")
 
     _maybe_post_thread_escalation(orch, "TASK-1", reason="x")
 

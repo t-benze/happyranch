@@ -85,10 +85,9 @@ def _sweep_on_startup(
     revisited_roots: set[str] = set()
 
     import json as _json
-    # Path B: parked carriers are in_progress(...); the legacy blocked(...)
-    # shapes are accepted too (dual-read). A live subprocess is in_progress +
-    # block_kind IS NULL (Branch 1).
-    _PARKED = {TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED}
+    # Path B: parked carriers are in_progress(...) with block_kind set.
+    # A live subprocess is in_progress + block_kind IS NULL (Branch 1).
+    _PARKED = {TaskStatus.IN_PROGRESS}
     _TERMINAL_JOB_STATES = {"completed", "failed", "rejected"}
 
     for task_id in db.get_nonterminal_task_ids():

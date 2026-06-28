@@ -166,8 +166,8 @@ def test_synthesize_terminal_event_rules(org_state):
 
     done = make("T-DONE", TaskStatus.COMPLETED)
     failed = make("T-FAIL", TaskStatus.FAILED)
-    delegated = make("T-DEL", TaskStatus.BLOCKED, BlockKind.DELEGATED)
-    escalated = make("T-ESC", TaskStatus.BLOCKED, BlockKind.ESCALATED)
+    delegated = make("T-DEL", TaskStatus.IN_PROGRESS, BlockKind.DELEGATED)
+    escalated = make("T-ESC", TaskStatus.ESCALATED)
 
     assert org_state._synthesize_terminal_event(done)["type"] == "task_complete"
     assert org_state._synthesize_terminal_event(failed)["type"] == "task_failed"

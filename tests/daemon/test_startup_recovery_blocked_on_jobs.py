@@ -29,8 +29,7 @@ def _insert_task_blocked_on_job(db: Database, task_id: str, job_ids: list[str]) 
     ))
     db.update_task(
         task_id,
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
         blocked_on_job_ids=json.dumps(job_ids),
     )
 

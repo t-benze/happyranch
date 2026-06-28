@@ -167,7 +167,7 @@ def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_p
     db.insert_task(TaskRecord(
         id="T-PAR", brief="p", team="engineering",
         assigned_agent="engineering_head",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
         note="waiting",
         task_type="task",
     ))
@@ -186,7 +186,7 @@ def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_p
     # Child force-failed.
     assert db.get_task("T-CHD").status == TaskStatus.FAILED
     # TASK-573: parent stays BLOCKED(DELEGATED) for bounded-wake, not FAILED.
-    assert db.get_task("T-PAR").status == TaskStatus.BLOCKED
+    assert db.get_task("T-PAR").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-PAR").block_kind == BlockKind.DELEGATED
     # A fresh root was spawned via revisit_of_task_id=T-PAR.
     revisits = [
@@ -207,15 +207,14 @@ def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_p
 def test_sweep_leaves_blocked_escalated_alone(tmp_path):
     db = _seed_org(tmp_path)
     db.insert_task(TaskRecord(id="T-1", brief="x"))
-    db.update_task("T-1", status=TaskStatus.BLOCKED,
-                   block_kind=BlockKind.ESCALATED, note="halt")
+    db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None, note="halt")
 
     queue = TaskQueue()
     _sweep_on_startup(db, queue, "test")
 
     t = db.get_task("T-1")
-    assert t.status == TaskStatus.BLOCKED
-    assert t.block_kind == BlockKind.ESCALATED
+    assert t.status == TaskStatus.ESCALATED
+    assert t.block_kind is None
     assert queue._queue.empty()
 
 
@@ -258,7 +257,7 @@ def test_sweep_in_progress_spawns_auto_revisit(tmp_path):
     db.insert_task(TaskRecord(
         id="T-ROOT", brief="root work", team="engineering",
         assigned_agent="engineering_head",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
         task_type="task",
     ))
     db.insert_task(TaskRecord(
@@ -276,7 +275,7 @@ def test_sweep_in_progress_spawns_auto_revisit(tmp_path):
     # Child force-failed.
     assert db.get_task("T-CHD").status == TaskStatus.FAILED
     # TASK-573: bounded-wake, not cascade-fail.
-    assert db.get_task("T-ROOT").status == TaskStatus.BLOCKED
+    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-ROOT").block_kind == BlockKind.DELEGATED
     # A new root was spawned via revisit_of_task_id=T-ROOT.
     revisits = [
@@ -307,7 +306,7 @@ def test_sweep_per_root_dedup(tmp_path):
     db.insert_task(TaskRecord(
         id="T-ROOT", brief="root", team="engineering",
         assigned_agent="engineering_head",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
     ))
     db.insert_task(TaskRecord(
         id="T-CHD-A", brief="a", team="engineering",

@@ -93,14 +93,14 @@ def _wait_for_terminal_status(
         if status in ("completed", "failed", "cancelled"):
             return status
         # Path B: escalated is the top-level await-founder status (legacy
-        # blocked(escalated) accepted too during the transition window).
-        if status == "escalated" or (status == "blocked" and block_kind == "escalated"):
+        # Path B: escalated is a top-level status.
+        if status == "escalated":
             return status
         # Parked carriers (delegated / blocked_on_job) are in_progress(kind)
-        # under Path B; legacy blocked(kind) accepted too. Opt-in via allow_blocked.
+        # under Path B. Opt-in via allow_blocked.
         if (allow_blocked
                 and block_kind in ("delegated", "blocked_on_job")
-                and status in ("in_progress", "blocked")):
+                and status == "in_progress"):
             return status
         time.sleep(0.2)
     raise AssertionError(f"task {task_id} did not reach a terminal state (last body={body})")
