@@ -449,22 +449,85 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
     expect(eyebrow).toHaveTextContent('1 FAILED');
   });
 
-  // TASKS-01: column header row aligned above the rows.
-  test('renders the TASK · TITLE · AGENT · THREAD · UPDATED column header row', async () => {
+  // TASKS-01: column header row aligned above the rows. THR-041: STATUS · TASK · TITLE · AGENT · THREAD · UPDATED.
+  test('renders the STATUS · TASK · TITLE · AGENT · THREAD · UPDATED column header row', async () => {
     mountTasks([
       rootTask({ task_id: 'TASK-0410', status: 'in_progress', severity_rollup: 'in_progress' }),
     ]);
     await waitFor(() => {
-      expect(screen.getByText('TASK')).toBeInTheDocument();
+      expect(screen.getByText('STATUS')).toBeInTheDocument();
     });
+    expect(screen.getByText('TASK')).toBeInTheDocument();
     expect(screen.getByText('TITLE')).toBeInTheDocument();
     expect(screen.getByText('AGENT')).toBeInTheDocument();
     expect(screen.getByText('THREAD')).toBeInTheDocument();
     expect(screen.getByText('UPDATED')).toBeInTheDocument();
+    // Verify the DOM order: STATUS before TASK, TASK before TITLE.
+    const headerDivs = document.querySelectorAll('.text-text-muted.border-b > div');
+    const labels = Array.from(headerDivs).map((d) => d.textContent);
+    expect(labels).toEqual(['STATUS', 'TASK', 'TITLE', 'AGENT', 'THREAD', 'UPDATED']);
   });
 
   // TASKS-02: agent rendered as AgentChip (avatar idiom), thread as a chip,
-  // row click-through preserved to the detail route.
+  // task ID as a monospace IdBadge, row click-through preserved to the detail route.
+  test('renders task ID as a monospace IdBadge between status and title', async () => {
+    mountTasks([
+      rootTask({
+        task_id: 'TASK-0410',
+        assigned_agent: 'dev_agent',
+        dispatched_from_thread_id: 'THR-0030',
+        status: 'in_progress',
+        severity_rollup: 'in_progress',
+        brief: 'Reshape the tasks list rows',
+      }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText('TASK-0410')).toBeInTheDocument();
+    });
+    // Task ID renders as a monospace IdBadge (tinted, not plain text).
+    const taskId = screen.getByText('TASK-0410');
+    expect(taskId).toHaveClass('font-mono');
+    expect(taskId).toHaveClass('text-id-task');
+    // The task ID is inside the row Link (the whole row is clickable) but the
+    // IdBadge itself renders without a `to` prop, so it does NOT create a
+    // nested anchor — the span's direct parent is a div.COL.taskId, not an <a>.
+    expect(taskId.parentElement?.tagName).not.toBe('A');
+  });
+
+  // THR-041: long titles truncate cleanly with ellipsis so they cannot
+  // overlap the Agent/Thread/Updated columns.
+  test('truncates long titles with ellipsis and keeps status on one line', async () => {
+    const longBrief = 'A'.repeat(500) + ' should be clipped';
+    mountTasks([
+      rootTask({
+        task_id: 'TASK-0440',
+        assigned_agent: 'dev_agent',
+        dispatched_from_thread_id: 'THR-0030',
+        status: 'in_progress',
+        severity_rollup: 'in_progress',
+        brief: longBrief,
+      }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText('TASK-0440')).toBeInTheDocument();
+    });
+    // The title span should carry the truncate class.
+    const titleSpan = screen.getByText((content, element) => {
+      return element?.tagName === 'SPAN' && content.startsWith('AAAA');
+    });
+    expect(titleSpan).toHaveClass('truncate');
+    // The status badge cell in the data row carries whitespace-nowrap so the
+    // pill cannot wrap. The header also has whitespace-nowrap (via COL.status),
+    // so we scope to the data row specifically.
+    const statusCell = document.querySelector(
+      'a[href*="/tasks/TASK-0440"] .whitespace-nowrap',
+    );
+    expect(statusCell).not.toBeNull();
+    expect(statusCell!.textContent).toContain('in_progress');
+  });
+
+  // THR-041: status column now only shows the StatusBadge (no task ID).
+  // Row click-through to the detail route is preserved.
   test('renders agent as an AgentChip avatar and thread as an inline chip', async () => {
     mountTasks([
       rootTask({

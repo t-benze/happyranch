@@ -1,8 +1,8 @@
 /**
  * TaskListRow — Direction-A Pasture single-line, aligned-column root-task row
- * (THR-030 TASKS-01 / TASKS-02). Replaces the two-line bordered TaskCard on
- * the Tasks list with flat columns: TASK (status pill) · TITLE · AGENT
- * (AgentChip) · THREAD (IdBadge) · UPDATED (relative age).
+ * (THR-030 TASKS-01 / TASKS-02, THR-041 column reshape). Flat columns:
+ * STATUS (StatusBadge) · TASK (IdBadge) · TITLE · AGENT (AgentChip) ·
+ * THREAD (IdBadge) · UPDATED (relative age).
  *
  * Presentation-only over already-loaded /tasks/roots fields. Missing agent or
  * thread render a neutral em-dash — never a fabricated identity.
@@ -35,11 +35,12 @@ export interface TaskListRoutes {
  * surface forbids arbitrary values (`tailwindcss/no-arbitrary-value`).
  */
 const COL = {
-  task: 'w-32 shrink-0',
+  status: 'w-24 shrink-0 whitespace-nowrap',
+  taskId: 'w-28 shrink-0',
   title: 'min-w-0 flex-1',
   agent: 'w-36 shrink-0',
   thread: 'w-24 shrink-0',
-  updated: 'w-12 shrink-0 text-right',
+  updated: 'w-16 shrink-0 text-right',
 } as const;
 
 const ROW_FLEX = 'flex items-center gap-3';
@@ -133,7 +134,8 @@ export function TaskListColumnHeader(): JSX.Element {
     <div
       className={`${ROW_FLEX} text-text-muted border-border-default border-b px-2 py-1.5 text-xs font-medium tracking-wide`}
     >
-      <div className={COL.task}>TASK</div>
+      <div className={COL.status}>STATUS</div>
+      <div className={COL.taskId}>TASK</div>
       <div className={COL.title}>TITLE</div>
       <div className={COL.agent}>AGENT</div>
       <div className={COL.thread}>THREAD</div>
@@ -160,8 +162,11 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
         to={to}
         className={`${ROW_FLEX} hover:bg-surface-hover rounded-md px-2 py-2 text-sm no-underline transition-colors`}
       >
-        <div className={COL.task}>
+        <div className={COL.status}>
           <StatusBadge status={rollup} blockKind={task.block_kind} />
+        </div>
+        <div className={COL.taskId}>
+          <IdBadge id={task.task_id} kind="task" />
         </div>
         <div className={`${COL.title} flex items-center gap-2`}>
           <span className="text-text-primary truncate">{briefHeadline(task.brief)}</span>
