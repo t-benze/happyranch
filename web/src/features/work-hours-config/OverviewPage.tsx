@@ -343,7 +343,7 @@ function Header({ slug }: { slug: string | undefined }): JSX.Element {
         leaf by leaf.{' '}
         {slug && (
           <Link
-            to={`/orgs/${slug}/schedule`}
+            to={`/orgs/${slug}/work-hours?view=wakes`}
             className="text-accent-text hover:underline"
           >
             View wake history

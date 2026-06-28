@@ -62,7 +62,7 @@ function defaultEntries(): WorkHourRecord[] {
       summary: null,
       transcript_path: null,
       session_id: null,
-      error: null,
+      error: 'Agent code_reviewer is not enrolled in any team',
       created_at: '2026-06-18T13:00:00Z',
     },
     {
@@ -259,6 +259,31 @@ describe('THR-035: wake-execution list (consolidated into Work Hours Wakes view)
     expect(screen.queryByRole('button', { name: /add wake/i })).toBeNull();
     // No form inputs for editing
     expect(screen.queryByPlaceholderText(/type a message/i)).toBeNull();
+  });
+
+  test('renders per-wake summary when present', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours();
+    mountAt(`/orgs/${SLUG}/schedule`);
+
+    await waitFor(() => {
+      // WORKHOUR-001 and WORKHOUR-003 both have summary: 'Morning routines completed.'
+      const summaries = screen.getAllByText('Morning routines completed.');
+      expect(summaries.length).toBe(2);
+    });
+  });
+
+  test('renders per-wake error when present', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours();
+    mountAt(`/orgs/${SLUG}/schedule`);
+
+    await waitFor(() => {
+      // WORKHOUR-002 has error: 'Agent code_reviewer is not enrolled in any team'
+      expect(
+        screen.getByText('Agent code_reviewer is not enrolled in any team'),
+      ).toBeInTheDocument();
+    });
   });
 
   test('shows wake count per agent in card headers', async () => {

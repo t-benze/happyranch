@@ -136,7 +136,7 @@ must implement; where the prototype already implements it, it is marked
 
 #### 2.5.1 Shell & navigation
 - **Left rail, two groups + footer** (P4). Primary: `Home · Threads · Tasks ·
-  Agents · Knowledge · Artifacts`. "Operate": `Spend · Dreams · Schedule · Audit`.
+  Agents · Knowledge · Artifacts`. "Operate": `Spend · Dreams · Work Hours · Audit`. *(THR-035: Schedule consolidated into Work Hours as its Wakes view — the standalone Schedule nav item no longer exists.)*
   Footer: `Settings` + founder identity block + theme toggle + org switcher.
 - **Active item** driven by the surface's `data-active`; nav counts (Threads/Tasks/
   Agents) and the Dreams attention dot are **real stored counts** (P1), not static.
@@ -218,7 +218,7 @@ four states honestly:
 ## 3. Information Architecture (unchanged from build-spec — summarised)
 
 - **Primary group:** `Home · Threads · Tasks · Agents · Knowledge · Artifacts`
-- **"Operate" group:** `Spend · Dreams · Schedule · Audit`
+- **"Operate" group:** `Spend · Dreams · Work Hours · Audit`
 - **Footer:** `Settings` (+ founder block, theme toggle, org switcher)
 - **Assistant is NOT a tab** — omnipresent ⌘K dock (§4.10).
 - **Jobs is NOT a tab** — retired; reached contextually + Home rollup + Audit
@@ -964,7 +964,7 @@ D4 artifact↔PR, D5 KB rich-usage, D10 B.2 edit-route, D11 B.3 read-state).
 
 - **Calm:** founder answers "is anything on fire?" in one glance on Home; empty
   queue reads as the positive Quiet state, not a blank. (Dogfood.)
-- **Homes for the homeless:** Spend, Dreams, Schedule each reachable in 1 click.
+- **Homes for the homeless:** Spend, Dreams, Work Hours (including Wakes) each reachable in 1 click.
 - **Honesty (dominant):** zero UI elements (data **or interaction**) assert facts
   the daemon can't substantiate; dollars `$0.00 / not metered`; @mention
   broadcast-only; KB "viewed N× (CLI)"; no autonomy toggle. (P1 review gate.)

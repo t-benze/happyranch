@@ -196,6 +196,26 @@ function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.
         </span>
       )}
 
+      {/* Summary */}
+      {entry.summary && (
+        <span
+          className="text-text-secondary shrink-0 max-w-[16rem] truncate text-xs"
+          title={entry.summary}
+        >
+          {entry.summary}
+        </span>
+      )}
+
+      {/* Error */}
+      {entry.error && (
+        <span
+          className="text-feedback-danger shrink-0 max-w-[16rem] truncate text-xs"
+          title={entry.error}
+        >
+          {entry.error}
+        </span>
+      )}
+
       {/* Spacer */}
       <span className="flex-1" />
 
