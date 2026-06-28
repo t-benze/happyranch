@@ -482,7 +482,7 @@ def test_chain_summary_not_appended_when_no_chain_ran(tmp_path):
 
 def test_cascade_fail_clears_active_chain(tmp_path):
     """TASK-573: when a chain leg's subtask fails, the bounded-wake path clears
-    the parent's active_chain and keeps the parent BLOCKED(DELEGATED) for a
+    the parent's active_chain and keeps the parent in_progress(delegated) for a
     manager decision step (not cascade-failed)."""
     from runtime.infrastructure.database import Database
     from runtime.orchestrator.chain import ChainState
@@ -520,7 +520,7 @@ def test_cascade_fail_clears_active_chain(tmp_path):
     _enqueue_parent_if_waiting(orch, "TASK-C1")
 
     parent_after = db.get_task("TASK-P")
-    # Parent stays BLOCKED(DELEGATED) for bounded-wake, not FAILED.
+    # Parent stays in_progress(delegated) for bounded-wake, not FAILED.
     assert parent_after.status == TaskStatus.IN_PROGRESS
     assert parent_after.block_kind == BlockKind.DELEGATED
     assert parent_after.active_chain is None, "failed leg must clear active_chain"

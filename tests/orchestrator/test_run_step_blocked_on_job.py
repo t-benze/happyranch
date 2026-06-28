@@ -177,7 +177,7 @@ from runtime.models import CompletionReport
 
 def test_block_on_jobs_branch_transitions_in_place(db_and_orch):
     """report.status=blocked + non-empty waiting_on_job_ids → row goes to
-    BLOCKED+BLOCKED_ON_JOB (NOT _fail)."""
+    in_progress(blocked_on_job) (NOT _fail)."""
     db, orch = db_and_orch
     db.insert_task(TaskRecord(
         id="TASK-1", team="engineering", brief="t",

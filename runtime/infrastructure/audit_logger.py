@@ -212,7 +212,7 @@ class AuditLogger:
         blocking_job_ids: list[str],
         output_summary_excerpt: str,
     ) -> None:
-        """Written when run_step_impl transitions a task to BLOCKED+BLOCKED_ON_JOB
+        """Written when run_step_impl transitions a task to in_progress+blocked_on_job
         in response to report.status=blocked + report.waiting_on_job_ids non-empty.
         Spec §7.
         """
@@ -235,7 +235,7 @@ class AuditLogger:
         triggering_job_id: str | None,
         job_outcomes: dict[str, str],
     ) -> None:
-        """Written immediately after try_claim_for_step wins on a BLOCKED+BLOCKED_ON_JOB
+        """Written immediately after try_claim_for_step wins on an in_progress+blocked_on_job
         row. Read by the resume header injector. Spec §5.2, §7.
         """
         self._db.insert_audit_log(

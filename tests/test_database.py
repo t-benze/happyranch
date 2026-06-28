@@ -1063,7 +1063,7 @@ def test_try_escalate_succeeds_on_pending_task(db):
 
 def test_try_escalate_rejects_cancelled_task(db):
     """Atomic CAS: a task with cancelled_at set must not be transitioned
-    back to BLOCKED(ESCALATED). Closes Codex P2 race in the escalate branch."""
+    back to escalated. Closes Codex P2 race in the escalate branch."""
     from datetime import datetime, timezone
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     now = datetime.now(timezone.utc).isoformat()
@@ -1149,7 +1149,7 @@ def test_try_escalate_over_budget_rejects_cancelled_task(db):
 def test_try_fail_over_budget_succeeds_from_expected_state(db):
     """THR-033 Change A: the non-root variant of the budget-guard CAS. An
     eligible PENDING task at the step cap transitions to FAILED (block_kind
-    NULL, completed_at set) instead of BLOCKED(ESCALATED)."""
+    NULL, completed_at set) instead of escalated."""
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     ok = db.try_fail_over_budget(
         "T-1", expected_status=TaskStatus.PENDING, expected_block_kind=None,
@@ -1198,8 +1198,8 @@ def test_try_fail_over_budget_rejects_cancelled_task(db):
     assert t.note == "cancelled by founder"  # unchanged
 
 
-def test_try_fail_over_budget_succeeds_from_blocked_delegated(db):
-    """The budget guard can also fire from a BLOCKED(DELEGATED) eligible
+def test_try_fail_over_budget_succeeds_from_in_progress_delegated(db):
+    """The budget guard can also fire from an in_progress(delegated) eligible
     pre-state (a resumed parent-style row); the CAS keys on the block_kind."""
     from runtime.models import BlockKind
     db.insert_task(TaskRecord(id="T-1", brief="x"))
@@ -1301,7 +1301,7 @@ def test_path_b_migration_flips_live_blocked_rows(tmp_path):
 
 def test_try_delegate_rejects_cancelled_parent_and_inserts_no_child(db):
     """Atomic CAS: a cancelled parent must not be transitioned back to
-    BLOCKED(DELEGATED), AND the child must not be created. This is the
+    in_progress(delegated), AND the child must not be created. This is the
     spawn-new-work race from Codex P1 — the most important variant.
     """
     from datetime import datetime, timezone

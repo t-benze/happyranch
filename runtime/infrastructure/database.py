@@ -1666,7 +1666,7 @@ class Database:
         Database RLock (same lock the cancel route's update_task uses), the
         operation serializes against cancel: either cancel ran first and we
         see cancelled_at != NULL → bail, or we ran first and cancel observes
-        BLOCKED(ESCALATED) → transitions cleanly to FAILED on its own.
+        escalated → transitions cleanly to FAILED on its own.
 
         Returns True iff the row transitioned.
 

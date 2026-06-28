@@ -45,7 +45,7 @@ def _wait_for_terminal(
     task_id: str,
     timeout: float = 60.0,
 ) -> dict:
-    """Poll until task reaches completed, failed, or blocked(escalated). Returns full body dict."""
+    """Poll until task reaches completed, failed, or escalated. Returns full body dict."""
     headers = _auth_headers()
     deadline = time.monotonic() + timeout
     body: dict = {}
@@ -263,7 +263,7 @@ def test_chain_aborts_on_verdict_mismatch_e2e(
       - 1 chain_auto_advance row (dev_agent→payment_agent only)
       - active_chain cleared after mismatch
       - qa_engineer child task does NOT exist
-      - parent ends at blocked(escalated) — manager chose to escalate after wake
+      - parent ends at escalated — manager chose to escalate after wake
     """
     port = live_daemon
     base = f"http://127.0.0.1:{port}/api/v1/orgs/test"

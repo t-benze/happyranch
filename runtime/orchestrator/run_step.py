@@ -182,7 +182,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     # Spec §5.2: write task_resumed_from_jobs audit row immediately after the
-    # CAS wins on a BLOCKED+BLOCKED_ON_JOB → IN_PROGRESS transition. The
+    # CAS wins on an in_progress(blocked_on_job) → in_progress(NULL) transition. The
     # prompt-build at step 4 reads this row to inject BLOCKED-JOBS-RESULTS.
     if (task.status in _PARKED_CARRIER_STATUSES
             and task.block_kind == BlockKind.BLOCKED_ON_JOB):
@@ -1224,7 +1224,7 @@ def _advance_chain_for_completed_child(
         return "wake"
 
     # Advance: bump chain state FIRST so a crash between this and insert_task
-    # leaves a recoverable "stuck blocked-delegated waiting for missing child"
+    # leaves a recoverable "stuck delegated waiting for missing child"
     # rather than a silently-mis-routed chain on the next terminal.
     next_child_id = orch._db.next_task_id()
     chain.step_index = action.next_step_index
@@ -1271,7 +1271,7 @@ def _enqueue_parent_if_waiting(
     root_auto_revisit_spawned: bool = False,
 ) -> None:
     """Idempotent: advance the parent only if it's actually waiting on THIS
-    lineage (blocked+DELEGATED) AND all its children are now terminal.
+    lineage (in_progress+delegated) AND all its children are now terminal.
 
     Three outcomes (TASK-573 bounded failure-recovery):
       - every subtask COMPLETED → enqueue parent for its next manager

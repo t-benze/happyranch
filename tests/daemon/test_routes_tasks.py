@@ -770,9 +770,9 @@ def test_events_stream_yields_completion(tmp_home, app, daemon_state, org_state,
     assert b"task_complete" in body
 
 
-def test_resolve_escalation_rejects_non_blocked_task(client_with_runtime):
-    """Under the new model, the precondition is (status=BLOCKED AND
-    block_kind=ESCALATED). A task that is merely BLOCKED(DELEGATED) must 409."""
+def test_resolve_escalation_rejects_non_escalated_task(client_with_runtime):
+    """Under the Phase 3 model, the precondition is status=ESCALATED.
+    A task that is merely in_progress(delegated) must 409."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
@@ -875,7 +875,7 @@ def test_resolve_escalation_overwrites_note_with_rationale(client_with_runtime):
 
 
 def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runtime):
-    """Approve resumes the child itself; parent stays blocked(DELEGATED) and
+    """Approve resumes the child itself; parent stays in_progress(delegated) and
     will be woken later when the child reaches a true terminal."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
@@ -898,7 +898,7 @@ def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runt
     )
     assert r.status_code == 200
     # Approve re-enqueues the child itself (resumes the work). Parent stays
-    # blocked(DELEGATED) and will be woken when the child next reaches a
+    # in_progress(delegated) and will be woken when the child next reaches a
     # true terminal — no immediate parent wake here.
     assert daemon.queue._queue.get_nowait() == ("alpha", "T-CHD", None)
     assert daemon.queue._queue.empty()
@@ -909,7 +909,7 @@ def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runt
 
 def test_resolve_escalation_reject_cascades_to_parent(client_with_runtime):
     """Reject on a child fails it and wakes the parent via bounded
-    failure-recovery (TASK-573) — parent stays BLOCKED(DELEGATED) for
+    failure-recovery (TASK-573) — parent stays in_progress(delegated) for
     a bounded-wake decision step, NOT cascade-failed."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
@@ -1626,7 +1626,7 @@ def test_get_task_includes_blocked_on_jobs_when_blocked(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     """GET /tasks/{id} includes blocked_on_jobs list with id+status for each
-    blocking job when the task is in BLOCKED+BLOCKED_ON_JOB state."""
+    blocking job when the task is in in_progress(blocked_on_job) state."""
     import json as _json
     from datetime import datetime, timezone
     from runtime.models import BlockKind, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
@@ -1690,7 +1690,7 @@ def test_get_task_blocked_on_jobs_is_none_for_non_blocked_task(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     """blocked_on_jobs is None (not an empty list) for tasks not in
-    BLOCKED+BLOCKED_ON_JOB state, so callers can distinguish the two cases."""
+    in_progress(blocked_on_job) state, so callers can distinguish the two cases."""
     from runtime.models import TaskRecord
 
     org_state.db.insert_task(TaskRecord(

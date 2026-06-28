@@ -153,8 +153,8 @@ async def test_worker_loop_stamps_heartbeat_and_cancels_after_run_step(
 
 
 def test_synthesize_terminal_event_rules(org_state):
-    """P1 regression: BLOCKED(DELEGATED) is non-terminal for event purposes —
-    the parent resumes when children finish. Only BLOCKED(ESCALATED) should
+    """P1 regression: in_progress(delegated) is non-terminal for event purposes —
+    the parent resumes when children finish. Only escalated should
     surface as task_blocked to a late subscriber."""
     from runtime.models import BlockKind, TaskRecord, TaskStatus
 

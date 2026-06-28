@@ -35,20 +35,24 @@ repurposed in place (no rename, no new column).
 ## A. `TaskStatus` + the three lockstep terminal predicates
 
 `runtime/models.py`: `TaskStatus` gains `ESCALATED` (non-terminal) and `CANCELLED`
-(terminal). `BLOCKED` and `BlockKind.ESCALATED` are kept as **deprecated** members for
-the transition window + reverse migration (deleting an enum member strands a runtime: a
-`StrEnum` built from a lingering `'blocked'` row raises `ValueError`). `block_kind`'s live
-domain narrows to `{delegated, blocked_on_job}`.
+(terminal). **Phase 1/2 (historical):** `BLOCKED` and `BlockKind.ESCALATED` were kept as
+deprecated members for the transition window + reverse migration so that a `StrEnum`
+built from a lingering `'blocked'` row wouldn't raise `ValueError`.
+**Phase 3 (current):** `TaskStatus.BLOCKED` and `BlockKind.ESCALATED` are fully removed.
+The idempotent boot-time migration `UPDATE` in `database.py` is retained to flip any
+future legacy `'blocked'` rows before request handling. Only status `'in_progress'`
+(with `block_kind IN ('delegated','blocked_on_job')`) and status `'escalated'` exist
+at runtime. `block_kind`'s live domain is `{delegated, blocked_on_job}`.
 
-Three predicates move in lockstep (guard test: `tests/test_models.py`):
+Three predicates moved in lockstep (guard test: `tests/test_models.py`):
 - `TERMINAL_STATES` (`run_step.py`) — `+CANCELLED`. `ESCALATED` is **not** terminal.
 - `_TERMINAL_TASK_STATUSES` (`routes/tasks.py`) — `+CANCELLED`.
 - `_TERMINAL_STATUS_TO_EVENT` (`org_state.py`) — `CANCELLED → "task_failed"` (failure-class
   replay, `outcome="cancelled"`); `ESCALATED` in none. `_synthesize_terminal_event`'s
-  blocked+escalated special-case becomes `status == ESCALATED`.
+  **historical** blocked+escalated special-case was replaced with `status == ESCALATED`.
 
 `get_nonterminal_task_ids` (`database.py`) returns `{pending, in_progress, escalated}` —
-`blocked` dropped (no live row is `blocked` after boot migration), `escalated` added so the
+(no live row is `blocked` after boot migration), `escalated` added so the
 restart sweep visits escalated rows to leave them alone; `cancelled` terminal → excluded.
 
 ## B. The restart-sweep landmine — `_sweep_on_startup` (`daemon/__main__.py`)
@@ -116,12 +120,17 @@ so the table is never half-flipped while request handlers are live.
 - `_eligible_supersede_block_kind` keys `escalated` (status) and `in_progress(delegated)`
   (children terminal). `resolve_escalation` guard becomes `status != ESCALATED`.
 
-## I. Dual-read transition window (Phase 1a) + phasing
+## I. Dual-read transition window (historical — retired in Phase 3)
 
-Scheduler / sweep / fan-in / supersede predicates tolerate **both** `blocked+kind` and
-`in_progress+kind` (and `escalated` ↔ legacy `blocked(escalated)`) as the same logical
-state during the transition. In production the boot migration removes live `blocked` rows
-before anything queries; the dual-read is belt-and-suspenders for in-memory records.
+**Phase 1a (historical):** Scheduler / sweep / fan-in / supersede predicates tolerated
+**both** `blocked+kind` and `in_progress+kind` (and `escalated` ↔ legacy
+`blocked(escalated)`) as the same logical state during the transition. The boot migration
+removed live `blocked` rows before anything queried; the dual-read was belt-and-suspenders
+for in-memory records.
+
+**Phase 3 (current):** All dual-read tolerance is removed. Only `in_progress+kind` and
+`escalated` are recognized at runtime. Legacy `blocked+kind` rows are handled exclusively
+by the boot-time migration safety net before request handling begins.
 
 - **Phase 1 (this PR):** core model + migration + scheduler/sweep/CAS + protocol/doc parity.
 - **Phase 2 (separate chain):** display/derivation — `StatusBadge.tsx`, `types.ts`, CLI

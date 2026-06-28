@@ -89,7 +89,7 @@ def test_get_job_status_terminal_and_running():
 
 
 def test_list_tasks_blocked_on_jobs_filters_correctly():
-    """Returns only ids of BLOCKED+BLOCKED_ON_JOB tasks; excludes other blocked."""
+    """Returns only ids of in_progress(blocked_on_job) tasks; excludes other in_progress."""
     from runtime.models import TaskRecord, TaskStatus
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -177,7 +177,7 @@ def test_list_tasks_blocked_on_job_id_filter_requires_blocked_status():
 
         # (b) Blocked task MUST appear.
         assert "TASK-BLOCKED" in result_ids, (
-            f"TASK-BLOCKED (BLOCKED+BLOCKED_ON_JOB) missing from blocked_on_job_id filter; "
+            f"TASK-BLOCKED (in_progress+blocked_on_job) missing from blocked_on_job_id filter; "
             f"got {result_ids}"
         )
 

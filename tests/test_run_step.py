@@ -222,7 +222,7 @@ def test_run_step_nonroot_escalate_fails_and_routes_to_parent(
     orch.run_step("T-CHD")
 
     child = db.get_task("T-CHD")
-    # Non-root never reaches BLOCKED(ESCALATED) — it FAILS.
+    # Non-root never reaches escalated — it FAILS.
     assert child.status == TaskStatus.FAILED
     assert child.block_kind is None
     assert "non-root escalation requested" in (child.note or "")
@@ -238,11 +238,11 @@ def test_run_step_nonroot_escalate_fails_and_routes_to_parent(
     assert db.get_task("T-PAR").status == TaskStatus.IN_PROGRESS
 
 
-def test_run_step_root_escalate_parks_blocked_escalated(
+def test_run_step_root_escalate_parks_escalated(
     runtime, db, monkeypatch,
 ):
-    """THR-033 Change A: a ROOT task whose decision is `escalate` still parks
-    in blocked(ESCALATED) for the founder — root escalation is unchanged."""
+    """THR-033 Change A: a ROOT task whose decision is `escalate` parks
+    in escalated for the founder — root escalation is unchanged."""
     import json
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -409,7 +409,7 @@ def test_run_step_session_failure_cascades_to_parent_no_retry(
     assert child.status == TaskStatus.FAILED
     assert "session failed" in (child.note or "")
 
-    # Parent stays BLOCKED(DELEGATED) for bounded manager-wake (TASK-573).
+    # Parent stays in_progress(delegated) for bounded manager-wake (TASK-573).
     parent = db.get_task("T-PAR")
     assert parent.status == TaskStatus.IN_PROGRESS
     assert parent.block_kind == BlockKind.DELEGATED
@@ -463,10 +463,10 @@ def test_run_step_session_failure_cascades_up_chain(
 
     # T-LEAF is FAILED (opaque session failure).
     assert db.get_task("T-LEAF").status == TaskStatus.FAILED
-    # T-MID stays BLOCKED(DELEGATED) — bounded manager-wake.
+    # T-MID stays in_progress(delegated) — bounded manager-wake.
     assert db.get_task("T-MID").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-MID").block_kind == BlockKind.DELEGATED
-    # T-ROOT stays BLOCKED(DELEGATED) — not reachable until T-MID advances.
+    # T-ROOT stays in_progress(delegated) — not reachable until T-MID advances.
     assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-ROOT").block_kind == BlockKind.DELEGATED
     # Queue holds auto-revisit root (spawned first) + T-MID enqueue.
@@ -1174,7 +1174,7 @@ def test_run_step_concurrent_claim_spawns_only_one_agent(
     and call _run_agent. The other must observe the claimed state and
     silently no-op.
 
-    Without an atomic CAS on the BLOCKED+DELEGATED → IN_PROGRESS transition,
+    Without an atomic CAS on the in_progress(delegated) → in_progress(NULL) transition,
     both threads pass the eligibility check at run_step steps 1 and both
     write IN_PROGRESS at step 3 → both _run_agent calls fire, producing two
     EH subprocesses on the same brief.
@@ -1183,7 +1183,7 @@ def test_run_step_concurrent_claim_spawns_only_one_agent(
     import threading
     from runtime.orchestrator.orchestrator import Orchestrator
 
-    # Parent blocked(DELEGATED) with two children, both terminal → eligible
+    # Parent in_progress(delegated) with two children, both terminal → eligible
     # for exactly one EH decision step.
     db.insert_task(TaskRecord(id="T-PAR", brief="p",
                               assigned_agent="engineering_head"))
@@ -1492,8 +1492,8 @@ def test_is_already_terminal_predicate(runtime, db):
     db.update_task("T-A", status=TaskStatus.IN_PROGRESS)
     assert _is_already_terminal(orch, "T-A") is False
 
-    # BLOCKED → False. (Parent in blocked(delegated) is waiting on a child,
-    # not terminal; a fresh manager step is allowed.)
+    # IN_PROGRESS(delegated) → False. (Parent in_progress(delegated) is waiting
+    # on a child, not terminal; a fresh manager step is allowed.)
     db.update_task("T-A", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED)
     assert _is_already_terminal(orch, "T-A") is False
 
@@ -1582,7 +1582,7 @@ def test_run_step_escalate_atomic_against_cancel_between_recheck_and_cas(
 ):
     """Codex P2 on PR #34: same race shape for the escalate branch — cancel
     landing between Guard B and the conditional UPDATE must not resurrect a
-    cancelled row into BLOCKED(ESCALATED)."""
+    cancelled row into escalated."""
     import json
     from datetime import datetime, timezone
     from runtime.orchestrator.orchestrator import Orchestrator
@@ -1619,7 +1619,7 @@ def test_run_step_escalate_atomic_against_cancel_between_recheck_and_cas(
     assert t.status == TaskStatus.FAILED
     assert t.note == "cancelled by founder: stop"
     assert t.cancelled_at is not None
-    # block_kind stays None (cancel cleared it); not BLOCKED(ESCALATED).
+    # block_kind stays None (cancel cleared it); not escalated.
     assert t.block_kind is None
 
 
@@ -1927,7 +1927,7 @@ def test_failed_child_wakes_parent_for_decision_step_not_cascade(
     # Parent must NOT be FAILED — it gets a decision step.
     parent = db.get_task("T-PAR")
     assert parent.status == TaskStatus.IN_PROGRESS, (
-        f"parent should stay BLOCKED(DELEGATED) for decision step, got {parent.status}"
+        f"parent should stay in_progress(delegated) for decision step, got {parent.status}"
     )
     assert parent.block_kind == BlockKind.DELEGATED
 
@@ -1939,7 +1939,7 @@ def test_failed_child_wakes_parent_for_decision_step_not_cascade(
 
 def test_two_failed_children_escalates_parent_not_fail(runtime, db, monkeypatch):
     """Exhausting the 2-round bound (>1 prior failed child) escalates the
-    parent to blocked(ESCALATED), NOT failed. The founder can then resolve."""
+    parent to escalated, NOT failed. The founder can then resolve."""
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -2134,7 +2134,7 @@ def test_regression_revise_verdict_chain_advance_unchanged(
 def test_run_step_nonroot_over_budget_fails_and_routes_to_parent(runtime, db):
     """THR-033 Change A — the one substantive behavioral fix: a NON-root task
     that exceeds the step budget FAILS (block_kind=NULL) instead of parking in
-    blocked(ESCALATED), and hands back to its parent for bounded recovery."""
+    escalated, and hands back to its parent for bounded recovery."""
     from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
 
@@ -2198,8 +2198,8 @@ def test_run_step_nonroot_over_budget_idempotent_single_parent_wake(runtime, db)
 
 
 def test_run_step_root_over_budget_still_escalates(runtime, db):
-    """THR-033 Change A: a ROOT task that exceeds the step budget still parks
-    in blocked(ESCALATED) for the founder — unchanged."""
+    """THR-033 Change A: a ROOT task that exceeds the step budget parks
+    in escalated for the founder — unchanged."""
     from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
     db.insert_task(TaskRecord(

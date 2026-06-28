@@ -3,7 +3,7 @@
 Tests the three paths defined in the spec:
   - PASS: CM → writer → QA(PASS) → CM done → COMPLETED
   - REVISE: CM → writer → QA(REVISE) → CM re-delegates writer → writer → QA(PASS) → done
-  - REJECT: CM → writer → QA(REJECT) → CM escalate → BLOCKED(ESCALATED)
+  - REJECT: CM → writer → QA(REJECT) → CM escalate → escalated
 """
 from __future__ import annotations
 
@@ -174,7 +174,7 @@ def test_revise_path_bumps_revision_count(paths: OrgPaths, db: Database, monkeyp
 
 
 def test_reject_path_escalates(paths: OrgPaths, db: Database, monkeypatch) -> None:
-    """REJECT path: QA rejects → CM escalates → task ends BLOCKED(ESCALATED)."""
+    """REJECT path: QA rejects → CM escalates → task ends escalated."""
     _seed_workspaces(paths)
     orch = _make_orch(paths, db)
     tid = _seed_task(db)

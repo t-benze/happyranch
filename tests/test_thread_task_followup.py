@@ -607,7 +607,7 @@ def test_cancel_in_progress_thread_dispatched_task_fires_followup(orch_with_thre
 
 
 def test_cancel_blocked_thread_dispatched_task_fires_followup(orch_with_thread_queue):
-    """BLOCKED(DELEGATED) root cancellation: cancel route's Phase 1b fires the helper."""
+    """in_progress(delegated) root cancellation: cancel route's Phase 1b fires the helper."""
     orch, thread_queue, main_loop = orch_with_thread_queue
     _seed_dispatched_root(orch)
     # Walk through: prior_status=BLOCKED → cancel sets FAILED + cancelled_at → fire.

@@ -185,7 +185,7 @@ def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_p
 
     # Child force-failed.
     assert db.get_task("T-CHD").status == TaskStatus.FAILED
-    # TASK-573: parent stays BLOCKED(DELEGATED) for bounded-wake, not FAILED.
+    # TASK-573: parent stays in_progress(delegated) for bounded-wake, not FAILED.
     assert db.get_task("T-PAR").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-PAR").block_kind == BlockKind.DELEGATED
     # A fresh root was spawned via revisit_of_task_id=T-PAR.

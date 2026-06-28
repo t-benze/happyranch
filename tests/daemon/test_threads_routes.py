@@ -466,10 +466,10 @@ def _audit_payload(org_state, task_id: str, action: str) -> dict:
     return {}
 
 
-def test_manager_dispatch_supersedes_blocked_escalated_predecessor(
+def test_manager_dispatch_supersedes_escalated_predecessor(
     tmp_home, app, org_state, auth_headers,
 ):
-    """A manager-authorized thread-dispatch naming a blocked(escalated)
+    """A manager-authorized thread-dispatch naming an escalated
     predecessor auto-resolves it to RESOLVED_SUPERSEDED, citing the new root +
     the thread ruling in the audit (the maker-checker evidence)."""
     client = TestClient(app)
@@ -502,10 +502,10 @@ def test_manager_dispatch_supersedes_blocked_escalated_predecessor(
     assert payload["thread_id"] == tid  # thread ruling cited
 
 
-def test_manager_dispatch_supersedes_blocked_delegated_when_children_terminal(
+def test_manager_dispatch_supersedes_delegated_when_children_terminal(
     tmp_home, app, org_state, auth_headers,
 ):
-    """Gap-B on the thread path: a blocked(delegated) predecessor with ALL
+    """Gap-B on the thread path: an in_progress(delegated) predecessor with ALL
     children terminal is supersedable without cascade."""
     client = TestClient(app)
     _seed_agent(org_state, "engineering_head", role="manager")
