@@ -560,21 +560,19 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             + ", ".join(f"{c.agent}={cid}" for c, cid in zip(decision.children, children_ids))
         )
 
-        # Atomic insert-N + parent transition under single RLock.
-        # Parent transitions to IN_PROGRESS(DELEGATED) with all children
-        # inserted. If cancel raced ahead, no children are written.
-        if not db.try_delegate_many(task_id, child_records, parent_note=parent_note):
+        # Atomic insert-N + parent transition under a single explicit SQL
+        # transaction. active_fanout is written in the same transaction as
+        # child inserts + parent park — no crash gap between spawn and
+        # metadata persistence.
+        if not db.try_delegate_many(
+            task_id, child_records, parent_note=parent_note,
+            active_fanout_json=fanout_state.serialize(),
+        ):
             logger.debug(
                 "run_step %s: cancelled between re-check and fanout spawn, dropping",
                 task_id,
             )
             return
-
-        # Persist active_fanout on the parent AFTER the atomic spawn succeeds
-        # but BEFORE enqueueing any children. A fast child could otherwise
-        # complete and reach _enqueue_parent_if_waiting while active_fanout is
-        # still NULL, missing the join-context injection.
-        db.update_task_active_fanout(task_id, fanout_state.serialize())
 
         orch._audit.log_fanout_spawned(
             task_id=task_id,
@@ -2250,12 +2248,22 @@ def _inject_fanout_join_context(
     db = orch._db
     # Collect child results for all children in the fan-out.
     children = []
+    child_reports: dict[str, dict | None] = {}
     for cid in fanout.children_ids:
         child = db.get_task(cid)
         if child is not None:
             children.append(child)
+        # Fetch the latest completion report for verdict/confidence.
+        report = db.get_latest_completion_report(cid)
+        if report is not None:
+            child_reports[cid] = {
+                "verdict": report.verdict,
+                "confidence_score": report.confidence,
+            }
+        else:
+            child_reports[cid] = None
 
-    join_infos = collect_child_join_info(children)
+    join_infos = collect_child_join_info(children, child_reports=child_reports)
     join_context = build_fanout_join_context(
         parent_task_id=task_id,
         fanout=fanout,

@@ -328,3 +328,43 @@ def test_log_agent_session_reused_and_evicted(tmp_path):
     assert reused["payload"]["agent_session_id"] == "sess-abc"
     assert reused["payload"]["triggering_seq"] == 4
     assert reused["payload"]["executor"] == "claude"
+
+
+def test_log_fanout_spawned_writes_correct_shape(db):
+    """log_fanout_spawned records correct row shape with children_ids."""
+    from runtime.infrastructure.audit_logger import AuditLogger
+    logger = AuditLogger(db)
+    logger.log_fanout_spawned(
+        task_id="TASK-FANOUT-S",
+        agent="engineering_head",
+        width=3,
+        children_ids=["TASK-C1", "TASK-C2", "TASK-C3"],
+    )
+    rows = db.get_audit_logs("TASK-FANOUT-S")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "fanout_spawned"
+    assert rows[0]["agent"] == "engineering_head"
+    payload = rows[0]["payload"]
+    assert payload["width"] == 3
+    assert payload["children_ids"] == ["TASK-C1", "TASK-C2", "TASK-C3"]
+
+
+def test_log_fanout_join_writes_correct_shape(db):
+    """log_fanout_join records correct row shape with context_markdown."""
+    from runtime.infrastructure.audit_logger import AuditLogger
+    logger = AuditLogger(db)
+    markdown = "=== FAN-OUT JOIN CONTEXT ===\nAll children terminal.\n======"
+    logger.log_fanout_join(
+        task_id="TASK-FANOUT-J",
+        width=2,
+        children_ids=["TASK-CA", "TASK-CB"],
+        context_markdown=markdown,
+    )
+    rows = db.get_audit_logs("TASK-FANOUT-J")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "fanout_join"
+    assert rows[0]["agent"] == "orchestrator"
+    payload = rows[0]["payload"]
+    assert payload["width"] == 2
+    assert payload["children_ids"] == ["TASK-CA", "TASK-CB"]
+    assert "FAN-OUT JOIN CONTEXT" in payload["context_markdown"]

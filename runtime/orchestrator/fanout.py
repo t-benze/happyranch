@@ -119,24 +119,38 @@ class _ChildJoinInfo:
     failure_note: str | None
 
 
-def collect_child_join_info(children: list) -> list[_ChildJoinInfo]:
+def collect_child_join_info(
+    children: list,
+    *,
+    child_reports: dict[str, dict | None] | None = None,
+) -> list[_ChildJoinInfo]:
     """Collect structured join info from a list of TaskRecord children.
 
     ``children`` is a list of TaskRecord objects for the fan-out's child
     tasks, fetched from the DB. Returns one _ChildJoinInfo per child in the
     order provided (caller maintains fan-out ordering).
+
+    ``child_reports`` is an optional dict mapping child task_id to its
+    latest task_results row (as a dict). When provided, verdict and
+    confidence are read from the persisted completion report instead of
+    defaulting to None/80. This ensures the manager's join context reflects
+    the actual child outcomes.
     """
+    reports = child_reports or {}
     result: list[_ChildJoinInfo] = []
     for child in children:
         # Summary excerpt: first 200 chars of note, or "(no summary)".
         note = child.note or ""
         excerpt = note[:200] if note else None
+        report = reports.get(child.id)
+        verdict = report.get("verdict") if report else None
+        confidence = report.get("confidence_score", 80) if report else 80
         result.append(_ChildJoinInfo(
             id=child.id,
             agent=child.assigned_agent or "unknown",
             status=child.status.value if hasattr(child.status, 'value') else str(child.status),
-            verdict=None,  # Subtask agents don't emit verdicts; derived later if needed
-            confidence=80,  # Default; subtask confidence is not in the row
+            verdict=verdict,
+            confidence=confidence,
             summary_excerpt=excerpt,
             output_dir=child.final_output_dir,
             failure_note=note if child.status.value == "failed" else None,

@@ -1634,9 +1634,14 @@ class Database:
     @_synchronized
     def try_delegate_many(
         self, parent_id: str, children: list, *, parent_note: str,
+        active_fanout_json: str | None = None,
     ) -> bool:
         """Atomic CAS: insert N child tasks + transition parent to
-        IN_PROGRESS(DELEGATED) under a single @_synchronized acquisition.
+        IN_PROGRESS(DELEGATED) under a single explicit SQL transaction.
+
+        All child inserts, parent status/block_kind/active_fanout update,
+        and note write happen in one transaction. On any exception the
+        transaction rolls back — no partial children, no orphan rows.
 
         Same cancel-race semantics as try_delegate (single-child): if the
         parent is cancelled or already terminal at the time of the guarded
@@ -1658,20 +1663,51 @@ class Database:
             "completed", "failed", "resolved_superseded", "cancelled",
         ):
             return False
-        # Insert all children, then transition parent — all under the same
-        # RLock acquisition (this method is @_synchronized).
-        for child in children:
-            self.insert_task(child)
         now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            """UPDATE tasks
-               SET status = ?, block_kind = ?, note = ?, updated_at = ?
-               WHERE id = ?""",
-            (TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value, parent_note,
-             now, parent_id),
-        )
-        self._conn.commit()
-        return True
+        try:
+            # One explicit transaction: all child inserts + parent transition.
+            self._conn.execute("BEGIN IMMEDIATE")
+            for child in children:
+                self._conn.execute(
+                    """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                       revision_count, created_at, updated_at, completed_at, parent_task_id,
+                       revisit_of_task_id, dispatched_from_thread_id,
+                       block_kind, note,
+                       orchestration_step_count, session_timeout_seconds, task_type, active_fanout)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        child.id,
+                        child.status.value,
+                        child.assigned_agent,
+                        child.team,
+                        child.brief,
+                        child.revision_count,
+                        child.created_at.isoformat(),
+                        child.updated_at.isoformat(),
+                        child.completed_at.isoformat() if child.completed_at else None,
+                        child.parent_task_id,
+                        child.revisit_of_task_id,
+                        child.dispatched_from_thread_id,
+                        child.block_kind.value if child.block_kind else None,
+                        child.note,
+                        child.orchestration_step_count,
+                        child.session_timeout_seconds,
+                        child.task_type,
+                        child.active_fanout,
+                    ),
+                )
+            self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = ?, note = ?, active_fanout = ?, updated_at = ?
+                   WHERE id = ?""",
+                (TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value, parent_note,
+                 active_fanout_json, now, parent_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def try_claim_for_step(

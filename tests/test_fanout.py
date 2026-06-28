@@ -299,7 +299,10 @@ class TestFanoutDatabase:
             TaskRecord(id="TASK-FTC1", brief="child 1", parent_task_id="TASK-FTP", assigned_agent="dev", task_type="subtask"),
             TaskRecord(id="TASK-FTC2", brief="child 2", parent_task_id="TASK-FTP", assigned_agent="qa", task_type="subtask"),
         ]
-        ok = db.try_delegate_many("TASK-FTP", children, parent_note="Fan-out 2 children")
+        ok = db.try_delegate_many(
+            "TASK-FTP", children, parent_note="Fan-out 2 children",
+            active_fanout_json='{"v":1}',
+        )
         assert ok is True
         c1 = db.get_task("TASK-FTC1")
         assert c1 is not None and c1.parent_task_id == "TASK-FTP"
@@ -308,6 +311,7 @@ class TestFanoutDatabase:
         p = db.get_task("TASK-FTP")
         assert p.status == TaskStatus.IN_PROGRESS
         assert p.block_kind == BlockKind.DELEGATED
+        assert p.active_fanout == '{"v":1}'
 
     def test_try_delegate_many_rejects_cancelled_parent(self, db):
         from datetime import datetime, timezone
@@ -347,6 +351,103 @@ class TestFanoutDatabase:
         ok = db.try_delegate_many("NONEXISTENT", children, parent_note="nope")
         assert ok is False
         assert db.get_task("TASK-FTC8") is None
+
+    def test_try_delegate_many_atomic_rollback_on_conflict(self, db):
+        """Reviewer probe: a later child insert failure (UNIQUE conflict)
+        must leave no new children committed and the parent unchanged.
+
+        Reproduces: two children with the same id (duplicate) causes the
+        second insert to fail; the transaction must roll back so child 1
+        is NOT committed and the parent is NOT parked.
+        """
+        parent = TaskRecord(id="TASK-FTP-DUP", brief="duplicate child ids")
+        db.insert_task(parent)
+        parent_before = db.get_task("TASK-FTP-DUP")
+        assert parent_before.status == TaskStatus.PENDING
+
+        children = [
+            TaskRecord(id="TASK-FTC-DUP", brief="child 1", parent_task_id="TASK-FTP-DUP", task_type="subtask"),
+            TaskRecord(id="TASK-FTC-DUP", brief="child 2", parent_task_id="TASK-FTP-DUP", task_type="subtask"),
+        ]
+        with pytest.raises(Exception):
+            db.try_delegate_many("TASK-FTP-DUP", children, parent_note="should roll back")
+
+        # Neither child was committed.
+        assert db.get_task("TASK-FTC-DUP") is None
+        # Parent unchanged.
+        parent_after = db.get_task("TASK-FTP-DUP")
+        assert parent_after.status == TaskStatus.PENDING
+        assert parent_after.block_kind is None
+
+    def test_try_delegate_many_atomic_sets_active_fanout(self, db):
+        """active_fanout_json is written in the same transaction as children
+        and parent park, so there is no crash gap."""
+        parent = TaskRecord(id="TASK-FTP-AF", brief="af test")
+        db.insert_task(parent)
+        children = [
+            TaskRecord(id="TASK-FTC-AF1", brief="c1", parent_task_id="TASK-FTP-AF", assigned_agent="dev", task_type="subtask"),
+            TaskRecord(id="TASK-FTC-AF2", brief="c2", parent_task_id="TASK-FTP-AF", assigned_agent="qa", task_type="subtask"),
+        ]
+        ok = db.try_delegate_many(
+            "TASK-FTP-AF", children, parent_note="fanout",
+            active_fanout_json='{"children_ids":["TASK-FTC-AF1","TASK-FTC-AF2"],"width":2}',
+        )
+        assert ok is True
+        p = db.get_task("TASK-FTP-AF")
+        assert p.active_fanout is not None
+        assert '"width":2' in p.active_fanout
+
+
+# --- Join context verdict/confidence tests ---
+
+
+class TestJoinContextVerdict:
+    """Tests that collect_child_join_info properly propagates persisted
+    verdict and confidence from child completion reports."""
+
+    def test_default_verdict_and_confidence_without_reports(self):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        t = TaskRecord(
+            id="T-001", brief="x", status=TaskStatus.COMPLETED,
+            assigned_agent="dev", note="did the work",
+            created_at=now, updated_at=now,
+        )
+        infos = collect_child_join_info([t])
+        assert infos[0].verdict is None
+        assert infos[0].confidence == 80
+
+    def test_verdict_and_confidence_from_report(self):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        t = TaskRecord(
+            id="T-002", brief="y", status=TaskStatus.COMPLETED,
+            assigned_agent="qa", note="verified",
+            created_at=now, updated_at=now,
+        )
+        reports = {"T-002": {"verdict": "PASS", "confidence_score": 92}}
+        infos = collect_child_join_info([t], child_reports=reports)
+        assert infos[0].verdict == "PASS"
+        assert infos[0].confidence == 92
+
+    def test_mixed_report_availability(self):
+        """One child has a report, one does not — each gets correct values."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        t1 = TaskRecord(
+            id="T-WITH", brief="with", status=TaskStatus.COMPLETED,
+            assigned_agent="dev", created_at=now, updated_at=now,
+        )
+        t2 = TaskRecord(
+            id="T-WITHOUT", brief="without", status=TaskStatus.FAILED,
+            assigned_agent="qa", created_at=now, updated_at=now,
+        )
+        reports = {"T-WITH": {"verdict": "APPROVE", "confidence_score": 88}}
+        infos = collect_child_join_info([t1, t2], child_reports=reports)
+        assert infos[0].verdict == "APPROVE"
+        assert infos[0].confidence == 88
+        assert infos[1].verdict is None
+        assert infos[1].confidence == 80
 
 
 # --- Orchestration tests (run_step fanout decision branch) ---
