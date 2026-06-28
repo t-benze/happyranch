@@ -102,9 +102,9 @@ _TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
 def _is_eligible(db: Database, tid: str) -> bool:
     """Return True if run_step would accept this task (mirrors run_step entry check).
 
-    Path B: a parked-delegated parent is in_progress(delegated); the legacy
-    blocked(delegated) shape is accepted too (dual-read), matching the real
-    entry gate's _PARKED_CARRIER_STATUSES.
+    Path B (Phase 3): a parked-delegated parent is in_progress(delegated).
+    The boot-time migration flips any legacy blocked(delegated) rows, so only
+    the in_progress(delegated) shape is seen at runtime.
     """
     task = db.get_task(tid)
     if task is None:

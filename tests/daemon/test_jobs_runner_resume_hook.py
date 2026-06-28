@@ -214,3 +214,30 @@ def test_fire_resume_rejected_job_triggers_resume(tmp_path):
         "acme", "TASK-5",
         metadata={"trigger": "job_terminal", "triggering_job_id": "JOB-99"},
     )
+
+
+def test_fire_resume_rejects_legacy_blocked_row(tmp_path):
+    """Phase 3: a direct legacy blocked(blocked_on_job) row seeded AFTER
+    Database init (bypassing the boot migration) is NOT accepted by the
+    runtime scanner. Only in_progress(blocked_on_job) tasks are picked up.
+    """
+    db = _make_db(tmp_path)
+    # Insert a bare task, then bypass the write path to craft a legacy row.
+    db.insert_task(TaskRecord(
+        id="T-LEGACY", team="eng", brief="old",
+        status=TaskStatus.PENDING, parent_task_id=None,
+    ))
+    # Use raw SQL to set a status='blocked' row the boot migration never saw.
+    db._conn.execute(
+        "UPDATE tasks SET status='blocked', block_kind='blocked_on_job', "
+        "blocked_on_job_ids=? WHERE id='T-LEGACY'",
+        (json.dumps(["JOB-BOOT"]),),
+    )
+    db._conn.commit()
+    _insert_job_terminal(db, "JOB-BOOT", "T-LEGACY", status="completed")
+
+    org = _make_org(db)
+    fire_resume_check_for_job(org, "JOB-BOOT")
+
+    # Phase 3: status='blocked' is NOT matched → no enqueue.
+    org.orchestrator._queue.enqueue.assert_not_called()

@@ -59,9 +59,8 @@ def _sweep_on_startup(
       - Branch 5 — escalated → leave alone (founder owns these); mirrors the
         pre-Path-B blocked(ESCALATED) fall-through.
 
-    The legacy ``blocked(...)`` shapes are accepted alongside ``in_progress(...)``
-    (dual-read) — though in production the boot migration has already flipped
-    live rows before the sweep runs.
+    Phase 3: only in_progress(...) shapes are accepted; the boot migration
+    flips any legacy blocked(...) rows before the sweep runs.
 
     When ``orchestrator`` is None (test harnesses that don't construct one),
     Branch 1 degrades to mark-failed-and-audit only; no auto-revisit, no
@@ -150,7 +149,8 @@ def _sweep_on_startup(
         # Reached only because get_nonterminal_task_ids now yields escalated.
         elif t.status == TaskStatus.ESCALATED:
             pass
-        # Any legacy blocked(escalated) row likewise falls through untouched.
+        # The boot-time migration flips any legacy blocked(escalated) row
+        # before startup; this branch is reached only via new escalated rows.
 
 
 def _build_state(settings: Settings) -> DaemonState:

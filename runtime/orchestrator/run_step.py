@@ -8,8 +8,8 @@ Entry contract (Path B): task MUST be one of:
   (c) status=in_progress AND block_kind=BLOCKED_ON_JOB AND all blocking jobs are terminal.
 Any other state = stale enqueue, silent no-op — in particular
 in_progress + block_kind IS NULL is a LIVE subprocess and must NOT be admitted
-(it would double-spawn). The legacy blocked(delegated|blocked_on_job) shapes are
-also accepted during the transition window (dual-read).
+(it would double-spawn). Phase 3: no legacy blocked shapes are accepted;
+the boot-time migration flips them before request handling.
 
 Exit contract: task ends in exactly one of {in_progress-then-crashed,
 completed, failed, in_progress(DELEGATED), in_progress(BLOCKED_ON_JOB),

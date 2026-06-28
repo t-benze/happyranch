@@ -1793,7 +1793,7 @@ class Database:
         reentrant). The cancel route's update_task also acquires this lock,
         so the only two interleavings are:
         - cancel before us: our SELECT sees cancelled_at != NULL → bail, no writes
-        - us before cancel: cancel sees parent in BLOCKED(DELEGATED), transitions
+        - us before cancel: cancel sees parent in in_progress(delegated), transitions
           to FAILED, and its cascade walks our newly-inserted child for cleanup
 
         On True: parent has transitioned and child exists.
