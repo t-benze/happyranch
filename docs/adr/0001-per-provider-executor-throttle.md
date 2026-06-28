@@ -135,8 +135,14 @@ thread-scoped audit rows do.
 - The hard-coded `range(4)` thread pool and `queue_workers` stay as
   **producers**; the semaphore is the real consumer-side cap. Resizing pools is
   unnecessary once the ceiling exists.
-- `thread_runner._session_lock` (per-`(org, thread, agent)`, issue #53 `--resume`
-  safety) is an **orthogonal** gate, left exactly as-is.
+- `thread_runner._invocation_lock` (per-`(org, thread, agent)`, provider-agnostic,
+  THR-042) serializes active thread invocations for the same org/thread/agent
+  across all executor providers (Claude, Codex, opencode, pi). Formerly
+  `_session_lock` and Claude-only; now provider-agnostic. Claude-only
+  session-resume behavior (`get_thread_session` / `update_thread_session`,
+  `resume_session_id`, delta-prompt building, eviction fallback, watermark
+  advancement) is unchanged and remains gated to Claude. No permission-surface
+  change.
 - No change to the permission model, Codex sandbox flags, opencode permission
   map, Claude `--allowedTools` generation, auth/bearer-token flow, Feishu, or
   notification routing. The throttle is purely a launch-timing wrapper.
