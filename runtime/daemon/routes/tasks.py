@@ -157,7 +157,7 @@ def list_tasks(
     # page comes back empty). When `before` references a missing task, the
     # database returns [] and we surface that as the end of the list.
     # `status` / `block_kind` are read-only equality filters for backlog
-    # queries (e.g. `tasks --status blocked --block-kind escalated`).
+    # queries (e.g. `tasks --status in_progress --block-kind delegated`).
     # `blocked_on_job_id` is a DERIVE filter for the Jobs "if-approved"
     # cascade — finds tasks blocked on a specific job id.
     tasks = org.db.list_tasks(
@@ -232,13 +232,8 @@ def get_task(task_id: str, org: OrgDep) -> dict:
 
     # When a task is blocked waiting for jobs, include the id+status of each
     # blocking job so `happyranch details` can show the founder what to act on.
-    # Path B: a task waiting on jobs is in_progress(blocked_on_job); the
-    # block_kind discriminant identifies the parked state regardless of whether
-    # the status is the new in_progress or the legacy blocked (dual-read).
     blocked_on_jobs: list[dict] | None = None
-    if task.block_kind == BlockKind.BLOCKED_ON_JOB and task.status in (
-        TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED
-    ):
+    if task.block_kind == BlockKind.BLOCKED_ON_JOB and task.status == TaskStatus.IN_PROGRESS:
         job_ids = _json.loads(task.blocked_on_job_ids or "[]")
         blocked_on_jobs = [
             {"job_id": jid, "status": org.db.get_job_status(jid) or "unknown"}
@@ -547,11 +542,8 @@ async def resolve_escalation_in_process(
     task = org.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    # Path B: an escalated task is status=ESCALATED; the legacy blocked(escalated)
-    # shape is accepted too (dual-read).
-    is_escalated = task.status == TaskStatus.ESCALATED or (
-        task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.ESCALATED
-    )
+    # Path B: an escalated task is status=ESCALATED.
+    is_escalated = task.status == TaskStatus.ESCALATED
     if not is_escalated:
         raise HTTPException(
             status_code=409,
@@ -583,7 +575,7 @@ async def resolve_escalation_in_process(
         # Re-enqueue self. The manager's next step sees the rationale via the
         # escalation-resolved prompt header (see
         # ``_resolved_escalation_header_if_applicable`` in run_step.py).
-        # Parent (if any) stays blocked (DELEGATED) and will be woken when
+        # Parent (if any) stays in_progress (delegated) and will be woken when
         # this task next reaches a true terminal — no immediate wake here.
         if state.queue is not None:
             state.queue.put_nowait(org.slug, task_id)
@@ -680,8 +672,8 @@ def _classify_predecessor_status(task: TaskRecord) -> str | None:
     Path B: read ``cancelled_at`` FIRST (before the status label) so this
     classifies BOTH the new CANCELLED status and the historical
     failed+cancelled_at rows left as-is by the migration. The escalated case
-    reads the new top-level ESCALATED status, accepting the legacy
-    blocked(escalated) shape too (dual-read).
+    reads the new top-level ESCALATED status. Phase 3: the boot migration
+    has already flipped any legacy blocked(escalated) rows.
     """
     from runtime.models import BlockKind
     if task.cancelled_at is not None:
@@ -690,15 +682,13 @@ def _classify_predecessor_status(task: TaskRecord) -> str | None:
         return "failed"
     if task.status == TaskStatus.COMPLETED:
         return "completed"
-    if task.status == TaskStatus.ESCALATED or (
-        task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.ESCALATED
-    ):
+    if task.status == TaskStatus.ESCALATED:
         return "blocked-escalated"
     return None
 
 
 def _delegated_children_all_terminal(org, predecessor_id: str) -> bool:
-    """True iff a blocked(delegated) predecessor has at least one child and ALL
+    """True iff an in_progress(delegated) predecessor has at least one child and ALL
     its children are terminal.
 
     The non-cascading safety gate (Gap-B): a delegated parent may be superseded
@@ -723,16 +713,13 @@ def _eligible_supersede_block_kind(org, predecessor: TaskRecord) -> str | None:
     walk + `_classify_predecessor_status`. THR-018 tier #3 §3a.
 
     Path B: an escalated predecessor is status=ESCALATED; a delegating
-    predecessor is in_progress(delegated). The legacy blocked(escalated|
-    delegated) shapes are accepted too (dual-read).
+    predecessor is in_progress(delegated). Phase 3: no legacy blocked shapes;
+    the boot-time migration flips them before request handling.
     """
-    if predecessor.status == TaskStatus.ESCALATED or (
-        predecessor.status == TaskStatus.BLOCKED
-        and predecessor.block_kind == BlockKind.ESCALATED
-    ):
+    if predecessor.status == TaskStatus.ESCALATED:
         return "escalated"
     if (
-        predecessor.status in (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED)
+        predecessor.status == TaskStatus.IN_PROGRESS
         and predecessor.block_kind == BlockKind.DELEGATED
         and _delegated_children_all_terminal(org, predecessor.id)
     ):
@@ -751,7 +738,7 @@ def _supersede_predecessor_locked(
     note_suffix: str | None = None,
     thread_id: str | None = None,
 ) -> None:
-    """Transition a blocked(escalated|delegated) predecessor to the terminal
+    """Transition an escalated or in_progress(delegated) predecessor to the terminal
     RESOLVED_SUPERSEDED status — block_kind cleared, audit citing the concrete
     successor root (the maker-checker evidence) and, on the thread path, the
     dispatching thread ruling.
@@ -830,14 +817,14 @@ async def revisit_from_notification(
     predecessor = chain[-1]  # root is last; chain is [flagged, ..., root]
 
     prior_status = _classify_predecessor_status(predecessor)
-    # Gap-B (THR-018 §3): a blocked(delegated) predecessor is revisit-eligible
+    # Gap-B (THR-018 §3): an in_progress(delegated) predecessor is revisit-eligible
     # only when ALL its children are terminal. Superseding it must never
     # abandon — or cascade-SIGTERM — a live sibling, so a delegated parent with
     # any in-flight child stays ineligible (falls into the 409 below). The
     # all-terminal gate is the safety boundary for the non-cascading close.
     if (
         prior_status is None
-        and predecessor.status in (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED)
+        and predecessor.status == TaskStatus.IN_PROGRESS
         and predecessor.block_kind == BlockKind.DELEGATED
         and _delegated_children_all_terminal(org, predecessor.id)
     ):
@@ -892,7 +879,7 @@ async def revisit_from_notification(
         audit.log_revisit_spawned(
             predecessor_task_id=predecessor.id, new_root=new_id,
         )
-        # §3(a) forcing function: a blocked(escalated|delegated) predecessor is
+        # §3(a) forcing function: an escalated or in_progress(delegated) predecessor is
         # auto-resolved to the terminal RESOLVED_SUPERSEDED — block_kind
         # cleared, audit citing the new continuation root (the maker-checker
         # evidence). It is NOT re-enqueued (that would spawn a wasted manager
@@ -1053,7 +1040,7 @@ async def cancel_task(
     #     SIGTERM is never sent so run_step never runs and the cancel-race guard
     #     in run_step never triggers. Under Path B that set is: PENDING,
     #     ESCALATED, the parked carriers in_progress(delegated|blocked_on_job),
-    #     and the legacy BLOCKED(...) shapes.
+    #     and the parked carriers in_progress(delegated|blocked_on_job).
     #   • Live subprocess (in_progress + block_kind IS NULL) → cancel route sends
     #     SIGTERM (Phase 2 below); the subprocess exits with rc=-15; run_step's
     #     cancel-race guard (``refetch.cancelled_at is not None → return``) fires

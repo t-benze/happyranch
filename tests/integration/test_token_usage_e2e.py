@@ -49,7 +49,7 @@ def _wait_for_terminal_status(
         status = body["task"]["status"]
         if status in ("completed", "failed"):
             return status
-        if status == "blocked" and body["task"].get("block_kind") == "escalated":
+        if status == "escalated":
             return status
         time.sleep(0.2)
     raise AssertionError(f"task {task_id} did not reach a terminal state (last={body})")

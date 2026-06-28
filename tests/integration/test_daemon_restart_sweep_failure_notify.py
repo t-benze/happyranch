@@ -72,7 +72,7 @@ def test_sweep_uses_unknown_for_missing_assigned_agent(tmp_path: Path):
     db.insert_task(TaskRecord(
         id="TASK-ROOT", brief="root", team="engineering",
         assigned_agent="engineering_head",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
     ))
     db.insert_task(TaskRecord(
         id="TASK-2", brief="x", team="engineering",

@@ -60,9 +60,10 @@ scripts/happyranch tail TASK-001
 # Snapshot: status, block_kind, note, results, last event, audit summary
 scripts/happyranch details TASK-001
 scripts/happyranch details TASK-001 --full   # untruncated per-step output summaries
-# Task status is one of {pending, in_progress, blocked, completed, failed}.
-# When status=blocked the block_kind is either `delegated` (waiting on child
-# tasks) or `escalated` (waiting on founder). `note` carries the human-readable
+# Live task statuses are {pending, in_progress, escalated, completed, failed, cancelled, resolved_superseded}.
+# Parked states are in_progress(delegated) (waiting on child tasks) and
+# in_progress(blocked_on_job) (waiting on job approval/completion). Top-level
+# escalated signals founder attention. `note` carries the human-readable
 # reason or the founder's resolution rationale.
 
 # Recent tasks (default 20)
@@ -368,7 +369,7 @@ scripts/happyranch init-agent                                   # bootstrap work
 - **`no active runtime`** → `scripts/happyranch use <path>` (or `scripts/happyranch init <path>` if creating a new container).
 - **`missing org slug` / `ambiguous org`** → either set `export HAPPYRANCH_ORG_SLUG=<slug>` or pass `--org <slug>`. Auto-infer only works when the container has exactly one org.
 - **Task silently ends as `failed`** → likely a blocked agent callback. Check `scripts/happyranch audit <id>` for the `session_end` event; the project's CLAUDE.md explains the `Bash(happyranch:*)` allowlist requirement and the single-line `--from-file` convention.
-- **Task sits in `blocked(delegated)` forever** → a child task hasn't finished or its terminal event never arrived. `scripts/happyranch tasks` shows children; drill in with `scripts/happyranch details <child>`. The parent auto-resumes when the last child terminates.
-- **Task is in `blocked(escalated)`** → waiting on founder resolution. Read the `note` field via `scripts/happyranch details <id>`, then use the resolve-escalation flow above.
+- **Task sits in `in_progress(delegated)` forever** → a child task hasn't finished or its terminal event never arrived. `scripts/happyranch tasks` shows children; drill in with `scripts/happyranch details <child>`. The parent auto-resumes when the last child terminates.
+- **Task is in `escalated`** → waiting on founder resolution. Read the `note` field via `scripts/happyranch details <id>`, then use the resolve-escalation flow above.
 - **`compose failed: HTTP 404: {"code":"unknown_agent","agent":"..."}`** → the recipient is either a typo, a terminated agent, or a pending-approval agent without an active `.md` in `<runtime>/orgs/<slug>/org/agents/`. Confirm names in the web UI or under `<runtime>/orgs/<slug>/org/agents/`, then re-try.
 - **`No such file or directory`** / `uv: command not found` → install `uv` and ensure the project root resolution is working (set `HAPPYRANCH_PROJECT_DIR` if the skill is in an unusual location). Shim calls `uv --project` under the hood; nothing else is expected on PATH.

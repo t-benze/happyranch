@@ -6,7 +6,7 @@ Approach: unit-level DB staging rather than a full daemon restart.
 
 The full daemon-restart flow would require:
   1. Starting the daemon (live_daemon fixture)
-  2. Getting a task into BLOCKED+BLOCKED_ON_JOB with a job in 'running' state
+  2. Getting a task into in_progress(blocked_on_job) with a job in 'running' state
   3. Killing the daemon mid-run (SIGKILL — no graceful shutdown)
   4. Restarting the daemon against the same DB
   5. Verifying the startup lifespan hook re-evaluates the predicate
@@ -103,7 +103,7 @@ def test_startup_recovery_enqueues_blocked_task_after_job_crash(
     tmp_path: Path,
 ) -> None:
     """Crash scenario: daemon dies with one job 'running' and the task
-    in BLOCKED+BLOCKED_ON_JOB.
+    in in_progress(blocked_on_job).
 
     Startup recovery sequence (mirroring src/daemon/app.py lifespan):
       step A — recover_orphaned_running_jobs force-fails 'running' jobs
@@ -123,7 +123,7 @@ def test_startup_recovery_enqueues_blocked_task_after_job_crash(
     org_paths = _make_runtime(tmp_path)
     db = Database(org_paths.db_path)
 
-    # Stage: task in BLOCKED+BLOCKED_ON_JOB waiting on JOB-1.
+    # Stage: task in in_progress(blocked_on_job) waiting on JOB-1.
     # Note: insert_task does not include blocked_on_job_ids; use update_task
     # to set it after insertion (mirrors the real route that calls insert_task
     # then update_task with blocked_on_job_ids in the self-block handler).
@@ -132,8 +132,7 @@ def test_startup_recovery_enqueues_blocked_task_after_job_crash(
         brief="deploy service",
         team="engineering",
         assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
     ))
     db.update_task("TASK-1", blocked_on_job_ids=json.dumps(["JOB-1"]))
 
@@ -235,8 +234,7 @@ def test_startup_recovery_multi_job_all_crashed(tmp_path: Path) -> None:
         brief="multi-job crash test",
         team="engineering",
         assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
     ))
     db.update_task("TASK-2", blocked_on_job_ids=json.dumps(["JOB-A", "JOB-B"]))
     db.insert_job(_make_job("JOB-A", "TASK-2", status=JobStatus.RUNNING))
@@ -292,7 +290,7 @@ def test_startup_recovery_run_step_writes_resumed_audit_row(
     tmp_path: Path,
 ) -> None:
     """After caller C enqueues the task, run_step picks it up and transitions
-    BLOCKED+BLOCKED_ON_JOB → IN_PROGRESS via the CAS.  At CAS-win it writes
+    in_progress(blocked_on_job) → in_progress(NULL) via the CAS. At CAS-win it writes
     a `task_resumed_from_jobs` audit row with the job outcomes — this is what
     the BLOCKED-JOBS-RESULTS header builder reads.
 
@@ -317,8 +315,7 @@ def test_startup_recovery_run_step_writes_resumed_audit_row(
         brief="restart audit row test",
         team="engineering",
         assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
     ))
     db.update_task("TASK-3", blocked_on_job_ids=json.dumps(["JOB-C"]))
     db.insert_job(_make_job("JOB-C", "TASK-3", status=JobStatus.RUNNING))

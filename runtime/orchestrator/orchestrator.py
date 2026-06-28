@@ -420,7 +420,7 @@ class Orchestrator:
     def run_step(self, task_id: str, metadata: dict | None = None) -> None:
         """Advance a task one agent-subprocess worth.
 
-        Contract: task MUST be PENDING or BLOCKED(DELEGATED)-with-all-children-
+        Contract: task MUST be pending or in_progress(delegated)-with-all-children-
         terminal. Anything else is a stale enqueue and is silently ignored.
 
         ``metadata`` is an optional trigger-context dict forwarded from the

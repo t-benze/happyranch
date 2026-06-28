@@ -1221,13 +1221,12 @@ class Database:
             # Mirror jobs_runner.py canonic pred: status + block_kind + LIKE.
             # Without the status/block_kind guard a task that was once
             # blocked on JOB-X but is now done/running leaks into the
-            # "if approved" cascade. Path B flipped the parked carrier from
-            # `blocked` to `in_progress`; accept BOTH (dual-read).
+            # "if approved" cascade. Path B changed the parked carrier
+            # from blocked(blocked_on_job) to in_progress(blocked_on_job).
             conditions.append(
-                "status IN (?, ?) AND block_kind = ? AND blocked_on_job_ids LIKE ?"
+                "status = ? AND block_kind = ? AND blocked_on_job_ids LIKE ?"
             )
             params.extend([
-                TaskStatus.BLOCKED.value,
                 TaskStatus.IN_PROGRESS.value,
                 BlockKind.BLOCKED_ON_JOB.value,
                 f'%"{blocked_on_job_id}"%',
@@ -1667,7 +1666,7 @@ class Database:
         Database RLock (same lock the cancel route's update_task uses), the
         operation serializes against cancel: either cancel ran first and we
         see cancelled_at != NULL → bail, or we ran first and cancel observes
-        BLOCKED(ESCALATED) → transitions cleanly to FAILED on its own.
+        escalated → transitions cleanly to FAILED on its own.
 
         Returns True iff the row transitioned.
 
@@ -1794,7 +1793,7 @@ class Database:
         reentrant). The cancel route's update_task also acquires this lock,
         so the only two interleavings are:
         - cancel before us: our SELECT sees cancelled_at != NULL → bail, no writes
-        - us before cancel: cancel sees parent in BLOCKED(DELEGATED), transitions
+        - us before cancel: cancel sees parent in in_progress(delegated), transitions
           to FAILED, and its cascade walks our newly-inserted child for cleanup
 
         On True: parent has transitioned and child exists.
@@ -1866,15 +1865,12 @@ class Database:
     def list_blocked_with_kind(self, kind) -> list[str]:
         """Return IDs of parked tasks with the given block_kind.
 
-        Path B: the parked carrier flipped from `blocked` to `in_progress`;
-        accept BOTH so this is dual-read tolerant during the transition window
-        (the boot migration converts live rows, but in-memory/edge rows may
-        still carry the legacy status).
+        Queries by in_progress + block_kind — the stored Path-B representation.
         """
         kind_value = kind.value if hasattr(kind, "value") else kind
         cursor = self._conn.execute(
             "SELECT id FROM tasks "
-            "WHERE status IN ('blocked', 'in_progress') AND block_kind = ?",
+            "WHERE status = 'in_progress' AND block_kind = ?",
             (kind_value,),
         )
         return [row["id"] for row in cursor.fetchall()]
@@ -1884,15 +1880,12 @@ class Database:
         """Return ids of tasks currently parked waiting on jobs (BLOCKED_ON_JOB).
 
         Used by startup recovery (spec §5.7) to re-evaluate the predicate after
-        `recover_orphaned_running_jobs` force-fails any leftovers. Path B: the
-        carrier flipped from `blocked` to `in_progress`; accept BOTH (dual-read)
-        so a task parked on jobs is still found after the migration.
+        `recover_orphaned_running_jobs` force-fails any leftovers.
         """
         rows = self._conn.execute(
             "SELECT id FROM tasks "
-            "WHERE status IN (?, ?) AND block_kind = ?",
-            (TaskStatus.BLOCKED.value, TaskStatus.IN_PROGRESS.value,
-             BlockKind.BLOCKED_ON_JOB.value),
+            "WHERE status = ? AND block_kind = ?",
+            (TaskStatus.IN_PROGRESS.value, BlockKind.BLOCKED_ON_JOB.value),
         ).fetchall()
         return [row["id"] for row in rows]
 

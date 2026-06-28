@@ -176,10 +176,10 @@ def test_cmd_tasks_calls_list_endpoint(capsys):
 def test_tasks_status_and_block_kind_args_parse():
     parser = build_parser()
     args = parser.parse_args(
-        ["tasks", "--status", "blocked", "--block-kind", "escalated"],
+        ["tasks", "--status", "escalated"],
     )
-    assert args.status == "blocked"
-    assert args.block_kind == "escalated"
+    assert args.status == "escalated"
+    assert args.block_kind is None
     # Defaults are None so the filters are omitted from the query unless set.
     bare = parser.parse_args(["tasks"])
     assert bare.status is None
@@ -194,11 +194,11 @@ def test_cmd_tasks_forwards_status_filters(capsys):
     fake.get.return_value.json.return_value = {"tasks": []}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
-        args = MagicMock(org=None, limit=20, status="blocked", block_kind="escalated")
+        args = MagicMock(org=None, limit=20, status="in_progress", block_kind="delegated")
         cmd_tasks(args)
     fake.get.assert_called_once_with(
         "/api/v1/orgs/alpha/tasks",
-        params={"limit": 20, "status": "blocked", "block_kind": "escalated"},
+        params={"limit": 20, "status": "in_progress", "block_kind": "delegated"},
     )
 
 
@@ -1203,7 +1203,7 @@ def test_kb_write_parsers_require_org():
 
 
 def test_cmd_tasks_shows_block_kind_when_present(capsys):
-    """A blocked task should show its block_kind alongside status."""
+    """An in_progress(delegated) task should show its block_kind alongside status."""
     from cli.main import cmd_tasks
     from argparse import Namespace
     from unittest.mock import MagicMock, patch
@@ -1212,7 +1212,7 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
     response = MagicMock()
     response.status_code = 200
     response.json.return_value = {"tasks": [
-        {"task_id": "T-1", "team": "engineering", "status": "blocked",
+        {"task_id": "T-1", "team": "engineering", "status": "in_progress",
          "assigned_agent": "engineering_head", "brief": "waiting",
          "block_kind": "delegated"},
         {"task_id": "T-2", "team": "engineering", "status": "completed",
@@ -1224,7 +1224,7 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_tasks(Namespace(org=None, limit=10))
     out = capsys.readouterr().out
-    assert "blocked(delegated)" in out or "blocked (delegated)" in out
+    assert "in_progress(delegated)" in out or "in_progress (delegated)" in out
     assert "completed" in out
 
 

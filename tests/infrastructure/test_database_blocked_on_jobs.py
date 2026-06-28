@@ -52,12 +52,11 @@ def test_blocked_on_job_ids_round_trips_through_update_and_read():
         db.insert_task(task)
         db.update_task(
             "TASK-001",
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.BLOCKED_ON_JOB,
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
             blocked_on_job_ids=json.dumps(["JOB-12", "JOB-13"]),
         )
         loaded = db.get_task("TASK-001")
-        assert loaded.status == TaskStatus.BLOCKED
+        assert loaded.status == TaskStatus.IN_PROGRESS
         assert loaded.block_kind == BlockKind.BLOCKED_ON_JOB
         assert loaded.blocked_on_job_ids == '["JOB-12", "JOB-13"]'
 
@@ -90,17 +89,17 @@ def test_get_job_status_terminal_and_running():
 
 
 def test_list_tasks_blocked_on_jobs_filters_correctly():
-    """Returns only ids of BLOCKED+BLOCKED_ON_JOB tasks; excludes other blocked."""
+    """Returns only ids of in_progress(blocked_on_job) tasks; excludes other in_progress."""
     from runtime.models import TaskRecord, TaskStatus
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.db"
         db = Database(db_path)
 
-        # Three tasks: one blocked-on-job, one blocked-escalated, one in_progress.
+        # Three tasks: one blocked-on-job, one escalated, one in_progress.
         for tid, status, bk, jids in (
-            ("TASK-A", TaskStatus.BLOCKED, BlockKind.BLOCKED_ON_JOB, '["JOB-1"]'),
-            ("TASK-B", TaskStatus.BLOCKED, BlockKind.ESCALATED,     None),
+            ("TASK-A", TaskStatus.IN_PROGRESS, BlockKind.BLOCKED_ON_JOB, '["JOB-1"]'),
+            ("TASK-B", TaskStatus.ESCALATED, None,     None),
             ("TASK-C", TaskStatus.IN_PROGRESS, None,                None),
         ):
             db.insert_task(TaskRecord(
@@ -115,8 +114,8 @@ def test_list_tasks_blocked_on_jobs_filters_correctly():
         assert set(result) == {"TASK-A"}
 
 
-def test_list_tasks_blocked_on_job_id_filter_requires_blocked_status():
-    """list_tasks(blocked_on_job_id=...) MUST constrain status=blocked AND
+def test_list_tasks_blocked_on_job_id_filter_requires_in_progress_and_blocked_on_job():
+    """list_tasks(blocked_on_job_id=...) MUST constrain status=in_progress AND
     block_kind=blocked_on_job — non-blocked (e.g., done) tasks with the same
     job in blocked_on_job_ids must NOT appear.
 
@@ -142,29 +141,27 @@ def test_list_tasks_blocked_on_job_id_filter_requires_blocked_status():
             blocked_on_job_ids=json.dumps(["JOB-X"]),
         )
 
-        # (b) A genuinely BLOCKED + BLOCKED_ON_JOB task on JOB-X — MUST appear.
+        # (b) A genuinely in_progress + blocked_on_job task on JOB-X — MUST appear.
         blocked_task = TaskRecord(
             id="TASK-BLOCKED", team="engineering", brief="blocked",
-            status=TaskStatus.BLOCKED, parent_task_id=None,
+            status=TaskStatus.IN_PROGRESS, parent_task_id=None,
         )
         db.insert_task(blocked_task)
         db.update_task(
             "TASK-BLOCKED",
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.BLOCKED_ON_JOB,
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
             blocked_on_job_ids=json.dumps(["JOB-X"]),
         )
 
         # (c) A task blocked on JOB-12 — must NOT match JOB-1.
         wrong_job_task = TaskRecord(
             id="TASK-JOB12", team="engineering", brief="wrong",
-            status=TaskStatus.BLOCKED, parent_task_id=None,
+            status=TaskStatus.IN_PROGRESS, parent_task_id=None,
         )
         db.insert_task(wrong_job_task)
         db.update_task(
             "TASK-JOB12",
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.BLOCKED_ON_JOB,
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
             blocked_on_job_ids=json.dumps(["JOB-12"]),
         )
 
@@ -178,9 +175,9 @@ def test_list_tasks_blocked_on_job_id_filter_requires_blocked_status():
             f"got {result_ids}"
         )
 
-        # (b) Blocked task MUST appear.
+        # (b) in_progress(blocked_on_job) task MUST appear.
         assert "TASK-BLOCKED" in result_ids, (
-            f"TASK-BLOCKED (BLOCKED+BLOCKED_ON_JOB) missing from blocked_on_job_id filter; "
+            f"TASK-BLOCKED (in_progress+blocked_on_job) missing from blocked_on_job_id filter; "
             f"got {result_ids}"
         )
 

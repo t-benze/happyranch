@@ -17,8 +17,7 @@ async def test_resolve_escalation_cli_consumes_open_feishu_notification(
     org.db.insert_task(TaskRecord(id="T-1", brief="b"))
     org.db.update_task(
         "T-1",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.ESCALATED,
+        status=TaskStatus.ESCALATED, block_kind=None,
     )
     expires = datetime.now(timezone.utc) + timedelta(hours=72)
     org.db.mint_escalation_notification(
@@ -47,8 +46,7 @@ async def test_resolve_escalation_reject_also_consumes_notification(
     org.db.insert_task(TaskRecord(id="T-2", brief="b"))
     org.db.update_task(
         "T-2",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.ESCALATED,
+        status=TaskStatus.ESCALATED, block_kind=None,
     )
     expires = datetime.now(timezone.utc) + timedelta(hours=72)
     org.db.mint_escalation_notification(

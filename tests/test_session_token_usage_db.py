@@ -368,7 +368,7 @@ def test_aggregate_by_failed_task_groups_per_task_and_agent(db: Database):
     db.insert_task(TaskRecord(id="T-FAIL-1", brief="x", status=TaskStatus.FAILED))
     db.insert_task(TaskRecord(id="T-FAIL-2", brief="x", status=TaskStatus.FAILED))
     db.insert_task(TaskRecord(id="T-DONE", brief="x", status=TaskStatus.COMPLETED))
-    db.insert_task(TaskRecord(id="T-BLOCKED", brief="x", status=TaskStatus.BLOCKED))
+    db.insert_task(TaskRecord(id="T-BLOCKED", brief="x", status=TaskStatus.IN_PROGRESS))
 
     # T-FAIL-1: two agents -> two rollup rows.
     db.insert_session_token_usage(

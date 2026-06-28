@@ -84,13 +84,9 @@ class OrgState:
                 "outcome": task.status.value,
                 "synthesized": True,
             }
-        # Path B: escalated is now a top-level status. Tolerate the legacy
-        # blocked(escalated) shape during the transition window so a late
-        # subscriber still gets the right synthesized event for either form.
-        if task.status == TaskStatus.ESCALATED or (
-            task.status == TaskStatus.BLOCKED
-            and task.block_kind == BlockKind.ESCALATED
-        ):
+        # Path B: escalated is a top-level non-terminal status. Late
+        # subscribers still get the right synthesized event.
+        if task.status == TaskStatus.ESCALATED:
             return {
                 "type": "task_blocked",
                 "outcome": "escalated",

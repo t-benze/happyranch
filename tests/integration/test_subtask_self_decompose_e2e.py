@@ -52,7 +52,7 @@ def _wait_for_terminal(
     task_id: str,
     timeout: float = 90.0,
 ) -> dict:
-    """Poll until the task reaches completed, failed, or blocked(escalated)."""
+    """Poll until the task reaches completed, failed, or escalated."""
     headers = _auth_headers()
     deadline = time.monotonic() + timeout
     body: dict = {}
@@ -64,7 +64,7 @@ def _wait_for_terminal(
         block_kind = task.get("block_kind")
         if status in ("completed", "failed"):
             return body
-        if status == "blocked" and block_kind == "escalated":
+        if status == "escalated":
             return body
         time.sleep(0.3)
     raise AssertionError(

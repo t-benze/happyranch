@@ -921,7 +921,7 @@ class DispatchBody(BaseModel):
     brief: str
     target_agent: str | None = None
     team: str | None = None
-    # THR-018 §3a: optionally name a blocked(escalated|delegated) predecessor
+    # THR-018 §3a: optionally name an escalated or in_progress(delegated) predecessor
     # that this continuation supersedes. Honored ONLY for a manager-authorized
     # dispatch (maker-checker); a worker self-dispatch must NEVER auto-close it.
     resolves: str | None = None

@@ -29,8 +29,7 @@ def _insert_task_blocked_on_job(db: Database, task_id: str, job_ids: list[str]) 
     ))
     db.update_task(
         task_id,
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
         blocked_on_job_ids=json.dumps(job_ids),
     )
 
@@ -50,7 +49,7 @@ def _insert_job(db: Database, job_id: str, task_id: str, status: JobStatus) -> N
 
 
 def test_startup_recovery_resumes_tasks_with_all_terminal_jobs():
-    """After recovery scan, a BLOCKED+BLOCKED_ON_JOB task whose listed jobs
+    """After recovery scan, an in_progress(blocked_on_job) task whose listed jobs
     are all terminal gets enqueued."""
     with tempfile.TemporaryDirectory() as tmp:
         db = Database(Path(tmp) / "t.db")
@@ -73,7 +72,7 @@ def test_startup_recovery_resumes_tasks_with_all_terminal_jobs():
 
 
 def test_startup_recovery_resumes_tasks_with_completed_jobs():
-    """A BLOCKED+BLOCKED_ON_JOB task whose job completed (not failed) also
+    """An in_progress(blocked_on_job) task whose job completed (not failed) also
     gets enqueued — both terminal statuses satisfy the predicate."""
     with tempfile.TemporaryDirectory() as tmp:
         db = Database(Path(tmp) / "t.db")
@@ -93,7 +92,7 @@ def test_startup_recovery_resumes_tasks_with_completed_jobs():
 
 
 def test_startup_recovery_no_resume_for_running_jobs():
-    """Tasks blocked on jobs that are STILL running stay blocked."""
+    """Tasks blocked on jobs that are STILL running remain parked as in_progress(blocked_on_job)."""
     with tempfile.TemporaryDirectory() as tmp:
         db = Database(Path(tmp) / "t.db")
         _insert_task_blocked_on_job(db, "TASK-1", ["JOB-1"])

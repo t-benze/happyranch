@@ -443,21 +443,19 @@ def test_per_kind_cap_admits_different_kind_after_session_timeout(runtime, db):
 def test_cascade_fail_suppressed_when_root_auto_revisit_spawned(runtime, db):
     """TASK-573 bounded failure-recovery: when a subtask fails and the root
     auto-revisit fires, the intermediate parent gets a bounded-wake decision
-    step (BLOCKED+DELEGATED, enqueued). The Feishu notification path is
+    step (in_progress+delegated, enqueued). The Feishu notification path is
     removed; no cascade-fail happens."""
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="root", team="engineering",
                               assigned_agent="engineering_head",
-                              status=TaskStatus.BLOCKED,
-                              block_kind=BlockKind.DELEGATED,
+                              status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
                               task_type="task"))
     db.insert_task(TaskRecord(id="T-MID", brief="mid", team="engineering",
                               assigned_agent="engineering_head",
                               parent_task_id="T-ROOT",
-                              status=TaskStatus.BLOCKED,
-                              block_kind=BlockKind.DELEGATED,
+                              status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
                               task_type="task"))
     db.insert_task(TaskRecord(id="T-CHD", brief="chd", team="engineering",
                               assigned_agent="dev_agent",
@@ -482,11 +480,11 @@ def test_cascade_fail_suppressed_when_root_auto_revisit_spawned(runtime, db):
         orch, "T-CHD", root_auto_revisit_spawned=True,
     )
 
-    # T-MID stays BLOCKED(DELEGATED) — bounded manager-wake (TASK-573).
-    assert db.get_task("T-MID").status == TaskStatus.BLOCKED
+    # T-MID stays in_progress(delegated) — bounded manager-wake (TASK-573).
+    assert db.get_task("T-MID").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-MID").block_kind == BlockKind.DELEGATED
-    # T-ROOT stays BLOCKED(DELEGATED) — not reachable until T-MID advances.
-    assert db.get_task("T-ROOT").status == TaskStatus.BLOCKED
+    # T-ROOT stays in_progress(delegated) — not reachable until T-MID advances.
+    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-ROOT").block_kind == BlockKind.DELEGATED
     # ZERO Feishu notifications.
     assert notify_calls == []
@@ -495,14 +493,13 @@ def test_cascade_fail_suppressed_when_root_auto_revisit_spawned(runtime, db):
 def test_cascade_fail_no_auto_revisit(runtime, db):
     """TASK-573: when no auto-revisit was spawned (e.g., a deliberate
     self-block), the parent gets a bounded-wake decision step — stays
-    BLOCKED(DELEGATED) and is enqueued, NOT cascade-failed."""
+    in_progress(delegated) and is enqueued, NOT cascade-failed."""
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="root", team="engineering",
                               assigned_agent="engineering_head",
-                              status=TaskStatus.BLOCKED,
-                              block_kind=BlockKind.DELEGATED,
+                              status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
                               task_type="task"))
     db.insert_task(TaskRecord(id="T-CHD", brief="chd", team="engineering",
                               assigned_agent="dev_agent",
@@ -522,8 +519,8 @@ def test_cascade_fail_no_auto_revisit(runtime, db):
         orch, "T-CHD", root_auto_revisit_spawned=False,
     )
 
-    # Parent stays BLOCKED(DELEGATED) — bounded-wake (TASK-573), not cascade-fail.
-    assert db.get_task("T-ROOT").status == TaskStatus.BLOCKED
+    # Parent stays in_progress(delegated) — bounded-wake (TASK-573), not cascade-fail.
+    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-ROOT").block_kind == BlockKind.DELEGATED
     # No notification fires — Feishu removed.
     assert len(notify_calls) == 0
