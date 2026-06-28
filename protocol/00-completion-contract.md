@@ -62,7 +62,7 @@ Team-manager sessions must additionally include a structured `decision` object a
 - `"delegate"` — spawn a child task on another agent. Requires `agent` (target agent name) and `prompt` (child task brief).
 - `"done"` — terminal; the root task finishes here. Optional `summary` for a final outcome note.
 - `"escalate"` — surface to the founder for resolution. Requires `reason`.
-- `"fanout"` — spawn N child tasks in parallel (2 ≤ N ≤ 8, read-only Phase 1). Requires `children` (array of `{agent, prompt}` objects). Optional `width_cap_ack` (must match child count) and `join_summary` (prose directive for the join prompt). Per-child `then`/`expect_verdict` are rejected in Phase 1. Width > 4 requires founder review.
+- `"fanout"` — spawn N child tasks in parallel (2 ≤ N ≤ 8, read-only Phase 1). Requires `children` (array of `{agent, prompt}` objects). `width_cap_ack` is required and must exactly equal the child count. Optional `join_summary` (prose directive for the join prompt). Per-child `then`/`expect_verdict` are rejected in Phase 1. Width > 4 requires founder review.
 
 **Field-name note:** the child task's brief lives in `decision.prompt`, not `decision.brief`. The schema silently ignores unknown keys, so writing `"brief"` produces a child task with an empty brief. Use `"prompt"`.
 
@@ -166,8 +166,9 @@ A manager can spawn N child tasks in parallel:
 }
 ```
 
-Constraints: 2 ≤ N ≤ 8 (hard cap); per-child `then`/`expect_verdict` are rejected
-(read-only Phase 1); width > 4 requires founder `review_required`.
+Constraints: 2 ≤ N ≤ 8 (hard cap); `width_cap_ack` is required and must exactly
+equal the child count; per-child `then`/`expect_verdict` are rejected (read-only
+Phase 1); width > 4 requires founder `review_required`.
 The parent parks in `in_progress(delegated)` with `active_fanout` metadata
 and wakes once when all children are terminal. The manager receives a
 structured join context block with each child's outcome.

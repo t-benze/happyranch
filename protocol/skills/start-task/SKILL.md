@@ -161,8 +161,8 @@ Parameters:
      adding `"then": [...]` to a delegate decision. The orchestrator
      auto-advances routine legs without consuming orchestration steps.
    - `fanout` (the `parallel` alias is also accepted) — spawn N child tasks in parallel (2 ≤ N ≤ 8,
-     read-only Phase 1). Requires `children` (array of `{agent, prompt}` objects).
-     Optional `width_cap_ack` (must exactly match child count) and `join_summary`
+     read-only Phase 1). Requires `children` (array of `{agent, prompt}` objects)
+     and `width_cap_ack` (must exactly equal the child count). Optional `join_summary`
      (prose directive for the join prompt). Per-child `then`/`expect_verdict`
      are rejected in Phase 1. Width > 4 requires founder `review_required`.
      The parent parks in `in_progress(delegated)` with `active_fanout` metadata
