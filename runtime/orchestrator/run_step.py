@@ -203,25 +203,52 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         )
 
     # Fan-out dispatch: active_fanout can be "pending_review" (review gate
-    # just cleared — spawn children now without re-running the agent) or
+    # job just completed — spawn children only if the founder approved) or
     # "spawned" (all children terminal — inject join context).
     if task.active_fanout is not None:
         from runtime.orchestrator.fanout import FanoutState as _FanoutState
         fanout_state = _FanoutState.deserialize(task.active_fanout)
         if fanout_state.status == "pending_review":
-            # Review gate cleared: spawn children directly from the stored
-            # plan, then return without re-running the agent.
-            _spawn_fanout_children(
-                orch, task, task_id, next_count,
-                children=fanout_state.children_details,
-                width=fanout_state.width,
-                manager_agent=fanout_state.manager_agent,
-                join_summary=fanout_state.join_summary,
+            # Review gate: inspect the actual blocking review job outcome.
+            # Only spawn children if the founder approved (job completed).
+            # Rejected or failed review jobs → clear pending fan-out and
+            # fall through to agent re-run so the manager sees the
+            # BLOCKED-JOBS-RESULTS header and decides next steps.
+            import json as _json
+            try:
+                job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+            except _json.JSONDecodeError:
+                job_ids = []
+            can_spawn = bool(job_ids) and all(
+                db.get_job_status(jid) == "completed"
+                for jid in job_ids
             )
-            return
-        # status == "spawned" → all children terminal; inject join context.
-        _inject_fanout_join_context(orch, task_id, task.active_fanout)
-        db.update_task_active_fanout(task_id, None)
+            if can_spawn:
+                # Founder approved: spawn children from the stored plan,
+                # then return without re-running the agent.
+                _spawn_fanout_children(
+                    orch, task, task_id, next_count,
+                    children=fanout_state.children_details,
+                    width=fanout_state.width,
+                    manager_agent=fanout_state.manager_agent,
+                    join_summary=fanout_state.join_summary,
+                )
+                return
+            # Review was rejected or failed: clear the pending fan-out and
+            # fall through to agent re-run so the manager sees the
+            # BLOCKED-JOBS-RESULTS header and decides next steps.
+            db.update_task_active_fanout(task_id, None)
+            orch._audit.log_orchestration_step(
+                task_id, next_count,
+                {"action": "fanout_review_not_approved", "reason": (
+                    f"review job(s) {job_ids} not approved"
+                )},
+            )
+            # Fall through to agent run (step 4).
+        elif fanout_state.status == "spawned":
+            # status == "spawned" → all children terminal; inject join context.
+            _inject_fanout_join_context(orch, task_id, task.active_fanout)
+            db.update_task_active_fanout(task_id, None)
 
     # ---- 4. Run the agent subprocess ----
     agent = task.assigned_agent or _default_agent_for_root(orch, task)

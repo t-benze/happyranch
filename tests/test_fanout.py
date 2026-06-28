@@ -908,6 +908,158 @@ class TestFanoutRunStep:
             assert child is not None
             assert child.task_type == "subtask"
 
+    def test_fanout_review_gate_reentry_rejected_spawns_zero_children(
+        self, runtime, db, monkeypatch,
+    ):
+        """Rejected review job: re-entry spawns zero children, clears active_fanout,
+        and falls through to agent re-run with BLOCKED-JOBS-RESULTS header."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.fanout import FanoutState
+
+        for i in range(5):
+            (runtime.workspaces_dir / f"agent{i}").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-FANOUT-REJECT", brief="rejected review",
+            assigned_agent="engineering_head",
+        ))
+
+        # Simulate: task parked on BLOCKED_ON_JOB after review gate,
+        # with pending_review active_fanout and a REJECTED review job.
+        job_id = db.next_job_id()
+        now_iso = "2026-06-28T00:00:00+00:00"
+        from runtime.models import JobRecord, JobStatus, JobInterpreter
+        db.insert_job(JobRecord(
+            id=job_id, task_id="T-FANOUT-REJECT", agent_name="engineering_head",
+            title="Review fan-out", rationale="review", script_text="",
+            interpreter=JobInterpreter.BASH, status=JobStatus.REJECTED,
+            review_required=True, created_at=now_iso,
+        ))
+        pending = FanoutState(
+            children_ids=[],
+            children_details=[
+                {"agent": f"agent{i}", "prompt": f"task {i}"} for i in range(5)
+            ],
+            width=5, manager_agent="engineering_head",
+            status="pending_review",
+        )
+        db.update_task(
+            "T-FANOUT-REJECT",
+            status=TaskStatus.IN_PROGRESS,
+            block_kind=BlockKind.BLOCKED_ON_JOB,
+            blocked_on_job_ids=json.dumps([job_id]),
+            note="pending review",
+        )
+        db.update_task_active_fanout("T-FANOUT-REJECT", pending.serialize())
+
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        orch._queue = _SlugQueue()
+
+        # Monkeypatch _run_agent so the rejected path can fall through to
+        # agent re-run; agent decides "done" so the task completes cleanly.
+        def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            return _make_result(), _make_report(output_summary="done")
+        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+        # Re-entry: should detect pending_review with rejected job,
+        # clear active_fanout, NOT spawn children, and fall through to agent.
+        orch.run_step("T-FANOUT-REJECT")
+
+        parent = db.get_task("T-FANOUT-REJECT")
+        # active_fanout must be cleared (not pending_review or spawned).
+        assert parent.active_fanout is None
+        # Zero children spawned.
+        children = db.get_children("T-FANOUT-REJECT")
+        assert len(children) == 0
+        # Audit log must include fanout_review_not_approved decision
+        # (logged as an orchestration_step with decision.action).
+        logs = db.get_audit_logs("T-FANOUT-REJECT")
+        not_approved = [
+            e for e in logs
+            if e["action"] == "orchestration_step"
+            and isinstance(e.get("payload"), dict)
+            and e["payload"].get("decision", {}).get("action") == "fanout_review_not_approved"
+        ]
+        assert len(not_approved) == 1
+        # Agent re-ran (orchestration_step for the done decision after rejection).
+        orch_steps = [e for e in logs if e["action"] == "orchestration_step"]
+        assert len(orch_steps) >= 2
+
+    def test_fanout_review_gate_reentry_failed_spawns_zero_children(
+        self, runtime, db, monkeypatch,
+    ):
+        """Failed review job: re-entry spawns zero children (same as rejected)."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.fanout import FanoutState
+
+        for i in range(5):
+            (runtime.workspaces_dir / f"agent{i}").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-FANOUT-FAILRVW", brief="failed review",
+            assigned_agent="engineering_head",
+        ))
+
+        job_id = db.next_job_id()
+        now_iso = "2026-06-28T00:00:00+00:00"
+        from runtime.models import JobRecord, JobStatus, JobInterpreter
+        db.insert_job(JobRecord(
+            id=job_id, task_id="T-FANOUT-FAILRVW", agent_name="engineering_head",
+            title="Review fan-out", rationale="review", script_text="",
+            interpreter=JobInterpreter.BASH, status=JobStatus.FAILED,
+            review_required=True, created_at=now_iso,
+        ))
+        pending = FanoutState(
+            children_ids=[],
+            children_details=[
+                {"agent": f"agent{i}", "prompt": f"task {i}"} for i in range(5)
+            ],
+            width=5, manager_agent="engineering_head",
+            status="pending_review",
+        )
+        db.update_task(
+            "T-FANOUT-FAILRVW",
+            status=TaskStatus.IN_PROGRESS,
+            block_kind=BlockKind.BLOCKED_ON_JOB,
+            blocked_on_job_ids=json.dumps([job_id]),
+            note="pending review",
+        )
+        db.update_task_active_fanout("T-FANOUT-FAILRVW", pending.serialize())
+
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        orch._queue = _SlugQueue()
+
+        def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            return _make_result(), _make_report(output_summary="done")
+        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+        orch.run_step("T-FANOUT-FAILRVW")
+
+        parent = db.get_task("T-FANOUT-FAILRVW")
+        assert parent.active_fanout is None
+        children = db.get_children("T-FANOUT-FAILRVW")
+        assert len(children) == 0
+        logs = db.get_audit_logs("T-FANOUT-FAILRVW")
+        not_approved = [
+            e for e in logs
+            if e["action"] == "orchestration_step"
+            and isinstance(e.get("payload"), dict)
+            and e["payload"].get("decision", {}).get("action") == "fanout_review_not_approved"
+        ]
+        assert len(not_approved) == 1
+
     def test_fanout_over_cap_still_hard_fails(self, runtime, db, monkeypatch):
         """Width > MAX_FANOUT_WIDTH still hard-fails (parse rejection before review gate)."""
         import json
