@@ -33,7 +33,7 @@ Concrete failure case: the founder asks the Engineering Head to review project s
 ## Non-goals
 
 - Semantic / vector-based retrieval (defer until enough history accumulates to need it).
-- Automatic prompt injection of unrelated past tasks (keeps prompts clean). **[REVERSED by THR-032 Phase 2 — the pointer-only, salience-ranked, budget-capped MEMORY-DIGEST block is now injected into every agent spawn prompt. Founder-ratified at THR-032 seq 48.]** 
+- Automatic prompt injection of unrelated past tasks (keeps prompts clean). **[REVERSED by THR-032 Phase 2 — the pointer-only, salience-ranked, budget-capped MEMORY-DIGEST block is now injected into every agent spawn prompt. Founder-ratified at THR-032 seq 48.]**
 - Cross-agent shared memory (each agent sees only its own history; cross-agent access goes through `opc recall`).
 - Rewriting the learnings / scorecard mechanisms — they stay as-is.
 
