@@ -636,8 +636,8 @@ dated commitment** (timeline = separate Founder sign-off).
 Tied to founder value, not output:
 - **Calm:** founder answers "is anything on fire?" in one glance on Home without
   opening Audit. (Dogfood.)
-- **Homes for the homeless:** Spend, Dreams, Schedule each reachable in 1 click
-  from the sidebar; the "indistinguishable dream-thread" gap is closed by A4.
+- **Homes for the homeless:** Spend, Dreams, Work Hours (including Wakes) each reachable in 1 click
+  from the sidebar; the "indistinguishable dream-thread" gap is closed by A4. *(THR-035 (2026-06-28): the standalone Schedule nav item was consolidated into Work Hours as its Wakes view — see the PRD-final for current nav.)*
 - **Honesty (dominant):** zero UI elements assert facts the daemon can't
   substantiate; dollars render `$0.00 / not metered`; @mention is broadcast-only;
   KB shows "viewed N× (CLI)". (Review gate enforces P1.)
