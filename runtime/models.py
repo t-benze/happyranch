@@ -124,7 +124,7 @@ class ChainLeg(BaseModel):
 
 
 class FanoutChild(BaseModel):
-    """One child in a fanout/parallel NextStep. Phase 1: read-only children only —
+    """One child in a fanout NextStep. Phase 1: read-only children only —
     each carries agent + prompt. ``then`` and ``expect_verdict`` are NOT allowed in
     Phase 1 and are parse-rejected (mutating fan-out is out of scope).
     """

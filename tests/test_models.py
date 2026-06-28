@@ -360,6 +360,26 @@ def test_next_step_accepts_fanout_action():
     assert ns.join_summary == "Coordinate results"
 
 
+def test_next_step_rejects_parallel_action():
+    """NextStep only accepts fanout (not parallel) as the fan-out action token.
+    A manager submitting decision.action: "parallel" gets a Pydantic rejection."""
+    from pydantic import ValidationError
+    from runtime.models import NextStep, FanoutChild
+    import pytest
+    with pytest.raises(ValidationError) as excinfo:
+        NextStep(
+            action="parallel",
+            children=[
+                FanoutChild(agent="dev_agent", prompt="task 1"),
+                FanoutChild(agent="qa_engineer", prompt="task 2"),
+            ],
+        )
+    # Error must mention the valid action values (fanout, not parallel)
+    err = str(excinfo.value)
+    assert "fanout" in err.lower()
+    assert "parallel" in err.lower()  # the submitted invalid value should appear
+
+
 def test_next_step_fanout_children_defaults_empty():
     from runtime.models import NextStep
     ns = NextStep(action="delegate", agent="x", prompt="y")

@@ -160,7 +160,7 @@ Parameters:
      empty brief. Managers can declare a multi-leg workflow chain inline by
      adding `"then": [...]` to a delegate decision. The orchestrator
      auto-advances routine legs without consuming orchestration steps.
-   - `fanout` (or `parallel`) — spawn N child tasks in parallel (2 ≤ N ≤ 8,
+   - `fanout` — spawn N child tasks in parallel (2 ≤ N ≤ 8,
      read-only Phase 1). Requires `children` (array of `{agent, prompt}` objects).
      Optional `width_cap_ack` (must exactly match child count) and `join_summary`
      (prose directive for the join prompt). Per-child `then`/`expect_verdict`

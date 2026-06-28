@@ -188,7 +188,7 @@ def test_self_only_prompt_omits_roster_and_names_self():
 # ── Fan-out capabilities prompt tests ──────────────────────────────────────
 
 def test_manager_prompt_advertises_fanout_shape():
-    """The manager prompt must include the fanout/parallel decision shape
+    """The manager prompt must include the fanout decision shape
     so managers know how to invoke native fan-out from their capabilities block."""
     p = build_capabilities_prompt(
         agents=[{"name": "dev_agent", "description": "Implements features"}],
@@ -196,9 +196,11 @@ def test_manager_prompt_advertises_fanout_shape():
         manager_name="engineering_head",
     )
     assert "fanout" in p
-    assert "parallel" in p
     assert '"action": "fanout"' in p
     assert '"children":' in p
+    # parallel is NOT a valid action token — only fanout is accepted
+    assert "**parallel**" not in p.lower()
+    assert "fanout / parallel" not in p.lower()
 
 
 def test_manager_prompt_shows_fanout_required_fields():
@@ -265,7 +267,9 @@ def test_self_only_prompt_advertises_fanout_as_unavailable():
         manager_name="dev_agent", self_only=True,
     )
     assert "fanout" in p.lower()
-    assert "parallel" in p.lower()
     # Must say it's NOT available in self-only mode
     assert "not available" in p.lower() or "NOT available" in p
     assert "team-manager-only" in p.lower() or "team manager" in p.lower()
+    # parallel is NOT a valid action token — only fanout is accepted
+    assert "**parallel**" not in p.lower()
+    assert "fanout / parallel" not in p.lower()

@@ -53,7 +53,7 @@ def build_capabilities_prompt(
             "```json",
             '{"action": "escalate", "reason": "<why>"}',
             "```\n",
-            "**fanout / parallel** -- NOT available in self-only mode. "
+            "**fanout** -- NOT available in self-only mode. "
             "Fan-out (spawning N parallel sub-tasks across multiple agents, "
             "width 2–8, read-only Phase 1) is a team-manager-only capability. "
             "If you need parallel work, delegate sequentially or escalate to "
@@ -124,7 +124,7 @@ def build_capabilities_prompt(
         "```json",
         '{"action": "escalate", "reason": "<why this needs escalation>"}',
         "```\n",
-        "**fanout / parallel** -- Spawn N parallel read-only sub-tasks "
+        "**fanout** -- Spawn N parallel read-only sub-tasks "
         "(Phase 1, team-manager only):\n",
         "```json\n",
         '{"action": "fanout",',
