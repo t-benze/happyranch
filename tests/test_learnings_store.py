@@ -490,3 +490,343 @@ def test_list_entries_populates_new_summary_fields_and_returns_all(
     assert summaries["LRN-001"].salience == 70
     assert summaries["LRN-001"].lifecycle == "valid"
     assert summaries["LRN-002"].lifecycle == "evicted"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# THR-032 Phase 2 — PUSH memory digest (build_memory_digest)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _make_memory_item(store: MemoryStore, id: str, slug: str, title: str,
+                      topic: str = "workflow", body: str = "some body content\n",
+                      **overrides) -> MemoryItem:
+    """Write an entry and return the stamped MemoryItem."""
+    entry = MemoryItem(
+        id=id, slug=slug, title=title, topic=topic, body=body, **overrides,
+    )
+    return store.write_entry(entry, agent="test-agent")
+
+
+class TestBuildMemoryDigest:
+    """THR-032 Phase 2: build_memory_digest — salience-ranked, pointer-only,
+    budgeted PUSH digest."""
+
+    @pytest.fixture
+    def mem_store(self, tmp_path: Path) -> MemoryStore:
+        return MemoryStore(tmp_path / "memory")
+
+    # ── Budget enforcement ──
+
+    def test_budget_enforcement_never_exceeds_cap(self, mem_store: MemoryStore):
+        """The emitted digest (including header + nudge) never exceeds the
+        configured char budget."""
+        for i in range(30):
+            _make_memory_item(
+                mem_store,
+                id=f"MEM-{i + 1:03d}", slug=f"item-{i}",
+                title=f"Long descriptive title for memory item number {i}",
+                salience=90,
+            )
+        budget = 400
+        digest = mem_store.build_memory_digest("brief", budget=budget)
+        assert digest is not None
+        assert len(digest) <= budget, f"digest {len(digest)} chars > budget {budget}"
+
+    def test_budget_enforcement_with_nudge_when_over_capacity(self, mem_store: MemoryStore):
+        """When candidate set exceeds budget, a 'Pull the long tail' nudge
+        is included."""
+        for i in range(30):
+            _make_memory_item(
+                mem_store,
+                id=f"MEM-{i + 1:03d}", slug=f"item-{i}",
+                title=f"Title number {i}", salience=90,
+            )
+        digest = mem_store.build_memory_digest("brief", budget=400)
+        assert digest is not None
+        assert "Pull the long tail" in digest
+        assert "happyranch memory search" in digest
+
+    # ── Ranking order ──
+
+    def test_higher_salience_sorts_first(self, mem_store: MemoryStore):
+        """Higher effective salience items appear earlier in the digest."""
+        _make_memory_item(mem_store, id="MEM-001", slug="low", title="Low", salience=30)
+        _make_memory_item(mem_store, id="MEM-002", slug="high", title="High", salience=90)
+        _make_memory_item(mem_store, id="MEM-003", slug="mid", title="Mid", salience=60)
+        digest = mem_store.build_memory_digest("brief", budget=2000)
+        assert digest is not None
+        idx_high = digest.index("MEM-002")
+        idx_mid = digest.index("MEM-003")
+        idx_low = digest.index("MEM-001")
+        assert idx_high < idx_mid < idx_low
+
+    def test_deterministic_tie_breaking(self, mem_store: MemoryStore):
+        """Items with equal effective score sort deterministically (by title)."""
+        _make_memory_item(mem_store, id="MEM-001", slug="b-item", title="B Item", salience=50)
+        _make_memory_item(mem_store, id="MEM-002", slug="a-item", title="A Item", salience=50)
+        digest = mem_store.build_memory_digest("brief", budget=2000)
+        assert digest is not None
+        # 'A Item' should come before 'B Item' alphabetically
+        idx_a = digest.index("MEM-002")
+        idx_b = digest.index("MEM-001")
+        assert idx_a < idx_b
+
+    # ── Brief-relevance boost ──
+
+    def test_brief_relevance_boost_title_match(self, mem_store: MemoryStore):
+        """Memory whose title contains the brief query beats otherwise equal
+        non-matching memory."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="About Deployment",
+                          salience=50)
+        _make_memory_item(mem_store, id="MEM-002", slug="b", title="Database Tips",
+                          salience=50)
+        digest = mem_store.build_memory_digest("deployment config")
+        assert digest is not None
+        idx_deploy = digest.index("MEM-001")
+        idx_db = digest.index("MEM-002")
+        assert idx_deploy < idx_db
+
+    def test_brief_relevance_boost_tag_match(self, mem_store: MemoryStore):
+        """Memory with matching tags gets a boost."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="Item A",
+                          tags=["ci", "docker"], salience=50)
+        _make_memory_item(mem_store, id="MEM-002", slug="b", title="Item B",
+                          tags=["ui", "react"], salience=50)
+        digest = mem_store.build_memory_digest("docker container issue")
+        assert digest is not None
+        idx_ci = digest.index("MEM-001")
+        idx_ui = digest.index("MEM-002")
+        assert idx_ci < idx_ui
+
+    def test_brief_relevance_boost_topic_match(self, mem_store: MemoryStore):
+        """Memory with matching topic gets a boost."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="Item A",
+                          topic="database", salience=50)
+        _make_memory_item(mem_store, id="MEM-002", slug="b", title="Item B",
+                          topic="frontend", salience=50)
+        digest = mem_store.build_memory_digest("database migration")
+        assert digest is not None
+        idx_db = digest.index("MEM-001")
+        idx_fe = digest.index("MEM-002")
+        assert idx_db < idx_fe
+
+    # ── Zero items emits nothing ──
+
+    def test_zero_items_emits_none(self, mem_store: MemoryStore):
+        """When no valid, unpromoted memories exist, the digest returns None."""
+        result = mem_store.build_memory_digest("brief")
+        assert result is None
+
+    def test_all_evicted_emits_none(self, mem_store: MemoryStore):
+        """When all items are evicted, digest returns None."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="A",
+                          lifecycle="evicted")
+        _make_memory_item(mem_store, id="MEM-002", slug="b", title="B",
+                          lifecycle="evicted")
+        result = mem_store.build_memory_digest("brief")
+        assert result is None
+
+    def test_all_superseded_emits_none(self, mem_store: MemoryStore):
+        """When all items are superseded, digest returns None."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="A",
+                          lifecycle="superseded")
+        result = mem_store.build_memory_digest("brief")
+        assert result is None
+
+    # ── Exclusion filters ──
+
+    def test_excludes_promoted_items(self, mem_store: MemoryStore):
+        """Promoted items are excluded from the digest."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="Valid", salience=90)
+        _make_memory_item(mem_store, id="MEM-002", slug="b", title="Promoted",
+                          promoted_to="kb-foo", salience=90)
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "MEM-001" in digest
+        assert "MEM-002" not in digest
+
+    def test_excludes_evicted_items(self, mem_store: MemoryStore):
+        """Evicted items are excluded from the digest."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="Valid", salience=90)
+        _make_memory_item(mem_store, id="MEM-002", slug="b", title="Evicted",
+                          lifecycle="evicted", salience=90)
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "MEM-001" in digest
+        assert "MEM-002" not in digest
+
+    def test_excludes_superseded_items(self, mem_store: MemoryStore):
+        """Superseded items are excluded from the digest."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="Valid", salience=90)
+        _make_memory_item(mem_store, id="MEM-002", slug="b", title="Superseded",
+                          lifecycle="superseded", salience=90)
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "MEM-001" in digest
+        assert "MEM-002" not in digest
+
+    # ── Pointer-only ──
+
+    def test_pointer_only_no_body_leakage(self, mem_store: MemoryStore):
+        """Body text from memory items must never leak into the digest."""
+        _make_memory_item(
+            mem_store,
+            id="MEM-001", slug="secret", title="Safe Title",
+            body="This is SECRET content that must NOT appear in the digest.\n"
+            "API_KEY=sk-123456\n",
+            salience=90,
+        )
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "SECRET" not in digest
+        assert "API_KEY" not in digest
+        assert "sk-123456" not in digest
+        # But the title and id should be there
+        assert "MEM-001" in digest
+        assert "Safe Title" in digest
+
+    # ── Decay is read-only ──
+
+    def test_build_digest_does_not_write_files(self, mem_store: MemoryStore):
+        """Building the digest must not write any memory files or change
+        mtimes / frontmatter."""
+        entry = _make_memory_item(
+            mem_store, id="MEM-001", slug="old", title="Old Entry",
+            salience=50,
+        )
+        original_mtime = (mem_store.root / "MEM-001-old.md").stat().st_mtime
+        # Build digest multiple times
+        mem_store.build_memory_digest("brief")
+        mem_store.build_memory_digest("different brief")
+        mem_store.build_memory_digest("third brief")
+        # Verify no files were written
+        new_mtime = (mem_store.root / "MEM-001-old.md").stat().st_mtime
+        assert new_mtime == original_mtime
+        # Read-back salience should be unchanged
+        re_read = mem_store.read_entry("MEM-001")
+        assert re_read.salience == 50
+
+    # ── Ancestor boost ──
+
+    def test_ancestor_boost_promotes_matching_source_task(self, mem_store: MemoryStore):
+        """Memory whose source_task is an ancestor of the current task gets a
+        ranking boost."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="a", title="Ancestor Memory",
+            source_task="TASK-100", salience=50,
+        )
+        _make_memory_item(
+            mem_store, id="MEM-002", slug="b", title="Unrelated Memory",
+            salience=50,
+        )
+        digest = mem_store.build_memory_digest(
+            "brief", ancestor_task_ids={"TASK-050", "TASK-100", "TASK-200"},
+        )
+        assert digest is not None
+        idx_ancestor = digest.index("MEM-001")
+        idx_unrelated = digest.index("MEM-002")
+        assert idx_ancestor < idx_unrelated
+
+    def test_no_ancestor_boost_when_no_match(self, mem_store: MemoryStore):
+        """When no source_task matches ancestors, no boost is applied and
+        equal-salience items tie-break on title."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="b", title="B Item",
+            source_task="TASK-999", salience=50,
+        )
+        _make_memory_item(
+            mem_store, id="MEM-002", slug="a", title="A Item",
+            salience=50,
+        )
+        digest = mem_store.build_memory_digest(
+            "brief", ancestor_task_ids={"TASK-001"},
+        )
+        assert digest is not None
+        idx_a = digest.index("MEM-002")
+        idx_b = digest.index("MEM-001")
+        assert idx_a < idx_b  # alphabetical, no boost
+
+    # ── Directive boost ──
+
+    def test_directive_items_get_provenance_boost(self, mem_store: MemoryStore):
+        """Directive-provenance items get a boost over experiential items
+        of equal base salience."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="a", title="Experiential",
+            provenance="experiential", salience=50,
+        )
+        _make_memory_item(
+            mem_store, id="MEM-002", slug="b", title="Directive",
+            provenance="directive", salience=50,
+        )
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        idx_dir = digest.index("MEM-002")
+        idx_exp = digest.index("MEM-001")
+        assert idx_dir < idx_exp
+
+    # ── Digest format ──
+
+    def test_digest_header_present(self, mem_store: MemoryStore):
+        """The digest includes the standard MEMORY-DIGEST header."""
+        _make_memory_item(mem_store, id="MEM-001", slug="ok", title="Hello",
+                          salience=50)
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "=== MEMORY-DIGEST (system) ===" in digest
+
+    def test_digest_line_format(self, mem_store: MemoryStore):
+        """Each pointer line carries id, title, provenance, salience."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="ok", title="Format Check",
+            provenance="reflective", salience=73,
+        )
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "MEM-001" in digest
+        assert "Format Check" in digest
+        assert "reflective" in digest
+        assert "73" in digest
+
+    def test_digest_uses_happyranch_memory_cli_references(self, mem_store: MemoryStore):
+        """The digest references the post-rename `happyranch memory` CLI."""
+        # Create enough items that budget overflow forces the nudge.
+        for i in range(20):
+            _make_memory_item(
+                mem_store,
+                id=f"MEM-{i + 1:03d}", slug=f"item-{i}",
+                title=f"Memory item number {i} with a longish title",
+                salience=90,
+            )
+        digest = mem_store.build_memory_digest("brief", budget=300)
+        assert digest is not None
+        assert "happyranch memory get" in digest
+        assert "happyranch memory search" in digest
+
+    def test_digest_pointer_lines_include_salience(self, mem_store: MemoryStore):
+        """Each pointer line includes the effective salience score."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="A", salience=50)
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "salience" in digest
+
+    # ── Edge cases ──
+
+    def test_empty_brief_is_handled(self, mem_store: MemoryStore):
+        """An empty brief string should still produce a digest ranked by
+        salience alone."""
+        _make_memory_item(mem_store, id="MEM-001", slug="a", title="A", salience=30)
+        _make_memory_item(mem_store, id="MEM-002", slug="b", title="B", salience=90)
+        digest = mem_store.build_memory_digest("")
+        assert digest is not None
+        idx_b = digest.index("MEM-002")
+        idx_a = digest.index("MEM-001")
+        assert idx_b < idx_a
+
+    def test_single_item_within_budget(self, mem_store: MemoryStore):
+        """A single item digest stays well within budget."""
+        _make_memory_item(mem_store, id="MEM-001", slug="x", title="Single", salience=50)
+        digest = mem_store.build_memory_digest("brief", budget=2000)
+        assert digest is not None
+        assert len(digest) < 500
+        assert "Pull the long tail" not in digest  # single item fits, no nudge

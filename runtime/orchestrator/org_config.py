@@ -153,6 +153,10 @@ class OrgConfig:
     threads_enabled: bool = True
     threads_default_turn_cap: int = 500
     threads_invocation_timeout_seconds: int | None = None
+    # THR-032 Phase 2: char budget for the per-task MEMORY-DIGEST push block.
+    # Default ~1500 chars ≈ a dozen pointer lines; set to 0 to disable the
+    # digest entirely. Must be >= 0.
+    memory_digest_budget: int = 1500
 
     @classmethod
     def load_from_text(cls, text: str, path: str = "<text>") -> "OrgConfig":
@@ -615,11 +619,24 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
     if threads_block is not None:
         threads_kwargs = _parse_threads(threads_block, path)
 
+    # THR-032 Phase 2: memory_digest_budget — char budget for per-task
+    # MEMORY-DIGEST push block. Default 1500; 0 disables the digest.
+    digest_budget = data.get("memory_digest_budget", 1500)
+    if not isinstance(digest_budget, int) or isinstance(digest_budget, bool):
+        raise OrgConfigError(
+            f"{path}: memory_digest_budget must be an integer, got {digest_budget!r}"
+        )
+    if digest_budget < 0:
+        raise OrgConfigError(
+            f"{path}: memory_digest_budget must be >= 0, got {digest_budget}"
+        )
+
     return OrgConfig(
         session_timeout_seconds=timeout,
         timezone=org_timezone,
         dreaming=dreaming_cfg,
         working_hours=working_hours_cfg,
+        memory_digest_budget=digest_budget,
         **threads_kwargs,
     )
 
@@ -651,6 +668,7 @@ _ORG_WRITABLE_KEYS = {
     "threads",
     "session_timeout_seconds",
     "working_hours",  # THR-035: Work-Hours Config UI write surface (TASK-967)
+    "memory_digest_budget",  # THR-032 Phase 2: char budget for per-task MEMORY-DIGEST
 }
 
 

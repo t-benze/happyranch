@@ -330,6 +330,7 @@ class Orchestrator:
         brief: str,
         prompt: str,
         now: Callable[[], datetime] | None = None,
+        memory_digest: str | None = None,
     ) -> str:
         if provider == "codex":
             intro = (
@@ -356,6 +357,12 @@ class Orchestrator:
         # codex, opencode, pi) receive the local wall-clock + zone on every
         # spawn and wake.
         current_time = self._current_time_line(now)
+        # THR-032 Phase 2: PUSH memory digest — salience-ranked, pointer-only,
+        # budgeted block injected after brief/role_guidance on every agent
+        # spawn/wake. Harness-agnostic by construction: emitted as plain text
+        # in the one literal prompt string shared by every executor.
+        # Precedent: BLOCKED-JOBS-RESULTS in run_step.py.
+        digest_block = f"\n{memory_digest}\n" if memory_digest else ""
         return (
             f"{intro}"
             f"\n"
@@ -365,6 +372,7 @@ class Orchestrator:
             f"  current_time: {current_time}\n"
             f"  brief: {brief}\n"
             f"{role_guidance_block}"
+            f"{digest_block}"
         )
 
     def _read_completion_from_db(
@@ -517,6 +525,30 @@ class Orchestrator:
         # Brief is injected here:
         brief = task.brief if task else ""
         session_id = self._build_session_id()
+
+        # THR-032 Phase 2: build the per-task memory digest from the agent's
+        # MemoryStore. Ancestor task ids boost memories authored in the same
+        # task lineage. Budget is org-configurable; 0 disables the digest.
+        memory_digest: str | None = None
+        org_config = load_org_config(self._paths)
+        budget = org_config.memory_digest_budget
+        if budget > 0:
+            memory_dir = workspace / "memory"
+            if memory_dir.exists():
+                from runtime.infrastructure.learnings_store import MemoryStore
+                store = MemoryStore(memory_dir)
+                # Walk ancestor chain for source_task boost.
+                try:
+                    ancestors = self._db.walk_ancestors(task_id)
+                except Exception:
+                    ancestors = []
+                ancestor_ids = {a.id for a in ancestors} if ancestors else None
+                memory_digest = store.build_memory_digest(
+                    brief=brief,
+                    budget=budget,
+                    ancestor_task_ids=ancestor_ids,
+                )
+
         full_prompt = self._build_agent_prompt(
             provider,
             agent_name,
@@ -524,6 +556,7 @@ class Orchestrator:
             session_id,
             brief,
             prompt,
+            memory_digest=memory_digest,
         )
 
         if self._sessions is not None:

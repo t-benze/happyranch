@@ -523,6 +523,216 @@ class MemoryStore:
         index_path = self._root / "_index.md"
         self._atomic_write(index_path, "\n".join(lines).rstrip() + "\n")
 
+    # ── THR-032 Phase 2: PUSH memory digest (mechanism A) ──
+
+    # Scoring constants — read-time only, never written back.
+    _AGE_DECAY_PER_DAY = 2         # lose 2 salience points per day
+    _AGE_DECAY_CAP = 30             # max age penalty
+    _BRIEF_TITLE_BOOST = 10        # brief substring in title
+    _BRIEF_TAG_TOPIC_BOOST = 5     # brief substring in tag or topic
+    _ANCESTOR_BOOST = 20           # source_task is ancestor of current task
+    _DIRECTIVE_BOOST = 10          # provenance == directive
+    _DEFAULT_BUDGET = 1500
+
+    _DIGEST_HEADER = "=== MEMORY-DIGEST (system) ==="
+    _DIGEST_INTRO = (
+        "Relevant memory (pointers only — "
+        "fetch bodies with `happyranch memory get <id>`):"
+    )
+    _DIGEST_NUDGE = (
+        'Pull the long tail: `happyranch memory search "<terms>"`.'
+    )
+    _DIGEST_LINE_FMT = "- `{id}` — {title}  ({provenance}, salience {salience})"
+
+    def _effective_salience(
+        self,
+        entry: MemoryItem,
+        brief_lower: str,
+        ancestor_ids: set[str] | None,
+        now_dt: datetime,
+    ) -> int:
+        """Compute effective salience at digest time (read-only).
+
+        effective = base_salience - age_decay + relevance_boost
+                    + ancestor_boost + directive_boost
+
+        Age decay is computed from ``updated_at``; if unset, no decay.
+        All boosts are additive and computed at read time — nothing is
+        written back.
+        """
+        effective = entry.salience
+
+        # Age decay
+        if entry.updated_at:
+            try:
+                # updated_at is ISO-8601 with optional tz suffix
+                ts = entry.updated_at
+                if ts.endswith("Z"):
+                    ts = ts[:-1] + "+00:00"
+                updated = datetime.fromisoformat(ts)
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=timezone.utc)
+                delta = now_dt - updated
+                age_days = max(0, delta.days)
+                age_penalty = min(age_days * self._AGE_DECAY_PER_DAY,
+                                  self._AGE_DECAY_CAP)
+                effective -= age_penalty
+            except (ValueError, TypeError):
+                pass  # unparseable timestamp → no decay
+
+        # Brief relevance boost (cheap substring family, same as search())
+        if brief_lower:
+            if brief_lower in entry.title.lower():
+                effective += self._BRIEF_TITLE_BOOST
+            elif brief_lower in entry.body.lower():
+                # body match is weaker — just the tag/topic level
+                effective += self._BRIEF_TAG_TOPIC_BOOST
+            elif any(brief_lower in t.lower() for t in entry.tags):
+                effective += self._BRIEF_TAG_TOPIC_BOOST
+            elif brief_lower in entry.topic.lower():
+                effective += self._BRIEF_TAG_TOPIC_BOOST
+            else:
+                # Multi-word brief: check individual words
+                words = brief_lower.split()
+                if len(words) > 1:
+                    for w in words:
+                        if len(w) >= 3 and w in entry.title.lower():
+                            effective += self._BRIEF_TAG_TOPIC_BOOST
+                            break
+                        elif len(w) >= 3 and (
+                            any(w in t.lower() for t in entry.tags)
+                            or w in entry.topic.lower()
+                        ):
+                            effective += max(1, self._BRIEF_TAG_TOPIC_BOOST // 2)
+                            break
+
+        # Ancestor boost
+        if ancestor_ids and entry.source_task:
+            if entry.source_task in ancestor_ids:
+                effective += self._ANCESTOR_BOOST
+
+        # Directive provenance boost
+        if entry.provenance == "directive":
+            effective += self._DIRECTIVE_BOOST
+
+        return effective
+
+    def build_memory_digest(
+        self,
+        brief: str,
+        *,
+        budget: int | None = None,
+        ancestor_task_ids: set[str] | None = None,
+    ) -> str | None:
+        """Build a salience-ranked, pointer-only, budgeted push digest.
+
+        Returns the ``=== MEMORY-DIGEST (system) ===`` block as a string,
+        or ``None`` when no candidate memories exist.
+
+        Candidate set: ``lifecycle == valid`` AND ``promoted_to is None``.
+        Ranking: effective salience (base - age decay + boosts) descending,
+                 then title alphabetically for deterministic tie-breaking.
+        Budget: char-capped (default ~1500); includes header + nudge when
+                the candidate set overflows.
+        Pointer-only: id, title, provenance, effective salience — NEVER body.
+        Read-only: no files are written, no mtimes/timestamps are churned.
+        """
+        if budget is None:
+            budget = self._DEFAULT_BUDGET
+
+        # Build candidate set from list_entries (returns LearningSummary,
+        # which carries provenance/salience/lifecycle but not title/body).
+        # For scoring we need the full MemoryItem — iterate directly.
+        now_dt = datetime.now(timezone.utc)
+        brief_lower = brief.lower().strip() if brief else ""
+
+        candidates: list[tuple[int, str, MemoryItem]] = []
+        # (effective_salience, title_lower, MemoryItem) for sorting
+
+        for path in self._entry_paths():
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidLearningEntry:
+                continue
+            # Exclusion filters
+            if entry.lifecycle != "valid":
+                continue
+            if entry.promoted_to is not None:
+                continue
+
+            score = self._effective_salience(
+                entry, brief_lower, ancestor_task_ids, now_dt,
+            )
+            candidates.append((score, entry.title.lower(), entry))
+
+        if not candidates:
+            return None
+
+        # Sort: effective salience descending, then title ascending for
+        # deterministic tie-breaking.
+        candidates.sort(key=lambda c: (-c[0], c[2].title))
+
+        # Assemble digest with budget enforcement
+        lines: list[str] = [self._DIGEST_HEADER, self._DIGEST_INTRO, ""]
+        header_overhead = len("\n".join(lines)) + 1  # +1 for trailing newline
+        nudge_line = self._DIGEST_NUDGE
+        nudge_overhead = len(nudge_line) + 1
+
+        # Find how many pointer lines fit within budget.
+        pointer_lines: list[str] = []
+        used = header_overhead
+        nudge_appended = False
+
+        for score, _title_lower, entry in candidates:
+            line = self._DIGEST_LINE_FMT.format(
+                id=entry.id,
+                title=entry.title,
+                provenance=entry.provenance,
+                salience=score,
+            )
+            line_len = len(line) + 1  # +1 for newline
+
+            # Check if adding this line + possible nudge exceeds budget
+            nudge_needed = (len(pointer_lines) + 1 < len(candidates))
+            extra = nudge_overhead if nudge_needed and not nudge_appended else 0
+            if used + line_len + extra > budget:
+                # Include nudge and stop
+                if nudge_needed and not nudge_appended:
+                    if used + nudge_overhead <= budget:
+                        pointer_lines.append(nudge_line)
+                        nudge_appended = True
+                break
+
+            pointer_lines.append(line)
+            used += line_len
+
+            # If this was the last line, no nudge needed
+            if len(pointer_lines) >= len(candidates):
+                break
+            # Check if nudge is now needed for remaining items
+            remaining = len(candidates) - len(pointer_lines)
+            if remaining > 0 and not nudge_appended:
+                if used + nudge_overhead > budget:
+                    # Need to drop the last line to make room for nudge,
+                    # but that's overly complex. Instead, check if we
+                    # can fit nudge with remaining budget.
+                    pass  # handled in next iteration
+
+        # Add nudge if there are more items and budget allows
+        if len(pointer_lines) < len(candidates) and not nudge_appended:
+            if used + nudge_overhead <= budget:
+                pointer_lines.append(nudge_line)
+
+        lines.extend(pointer_lines)
+        result = "\n".join(lines) + "\n"
+
+        # Final budget enforcement — if somehow exceeded (shouldn't happen),
+        # truncate to budget chars and re-add final newline.
+        if len(result) > budget:
+            result = result[:budget].rstrip("\n") + "\n"
+
+        return result
+
     def _atomic_write(self, target: Path, content: str) -> None:
         fd, tmp_path = tempfile.mkstemp(
             prefix=target.stem + ".", suffix=".tmp", dir=str(target.parent)
