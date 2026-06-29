@@ -212,7 +212,7 @@ class AuditLogger:
         blocking_job_ids: list[str],
         output_summary_excerpt: str,
     ) -> None:
-        """Written when run_step_impl transitions a task to BLOCKED+BLOCKED_ON_JOB
+        """Written when run_step_impl transitions a task to in_progress+blocked_on_job
         in response to report.status=blocked + report.waiting_on_job_ids non-empty.
         Spec §7.
         """
@@ -235,7 +235,7 @@ class AuditLogger:
         triggering_job_id: str | None,
         job_outcomes: dict[str, str],
     ) -> None:
-        """Written immediately after try_claim_for_step wins on a BLOCKED+BLOCKED_ON_JOB
+        """Written immediately after try_claim_for_step wins on an in_progress+blocked_on_job
         row. Read by the resume header injector. Spec §5.2, §7.
         """
         self._db.insert_audit_log(
@@ -325,7 +325,7 @@ class AuditLogger:
         founder_note: str | None = None,
         thread_id: str | None = None,
     ) -> None:
-        """Record that a blocked(escalated|delegated) task was auto-resolved to
+        """Record that an escalated or in_progress(delegated) task was auto-resolved to
         RESOLVED_SUPERSEDED because a human-authorized continuation
         (`successor_root`) superseded it.
 
@@ -487,6 +487,35 @@ class AuditLogger:
             agent=agent,
             action="memory_promoted",
             payload={"id": id, "kb_slug": kb_slug},
+        )
+
+    def log_memory_lifecycle_changed(
+        self,
+        *,
+        agent: str,
+        id: str,
+        from_lifecycle: str,
+        to_lifecycle: str,
+        reason: str,
+        source: str = "manual",
+    ) -> None:
+        """THR-032 P3a: audit a lifecycle transition.
+
+        Row shape: ``task_id="AGENT-{agent}"``, ``action="memory_lifecycle_changed"``,
+        ``payload`` includes id, from_lifecycle, to_lifecycle, reason, source.
+        No column added; no historical row rewritten.
+        """
+        self._db.insert_audit_log(
+            task_id=f"AGENT-{agent}",
+            agent=agent,
+            action="memory_lifecycle_changed",
+            payload={
+                "id": id,
+                "from_lifecycle": from_lifecycle,
+                "to_lifecycle": to_lifecycle,
+                "reason": reason,
+                "source": source,
+            },
         )
 
     # NOTE: audit_log.task_id doubles as a generic scope id. Thread events store

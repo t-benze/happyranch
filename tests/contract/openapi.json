@@ -332,6 +332,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/compact": {
+      "POST": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/reindex": {
       "POST": {
         "params": [
@@ -404,6 +426,32 @@
     },
     "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}": {
       "PUT": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}/lifecycle": {
+      "PATCH": {
         "params": [
           [
             "agent_name",

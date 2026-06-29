@@ -162,8 +162,8 @@ async def run_wake(
     if executor_name not in {"claude", "codex", "opencode", "pi"}:
         executor_name = "claude"
     executor = (
-        executor_factory(executor_name, settings, None) if executor_factory
-        else _build_executor_for_provider(executor_name, settings, None)
+        executor_factory(executor_name, settings, paths) if executor_factory
+        else _build_executor_for_provider(executor_name, settings, paths)
     )
 
     loop = asyncio.get_running_loop()

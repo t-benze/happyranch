@@ -111,7 +111,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
-      expect(screen.getByText(/In progress/)).toBeInTheDocument();
+      expect(screen.getByText(/Active/)).toBeInTheDocument();
     });
   });
 
@@ -163,7 +163,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     const inProgress = await screen.findByRole('heading', {
-      name: /In progress/,
+      name: /Active/,
     });
     // Count badge reflects the client-side group size (2 in_progress roots).
     expect(within(inProgress).getByText('2')).toBeInTheDocument();
@@ -340,9 +340,10 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     });
     mountStatuses([running, escalated]);
 
-    // Proper display label (not a raw-lowercase fallback).
+    // Proper display label (not a raw-lowercase fallback). THR-046 msg-11:
+    // "Waiting on you" is the escalated attention group label.
     const escalatedHeading = await screen.findByRole('heading', {
-      name: /Escalated/,
+      name: /Waiting on you/,
     });
     // Red attention dot — the SAME token StatusBadge uses for escalated.
     const dot = escalatedHeading.querySelector('span[aria-hidden="true"]');
@@ -351,9 +352,9 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
 
     // Sorts EARLY: the escalated attention group precedes the in_progress group
     // in document order (first-class attention, surfaced near the top).
-    const inProgressHeading = screen.getByRole('heading', { name: /In progress/ });
+    const activeHeading = screen.getByRole('heading', { name: /Active/ });
     expect(
-      escalatedHeading.compareDocumentPosition(inProgressHeading) &
+      escalatedHeading.compareDocumentPosition(activeHeading) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
 
@@ -394,7 +395,7 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     ];
     mountStatuses(tasks);
 
-    await screen.findByRole('heading', { name: /In progress/ });
+    await screen.findByRole('heading', { name: /Active/ });
     // No retired `blocked` group heading.
     expect(screen.queryByRole('heading', { name: /Blocked/ })).toBeNull();
     // No retired blocked dot token anywhere in the rendered surface.
@@ -449,22 +450,86 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
     expect(eyebrow).toHaveTextContent('1 FAILED');
   });
 
-  // TASKS-01: column header row aligned above the rows.
-  test('renders the TASK · TITLE · AGENT · THREAD · UPDATED column header row', async () => {
+  // TASKS-01: column header row aligned above the rows. THR-041: STATUS · TASK · TITLE · AGENT · THREAD · UPDATED.
+  test('renders the STATUS · TASK · TITLE · AGENT · THREAD · UPDATED column header row', async () => {
     mountTasks([
       rootTask({ task_id: 'TASK-0410', status: 'in_progress', severity_rollup: 'in_progress' }),
     ]);
     await waitFor(() => {
-      expect(screen.getByText('TASK')).toBeInTheDocument();
+      expect(screen.getByText('STATUS')).toBeInTheDocument();
     });
+    expect(screen.getByText('TASK')).toBeInTheDocument();
     expect(screen.getByText('TITLE')).toBeInTheDocument();
     expect(screen.getByText('AGENT')).toBeInTheDocument();
     expect(screen.getByText('THREAD')).toBeInTheDocument();
     expect(screen.getByText('UPDATED')).toBeInTheDocument();
+    // Verify the DOM order: STATUS before TASK, TASK before TITLE.
+    // THR-046 msg-11: column header uses rounded-lg + bg-surface-sunken (no border-b).
+    const headerDivs = document.querySelectorAll('[class*="rounded-lg"][class*="bg-surface-sunken"] > div');
+    const labels = Array.from(headerDivs).map((d) => d.textContent);
+    expect(labels).toEqual(['STATUS', 'TASK', 'TITLE', 'AGENT', 'THREAD', 'UPDATED']);
   });
 
   // TASKS-02: agent rendered as AgentChip (avatar idiom), thread as a chip,
-  // row click-through preserved to the detail route.
+  // task ID as a monospace IdBadge, row click-through preserved to the detail route.
+  test('renders task ID as a monospace IdBadge between status and title', async () => {
+    mountTasks([
+      rootTask({
+        task_id: 'TASK-0410',
+        assigned_agent: 'dev_agent',
+        dispatched_from_thread_id: 'THR-0030',
+        status: 'in_progress',
+        severity_rollup: 'in_progress',
+        brief: 'Reshape the tasks list rows',
+      }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText('TASK-0410')).toBeInTheDocument();
+    });
+    // Task ID renders as a monospace IdBadge (tinted, not plain text).
+    const taskId = screen.getByText('TASK-0410');
+    expect(taskId).toHaveClass('font-mono');
+    expect(taskId).toHaveClass('text-id-task');
+    // The task ID is inside the row Link (the whole row is clickable) but the
+    // IdBadge itself renders without a `to` prop, so it does NOT create a
+    // nested anchor — the span's direct parent is a div.COL.taskId, not an <a>.
+    expect(taskId.parentElement?.tagName).not.toBe('A');
+  });
+
+  // THR-041: long titles truncate cleanly with ellipsis so they cannot
+  // overlap the Agent/Thread/Updated columns.
+  test('truncates long titles with ellipsis and keeps status on one line', async () => {
+    const longBrief = 'A'.repeat(500) + ' should be clipped';
+    mountTasks([
+      rootTask({
+        task_id: 'TASK-0440',
+        assigned_agent: 'dev_agent',
+        dispatched_from_thread_id: 'THR-0030',
+        status: 'in_progress',
+        severity_rollup: 'in_progress',
+        brief: longBrief,
+      }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText('TASK-0440')).toBeInTheDocument();
+    });
+    // The title span should carry the truncate class.
+    const titleSpan = screen.getByText((content, element) => {
+      return element?.tagName === 'SPAN' && content.startsWith('AAAA');
+    });
+    expect(titleSpan).toHaveClass('truncate');
+    // The status badge cell in the data row carries whitespace-nowrap so the
+    // pill cannot wrap. The header also has whitespace-nowrap (via COL.status),
+    // so we scope to the data row specifically.
+    const statusCell = document.querySelector(
+      'a[href*="/tasks/TASK-0440"] .whitespace-nowrap',
+    );
+    expect(statusCell).not.toBeNull();
+    expect(statusCell!.textContent).toContain('in_progress');
+  });
+
+  // THR-041: status column now only shows the StatusBadge (no task ID).
+  // Row click-through to the detail route is preserved.
   test('renders agent as an AgentChip avatar and thread as an inline chip', async () => {
     mountTasks([
       rootTask({
@@ -507,6 +572,107 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
     expect(document.querySelector('.bg-agent-worker')).toBeNull();
     // Both the agent and thread cells fall back to an em-dash.
     expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// THR-046 msg-11: wider layout, cream canvas, rounded column header,
+// rounded bordered group-section cards, right-aligned group-by control,
+// "Waiting on you" escalation label, "Active" in_progress label.
+describe('TasksPage — THR-046 msg-11 layout reshape', () => {
+  function mountTasks(tasks: TaskRecord[]) {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks }),
+      ),
+    );
+    return mountAt(`/orgs/${SLUG}/tasks`);
+  }
+
+  test('column header bar is rounded with surface-sunken background', async () => {
+    mountTasks([
+      rootTask({ task_id: 'TASK-0700', status: 'in_progress', severity_rollup: 'in_progress' }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText('STATUS')).toBeInTheDocument();
+    });
+    // The column header is the first element with both rounded-lg and
+    // bg-surface-sunken classes inside the <main> scroll area.
+    const header = document.querySelector('[class*="rounded-lg"][class*="bg-surface-sunken"]');
+    expect(header).not.toBeNull();
+    expect(header).toHaveClass('rounded-lg');
+    expect(header).toHaveClass('bg-surface-sunken');
+  });
+
+  test('each group section is a rounded bordered card', async () => {
+    mountTasks([
+      rootTask({ task_id: 'TASK-0710', status: 'escalated', severity_rollup: 'escalated' }),
+      rootTask({ task_id: 'TASK-0711', status: 'completed', severity_rollup: 'completed' }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText('TASK-0710')).toBeInTheDocument();
+    });
+    // Group sections inside <main> are bordered rounded cards.
+    const sections = document.querySelectorAll('main section');
+    expect(sections.length).toBeGreaterThanOrEqual(2);
+    sections.forEach((s) => {
+      expect(s).toHaveClass('rounded-xl');
+      expect(s).toHaveClass('border');
+    });
+  });
+
+  test('group-by control is right-aligned in the header flex row', async () => {
+    mountTasks([
+      rootTask({ task_id: 'TASK-0720', status: 'in_progress', severity_rollup: 'in_progress' }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'What the org is working on' })).toBeInTheDocument();
+    });
+    // The header contains a flex row with justify-between — the title (left)
+    // and the group-by tabs (right) are siblings.
+    const headerFlex = document.querySelector('header .flex.items-start.justify-between');
+    expect(headerFlex).not.toBeNull();
+    const tablist = headerFlex!.querySelector('[role="tablist"]');
+    expect(tablist).not.toBeNull();
+  });
+
+  test('escalated group renders as "Waiting on you" with red attention dot', async () => {
+    mountTasks([
+      rootTask({
+        task_id: 'TASK-0730',
+        status: 'escalated',
+        severity_rollup: 'escalated',
+        brief: 'A root escalated for attention',
+      }),
+    ]);
+    const heading = await screen.findByRole('heading', {
+      name: /Waiting on you/,
+    });
+    // Red attention dot.
+    const dot = heading.querySelector('span[aria-hidden="true"]');
+    expect(dot).not.toBeNull();
+    expect(dot).toHaveClass('text-status-escalated');
+    // Not dimmed.
+    expect(heading.closest('section')).not.toHaveClass('opacity-60');
+  });
+
+  test('in_progress group renders as "Active" with green status dot', async () => {
+    mountTasks([
+      rootTask({
+        task_id: 'TASK-0740',
+        status: 'in_progress',
+        severity_rollup: 'in_progress',
+        brief: 'Active root task',
+      }),
+    ]);
+    const heading = await screen.findByRole('heading', {
+      name: /Active/,
+    });
+    const dot = heading.querySelector('span[aria-hidden="true"]');
+    expect(dot).not.toBeNull();
+    expect(dot).toHaveClass('text-status-open');
+    // Count badge present.
+    expect(within(heading).getByText('1')).toBeInTheDocument();
   });
 });
 

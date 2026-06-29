@@ -108,6 +108,38 @@ class LearningSearchHit:
     title: str
     snippet: str
     score: int
+    # THR-032 P4a: additive fields for improved search ranking
+    source: str = "memory"
+    lifecycle: str = "valid"
+    provenance: str = "experiential"
+    salience: int = 50
+    updated_at: str | None = None
+
+
+@dataclass
+class MemoryCompactionPolicy:
+    """Policy knobs for memory compaction (THR-032 P3b)."""
+    salience_floor: int = 10
+    stale_days: int = 45
+    superseded_grace_days: int = 7
+    max_evictions_per_run: int = 25
+
+
+@dataclass
+class MemoryCompactionCandidate:
+    id: str
+    title: str
+    reason: str
+    current_lifecycle: str
+
+
+@dataclass
+class MemoryCompactionResult:
+    dry_run: bool
+    candidates: list[MemoryCompactionCandidate] = field(default_factory=list)
+    evicted: list[str] = field(default_factory=list)
+    skipped: list[dict] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -281,6 +313,15 @@ class MemoryStore:
         stamped.updated_at = now
         target = self.path_for(stamped.id, stamped.slug)
         self._atomic_write(target, self._serialize(stamped))
+        # THR-032 P3b: when a new entry supersedes an existing one, mark the
+        # predecessor `superseded` under the same serialized write. This closes
+        # the gap where `supersedes` exists but the predecessor can still appear
+        # `valid`. Existing historical supersedes do not need a migration.
+        _superseded_prior = None
+        if entry.supersedes is not None:
+            _superseded_prior = self._mark_superseded_by(entry.supersedes, stamped.id, agent)
+        # Store on the stamped item for route handler audit
+        stamped._superseded_target_id = entry.supersedes if _superseded_prior else None
         return stamped
 
     def update_entry(
@@ -318,6 +359,11 @@ class MemoryStore:
         # Remove the old file if slug changed
         if existing_path != target and existing_path.exists():
             existing_path.unlink()
+        # THR-032 P3b: supersede marking on update
+        _superseded_prior = None
+        if entry.supersedes is not None:
+            _superseded_prior = self._mark_superseded_by(entry.supersedes, stamped.id, agent)
+        stamped._superseded_target_id = entry.supersedes if _superseded_prior else None
         return stamped
 
     def read_entry(self, id_or_slug: str) -> MemoryItem:
@@ -523,6 +569,239 @@ class MemoryStore:
         index_path = self._root / "_index.md"
         self._atomic_write(index_path, "\n".join(lines).rstrip() + "\n")
 
+    # ── THR-032 Phase 2: PUSH memory digest (mechanism A) ──
+
+    # Scoring constants — read-time only, never written back.
+    _AGE_DECAY_PER_DAY = 2         # lose 2 salience points per day
+    _AGE_DECAY_CAP = 30             # max age penalty
+    _BRIEF_TITLE_BOOST = 10        # brief substring in title
+    _BRIEF_TAG_TOPIC_BOOST = 5     # brief substring in tag or topic
+    _ANCESTOR_BOOST = 20           # source_task is ancestor of current task
+    _DIRECTIVE_BOOST = 10          # provenance == directive
+    _DEFAULT_BUDGET = 1500
+
+    # ── THR-032 P3a: allowed lifecycle transitions ──
+    _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+        "valid": {"superseded", "evicted"},
+        "superseded": {"evicted", "valid"},
+        "evicted": {"valid"},
+    }
+
+    _DIGEST_HEADER = "=== MEMORY-DIGEST (system) ==="
+    _DIGEST_INTRO = (
+        "Relevant memory (pointers only — "
+        "fetch bodies with `happyranch memory get <id>`):"
+    )
+    _DIGEST_NUDGE = (
+        'Pull the long tail: `happyranch memory search "<terms>"`.'
+    )
+    _DIGEST_LINE_FMT = "- `{id}` — {title}  ({provenance}, salience {salience})"
+
+    def _effective_salience(
+        self,
+        entry: MemoryItem,
+        brief_lower: str,
+        ancestor_ids: set[str] | None,
+        now_dt: datetime,
+        *,
+        scope: str = "agent",
+    ) -> int:
+        """Compute effective salience at digest time (read-only).
+
+        effective = base_salience - age_decay + relevance_boost
+                    + ancestor_boost + directive_boost
+
+        Age decay is computed from ``updated_at``; if unset, no decay.
+        All boosts are additive and computed at read time — nothing is
+        written back.
+        """
+        effective = entry.salience
+
+        # Age decay
+        if entry.updated_at:
+            try:
+                # updated_at is ISO-8601 with optional tz suffix
+                ts = entry.updated_at
+                if ts.endswith("Z"):
+                    ts = ts[:-1] + "+00:00"
+                updated = datetime.fromisoformat(ts)
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=timezone.utc)
+                delta = now_dt - updated
+                age_days = max(0, delta.days)
+                age_penalty = min(age_days * self._AGE_DECAY_PER_DAY,
+                                  self._AGE_DECAY_CAP)
+                effective -= age_penalty
+            except (ValueError, TypeError):
+                pass  # unparseable timestamp → no decay
+
+        # Brief relevance boost (cheap substring family, same as search())
+        if brief_lower:
+            if brief_lower in entry.title.lower():
+                effective += self._BRIEF_TITLE_BOOST
+            elif brief_lower in entry.body.lower():
+                # body match is weaker — just the tag/topic level
+                effective += self._BRIEF_TAG_TOPIC_BOOST
+            elif any(brief_lower in t.lower() for t in entry.tags):
+                effective += self._BRIEF_TAG_TOPIC_BOOST
+            elif brief_lower in entry.topic.lower():
+                effective += self._BRIEF_TAG_TOPIC_BOOST
+            else:
+                # Multi-word brief: check individual words
+                words = brief_lower.split()
+                if len(words) > 1:
+                    for w in words:
+                        if len(w) >= 3 and w in entry.title.lower():
+                            effective += self._BRIEF_TAG_TOPIC_BOOST
+                            break
+                        elif len(w) >= 3 and (
+                            any(w in t.lower() for t in entry.tags)
+                            or w in entry.topic.lower()
+                        ):
+                            effective += max(1, self._BRIEF_TAG_TOPIC_BOOST // 2)
+                            break
+
+        # Ancestor boost
+        if ancestor_ids and entry.source_task:
+            if entry.source_task in ancestor_ids:
+                effective += self._ANCESTOR_BOOST
+
+        # Directive provenance boost — only for matching scope.
+        # Per-agent MemoryStore digests boost agent-scope directives;
+        # team/org-scoped directives do not boost in per-agent digests.
+        # (Team/org scoped memory store is later/founder-gated per §11.5.)
+        if entry.provenance == "directive" and entry.scope == scope:
+            effective += self._DIRECTIVE_BOOST
+
+        return effective
+
+    def build_memory_digest(
+        self,
+        brief: str,
+        *,
+        budget: int | None = None,
+        ancestor_task_ids: set[str] | None = None,
+        scope: str = "agent",
+    ) -> str | None:
+        """Build a salience-ranked, pointer-only, budgeted push digest.
+
+        Returns the ``=== MEMORY-DIGEST (system) ===`` block as a string,
+        or ``None`` when no candidate memories exist or the budget is too
+        small to fit any valid digest content.
+
+        Candidate set: ``lifecycle == valid`` AND ``promoted_to is None``.
+        Ranking: effective salience (base - age decay + boosts) descending,
+                 then title alphabetically for deterministic tie-breaking.
+        Budget: char-capped (default ~1500); includes header + nudge when
+                the candidate set overflows. For budgets too small to fit
+                even the header + intro, returns None cleanly.
+        Pointer-only: id, title, provenance, effective salience — NEVER body.
+        Read-only: no files are written, no mtimes/timestamps are churned.
+        """
+        if budget is None:
+            budget = self._DEFAULT_BUDGET
+
+        now_dt = datetime.now(timezone.utc)
+        brief_lower = brief.lower().strip() if brief else ""
+
+        candidates: list[tuple[int, str, MemoryItem]] = []
+        # (effective_salience, title_lower, MemoryItem) for sorting
+
+        for path in self._entry_paths():
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidLearningEntry:
+                continue
+            # Exclusion filters
+            if entry.lifecycle != "valid":
+                continue
+            if entry.promoted_to is not None:
+                continue
+
+            score = self._effective_salience(
+                entry, brief_lower, ancestor_task_ids, now_dt, scope=scope,
+            )
+            candidates.append((score, entry.title.lower(), entry))
+
+        if not candidates:
+            return None
+
+        # Sort: effective salience descending, then title ascending for
+        # deterministic tie-breaking.
+        candidates.sort(key=lambda c: (-c[0], c[2].title))
+
+        # Fixed header block — always emitted first when any output is produced.
+        header = f"{self._DIGEST_HEADER}\n{self._DIGEST_INTRO}\n\n"
+        header_len = len(header)
+
+        # If budget can't even fit the header, return None cleanly.
+        if budget < header_len:
+            return None
+
+        nudge_line = f"{self._DIGEST_NUDGE}\n"
+        nudge_len = len(nudge_line)
+
+        # Build the digest: add pointer lines and nudge, tracking exact length.
+        result_parts: list[str] = [header]
+        used = header_len
+        nudged = False
+
+        for i, (score, _title_lower, entry) in enumerate(candidates):
+            line = self._DIGEST_LINE_FMT.format(
+                id=entry.id,
+                title=entry.title,
+                provenance=entry.provenance,
+                salience=score,
+            ) + "\n"
+            line_len = len(line)
+            remaining = len(candidates) - i - 1
+
+            if remaining == 0 or nudged:
+                # Last item or nudge already emitted — just check line fit.
+                if used + line_len <= budget:
+                    result_parts.append(line)
+                    used += line_len
+                else:
+                    break
+            else:
+                # More candidates follow: try to reserve for nudge.
+                if used + line_len + nudge_len <= budget:
+                    # Both line + future nudge fit — add line, continue.
+                    result_parts.append(line)
+                    used += line_len
+                elif used + nudge_len <= budget:
+                    # Line + nudge don't fit, but nudge alone fits — emit nudge.
+                    result_parts.append(nudge_line)
+                    nudged = True
+                    break
+                elif used + line_len <= budget:
+                    # Even nudge alone doesn't fit, but the line does — add it
+                    # and stop (no nudge will be emitted).
+                    result_parts.append(line)
+                    used += line_len
+                    break
+                else:
+                    # Nothing fits — stop.
+                    break
+
+        # If we didn't emit a nudge but there ARE remaining items and the
+        # last added line left room, emit nudge now.
+        if not nudged and len(result_parts) - 1 < len(candidates):
+            if used + nudge_len <= budget:
+                result_parts.append(nudge_line)
+
+        result = "".join(result_parts)
+
+        # If output is header-only (no pointer lines or nudge), return None.
+        if len(result_parts) <= 1:
+            return None
+
+        # Final safety: result must never exceed budget.
+        if len(result) > budget:
+            return None
+
+        return result
+
     def _atomic_write(self, target: Path, content: str) -> None:
         fd, tmp_path = tempfile.mkstemp(
             prefix=target.stem + ".", suffix=".tmp", dir=str(target.parent)
@@ -537,6 +816,442 @@ class MemoryStore:
             except FileNotFoundError:
                 pass
             raise
+
+    # ── THR-032 P3a: explicit lifecycle transitions ──
+
+    def set_lifecycle(
+        self,
+        id: str,
+        lifecycle: str,
+        *,
+        agent: str,
+        reason: str,
+    ) -> tuple[MemoryItem, str]:
+        """Transition a memory entry to a new lifecycle state.
+
+        Returns ``(updated_item, prior_lifecycle)``.
+
+        Raises:
+            InvalidLearningId, LearningNotFound, InvalidLearningEntry,
+            PromotedLocked
+        """
+        self.validate_id(id)
+        if not reason or not reason.strip():
+            raise InvalidLearningEntry(
+                "reason_required", "reason must be non-empty"
+            )
+        reason = reason.strip()
+        if lifecycle not in LIFECYCLE_VALUES:
+            raise InvalidLearningEntry(
+                "invalid_lifecycle",
+                f"lifecycle {lifecycle!r} not in {LIFECYCLE_VALUES}",
+            )
+        existing_path = self._find_by_id(id)
+        if existing_path is None:
+            raise LearningNotFound(id)
+        existing = self._parse(existing_path.read_text())
+        if existing.promoted_to is not None:
+            raise PromotedLocked(id, existing.promoted_to)
+        prior = existing.lifecycle
+        if prior == lifecycle:
+            raise InvalidLearningEntry(
+                "noop_transition",
+                f"lifecycle is already {lifecycle!r}",
+            )
+        allowed = self._ALLOWED_TRANSITIONS.get(prior, set())
+        if lifecycle not in allowed:
+            raise InvalidLearningEntry(
+                "unsupported_transition",
+                f"cannot transition from {prior!r} to {lifecycle!r}",
+            )
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamped = MemoryItem(**{**existing.__dict__})
+        stamped.lifecycle = lifecycle
+        stamped.updated_by = agent
+        stamped.updated_at = now
+        # Write to the canonical on-disk id file (never resurrect LRN)
+        target = self.path_for(existing.id, existing.slug)
+        self._atomic_write(target, self._serialize(stamped))
+        return stamped, prior
+
+    # ── THR-032 P3b: manual memory compaction ──
+
+    def _mark_superseded_by(
+        self, target_id: str, by_id: str, agent: str,
+    ) -> str | None:
+        """Mark an existing memory as superseded by another entry.
+
+        Called within write_entry to maintain supersede consistency.
+        Returns the prior lifecycle if a transition occurred, or None if no-op.
+        """
+        if not ID_RE.match(target_id):
+            return None
+        existing_path = self._find_by_id(target_id)
+        if existing_path is None:
+            return None
+        existing = self._parse(existing_path.read_text())
+        if existing.lifecycle in ("evicted", "superseded"):
+            return None  # already transitioned
+        if existing.promoted_to is not None:
+            return None  # promoted items are locked
+        prior = existing.lifecycle
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamped = MemoryItem(**{**existing.__dict__})
+        stamped.lifecycle = "superseded"
+        stamped.updated_by = agent
+        stamped.updated_at = now
+        target = self.path_for(existing.id, existing.slug)
+        self._atomic_write(target, self._serialize(stamped))
+        return prior
+
+    # Cross-reference detection helpers for compaction protection
+    def _is_referenced_by(self, entry_id: str, exclude_lifecycles: set[str] | None = None) -> bool:
+        """Check if any non-evicted/non-superseded entry references ``entry_id``
+        via ``related_to``, ``supersedes``, or body tokens ``MEM-NNN``/``LRN-NNN``."""
+        if exclude_lifecycles is None:
+            exclude_lifecycles = {"evicted"}
+        # Build the set of id variants to search for (MEM-NNN and LRN-NNN aliases)
+        variants = set(_id_variants(entry_id))
+        for path in self._entry_paths():
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidLearningEntry:
+                continue
+            if entry.lifecycle in exclude_lifecycles:
+                continue
+            # direct refs — check all variants
+            if any(v in entry.related_to for v in variants):
+                return True
+            if entry.supersedes in variants:
+                return True
+            # body token refs (MEM-NNN / LRN-NNN)
+            for variant in variants:
+                if re.search(rf"\b{re.escape(variant)}\b", entry.body):
+                    return True
+        return False
+
+    def _compact_protected(self, entry: MemoryItem) -> str | None:
+        """Return a reason string if an entry is protected from auto-eviction,
+        or None if it is eligible."""
+        if entry.promoted_to is not None:
+            return "promoted"
+        if entry.provenance == "directive":
+            return "directive"
+        if entry.lifecycle == "evicted":
+            return "already_evicted"
+        if entry.scope in ("team", "org"):
+            return f"scope:{entry.scope}"
+        if self._is_referenced_by(entry.id):
+            return "referenced_by_others"
+        return None
+
+    def _compact_candidate(
+        self,
+        entry: MemoryItem,
+        policy: MemoryCompactionPolicy,
+        now_dt: datetime,
+    ) -> MemoryCompactionCandidate | None:
+        """Evaluate a single entry for compaction eligibility.
+
+        Returns a candidate with reason, or None if not eligible.
+        """
+        # Protection checks first
+        protected = self._compact_protected(entry)
+        if protected is not None:
+            return None
+
+        # Superseded beyond grace period
+        if entry.lifecycle == "superseded":
+            if entry.updated_at:
+                try:
+                    ts = entry.updated_at
+                    if ts.endswith("Z"):
+                        ts = ts[:-1] + "+00:00"
+                    updated = datetime.fromisoformat(ts)
+                    if updated.tzinfo is None:
+                        updated = updated.replace(tzinfo=timezone.utc)
+                    age_days = (now_dt - updated).days
+                    if age_days >= policy.superseded_grace_days:
+                        return MemoryCompactionCandidate(
+                            id=entry.id,
+                            title=entry.title,
+                            reason=f"superseded_{age_days}d (>={policy.superseded_grace_days}d grace)",
+                            current_lifecycle="superseded",
+                        )
+                except (ValueError, TypeError):
+                    pass
+            return None
+
+        # Low effective salience + stale
+        # Compute effective salience at read time (never write back)
+        effective = entry.salience
+        if entry.updated_at:
+            try:
+                ts = entry.updated_at
+                if ts.endswith("Z"):
+                    ts = ts[:-1] + "+00:00"
+                updated = datetime.fromisoformat(ts)
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=timezone.utc)
+                age_days = max(0, (now_dt - updated).days)
+                age_penalty = min(age_days * self._AGE_DECAY_PER_DAY, self._AGE_DECAY_CAP)
+                effective -= age_penalty
+                if effective <= policy.salience_floor and age_days >= policy.stale_days:
+                    return MemoryCompactionCandidate(
+                        id=entry.id,
+                        title=entry.title,
+                        reason=f"stale_{age_days}d_salience_{effective}_<=_{policy.salience_floor}",
+                        current_lifecycle="valid",
+                    )
+            except (ValueError, TypeError):
+                pass
+
+        return None
+
+    def compact(
+        self,
+        *,
+        dry_run: bool,
+        now: datetime | None = None,
+        policy: MemoryCompactionPolicy | None = None,
+    ) -> MemoryCompactionResult:
+        """Manual compaction dry-run or apply.
+
+        dry_run=True: compute candidates and reasons, write nothing, return result.
+        dry_run=False: re-evaluate under serialization boundary, evict eligible
+        entries, regenerate index, return summary. Idempotent on rerun.
+
+        No hard deletes, no renumbering, no history rewrite, no automatic
+        scheduling.
+        """
+        if policy is None:
+            policy = MemoryCompactionPolicy()
+        if now is None:
+            now = datetime.now(timezone.utc)
+
+        # Phase 1: scan all entries and compute candidates
+        candidates: list[MemoryCompactionCandidate] = []
+        skipped: list[dict] = []
+
+        for path in self._entry_paths():
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidLearningEntry:
+                skipped.append({"id": path.name, "reason": "parse_error"})
+                continue
+
+            protected = self._compact_protected(entry)
+            if protected is not None:
+                skipped.append({"id": entry.id, "reason": protected})
+                continue
+
+            cand = self._compact_candidate(entry, policy, now)
+            if cand is not None:
+                if len(candidates) < policy.max_evictions_per_run:
+                    candidates.append(cand)
+                else:
+                    skipped.append({"id": entry.id, "reason": "cap_reached"})
+            else:
+                skipped.append({"id": entry.id, "reason": "not_eligible"})
+
+        if dry_run:
+            return MemoryCompactionResult(
+                dry_run=True,
+                candidates=candidates,
+                skipped=skipped,
+            )
+
+        # Phase 2: apply — recompute under same conditions and evict
+        evicted: list[str] = []
+        errors: list[str] = []
+
+        for cand in candidates:
+            existing_path = self._find_by_id(cand.id)
+            if existing_path is None:
+                errors.append(f"{cand.id}: not_found_on_apply")
+                skipped.append({"id": cand.id, "reason": "not_found_on_apply"})
+                continue
+            try:
+                existing = self._parse(existing_path.read_text())
+            except InvalidLearningEntry:
+                errors.append(f"{cand.id}: parse_error_on_apply")
+                skipped.append({"id": cand.id, "reason": "parse_error_on_apply"})
+                continue
+            # Re-check protection and eligibility under write boundary
+            if self._compact_protected(existing) is not None:
+                skipped.append({"id": cand.id, "reason": "became_protected"})
+                continue
+            recheck = self._compact_candidate(existing, policy, now)
+            if recheck is None:
+                skipped.append({"id": cand.id, "reason": "no_longer_eligible"})
+                continue
+            if existing.lifecycle == "evicted":
+                skipped.append({"id": cand.id, "reason": "already_evicted"})
+                continue
+            now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+            stamped = MemoryItem(**{**existing.__dict__})
+            stamped.lifecycle = "evicted"
+            stamped.updated_by = "compaction"
+            stamped.updated_at = now_str
+            target = self.path_for(existing.id, existing.slug)
+            self._atomic_write(target, self._serialize(stamped))
+            evicted.append(cand.id)
+
+        # Regenerate index after all writes
+        self.regenerate_index()
+
+        return MemoryCompactionResult(
+            dry_run=False,
+            candidates=candidates,
+            evicted=evicted,
+            skipped=skipped,
+            errors=errors,
+        )
+
+    # ── THR-032 P4a: improved memory search ranking ──
+
+    # Scoring constants for P4a multi-term ranking
+    _SEARCH_TITLE_EXACT = 40
+    _SEARCH_TITLE_TERM = 12
+    _SEARCH_TAG_TOPIC_TERM = 8
+    _SEARCH_BODY_TERM = 4
+    _SEARCH_BODY_CAP = 16
+    _SEARCH_PROVENANCE_BOOST: dict[str, int] = {"directive": 8, "reflective": 3, "experiential": 0}
+    _SEARCH_SUPERSEDED_PENALTY = 20
+    _SEARCH_SALIENCE_DIVISOR = 10
+    _SEARCH_SALIENCE_MAX = 10
+
+    def search(
+        self,
+        query: str,
+        limit: int = 20,
+        include_promoted: bool = False,
+        include_evicted: bool = False,
+        include_superseded: bool = False,
+    ) -> list[LearningSearchHit]:
+        """Multi-term ranked search over memory items.
+
+        Scoring:
+        - title exact full-query substring: +40
+        - title term match: +12 per term
+        - tag/topic term match: +8 per term
+        - body term match: +4 per term, capped at +16
+        - provenance boost: directive +8, reflective +3, experiential +0
+        - lifecycle penalty: superseded -20
+        - effective salience: round(salience/10), max +10
+        - recency tie-breaker from updated_at
+
+        Excludes evicted and superseded by default; include with flags.
+        Empty query returns no hits and exit 0.
+        """
+        q = query.lower().strip()
+        if not q:
+            return []
+
+        # Normalize: split on whitespace, drop terms shorter than 3
+        # unless the whole query is short
+        terms = [t for t in q.split() if len(t) >= 3]
+        if not terms:
+            # query is only short words — use the whole query as a single term
+            terms = [q]
+
+        hits: list[tuple[int, LearningSearchHit]] = []
+
+        for path in self._entry_paths():
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidLearningEntry:
+                continue
+
+            # Exclusion filters
+            if entry.promoted_to is not None and not include_promoted:
+                continue
+            if entry.lifecycle == "evicted" and not include_evicted:
+                continue
+            if entry.lifecycle == "superseded" and not include_superseded:
+                continue
+
+            score = 0
+            matched = False
+            title_l = entry.title.lower()
+            topic_l = entry.topic.lower()
+            tags_l = [t.lower() for t in entry.tags]
+            body_l = entry.body.lower()
+
+            # Title exact match
+            if q in title_l:
+                score += self._SEARCH_TITLE_EXACT
+                matched = True
+
+            # Term-level scoring
+            for term in terms:
+                if term in title_l:
+                    score += self._SEARCH_TITLE_TERM
+                    matched = True
+                if term in topic_l or any(term in t for t in tags_l):
+                    score += self._SEARCH_TAG_TOPIC_TERM
+                    matched = True
+
+            # Body term match (capped)
+            body_points = 0
+            for term in terms:
+                if term in body_l:
+                    body_points += self._SEARCH_BODY_TERM
+                    matched = True
+            body_points = min(body_points, self._SEARCH_BODY_CAP)
+            score += body_points
+
+            # Only include entries with at least one actual query-term match.
+            # Provenance, salience, and lifecycle modifiers only rank matched
+            # entries — they never cause an unrelated entry to appear.
+            if not matched:
+                continue
+
+            # Provenance boost
+            score += self._SEARCH_PROVENANCE_BOOST.get(entry.provenance, 0)
+
+            # Lifecycle penalty
+            if entry.lifecycle == "superseded":
+                score -= self._SEARCH_SUPERSEDED_PENALTY
+
+            # Effective salience contribution
+            salience_contrib = min(
+                round(max(0, entry.salience) / self._SEARCH_SALIENCE_DIVISOR),
+                self._SEARCH_SALIENCE_MAX,
+            )
+            score += salience_contrib
+
+            # Snippet: prefer matching portion of body, else title
+            snippet = self._snippet(entry.body, q)
+
+            hits.append((score, LearningSearchHit(
+                id=entry.id,
+                slug=entry.slug,
+                title=entry.title,
+                snippet=snippet,
+                score=score,
+                source="memory",
+                lifecycle=entry.lifecycle,
+                provenance=entry.provenance,
+                salience=entry.salience,
+                updated_at=entry.updated_at,
+            )))
+
+        # Deterministic sort: score desc, salience desc, updated_at desc,
+        # title asc, id asc. Multi-pass stable sort with least-significant
+        # key first so most-significant key wins on ties.
+        hits.sort(key=lambda item: item[1].id)                     # id asc
+        hits.sort(key=lambda item: item[1].title)                   # title asc
+        # updated_at desc: None/empty → last; ISO 8601 lexicographic = chronological
+        hits.sort(
+            key=lambda item: (1 if (item[1].updated_at or "") else 0,
+                              item[1].updated_at or ""),
+            reverse=True,
+        )
+        hits.sort(key=lambda item: (item[1].salience or 0,), reverse=True)   # salience desc
+        hits.sort(key=lambda item: (item[0],), reverse=True)                  # score desc
+
+        return [h[1] for h in hits[:limit]]
 
 
 # Back-compat aliases (THR-032 Phase 1). The class + dataclass are renamed to

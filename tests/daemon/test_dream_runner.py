@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from runtime.daemon.dream_runner import build_dream_prompt, run_dream
-from runtime.models import DreamRecord, DreamStatus
+from runtime.models import DreamRecord, DreamStatus, TokenUsage
+from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import OrgConfig
 
 
@@ -60,6 +61,10 @@ class FakeFailureResult:
     session_id = "executor-session"
     agent_session_id = None
     token_usage = None
+
+
+class FakeTokenUsageResult(FakeResult):
+    token_usage = TokenUsage(input_tokens=12, output_tokens=3, model="test-model")
 
 
 class FakeExecutor:
@@ -144,3 +149,56 @@ async def test_run_dream_prompt_includes_agent_window_audit(org_state):
     prompt = fake.calls[0]["prompt"]
     assert "TASK-900" in prompt
     assert "session_start" in prompt
+
+
+async def test_run_dream_persists_token_usage_as_dream_scope(org_state):
+    """Dream executor sessions that return TokenUsage must write a
+    dream-scope session_token_usage row (issue #216)."""
+    _insert_pending_dream(org_state)
+    usage = TokenUsage(
+        input_tokens=5000,
+        output_tokens=2000,
+        cache_read_tokens=8000,
+        cache_creation_tokens=3000,
+        reasoning_tokens=None,
+        model="claude-sonnet-4-6",
+    )
+    result = FakeResult()
+    result.token_usage = usage
+    result.session_id = "dream-sess-001"
+
+    def factory(*_a, **_k):
+        ex = FakeExecutor()
+        ex._result_cls = lambda: result
+        return ex
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=factory)
+
+    rows = org_state.db.list_session_token_usage(scope_type="dream", scope_id="DREAM-001")
+    assert len(rows) == 1, f"Expected 1 dream-scope row, got {len(rows)}"
+    row = rows[0]
+    assert row["agent"] == "dev_agent"
+    assert row["scope_type"] == "dream"
+    assert row["scope_id"] == "DREAM-001"
+    assert row["task_id"] is None
+    assert row["executor"] == "claude"  # default for dev_agent workspace
+    assert row["input_tokens"] == 5000
+    assert row["output_tokens"] == 2000
+    assert row["cache_read_tokens"] == 8000
+    assert row["cache_creation_tokens"] == 3000
+    assert row["total_tokens"] == 7000  # input + output + reasoning (cache excluded)
+
+
+async def test_run_dream_passes_org_paths_to_executor_factory(org_state):
+    _insert_pending_dream(org_state)
+    captured = {}
+    fake = FakeExecutor()
+
+    def factory(executor_name, settings, paths):
+        captured["paths"] = paths
+        return fake
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=factory)
+
+    assert isinstance(captured["paths"], OrgPaths)
+    assert captured["paths"].root == org_state.root

@@ -67,20 +67,20 @@ def test_list_tasks_filter_by_assigned_agent(
 def test_list_tasks_filter_by_status_and_block_kind(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """?status=blocked&block_kind=escalated surfaces the escalation backlog in
-    one query (THR-018 tier #3, §3b)."""
+    """Path B: escalated and in_progress(delegated) are separate stored statuses.
+    Query each with its respective filter."""
     from datetime import datetime, timezone
     from runtime.models import TaskRecord, TaskStatus, BlockKind
 
     now = datetime.now(timezone.utc)
     org_state.db.insert_task(TaskRecord(
         id="TASK-ESC", brief="esc", team="engineering", assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+        status=TaskStatus.ESCALATED, block_kind=None,
         created_at=now, updated_at=now,
     ))
     org_state.db.insert_task(TaskRecord(
         id="TASK-DEL", brief="del", team="engineering", assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
         created_at=now, updated_at=now,
     ))
     org_state.db.insert_task(TaskRecord(
@@ -88,16 +88,17 @@ def test_list_tasks_filter_by_status_and_block_kind(
         status=TaskStatus.COMPLETED, created_at=now, updated_at=now,
     ))
 
-    blocked = TestClient(app).get(
-        "/api/v1/orgs/alpha/tasks?status=blocked", headers=auth_headers,
-    ).json()
-    assert {t["task_id"] for t in blocked["tasks"]} == {"TASK-ESC", "TASK-DEL"}
-
+    # Path B: escalated is a top-level status. Query by status=escalated.
     escalated = TestClient(app).get(
-        "/api/v1/orgs/alpha/tasks?status=blocked&block_kind=escalated",
-        headers=auth_headers,
+        "/api/v1/orgs/alpha/tasks?status=escalated", headers=auth_headers,
     ).json()
-    assert [t["task_id"] for t in escalated["tasks"]] == ["TASK-ESC"]
+    assert {t["task_id"] for t in escalated["tasks"]} == {"TASK-ESC"}
+
+    # Path B: delegated tasks are in_progress + block_kind=delegated.
+    delegated = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks?status=in_progress&block_kind=delegated", headers=auth_headers,
+    ).json()
+    assert {t["task_id"] for t in delegated["tasks"]} == {"TASK-DEL"}
 
 
 def test_list_tasks_cursor_pagination(
@@ -735,7 +736,7 @@ def test_resolve_escalation_requires_rationale(tmp_home, app, org_state, auth_he
         id="TASK-045", brief="x",
     ))
     org_state.db.update_task(
-        "TASK-045", status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+        "TASK-045", status=TaskStatus.ESCALATED, block_kind=None,
     )
     client = TestClient(app)
     r = client.post(
@@ -769,14 +770,13 @@ def test_events_stream_yields_completion(tmp_home, app, daemon_state, org_state,
     assert b"task_complete" in body
 
 
-def test_resolve_escalation_rejects_non_blocked_task(client_with_runtime):
-    """Under the new model, the precondition is (status=BLOCKED AND
-    block_kind=ESCALATED). A task that is merely BLOCKED(DELEGATED) must 409."""
+def test_resolve_escalation_rejects_non_escalated_task(client_with_runtime):
+    """Under the Phase 3 model, the precondition is status=ESCALATED.
+    A task that is merely in_progress(delegated) must 409."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
-    state.db.update_task("T-1", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.DELEGATED, note="waiting")
+    state.db.update_task("T-1", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED, note="waiting")
 
     r = client.post(
         "/api/v1/orgs/alpha/tasks/T-1/resolve-escalation",
@@ -790,8 +790,7 @@ def test_resolve_escalation_approve_resumes_task(client_with_runtime):
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
-    state.db.update_task("T-1", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.ESCALATED, note="halted")
+    state.db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None, note="halted")
     daemon = client.app.state.daemon
     while not daemon.queue._queue.empty():
         daemon.queue._queue.get_nowait()
@@ -819,8 +818,7 @@ def test_resolve_escalation_approve_target_is_root(client_with_runtime):
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-ROOT", brief="x"))
-    state.db.update_task("T-ROOT", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.ESCALATED, note="halted")
+    state.db.update_task("T-ROOT", status=TaskStatus.ESCALATED, block_kind=None, note="halted")
     # Precondition: an escalated task is structurally a root.
     assert state.db.get_task("T-ROOT").parent_task_id is None
     daemon = client.app.state.daemon
@@ -842,8 +840,7 @@ def test_resolve_escalation_reject_transitions_to_failed(client_with_runtime):
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
-    state.db.update_task("T-1", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.ESCALATED, note="halted")
+    state.db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None, note="halted")
 
     r = client.post(
         "/api/v1/orgs/alpha/tasks/T-1/resolve-escalation",
@@ -863,8 +860,7 @@ def test_resolve_escalation_overwrites_note_with_rationale(client_with_runtime):
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
-    state.db.update_task("T-1", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.ESCALATED,
+    state.db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None,
                          note="Original escalation reason")
 
     r = client.post(
@@ -879,17 +875,15 @@ def test_resolve_escalation_overwrites_note_with_rationale(client_with_runtime):
 
 
 def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runtime):
-    """Approve resumes the child itself; parent stays blocked(DELEGATED) and
+    """Approve resumes the child itself; parent stays in_progress(delegated) and
     will be woken later when the child reaches a true terminal."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-PAR", brief="p"))
-    state.db.update_task("T-PAR", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.DELEGATED, note="waiting")
+    state.db.update_task("T-PAR", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED, note="waiting")
     state.db.insert_task(TaskRecord(
         id="T-CHD", brief="c", parent_task_id="T-PAR"))
-    state.db.update_task("T-CHD", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.ESCALATED, note="halt")
+    state.db.update_task("T-CHD", status=TaskStatus.ESCALATED, block_kind=None, note="halt")
 
     # The global queue lives on the DaemonState, not the OrgState; items are
     # (slug, task_id) tuples in the multi-org layout.
@@ -904,28 +898,26 @@ def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runt
     )
     assert r.status_code == 200
     # Approve re-enqueues the child itself (resumes the work). Parent stays
-    # blocked(DELEGATED) and will be woken when the child next reaches a
+    # in_progress(delegated) and will be woken when the child next reaches a
     # true terminal — no immediate parent wake here.
     assert daemon.queue._queue.get_nowait() == ("alpha", "T-CHD", None)
     assert daemon.queue._queue.empty()
     par = state.db.get_task("T-PAR")
-    assert par.status == TaskStatus.BLOCKED
+    assert par.status == TaskStatus.IN_PROGRESS
     assert par.block_kind == BlockKind.DELEGATED
 
 
 def test_resolve_escalation_reject_cascades_to_parent(client_with_runtime):
     """Reject on a child fails it and wakes the parent via bounded
-    failure-recovery (TASK-573) — parent stays BLOCKED(DELEGATED) for
+    failure-recovery (TASK-573) — parent stays in_progress(delegated) for
     a bounded-wake decision step, NOT cascade-failed."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-PAR", brief="p", task_type="task"))
-    state.db.update_task("T-PAR", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.DELEGATED, note="waiting")
+    state.db.update_task("T-PAR", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED, note="waiting")
     state.db.insert_task(TaskRecord(
         id="T-CHD", brief="c", parent_task_id="T-PAR", task_type="subtask"))
-    state.db.update_task("T-CHD", status=TaskStatus.BLOCKED,
-                         block_kind=BlockKind.ESCALATED, note="halt")
+    state.db.update_task("T-CHD", status=TaskStatus.ESCALATED, block_kind=None, note="halt")
 
     daemon = client.app.state.daemon
     while not daemon.queue._queue.empty():
@@ -940,7 +932,7 @@ def test_resolve_escalation_reject_cascades_to_parent(client_with_runtime):
     assert chd.status == TaskStatus.FAILED
     par = state.db.get_task("T-PAR")
     # TASK-573: bounded-wake, not cascade-fail.
-    assert par.status == TaskStatus.BLOCKED
+    assert par.status == TaskStatus.IN_PROGRESS
     assert par.block_kind == BlockKind.DELEGATED
 
 
@@ -992,7 +984,7 @@ def test_cancel_cascades_down_subtree(client_with_runtime):
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-P", brief="parent"))
     state.db.update_task(
-        "T-P", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        "T-P", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
     )
     state.db.insert_task(TaskRecord(
         id="T-C1", brief="running",
@@ -1208,8 +1200,7 @@ def test_revisit_handles_escalated_predecessor(
     db.insert_task(TaskRecord(id="TASK-052", brief="x"))
     db.update_task(
         "TASK-052",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.ESCALATED,
+        status=TaskStatus.ESCALATED, block_kind=None,
         note="halted",
     )
     r = TestClient(app).post(
@@ -1219,8 +1210,9 @@ def test_revisit_handles_escalated_predecessor(
     assert r.status_code == 200
     body = r.json()
     assert body["predecessor_status"] == "blocked-escalated"
-    # THR-018 tier #3 §3a: revisit now auto-resolves a blocked(escalated)
-    # predecessor to the terminal RESOLVED_SUPERSEDED, citing the continuation.
+    # THR-018 tier #3 §3a: revisit now auto-resolves an escalated
+    # predecessor (legacy response label "blocked-escalated") to the terminal
+    # RESOLVED_SUPERSEDED, citing the continuation.
     pre = db.get_task("TASK-052")
     assert pre.status == TaskStatus.RESOLVED_SUPERSEDED
     assert pre.block_kind is None
@@ -1260,7 +1252,7 @@ def test_revisit_missing_task_returns_404(
     [
         ("in_progress", None, "working"),
         ("pending", None, None),
-        ("blocked", "delegated", "Delegated to dev_agent (child=TASK-053)"),
+        ("in_progress", "delegated", "Delegated to dev_agent (child=TASK-053)"),
     ],
 )
 def test_revisit_rejects_ineligible_predecessor(
@@ -1635,7 +1627,7 @@ def test_get_task_includes_blocked_on_jobs_when_blocked(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     """GET /tasks/{id} includes blocked_on_jobs list with id+status for each
-    blocking job when the task is in BLOCKED+BLOCKED_ON_JOB state."""
+    blocking job when the task is in in_progress(blocked_on_job) state."""
     import json as _json
     from datetime import datetime, timezone
     from runtime.models import BlockKind, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
@@ -1646,7 +1638,7 @@ def test_get_task_includes_blocked_on_jobs_when_blocked(
         brief="waiting on two jobs",
         team="engineering",
         assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED,
+        status=TaskStatus.IN_PROGRESS,
     ))
 
     job1_id = db.next_job_id()
@@ -1677,8 +1669,7 @@ def test_get_task_includes_blocked_on_jobs_when_blocked(
 
     db.update_task(
         "TASK-BOJ-1",
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
         blocked_on_job_ids=_json.dumps([job1_id, job2_id]),
     )
 
@@ -1700,7 +1691,7 @@ def test_get_task_blocked_on_jobs_is_none_for_non_blocked_task(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     """blocked_on_jobs is None (not an empty list) for tasks not in
-    BLOCKED+BLOCKED_ON_JOB state, so callers can distinguish the two cases."""
+    in_progress(blocked_on_job) state, so callers can distinguish the two cases."""
     from runtime.models import TaskRecord
 
     org_state.db.insert_task(TaskRecord(
@@ -1942,12 +1933,12 @@ def test_list_roots_supports_status_filter(
     ))
     org_state.db.insert_task(TaskRecord(
         id="ROOT-B", brief="root2", team="engineering",
-        assigned_agent="dev_agent", status=TaskStatus.BLOCKED,
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
         created_at=now, updated_at=now,
     ))
 
     r = TestClient(app).get(
-        "/api/v1/orgs/alpha/tasks/roots?status=blocked", headers=auth_headers,
+        "/api/v1/orgs/alpha/tasks/roots?status=in_progress", headers=auth_headers,
     )
     assert r.status_code == 200
     tasks = r.json()["tasks"]

@@ -30,8 +30,7 @@ def _insert_task_blocked_on_jobs(db: Database, task_id: str, job_ids: list[str])
     ))
     db.update_task(
         task_id,
-        status=TaskStatus.BLOCKED,
-        block_kind=BlockKind.BLOCKED_ON_JOB,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
         blocked_on_job_ids=json.dumps(job_ids),
     )
 
@@ -109,8 +108,7 @@ def test_no_audit_when_block_kind_is_escalated(db):
         id="TASK-1", team="engineering", brief="t",
         status=TaskStatus.IN_PROGRESS, parent_task_id=None,
     ))
-    db.update_task("TASK-1", status=TaskStatus.BLOCKED,
-                   block_kind=BlockKind.ESCALATED)
+    db.update_task("TASK-1", status=TaskStatus.ESCALATED, block_kind=None)
     orch = _make_orch(db)
     assert _maybe_resume_blocked_task(
         orch, "TASK-1", trigger="job_terminal", triggering_job_id="JOB-1",
@@ -125,8 +123,7 @@ def test_audits_skip_when_empty_job_list(db):
         id="TASK-1", team="engineering", brief="t",
         status=TaskStatus.IN_PROGRESS, parent_task_id=None,
     ))
-    db.update_task("TASK-1", status=TaskStatus.BLOCKED,
-                   block_kind=BlockKind.BLOCKED_ON_JOB,
+    db.update_task("TASK-1", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
                    blocked_on_job_ids="[]")
     orch = _make_orch(db)
     assert _maybe_resume_blocked_task(
@@ -147,5 +144,5 @@ def test_helper_does_not_mutate_task_status(db):
         orch, "TASK-1", trigger="job_terminal", triggering_job_id="JOB-1",
     )
     after = db.get_task("TASK-1")
-    assert after.status == TaskStatus.BLOCKED  # NOT in_progress
+    assert after.status == TaskStatus.IN_PROGRESS  # NOT in_progress
     assert after.block_kind == BlockKind.BLOCKED_ON_JOB

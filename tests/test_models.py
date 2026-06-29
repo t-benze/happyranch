@@ -14,7 +14,7 @@ def test_task_status_values():
     assert TaskStatus.PENDING == "pending"
     assert TaskStatus.IN_PROGRESS == "in_progress"
     assert TaskStatus.COMPLETED == "completed"
-    assert TaskStatus.BLOCKED == "blocked"
+    assert TaskStatus.ESCALATED == "escalated"
     assert TaskStatus.FAILED == "failed"
 
 
@@ -136,11 +136,10 @@ def test_completion_report_output_dir_defaults_to_none():
 def test_task_status_values():
     from runtime.models import TaskStatus
     # Path B (THR-037 Change B): + escalated (non-terminal) + cancelled
-    # (terminal). `blocked` retained as a DEPRECATED member for the transition
-    # window / reverse migration (strand-safety) — see models.py docstring.
+    # (terminal). Phase 3: `blocked` was fully retired.
     assert {s.value for s in TaskStatus} == {
         "pending", "in_progress", "escalated", "completed", "failed",
-        "cancelled", "resolved_superseded", "blocked",
+        "cancelled", "resolved_superseded",
     }
 
 
@@ -177,9 +176,9 @@ def test_path_b_lockstep_terminal_predicates():
     assert TaskStatus.ESCALATED not in OrgState._TERMINAL_STATUS_TO_EVENT
 
 
-def test_block_kind_has_delegated_and_escalated():
+def test_block_kind_has_delegated_and_blocked_on_job():
     from runtime.models import BlockKind
-    assert {b.value for b in BlockKind} == {"delegated", "escalated", "blocked_on_job"}
+    assert {b.value for b in BlockKind} == {"delegated", "blocked_on_job"}
 
 
 def test_task_record_has_new_columns():
@@ -194,7 +193,7 @@ def test_task_record_accepts_block_kind():
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     t = TaskRecord(
         id="TASK-001", brief="x",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
         note="Delegated to dev_agent", orchestration_step_count=3,
     )
     assert t.block_kind == BlockKind.DELEGATED

@@ -159,6 +159,8 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['PUT /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}', 'agent-only write'],
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}/promote', 'agent-only write'],
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/reindex', 'agent-only'],
+  ['PATCH /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id}/lifecycle', 'agent-only write'],
+  ['POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/compact', 'agent-only compaction'],
   // thread agent callbacks (require invocation tokens)
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/reply', 'agent invocation token only'],
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/decline', 'agent invocation token only'],

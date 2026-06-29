@@ -262,3 +262,300 @@ def test_read_yaml_payload_empty_file_returns_empty_dict(tmp_path):
     empty = tmp_path / "empty.yaml"
     empty.write_text("")
     assert cli._read_yaml_payload(str(empty)) == {}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# THR-032 P3a — lifecycle command
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _fake_client_for_lifecycle(monkeypatch, captured):
+    """Install a fake OPC client that captures PATCH calls."""
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "id": "MEM-001",
+                "lifecycle": "evicted",
+                "previous_lifecycle": "valid",
+                "slug": "x", "title": "x", "topic": "w",
+            }
+
+    class FakeClient:
+        def patch(self, path, json=None):
+            captured["path"] = path
+            captured["json"] = json
+            return FakeResponse()
+
+        def close(self):
+            pass
+
+    from cli import main as cli
+
+    monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["o"])
+
+
+def test_memory_help_includes_lifecycle():
+    r = _run(["memory", "--help"])
+    assert r.returncode == 0
+    assert "lifecycle" in r.stdout
+
+
+def test_memory_lifecycle_parses_and_dispatches(monkeypatch):
+    captured = {}
+    _fake_client_for_lifecycle(monkeypatch, captured)
+    args = _parse([
+        "memory", "lifecycle",
+        "--org", "o", "--agent", "a",
+        "MEM-001",
+        "--set", "evicted",
+        "--reason", "obsolete info",
+    ])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/MEM-001/lifecycle"
+    assert captured["json"] == {"lifecycle": "evicted", "reason": "obsolete info"}
+
+
+def test_memory_lifecycle_missing_reason_fails_before_http(monkeypatch):
+    """Missing --reason should fail argparse, not reach HTTP."""
+    with pytest.raises(SystemExit):
+        _parse([
+            "memory", "lifecycle",
+            "--org", "o", "--agent", "a",
+            "MEM-001",
+            "--set", "evicted",
+        ])
+
+
+def test_memory_lifecycle_missing_set_fails_before_http(monkeypatch):
+    """Missing --set should fail argparse, not reach HTTP."""
+    with pytest.raises(SystemExit):
+        _parse([
+            "memory", "lifecycle",
+            "--org", "o", "--agent", "a",
+            "MEM-001",
+            "--reason", "test",
+        ])
+
+
+def test_learning_lifecycle_alias_warns_and_dispatches(monkeypatch, capsys):
+    """The deprecated `learning lifecycle` alias warns and dispatches."""
+    captured = {}
+    _fake_client_for_lifecycle(monkeypatch, captured)
+    args = _parse([
+        "learning", "lifecycle",
+        "--org", "o", "--agent", "a",
+        "MEM-001",
+        "--set", "evicted",
+        "--reason", "test alias",
+    ])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/MEM-001/lifecycle"
+    assert "deprecated" in capsys.readouterr().err
+
+
+# ── Compact tests ──
+
+def _fake_client_for_compact(monkeypatch, captured: dict):
+    class FakeResp:
+        status_code = 200
+        @staticmethod
+        def json():
+            return {"dry_run": captured["dry_run"], "candidates": [],
+                    "evicted": [], "skipped": [], "errors": []}
+
+    class FakeClient:
+        @staticmethod
+        def from_env():
+            return FakeClient()
+        def post(self, path, json=None):
+            captured["path"] = path
+            captured["dry_run"] = json.get("dry_run")
+            return FakeResp()
+
+    monkeypatch.setattr("cli.commands.learning.OpcClient", FakeClient)
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+
+
+def test_memory_help_includes_compact():
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        _parse(["memory", "compact", "--help"])
+
+
+def test_memory_compact_dry_run_parses_and_dispatches(monkeypatch):
+    captured = {}
+    _fake_client_for_compact(monkeypatch, captured)
+    args = _parse([
+        "memory", "compact",
+        "--org", "o", "--agent", "a",
+        "--dry-run",
+    ])
+    assert args.org == "o"
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/compact"
+    assert captured["dry_run"] is True
+
+
+def test_memory_compact_apply_parses_and_dispatches(monkeypatch):
+    captured = {}
+    _fake_client_for_compact(monkeypatch, captured)
+    args = _parse([
+        "memory", "compact",
+        "--org", "o", "--agent", "a",
+        "--apply",
+    ])
+    args.func(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/compact"
+    assert captured["dry_run"] is False
+
+
+def test_memory_compact_mutually_exclusive(monkeypatch):
+    """--dry-run and --apply are mutually exclusive."""
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        _parse([
+            "memory", "compact",
+            "--org", "o", "--agent", "a",
+            "--dry-run", "--apply",
+        ])
+
+
+def test_memory_compact_requires_one_mode(monkeypatch):
+    """Either --dry-run or --apply must be provided."""
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        _parse([
+            "memory", "compact",
+            "--org", "o", "--agent", "a",
+        ])
+
+
+# ── Search with new flags ──
+
+def _fake_client_for_search(monkeypatch, captured: dict):
+    class FakeResp:
+        status_code = 200
+        @staticmethod
+        def json():
+            return {"hits": [], "warnings": []}
+
+    class FakeClient:
+        @staticmethod
+        def from_env():
+            return FakeClient()
+        def post(self, path, json=None):
+            captured["path"] = path
+            captured["body"] = json
+            return FakeResp()
+
+    monkeypatch.setattr("cli.commands.learning.OpcClient", FakeClient)
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+
+
+def test_memory_search_new_flags(monkeypatch):
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "--include-evicted", "--include-superseded", "--include-kb",
+        "test query",
+    ])
+    args.func(args)
+    assert captured["body"]["include_evicted"] is True
+    assert captured["body"]["include_superseded"] is True
+    assert captured["body"]["include_kb"] is True
+    assert captured["body"]["query"] == "test query"
+
+
+# ── Tri-state search flags ──
+
+def test_memory_search_omits_fields_when_not_provided(monkeypatch):
+    """When no --limit or include flags are given, the JSON payload
+    contains only the query field, letting the daemon apply org config."""
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "bare query",
+    ])
+    args.func(args)
+    body = captured["body"]
+    assert body == {"query": "bare query"}
+    assert "limit" not in body
+    assert "include_promoted" not in body
+    assert "include_evicted" not in body
+    assert "include_superseded" not in body
+    assert "include_kb" not in body
+
+
+def test_memory_search_explicit_true_include_serialized(monkeypatch):
+    """--include-kb (and siblings) serialize True when provided."""
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "--include-kb", "--include-evicted",
+        "query",
+    ])
+    args.func(args)
+    body = captured["body"]
+    assert body["include_kb"] is True
+    assert body["include_evicted"] is True
+    assert "query" in body
+
+
+def test_memory_search_explicit_false_include_serialized(monkeypatch):
+    """--no-include-kb (and siblings) serialize False when provided."""
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "--no-include-kb", "--no-include-evicted",
+        "query",
+    ])
+    args.func(args)
+    body = captured["body"]
+    assert body["include_kb"] is False
+    assert body["include_evicted"] is False
+    assert "query" in body
+
+
+def test_memory_search_explicit_limit_serialized(monkeypatch):
+    """--limit serializes when provided."""
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "--limit", "5",
+        "query",
+    ])
+    args.func(args)
+    body = captured["body"]
+    assert body["limit"] == 5
+    assert "include_kb" not in body  # flags still omitted
+
+
+def test_memory_search_include_promoted_still_sends_true(monkeypatch):
+    """--include-promoted keeps its compatible behavior: only sends True."""
+    captured = {}
+    _fake_client_for_search(monkeypatch, captured)
+    args = _parse([
+        "memory", "search",
+        "--org", "o", "--agent", "a",
+        "--include-promoted",
+        "query",
+    ])
+    args.func(args)
+    body = captured["body"]
+    assert body["include_promoted"] is True

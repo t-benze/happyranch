@@ -1,6 +1,6 @@
 """§3(a) auto-resolve forcing function + Gap-B delegated close (THR-018 tier #3).
 
-A founder `revisit` (or Feishu-reply revisit) of a blocked(escalated|delegated)
+A founder `revisit` (or Feishu-reply revisit) of an escalated or in_progress(delegated)
 predecessor auto-transitions that predecessor to the terminal
 RESOLVED_SUPERSEDED status — block_kind cleared, audit citing the new
 continuation root (the maker-checker evidence) — without re-enqueuing it.
@@ -55,7 +55,7 @@ async def test_revisit_supersedes_blocked_escalated_predecessor(tmp_path: Path):
     org, state, db = _build_org(tmp_path)
     db.insert_task(TaskRecord(
         id="TASK-1", brief="b", team="engineering", assigned_agent="m",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+        status=TaskStatus.ESCALATED, block_kind=None,
     ))
 
     result = await revisit_from_notification(
@@ -85,7 +85,7 @@ async def test_revisit_supersedes_blocked_delegated_when_all_children_terminal(
     org, state, db = _build_org(tmp_path)
     db.insert_task(TaskRecord(
         id="TASK-1", brief="parent", team="engineering", assigned_agent="m",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
     ))
     db.insert_task(TaskRecord(
         id="TASK-2", brief="c1", parent_task_id="TASK-1", status=TaskStatus.COMPLETED,
@@ -118,7 +118,7 @@ async def test_revisit_refuses_blocked_delegated_with_live_child(tmp_path: Path)
     org, state, db = _build_org(tmp_path)
     db.insert_task(TaskRecord(
         id="TASK-1", brief="parent", team="engineering", assigned_agent="m",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
     ))
     db.insert_task(TaskRecord(
         id="TASK-2", brief="done", parent_task_id="TASK-1", status=TaskStatus.COMPLETED,
@@ -135,7 +135,7 @@ async def test_revisit_refuses_blocked_delegated_with_live_child(tmp_path: Path)
     assert exc.value.status_code == 409
     assert exc.value.detail["code"] == "cannot_revisit"
     # Predecessor untouched (still blocked-delegated), live child untouched.
-    assert db.get_task("TASK-1").status == TaskStatus.BLOCKED
+    assert db.get_task("TASK-1").status == TaskStatus.IN_PROGRESS
     assert db.get_task("TASK-1").block_kind == BlockKind.DELEGATED
     assert db.get_task("TASK-3").status == TaskStatus.IN_PROGRESS
     assert "escalation_superseded" not in _audit_actions(db, "TASK-1")
@@ -171,7 +171,7 @@ async def test_manual_resolve_escalation_approve_does_not_supersede(tmp_path: Pa
     org, state, db = _build_org(tmp_path)
     db.insert_task(TaskRecord(
         id="TASK-1", brief="b", team="engineering", assigned_agent="m",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+        status=TaskStatus.ESCALATED, block_kind=None,
     ))
     db.list_open_notifications_for_task = MagicMock(return_value=[])
 

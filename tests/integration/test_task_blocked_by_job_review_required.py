@@ -9,7 +9,7 @@ Scenario A — Founder approves:
   2. Agent self-blocks via report-completion with waiting_on_job_ids=[JOB-NNN].
   3. Test driver (acting as founder) calls POST /jobs/{id}/run to approve.
   4. Job runs and completes.
-  5. Task auto-resumes (blocked_on_job → in_progress CAS flip by run_step).
+  5. Task auto-resumes (in_progress(blocked_on_job) → in_progress(NULL)).
   6. Next agent session sees BLOCKED-JOBS-RESULTS header (verified via audit).
   7. Task completes.
 

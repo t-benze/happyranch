@@ -39,8 +39,7 @@ def _insert_blocked_on_jobs(db: Database, task_id: str, job_ids: list[str]):
         status=TaskStatus.IN_PROGRESS, parent_task_id=None,
         assigned_agent="engineering_head",
     ))
-    db.update_task(task_id, status=TaskStatus.BLOCKED,
-                   block_kind=BlockKind.BLOCKED_ON_JOB,
+    db.update_task(task_id, status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
                    blocked_on_job_ids=json.dumps(job_ids))
 
 
@@ -77,7 +76,7 @@ def test_step1_skips_when_blocking_job_still_running(db_and_orch):
     run_step_impl(orch, "TASK-1")  # Returns silently without invoking agent
 
     after = db.get_task("TASK-1")
-    assert after.status == TaskStatus.BLOCKED
+    assert after.status == TaskStatus.IN_PROGRESS
     assert after.block_kind == BlockKind.BLOCKED_ON_JOB
 
 
@@ -88,7 +87,7 @@ def test_step1_skips_when_blocked_on_job_ids_empty(db_and_orch):
     run_step_impl(orch, "TASK-1")
 
     after = db.get_task("TASK-1")
-    assert after.status == TaskStatus.BLOCKED  # unchanged
+    assert after.status == TaskStatus.IN_PROGRESS  # unchanged
 
 
 def test_step1_skips_when_blocked_on_job_ids_unparseable(db_and_orch):
@@ -97,14 +96,13 @@ def test_step1_skips_when_blocked_on_job_ids_unparseable(db_and_orch):
         id="TASK-1", team="engineering", brief="t",
         status=TaskStatus.IN_PROGRESS, parent_task_id=None,
     ))
-    db.update_task("TASK-1", status=TaskStatus.BLOCKED,
-                   block_kind=BlockKind.BLOCKED_ON_JOB,
+    db.update_task("TASK-1", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
                    blocked_on_job_ids="not-valid-json")
 
     run_step_impl(orch, "TASK-1")
 
     after = db.get_task("TASK-1")
-    assert after.status == TaskStatus.BLOCKED
+    assert after.status == TaskStatus.IN_PROGRESS
 
 
 def test_cas_win_writes_task_resumed_from_jobs_audit_row(db_and_orch):
@@ -179,7 +177,7 @@ from runtime.models import CompletionReport
 
 def test_block_on_jobs_branch_transitions_in_place(db_and_orch):
     """report.status=blocked + non-empty waiting_on_job_ids → row goes to
-    BLOCKED+BLOCKED_ON_JOB (NOT _fail)."""
+    in_progress(blocked_on_job) (NOT _fail)."""
     db, orch = db_and_orch
     db.insert_task(TaskRecord(
         id="TASK-1", team="engineering", brief="t",

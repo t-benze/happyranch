@@ -8,8 +8,8 @@ Entry contract (Path B): task MUST be one of:
   (c) status=in_progress AND block_kind=BLOCKED_ON_JOB AND all blocking jobs are terminal.
 Any other state = stale enqueue, silent no-op — in particular
 in_progress + block_kind IS NULL is a LIVE subprocess and must NOT be admitted
-(it would double-spawn). The legacy blocked(delegated|blocked_on_job) shapes are
-also accepted during the transition window (dual-read).
+(it would double-spawn). Phase 3: no legacy blocked shapes are accepted;
+the boot-time migration flips them before request handling.
 
 Exit contract: task ends in exactly one of {in_progress-then-crashed,
 completed, failed, in_progress(DELEGATED), in_progress(BLOCKED_ON_JOB),
@@ -35,13 +35,11 @@ TERMINAL_STATES = frozenset({
     TaskStatus.CANCELLED,  # Path B: founder-initiated terminal stop.
 })
 
-# Path B: parked-but-in_progress carriers. A task in one of these
-# (status, block_kind) pairs runs no subprocess — it is waiting on children/
-# jobs it manages. The legacy `blocked` status is accepted alongside
-# `in_progress` so scheduler/sweep/fan-in predicates are dual-read tolerant
-# during the transition window. `block_kind IS NULL` (a live subprocess) is
-# deliberately NOT a parked carrier.
-_PARKED_CARRIER_STATUSES = frozenset({TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED})
+# Path B: parked-but-in_progress carriers. A task with block_kind set
+# runs no subprocess — it is waiting on children/jobs it manages.
+# block_kind IS NULL (a live subprocess) is deliberately NOT a parked carrier.
+# Phase 3 (THR-037): the deprecated BLOCKED status was retired.
+_PARKED_CARRIER_STATUSES = frozenset({TaskStatus.IN_PROGRESS})
 
 
 def is_root(task: "TaskRecord") -> bool:
@@ -73,10 +71,9 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     # ---- 1. Verify entry state ----
-    # Path B: parked carriers are in_progress(delegated|blocked_on_job). The
-    # legacy blocked(...) shapes are accepted too (dual-read). A live subprocess
-    # is in_progress + block_kind IS NULL — it falls to the `else: skip` and is
-    # never re-admitted (admitting it would double-spawn).
+    # Path B: parked carriers are in_progress(delegated|blocked_on_job).
+    # A live subprocess is in_progress + block_kind IS NULL — it falls to the
+    # `else: skip` and is never re-admitted (admitting it would double-spawn).
     if task.status == TaskStatus.PENDING:
         pass  # eligible
     elif task.status in _PARKED_CARRIER_STATUSES and task.block_kind == BlockKind.DELEGATED:
@@ -185,7 +182,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     # Spec §5.2: write task_resumed_from_jobs audit row immediately after the
-    # CAS wins on a BLOCKED+BLOCKED_ON_JOB → IN_PROGRESS transition. The
+    # CAS wins on an in_progress(blocked_on_job) → in_progress(NULL) transition. The
     # prompt-build at step 4 reads this row to inject BLOCKED-JOBS-RESULTS.
     if (task.status in _PARKED_CARRIER_STATUSES
             and task.block_kind == BlockKind.BLOCKED_ON_JOB):
@@ -315,7 +312,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                     )
                     return
             # Path B: a task waiting on jobs it submitted is in_progress, with
-            # the waiting reason kept in block_kind (NOT blocked).
+            # the waiting reason kept in block_kind.
             db.update_task(
                 task_id,
                 status=TaskStatus.IN_PROGRESS,
@@ -1227,7 +1224,7 @@ def _advance_chain_for_completed_child(
         return "wake"
 
     # Advance: bump chain state FIRST so a crash between this and insert_task
-    # leaves a recoverable "stuck blocked-delegated waiting for missing child"
+    # leaves a recoverable "stuck delegated waiting for missing child"
     # rather than a silently-mis-routed chain on the next terminal.
     next_child_id = orch._db.next_task_id()
     chain.step_index = action.next_step_index
@@ -1274,7 +1271,7 @@ def _enqueue_parent_if_waiting(
     root_auto_revisit_spawned: bool = False,
 ) -> None:
     """Idempotent: advance the parent only if it's actually waiting on THIS
-    lineage (blocked+DELEGATED) AND all its children are now terminal.
+    lineage (in_progress+delegated) AND all its children are now terminal.
 
     Three outcomes (TASK-573 bounded failure-recovery):
       - every subtask COMPLETED → enqueue parent for its next manager
@@ -1305,8 +1302,7 @@ def _enqueue_parent_if_waiting(
     if task is None or task.parent_task_id is None:
         return
     parent = orch._db.get_task(task.parent_task_id)
-    # Path B: a delegating parent is in_progress(delegated); the legacy
-    # blocked(delegated) shape is accepted too (dual-read). The non-cascading
+    # Path B: a delegating parent is in_progress(delegated). The non-cascading
     # failure-recovery contract (TASK-573/THR-028) below is otherwise unchanged.
     if parent is None or parent.status not in _PARKED_CARRIER_STATUSES:
         return
@@ -1631,8 +1627,7 @@ def _maybe_resume_blocked_task(
     task = db.get_task(task_id)
     if task is None:
         return False
-    # Path B: a task parked on jobs is in_progress(blocked_on_job); legacy
-    # blocked(blocked_on_job) accepted too (dual-read).
+    # Path B: a task parked on jobs is in_progress(blocked_on_job).
     if task.status not in _PARKED_CARRIER_STATUSES or task.block_kind != BlockKind.BLOCKED_ON_JOB:
         return False  # silent — steady state
 
@@ -1775,12 +1770,8 @@ def _maybe_post_thread_escalation(
     if task is None:
         return
     # Re-read persisted state: the founder may have resolved/cancelled the
-    # escalation in the window between try_escalate and this call. Path B:
-    # an escalated task is status=ESCALATED; the legacy blocked(escalated)
-    # shape is accepted too (dual-read).
-    if not (task.status == TaskStatus.ESCALATED or (
-            task.status == TaskStatus.BLOCKED
-            and task.block_kind == BlockKind.ESCALATED)):
+    # escalation in the window between try_escalate and this call.
+    if task.status != TaskStatus.ESCALATED:
         return
 
     # Resolve the originating thread. Escalation can fire on a child, so walk

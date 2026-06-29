@@ -116,8 +116,9 @@ async def run_dream(
         recent_audit = org_state.db.query_audit_logs(
             agent=dream.agent_name, limit=_AUDIT_WINDOW_CAP,
         )
+    paths = OrgPaths(root=org_state.root)
     try:
-        org_config = load_org_config(OrgPaths(root=org_state.root))
+        org_config = load_org_config(paths)
     except Exception:
         org_config = OrgConfig()
     prompt = build_dream_prompt(
@@ -132,7 +133,7 @@ async def run_dream(
     executor_name = _executor_name(workspace)
     if executor_name not in {"claude", "codex", "opencode", "pi"}:
         executor_name = "claude"
-    executor = executor_factory(executor_name, settings, None) if executor_factory else _build_executor_for_provider(executor_name, settings, None)
+    executor = executor_factory(executor_name, settings, paths) if executor_factory else _build_executor_for_provider(executor_name, settings, paths)
 
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: executor.run(
@@ -148,7 +149,7 @@ async def run_dream(
             agent=dream.agent_name,
             session_id=getattr(result, "agent_session_id", None) or getattr(result, "session_id", None) or dream_id,
             executor=executor_name,
-            usage=result.token_usage,
+            token_usage=result.token_usage,
             scope_type="dream",
             scope_id=dream_id,
         )

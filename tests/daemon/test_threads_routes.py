@@ -466,10 +466,10 @@ def _audit_payload(org_state, task_id: str, action: str) -> dict:
     return {}
 
 
-def test_manager_dispatch_supersedes_blocked_escalated_predecessor(
+def test_manager_dispatch_supersedes_escalated_predecessor(
     tmp_home, app, org_state, auth_headers,
 ):
-    """A manager-authorized thread-dispatch naming a blocked(escalated)
+    """A manager-authorized thread-dispatch naming an escalated
     predecessor auto-resolves it to RESOLVED_SUPERSEDED, citing the new root +
     the thread ruling in the audit (the maker-checker evidence)."""
     client = TestClient(app)
@@ -478,7 +478,7 @@ def test_manager_dispatch_supersedes_blocked_escalated_predecessor(
     org_state.db.insert_task(TaskRecord(
         id="TASK-900", brief="orphan escalation", team="engineering",
         assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+        status=TaskStatus.ESCALATED, block_kind=None,
     ))
 
     resp = client.post(
@@ -502,10 +502,10 @@ def test_manager_dispatch_supersedes_blocked_escalated_predecessor(
     assert payload["thread_id"] == tid  # thread ruling cited
 
 
-def test_manager_dispatch_supersedes_blocked_delegated_when_children_terminal(
+def test_manager_dispatch_supersedes_delegated_when_children_terminal(
     tmp_home, app, org_state, auth_headers,
 ):
-    """Gap-B on the thread path: a blocked(delegated) predecessor with ALL
+    """Gap-B on the thread path: an in_progress(delegated) predecessor with ALL
     children terminal is supersedable without cascade."""
     client = TestClient(app)
     _seed_agent(org_state, "engineering_head", role="manager")
@@ -513,7 +513,7 @@ def test_manager_dispatch_supersedes_blocked_delegated_when_children_terminal(
     org_state.db.insert_task(TaskRecord(
         id="TASK-900", brief="delegated parent", team="engineering",
         assigned_agent="engineering_head",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
     ))
     org_state.db.insert_task(TaskRecord(
         id="TASK-901", brief="c1", parent_task_id="TASK-900", status=TaskStatus.COMPLETED,
@@ -548,7 +548,7 @@ def test_manager_dispatch_refuses_supersede_of_delegated_with_live_child(
     org_state.db.insert_task(TaskRecord(
         id="TASK-900", brief="delegated parent", team="engineering",
         assigned_agent="engineering_head",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
     ))
     org_state.db.insert_task(TaskRecord(
         id="TASK-901", brief="done", parent_task_id="TASK-900", status=TaskStatus.COMPLETED,
@@ -567,7 +567,7 @@ def test_manager_dispatch_refuses_supersede_of_delegated_with_live_child(
     )
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "predecessor_not_supersedable"
-    assert org_state.db.get_task("TASK-900").status == TaskStatus.BLOCKED
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.IN_PROGRESS
     assert org_state.db.get_task("TASK-900").block_kind == BlockKind.DELEGATED
     assert org_state.db.get_task("TASK-902").status == TaskStatus.IN_PROGRESS
     assert "escalation_superseded" not in [
@@ -587,7 +587,7 @@ def test_worker_self_dispatch_cannot_supersede_predecessor(
     org_state.db.insert_task(TaskRecord(
         id="TASK-900", brief="orphan escalation", team="engineering",
         assigned_agent="dev_agent",
-        status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+        status=TaskStatus.ESCALATED, block_kind=None,
     ))
 
     resp = client.post(
@@ -600,8 +600,8 @@ def test_worker_self_dispatch_cannot_supersede_predecessor(
     assert resp.status_code == 403
     assert resp.json()["detail"]["code"] == "thread_supersede_not_authorized"
     # Predecessor untouched: never auto-closed by an unauthorized dispatch.
-    assert org_state.db.get_task("TASK-900").status == TaskStatus.BLOCKED
-    assert org_state.db.get_task("TASK-900").block_kind == BlockKind.ESCALATED
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.ESCALATED
+    assert org_state.db.get_task("TASK-900").block_kind is None
     assert "escalation_superseded" not in [
         e["action"] for e in org_state.db.get_audit_logs("TASK-900")
     ]

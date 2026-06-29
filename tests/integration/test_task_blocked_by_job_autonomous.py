@@ -6,7 +6,7 @@ Covers the full autonomous happy-path:
   1. Agent submits a review_required=false job (auto-runs immediately).
   2. Agent self-blocks via report-completion with waiting_on_job_ids=[JOB-NNN].
   3. The job runs and completes (review_required=false → auto-runs, no founder action).
-  4. The task auto-resumes (blocked_on_job → in_progress CAS flip by run_step).
+  4. The task auto-resumes (in_progress(blocked_on_job) → in_progress(NULL)).
   5. The next agent session is invoked (stage 2 plan runs).
   6. Task completes.
 

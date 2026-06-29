@@ -1,8 +1,8 @@
 /**
  * Tasks list — Direction-A Pasture, roots-only dense list.
  *
- * Group by Status / Agent / Thread. Each group renders as a Pasture card
- * with serif section headings. Resolved groups are visually dimmed.
+ * Group by Status / Agent / Thread. Each group renders as a rounded bordered
+ * Pasture card with serif section headings. Resolved groups are visually dimmed.
  * Status pills follow ds.css .tag (rounded-pill, led dot).
  *
  * Per founder ruling: NO in-list 'show subtasks' toggle. The list is
@@ -10,6 +10,10 @@
  *
  * Driven by GET /tasks/roots (roots-only invariant). Cursor pagination
  * via next_cursor with IntersectionObserver sentinel.
+ *
+ * THR-046 msg-11: wider full-width layout, cream canvas, STATUS/TASK split
+ * columns, rounded column-header bar, rounded bordered group-section cards,
+ * right-aligned group-by segmented control.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
@@ -125,8 +129,8 @@ function groupLabel(key: string, by: GroupBy): string {
   if (by === 'status') {
     const map: Record<string, string> = {
       pending: 'Pending',
-      in_progress: 'In progress',
-      escalated: 'Escalated',
+      in_progress: 'Active',
+      escalated: 'Waiting on you',
       completed: 'Completed',
       failed: 'Failed',
       cancelled: 'Cancelled',
@@ -243,34 +247,38 @@ export function TasksPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
-      {/* Page title + group-by selector */}
-      <header className="border-border-default shrink-0 border-b px-6 py-5">
-        <p className="text-text-muted text-xs font-medium uppercase tracking-wide">
-          {eyebrow}
-        </p>
-        <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-          What the org is working on
-        </h1>
-        <Tabs
-          className="mt-3"
-          value={groupBy}
-          onValueChange={(v) => setGroupBy(v as GroupBy)}
-        >
-          <TabsList
-            aria-label="Group by"
-            className="border-border-default bg-surface-sunken gap-0.5 rounded-lg border p-0.5"
+      {/* Page header: eyebrow + title (left), group-by selector (right) */}
+      <header className="border-border-default bg-surface-page shrink-0 border-b px-6 py-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
+              {eyebrow}
+            </p>
+            <h1 className="font-display text-text-primary mt-1 text-2xl font-medium">
+              What the org is working on
+            </h1>
+          </div>
+          <Tabs
+            className="shrink-0"
+            value={groupBy}
+            onValueChange={(v) => setGroupBy(v as GroupBy)}
           >
-            {GROUP_BY_OPTIONS.map((opt) => (
-              <TabsTrigger
-                key={opt.value}
-                value={opt.value}
-                className="data-[state=active]:bg-accent-soft data-[state=active]:text-accent-text rounded-md px-3 py-1"
-              >
-                {opt.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+            <TabsList
+              aria-label="Group by"
+              className="border-border-default bg-surface-sunken gap-0.5 rounded-lg border p-0.5"
+            >
+              {GROUP_BY_OPTIONS.map((opt) => (
+                <TabsTrigger
+                  key={opt.value}
+                  value={opt.value}
+                  className="data-[state=active]:bg-accent-soft data-[state=active]:text-accent-text rounded-md px-3 py-1"
+                >
+                  {opt.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </div>
       </header>
 
       {/* Task list */}
@@ -280,19 +288,26 @@ export function TasksPage(): JSX.Element {
         ) : allTasks.length === 0 ? (
           <EmptyState title="No tasks" body="No tasks match the current filters." />
         ) : (
-          <div className="mx-auto max-w-3xl space-y-6">
+          <div className="space-y-4">
             <TaskListColumnHeader />
             {groups.map(([key, tasks]) => {
               const dimmed = isResolvedGroup(key, groupBy);
               return (
-                <section key={key} className={dimmed ? 'opacity-60' : undefined}>
-                  <GroupHeading
-                    label={groupLabel(key, groupBy)}
-                    count={tasks.length}
-                    dot={groupDot(key, groupBy)}
-                    dimmed={dimmed}
-                  />
-                  <ul className="mt-2">
+                <section
+                  key={key}
+                  className={`border-border-default bg-surface-page rounded-xl border ${
+                    dimmed ? 'opacity-60' : ''
+                  }`}
+                >
+                  <div className="border-border-default border-b px-3 py-2.5">
+                    <GroupHeading
+                      label={groupLabel(key, groupBy)}
+                      count={tasks.length}
+                      dot={groupDot(key, groupBy)}
+                      dimmed={dimmed}
+                    />
+                  </div>
+                  <ul>
                     {tasks.map((t) => (
                       <li key={t.task_id}>
                         <TaskListRow

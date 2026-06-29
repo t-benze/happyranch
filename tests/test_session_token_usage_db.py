@@ -249,6 +249,8 @@ def test_aggregate_by_thread(db: Database):
         "cache_creation_tokens": 0,
         "reasoning_tokens": 0,
         "total_tokens": 35,
+        "churn_tokens": 35,
+        "context_tokens": 35,
         "model_distinct": 0,
         "model_any": None,
         "non_null_sessions": 0,
@@ -368,7 +370,7 @@ def test_aggregate_by_failed_task_groups_per_task_and_agent(db: Database):
     db.insert_task(TaskRecord(id="T-FAIL-1", brief="x", status=TaskStatus.FAILED))
     db.insert_task(TaskRecord(id="T-FAIL-2", brief="x", status=TaskStatus.FAILED))
     db.insert_task(TaskRecord(id="T-DONE", brief="x", status=TaskStatus.COMPLETED))
-    db.insert_task(TaskRecord(id="T-BLOCKED", brief="x", status=TaskStatus.BLOCKED))
+    db.insert_task(TaskRecord(id="T-BLOCKED", brief="x", status=TaskStatus.IN_PROGRESS))
 
     # T-FAIL-1: two agents -> two rollup rows.
     db.insert_session_token_usage(

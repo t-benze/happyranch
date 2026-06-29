@@ -166,12 +166,12 @@ def fire_resume_check_for_job(org: "object", job_id: str) -> None:
     from runtime.orchestrator.run_step import _maybe_resume_blocked_task
 
     # Quotes around job_id are intentional: suffix-anchored so JOB-1 doesn't match JOB-12.
-    # Path B: a task parked on jobs is in_progress(blocked_on_job); accept the
-    # legacy blocked(blocked_on_job) shape too (dual-read) so a job's terminal
-    # still resumes its parked task during the transition window.
+    # Phase 3: only in_progress(blocked_on_job) tasks are parked on jobs.
+    # The boot-time migration flips any legacy blocked(blocked_on_job) rows
+    # before request handling, so this scanner never sees them at runtime.
     rows = db._conn.execute(
         "SELECT id FROM tasks "
-        "WHERE status IN ('blocked', 'in_progress') "
+        "WHERE status = 'in_progress' "
         "AND block_kind = 'blocked_on_job' "
         "AND blocked_on_job_ids LIKE ?",
         (f'%"{job_id}"%',),

@@ -3,6 +3,29 @@ from runtime.infrastructure.database import Database
 from runtime.models import CompletionReport
 
 
+def test_log_memory_lifecycle_changed(db):
+    """THR-032 P3a: log_memory_lifecycle_changed records correct row shape."""
+    logger = AuditLogger(db)
+    logger.log_memory_lifecycle_changed(
+        agent="dev_agent",
+        id="MEM-001",
+        from_lifecycle="valid",
+        to_lifecycle="evicted",
+        reason="superseded by MEM-002",
+        source="manual",
+    )
+    logs = db.get_audit_logs("AGENT-dev_agent")
+    assert len(logs) == 1
+    assert logs[0]["action"] == "memory_lifecycle_changed"
+    assert logs[0]["agent"] == "dev_agent"
+    payload = logs[0]["payload"]
+    assert payload["id"] == "MEM-001"
+    assert payload["from_lifecycle"] == "valid"
+    assert payload["to_lifecycle"] == "evicted"
+    assert payload["reason"] == "superseded by MEM-002"
+    assert payload["source"] == "manual"
+
+
 def test_log_session_start(db):
     logger = AuditLogger(db)
     logger.log_session_start("TASK-001", "dev_agent", "/tmp/workspace")

@@ -46,6 +46,7 @@ import {
   OnDot,
   RecoveryBanner,
   SavedBanner,
+  WorkHoursTabs,
 } from './components';
 import { TierEditorDialog, type Tier } from './TierEditorDialog';
 import { EligibilityEditorDialog } from './EligibilityEditorDialog';
@@ -112,6 +113,7 @@ export function OverviewPage(): JSX.Element {
     return (
       <div className="flex h-full flex-col">
         <Header slug={slug} />
+        <WorkHoursTabs slug={slug} active="overview" />
         <div className="p-4">
           <RecoveryBanner reason={reason} />
           <Button
@@ -130,6 +132,7 @@ export function OverviewPage(): JSX.Element {
   return (
     <div className="flex h-full flex-col">
       <Header slug={slug} />
+      <WorkHoursTabs slug={slug} active="overview" />
 
       <div className="flex-1 overflow-y-auto p-4">
         {savedMsg && <SavedBanner message={savedMsg} />}
@@ -340,7 +343,7 @@ function Header({ slug }: { slug: string | undefined }): JSX.Element {
         leaf by leaf.{' '}
         {slug && (
           <Link
-            to={`/orgs/${slug}/schedule`}
+            to={`/orgs/${slug}/work-hours?view=wakes`}
             className="text-accent-text hover:underline"
           >
             View wake history

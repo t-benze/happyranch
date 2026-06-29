@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Plus, X, AlertCircle } from 'lucide-react';
+import { ChevronDown, ChevronRight, MessageCircle, Plus, X, AlertCircle } from 'lucide-react';
 import { TaskCard } from '@/design-system/patterns/TaskCard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Button } from '@/design-system/primitives/Button';
@@ -37,6 +37,8 @@ const EXECUTOR_OPTIONS = [
 interface AgentDetailPaneProps {
   agentName: string;
   onClose: () => void;
+  /** Called when the user clicks Start Thread for this agent. */
+  onStartThread?: () => void;
 }
 
 /** Sparse dirty-state tracker: only keys that differ from the last-saved snapshot. */
@@ -60,7 +62,7 @@ function useAccountabilityMetrics(agentName: string) {
   return { tasksQuery, done, total };
 }
 
-export function AgentDetailPane({ agentName, onClose }: AgentDetailPaneProps): JSX.Element {
+export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDetailPaneProps): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   const agentsQuery = useAgentsList();
   const { density } = useDensity();
@@ -274,9 +276,16 @@ export function AgentDetailPane({ agentName, onClose }: AgentDetailPaneProps): J
             <p className="text-text-secondary mt-2 text-sm leading-relaxed">{agent.description}</p>
           )}
         </div>
-        <Button variant="ghost" size="sm" className="shrink-0" onClick={onClose}>
-          <X size={16} />
-        </Button>
+        {onStartThread ? (
+          <Button size="sm" className="shrink-0" onClick={onStartThread}>
+            <MessageCircle size={14} className="mr-1" aria-hidden="true" />
+            Start Thread
+          </Button>
+        ) : (
+          <Button variant="ghost" size="sm" className="shrink-0" onClick={onClose}>
+            <X size={16} />
+          </Button>
+        )}
       </header>
 
       {/* --- Editable fields — Pasture card sections --- */}

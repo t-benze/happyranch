@@ -142,6 +142,25 @@ class WorkingHoursConfig:
 
 
 @dataclass(frozen=True)
+class MemorySearchConfig:
+    """THR-032 P4a: memory search defaults."""
+    default_limit: int = 20
+    include_kb_by_default: bool = False
+    include_superseded_by_default: bool = False
+    include_evicted_by_default: bool = False
+
+
+@dataclass(frozen=True)
+class MemoryCompactionConfig:
+    """THR-032 P3b: memory compaction policy defaults."""
+    enabled: bool = False
+    salience_floor: int = 10
+    stale_days: int = 45
+    superseded_grace_days: int = 7
+    max_evictions_per_run: int = 25
+
+
+@dataclass(frozen=True)
 class OrgConfig:
     session_timeout_seconds: int | None = None
     # Org-wide local timezone. None (the default) means "inherit machine-local"
@@ -153,6 +172,13 @@ class OrgConfig:
     threads_enabled: bool = True
     threads_default_turn_cap: int = 500
     threads_invocation_timeout_seconds: int | None = None
+    # THR-032 Phase 2: char budget for the per-task MEMORY-DIGEST push block.
+    # Default ~1500 chars ≈ a dozen pointer lines; set to 0 to disable the
+    # digest entirely. Must be >= 0.
+    memory_digest_budget: int = 1500
+    # THR-032 P3b/P4a: memory search and compaction config
+    memory_search: MemorySearchConfig = field(default_factory=MemorySearchConfig)
+    memory_compaction: MemoryCompactionConfig = field(default_factory=MemoryCompactionConfig)
 
     @classmethod
     def load_from_text(cls, text: str, path: str = "<text>") -> "OrgConfig":
@@ -615,11 +641,68 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
     if threads_block is not None:
         threads_kwargs = _parse_threads(threads_block, path)
 
+    # THR-032 Phase 2: memory_digest_budget — char budget for per-task
+    # MEMORY-DIGEST push block. Default 1500; 0 disables the digest.
+    digest_budget = data.get("memory_digest_budget", 1500)
+    if not isinstance(digest_budget, int) or isinstance(digest_budget, bool):
+        raise OrgConfigError(
+            f"{path}: memory_digest_budget must be an integer, got {digest_budget!r}"
+        )
+    if digest_budget < 0:
+        raise OrgConfigError(
+            f"{path}: memory_digest_budget must be >= 0, got {digest_budget}"
+        )
+
+    # THR-032 P4a: memory search config
+    search_cfg = MemorySearchConfig()
+    search_block = data.get("memory_search")
+    if search_block is not None:
+        if not isinstance(search_block, dict):
+            raise OrgConfigError(f"{path}: memory_search must be a mapping")
+        search_cfg = MemorySearchConfig(
+            default_limit=_validate_positive_int(
+                search_block.get("default_limit", 20), "memory_search.default_limit",
+                min_v=1, max_v=200, path=path,
+            ),
+            include_kb_by_default=bool(search_block.get("include_kb_by_default", False)),
+            include_superseded_by_default=bool(search_block.get("include_superseded_by_default", False)),
+            include_evicted_by_default=bool(search_block.get("include_evicted_by_default", False)),
+        )
+
+    # THR-032 P3b: memory compaction config
+    comp_cfg = MemoryCompactionConfig()
+    comp_block = data.get("memory_compaction")
+    if comp_block is not None:
+        if not isinstance(comp_block, dict):
+            raise OrgConfigError(f"{path}: memory_compaction must be a mapping")
+        comp_cfg = MemoryCompactionConfig(
+            enabled=bool(comp_block.get("enabled", False)),
+            salience_floor=_validate_positive_int(
+                comp_block.get("salience_floor", 10), "memory_compaction.salience_floor",
+                min_v=0, max_v=100, path=path,
+            ),
+            stale_days=_validate_positive_int(
+                comp_block.get("stale_days", 45), "memory_compaction.stale_days",
+                min_v=1, max_v=3650, path=path,
+            ),
+            superseded_grace_days=_validate_positive_int(
+                comp_block.get("superseded_grace_days", 7), "memory_compaction.superseded_grace_days",
+                min_v=1, max_v=3650, path=path,
+            ),
+            max_evictions_per_run=_validate_positive_int(
+                comp_block.get("max_evictions_per_run", 25), "memory_compaction.max_evictions_per_run",
+                min_v=1, max_v=10000, path=path,
+            ),
+        )
+
     return OrgConfig(
         session_timeout_seconds=timeout,
         timezone=org_timezone,
         dreaming=dreaming_cfg,
         working_hours=working_hours_cfg,
+        memory_digest_budget=digest_budget,
+        memory_search=search_cfg,
+        memory_compaction=comp_cfg,
         **threads_kwargs,
     )
 

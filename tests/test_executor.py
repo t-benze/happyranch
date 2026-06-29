@@ -210,9 +210,9 @@ def test_opencode_executor_launches_run_with_workspace_dir(mock_subprocess, tmp_
     assert cmd[cmd.index("--dir") + 1] == str(workspace)
     assert "--format" in cmd
     assert cmd[cmd.index("--format") + 1] == "json"
-    assert "--prompt" in cmd
-    # The executor prepends the shared session-lifetime preamble to every prompt.
-    sent = cmd[cmd.index("--prompt") + 1]
+    # opencode >= 1.14.0 uses positional prompt (issue #216); the prompt is the
+    # last argument (after --format json).
+    sent = cmd[-1]
     assert sent.endswith("Implement Alipay support")
     assert "<session-lifetime>" in sent
     # Permission discipline lives in opencode.json — bypass flag must NOT be present.

@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"019eb87f-c169-7901-bab9-cdfc180419c4"}
+{"type":"step_started"}
+{"type":"assistant","model":"claude-sonnet-4-6","content":"thinking","usage":{"input_tokens":150,"output_tokens":80,"cache_read_tokens":40,"cache_write_tokens":0}}
+{"type":"step_finish","part":{"tokens":{"input_tokens":5000,"output_tokens":2000,"cache_read_tokens":3000,"cache_write_tokens":1000}}}

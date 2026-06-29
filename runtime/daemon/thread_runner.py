@@ -6,7 +6,6 @@ consumed (via reply/decline callback) → exit. No NextStep loop.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections.abc import Callable
 from datetime import datetime
@@ -215,25 +214,26 @@ def _is_session_not_found(result) -> bool:
     return any(marker in blob for marker in _SESSION_NOT_FOUND_MARKERS)
 
 
-# Per-(thread, agent) serialization for resumed sessions (issue #53). The daemon
-# runs a pool of thread workers (4) that drain each org's queue concurrently, so
-# two pending invocations for the SAME Claude participant can otherwise run in
-# parallel — both read the same stored session, both `--resume` it (undefined),
-# and the last writer advances `last_resumed_seq` from stale state. This lock
-# serializes the read→run→update path per (thread, agent). Locks are created
-# lazily; `get`-then-assign is atomic across coroutines (no await between), and
-# the daemon is single-event-loop. The key is scoped by org root so distinct orgs
-# never share a lock. The registry grows unbounded with distinct (thread, agent)
-# pairs over the daemon's lifetime — entries are tiny; revisit only if it matters.
-_session_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
+# Per-(thread, agent) active-invocation lock (provider-agnostic, THR-042). The
+# daemon runs a pool of thread workers that drain each org's queue concurrently,
+# so two pending invocations for the SAME (org, thread, agent) can otherwise run
+# in parallel — two subprocess sessions for the same agent in the same thread
+# would race callback consumption and (for Claude) the stored session + watermark.
+# This lock serializes the acquire→run→settle path per (org, thread, agent).
+# Locks are created lazily; `get`-then-assign is atomic across coroutines (no
+# await between), and the daemon is single-event-loop. The key is scoped by org
+# root so distinct orgs never share a lock. The registry grows unbounded with
+# distinct (thread, agent) pairs over the daemon's lifetime — entries are tiny;
+# revisit only if it matters.
+_invocation_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
 
 
-def _session_lock(org_state, thread_id: str, agent_name: str) -> asyncio.Lock:
+def _invocation_lock(org_state, thread_id: str, agent_name: str) -> asyncio.Lock:
     key = (str(org_state.root), thread_id, agent_name)
-    lock = _session_locks.get(key)
+    lock = _invocation_locks.get(key)
     if lock is None:
         lock = asyncio.Lock()
-        _session_locks[key] = lock
+        _invocation_locks[key] = lock
     return lock
 
 
@@ -450,19 +450,14 @@ async def run_invocation(
     if org_config.threads_invocation_timeout_seconds is not None:
         timeout = org_config.threads_invocation_timeout_seconds
 
-    # --- Agent session resume (issue #53) ---
-    # Only Claude supports --resume; other executors always run full-context.
-    # Serialize the read→run→update path per (thread, agent): the worker pool runs
-    # invocations concurrently, so two pending turns for the same Claude participant
-    # would otherwise race the stored session + watermark (see _session_lock). The
-    # guard is a no-op for non-Claude executors, which keep no session state.
+    # --- Active-invocation lock (provider-agnostic, THR-042) ---
+    # Every executor must acquire the per-(org, thread, agent) lock so no two
+    # subprocess sessions for the same agent in the same thread run concurrently.
+    # Only Claude supports --resume and manages thread_session state; the lock
+    # now protects all providers against concurrent runs, not just Claude.
     is_claude = executor_name == "claude"
-    session_guard: contextlib.AbstractAsyncContextManager = (
-        _session_lock(org_state, inv.thread_id, inv.agent_name)
-        if is_claude
-        else contextlib.nullcontext()
-    )
-    async with session_guard:
+    invocation_guard = _invocation_lock(org_state, inv.thread_id, inv.agent_name)
+    async with invocation_guard:
         stored_sid, last_seq = (
             org_state.db.get_thread_session(inv.thread_id, inv.agent_name)
             if is_claude else (None, 0)

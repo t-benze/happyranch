@@ -87,7 +87,7 @@ redesign is organized around three feeling-words:
 ### 3.1 Direction A nav (RULED, RENDER-ONLY)
 
 - **Primary group:** `Home · Threads · Tasks · Agents · Knowledge · Artifacts`
-- **"Operate" group:** `Spend · Dreams · Schedule · Audit`
+- **"Operate" group:** `Spend · Dreams · Schedule · Audit` *(THR-035 (2026-06-28): the standalone Schedule nav item was later consolidated into Work Hours as its Wakes view — see the PRD-final for current nav.)*
 - **Footer:** `Settings` (+ founder identity block, theme toggle, org switcher)
 - **Assistant is NOT a tab** — it is an **omnipresent dock** (⌘K / "Ask or
   search" pill). See §4.10.
@@ -103,7 +103,7 @@ redesign is organized around three feeling-words:
 | IA-2 | Default landing = Home | RENDER-ONLY (S) | **v1** | One-line route change. **Build first** (§7). |
 | IA-3 | Spend dedicated page (tokens) | RENDER-ONLY (L) | **v1** | Dollars deferred (Q1 → §6). |
 | IA-4 | Dreams dedicated surface (read) | RENDER-ONLY (L) | **v1** | Backend ships; far less greenfield than first thought. |
-| IA-5 | Schedule dedicated surface (read) | RENDER-ONLY (L) | **v1** | **Correction: not blocked/unmerged** — `work_hours` route + API client ship. |
+| IA-5 | Schedule dedicated surface (read) | RENDER-ONLY (L) | **v1** | **Correction: not blocked/unmerged** — `work_hours` route + API client ship. *(THR-035 (2026-06-28): this surface was later consolidated into Work Hours as its Wakes tab — the standalone `/schedule` route now redirects to `/work-hours?view=wakes`.)* |
 | IA-6 | Assistant = omnipresent dock (⌘K) | RENDER-ONLY | **v1** | Action chips gated (A3); build approach per TASK-414. |
 | IA-7 | Settings = page + sub-nav | RENDER-ONLY (M) | **v1** | Dialog → page; reuse editable Org fields. |
 | IA-8 | Jobs tab retired | RENDER-ONLY removal (S–M) | **v1** | Q6 RULED. |
@@ -636,8 +636,8 @@ dated commitment** (timeline = separate Founder sign-off).
 Tied to founder value, not output:
 - **Calm:** founder answers "is anything on fire?" in one glance on Home without
   opening Audit. (Dogfood.)
-- **Homes for the homeless:** Spend, Dreams, Schedule each reachable in 1 click
-  from the sidebar; the "indistinguishable dream-thread" gap is closed by A4.
+- **Homes for the homeless:** Spend, Dreams, Work Hours (including Wakes) each reachable in 1 click
+  from the sidebar; the "indistinguishable dream-thread" gap is closed by A4. *(THR-035 (2026-06-28): the standalone Schedule nav item was consolidated into Work Hours as its Wakes view — see the PRD-final for current nav.)*
 - **Honesty (dominant):** zero UI elements assert facts the daemon can't
   substantiate; dollars render `$0.00 / not metered`; @mention is broadcast-only;
   KB shows "viewed N× (CLI)". (Review gate enforces P1.)

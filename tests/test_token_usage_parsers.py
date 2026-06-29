@@ -226,3 +226,99 @@ def test_parse_opencode_usage_assistant_missing_usage_field():
     assert u is not None
     assert u.input_tokens == 50
     assert u.output_tokens == 25
+
+
+def _opencode_jsonl_fixture() -> str:
+    return (FIXTURES / "usage_opencode_jsonl.json").read_text()
+
+
+def test_parse_opencode_usage_jsonl_step_finish_tokens():
+    """New opencode >= 1.14.31 JSONL format: step_finish.part.tokens."""
+    u = _parse_opencode_usage(_opencode_jsonl_fixture())
+    assert u is not None
+    assert u.input_tokens == 5000
+    assert u.output_tokens == 2000
+    assert u.cache_read_tokens == 3000
+    assert u.cache_creation_tokens == 1000
+    assert u.model == "claude-sonnet-4-6"
+    assert u.usage_raw_json is not None
+
+
+def test_parse_opencode_usage_jsonl_no_step_finish_falls_back_to_assistant():
+    """JSONL format without step_finish events falls back to summing
+    assistant usage events."""
+    stream = (
+        '{"type":"assistant","model":"sonnet",'
+        '"usage":{"input_tokens":300,"output_tokens":100}}\n'
+        '{"type":"assistant","model":"sonnet",'
+        '"usage":{"input_tokens":200,"output_tokens":50}}\n'
+    )
+    u = _parse_opencode_usage(stream)
+    assert u is not None
+    assert u.input_tokens == 500
+    assert u.output_tokens == 150
+    assert u.model == "sonnet"
+
+
+def test_parse_opencode_usage_jsonl_empty():
+    """JSONL format with no usable events."""
+    stream = '{"type":"thread.started"}\n{"type":"step_started"}\n'
+    u = _parse_opencode_usage(stream)
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.usage_raw_json is not None
+
+
+def test_parse_opencode_usage_jsonl_skips_non_json_lines():
+    """JSONL parser tolerates blank lines and non-JSON lines."""
+    stream = (
+        '\n'
+        'WARNING: something\n'
+        '{"type":"step_finish","part":{"tokens":{"input_tokens":100,"output_tokens":50}}}\n'
+    )
+    u = _parse_opencode_usage(stream)
+    assert u is not None
+    assert u.input_tokens == 100
+    assert u.output_tokens == 50
+
+
+# ---- Pi structured parsing (issue #216 addendum) ----
+
+from runtime.orchestrator.executors import _parse_pi_usage
+
+
+def _pi_fixture() -> str:
+    return (FIXTURES / "usage_pi.jsonl").read_text()
+
+
+def test_parse_pi_usage_structured_from_assistant_event():
+    """Pi JSONL output with assistant event carrying usage.input/output/cacheRead/cacheWrite."""
+    u = _parse_pi_usage(_pi_fixture())
+    assert u is not None
+    assert u.input_tokens == 500      # usage.input
+    assert u.output_tokens == 200     # usage.output
+    assert u.cache_read_tokens == 100  # usage.cacheRead
+    assert u.cache_creation_tokens == 50  # usage.cacheWrite
+    assert u.model == "pi-model-v1"
+    assert u.usage_raw_json is not None
+
+
+def test_parse_pi_usage_falls_back_to_raw_on_unrecognized():
+    """Pi stdout without a parseable assistant event falls back to raw-only."""
+    u = _parse_pi_usage('{"type":"result","model":"pi"}\n')
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.output_tokens is None
+    assert "pi" in (u.usage_raw_json or "")
+
+
+def test_parse_pi_usage_empty():
+    assert _parse_pi_usage("") is None
+
+
+def test_parse_pi_usage_raw_fallback_on_malformed():
+    """Malformed Pi output preserves raw JSON for forensics."""
+    u = _parse_pi_usage("not json")
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.usage_raw_json is not None
