@@ -21,8 +21,12 @@ export type TaskStatus =
   | 'completed'
   | 'failed'
   | 'cancelled'
-  | 'resolved_superseded';
-export type BlockKind = 'delegated' | 'blocked_on_job';
+  | 'resolved_superseded'
+  // DEPRECATED (Path B transition). Retained so legacy status='blocked'
+  // rows paired with block_kind='escalated' still render a badge. Remove
+  // in a later cleanup phase.
+  | 'blocked';
+export type BlockKind = 'delegated' | 'blocked_on_job' | 'escalated';
 
 interface StatusBadgeProps {
   status: ThreadStatus | TaskStatus;
@@ -40,6 +44,7 @@ const STATUS_STYLE: Record<ThreadStatus | TaskStatus, string> = {
   pending: 'text-status-archiving bg-tier-yellow-tint',
   in_progress: 'text-status-open bg-tier-green-tint',
   escalated: 'text-status-escalated bg-tier-red-tint',
+  blocked: 'text-status-escalated bg-tier-red-tint',
   completed: 'text-status-open bg-tier-green-tint',
   failed: 'text-status-abandoned bg-tier-red-tint',
   cancelled: 'text-status-archived border border-border-default bg-transparent',
@@ -102,6 +107,7 @@ export const meta = {
       "failed",
       "cancelled",
       "resolved_superseded",
+      "blocked",
     ],
   },
   consumes: ["components.badge"],
