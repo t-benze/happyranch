@@ -361,3 +361,13 @@ def test_parse_pi_usage_raw_fallback_on_malformed():
     assert u is not None
     assert u.input_tokens is None
     assert u.usage_raw_json is not None
+
+
+def test_parse_pi_usage_terminal_event_with_null_message_falls_back_to_raw():
+    """A terminal turn_end event where message is null (not a dict)
+    must not raise AttributeError and must fall back to raw-only TokenUsage."""
+    u = _parse_pi_usage('{"type":"turn_end","message":null}\n')
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.output_tokens is None
+    assert u.usage_raw_json is not None

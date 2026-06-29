@@ -323,9 +323,11 @@ def _parse_pi_usage(stdout: str) -> TokenUsage | None:
             continue
         if not isinstance(event, dict):
             continue
-        if event.get("type") in ("message_end", "turn_end") and isinstance(event.get("message", {}).get("usage"), dict):
-            last_usage = event["message"]["usage"]
-            last_model = event.get("model")
+        if event.get("type") in ("message_end", "turn_end"):
+            message = event.get("message")
+            if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+                last_usage = event["message"]["usage"]
+                last_model = event.get("model")
     if last_usage is not None:
         return TokenUsage(
             input_tokens=last_usage.get("input"),
