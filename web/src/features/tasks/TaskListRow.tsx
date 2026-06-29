@@ -35,7 +35,7 @@ export interface TaskListRoutes {
  * surface forbids arbitrary values (`tailwindcss/no-arbitrary-value`).
  */
 const COL = {
-  task: 'w-32 shrink-0',
+  task: 'w-64 shrink-0',
   title: 'min-w-0 flex-1',
   agent: 'w-36 shrink-0',
   thread: 'w-24 shrink-0',
