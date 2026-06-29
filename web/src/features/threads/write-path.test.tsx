@@ -24,6 +24,81 @@ function stubBaseHandlers() {
 }
 
 describe('ThreadsPage — write path', () => {
+  test('double-click Send creates exactly one thread (synchronous in-flight guard)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+
+    // Delay the POST so the second click can enter before React Query
+    // sets isPending — this is the exact scenario that produced duplicate
+    // threads (THR-046 message 49).
+    let resolvePost: (v: unknown) => void;
+    const postDeferred = new Promise((r) => { resolvePost = r; });
+    let postCount = 0;
+
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async () => {
+        postCount++;
+        await postDeferred;
+        return HttpResponse.json(
+          { thread_id: 'THR-007', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-007`, () =>
+        HttpResponse.json({
+          thread_id: 'THR-007',
+          subject: 'Only one',
+          status: 'open',
+          started_at: 'now',
+          archived_at: null,
+          forwarded_from_id: null,
+          forwarded_from_kind: null,
+          turn_cap: 500,
+          turns_used: 0,
+          summary: null,
+          transcript_path: null,
+          participants: ['agent_a'],
+          messages: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-007/messages`, () =>
+        HttpResponse.json({ messages: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-007/tail`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
+
+    // Open dialog, fill fields
+    await user.click(await screen.findByRole('button', { name: /New thread/i }));
+    await user.type(screen.getByLabelText(/^Subject$/i), 'Only one');
+    await user.type(screen.getByLabelText(/^Recipients/i), 'agent_a');
+    await user.type(screen.getByLabelText(/^Body \(Markdown\)$/i), 'Body');
+
+    const sendBtn = screen.getByRole('button', { name: /^Send$/i });
+
+    // Double-click Send — the first click starts the (delayed) POST, the
+    // second must be rejected by the synchronous in-flight guard.
+    await user.click(sendBtn);
+    await user.click(sendBtn);
+
+    // Release the deferred POST so both clicks resolve.
+    resolvePost!({});
+
+    // Assert exactly one POST reached the server.
+    await waitFor(() => {
+      expect(postCount).toBe(1);
+    });
+
+    // Navigated once to thread detail.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Only one/i })).toBeInTheDocument(),
+    );
+  });
+
   test('NewThreadDialog posts compose body and navigates to the new thread', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
