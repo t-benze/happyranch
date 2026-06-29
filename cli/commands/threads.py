@@ -239,7 +239,18 @@ def cmd_threads_dispatch(args: argparse.Namespace) -> None:
     if not _ok(r):
         return
     resp = r.json()
-    print(f"ok: dispatched {resp['task_id']} from {resp['dispatched_from_thread_id']}")
+    superseded = resp.get("superseded_task_id")
+    if superseded:
+        print(
+            f"ok: dispatched {resp['task_id']} from"
+            f" {resp['dispatched_from_thread_id']}"
+            f" -> supersedes {superseded}"
+        )
+    else:
+        print(
+            f"ok: dispatched {resp['task_id']} from"
+            f" {resp['dispatched_from_thread_id']}"
+        )
 
 
 
