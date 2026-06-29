@@ -845,7 +845,7 @@ function ThreadDetailTranscript({ messages, loading, slug, nowMs }: TranscriptPr
                 body={m.body_markdown}
                 declineReason={m.decline_reason}
                 attachments={m.attachments}
-                attachmentHref={slug ? (artifactName) => artifactsApi.artifactDownloadPath(slug, artifactName) : undefined}
+                onAttachmentDownload={slug ? (artifactName) => artifactsApi.downloadArtifact(slug, artifactName) : undefined}
               />
             )}
             {m.kind === 'message' && (

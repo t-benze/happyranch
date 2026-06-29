@@ -1,7 +1,7 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
@@ -191,9 +191,18 @@ describe('ThreadsPage — write path', () => {
     );
   });
 
-  test('message bubble renders attachment download link', async () => {
+  test('message bubble attachment chip downloads with auth token via fetch, not raw anchor navigation', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
+
+    // Stub the browser download machinery that downloadArtifact relies on.
+    // jsdom doesn't ship URL.createObjectURL / URL.revokeObjectURL — add them.
+    const createObjectURL = vi.fn(() => 'blob:mock');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, writable: true, configurable: true });
+    Object.defineProperty(URL, 'revokeObjectURL', { value: revokeObjectURL, writable: true, configurable: true });
+
+    let downloadAuthHeader: string | null = null;
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads/THR-001`, () =>
         HttpResponse.json({
@@ -240,15 +249,26 @@ describe('ThreadsPage — write path', () => {
       http.get(`/api/v1/orgs/${SLUG}/threads/THR-001/tail`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
       ),
+      // The artifact download endpoint — capture the Authorization header
+      http.get(`/api/v1/orgs/${SLUG}/artifacts/THR-001-report.pdf`, ({ request }) => {
+        downloadAuthHeader = request.headers.get('Authorization');
+        return new HttpResponse('fake-pdf', { headers: { 'content-type': 'application/pdf' } });
+      }),
     );
 
+    const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/THR-001` });
 
-    const link = await screen.findByRole('link', { name: /report\.pdf/i });
-    expect(link).toHaveAttribute(
-      'href',
-      '/api/v1/orgs/alpha/artifacts/THR-001-report.pdf',
-    );
-    expect(link).toHaveTextContent('5 MB');
+    // The attachment chip is now a button (not a link), still shows display name + size
+    const chip = await screen.findByRole('button', { name: /report\.pdf/i });
+    expect(chip).toHaveTextContent('5 MB');
+
+    await user.click(chip);
+
+    // The download triggered a GET with the bearer token — this is the fix:
+    // raw anchor navigation cannot attach Authorization; fetch can.
+    await waitFor(() => {
+      expect(downloadAuthHeader).toBe('Bearer tok');
+    });
   });
 });
