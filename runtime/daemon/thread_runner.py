@@ -166,6 +166,81 @@ def _purpose_note(
     return f"Message {triggering_seq} was posted to this thread"
 
 
+def _maybe_unresolved_escalations_note(
+    *,
+    messages: list[ThreadMessage],
+    org_state,
+    purpose: str,
+    invoked_agent: str,
+) -> str:
+    """Guardrail: when a manager receives a REPLY/BOOTSTRAP invocation in a
+    thread that carries unresolved ``task_escalated`` system messages whose live
+    task rows are still supersedable, surface the concrete task ids so the agent
+    knows to include ``resolves`` in any continuation dispatch.
+
+    Derived from thread messages + task status, never from brief prose.
+    """
+    if purpose not in ("reply", "bootstrap"):
+        return ""
+    # Only fire for thread participants who can actually close a predecessor —
+    # a worker self-dispatch that names resolves is rejected 403 anyway.
+    teams = getattr(org_state, "teams", None)
+    if teams is None or not teams.is_team_manager(invoked_agent):
+        return ""
+    escalated_ids: list[str] = []
+    for m in messages:
+        if m.kind is not ThreadMessageKind.SYSTEM:
+            continue
+        payload = m.system_payload or {}
+        if payload.get("kind_tag") != "task_escalated":
+            continue
+        task_id = payload.get("task_id", "")
+        if not task_id or task_id in escalated_ids:
+            continue
+        task = org_state.db.get_task(task_id)
+        if task is None:
+            continue
+        # Check supersedability — same logic as _eligible_supersede_block_kind
+        # in routes/tasks.py; imported late to avoid circular imports.
+        from runtime.daemon.routes.tasks import _eligible_supersede_block_kind
+        if _eligible_supersede_block_kind(org_state, task) is None:
+            continue
+        escalated_ids.append(task_id)
+    if not escalated_ids:
+        return ""
+    if len(escalated_ids) == 1:
+        tid = escalated_ids[0]
+        return (
+            "\n## Unresolved Escalation in This Thread\n\n"
+            f"Task **{tid}** escalated in this thread and is still "
+            f"awaiting a founder-authorized continuation.\n\n"
+            f"If your next self-dispatched task is the continuation, you MUST "
+            f"include the explicit linkage in your dispatch payload:\n"
+            f'  ```json\n'
+            f'  {{"resolves": "{tid}"}}\n'
+            f'  ```\n'
+            f"Omitting this field leaves the predecessor open — the runtime cannot "
+            f"infer the relationship from brief prose alone.\n\n"
+        )
+    # Multiple unresolved escalations — show per-task valid examples.
+    per_task_lines = "\n".join(
+        f'  {tid} →' + ' {"resolves": "' + tid + '"}'
+        for tid in escalated_ids
+    )
+    ids_str = ", ".join(escalated_ids)
+    return (
+        "\n## Unresolved Escalations in This Thread\n\n"
+        f"The following tasks escalated in this thread and are still "
+        f"awaiting a founder-authorized continuation: **{ids_str}**.\n\n"
+        f"If your next self-dispatched task is the continuation of one of these, "
+        f"you MUST include the explicit linkage for the specific predecessor "
+        f"your continuation supersedes:\n"
+        f"{per_task_lines}\n\n"
+        f"Omitting this field leaves the predecessor open — the runtime cannot "
+        f"infer the relationship from brief prose alone.\n\n"
+    )
+
+
 def _decline_by_default_doctrine() -> str:
     return (
         "## Decline-by-Default in Threads\n\n"
@@ -483,6 +558,17 @@ async def run_invocation(
             )
             shown_seqs = [m.seq for m in messages]
 
+        # Guardrail: surface unresolved escalated tasks from this thread so a
+        # manager continuation dispatch includes the explicit resolves linkage.
+        escalation_note = _maybe_unresolved_escalations_note(
+            messages=messages,
+            org_state=org_state,
+            purpose=inv.purpose.value,
+            invoked_agent=inv.agent_name,
+        )
+        if escalation_note:
+            prompt += "\n" + escalation_note
+
         org_state.db.stamp_invocation_started(invocation_token, session_id=None)
         await _publish_invocation_event(
             org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
@@ -526,6 +612,15 @@ async def run_invocation(
                     purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                     org_config=org_config,
                 )
+                # Re-apply the guardrail for the fallback prompt too.
+                escalation_note2 = _maybe_unresolved_escalations_note(
+                    messages=messages,
+                    org_state=org_state,
+                    purpose=inv.purpose.value,
+                    invoked_agent=inv.agent_name,
+                )
+                if escalation_note2:
+                    full_prompt += "\n" + escalation_note2
                 shown_seqs = [m.seq for m in messages]
                 resume_sid = None
                 result = await loop.run_in_executor(None, lambda: _invoke(full_prompt, None))

@@ -366,3 +366,63 @@ def test_threads_compose_as_agent_attach_uses_composer_attribution(
             "content_type": "text/markdown",
         },
     ]
+
+
+def test_threads_dispatch_prints_superseded_task_id(tmp_path: Path, monkeypatch, capsys) -> None:
+    """When the dispatch response includes superseded_task_id, the CLI prints it."""
+    from cli.commands.threads import cmd_threads_dispatch
+
+    payload_path = tmp_path / "dispatch.json"
+    payload_path.write_text(
+        json.dumps({
+            "thread_id": "THR-001",
+            "invocation_token": "tok",
+            "dispatcher": "engineering_head",
+            "brief": "continue",
+            "resolves": "TASK-900",
+        }),
+        encoding="utf-8",
+    )
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "task_id": "TASK-999",
+        "dispatched_from_thread_id": "THR-001",
+        "superseded_task_id": "TASK-900",
+    })
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(org="alpha", thread_id="THR-001", from_file=payload_path)
+    cmd_threads_dispatch(args)
+
+    out = capsys.readouterr().out
+    assert "ok: dispatched TASK-999 from THR-001 -> supersedes TASK-900" in out
+
+
+def test_threads_dispatch_no_supersede_prints_plain(tmp_path: Path, monkeypatch, capsys) -> None:
+    """When no superseded_task_id, the CLI prints the existing plain message."""
+    from cli.commands.threads import cmd_threads_dispatch
+
+    payload_path = tmp_path / "dispatch.json"
+    payload_path.write_text(
+        json.dumps({
+            "thread_id": "THR-001",
+            "invocation_token": "tok",
+            "dispatcher": "engineering_head",
+            "brief": "create new task",
+        }),
+        encoding="utf-8",
+    )
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "task_id": "TASK-888",
+        "dispatched_from_thread_id": "THR-001",
+        "superseded_task_id": None,
+    })
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(org="alpha", thread_id="THR-001", from_file=payload_path)
+    cmd_threads_dispatch(args)
+
+    out = capsys.readouterr().out
+    assert "ok: dispatched TASK-888 from THR-001" in out
+    assert "supersedes" not in out
