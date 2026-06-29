@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Sample pre-push hook: runs the local PR CI target before every push.
+# This is OPT-IN only — it is NOT auto-installed and never touches .git/hooks.
+#
+# To install:
+#   cp scripts/hooks/pre-push.local-ci.sample .git/hooks/pre-push
+#   chmod +x .git/hooks/pre-push
+#
+# The hook runs `scripts/local_ci.sh all` (python + web, mirrors GitHub PR CI).
+# If any step fails the push is blocked.  The hook does NOT run integration
+# tests (those are nightly in GitHub).  GitHub CI remains authoritative; this
+# is pre-push feedback only.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+exec "${REPO_ROOT}/scripts/local_ci.sh" all
