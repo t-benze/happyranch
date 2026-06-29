@@ -82,6 +82,7 @@ const ROLLUP_COLOR: Record<TaskStatus, string> = {
   pending: 'text-status-archiving',
   in_progress: 'text-status-open',
   escalated: 'text-status-escalated',
+  blocked: 'text-status-escalated',
   completed: 'text-status-open',
   failed: 'text-status-abandoned',
   cancelled: 'text-status-archived',
