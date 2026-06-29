@@ -294,7 +294,7 @@ describe('AgentDetailPane — editable fields', () => {
     });
   });
 
-  test('close button clears selection and shows calm state', async () => {
+  test('Start Thread button opens compose dialog with agent prefill', async () => {
     stubBaseHandlers();
     stubDetailHandlers();
     const user = userEvent.setup();
@@ -304,18 +304,89 @@ describe('AgentDetailPane — editable fields', () => {
       expect(screen.getByText('manager')).toBeInTheDocument();
     });
 
-    // Click the X close button — it's the first X icon button in the detail pane
-    const closeButtons = screen.getAllByRole('button');
-    // Find the button containing only an X icon (no text children)
-    const closeBtn = closeButtons.find((btn) => btn.closest('header') && !btn.textContent);
-    expect(closeBtn).toBeTruthy();
-    if (closeBtn) await user.click(closeBtn);
+    // Click the Start Thread button in the detail pane header
+    const startBtn = screen.getByRole('button', { name: /Start Thread/i });
+    expect(startBtn).toBeInTheDocument();
+    await user.click(startBtn);
+
+    // Dialog opens with recipients pre-filled to the selected agent
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('New thread')).toBeInTheDocument();
+    const recipientsInput = within(dialog).getByLabelText(/^Recipients/i);
+    expect(recipientsInput).toHaveValue('engineering_head');
+  });
+
+  test('Start Thread dialog posts compose body and navigates to new thread detail', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let composeBody: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
+        composeBody = await request.json();
+        return HttpResponse.json(
+          { thread_id: 'THR-AGENT-1', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-AGENT-1`, () =>
+        HttpResponse.json({
+          thread_id: 'THR-AGENT-1',
+          subject: 'Hello from agents',
+          status: 'open',
+          started_at: 'now',
+          archived_at: null,
+          forwarded_from_id: null,
+          forwarded_from_kind: null,
+          turn_cap: 500,
+          turns_used: 0,
+          summary: null,
+          transcript_path: null,
+          participants: ['engineering_head'],
+          messages: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-AGENT-1/messages`, () =>
+        HttpResponse.json({ messages: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-AGENT-1/tail`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+      // Thread detail SSE and thread list
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(
-        screen.getAllByText(/Select an agent/).length,
-      ).toBeGreaterThan(0);
+      expect(screen.getByText('manager')).toBeInTheDocument();
     });
+
+    // Click Start Thread
+    await user.click(screen.getByRole('button', { name: /Start Thread/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    // Recipients already prefilled — fill subject and body
+    await user.type(within(dialog).getByLabelText(/^Subject$/i), 'Hello from agents');
+    await user.type(within(dialog).getByLabelText(/^Body \(Markdown\)$/i), 'Let us begin');
+    await user.click(within(dialog).getByRole('button', { name: /^Send$/i }));
+
+    // Assert POST received the pre-filled recipient
+    await waitFor(() => {
+      expect(composeBody).toEqual({
+        subject: 'Hello from agents',
+        recipients: ['engineering_head'],
+        body_markdown: 'Let us begin',
+      });
+    });
+    // Navigated to thread detail — header shows subject
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Hello from agents/i })).toBeInTheDocument(),
+    );
   });
 });
 

@@ -14,6 +14,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
+import { useThreadRoutes } from '@/hooks/threads';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import {
   Tabs,
@@ -27,6 +29,7 @@ import { useAgentsList, useAgentsRoutes } from '@/hooks/agents';
 import { useDensity } from '@/hooks/density';
 import { PendingEnrollmentsTab } from './PendingEnrollmentsTab';
 import { AgentDetailPane } from './AgentDetailPane';
+import type { AgentSummary } from '@/lib/api/types';
 import { AddAgentDialog } from './AddAgentDialog';
 
 /**
@@ -66,6 +69,13 @@ export function AgentsPage(): JSX.Element {
   const { density } = useDensity();
   const rowPad = density === 'compact' ? 'py-1.5' : 'py-2.5';
   const [addOpen, setAddOpen] = useState(false);
+
+  // Start Thread dialog state
+  const threadRoutes = useThreadRoutes();
+  const [showStartThread, setShowStartThread] = useState(false);
+  const [startThreadPrefill, setStartThreadPrefill] = useState<
+    { recipients: string[] } | undefined
+  >(undefined);
 
   // A selected agent pins the Active tab — Pending under a detail view
   // doesn't make sense. The URL's `view=pending` is otherwise the source
@@ -113,6 +123,11 @@ export function AgentsPage(): JSX.Element {
     navigate,
     routes,
   ]);
+
+  const handleStartThread = (agent: AgentSummary) => {
+    setStartThreadPrefill({ recipients: [agent.name] });
+    setShowStartThread(true);
+  };
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
@@ -244,6 +259,11 @@ export function AgentsPage(): JSX.Element {
             <AgentDetailPane
               agentName={selectedAgent}
               onClose={() => navigate(routes.inbox())}
+              onStartThread={
+                agents.find((a) => a.name === selectedAgent)
+                  ? () => handleStartThread(agents.find((a) => a.name === selectedAgent)!)
+                  : undefined
+              }
             />
           ) : (
             <div className="text-text-muted flex h-full items-center justify-center">
@@ -265,6 +285,14 @@ export function AgentsPage(): JSX.Element {
       </div>
 
       <AddAgentDialog open={addOpen} onOpenChange={setAddOpen} />
+
+      <NewThreadDialog
+        open={showStartThread}
+        onClose={() => setShowStartThread(false)}
+        prefill={startThreadPrefill}
+        onCreated={(newId) => navigate(threadRoutes.detail(newId))}
+        agents={agents}
+      />
     </div>
   );
 }
