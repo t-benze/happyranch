@@ -298,9 +298,11 @@ def _parse_opencode_usage(stdout: str) -> TokenUsage | None:
 def _parse_pi_usage(stdout: str) -> TokenUsage | None:
     """Parse Pi `--mode json` stdout into TokenUsage.
 
-    Pi >= current emits JSONL events. The assistant message event carries a
-    ``usage`` object with camelCase keys:
+    Pi 0.80.2+ emits JSONL events. The terminal events ``message_end`` and
+    ``turn_end`` carry final usage at ``message.usage`` with keys:
     ``input``, ``output``, ``cacheRead``, ``cacheWrite``, ``totalTokens``.
+
+    The LAST terminal event's usage wins when both are present.
 
     Falls back to raw-only preservation when the stdout cannot be parsed
     (original behavior), so successful Pi sessions still leave an auditable
@@ -308,7 +310,9 @@ def _parse_pi_usage(stdout: str) -> TokenUsage | None:
     """
     if not stdout or not stdout.strip():
         return None
-    # Walk JSONL lines for an assistant event with usage.
+    # Walk JSONL lines for terminal events with usage in message.usage.
+    last_usage: dict | None = None
+    last_model: str | None = None
     for line in stdout.splitlines():
         line = line.strip()
         if not line or not line.startswith("{"):
@@ -319,17 +323,21 @@ def _parse_pi_usage(stdout: str) -> TokenUsage | None:
             continue
         if not isinstance(event, dict):
             continue
-        if event.get("type") == "assistant" and isinstance(event.get("usage"), dict):
-            usage = event["usage"]
-            return TokenUsage(
-                input_tokens=usage.get("input"),
-                output_tokens=usage.get("output"),
-                cache_read_tokens=usage.get("cacheRead"),
-                cache_creation_tokens=usage.get("cacheWrite"),
-                reasoning_tokens=usage.get("reasoning"),
-                model=event.get("model"),
-                usage_raw_json=json.dumps(usage),
-            )
+        if event.get("type") in ("message_end", "turn_end"):
+            message = event.get("message")
+            if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+                last_usage = event["message"]["usage"]
+                last_model = event.get("model")
+    if last_usage is not None:
+        return TokenUsage(
+            input_tokens=last_usage.get("input"),
+            output_tokens=last_usage.get("output"),
+            cache_read_tokens=last_usage.get("cacheRead"),
+            cache_creation_tokens=last_usage.get("cacheWrite"),
+            reasoning_tokens=last_usage.get("reasoning"),
+            model=last_model,
+            usage_raw_json=json.dumps(last_usage),
+        )
     # Fall back to raw-only preservation (original behavior).
     return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
 

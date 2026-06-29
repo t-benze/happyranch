@@ -291,20 +291,59 @@ def _pi_fixture() -> str:
     return (FIXTURES / "usage_pi.jsonl").read_text()
 
 
-def test_parse_pi_usage_structured_from_assistant_event():
-    """Pi JSONL output with assistant event carrying usage.input/output/cacheRead/cacheWrite."""
+def test_parse_pi_usage_structured_from_message_end():
+    """Pi 0.80.2+ JSONL: message_end event carries usage at message.usage.
+    The fixture includes a turn_end AFTER message_end; the parser must use the
+    LAST terminal event's usage (turn_end wins)."""
     u = _parse_pi_usage(_pi_fixture())
     assert u is not None
-    assert u.input_tokens == 500      # usage.input
-    assert u.output_tokens == 200     # usage.output
-    assert u.cache_read_tokens == 100  # usage.cacheRead
-    assert u.cache_creation_tokens == 50  # usage.cacheWrite
+    assert u.input_tokens == 999      # turn_end.message.usage.input (last terminal)
+    assert u.output_tokens == 999     # turn_end.message.usage.output
+    assert u.cache_read_tokens == 999  # turn_end.message.usage.cacheRead
+    assert u.cache_creation_tokens == 999  # turn_end.message.usage.cacheWrite
     assert u.model == "pi-model-v1"
     assert u.usage_raw_json is not None
 
 
+def test_parse_pi_usage_message_end_only_no_turn_end():
+    """When only message_end is present (no turn_end), use its usage."""
+    stdout = '{"type":"message_end","model":"pi-1","message":{"usage":{"input":10,"output":20,"cacheRead":3,"cacheWrite":4,"totalTokens":37}}}\n'
+    u = _parse_pi_usage(stdout)
+    assert u is not None
+    assert u.input_tokens == 10
+    assert u.output_tokens == 20
+    assert u.cache_read_tokens == 3
+    assert u.cache_creation_tokens == 4
+    assert u.model == "pi-1"
+
+
+def test_parse_pi_usage_turn_end_no_message_end():
+    """When only turn_end is present (no message_end), use its usage."""
+    stdout = '{"type":"turn_end","model":"pi-2","message":{"usage":{"input":99,"output":88,"totalTokens":187}}}\n'
+    u = _parse_pi_usage(stdout)
+    assert u is not None
+    assert u.input_tokens == 99
+    assert u.output_tokens == 88
+    assert u.cache_read_tokens is None  # missing from event
+    assert u.cache_creation_tokens is None  # missing from event
+    assert u.model == "pi-2"
+
+
+def test_parse_pi_usage_skips_non_terminal_assistant():
+    """Assistant events with message.usage are not terminal events; parser
+    must skip them and fall back to raw-only."""
+    stdout = (
+        '{"type":"assistant","model":"pi","message":{"usage":{"input":5,"output":5}}}\n'
+    )
+    u = _parse_pi_usage(stdout)
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.output_tokens is None
+    assert u.usage_raw_json is not None
+
+
 def test_parse_pi_usage_falls_back_to_raw_on_unrecognized():
-    """Pi stdout without a parseable assistant event falls back to raw-only."""
+    """Pi stdout without a parseable terminal event falls back to raw-only."""
     u = _parse_pi_usage('{"type":"result","model":"pi"}\n')
     assert u is not None
     assert u.input_tokens is None
@@ -321,4 +360,14 @@ def test_parse_pi_usage_raw_fallback_on_malformed():
     u = _parse_pi_usage("not json")
     assert u is not None
     assert u.input_tokens is None
+    assert u.usage_raw_json is not None
+
+
+def test_parse_pi_usage_terminal_event_with_null_message_falls_back_to_raw():
+    """A terminal turn_end event where message is null (not a dict)
+    must not raise AttributeError and must fall back to raw-only TokenUsage."""
+    u = _parse_pi_usage('{"type":"turn_end","message":null}\n')
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.output_tokens is None
     assert u.usage_raw_json is not None

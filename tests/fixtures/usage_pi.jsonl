@@ -1,1 +1,4 @@
-{"type":"assistant","model":"pi-model-v1","content":"OK","usage":{"input":500,"output":200,"cacheRead":100,"cacheWrite":50,"totalTokens":850}}
+{"type":"system","subtype":"init","model":"pi-model-v1","session_id":"sess-abc123"}
+{"type":"assistant","model":"pi-model-v1","content":"OK","message":{"usage":{"input":100,"output":50,"cacheRead":10,"cacheWrite":5,"totalTokens":165}}}
+{"type":"message_end","model":"pi-model-v1","message":{"usage":{"input":500,"output":200,"cacheRead":100,"cacheWrite":50,"totalTokens":850}}}
+{"type":"turn_end","model":"pi-model-v1","message":{"usage":{"input":999,"output":999,"cacheRead":999,"cacheWrite":999,"totalTokens":3996}}}
