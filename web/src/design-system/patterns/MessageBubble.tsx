@@ -33,7 +33,9 @@ interface MessageBubbleProps {
   /** Used for `system` variant — a pre-rendered one-line description. */
   systemDescription?: React.ReactNode;
   attachments?: ThreadAttachment[];
-  attachmentHref?: (artifactName: string) => string;
+  /** Called when the user clicks an attachment chip. The owner wires this to
+   *  an authed download action (e.g. artifactsApi.downloadArtifact). */
+  onAttachmentDownload?: (artifactName: string) => void;
 }
 
 function fmtTs(iso: string): string {
@@ -76,7 +78,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
     body,
     declineReason,
     attachments,
-    attachmentHref,
+    onAttachmentDownload,
   } = props;
 
   return (
@@ -104,16 +106,17 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
           {attachments.map((attachment) => {
             const formattedSize = formatAttachmentSize(attachment.size_bytes);
             return (
-              <a
+              <button
+                type="button"
                 key={attachment.artifact_name}
-                href={attachmentHref?.(attachment.artifact_name) ?? '#'}
-                className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1"
+                onClick={() => onAttachmentDownload?.(attachment.artifact_name)}
+                className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1 cursor-pointer"
               >
                 <span className="max-w-64 truncate">{attachment.display_name}</span>
                 {formattedSize && (
                   <span className="text-text-muted shrink-0">{formattedSize}</span>
                 )}
-              </a>
+              </button>
             );
           })}
         </div>

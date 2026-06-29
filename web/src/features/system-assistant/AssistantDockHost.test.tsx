@@ -154,7 +154,9 @@ describe('AssistantDockHost — pre-ack raw-frame tolerance (OPTION 3)', () => {
 
     // The dock is still in "connecting" state (loading skeleton shown).
     // The pre-ack raw frame was ignored — it doesn't appear in the DOM.
-    expect(screen.getByLabelText('Loading')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText('Loading')).toBeInTheDocument();
+    });
     expect(screen.queryByText('assistant ready')).toBeNull();
   });
 
@@ -211,7 +213,9 @@ describe('AssistantDockHost — pre-ack raw-frame tolerance (OPTION 3)', () => {
     fireOnmessage('assistant ready\n');
 
     // Confirm loading state is shown (not the raw text).
-    expect(screen.getByLabelText('Loading')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText('Loading')).toBeInTheDocument();
+    });
     expect(screen.queryByText('assistant ready')).toBeNull();
 
     // 2. "ready" ack.
