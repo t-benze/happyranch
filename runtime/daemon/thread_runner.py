@@ -209,24 +209,36 @@ def _maybe_unresolved_escalations_note(
         escalated_ids.append(task_id)
     if not escalated_ids:
         return ""
-    ids = ", ".join(escalated_ids)
-    ids_plural = "s" if len(escalated_ids) > 1 else ""
+    if len(escalated_ids) == 1:
+        tid = escalated_ids[0]
+        return (
+            "\n## Unresolved Escalation in This Thread\n\n"
+            f"Task **{tid}** escalated in this thread and is still "
+            f"awaiting a founder-authorized continuation.\n\n"
+            f"If your next self-dispatched task is the continuation, you MUST "
+            f"include the explicit linkage in your dispatch payload:\n"
+            f'  ```json\n'
+            f'  {{"resolves": "{tid}"}}\n'
+            f'  ```\n'
+            f"Omitting this field leaves the predecessor open — the runtime cannot "
+            f"infer the relationship from brief prose alone.\n\n"
+        )
+    # Multiple unresolved escalations — show per-task valid examples.
+    per_task_lines = "\n".join(
+        f'  {tid} →' + ' {"resolves": "' + tid + '"}'
+        for tid in escalated_ids
+    )
+    ids_str = ", ".join(escalated_ids)
     return (
-        "\n## Unresolved Escalation{plural} in This Thread\n\n"
-        "The following task{plural} escalated in this thread and {verb} still "
-        "awaiting a founder-authorized continuation: **{ids}**.\n\n"
-        "If your next self-dispatched task {verb_singular} the continuation, you MUST "
-        'include the explicit linkage in your dispatch payload:\n'
-        '  ```json\n'
-        '  {{"resolves": "{ids}"}}\n'
-        '  ```\n'
-        "Omitting this field leaves the predecessor open — the runtime cannot "
-        "infer the relationship from brief prose alone.\n\n"
-    ).format(
-        plural=ids_plural,
-        ids=ids,
-        verb="are" if len(escalated_ids) > 1 else "is",
-        verb_singular="is",  # "your next self-dispatched task" is always singular
+        "\n## Unresolved Escalations in This Thread\n\n"
+        f"The following tasks escalated in this thread and are still "
+        f"awaiting a founder-authorized continuation: **{ids_str}**.\n\n"
+        f"If your next self-dispatched task is the continuation of one of these, "
+        f"you MUST include the explicit linkage for the specific predecessor "
+        f"your continuation supersedes:\n"
+        f"{per_task_lines}\n\n"
+        f"Omitting this field leaves the predecessor open — the runtime cannot "
+        f"infer the relationship from brief prose alone.\n\n"
     )
 
 

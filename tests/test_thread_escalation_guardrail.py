@@ -27,6 +27,8 @@ from runtime.models import (
     ThreadMessageKind,
     ThreadParticipant,
     ThreadRecord,
+    TokenUsage,
+    ThreadInvocationPurpose,
 )
 from runtime.orchestrator.org_config import OrgConfig
 
@@ -161,6 +163,11 @@ def test_returns_note_for_multiple_unresolved_escalations():
     assert "TASK-900" in note
     assert "TASK-901" in note
     assert "and are still awaiting" in note  # plural
+    # Must NOT contain a comma-joined resolves value (route contract is singular).
+    assert '"resolves": "TASK-900, TASK-901"' not in note
+    # Each task gets its own valid per-task example.
+    assert 'TASK-900 → {"resolves": "TASK-900"}' in note
+    assert 'TASK-901 → {"resolves": "TASK-901"}' in note
 
 
 def test_no_note_for_non_manager():
@@ -320,3 +327,172 @@ def test_build_delta_prompt_without_guardrail():
         org_config=OrgConfig(),
     )
     assert "Unresolved Escalation" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# run_invocation boundary tests — prove the executor receives the guardrail
+# ---------------------------------------------------------------------------
+
+
+class _CapturingExecutor:
+    """Executor stub that captures the prompt passed to run()."""
+
+    def __init__(self, **kwargs):
+        self._prompt: str | None = None
+
+    def run(self, prompt, **kwargs):
+        self._prompt = prompt
+        return _FakeExecutorResult(success=True)
+
+
+class _FakeExecutorResult:
+    def __init__(self, success: bool, error: str = "",
+                 token_usage: "TokenUsage | None" = None):
+        self.success = success
+        self.error = error
+        self.returncode = 0
+        self.session_id = "sess-x"
+        self.duration_seconds = 1
+        self.agent_session_id = None
+        self.stdout_tail = ""
+        self.stderr_tail = ""
+        self.token_usage = token_usage
+
+
+def _make_org_state_with_teams(db, root, manager_name: str = "engineering_head"):
+    """Return an org_state-like object with a .teams registry."""
+    class _OS:
+        pass
+    os = _OS()
+    os.db = db
+    os.root = root
+    os.teams = FakeTeams({manager_name})
+    return os
+
+
+def _insert_escalated_task(db, task_id: str = "TASK-900", team: str = "engineering",
+                           agent: str = "engineering_head") -> None:
+    db.insert_task(TaskRecord(
+        id=task_id, brief="some escalated work", team=team,
+        assigned_agent=agent, status=TaskStatus.ESCALATED,
+    ))
+
+
+def _insert_delegated_task_with_live_child(db, task_id: str = "TASK-900",
+                                            team: str = "engineering",
+                                            agent: str = "engineering_head") -> None:
+    """Insert a delegated task with a non-terminal child so it is NOT
+    supersedable (Gap-B safety gate: _eligible_supersede_block_kind
+    requires _delegated_children_all_terminal)."""
+    db.insert_task(TaskRecord(
+        id=task_id, brief="delegated work", team=team,
+        assigned_agent=agent, status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    ))
+    # Live child — ensures _delegated_children_all_terminal returns False.
+    db.insert_task(TaskRecord(
+        id=f"{task_id}-child", brief="child work", team=team,
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
+        parent_task_id=task_id,
+    ))
+
+
+@pytest.mark.asyncio
+async def test_run_invocation_injects_guardrail_for_supersedable_escalation(
+    tmp_path, monkeypatch
+):
+    """The executor prompt receives the guardrail note when the thread has an
+    unresolved escalated task whose live row is supersedable."""
+    from runtime.infrastructure.database import Database
+    from runtime.config import Settings
+    from runtime.daemon import thread_runner as runner_mod
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="Escalation follow-up"))
+    db.add_thread_participant("THR-001", "engineering_head", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="system",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_escalated",
+                         "task_id": "TASK-900",
+                         "status": "escalated"},
+    )
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="please continue",
+    )
+    _insert_escalated_task(db, "TASK-900")
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="engineering_head",
+        triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    ws = tmp_path / "workspaces" / "engineering_head"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    cap = _CapturingExecutor()
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: cap,
+    )
+
+    org = _make_org_state_with_teams(db, tmp_path)
+    await runner_mod.run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    assert cap._prompt is not None, "executor was invoked"
+    assert "Unresolved Escalation" in cap._prompt
+    assert "TASK-900" in cap._prompt
+    assert '"resolves"' in cap._prompt
+
+
+@pytest.mark.asyncio
+async def test_run_invocation_skips_guardrail_for_non_supersedable_predecessor(
+    tmp_path, monkeypatch
+):
+    """When the escalated message's task row is delegated with a live child
+    (not supersedable via _eligible_supersede_block_kind), the executor
+    prompt does NOT receive the guardrail."""
+    from runtime.infrastructure.database import Database
+    from runtime.config import Settings
+    from runtime.daemon import thread_runner as runner_mod
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="Delegated follow-up"))
+    db.add_thread_participant("THR-001", "engineering_head", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="system",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_escalated",
+                         "task_id": "TASK-900",
+                         "status": "escalated"},
+    )
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="what's happening?",
+    )
+    _insert_delegated_task_with_live_child(db, "TASK-900")
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="engineering_head",
+        triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    ws = tmp_path / "workspaces" / "engineering_head"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    cap = _CapturingExecutor()
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: cap,
+    )
+
+    org = _make_org_state_with_teams(db, tmp_path)
+    await runner_mod.run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+    assert cap._prompt is not None, "executor was invoked"
+    assert "Unresolved Escalation" not in cap._prompt
