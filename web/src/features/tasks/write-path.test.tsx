@@ -97,4 +97,98 @@ describe('Tasks write path', () => {
 
     expect(cancelCalled).toBe(true);
   });
+
+  test('cancels a task with blank reason', async () => {
+    // THR-046: cancel with blank reason is allowed; payload includes rationale field.
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+    let cancelBody: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/cancel`, async ({ request }) => {
+        cancelBody = await request.json();
+        return HttpResponse.json({});
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+
+    await screen.findByRole('button', { name: /^Cancel$/ });
+    await user.click(screen.getByRole('button', { name: /^Cancel$/ }));
+
+    // Submit without typing anything — button is no longer disabled for blank text
+    await user.click(screen.getByRole('button', { name: /^Cancel task$/ }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /^Cancel task$/ })).toBeNull();
+    });
+
+    expect(cancelBody).toEqual({ rationale: '' });
+  });
+
+  test('resolves escalation with blank rationale', async () => {
+    // THR-046: approve/reject with blank rationale is allowed.
+    const escalatedTask = { ...TASK, status: 'escalated', block_kind: null };
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+        HttpResponse.json({ tasks: [escalatedTask] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
+        HttpResponse.json({
+          task: escalatedTask,
+          results: [],
+          audit_log: [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: TASK.task_id,
+          assigned_agent: 'content_writer',
+          brief: TASK.brief,
+          status: 'escalated',
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+
+    let resolveBody: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/resolve-escalation`, async ({ request }) => {
+        resolveBody = await request.json();
+        return HttpResponse.json({ ok: true, task_id: TASK.task_id, new_status: 'pending' });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+
+    // Wait for the "Resolve…" button on the escalated task detail
+    await screen.findByRole('button', { name: /Resolve…/ });
+    await user.click(screen.getByRole('button', { name: /Resolve…/ }));
+
+    // The ResolveEscalationDialog is open. Submit without typing rationale.
+    await user.click(screen.getByRole('button', { name: /^Resolve$/ }));
+
+    // Dialog should close after successful mutation
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /^Resolve$/ })).toBeNull();
+    });
+
+    expect(resolveBody).toEqual({ decision: 'approve', rationale: '' });
+  });
 });

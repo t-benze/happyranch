@@ -1165,6 +1165,18 @@ def test_cli_has_resolve_escalation():
     assert "resolve-escalation" in sub.choices
 
 
+def test_resolve_escalation_rationale_is_optional():
+    """THR-046: --rationale is optional; omitting it defaults to empty string."""
+    from cli.main import build_parser
+    parser = build_parser()
+    # Parse without --rationale
+    ns = parser.parse_args([
+        "resolve-escalation", "--task-id", "TASK-001",
+        "--decision", "approve",
+    ])
+    assert ns.rationale == ""
+
+
 def test_kb_add_requires_from_file():
     from cli.main import build_parser
     parser = build_parser()

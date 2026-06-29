@@ -51,7 +51,6 @@ export function EscalationInboxRow({
   }, [expanded]);
 
   async function submit() {
-    if (!rationale.trim()) return;
     await resolve.mutateAsync({ decision: 'approve', rationale });
   }
 
@@ -109,7 +108,7 @@ export function EscalationInboxRow({
             </Button>
             <Button
               onClick={() => void submit()}
-              disabled={resolve.isPending || !rationale.trim()}
+              disabled={resolve.isPending}
               type="button"
             >
               {resolve.isPending ? 'Resolving…' : 'Approve & resolve'}

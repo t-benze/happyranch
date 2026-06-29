@@ -24,10 +24,6 @@ export function ResolveEscalationDialog({ taskId, onClose }: Props): JSX.Element
 
   const onSubmit = async () => {
     setError(null);
-    if (!rationale.trim()) {
-      setError('Rationale is required.');
-      return;
-    }
     try {
       await resolve.mutateAsync({ decision, rationale });
       onClose();
@@ -69,7 +65,7 @@ export function ResolveEscalationDialog({ taskId, onClose }: Props): JSX.Element
           value={rationale}
           onChange={(e) => setRationale(e.target.value)}
           rows={4}
-          placeholder="Rationale (required)"
+          placeholder="Rationale (optional)"
         />
         {error && <p className="text-danger text-sm">{error}</p>}
         <DialogFooter>
