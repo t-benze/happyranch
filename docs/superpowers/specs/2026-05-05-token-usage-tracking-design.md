@@ -432,4 +432,4 @@ Opencode >= 1.14.31 rejects the `--prompt` flag (now positional). The executor c
 
 ### Pi structured token parsing
 
-Pi >= current emits usage fields on assistant JSONL events (`usage.input`, `usage.output`, `usage.cacheRead`, `usage.cacheWrite`). The parser now extracts these into a structured `TokenUsage` instead of preserving only raw JSON.
+Pi 0.80.2+ emits usage fields on terminal JSONL events (`message_end` and `turn_end`) at `message.usage` with keys `input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`. The parser extracts the last terminal event's usage into a structured `TokenUsage` instead of preserving only raw JSON.
