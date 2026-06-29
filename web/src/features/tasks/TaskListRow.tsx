@@ -1,8 +1,8 @@
 /**
  * TaskListRow — Direction-A Pasture single-line, aligned-column root-task row
- * (THR-030 TASKS-01 / TASKS-02, THR-041 column reshape). Flat columns:
- * STATUS (StatusBadge) · TASK (IdBadge) · TITLE · AGENT (AgentChip) ·
- * THREAD (IdBadge) · UPDATED (relative age).
+ * (THR-030 TASKS-01 / TASKS-02, THR-046 msg-11). Flat columns: STATUS
+ * (StatusBadge) · TASK (task_id IdBadge monospace) · TITLE · AGENT
+ * (AgentChip) · THREAD (IdBadge) · UPDATED (relative age).
  *
  * Presentation-only over already-loaded /tasks/roots fields. Missing agent or
  * thread render a neutral em-dash — never a fabricated identity.
@@ -33,14 +33,18 @@ export interface TaskListRoutes {
  * Shared flex column widths. The header row and every data row use the same
  * tokens so the columns line up. Standard Tailwind widths only — the feature
  * surface forbids arbitrary values (`tailwindcss/no-arbitrary-value`).
+ *
+ * THR-046 msg-11: STATUS and TASK are now separate columns (the old TASK
+ * column contained the status pill; now STATUS holds the pill and TASK holds
+ * the monospace task-id badge).
  */
 const COL = {
-  status: 'w-24 shrink-0 whitespace-nowrap',
-  taskId: 'w-28 shrink-0',
+  status: 'w-28 shrink-0',
+  task: 'w-24 shrink-0',
   title: 'min-w-0 flex-1',
   agent: 'w-36 shrink-0',
   thread: 'w-24 shrink-0',
-  updated: 'w-16 shrink-0 text-right',
+  updated: 'w-14 shrink-0 text-right',
 } as const;
 
 const ROW_FLEX = 'flex items-center gap-3';
@@ -94,11 +98,15 @@ function rollupLabel(status: TaskStatus): string {
  * (worst) status among the root and its descendants, so a rollup that differs
  * from the root's own status always comes from a strictly-worse descendant —
  * honest to render "subtask <status>" with no count claim.
+ *
+ * THR-046 msg-11: this now lives in the TITLE column alongside the headline
+ * text. The STATUS column is reserved for the StatusBadge only, so the rollup
+ * no longer stacks on top of the badge.
  */
 function SubtaskRollup({ status }: { status: TaskStatus }): JSX.Element {
   return (
     <span
-      className={`${ROLLUP_COLOR[status]} inline-flex shrink-0 items-center gap-1 text-xs font-medium`}
+      className={`${ROLLUP_COLOR[status]} inline-flex shrink-0 items-center gap-1 text-xs font-medium whitespace-nowrap`}
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
       subtask {rollupLabel(status)}
@@ -128,14 +136,17 @@ function agentChipRole(name: string): 'worker' | 'founder' {
   return name === 'founder' ? 'founder' : 'worker';
 }
 
-/** Aligned, muted, uppercase column-label row (TASKS-01). */
+/**
+ * Aligned, muted, uppercase column-label row (TASKS-01, THR-046 msg-11).
+ * STATUS and TASK are now separate columns; the bar is rounded.
+ */
 export function TaskListColumnHeader(): JSX.Element {
   return (
     <div
-      className={`${ROW_FLEX} text-text-muted border-border-default border-b px-2 py-1.5 text-xs font-medium tracking-wide`}
+      className={`${ROW_FLEX} text-text-muted bg-surface-sunken rounded-lg px-3 py-2 text-xs font-medium tracking-wide`}
     >
       <div className={COL.status}>STATUS</div>
-      <div className={COL.taskId}>TASK</div>
+      <div className={COL.task}>TASK</div>
       <div className={COL.title}>TITLE</div>
       <div className={COL.agent}>AGENT</div>
       <div className={COL.thread}>THREAD</div>
@@ -160,18 +171,22 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
     <div className="border-border-default border-b last:border-b-0">
       <Link
         to={to}
-        className={`${ROW_FLEX} hover:bg-surface-hover rounded-md px-2 py-2 text-sm no-underline transition-colors`}
+        className={`${ROW_FLEX} hover:bg-surface-hover rounded-md px-2 py-2.5 text-sm no-underline transition-colors`}
       >
-        <div className={COL.status}>
+        {/* STATUS — StatusBadge only, whitespace-nowrap to prevent wrapping */}
+        <div className={`${COL.status} whitespace-nowrap`}>
           <StatusBadge status={rollup} blockKind={task.block_kind} />
         </div>
-        <div className={COL.taskId}>
+        {/* TASK — monospace task-id badge */}
+        <div className={`${COL.task} whitespace-nowrap`}>
           <IdBadge id={task.task_id} kind="task" />
         </div>
-        <div className={`${COL.title} flex items-center gap-2`}>
+        {/* TITLE — headline text + inline subtask rollup */}
+        <div className={`${COL.title} flex items-center gap-2 overflow-hidden`}>
           <span className="text-text-primary truncate">{briefHeadline(task.brief)}</span>
           {rollup !== task.status && <SubtaskRollup status={rollup} />}
         </div>
+        {/* AGENT — AgentChip or em-dash fallback */}
         <div className={`${COL.agent} truncate`}>
           {agent ? (
             <AgentChip name={agent} role={agentChipRole(agent)} />
@@ -179,6 +194,7 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
             <span className="text-text-muted">—</span>
           )}
         </div>
+        {/* THREAD — IdBadge or em-dash fallback */}
         <div className={`${COL.thread} truncate`}>
           {thread ? (
             <IdBadge id={thread} kind="thread" />
@@ -186,6 +202,7 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
             <span className="text-text-muted">—</span>
           )}
         </div>
+        {/* UPDATED — relative age */}
         <div className={`${COL.updated} text-text-muted tabular-nums`}>
           {relativeAge(task.updated_at)}
         </div>
