@@ -19,10 +19,17 @@ design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
      InboxRow, MessageBubble, …). Pure props in, JSX out.
    - **`layouts/`** _(future)_ — slot-based templates (AppShell, ThreadsLayout,
      DashboardLayout).
-3. **`src/features/<domain>/`** — React feature folders. One folder per CLI
+3. **`src/shared/<domain>/`** — Shared feature-safe modules. Hookful React
+   components (dialogs, composers) that multiple feature folders need but
+   that cannot live in `design-system/` (patterns are pure, no hooks) or
+   `features/` (cross-feature imports forbidden). May import from
+   `@/lib/`, `@/design-system/`, and `@/hooks/`. May NOT import from
+   `@/features/`.
+4. **`src/features/<domain>/`** — React feature folders. One folder per CLI
    domain. Owns pages, dialogs, and TanStack Query hooks. May import only from
-   `@/lib/`, `@/design-system/`, and `@/hooks/`. **No cross-feature imports.**
-4. **`src/lib/utils.ts`** — `cn` helper for class-name composition (used by
+   `@/lib/`, `@/design-system/`, `@/shared/`, and `@/hooks/`. **No
+   cross-feature imports.**
+5. **`src/lib/utils.ts`** — `cn` helper for class-name composition (used by
    primitives only).
 
 ## Boundary rule
@@ -30,10 +37,11 @@ design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
 > Every browser-callable daemon route maps 1:1 to one TS function in
 > `src/lib/api/`. Features compose those functions through TanStack Query
 > hooks. Features may not call `fetch` directly. Cross-feature imports are
-> forbidden — share through `@/design-system/` or `@/lib/`.
+> forbidden — share through `@/shared/`, `@/design-system/`, or `@/lib/`.
 >
-> Primitives may not import patterns, layouts, hooks, or `@/lib/api`.
-> Patterns may import primitives but not layouts.
+> `@/shared/` modules may import hooks, lib, and design-system but never
+> `@/features/`. Primitives may not import patterns, layouts, hooks, or
+> `@/lib/api`. Patterns may import primitives but not layouts.
 
 ## What is intentionally not in here
 
