@@ -234,6 +234,38 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(screen.queryByText('subtask in progress')).not.toBeInTheDocument();
   });
 
+  test('stacks subtask rollup under title inside the title column', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const taskWithRollup = rootTask({
+      task_id: 'TASK-0502',
+      status: 'in_progress',
+      severity_rollup: 'escalated',
+      brief:
+        'A long root title that needs truncation before it can collide with the task id column',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [taskWithRollup] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    const rollup = await screen.findByText('subtask escalated');
+    const title = screen.getByText(/A long root title/);
+    const titleColumn = rollup.parentElement;
+
+    expect(titleColumn).toBe(title.parentElement);
+    expect(titleColumn).toHaveClass('min-w-0');
+    expect(titleColumn).toHaveClass('flex-1');
+    expect(titleColumn).toHaveClass('flex-col');
+    expect(titleColumn).toHaveClass('items-start');
+    expect(title).toHaveClass('w-full');
+    expect(title).toHaveClass('min-w-0');
+    expect(rollup).not.toHaveClass('shrink-0');
+    expect(rollup).toHaveClass('max-w-full');
+    expect(rollup).toHaveClass('overflow-hidden');
+  });
+
   test('groups by thread on dispatched_from_thread_id, with no-thread bucket', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     const threaded = rootTask({

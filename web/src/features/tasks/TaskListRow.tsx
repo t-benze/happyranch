@@ -100,14 +100,14 @@ function rollupLabel(status: TaskStatus): string {
  * from the root's own status always comes from a strictly-worse descendant —
  * honest to render "subtask <status>" with no count claim.
  *
- * THR-046 msg-11: this now lives in the TITLE column alongside the headline
- * text. The STATUS column is reserved for the StatusBadge only, so the rollup
- * no longer stacks on top of the badge.
+ * THR-046 msg-11: this now lives in the TITLE column under the headline text.
+ * The STATUS column is reserved for the StatusBadge only, and the rollup clips
+ * inside the title column instead of forcing adjacent columns to move.
  */
 function SubtaskRollup({ status }: { status: TaskStatus }): JSX.Element {
   return (
     <span
-      className={`${ROLLUP_COLOR[status]} inline-flex shrink-0 items-center gap-1 text-xs font-medium whitespace-nowrap`}
+      className={`${ROLLUP_COLOR[status]} flex max-w-full items-center gap-1 overflow-hidden text-xs font-medium text-ellipsis whitespace-nowrap`}
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
       subtask {rollupLabel(status)}
@@ -182,9 +182,9 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
         <div className={`${COL.task} whitespace-nowrap`}>
           <IdBadge id={task.task_id} kind="task" />
         </div>
-        {/* TITLE — headline text + inline subtask rollup */}
-        <div className={`${COL.title} flex items-center gap-2 overflow-hidden`}>
-          <span className="text-text-primary truncate">{briefHeadline(task.brief)}</span>
+        {/* TITLE — headline text + optional subtask rollup, both clipped to the title column */}
+        <div className={`${COL.title} flex flex-col items-start justify-center gap-1 overflow-hidden`}>
+          <span className="text-text-primary w-full min-w-0 truncate">{briefHeadline(task.brief)}</span>
           {rollup !== task.status && <SubtaskRollup status={rollup} />}
         </div>
         {/* AGENT — AgentChip or em-dash fallback */}
