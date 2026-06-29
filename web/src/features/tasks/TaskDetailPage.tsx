@@ -505,12 +505,17 @@ export function TaskDetailPage(): JSX.Element {
   const chainQuery = useChainWithBlock(slug, taskId);
   const [dialog, setDialog] = useState<null | 'cancel' | 'revisit' | 'resolve'>(null);
 
-  // THR-037 Change B: escalation is the top-level `escalated` status.
-  const isEscalated = task.data?.status === 'escalated';
+  // THR-037 Change B dual-read: Path B top-level `escalated` status OR
+  // legacy `blocked` + `escalated` block_kind (transition window).
+  const isEscalated =
+    task.data?.status === 'escalated' ||
+    (task.data?.status === 'blocked' && task.data?.block_kind === 'escalated');
   const isTerminal = task.data ? TERMINAL_STATUSES.has(task.data.status) : false;
   const isFailed = task.data?.status === 'failed';
   const note = task.data ? (task.data as { note?: unknown }).note : undefined;
   const failureNote = isFailed && typeof note === 'string' && note ? note : null;
+  const escalationNote =
+    isEscalated && typeof note === 'string' && note ? note : null;
   const brief = task.data?.brief ?? '';
   // §G derived escalated flavor (graceful: null → plain "escalated").
   const escalationFlavor = isEscalated ? chainQuery.data?.escalationFlavor ?? null : null;
@@ -522,10 +527,12 @@ export function TaskDetailPage(): JSX.Element {
     if (!task.data) return undefined;
     const isBlocked =
       task.data.status === 'escalated' ||
+      (task.data.status === 'blocked' && task.data.block_kind === 'escalated') ||
       (task.data.status === 'in_progress' && !!task.data.block_kind);
     if (!isBlocked) return { isBlocked: false };
     const blockerName =
-      task.data.status === 'escalated'
+      task.data.status === 'escalated' ||
+      (task.data.status === 'blocked' && task.data.block_kind === 'escalated')
         ? 'escalation'
         : deriveBlockerName(
             task.data.block_kind,
@@ -603,6 +610,14 @@ export function TaskDetailPage(): JSX.Element {
               >
                 <span className="font-semibold">Failure reason:</span>{' '}
                 <span className="font-mono">{failureNote}</span>
+              </div>
+            )}
+            {escalationNote && (
+              <div
+                className="bg-tier-amber-tint text-status-escalated mt-3 max-h-32 overflow-y-auto rounded-md px-3 py-2 text-sm"
+              >
+                <span className="font-semibold">Escalation reason:</span>{' '}
+                <span className="font-mono">{escalationNote}</span>
               </div>
             )}
             <div className="mt-3 flex gap-2">

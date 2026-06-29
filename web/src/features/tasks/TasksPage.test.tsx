@@ -993,3 +993,128 @@ describe('TaskDetailPage — property grid (TASKDET-03)', () => {
     expect(within(rail).getByText('Created')).toBeInTheDocument();
   });
 });
+
+describe('TaskDetailPage — escalation reason', () => {
+  const ESCALATION_NOTE = 'Agent exhausted failure-round bound after 5 attempts';
+
+  function stubDetailHandlers(
+    overrides: Partial<TaskRecord> & Record<string, unknown>,
+  ) {
+    const detailTask = { ...TASK, ...overrides } as TaskRecord;
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${detailTask.task_id}`, () =>
+        HttpResponse.json({
+          task: detailTask,
+          results: [],
+          audit_log: [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          active_chain: null,
+          blocked_on_jobs: null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${detailTask.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: detailTask.task_id,
+          assigned_agent: null,
+          brief: detailTask.brief,
+          status: detailTask.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [] }),
+      ),
+    );
+  }
+
+  test('displays escalation reason for a Path B escalated task with a note', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubDetailHandlers({
+      status: 'escalated',
+      block_kind: null,
+      note: ESCALATION_NOTE,
+    });
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    // Wait for the data-driven Brief section to confirm detail fetch completed.
+    expect(
+      await screen.findByRole('heading', { name: 'Brief' }),
+    ).toBeInTheDocument();
+    // Escalation reason banner is visible.
+    expect(screen.getByText(/Escalation reason:/)).toBeInTheDocument();
+    expect(screen.getByText(ESCALATION_NOTE)).toBeInTheDocument();
+    // The Resolve button is present because the task is escalated.
+    expect(screen.getByRole('button', { name: /Resolve/ })).toBeInTheDocument();
+  });
+
+  test('displays escalation reason for a legacy blocked+escalated task with a note', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubDetailHandlers({
+      status: 'blocked',
+      block_kind: 'escalated',
+      note: 'Legacy escalation: budget override required',
+    });
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    expect(
+      await screen.findByRole('heading', { name: 'Brief' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Escalation reason:/)).toBeInTheDocument();
+    expect(
+      screen.getByText('Legacy escalation: budget override required'),
+    ).toBeInTheDocument();
+    // The Resolve button is present for the legacy form too.
+    expect(screen.getByRole('button', { name: /Resolve/ })).toBeInTheDocument();
+  });
+
+  test('does not display escalation reason for a non-escalated task with a note', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // A completed task with a note — note belongs to a prior failure, not escalation.
+    stubDetailHandlers({
+      status: 'completed',
+      block_kind: null,
+      note: 'Some note from a prior escalation',
+    });
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    expect(
+      await screen.findByRole('heading', { name: 'Brief' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Escalation reason:/)).not.toBeInTheDocument();
+    // No Resolve button for non-escalated tasks.
+    expect(
+      screen.queryByRole('button', { name: /Resolve/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  test('does not display escalation reason for an escalated task with empty note', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubDetailHandlers({
+      status: 'escalated',
+      block_kind: null,
+      note: '',
+    });
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    expect(
+      await screen.findByRole('heading', { name: 'Brief' }),
+    ).toBeInTheDocument();
+    // Empty note → no escalation reason banner.
+    expect(screen.queryByText(/Escalation reason:/)).not.toBeInTheDocument();
+    // Resolve button is still present (task is escalated, just no note).
+    expect(screen.getByRole('button', { name: /Resolve/ })).toBeInTheDocument();
+  });
+});

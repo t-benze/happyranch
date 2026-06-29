@@ -15,6 +15,10 @@
 // THR-037 Change B (Path B, stored source-of-truth): `blocked` is gone from
 // the surfaced vocabulary. A parent waiting on its own children/jobs is
 // `in_progress` with a `block_kind` discriminant; an agent waiting on the
+// During the Path B transition, a legacy DB row may still carry `blocked`
+// paired with block_kind='escalated'. The TaskDetailPage dual-read handles
+// this; the union keeps it so tsc won't reject the comparison. Remove after
+// the legacy-row soak period ends.
 // founder is the top-level `escalated`; a founder-cancelled task is the
 // terminal `cancelled` (distinct from `failed`).
 export type TaskStatus =
@@ -28,11 +32,17 @@ export type TaskStatus =
   | 'cancelled'
   // Terminal: task closed because its follow-up moved to a human-authorized
   // continuation (revisit / thread-dispatch).
-  | 'resolved_superseded';
+  | 'resolved_superseded'
+  // DEPRECATED (Path B transition). Retained so legacy rows that still carry
+  // status='blocked' + block_kind='escalated' don't cause type errors in
+  // dual-read transition sites. Remove in a later cleanup phase.
+  | 'blocked';
 
 // What an `in_progress` task is internally waiting on (escalated left the
 // discriminant and became a top-level status under Path B).
-export type BlockKind = 'delegated' | 'blocked_on_job';
+// 'escalated' retained for legacy transition: rows that haven't migrated
+// yet may carry block_kind='escalated' alongside status='blocked'.
+export type BlockKind = 'delegated' | 'blocked_on_job' | 'escalated';
 
 export type ReviewVerdict =
   | 'accept'
