@@ -510,7 +510,7 @@ async def submit_progress(task_id: str, body: ProgressBody, org: OrgDep) -> dict
 
 class ResolveEscalationBody(BaseModel):
     decision: str  # "approve" | "reject"
-    rationale: str
+    rationale: str = ""
 
 
 async def resolve_escalation_in_process(
@@ -535,8 +535,6 @@ async def resolve_escalation_in_process(
         _kill_jobs_for_terminating_task,
     )
 
-    if not rationale.strip():
-        raise HTTPException(status_code=400, detail={"code": "rationale_required"})
     if decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
     task = org.db.get_task(task_id)
@@ -556,7 +554,9 @@ async def resolve_escalation_in_process(
     # the task back to PENDING with the rationale on `note`, and the team
     # manager picks it up on the next step with a one-shot prompt header
     # (see `_resolved_escalation_header_if_applicable` in run_step.py).
-    resolved_note = f"Founder {decision}d: {rationale}"
+    trimmed = rationale.strip()
+    verb = "approved" if decision == "approve" else "rejected"
+    resolved_note = f"Founder {verb}: {trimmed}" if trimmed else f"Founder {verb}"
     async with org.db_lock:
         new_status = TaskStatus.PENDING if decision == "approve" else TaskStatus.FAILED
         org.db.update_task(

@@ -24,7 +24,7 @@ export function CancelTaskDialog({ taskId, onClose }: Props): JSX.Element {
   const onSubmit = async () => {
     setError(null);
     try {
-      await cancel.mutateAsync({ reason });
+      await cancel.mutateAsync({ rationale: reason });
       onClose();
     } catch (e: unknown) {
       const code = (e as { code?: string }).code;
@@ -39,20 +39,20 @@ export function CancelTaskDialog({ taskId, onClose }: Props): JSX.Element {
           <DialogTitle>Cancel task</DialogTitle>
         </DialogHeader>
         <p className="text-fg-muted text-sm">
-          Reason (required). The agent's current session will be terminated.
+          Reason (optional). The agent's current session will be terminated.
         </p>
         <Textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           rows={4}
-          placeholder="Reason for cancellation"
+          placeholder="Reason for cancellation (optional)"
         />
         {error && <p className="text-danger text-sm">{error}</p>}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Back</Button>
           <Button
             variant="destructive"
-            disabled={!reason.trim() || cancel.isPending}
+            disabled={cancel.isPending}
             onClick={onSubmit}
           >
             {cancel.isPending ? 'Cancelling…' : 'Cancel task'}

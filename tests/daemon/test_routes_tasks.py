@@ -730,8 +730,10 @@ def test_events_unknown_task_returns_404(tmp_home, app, auth_headers) -> None:
     assert r.status_code == 404
 
 
-def test_resolve_escalation_requires_rationale(tmp_home, app, org_state, auth_headers):
-    from runtime.models import BlockKind, TaskRecord, TaskStatus
+def test_resolve_escalation_accepts_blank_rationale(tmp_home, app, org_state, auth_headers):
+    """THR-046: blank rationale is accepted; note reads 'Founder approved'
+    without trailing colon. Audit payload includes the empty rationale string."""
+    from runtime.models import TaskRecord, TaskStatus
     org_state.db.insert_task(TaskRecord(
         id="TASK-045", brief="x",
     ))
@@ -744,8 +746,39 @@ def test_resolve_escalation_requires_rationale(tmp_home, app, org_state, auth_he
         json={"decision": "approve", "rationale": ""},
         headers=auth_headers,
     )
-    assert r.status_code == 400
-    assert r.json()["detail"]["code"] == "rationale_required"
+    assert r.status_code == 200
+    t = org_state.db.get_task("TASK-045")
+    assert t.note == "Founder approved"
+    entries = org_state.db.get_audit_logs("TASK-045")
+    resolved = [e for e in entries if e["action"] == "escalation_resolved"]
+    assert len(resolved) == 1
+    assert resolved[0]["payload"]["rationale"] == ""
+
+
+def test_resolve_escalation_reject_without_rationale(tmp_home, app, org_state, auth_headers):
+    """THR-046: reject without rationale transitions to failed with note
+    'Founder rejected' and empty audit rationale."""
+    from runtime.models import TaskRecord, TaskStatus
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-046", brief="x",
+    ))
+    org_state.db.update_task(
+        "TASK-046", status=TaskStatus.ESCALATED, block_kind=None,
+    )
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/tasks/TASK-046/resolve-escalation",
+        json={"decision": "reject"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    t = org_state.db.get_task("TASK-046")
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "Founder rejected"
+    entries = org_state.db.get_audit_logs("TASK-046")
+    resolved = [e for e in entries if e["action"] == "escalation_resolved"]
+    assert len(resolved) == 1
+    assert resolved[0]["payload"]["rationale"] == ""
 
 
 def test_events_stream_yields_completion(tmp_home, app, daemon_state, org_state, auth_headers) -> None:

@@ -1029,7 +1029,7 @@ def register(sub) -> None:
     p_resolve.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_resolve.add_argument("--task-id", required=True)
     p_resolve.add_argument("--decision", required=True, choices=["approve", "reject"])
-    p_resolve.add_argument("--rationale", required=True)
+    p_resolve.add_argument("--rationale", default="")
     p_resolve.set_defaults(func=cmd_resolve_escalation)
 
     p_cancel = sub.add_parser(

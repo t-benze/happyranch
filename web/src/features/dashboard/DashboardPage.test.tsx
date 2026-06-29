@@ -1,4 +1,5 @@
 import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse, delay } from 'msw';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -434,6 +435,60 @@ describe('DashboardPage', () => {
       .closest('section') as HTMLElement;
     expect(within(card).getByText('—')).toBeInTheDocument();
     expect(within(card).queryByText('0')).not.toBeInTheDocument();
+  });
+
+  test('EscalationInboxRow approve submits blank rationale', async () => {
+    // THR-046: dashboard inline approve allows blank rationale.
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 3;
+    s.narrative_counts.escalated_open = 1;
+    s.escalations = [
+      {
+        task_id: 'TASK-301',
+        agent: 'qa_engineer',
+        team: 'engineering',
+        question: 'Photo licensing unclear',
+        raised_at: '2026-05-30T11:00:00Z',
+        age_seconds: 3600,
+      },
+    ];
+    seedShell();
+
+    let resolveBody: unknown = null;
+    server.use(
+      handler(s),
+      http.post(
+        `/api/v1/orgs/${SLUG}/tasks/TASK-301/resolve-escalation`,
+        async ({ request }) => {
+          resolveBody = await request.json();
+          return HttpResponse.json({ ok: true, task_id: 'TASK-301', new_status: 'pending' });
+        },
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    // Wait for the escalation row to render, then click it to expand.
+    await screen.findByText(/Photo licensing unclear/i);
+    const row = screen.getByText(/Photo licensing unclear/i).closest(
+      '.border-border-subtle',
+    ) as HTMLElement;
+    await user.click(row);
+
+    // The expanded view shows an "Approve & resolve" button.
+    // Click it without typing any rationale.
+    await user.click(
+      screen.getByRole('button', { name: /Approve & resolve/i }),
+    );
+
+    // The mutation fires asynchronously; wait for the captured body to be set.
+    await waitFor(() => {
+      expect(resolveBody).not.toBeNull();
+    });
+
+    expect(resolveBody).toEqual({ decision: 'approve', rationale: '' });
   });
 
   test('renders org pulse table when teams exist', async () => {
