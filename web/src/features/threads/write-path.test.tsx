@@ -511,12 +511,12 @@ describe('ThreadsPage — write path', () => {
       stubBaseHandlers();
       stubInviteStubs();
 
-      let inviteBody: unknown = null;
+      const inviteCalls: unknown[] = [];
       server.use(
         http.post(
           `/api/v1/orgs/${SLUG}/threads/${INVITE_THREAD_ID}/invite`,
           async ({ request: req }) => {
-            inviteBody = await req.json();
+            inviteCalls.push(await req.json());
             return HttpResponse.json({
               thread_id: INVITE_THREAD_ID,
               agent_name: 'agent_c',
@@ -553,9 +553,10 @@ describe('ThreadsPage — write path', () => {
       const dialog = screen.getByRole('dialog');
       await user.click(within(dialog).getByRole('button', { name: /^Invite$/i }));
 
-      // Assert exactly one POST with { agent_name: 'agent_c' }.
+      // Assert exactly one invite POST with { agent_name: 'agent_c' }.
       await waitFor(() => {
-        expect(inviteBody).toEqual({ agent_name: 'agent_c' });
+        expect(inviteCalls).toHaveLength(1);
+        expect(inviteCalls[0]).toEqual({ agent_name: 'agent_c' });
       });
     });
 
