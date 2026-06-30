@@ -84,6 +84,12 @@ export const resumeThread = (
 export const threadInboxEventsPath = (slug: string): string =>
   `/orgs/${slug}/threads/events`;
 
+export const abortReplies = (
+  slug: string,
+  threadId: string,
+): Promise<{ thread_id: string; aborted_count: number; purposes: string[] }> =>
+  request(`/orgs/${slug}/threads/${threadId}/abort-replies`, { method: 'POST' });
+
 export const threadTailPath = (
   slug: string,
   threadId: string,

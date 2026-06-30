@@ -13,6 +13,7 @@ from runtime.infrastructure.database import Database
 from runtime.models import (
     ThreadAttachment,
     ThreadInvocationPurpose,
+    ThreadInvocationStatus,
     ThreadMessage,
     ThreadMessageKind,
     ThreadParticipant,
@@ -833,3 +834,71 @@ async def test_same_agent_distinct_threads_can_overlap(tmp_path, monkeypatch):
     )
     # Same agent on distinct threads can overlap.
     assert counter["max"] == 2
+
+
+@pytest.mark.asyncio
+async def test_run_invocation_preserves_abort_reason_when_externally_failed(
+    tmp_path, monkeypatch,
+):
+    """When an invocation is externally failed (founder_aborted) during
+    subprocess execution, the runner must not overwrite the abort reason
+    with no_callback or emit a misleading extra failure audit."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    class _FakeExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            return FakeExecutorResult(success=True)
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _FakeExec(),
+    )
+
+    # Simulate external abort during execution: fail the invocation before
+    # the runner inspects post-subprocess state.
+    db.fail_invocation(
+        inv.invocation_token,
+        status=ThreadInvocationStatus.FAILED,
+        decline_reason="founder_aborted",
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+
+    # Run invocation — should detect externally-failed token and return
+    # without overwriting the abort reason.
+    await run_invocation(
+        org_state=org,
+        invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    # The invocation should still be failed with founder_aborted reason.
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after is not None
+    assert after.status is ThreadInvocationStatus.FAILED
+    assert after.decline_reason == "founder_aborted"
+
+    # No extra failure audit row should be emitted for this invocation
+    # (the audit row count for thread invocation failures should be 0).
+    # We verify the decline_reason wasn't overwritten to "no_callback".
+    assert "no_callback" not in (after.decline_reason or "")

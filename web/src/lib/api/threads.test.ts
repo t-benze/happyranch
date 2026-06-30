@@ -2,6 +2,7 @@ import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { server } from '../../test/server';
 import {
+  abortReplies,
   archiveThread,
   composeThread,
   extendThreadCap,
@@ -144,6 +145,26 @@ describe('threads api mirror', () => {
     );
     await call();
     expect(hit).toBe(true);
+  });
+
+  test('abortReplies POSTs to the correct path', async () => {
+    seedToken();
+    let hit = false;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/abort-replies`, () => {
+        hit = true;
+        return HttpResponse.json({
+          thread_id: 'THR-001',
+          aborted_count: 3,
+          purposes: ['reply', 'bootstrap', 'task_followup'],
+        });
+      }),
+    );
+    const r = await abortReplies(SLUG, 'THR-001');
+    expect(hit).toBe(true);
+    expect(r.thread_id).toBe('THR-001');
+    expect(r.aborted_count).toBe(3);
+    expect(r.purposes).toEqual(['reply', 'bootstrap', 'task_followup']);
   });
 
   test('SSE path helpers return stable strings', () => {

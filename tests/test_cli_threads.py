@@ -426,3 +426,50 @@ def test_threads_dispatch_no_supersede_prints_plain(tmp_path: Path, monkeypatch,
     out = capsys.readouterr().out
     assert "ok: dispatched TASK-888 from THR-001" in out
     assert "supersedes" not in out
+
+
+def test_threads_abort_replies_prints_json(monkeypatch, capsys) -> None:
+    """CLI abort-replies prints JSON response like other founder thread actions."""
+    from cli.commands.threads import cmd_threads_abort_replies
+
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "thread_id": "THR-001",
+        "aborted_count": 2,
+        "purposes": ["reply", "bootstrap", "task_followup"],
+    })
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(org="alpha", thread_id="THR-001")
+    cmd_threads_abort_replies(args)
+
+    out = capsys.readouterr().out
+    parsed = json.loads(out)
+    assert parsed["thread_id"] == "THR-001"
+    assert parsed["aborted_count"] == 2
+    assert set(parsed["purposes"]) == {"reply", "bootstrap", "task_followup"}
+
+    # Verify the POST hit the correct URL
+    fake.post.assert_called_once_with(
+        "/api/v1/orgs/alpha/threads/THR-001/abort-replies",
+    )
+
+
+def test_threads_abort_replies_zero_count(monkeypatch, capsys) -> None:
+    """CLI abort-replies prints zero count for idempotent case."""
+    from cli.commands.threads import cmd_threads_abort_replies
+
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "thread_id": "THR-002",
+        "aborted_count": 0,
+        "purposes": ["reply", "bootstrap", "task_followup"],
+    })
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(org=None, thread_id="THR-002")
+    cmd_threads_abort_replies(args)
+
+    out = capsys.readouterr().out
+    parsed = json.loads(out)
+    assert parsed["aborted_count"] == 0

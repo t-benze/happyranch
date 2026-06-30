@@ -32,6 +32,7 @@ import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
 import { isGPrefixArmed } from '@/hooks/global-jump';
 import {
+  useAbortReplies,
   useSendFollowUp,
   useThread,
   useThreadMessages,
@@ -223,6 +224,11 @@ export function ThreadsPage(): JSX.Element {
     [messages],
   );
   const nowMs = useNowMs(anyWorking);
+
+  // Abort replies
+  const abortReplies = useAbortReplies(threadId ?? '');
+  const inFlight = useMemo(() => selectInFlightResponders(messages), [messages]);
+  const hasInFlightResponders = inFlight.length > 0;
 
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
@@ -470,6 +476,9 @@ export function ThreadsPage(): JSX.Element {
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
           onExtend={() => setShowExtend(true)}
+          onAbort={() => abortReplies.mutate()}
+          abortPending={abortReplies.isPending}
+          hasInFlightResponders={hasInFlightResponders}
           composer={
             <Composer
               agents={agents}
@@ -552,6 +561,9 @@ interface DetailColumnProps {
   onInvite: () => void;
   onArchive: () => void;
   onExtend: () => void;
+  onAbort: () => void;
+  abortPending: boolean;
+  hasInFlightResponders: boolean;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -568,6 +580,9 @@ function DetailColumn({
   onInvite,
   onArchive,
   onExtend,
+  onAbort,
+  abortPending,
+  hasInFlightResponders,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -653,6 +668,17 @@ function DetailColumn({
           <>
             <Button variant="ghost" size="sm" onClick={onInvite} disabled={!open} title="Invite (I)">Invite</Button>
             <Button variant="ghost" size="sm" onClick={onExtend} disabled={!open} title="Extend turn cap">Extend</Button>
+            {open && hasInFlightResponders && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onAbort}
+                disabled={abortPending}
+                title="Abort pending reply sessions"
+              >
+                Abort replies
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
             {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
             {slug && thread.participants[0] && (

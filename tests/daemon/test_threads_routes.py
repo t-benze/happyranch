@@ -1434,3 +1434,183 @@ def test_post_as_agent_rejects_unknown_task(tmp_home, app, org_state, auth_heade
 
     assert resp.status_code == 404, resp.text
     assert resp.json()["detail"]["code"] == "unknown_task"
+
+
+# ---------------------------------------------------------------------------
+# POST /threads/{id}/abort-replies
+# ---------------------------------------------------------------------------
+
+
+def test_abort_replies_marks_pending_failed(tmp_home, app, org_state, auth_headers):
+    """Abort marks pending REPLY invocations failed with founder_aborted reason,
+    consumes no turns, writes no transcript row, and returns the count."""
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="dev_agent")
+    t_before = org_state.db.get_thread(tid)
+    msg_count_before = len(org_state.db.list_thread_messages(tid))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/abort-replies",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["thread_id"] == tid
+    assert data["aborted_count"] == 1
+    assert set(data["purposes"]) == {"reply", "bootstrap", "task_followup"}
+
+    # Token is now non-pending
+    inv = org_state.db.get_pending_invocation(token)
+    assert inv is None
+
+    # Invocation is failed with founder_aborted reason
+    any_inv = org_state.db.get_invocation_any_status(token)
+    assert any_inv is not None
+    assert any_inv.status.value == "failed"
+    assert any_inv.decline_reason == "founder_aborted"
+    assert any_inv.consumed_at is not None
+
+    # No turns consumed, no transcript row appended
+    t_after = org_state.db.get_thread(tid)
+    assert t_after.turns_used == t_before.turns_used
+    assert len(org_state.db.list_thread_messages(tid)) == msg_count_before
+
+
+def test_abort_replies_rejects_aborted_token_reply(tmp_home, app, org_state, auth_headers):
+    """After abort, presenting the aborted token for a reply is rejected
+    with 409 (invocation_token_consumed), and no new message is created."""
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="dev_agent")
+
+    # Abort first
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/abort-replies",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    msg_count_before = len(org_state.db.list_thread_messages(tid))
+
+    # Try to reply with the aborted token
+    reply_resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid, "invocation_token": token,
+            "speaker": "dev_agent", "body_markdown": "stale reply",
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert reply_resp.status_code == 409, reply_resp.text
+    assert reply_resp.json()["detail"]["code"] == "invocation_token_consumed"
+
+    # No new message created
+    assert len(org_state.db.list_thread_messages(tid)) == msg_count_before
+
+
+def test_abort_replies_idempotent(tmp_home, app, org_state, auth_headers):
+    """Aborting a thread with no pending invocations returns aborted_count: 0."""
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="dev_agent")
+
+    # First abort — should find 1 pending
+    r1 = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/abort-replies",
+        headers=auth_headers,
+    )
+    assert r1.status_code == 200
+    assert r1.json()["aborted_count"] == 1
+
+    # Second abort — should be idempotent, return 0
+    r2 = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/abort-replies",
+        headers=auth_headers,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["aborted_count"] == 0
+
+
+def test_abort_replies_missing_thread_404(tmp_home, app, org_state, auth_headers):
+    """Aborting a non-existent thread returns 404."""
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads/THR-NOPE/abort-replies",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "not_found"
+
+
+def test_abort_replies_archived_thread_400(tmp_home, app, org_state, auth_headers):
+    """Aborting an archived thread returns 400 thread_not_open."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+    _seed_agent(org_state, "dev_agent")
+    org_state.db.set_thread_status(tid, status=ThreadStatus.ARCHIVED, summary="done")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/abort-replies",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "thread_not_open"
+
+
+def test_abort_replies_normal_reply_still_works(tmp_home, app, org_state, auth_headers):
+    """Normal reply behavior is unaffected by abort route existence."""
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="dev_agent")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid, "invocation_token": token,
+            "speaker": "dev_agent", "body_markdown": "normal reply",
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["kind"] == "message"
+
+
+def test_abort_replies_normal_decline_still_works(tmp_home, app, org_state, auth_headers):
+    """Normal decline behavior is unaffected by abort route existence."""
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="dev_agent")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/decline",
+        json={
+            "thread_id": tid, "invocation_token": token,
+            "speaker": "dev_agent", "reason": "not needed",
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["status"] == "declined"
+
+
+def test_abort_replies_aborted_token_decline_rejected(tmp_home, app, org_state, auth_headers):
+    """After abort, presenting the aborted token for a decline is rejected."""
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="dev_agent")
+
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/abort-replies",
+        headers=auth_headers,
+    )
+
+    decline_resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/decline",
+        json={
+            "thread_id": tid, "invocation_token": token,
+            "speaker": "dev_agent", "reason": "too late",
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert decline_resp.status_code == 409, decline_resp.text
+    assert decline_resp.json()["detail"]["code"] == "invocation_token_consumed"

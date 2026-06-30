@@ -1,6 +1,6 @@
 ---
 name: happyranch
-description: Manage the HappyRanch AI tourism organization via the `happyranch` CLI — submit tasks, stream events, inspect audit logs, approve agent enrollments, operate the shared knowledge base, manage threads (compose/send/invite/archive), and record founder-resolved precedents. Use when the user asks about HappyRanch tasks, agents, threads, the daemon/runtime, the knowledge base, or the one-person-company system.
+description: Manage the HappyRanch AI tourism organization via the `happyranch` CLI — submit tasks, stream events, inspect audit logs, approve agent enrollments, operate the shared knowledge base, manage threads (compose/send/invite/archive/abort-replies), and record founder-resolved precedents. Use when the user asks about HappyRanch tasks, agents, threads, the daemon/runtime, the knowledge base, or the one-person-company system.
 metadata:
   {
     "openclaw":
@@ -221,6 +221,9 @@ scripts/happyranch threads archive --thread-id THR-001 --from-file /tmp/thread-a
 # Reopen an archived thread
 scripts/happyranch threads resume --thread-id THR-001
 
+# Abort all pending reply obligations (idempotent, founder only)
+scripts/happyranch threads abort-replies --thread-id THR-001
+
 # Forward a finished thread into a NEW thread (decision continuity)
 scripts/happyranch threads forward --source THR-042 --recipients "engineering_head,product_manager" \
     [--subject "Follow-up: pricing API contract"] [--note-file /tmp/note.md]
@@ -356,7 +359,7 @@ scripts/happyranch init-agent                                   # bootstrap work
   - `cancel --no-cascade` — extra dangerous; leaves live children parentless
   -
   - `threads compose` / `threads send` / `threads invite` / `threads extend` — visible to participants and triggers agent invocations
-  - `threads archive` / `threads resume` / `threads forward` — visible thread state transitions / new-thread spawn
+  - `threads archive` / `threads resume` / `threads forward` / `threads abort-replies` — visible thread state transitions / new-thread spawn / invalidation of pending obligations
   - `jobs run` — TTY-gated; executes the job body inside the daemon process with the daemon's env
   - `jobs reject` / `jobs stop` — terminal or interrupting transition for a job
 - **Agent-callback subcommands — do NOT invoke by hand:**

@@ -688,6 +688,14 @@ async def run_invocation(
                 )
             return
 
+        # Externally failed (e.g. founder_aborted) — the abort route already
+        # published a settled event; do not overwrite the abort reason with
+        # no_callback or emit a misleading extra failure audit row.
+        if after.status is ThreadInvocationStatus.FAILED:
+            reason = after.decline_reason or ""
+            if reason.startswith("founder_aborted") or reason.startswith("archive_started"):
+                return
+
         # Subprocess exited without consuming → auto-decline.
         err_text = str(getattr(result, "error", "") or "").lower()
         rc = getattr(result, "returncode", "?")

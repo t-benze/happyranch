@@ -259,7 +259,15 @@ happyranch threads forward --org <slug> --source THR-008 --recipients alice,bob
 happyranch threads archive --org <slug> --thread-id THR-001 --from-file /tmp/arch.json
 happyranch threads resume --org <slug> --thread-id THR-001
 happyranch threads extend --org <slug> --thread-id THR-001 --new-cap 1000
+happyranch threads abort-replies --org <slug> --thread-id THR-001
 ```
+
+`abort-replies` is an idempotent founder action that marks all pending reply,
+bootstrap, and task-followup invocations as failed with reason `founder_aborted`.
+No transcript rows are written and no turns are consumed. Agents holding aborted
+tokens cannot reply, decline, or dispatch — presenting an aborted token returns
+409 `invocation_token_consumed`. The web UI shows an "Abort replies" button on
+open threads with queued or working responders.
 
 Archive is synchronous: the daemon writes the transcript file and flips the
 thread to `archived` inside the POST handler. The founder can later reopen

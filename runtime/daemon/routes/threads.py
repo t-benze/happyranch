@@ -23,6 +23,7 @@ from runtime.models import (
     TaskRecord,
     ThreadAttachment,
     ThreadInvocationPurpose,
+    ThreadInvocationStatus,
     ThreadMessageKind,
     ThreadRecord,
     ThreadStatus,
@@ -1497,6 +1498,62 @@ async def archive_thread_endpoint(
     return {
         "thread_id": thread_id, "status": "archived",
         "transcript_path": str(transcript_path),
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /threads/{id}/abort-replies — founder aborts pending reply obligations
+# ---------------------------------------------------------------------------
+
+FOUNDER_ABORT_REASON = "founder_aborted"
+
+
+@router.post("/threads/{thread_id}/abort-replies")
+async def abort_replies_endpoint(
+    slug: str, thread_id: str, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+
+    purposes = [
+        ThreadInvocationPurpose.REPLY,
+        ThreadInvocationPurpose.BOOTSTRAP,
+        ThreadInvocationPurpose.TASK_FOLLOWUP,
+    ]
+
+    # Collect triggering seqs BEFORE the reap so we can publish refetch events.
+    pending_rows = org.db.list_thread_invocations(
+        thread_id, status=ThreadInvocationStatus.PENDING,
+    )
+    affected_seqs: set[int] = set()
+    for inv in pending_rows:
+        if inv.purpose in purposes:
+            affected_seqs.add(inv.triggering_seq)
+
+    aborted_count = 0
+    if affected_seqs:
+        aborted_count = org.db.reap_pending_invocations(
+            thread_id,
+            purposes=purposes,
+            decline_reason=FOUNDER_ABORT_REASON,
+        )
+
+    # Publish seq-bearing refetch-triggering events for each affected
+    # triggering seq so the web UI clears queued/working indicators live.
+    for seq in sorted(affected_seqs):
+        await _publish_thread_event(
+            org, slug,
+            thread_id=thread_id, seq=seq, speaker="founder",
+            kind="invocation_settled", preview=None, status="open",
+        )
+
+    return {
+        "thread_id": thread_id,
+        "aborted_count": aborted_count,
+        "purposes": [p.value for p in purposes],
     }
 
 

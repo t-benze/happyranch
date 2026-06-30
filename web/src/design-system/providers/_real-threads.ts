@@ -267,6 +267,22 @@ function useExtendCap(threadId: string): MutationLike<
   });
 }
 
+function useAbortReplies(threadId: string): MutationLike<
+  void,
+  Awaited<ReturnType<typeof threadsApi.abortReplies>>
+> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => threadsApi.abortReplies(slug, threadId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+      qc.invalidateQueries({ queryKey: ['threads', slug] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Exposed surface
 // ---------------------------------------------------------------------------
@@ -283,4 +299,5 @@ export const realThreadsApi: ThreadsApi = {
   useArchiveThread,
   useResumeThread,
   useExtendCap,
+  useAbortReplies,
 };

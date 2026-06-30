@@ -15,6 +15,8 @@ import { useEffect, useState } from 'react';
 import type { ThreadDetailResponse, ThreadMessage, ThreadRecord } from '@/lib/api/types';
 import { MOCK_MESSAGES, MOCK_PARTICIPANTS, MOCK_THREADS } from '@/mocks';
 import type {
+  AbortRepliesArgs,
+  AbortRepliesResult,
   ArchiveArgs,
   ArchiveResult,
   ComposeArgs,
@@ -393,6 +395,29 @@ function useExtendCap(threadId: string): MutationLike<ExtendArgs, ExtendResult> 
   });
 }
 
+function useAbortReplies(threadId: string): MutationLike<AbortRepliesArgs, AbortRepliesResult> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      await sleep(120);
+      // Clear all responder_status from messages to simulate aborted replies.
+      const msgs = store.messages[threadId];
+      if (msgs) {
+        store.messages[threadId] = msgs.map((m) => ({
+          ...m,
+          responder_status: [],
+        }));
+      }
+      return { thread_id: threadId, aborted_count: 1, purposes: ['reply', 'bootstrap', 'task_followup'] };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mock-thread-messages', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Exposed surface
 // ---------------------------------------------------------------------------
@@ -409,6 +434,7 @@ export const mockThreadsApi: ThreadsApi = {
   useArchiveThread,
   useResumeThread,
   useExtendCap,
+  useAbortReplies,
 };
 
 /** Test-only: reset the in-memory store to the canonical fixtures. */
