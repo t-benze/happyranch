@@ -470,17 +470,23 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             except FileNotFoundError:
                 pass
             raise
-        if body.system_prompt:
-            workspace = paths.workspaces_dir / body.name
-            if workspace.exists():
-                ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-                await asyncio.to_thread(
-                    ctx.ensure_workspace_ready, workspace, body.name, body.system_prompt,
-                )
-        if body.executor is not None:
-            workspace = paths.workspaces_dir / body.name
-            if workspace.exists():
-                await asyncio.to_thread(set_executor, workspace, body.executor)
+        workspace = paths.workspaces_dir / body.name
+        if workspace.exists() and (body.system_prompt or body.executor is not None):
+            # Reconcile the workspace bootstrap for the (possibly new) executor
+            # profile. Use the preserved or updated system prompt so the
+            # bootstrap files reflect the current agent definition — not only
+            # the caller-supplied body.system_prompt.
+            ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+            await asyncio.to_thread(
+                ctx.ensure_workspace_ready,
+                workspace,
+                body.name,
+                updated.system_prompt,
+                provider=updated.executor,
+            )
+        if body.executor is not None and workspace.exists():
+            # Also update agent.yaml so the workspace file stays in sync.
+            await asyncio.to_thread(set_executor, workspace, body.executor)
         audit.log_agent_managed(
             scope_id=scope_id,
             action="update",

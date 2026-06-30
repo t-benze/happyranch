@@ -131,6 +131,26 @@ class OrgState:
             slug=slug,
             teams=teams,
         )
+        # THR-052: register any custom executor profiles from the org config
+        # so executor validation surfaces accept them before any route handler
+        # is called. Registration is process-wide (last-write-wins across
+        # multi-org setups); profile name collisions across orgs overwrite
+        # silently — a deliberate bounded behavior until org-scoped registries
+        # are needed.
+        # Malformed profiles are logged but do not prevent org load — the org
+        # still functions with built-in executors.
+        from runtime.orchestrator.org_config import load_org_config
+        from runtime.orchestrator.executor_registry import get_registry
+        try:
+            org_config = load_org_config(paths)
+            if org_config.executor_profiles:
+                get_registry().register_custom_from_config(
+                    org_config.executor_profiles
+                )
+        except Exception as exc:
+            logger.error(
+                "org %r: failed to register executor_profiles: %s", slug, exc
+            )
         return cls(
             slug=slug,
             root=root,

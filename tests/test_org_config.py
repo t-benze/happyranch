@@ -117,6 +117,106 @@ def test_memory_digest_budget_positive_value(tmp_path: Path) -> None:
     assert cfg.memory_digest_budget == 2000
 
 
+# ── THR-052: executor_profiles config parsing ──
+
+def test_executor_profiles_default_empty(tmp_path: Path) -> None:
+    """executor_profiles is an empty dict by default."""
+    runtime = _runtime(tmp_path)
+    cfg = load_org_config(runtime)
+    assert cfg.executor_profiles == {}
+
+
+def test_executor_profiles_parsed_from_config(tmp_path: Path) -> None:
+    """An executor_profiles block is parsed and retained in OrgConfig."""
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, """
+executor_profiles:
+  openclaw:
+    command: openclaw
+    adapter: pi
+    argv_template:
+      - openclaw
+      - agent
+      - "--local"
+      - "--json"
+      - "--message"
+      - "{prompt}"
+      - "--timeout"
+      - "{timeout_seconds}"
+  customcli:
+    command: mycli
+    adapter: claude
+    argv_template:
+      - mycli
+      - "--prompt"
+      - "{prompt}"
+""")
+    cfg = load_org_config(runtime)
+    assert "openclaw" in cfg.executor_profiles
+    assert "customcli" in cfg.executor_profiles
+    assert cfg.executor_profiles["openclaw"]["command"] == "openclaw"
+    assert cfg.executor_profiles["openclaw"]["adapter"] == "pi"
+    assert len(cfg.executor_profiles["openclaw"]["argv_template"]) == 8
+
+
+def test_executor_profiles_rejects_non_mapping(tmp_path: Path) -> None:
+    """executor_profiles must be a mapping, not a list or scalar."""
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, "executor_profiles: [1, 2, 3]\n")
+    with pytest.raises(OrgConfigError, match="executor_profiles must be a mapping"):
+        load_org_config(runtime)
+
+
+def test_executor_profiles_rejects_empty_key(tmp_path: Path) -> None:
+    """executor_profiles keys must be non-empty strings."""
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, """
+executor_profiles:
+  '':
+    command: foo
+    argv_template: [foo, --prompt, '{prompt}']
+""")
+    with pytest.raises(OrgConfigError, match="executor_profiles keys must be non-empty"):
+        load_org_config(runtime)
+
+
+def test_executor_profiles_rejects_non_dict_value(tmp_path: Path) -> None:
+    """Each executor_profiles entry must be a mapping."""
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, """
+executor_profiles:
+  foo: bar
+""")
+    with pytest.raises(OrgConfigError, match="executor_profiles.foo must be a mapping"):
+        load_org_config(runtime)
+
+
+def test_executor_profiles_production_shape_probe(tmp_path: Path) -> None:
+    """Production-shape probe: load config, register profiles, verify
+    registry accepts the custom profile."""
+    from runtime.orchestrator.org_config import OrgConfig
+    from runtime.orchestrator.executor_registry import get_registry, reset_registry
+    reset_registry()
+    cfg = OrgConfig.load_from_text("""
+executor_profiles:
+  openclaw:
+    command: echo
+    adapter: pi
+    argv_template:
+      - echo
+      - "{prompt}"
+""")
+    assert cfg.executor_profiles
+    # Simulate the production registration path (what OrgState.load does).
+    get_registry().register_custom_from_config(cfg.executor_profiles)
+    assert get_registry().is_registered("openclaw")
+    assert get_registry().is_registered("OPENCLAW")  # case-insensitive
+    profile = get_registry().get_profile("openclaw")
+    assert profile is not None
+    assert profile.kind == "custom"
+    assert profile.adapter_id == "pi"
+
+
 @pytest.mark.parametrize(
     "bad_value,err_fragment",
     [

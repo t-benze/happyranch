@@ -644,6 +644,66 @@ def test_manage_agent_update_persists_executor_to_workspace(
     assert cfg["executor"] == "codex"
 
 
+def test_manage_agent_update_executor_regenerates_bootstrap(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Switching executor without supplying system_prompt must regenerate
+    workspace bootstrap for the new executor profile (not default to claude)."""
+    from runtime.orchestrator.executor_registry import (
+        get_registry,
+        ExecutorProfile,
+    )
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude", system_prompt="sys prompt")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+
+    # Register a custom profile so the registry accepts the new name.
+    get_registry().register_custom_profile(
+        ExecutorProfile(
+            name="testcustom",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+        )
+    )
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "update",
+                "name": "dev_agent",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+                "executor": "testcustom",
+            },
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+
+        # Verify ensure_workspace_ready was called with the new executor
+        # name as provider, NOT default "claude".
+        mock_ctx.ensure_workspace_ready.assert_called_once()
+        call_args = mock_ctx.ensure_workspace_ready.call_args
+        # call_args[0] = positional args tuple, call_args[1] = keyword args dict
+        assert call_args[1]["provider"] == "testcustom", \
+            f"expected provider=testcustom, got {call_args}"
+        # System prompt must come from the preserved AgentDef, not the body.
+        assert call_args[0][2].strip() == "sys prompt", \
+            f"expected system prompt 'sys prompt', got {call_args[0][2]!r}"
+
+    # Agent.yaml must reflect the new executor.
+    from runtime.daemon.agent_config import load_agent_config
+    cfg = load_agent_config(workspace)
+    assert cfg["executor"] == "testcustom"
+
+
 def test_manage_agent_terminate_removes_workspace(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
