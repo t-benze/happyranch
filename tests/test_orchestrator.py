@@ -281,11 +281,12 @@ def test_run_agent_routes_opencode_workspace_to_opencode_executor(
         duration_seconds=1,
         session_id="sess-eh",
     )
-    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor) as mock_build:
         result, report = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     assert result.success is True
     assert report is None
+    mock_build.assert_called_once_with("opencode")
     assert mock_executor.run.call_count == 1
     # opencode shares the Claude-style "use the start-task skill" nudge
     # because opencode's `skill` tool resolves the skill on demand.
@@ -307,11 +308,12 @@ def test_run_agent_routes_pi_workspace_to_pi_executor(
         duration_seconds=1,
         session_id="sess-eh",
     )
-    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor) as mock_build:
         result, report = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     assert result.success is True
     assert report is None
+    mock_build.assert_called_once_with("pi")
     assert mock_executor.run.call_count == 1
     prompt = mock_executor.run.call_args.kwargs["prompt"]
     assert "Use the start-task skill" in prompt
