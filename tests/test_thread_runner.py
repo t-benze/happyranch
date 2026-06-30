@@ -878,7 +878,9 @@ async def test_run_invocation_preserves_abort_reason_when_externally_failed(
                 status=ThreadInvocationStatus.FAILED,
                 decline_reason="founder_aborted",
             )
-            return FakeExecutorResult(success=True)
+            r = FakeExecutorResult(success=True)
+            r.agent_session_id = "claude-stale-session"
+            return r
 
     monkeypatch.setattr(
         runner_mod,
@@ -912,3 +914,16 @@ async def test_run_invocation_preserves_abort_reason_when_externally_failed(
     # (the audit row count for thread invocation failures should be 0).
     # We verify the decline_reason wasn't overwritten to "no_callback".
     assert "no_callback" not in (after.decline_reason or "")
+
+    # The stale executor session must NOT be persisted as the resumable
+    # thread session — a future reply would incorrectly resume the aborted
+    # Claude session instead of starting fresh.
+    stored_sid, stored_seq = db.get_thread_session("THR-001", "alice")
+    assert stored_sid is None, (
+        f"aborted invocation must not store its agent_session_id "
+        f"for future resume, but got {stored_sid!r}"
+    )
+    assert stored_seq == 0, (
+        f"aborted invocation must not advance last_resumed_seq, "
+        f"but got {stored_seq}"
+    )

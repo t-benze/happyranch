@@ -654,6 +654,21 @@ async def run_invocation(
             invocation_token=invocation_token,
         )
 
+        # Inspect post-subprocess token state BEFORE session persistence.
+        # An externally terminal invocation (founder_aborted / archive_started)
+        # must not pollute the resumable thread session watermark.
+        after = org_state.db.get_invocation_any_status(invocation_token)
+        if after is None:
+            return
+
+        # Externally failed (e.g. founder_aborted) — the abort route already
+        # published a settled event; skip session persistence and do not
+        # overwrite the abort reason with no_callback.
+        if after.status is ThreadInvocationStatus.FAILED:
+            reason = after.decline_reason or ""
+            if reason.startswith("founder_aborted") or reason.startswith("archive_started"):
+                return
+
         # Persist the (possibly forked / freshly-minted) session id + delta watermark.
         # Advanced only on a successful subprocess — a failed turn leaves the watermark
         # so the next resume re-includes the skipped messages.
@@ -672,10 +687,6 @@ async def run_invocation(
                     triggering_seq=inv.triggering_seq,
                 )
 
-        # Inspect post-subprocess token state.
-        after = org_state.db.get_invocation_any_status(invocation_token)
-        if after is None:
-            return
         if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
             # A reply (CONSUMED) already publishes a seq-bearing message event via
             # the reply route, which clears the indicator. A silent decline only
@@ -687,14 +698,6 @@ async def run_invocation(
                     seq=inv.triggering_seq, kind="invocation_settled", status="declined",
                 )
             return
-
-        # Externally failed (e.g. founder_aborted) — the abort route already
-        # published a settled event; do not overwrite the abort reason with
-        # no_callback or emit a misleading extra failure audit row.
-        if after.status is ThreadInvocationStatus.FAILED:
-            reason = after.decline_reason or ""
-            if reason.startswith("founder_aborted") or reason.startswith("archive_started"):
-                return
 
         # Subprocess exited without consuming → auto-decline.
         err_text = str(getattr(result, "error", "") or "").lower()
