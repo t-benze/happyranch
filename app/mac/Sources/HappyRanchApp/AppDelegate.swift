@@ -141,27 +141,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 environment: EnvironmentSanitizer.buildChildEnvironment(
                     daemonHome: daemonHome(),
                     parentEnvironment: ProcessInfo.processInfo.environment
-                )
+                ),
+                terminationHandler: { @Sendable [weak self] exitedHandle in
+                    let exitCode = exitedHandle.terminationStatus
+                    let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        // PID guard: reject only if currentHandle is set AND
+                        // doesn't match. If currentHandle is nil (immediate
+                        // exit before the caller stores the returned handle),
+                        // this is the current launch's callback — accept it.
+                        if let ch = self.currentHandle,
+                           ch.processIdentifier != exitedHandle.processIdentifier {
+                            return
+                        }
+                        self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
+                        self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
+                        self.stateText = self.supervisor.state.description
+                    }
+                }
             )
             currentHandle = handle
             let pid = handle.processIdentifier
-
-            pc.terminationHandler = { @Sendable [weak self] exitedHandle in
-                let exitCode = exitedHandle.terminationStatus
-                let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    // Guard: only process exit if this handle matches the
-                    // current lifecycle.  A stale callback from a prior launch
-                    // must NOT stop/crash the new daemon.
-                    guard exitedHandle.processIdentifier == self.currentHandle?.processIdentifier else {
-                        return
-                    }
-                    self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
-                    self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
-                    self.stateText = self.supervisor.state.description
-                }
-            }
 
             diagnostics.recordDaemonState(pid: pid, port: 0, bindHost: "127.0.0.1", state: "starting")
 

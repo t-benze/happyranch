@@ -87,7 +87,10 @@ final class FakeProcessHandle: ProcessHandle, @unchecked Sendable {
 /// reuse an already-exited handle via the controller, it throws
 /// `processAlreadyExited`.
 final class FakeProcessController: ProcessControlling, @unchecked Sendable {
-    var terminationHandler: (@Sendable (any ProcessHandle) -> Void)?
+    /// The termination handler registered in the most recent launch() call.
+    /// Stored so fireTermination(for:) and simulateCrash(exitCode:) can
+    /// replay the handler for stale-callback regression tests.
+    private var storedTerminationHandler: (@Sendable (any ProcessHandle) -> Void)?
 
     // Call counters for verification
     var launchCallCount = 0
@@ -109,6 +112,12 @@ final class FakeProcessController: ProcessControlling, @unchecked Sendable {
 
     private var nextPID: Int32 = 12345
 
+    /// When true, the next launch() call will fire the termination handler
+    /// synchronously (simulating a daemon that exits immediately during
+    /// startup) before returning the handle.
+    var simulateImmediateExitOnNextLaunch = false
+    var immediateExitCode: Int32 = 1
+
     /// Configure a custom PID for the next launch. Subsequent launches
     /// auto-increment.
     func setNextPID(_ pid: Int32) {
@@ -121,7 +130,8 @@ final class FakeProcessController: ProcessControlling, @unchecked Sendable {
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL?,
-        environment: [String: String]?
+        environment: [String: String]?,
+        terminationHandler: (@Sendable (any ProcessHandle) -> Void)?
     ) throws -> any ProcessHandle {
         let handle = FakeProcessHandle(
             isRunning: true,
@@ -130,11 +140,12 @@ final class FakeProcessController: ProcessControlling, @unchecked Sendable {
             terminationReason: .exit,
             hasExited: false
         )
+        self.storedTerminationHandler = terminationHandler
         // Wire handle.terminate() to increment call counter and fire handler.
         handle.onTerminate = { [weak self] in
             guard let self else { return }
             self.terminateCallCount += 1
-            self.terminationHandler?(handle)
+            self.storedTerminationHandler?(handle)
         }
 
         nextPID += 1
@@ -147,6 +158,20 @@ final class FakeProcessController: ProcessControlling, @unchecked Sendable {
 
         activeHandle = handle
         allHandles.append(handle)
+
+        // Simulate an immediate daemon exit during launch (for regression testing
+        // of the launch-then-register-termination-handler ordering race).
+        if simulateImmediateExitOnNextLaunch {
+            simulateImmediateExitOnNextLaunch = false
+            handle.simulateCrash(exitCode: immediateExitCode)
+            // Fire the termination handler synchronously.
+            // In the OLD code (handler set AFTER launch returns), this is nil
+            // and the exit is silently dropped → supervisor stays .starting.
+            // In the NEW code (handler passed as launch parameter), this
+            // fires the handler → supervisor reaches .crashed.
+            self.storedTerminationHandler?(handle)
+        }
+
         return handle
     }
 
@@ -164,14 +189,14 @@ final class FakeProcessController: ProcessControlling, @unchecked Sendable {
     /// Used for stale-callback regression tests: fire a handle's callback
     /// without going through terminateActive.
     func fireTermination(for handle: FakeProcessHandle) {
-        terminationHandler?(handle)
+        storedTerminationHandler?(handle)
     }
 
     /// Simulate a crash for the active handle (via uncaughtSignal).
     func simulateCrash(exitCode: Int32) {
         guard let handle = activeHandle else { return }
         handle.simulateCrash(exitCode: exitCode)
-        terminationHandler?(handle)
+        storedTerminationHandler?(handle)
     }
 
     /// All handles created by this controller, in order.

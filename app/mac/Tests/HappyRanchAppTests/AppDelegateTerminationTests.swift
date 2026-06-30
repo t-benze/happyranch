@@ -38,7 +38,8 @@ struct AppDelegateTerminationTests {
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["test"],
             currentDirectoryURL: nil,
-            environment: nil
+            environment: nil,
+            terminationHandler: nil
         ) as! FakeProcessHandle
 
         // Reset call counters since this was setup, not a test action.
@@ -222,7 +223,8 @@ struct AppDelegateTerminationTests {
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["true"],
             currentDirectoryURL: nil,
-            environment: nil
+            environment: nil,
+            terminationHandler: nil
         ) as! FakeProcessHandle
         #expect(fake.launchCallCount == 1)
         #expect(handle1.isRunning == true)
@@ -236,7 +238,8 @@ struct AppDelegateTerminationTests {
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["true"],
             currentDirectoryURL: nil,
-            environment: nil
+            environment: nil,
+            terminationHandler: nil
         ) as! FakeProcessHandle
         #expect(fake.launchCallCount == 2)
         #expect(handle1 !== handle2, "Second launch must return a fresh handle")
@@ -250,6 +253,37 @@ struct AppDelegateTerminationTests {
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
+    }
+
+    // MARK: - Immediate exit during launch (REVISE finding — ordering race)
+
+    /// Verifies that when the managed daemon exits immediately during launch
+    /// (between process.run() and AppDelegate wiring the termination handler),
+    /// the supervisor reaches .crashed, NOT .starting.
+    ///
+    /// RED against the current launch-then-register-termination-handler ordering
+    /// (the handler is nil when the immediate exit fires, so the exit is
+    /// dropped and the supervisor stays .starting). GREEN only after the handler
+    /// is registered atomically with launch (passed as a parameter and wired
+    /// before process.run()).
+    @Test("immediate exit during launch reaches .crashed, not .starting")
+    func immediateExitDuringLaunch() async throws {
+        let fake = FakeProcessController()
+        fake.simulateImmediateExitOnNextLaunch = true
+        fake.immediateExitCode = 1
+
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr")
+
+        delegate.startDaemon()
+
+        // Yield to let any @MainActor Tasks execute
+        await Task.yield()
+
+        #expect(fake.launchCallCount == 1)
+        #expect(delegate.supervisor.state == .crashed,
+                "Immediate exit during launch must reach .crashed, got \(delegate.supervisor.state)")
     }
 
     // MARK: - Stale callback regression (Finding 2 fix)

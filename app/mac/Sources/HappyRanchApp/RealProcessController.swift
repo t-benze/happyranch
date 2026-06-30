@@ -8,23 +8,19 @@ import HappyRanchSupervisor
 /// Foundation.Process is single-use: calling run() a second time after the
 /// process has exited throws NSCocoaErrorDomain Code=3587.  This controller
 /// therefore creates a fresh Process on every launch(), discarding any prior
-/// instance.  The caller's terminationHandler closure is preserved across
-/// launches and wired to each new Process so that AppDelegate receives exactly
-/// one exit callback per managed daemon lifecycle, delivered as a
-/// RealProcessHandle capturing THAT process's state.
+/// instance.
+///
+/// The `terminationHandler` parameter is wired to Process.terminationHandler
+/// BEFORE `process.run()`, making handler registration and launch atomic.
+/// No exit callback can be dropped by a fast-exiting child.
 final class RealProcessController: ProcessControlling, @unchecked Sendable {
-    private var _terminationHandler: (@Sendable (any ProcessHandle) -> Void)?
-
-    var terminationHandler: (@Sendable (any ProcessHandle) -> Void)? {
-        get { _terminationHandler }
-        set { _terminationHandler = newValue }
-    }
 
     func launch(
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL?,
-        environment: [String: String]?
+        environment: [String: String]?,
+        terminationHandler: (@Sendable (any ProcessHandle) -> Void)?
     ) throws -> any ProcessHandle {
         let newProcess = Process()
         newProcess.executableURL = executableURL
@@ -34,12 +30,10 @@ final class RealProcessController: ProcessControlling, @unchecked Sendable {
 
         let handle = RealProcessHandle(process: newProcess)
 
-        // Capture the handle in the Process's terminationHandler so that
-        // when this specific process exits, we deliver ITS handle — not the
-        // controller and not whatever the current mutable slot holds.
-        newProcess.terminationHandler = { [weak self] _ in
-            guard let self else { return }
-            self._terminationHandler?(handle)
+        // Wire terminationHandler BEFORE run() so no exit can be dropped.
+        // Each Process gets its own closure capturing the per-launch handle.
+        newProcess.terminationHandler = { _ in
+            terminationHandler?(handle)
         }
 
         try newProcess.run()
