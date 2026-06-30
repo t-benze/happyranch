@@ -505,6 +505,7 @@ export function ThreadsPage(): JSX.Element {
             threadId={threadId}
             open={showInvite}
             onClose={() => setShowInvite(false)}
+            agents={agents}
           />
           <ArchiveDialog
             threadId={threadId}

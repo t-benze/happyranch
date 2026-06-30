@@ -11,34 +11,43 @@ import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
 import { useInviteAgent } from '@/hooks/threads';
+import { RecipientsInput } from './RecipientsInput';
 import { describeError } from './strings';
+import type { AgentSummary } from '@/lib/api/types';
 
 interface Props {
   threadId: string;
   open: boolean;
   onClose: () => void;
+  agents?: AgentSummary[];
 }
 
-export function InviteDialog({ threadId, open, onClose }: Props): JSX.Element {
+export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): JSX.Element {
   const invite = useInviteAgent(threadId);
-  const [name, setName] = useState('');
+  const [recipientsRaw, setRecipientsRaw] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const nameId = useId();
 
   useEffect(() => {
     if (!open) return;
-    setName('');
+    setRecipientsRaw('');
     setErrorMsg(null);
   }, [open]);
 
-  const submit = async () => {
+  const submit = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     setErrorMsg(null);
-    if (!name.trim()) {
+    // Take the first non-empty token as the single agent name to invite.
+    const firstName = recipientsRaw
+      .split(',')
+      .map((s) => s.trim())
+      .find(Boolean);
+    if (!firstName) {
       setErrorMsg('Agent name is required.');
       return;
     }
     try {
-      await invite.mutateAsync({ agent_name: name.trim() });
+      await invite.mutateAsync({ agent_name: firstName });
       onClose();
     } catch (err) {
       setErrorMsg(
@@ -56,30 +65,23 @@ export function InviteDialog({ threadId, open, onClose }: Props): JSX.Element {
             Invite an additional agent or founder to this thread.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-3">
+        <form onSubmit={submit} className="flex flex-col gap-3">
           <FormField label="Agent name" htmlFor={nameId} error={errorMsg ?? undefined}>
-            <input
+            <RecipientsInput
               id={nameId}
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoFocus
-              className="input"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  submit();
-                }
-              }}
+              value={recipientsRaw}
+              onChange={setRecipientsRaw}
+              agents={agents}
+              placeholder="agent_a, agent_b"
             />
           </FormField>
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} disabled={invite.isPending}>
-            {invite.isPending ? 'Inviting…' : 'Invite'}
-          </Button>
-        </DialogFooter>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={invite.isPending}>
+              {invite.isPending ? 'Inviting…' : 'Invite'}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

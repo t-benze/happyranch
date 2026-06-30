@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test, vi } from 'vitest';
@@ -431,6 +431,194 @@ describe('ThreadsPage — write path', () => {
     // raw anchor navigation cannot attach Authorization; fetch can.
     await waitFor(() => {
       expect(downloadAuthHeader).toBe('Bearer tok');
+    });
+  });
+
+  describe('InviteDialog', () => {
+    const INVITE_THREAD_ID = 'THR-002';
+
+    function stubInviteStubs() {
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+          HttpResponse.json({
+            agents: [
+              { name: 'agent_a', team: 'core', role: 'worker', executor: 'claude', description: null, repos: {}, system_prompt: '' },
+              { name: 'agent_b', team: 'core', role: 'worker', executor: 'claude', description: null, repos: {}, system_prompt: '' },
+              { name: 'agent_c', team: 'support', role: 'manager', executor: 'claude', description: null, repos: {}, system_prompt: '' },
+            ],
+          }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${INVITE_THREAD_ID}`, () =>
+          HttpResponse.json({
+            thread_id: INVITE_THREAD_ID,
+            subject: 'Invite test thread',
+            status: 'open',
+            started_at: '2026-06-30T00:00:00Z',
+            archived_at: null,
+            forwarded_from_id: null,
+            forwarded_from_kind: null,
+            turn_cap: 500,
+            turns_used: 2,
+            summary: null,
+            transcript_path: null,
+            participants: ['founder', 'agent_a'],
+            messages: [
+              {
+                seq: 1,
+                speaker: 'founder',
+                kind: 'message',
+                body_markdown: 'Hello',
+                decline_reason: null,
+                system_payload: null,
+                created_at: '2026-06-30T00:00:00Z',
+                responder_status: [],
+                attachments: [],
+              },
+            ],
+          }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${INVITE_THREAD_ID}/messages`, () =>
+          HttpResponse.json({ messages: [] }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${INVITE_THREAD_ID}/tail`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+      );
+    }
+
+    test('exposes matching placeholder as NewThreadDialog recipients field', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      stubInviteStubs();
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${INVITE_THREAD_ID}` });
+
+      // Open the Invite participant dialog.
+      await user.click(await screen.findByRole('button', { name: /^Invite$/i }));
+
+      // The agent name input should have the same placeholder as NewThreadDialog's recipients field.
+      const input = await screen.findByLabelText(/^Agent name$/i);
+      expect(input).toHaveAttribute('placeholder', 'agent_a, agent_b');
+      expect(input).toHaveAttribute('autocomplete', 'off');
+    });
+
+    test('shows roster autocomplete and submits exactly one invite', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      stubInviteStubs();
+
+      const inviteCalls: unknown[] = [];
+      server.use(
+        http.post(
+          `/api/v1/orgs/${SLUG}/threads/${INVITE_THREAD_ID}/invite`,
+          async ({ request: req }) => {
+            inviteCalls.push(await req.json());
+            return HttpResponse.json({
+              thread_id: INVITE_THREAD_ID,
+              agent_name: 'agent_c',
+              system_message_seq: 2,
+            });
+          },
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${INVITE_THREAD_ID}` });
+
+      // Open the Invite participant dialog.
+      await user.click(await screen.findByRole('button', { name: /^Invite$/i }));
+
+      // Type an agent name prefix to trigger autocomplete.
+      const input = screen.getByLabelText(/^Agent name$/i);
+      await user.type(input, 'agent_c');
+
+      // Autocomplete listbox should appear with matching option.
+      const listbox = await screen.findByRole('listbox', { name: /Mention agents/i });
+      expect(within(listbox).getByRole('option', { name: /agent_c/i })).toBeInTheDocument();
+
+      // Select the option via keyboard (Enter while popup open).
+      await user.keyboard('{Enter}');
+
+      // The input should now contain the selected agent name.
+      await waitFor(() => {
+        expect(input).toHaveValue('agent_c, ');
+      });
+
+      // Submit via the dialog's Invite button (scoped to the dialog to avoid
+      // the header's "Invite" button).
+      const dialog = screen.getByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: /^Invite$/i }));
+
+      // Assert exactly one invite POST with { agent_name: 'agent_c' }.
+      await waitFor(() => {
+        expect(inviteCalls).toHaveLength(1);
+        expect(inviteCalls[0]).toEqual({ agent_name: 'agent_c' });
+      });
+    });
+
+    test('submits only the first agent name when multiple comma-separated tokens are entered', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      stubInviteStubs();
+
+      let inviteBody: unknown = null;
+      server.use(
+        http.post(
+          `/api/v1/orgs/${SLUG}/threads/${INVITE_THREAD_ID}/invite`,
+          async ({ request: req }) => {
+            inviteBody = await req.json();
+            return HttpResponse.json({
+              thread_id: INVITE_THREAD_ID,
+              agent_name: 'agent_a',
+              system_message_seq: 2,
+            });
+          },
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${INVITE_THREAD_ID}` });
+
+      // Open the Invite participant dialog.
+      await user.click(await screen.findByRole('button', { name: /^Invite\b/i }));
+
+      // Type multiple comma-separated agent names.
+      const input = screen.getByLabelText(/^Agent name$/i);
+      await user.type(input, 'agent_a, agent_b');
+
+      // Submit via the dialog's Invite button.
+      const dialog = screen.getByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: /^Invite$/i }));
+
+      // Assert only the first name is sent.
+      await waitFor(() => {
+        expect(inviteBody).toEqual({ agent_name: 'agent_a' });
+      });
+    });
+
+    test('validates empty input and shows error', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      stubInviteStubs();
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${INVITE_THREAD_ID}` });
+
+      // Open the Invite participant dialog.
+      await user.click(await screen.findByRole('button', { name: /^Invite\b/i }));
+
+      // Submit with empty input via the dialog's Invite button.
+      const dialog = screen.getByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: /^Invite$/i }));
+
+      // Error message should appear.
+      await waitFor(() => {
+        expect(screen.getByText('Agent name is required.')).toBeInTheDocument();
+      });
     });
   });
 });
