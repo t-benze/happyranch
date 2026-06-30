@@ -1558,6 +1558,39 @@ def test_get_subtree_statuses_multiple_branches(db):
 
 
 # ---------------------------------------------------------------------------
+# get_descendant_task_ids — subtree walk for Activity replay
+# ---------------------------------------------------------------------------
+
+def test_get_descendant_task_ids_returns_empty_for_task_with_no_children(db):
+    db.insert_task(TaskRecord(id="ROOT-D", brief="root"))
+    result = db.get_descendant_task_ids("ROOT-D")
+    assert result == []
+
+
+def test_get_descendant_task_ids_returns_direct_children(db):
+    db.insert_task(TaskRecord(id="ROOT-D", brief="root"))
+    db.insert_task(TaskRecord(id="CHILD-1", brief="c1", parent_task_id="ROOT-D"))
+    db.insert_task(TaskRecord(id="CHILD-2", brief="c2", parent_task_id="ROOT-D"))
+    result = db.get_descendant_task_ids("ROOT-D")
+    assert sorted(result) == ["CHILD-1", "CHILD-2"]
+
+
+def test_get_descendant_task_ids_walks_grandchildren(db):
+    db.insert_task(TaskRecord(id="ROOT-D", brief="root"))
+    db.insert_task(TaskRecord(id="CHILD-1", brief="c1", parent_task_id="ROOT-D"))
+    db.insert_task(TaskRecord(id="GRAND-1", brief="g1", parent_task_id="CHILD-1"))
+    result = db.get_descendant_task_ids("ROOT-D")
+    assert sorted(result) == ["CHILD-1", "GRAND-1"]
+
+
+def test_get_descendant_task_ids_excludes_root(db):
+    db.insert_task(TaskRecord(id="ROOT-D", brief="root"))
+    db.insert_task(TaskRecord(id="CHILD-1", brief="c1", parent_task_id="ROOT-D"))
+    result = db.get_descendant_task_ids("ROOT-D")
+    assert "ROOT-D" not in result
+
+
+# ---------------------------------------------------------------------------
 # list_roots — roots-only list with severity rollup
 # ---------------------------------------------------------------------------
 

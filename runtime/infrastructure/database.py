@@ -1285,6 +1285,21 @@ class Database:
         )
         return [row["id"] for row in cursor.fetchall()]
 
+    @_synchronized
+    def get_descendant_task_ids(self, root_task_id: str) -> list[str]:
+        """Return all descendant task IDs in the parent_task_id subtree
+        (direct children, grandchildren, etc.). Excludes the root itself.
+
+        Uses the same iterative get_children() walk as get_subtree_statuses().
+        """
+        ids: list[str] = []
+        stack = list(self.get_children(root_task_id))
+        while stack:
+            child_id = stack.pop()
+            ids.append(child_id)
+            stack.extend(self.get_children(child_id))
+        return ids
+
     # Severity ranking for subtree rollup: lower = worse.
     # escalated is the attention-grabbing worst (genuine founder attention);
     # resolved_superseded is the calmest. Under the Path-B stored model
