@@ -28,6 +28,7 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 - **System assistant.** A founder-facing assistant surface backed by a PTY-exec session. Three complementary surfaces: **web dock** (global &#8984;K chat dock mounted in the AppShell, with structured JSON-chat frames over the existing `/api/v1/assistant/session` WebSocket — bearer-subprotocol auth + PTY attach contract frozen), **web page** (`SystemAssistantPage` with xterm.js terminal, reachable from the dock header's "Open full session" escape hatch), and **CLI**. Onboarding is by **self-registration** (unchanged). The dock uses a JSON handshake to negotiate structured mode; per OPTION 3 (founder-ruled), the server output pump starts in raw mode immediately (legacy xterm path byte-identical — NO buffering, NO dependency on any client frame), and the structured frontend tolerates/buffers any raw PTY frame that arrives before the handshake is acknowledged; no structured client ever surfaces a raw PTY frame to the user. Legacy xterm clients continue to work in raw-text mode (byte-identical frozen PTY attach contract). `ran:` cards show verbatim commands detected from PTY output (all ran: lines are stripped from the body). **Action chips:** (a) *reference-existing* chips (Approve JOB-083, Open THR-021, Show diff, any TASK/JOB/THR/KB id) deep-link/navigate to the existing object's approval or detail surface — no POST, no self-approval; (b) *propose-new-action* chips (a chip proposing a gated op that does NOT yet exist as an object, e.g. "propose merging PR X") MUST create a PENDING `review_required` job through the EXISTING jobs gate (the already-authenticated assistant WS carries the structured frame; the daemon-side handler submits the job through the existing jobs mechanism). The assistant NEVER self-approves or self-executes a privileged op. **No new WS/REST endpoint; auth (bearer-subprotocol) and PTY attach contract (`__HAPPYRANCH_ASSISTANT_RESIZE__`) are frozen and byte-for-byte unchanged.** Spec: PRD §2.5.2 + §4.10 (`docs/design-overhaul/product_lead-2026-06-17-design-overhaul-PRD-final.md`), TASK-414 feasibility note, TASK-564 gated-chip ruling, TASK-568 OPTION 3 founder ruling; impl `runtime/daemon/routes/assistant.py` (structured WS mode, OPTION 3 raw-first pump), `web/src/features/system-assistant/AssistantDockHost.tsx` (⌘K dock, Cmd-K close-while-focused, frontend pre-ack raw-frame tolerance), `web/src/features/system-assistant/AssistantTurn.tsx` (multiple-ran stripping, ID deep-link).
 - **Jobs.** Background subprocesses run by the daemon, with two policy flags (`review_required`, `persistent`) and founder-review gating. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `protocol/skills/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
 - **Task blocked by job.** A task can self-block on one or more jobs via `tasks.blocked_on_job_ids`; it auto-resumes when all are terminal. Spec `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. See [Task Blocked By Job](#task-blocked-by-job) below for traps.
+- **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. A first-class helper polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and merges only after review APPROVE + QA PASS + CI PASS + unchanged SHA + mergeable CLEAN. No new task state and no raw `gh pr merge` permission broadening. Current contract: `protocol/00-completion-contract.md`; implementation: `runtime/daemon/routes/pr_ci.py`, `runtime/daemon/pr_ci_waiter.py`, `cli/commands/pr_ci.py` once built.
 
 ### Collaboration surfaces
 
@@ -255,6 +256,16 @@ Traps:
 - Three resume callers must stay symmetric: job terminal hook, immediate block branch check, and startup recovery.
 - Predicate is all-terminal, not any-terminal.
 - `metadata` is a function parameter, not shared state.
+
+## PR CI Wait / Guarded Merge
+
+Traps:
+
+- SHA-pin every wait. If the PR head changes, stop with `stale_head`; do not continue polling the new head silently.
+- "No checks" is not pass. Use required contexts when branch protection provides them, otherwise require explicit expected checks and a bounded settle window.
+- GitHub `mergeable` / `mergeStateStatus` is not CI green. It is one guard in addition to CI pass.
+- Do not use `gh pr merge --auto` as proof of safety while required checks are absent on `main`.
+- Merge completion is allowed only through the guarded helper or founder-reviewed job, not broad worker `gh pr merge` allow-rules.
 
 ## Feishu Notifications (REMOVED)
 
