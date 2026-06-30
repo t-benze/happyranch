@@ -11,9 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Transport for constructing daemon URLs. Only LocalLoopbackTransport is wired.
     let localTransport: RuntimeTransport = LocalLoopbackTransport()
 
-    /// Handle to the app-managed daemon Process. Retained so we can send
-    /// SIGTERM on stop/quit. nil when no managed daemon is running.
-    private var managedProcess: Process?
+    /// Injected process controller — wraps Foundation.Process in production,
+    /// replaced with a FakeProcessController in tests.
+    var processController: ProcessControlling = RealProcessController()
 
     @Published var webViewURL: String?
     @Published var stateText: String = DaemonState.notConfigured.description
@@ -126,24 +126,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: - Process management
 
     private func launchDaemonProcess() {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        task.arguments = ["uv", "run", "python", "-m", "runtime.daemon"]
-        task.currentDirectoryURL = URL(fileURLWithPath: repoRoot())
+        let pc = processController
 
-        // Build a SANITIZED environment — do NOT inherit full parent env.
-        // Only PATH, HOME, and operational HAPPYRANCH vars survive.
-        task.environment = EnvironmentSanitizer.buildChildEnvironment(
-            daemonHome: daemonHome(),
-            parentEnvironment: ProcessInfo.processInfo.environment
-        )
-
-        task.terminationHandler = { @Sendable [weak self] process in
+        pc.terminationHandler = { @Sendable [weak self] process in
             let exitCode = process.terminationStatus
             let signal = process.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.managedProcess = nil
                 self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
                 self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
                 self.stateText = self.supervisor.state.description
@@ -151,9 +140,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
 
         do {
-            try task.run()
-            managedProcess = task
-            let pid = Int32(task.processIdentifier)
+            try pc.launch(
+                executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+                arguments: ["uv", "run", "python", "-m", "runtime.daemon"],
+                currentDirectoryURL: URL(fileURLWithPath: repoRoot()),
+                environment: EnvironmentSanitizer.buildChildEnvironment(
+                    daemonHome: daemonHome(),
+                    parentEnvironment: ProcessInfo.processInfo.environment
+                )
+            )
+            let pid = pc.processIdentifier
             diagnostics.recordDaemonState(pid: pid, port: 0, bindHost: "127.0.0.1", state: "starting")
 
             // Start health probing loop
@@ -168,29 +164,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Send SIGTERM to the managed daemon and wait for exit.
     /// Escalates (forces state to crashed) if the process doesn't exit within a bounded wait.
-    private func terminateManagedProcess() {
-        guard let process = managedProcess, process.isRunning else {
-            managedProcess = nil
+    func terminateManagedProcess() {
+        let pc = processController
+
+        guard pc.isRunning else {
             return
         }
 
         try? supervisor.stop()
         stateText = supervisor.state.description
 
-        process.terminate() // SIGTERM
+        pc.terminate() // SIGTERM
 
         // Bounded wait for the process to exit
         let deadline = Date().addingTimeInterval(5.0)
-        while process.isRunning && Date() < deadline {
+        while pc.isRunning && Date() < deadline {
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
         }
 
-        if process.isRunning {
+        if pc.isRunning {
             // Escalate: process didn't respond to SIGTERM
             diagnostics.recordExit(exitCode: -1, signal: 9)
             supervisor.forceState(.crashed)
             stateText = supervisor.state.description
-            managedProcess = nil
         }
     }
 

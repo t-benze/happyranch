@@ -20,6 +20,11 @@ let package = Package(
             dependencies: ["HappyRanchSupervisor"],
             path: "Tests/HappyRanchSupervisorTests"
         ),
+        .testTarget(
+            name: "HappyRanchAppTests",
+            dependencies: ["HappyRanchApp"],
+            path: "Tests/HappyRanchAppTests"
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

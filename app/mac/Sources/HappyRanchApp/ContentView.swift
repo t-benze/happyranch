@@ -108,10 +108,7 @@ struct ContentView: View {
     }
 
     private var canStop: Bool {
-        // Managed daemon only — external daemon stop is disabled in the UI.
-        // Phase 1: external stop is not surfaced to the founder-facing UI.
-        let s = appDelegate.supervisor.state
-        return s.isRunning && s != .externalRunning
+        appDelegate.supervisor.state.canStop
     }
 
     // MARK: - Placeholder

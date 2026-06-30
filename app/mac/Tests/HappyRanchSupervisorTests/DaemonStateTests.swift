@@ -44,4 +44,28 @@ struct DaemonStateTests {
         #expect(!DaemonState.starting.isRunning)
         #expect(!DaemonState.crashed.isRunning)
     }
+
+    // MARK: - canStop predicate
+
+    @Test("canStop: managed running/unhealthy/starting are stoppable")
+    func canStopManagedRunningStates() {
+        #expect(DaemonState.running.canStop)
+        #expect(DaemonState.unhealthy.canStop)
+        #expect(DaemonState.starting.canStop)
+    }
+
+    @Test("canStop: externalRunning is NOT stoppable")
+    func canStopExternalRunning() {
+        #expect(!DaemonState.externalRunning.canStop)
+    }
+
+    @Test("canStop: stopped and terminal states are NOT stoppable")
+    func canStopStoppedAndTerminal() {
+        #expect(!DaemonState.stopped.canStop)
+        #expect(!DaemonState.notConfigured.canStop)
+        #expect(!DaemonState.crashed.canStop)
+        #expect(!DaemonState.failed.canStop)
+        #expect(!DaemonState.stalePid.canStop)
+        #expect(!DaemonState.stopping.canStop)
+    }
 }

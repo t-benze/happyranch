@@ -44,6 +44,18 @@ public enum DaemonState: String, Sendable, Equatable, CustomStringConvertible {
         }
     }
 
+    /// Whether the daemon can be stopped from this state (UI gating).
+    /// Managed daemons in running, unhealthy, or starting states can be stopped.
+    /// External daemons are never stoppable from the toolbar.
+    public var canStop: Bool {
+        switch self {
+        case .running, .unhealthy, .starting:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Whether this is a terminal state that requires explicit restart.
     public var isTerminal: Bool {
         switch self {
