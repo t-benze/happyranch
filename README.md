@@ -259,6 +259,7 @@ happyranch threads forward --org <slug> --source THR-008 --recipients alice,bob
 happyranch threads archive --org <slug> --thread-id THR-001 --from-file /tmp/arch.json
 happyranch threads resume --org <slug> --thread-id THR-001
 happyranch threads extend --org <slug> --thread-id THR-001 --new-cap 1000
+happyranch threads abort-replies --org <slug> --thread-id THR-001
 ```
 
 Archive is synchronous: the daemon writes the transcript file and flips the

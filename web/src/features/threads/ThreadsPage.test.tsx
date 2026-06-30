@@ -870,6 +870,117 @@ describe('ThreadsPage — list header eyebrow + serif title (THREADS-04)', () =>
 });
 
 /* ------------------------------------------------------------------ */
+/*  Abort replies button — appears when queued/working responders exist */
+/* ------------------------------------------------------------------ */
+
+describe('ThreadsPage — abort replies', () => {
+  const threadId = 'THR-001';
+
+  function mkMsgWithResponders(
+    seq: number,
+    responders: Array<{ agent_name: string; status: string }>,
+  ) {
+    return {
+      seq,
+      speaker: 'founder',
+      kind: 'message' as const,
+      body_markdown: 'hi',
+      decline_reason: null,
+      system_payload: null,
+      created_at: '2026-05-14T00:00:00Z',
+      attachments: [],
+      responder_status: responders.map((r) => ({
+        agent_name: r.agent_name,
+        status: r.status,
+        responded_at: null,
+        started_at: null,
+      })),
+    };
+  }
+
+  function mountThreadWithResponders(
+    responders: Array<{ agent_name: string; status: string }>,
+  ) {
+    const thread = mkThread(threadId, 'Test thread');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [thread] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}`, () =>
+        HttpResponse.json({
+          ...thread,
+          participants: ['dev_agent'],
+          messages: [mkMsgWithResponders(1, responders)],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/messages`, () =>
+        HttpResponse.json({
+          messages: [mkMsgWithResponders(1, responders)],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/tail`, () =>
+        HttpResponse.text('', {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      ),
+    );
+    return mountAt(`/orgs/${SLUG}/threads/${threadId}`);
+  }
+
+  test('abort button appears when thread has queued/working responders', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountThreadWithResponders([
+      { agent_name: 'dev_agent', status: 'working' },
+    ]);
+
+    await screen.findByRole('button', { name: /Abort replies/i });
+  });
+
+  test('abort button is hidden when no in-flight responders', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountThreadWithResponders([]);
+
+    // Wait for detail to render.
+    await screen.findByText('Test thread');
+    expect(
+      screen.queryByRole('button', { name: /Abort replies/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test('abort button calls POST /abort-replies and invalidates queries', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+
+    let abortHit = false;
+    server.use(
+      http.post(
+        `/api/v1/orgs/${SLUG}/threads/${threadId}/abort-replies`,
+        () => {
+          abortHit = true;
+          return HttpResponse.json({
+            thread_id: threadId,
+            aborted_count: 1,
+          });
+        },
+      ),
+    );
+
+    mountThreadWithResponders([
+      { agent_name: 'dev_agent', status: 'queued' },
+    ]);
+
+    const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    const user = userEvent.setup();
+    await user.click(btn);
+
+    // Verify the POST was made.
+    await waitFor(() => {
+      expect(abortHit).toBe(true);
+    });
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
 /*  Retry button query-key invalidation (regression guard for TASK-506) */
 /* ------------------------------------------------------------------ */
 

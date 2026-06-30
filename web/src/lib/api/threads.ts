@@ -80,6 +80,12 @@ export const resumeThread = (
 ): Promise<{ thread_id: string; status: string; idempotent?: boolean }> =>
   request(`/orgs/${slug}/threads/${threadId}/resume`, { method: 'POST' });
 
+export const abortReplies = (
+  slug: string,
+  threadId: string,
+): Promise<{ thread_id: string; aborted_count: number }> =>
+  request(`/orgs/${slug}/threads/${threadId}/abort-replies`, { method: 'POST' });
+
 // SSE paths — pass to subscribeSSE
 export const threadInboxEventsPath = (slug: string): string =>
   `/orgs/${slug}/threads/events`;

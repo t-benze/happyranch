@@ -83,6 +83,7 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/invite',
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/extend',
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/archive',
+  'POST /api/v1/orgs/{slug}/threads/{thread_id}/abort-replies',
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/resume',
   // jobs — founder-facing
   'GET /api/v1/orgs/{slug}/jobs/',

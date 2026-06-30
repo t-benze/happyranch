@@ -32,6 +32,7 @@ import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
 import { isGPrefixArmed } from '@/hooks/global-jump';
 import {
+  useAbortReplies,
   useSendFollowUp,
   useThread,
   useThreadMessages,
@@ -222,10 +223,12 @@ export function ThreadsPage(): JSX.Element {
       ),
     [messages],
   );
+  const inFlight = useMemo(() => selectInFlightResponders(messages), [messages]);
   const nowMs = useNowMs(anyWorking);
 
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
+  const abortReplies = useAbortReplies(threadId ?? '');
   const [composerError, setComposerError] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
 
@@ -470,6 +473,9 @@ export function ThreadsPage(): JSX.Element {
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
           onExtend={() => setShowExtend(true)}
+          hasInFlightResponders={inFlight.length > 0}
+          aborting={abortReplies.isPending}
+          onAbortReplies={() => { abortReplies.mutateAsync().catch(() => {}); }}
           composer={
             <Composer
               agents={agents}
@@ -553,6 +559,9 @@ interface DetailColumnProps {
   onInvite: () => void;
   onArchive: () => void;
   onExtend: () => void;
+  hasInFlightResponders: boolean;
+  aborting: boolean;
+  onAbortReplies: () => void;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -569,6 +578,9 @@ function DetailColumn({
   onInvite,
   onArchive,
   onExtend,
+  hasInFlightResponders,
+  aborting,
+  onAbortReplies,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -652,6 +664,17 @@ function DetailColumn({
         dreamOriginated={isDreamOriginated}
         actions={
           <>
+            {open && hasInFlightResponders && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onAbortReplies}
+                disabled={aborting}
+                title="Abort pending replies"
+              >
+                {aborting ? 'Aborting…' : 'Abort replies'}
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={onInvite} disabled={!open} title="Invite (I)">Invite</Button>
             <Button variant="ghost" size="sm" onClick={onExtend} disabled={!open} title="Extend turn cap">Extend</Button>
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>

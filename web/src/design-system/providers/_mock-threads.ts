@@ -393,6 +393,29 @@ function useExtendCap(threadId: string): MutationLike<ExtendArgs, ExtendResult> 
   });
 }
 
+function useAbortReplies(threadId: string): MutationLike<void, { thread_id: string; aborted_count: number }> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      await sleep(120);
+      // Clear responder_status from all messages for this thread.
+      const msgs = store.messages[threadId];
+      if (msgs) {
+        store.messages[threadId] = msgs.map((m) => ({
+          ...m,
+          responder_status: [],
+        }));
+      }
+      return { thread_id: threadId, aborted_count: 1 };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mock-thread-messages', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Exposed surface
 // ---------------------------------------------------------------------------
@@ -409,6 +432,7 @@ export const mockThreadsApi: ThreadsApi = {
   useArchiveThread,
   useResumeThread,
   useExtendCap,
+  useAbortReplies,
 };
 
 /** Test-only: reset the in-memory store to the canonical fixtures. */
