@@ -1,5 +1,5 @@
 import re
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -96,27 +96,26 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
     # Fix the session_id so the prompt is deterministic.
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
-        mock_executor = MockExecutor.return_value
-        mock_executor.run.return_value = ExecutorResult(
-            success=True,
-            duration_seconds=30,
-            session_id="sess-eh",
-        )
-
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True,
+        duration_seconds=30,
+        session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         orchestrator._run_agent(task_id, "engineering_head", "Decide what to do next")
 
-        prompt = mock_executor.run.call_args.kwargs["prompt"]
-        assert "Use the start-task skill" in prompt
-        assert "task_id: TASK-001" in prompt
-        assert "brief: Explore payments" in prompt
-        assert "session_id:" in prompt
-        assert "role_guidance:" in prompt
-        # Regression guard: the brief must appear exactly once. Before the
-        # role_guidance / capabilities cleanup the brief was rendered both in
-        # ``Parameters.brief`` and at the top of the capabilities block
-        # (``# Task\n<brief>``), doubling the brief on every manager spawn.
-        assert prompt.count("Explore payments") == 1
+    prompt = mock_executor.run.call_args.kwargs["prompt"]
+    assert "Use the start-task skill" in prompt
+    assert "task_id: TASK-001" in prompt
+    assert "brief: Explore payments" in prompt
+    assert "session_id:" in prompt
+    assert "role_guidance:" in prompt
+    # Regression guard: the brief must appear exactly once. Before the
+    # role_guidance / capabilities cleanup the brief was rendered both in
+    # ``Parameters.brief`` and at the top of the capabilities block
+    # (``# Task\n<brief>``), doubling the brief on every manager spawn.
+    assert prompt.count("Explore payments") == 1
 
 
 def test_worker_prompt_omits_role_guidance_block(
@@ -131,24 +130,23 @@ def test_worker_prompt_omits_role_guidance_block(
     task_id = orchestrator.create_task("Implement Alipay webhook")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-dev")
 
-    with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
-        mock_executor = MockExecutor.return_value
-        mock_executor.run.return_value = ExecutorResult(
-            success=True,
-            duration_seconds=30,
-            session_id="sess-dev",
-        )
-
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True,
+        duration_seconds=30,
+        session_id="sess-dev",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         # Worker case: inner run_step._build_agent_prompt returns "" for
         # non-managers; _run_agent's outer wrapper must omit the line.
         orchestrator._run_agent(task_id, "dev_agent", "")
 
-        prompt = mock_executor.run.call_args.kwargs["prompt"]
-        assert "brief: Implement Alipay webhook" in prompt
-        assert prompt.count("Implement Alipay webhook") == 1
-        assert "role_guidance:" not in prompt
-        # No dangling block-scalar marker should be left behind.
-        assert "  |\n" not in prompt
+    prompt = mock_executor.run.call_args.kwargs["prompt"]
+    assert "brief: Implement Alipay webhook" in prompt
+    assert prompt.count("Implement Alipay webhook") == 1
+    assert "role_guidance:" not in prompt
+    # No dangling block-scalar marker should be left behind.
+    assert "  |\n" not in prompt
 
 
 def test_codex_agent_prompt_uses_provider_specific_wording(
@@ -158,21 +156,20 @@ def test_codex_agent_prompt_uses_provider_specific_wording(
     task_id = orchestrator.create_task("Explore payments")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("runtime.orchestrator.orchestrator.CodexExecutor") as MockExecutor:
-        mock_executor = MockExecutor.return_value
-        mock_executor.run.return_value = ExecutorResult(
-            success=True,
-            duration_seconds=30,
-            session_id="sess-eh",
-        )
-
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True,
+        duration_seconds=30,
+        session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         orchestrator._run_agent(task_id, "engineering_head", "Decide what to do next")
 
-        prompt = mock_executor.run.call_args.kwargs["prompt"]
-        assert "Use the start-task skill" not in prompt
-        assert "Use the injected task parameters directly" in prompt
-        assert "task_id: TASK-001" in prompt
-        assert "brief: Explore payments" in prompt
+    prompt = mock_executor.run.call_args.kwargs["prompt"]
+    assert "Use the start-task skill" not in prompt
+    assert "Use the injected task parameters directly" in prompt
+    assert "task_id: TASK-001" in prompt
+    assert "brief: Explore payments" in prompt
 
 
 def test_run_agent_registers_active_session_when_tracker_attached(
@@ -192,11 +189,11 @@ def test_run_agent_registers_active_session_when_tracker_attached(
     task_id = orchestrator.create_task("Explore payments")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
-        mock_executor = MockExecutor.return_value
-        mock_executor.run.return_value = ExecutorResult(
-            success=True, duration_seconds=1, session_id="sess-eh",
-        )
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     assert tracker.get_active(task_id, "engineering_head") == "sess-eh"
@@ -215,11 +212,11 @@ def test_run_agent_skips_session_registration_when_tracker_not_attached(
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
     captured: list[tuple[str, str, str]] = []
 
-    with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
-        mock_executor = MockExecutor.return_value
-        mock_executor.run.return_value = ExecutorResult(
-            success=True, duration_seconds=1, session_id="sess-eh",
-        )
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         orchestrator._run_agent(
             task_id, "engineering_head", "any prompt",
             on_session_started=lambda t, a, s: captured.append((t, a, s)),
@@ -253,14 +250,13 @@ def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, mo
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("runtime.orchestrator.orchestrator.CodexExecutor") as MockExecutor:
-        mock_executor = MockExecutor.return_value
-        mock_executor.run.return_value = ExecutorResult(
-            success=True,
-            duration_seconds=1,
-            session_id="sess-eh",
-        )
-
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True,
+        duration_seconds=1,
+        session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         result, report = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     assert result.success is True
@@ -279,14 +275,13 @@ def test_run_agent_routes_opencode_workspace_to_opencode_executor(
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("runtime.orchestrator.orchestrator.OpencodeExecutor") as MockExecutor:
-        mock_executor = MockExecutor.return_value
-        mock_executor.run.return_value = ExecutorResult(
-            success=True,
-            duration_seconds=1,
-            session_id="sess-eh",
-        )
-
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True,
+        duration_seconds=1,
+        session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         result, report = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     assert result.success is True
@@ -306,14 +301,13 @@ def test_run_agent_routes_pi_workspace_to_pi_executor(
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("runtime.orchestrator.orchestrator.PiExecutor") as MockExecutor:
-        mock_executor = MockExecutor.return_value
-        mock_executor.run.return_value = ExecutorResult(
-            success=True,
-            duration_seconds=1,
-            session_id="sess-eh",
-        )
-
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True,
+        duration_seconds=1,
+        session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         result, report = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     assert result.success is True
@@ -336,14 +330,13 @@ def test_run_agent_defaults_missing_executor_to_claude(orchestrator, test_runtim
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
-        mock_executor = MockExecutor.return_value
-        mock_executor.run.return_value = ExecutorResult(
-            success=True,
-            duration_seconds=1,
-            session_id="sess-eh",
-        )
-
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True,
+        duration_seconds=1,
+        session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         result, _ = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     assert result.success is True
