@@ -115,6 +115,22 @@ function SubtaskRollup({ status }: { status: TaskStatus }): JSX.Element {
   );
 }
 
+/**
+ * Derived waiting qualifier for the TITLE second-line context. Mirrors
+ * StatusBadge's waitingQualifier logic but kept local — the row deliberately
+ * does not reach into StatusBadge internals. Returns null when there is
+ * nothing to name (not in_progress, or no block_kind).
+ */
+function waitingContext(
+  status: TaskStatus,
+  blockKind: TaskRecord['block_kind'],
+): string | null {
+  if (status !== 'in_progress' || !blockKind) return null;
+  if (blockKind === 'delegated') return 'waiting on subtasks';
+  if (blockKind === 'blocked_on_job') return 'waiting on jobs';
+  return null;
+}
+
 function directRevisits(task: TaskRecord): string[] {
   const r = (task as Record<string, unknown>).direct_revisits;
   if (Array.isArray(r)) return r.filter((v): v is string => typeof v === 'string');
@@ -174,18 +190,33 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
         to={to}
         className={`${ROW_FLEX} hover:bg-surface-hover rounded-md px-2 py-2.5 text-sm no-underline transition-colors`}
       >
-        {/* STATUS — StatusBadge only, whitespace-nowrap to prevent wrapping */}
+        {/* STATUS — compact primary task status only, whitespace-nowrap to prevent wrapping */}
         <div className={`${COL.status} whitespace-nowrap`}>
-          <StatusBadge status={rollup} blockKind={task.block_kind} />
+          <StatusBadge status={task.status} />
         </div>
         {/* TASK — monospace task-id badge */}
         <div className={`${COL.task} whitespace-nowrap`}>
           <IdBadge id={task.task_id} kind="task" />
         </div>
-        {/* TITLE — headline text + optional subtask rollup, both clipped to the title column */}
-        <div className={`${COL.title} flex flex-col items-start justify-center gap-1 overflow-hidden`}>
+        {/* TITLE — headline text + optional second-line context (waiting qualifier
+            and/or worst-child severity rollup), both clipped to the title column */}
+        <div className={`${COL.title} flex flex-col items-start justify-center gap-0.5 overflow-hidden`}>
           <span className="text-text-primary w-full min-w-0 truncate">{briefHeadline(task.brief)}</span>
-          {rollup !== task.status && <SubtaskRollup status={rollup} />}
+          {(waitingContext(task.status, task.block_kind) || rollup !== task.status) && (
+            <div className="flex max-w-full items-center gap-1.5 overflow-hidden text-xs whitespace-nowrap">
+              {waitingContext(task.status, task.block_kind) && (
+                <span className="text-text-muted truncate">
+                  {waitingContext(task.status, task.block_kind)}
+                </span>
+              )}
+              {waitingContext(task.status, task.block_kind) && rollup !== task.status && (
+                <span className="text-border-default" aria-hidden>
+                  ·
+                </span>
+              )}
+              {rollup !== task.status && <SubtaskRollup status={rollup} />}
+            </div>
+          )}
         </div>
         {/* AGENT — AgentChip or em-dash fallback */}
         <div className={`${COL.agent} truncate`}>
