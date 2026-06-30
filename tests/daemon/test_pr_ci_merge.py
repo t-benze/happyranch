@@ -393,6 +393,65 @@ def test_perform_merge_not_called_on_mergeable_fail() -> None:
 # ── guard ordering: short-circuits on first failure ────────────────────────
 
 
+def test_stale_head_before_ci_verdict_when_head_changed() -> None:
+    """Spec §4.2 guard 3 (stale_head) checked BEFORE guard 4 (CI verdict).
+
+    review=APPROVE, QA=PASS, ci_verdict='ci_failed', fetch_pr_state returns
+    a DIFFERENT head SHA → verdict MUST be stale_head, NOT ci_failed.
+    fetch_pr_state MUST have been called — proves head recheck precedes CI
+    pass-through.
+    """
+    pr_fetched: list[bool] = [False]
+
+    def different_head() -> PRState:
+        pr_fetched[0] = True
+        return _pr(sha="b" * 40)  # different from pinned "a"*40
+
+    call_log: list[str] = []
+
+    def track_merge(method: str) -> MergeResult:
+        call_log.append("perform_merge_called")
+        return _result()
+
+    verdict = _merge(
+        ci_verdict="ci_failed",
+        fetch_pr_state=different_head,
+        perform_merge=track_merge,
+    )
+    # Guard 3 (stale_head) must fire BEFORE guard 4 (CI verdict)
+    assert verdict.verdict == "stale_head"
+    assert verdict.observed_head_sha == "b" * 40
+    # fetch_pr_state MUST have been called
+    assert pr_fetched[0], "fetch_pr_state was NOT called — CI guard ran first"
+    # perform_merge must NOT be called
+    assert "perform_merge_called" not in call_log
+
+
+def test_ci_verdict_before_pr_closed_when_head_unchanged() -> None:
+    """Spec §4.2 guard 4 (CI verdict) checked BEFORE guard 5 (open/draft).
+
+    review=APPROVE, QA=PASS, ci_verdict='ci_failed', PR is CLOSED but head SHA
+    UNCHANGED → verdict MUST be ci_failed, NOT pr_closed.
+    This locks in that open/draft (guard 5) stays AFTER CI (guard 4).
+    """
+    call_log: list[str] = []
+
+    def track_merge(method: str) -> MergeResult:
+        call_log.append("perform_merge_called")
+        return _result()
+
+    # Same pinned head SHA, but PR is closed
+    verdict = _merge(
+        ci_verdict="ci_failed",
+        fetch_pr_state=lambda: _pr(sha="a" * 40, open=False),
+        perform_merge=track_merge,
+    )
+    # Guard 4 (CI verdict) must fire BEFORE guard 5 (pr_closed)
+    assert verdict.verdict == "ci_failed"
+    # perform_merge must NOT be called
+    assert "perform_merge_called" not in call_log
+
+
 def test_short_circuit_order_review_before_qa() -> None:
     """Review guard checked before QA guard; review fail → merge_guard_review."""
     qa_called: list[bool] = [False]

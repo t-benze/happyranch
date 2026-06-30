@@ -129,10 +129,10 @@ def guarded_merge(
 
         1. Review evidence verdict == APPROVE  → else ``merge_guard_review``
         2. QA evidence verdict == PASS         → else ``merge_guard_qa``
-        3. ci_verdict == 'ci_pass'             → else pass through the
-           waiter's failure verdict
-        4. Re-fetch PR state at merge time:
+        3. Re-fetch PR state at merge time:
            head SHA unchanged == pinned_head_sha → else ``stale_head``
+        4. ci_verdict == 'ci_pass'             → else pass through the
+           waiter's failure verdict
         5. PR open and not draft                → else ``pr_closed`` /
            ``pr_draft``
         6. GitHub mergeability == CLEAN          → else ``merge_guard_mergeable``
@@ -206,22 +206,11 @@ def guarded_merge(
             pinned_head_sha=pinned_head_sha,
         )
 
-    # ── 3. CI verdict pass-through ──
-    if ci_verdict != "ci_pass":
-        if ci_verdict not in _KNOWN_WAITER_FAILURE_VERDICTS:
-            return GuardedMergeVerdict(
-                verdict="github_error",
-                pr_number=pr_number,
-                pinned_head_sha=pinned_head_sha,
-                error_detail=f"unknown ci_verdict {ci_verdict!r}",
-            )
-        return GuardedMergeVerdict(
-            verdict=ci_verdict,
-            pr_number=pr_number,
-            pinned_head_sha=pinned_head_sha,
-        )
-
-    # ── 4. Re-fetch PR state — SHA guard (spec §4.2 pt 3 / §7 trap 1) ──
+    # ── 3. Re-fetch PR state — SHA guard (spec §4.2 pt 3 / §7 trap 1) ──
+    # Per spec §4.2 lines 85-90: stale_head (guard 3) MUST be checked BEFORE
+    # the CI verdict pass-through (guard 4).  open/draft (guard 5) MUST be
+    # checked AFTER the CI verdict (guard 4).  fetch_pr_state is called once
+    # here; its result feeds both guard 3 (stale_head) and guard 5 (open/draft).
     try:
         pr = fetch_pr_state()
     except Exception as exc:
@@ -239,7 +228,22 @@ def guarded_merge(
             observed_head_sha=pr.head_sha,
         )
 
-    # ── 5. PR open and not draft ──
+    # ── 4. CI verdict pass-through (spec §4.2 pt 4) ──
+    if ci_verdict != "ci_pass":
+        if ci_verdict not in _KNOWN_WAITER_FAILURE_VERDICTS:
+            return GuardedMergeVerdict(
+                verdict="github_error",
+                pr_number=pr_number,
+                pinned_head_sha=pinned_head_sha,
+                error_detail=f"unknown ci_verdict {ci_verdict!r}",
+            )
+        return GuardedMergeVerdict(
+            verdict=ci_verdict,
+            pr_number=pr_number,
+            pinned_head_sha=pinned_head_sha,
+        )
+
+    # ── 5. PR open and not draft (spec §4.2 pt 5) — reuses `pr` from step 3 ──
     if not pr.open:
         return GuardedMergeVerdict(
             verdict="pr_closed",
