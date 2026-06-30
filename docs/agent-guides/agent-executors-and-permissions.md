@@ -57,7 +57,7 @@ opencode: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default
 
 Pi: `PiExecutor.run` invokes `pi -p ... --mode json` from the agent workspace. Use external containment when command/tool restriction matters.
 
-Enrolling a non-Claude worker: set `"executor": "codex"`, `"opencode"`, or `"pi"` in the `happyranch manage-agent --from-file` payload. Founder approval bootstraps the right workspace surface. See `protocol/skills/manage-agent/SKILL.md`.
+Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in org `config.yaml`). Founder approval bootstraps the right workspace surface. See `protocol/skills/manage-agent/SKILL.md`.
 
 Repos are configured per agent in `agent.yaml`:
 

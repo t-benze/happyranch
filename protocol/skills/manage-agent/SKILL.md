@@ -78,7 +78,7 @@ This prevents a Content Manager from enrolling agents into the engineering team,
 
 ## What happens
 
-- **enroll**: Creates a pending enrollment request. You may optionally specify `executor: "claude"`, `executor: "codex"`, `executor: "opencode"`, or `executor: "pi"`; if omitted, it defaults to `claude`. You may also include `"allow_rules": ["curl https://api.example.com", ...]` to grant additional Bash prefixes beyond the baseline `happyranch` grant — for example, to allow a specific external API call. The founder must run `happyranch approve-agent --org {ORG_SLUG} <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
+- **enroll**: Creates a pending enrollment request. `executor` is a registered executor profile name; if omitted, it defaults to `claude`. Built-in profiles (`claude`, `codex`, `opencode`, `pi`) are examples, not a closed list; org-config custom profiles are valid once registered (see `docs/agent-guides/agent-executors-and-permissions.md`). You may also include `"allow_rules": ["curl https://api.example.com", ...]` to grant additional Bash prefixes beyond the baseline `happyranch` grant — for example, to allow a specific external API call. The founder must run `happyranch approve-agent --org {ORG_SLUG} <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
 - **update**: Updates the agent's description, system prompt, executor, or repos in the enrollment registry. If the system prompt or executor changes, the workspace bootstrap files are regenerated. Only works on approved agents.
 - **terminate**: Marks the agent as terminated and deletes its workspace directory. Only works on approved agents.
 
