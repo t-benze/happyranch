@@ -247,6 +247,18 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         except _json.JSONDecodeError:
             active_chain = None  # defensive — never 500 on malformed on-disk state
 
+    # DERIVE: a resolved_superseded predecessor is cited by the
+    # escalation_superseded audit row whose structured successor_root
+    # payload names the continuation task that superseded it.
+    superseded_by_task_id: str | None = None
+    for entry in reversed(audit_log):
+        if entry["action"] == "escalation_superseded":
+            payload = entry.get("payload") or {}
+            succ = payload.get("successor_root")
+            if isinstance(succ, str) and succ:
+                superseded_by_task_id = succ
+            break
+
     return {
         "task": _task_to_dict(task),
         "results": org.db.get_task_results(task_id),
@@ -256,6 +268,7 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         "predecessor_prior_status": prior_status,
         "blocked_on_jobs": blocked_on_jobs,
         "active_chain": active_chain,
+        "superseded_by_task_id": superseded_by_task_id,
     }
 
 

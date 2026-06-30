@@ -1482,3 +1482,134 @@ describe('TaskDetailPage — escalation reason', () => {
     expect(screen.getByRole('button', { name: /Resolve/ })).toBeInTheDocument();
   });
 });
+
+describe('TaskDetailPage — superseded by link', () => {
+  const SUPERSEDED_TASK = {
+    ...TASK,
+    status: 'resolved_superseded',
+    block_kind: null,
+    note: 'Resolved: superseded by continuation TASK-SUCC',
+  } as TaskRecord;
+
+  function stubDetail(overrides: Record<string, unknown>) {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${SUPERSEDED_TASK.task_id}`, () =>
+        HttpResponse.json({
+          task: SUPERSEDED_TASK,
+          results: [],
+          audit_log: [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          active_chain: null,
+          blocked_on_jobs: null,
+          ...overrides,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${SUPERSEDED_TASK.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: SUPERSEDED_TASK.task_id,
+          assigned_agent: null,
+          brief: SUPERSEDED_TASK.brief,
+          status: SUPERSEDED_TASK.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [] }),
+      ),
+    );
+  }
+
+  test('shows superseded-by link when task has superseded_by_task_id', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubDetail({ superseded_by_task_id: 'TASK-SUCC' });
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${SUPERSEDED_TASK.task_id}`,
+    });
+    // Wait for data-driven content (Brief section).
+    expect(
+      await screen.findByRole('heading', { name: 'Brief' }),
+    ).toBeInTheDocument();
+    // The superseded-by link appears in the lineage metadata.
+    const link = screen.getByRole('link', { name: 'TASK-SUCC' });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute(
+      'href',
+      `/orgs/${SLUG}/tasks/TASK-SUCC`,
+    );
+    // The label text is present.
+    expect(screen.getByText(/superseded by/)).toBeInTheDocument();
+  });
+
+  test('does not show superseded-by link when superseded_by_task_id is null', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubDetail({ superseded_by_task_id: null });
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${SUPERSEDED_TASK.task_id}`,
+    });
+    expect(
+      await screen.findByRole('heading', { name: 'Brief' }),
+    ).toBeInTheDocument();
+    // No superseded-by link or label.
+    expect(screen.queryByText(/superseded by/)).not.toBeInTheDocument();
+    // The task id heading still renders.
+    expect(
+      screen.getByRole('heading', { name: new RegExp(SUPERSEDED_TASK.task_id) }),
+    ).toBeInTheDocument();
+  });
+
+  test('does not show superseded-by link for a non-superseded task (omitted key)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Override the task to in_progress — no supersession.
+    const normalTask = { ...TASK, status: 'in_progress' } as TaskRecord;
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${normalTask.task_id}`, () =>
+        HttpResponse.json({
+          task: normalTask,
+          results: [],
+          audit_log: [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          active_chain: null,
+          blocked_on_jobs: null,
+          superseded_by_task_id: null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${normalTask.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: normalTask.task_id,
+          assigned_agent: null,
+          brief: normalTask.brief,
+          status: normalTask.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [] }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${normalTask.task_id}`,
+    });
+    expect(
+      await screen.findByRole('heading', { name: 'Brief' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/superseded by/)).not.toBeInTheDocument();
+  });
+});
