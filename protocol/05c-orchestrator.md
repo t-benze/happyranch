@@ -251,11 +251,11 @@ Budget: each `run_step` call increments `orchestration_step_count` persisted
 on the task. When the count exceeds `max_orchestration_steps` the task parks
 in `escalated` for founder review (root tasks only; a non-root over-budget task fails and hands back to its parent).
 
-#### External waits: PR CI and similar systems
+#### External waits
 
-The orchestrator does not gain new task states for external systems such as GitHub CI. External waits use jobs. A task that cannot continue until an external job finishes reports `status="blocked"` with non-empty `waiting_on_job_ids`; the row parks as `in_progress` with `block_kind='blocked_on_job'`; and the existing all-terminal job predicate resumes the task.
+The orchestrator does not gain new task states for external systems. External waits use jobs. A task that cannot continue until an external job finishes reports `status="blocked"` with non-empty `waiting_on_job_ids`; the row parks as `in_progress` with `block_kind='blocked_on_job'`; and the existing all-terminal job predicate resumes the task. The orchestrator never infers task completion from intermediate external signals such as submission, handoff, or an absent result.
 
-PR CI completion is the canonical example. The PR CI / guarded merge helper is a bounded job that polls GitHub for a pinned PR head SHA, exits terminal with a structured verdict, and wakes the task through `blocked_on_job_ids`. The orchestrator never infers PR success from PR creation, GitHub mergeability alone, or an absent check list.
+Example: a PR CI / guarded merge helper is a bounded job that polls an external CI system and wakes the task through `blocked_on_job_ids`. The engineering-domain specifics live in the jobs skill and agent guides.
 
 ### Timeout handling
 

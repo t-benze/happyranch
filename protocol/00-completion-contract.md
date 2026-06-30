@@ -176,33 +176,21 @@ structured join context block with each child's outcome.
 See KB `fanout-primitive-founder-ratification` and
 `output/TASK-1101/native-fanout-phase1-refresh.md`.
 
-## PR CI wait and guarded merge path
+## Completion blocked on an asynchronous external condition
 
-For tasks whose requested outcome includes landing a pull request, opening the PR is an intermediate milestone, not terminal completion. The task owner may report `done` only after the PR is merged, or after it has explicitly escalated/failed with the reason the PR cannot be landed.
+A task whose requested outcome depends on an ASYNCHRONOUS EXTERNAL TERMINAL CONDITION — a long-running external job, a deploy, an external approval workflow, an external CI run — is NOT complete until that condition resolves. The task owner may not report `done` at an intermediate milestone (e.g., submission, handoff, or initiation) when completion requires the external system's terminal verdict.
 
-The runtime primitive for waiting on external PR checks is the existing jobs plus `waiting_on_job_ids` path:
+The runtime primitive for waiting on external conditions is the existing jobs plus `waiting_on_job_ids` path:
 
-1. The task owner captures the repository, PR number, and exact PR head SHA after PR creation or after the last intentional branch push.
-2. After code review and QA have produced the required verdicts, the task owner submits a bounded PR CI / guarded merge job through the first-class HappyRanch helper, not an ad hoc shell polling loop.
+1. The task owner captures the identity of the external artifact or process it must wait on.
+2. The task owner submits a bounded poller job that monitors the external condition to a terminal verdict.
 3. The task owner reports `status="blocked"` with `waiting_on_job_ids=["JOB-NNN"]`.
 4. The task remains `in_progress(blocked_on_job)` until the job is terminal. The normal blocked-on-job resume path reinvokes the task owner with the job result.
-5. On resume, the task owner inspects the job output. It reports `done` only if the job proves the PR was merged at the pinned head SHA. CI failure, stale PR head, missing checks after the settle window, timeout, rejected job, or failed merge must produce a revise/fail/escalate decision rather than a false completion.
+5. On resume, the task owner inspects the job output. It reports `done` only if the job proves the external condition resolved successfully. Failure, timeout, or a missing/disputed result must produce a revise/fail/escalate decision — never a false completion.
 
-The PR helper must be SHA-pinned. Every poll re-checks that the PR head still equals the submitted head SHA. If the head changes, the job exits with a stale-head verdict and does not merge.
+Do not infer external success from an intermediate signal. The poller job — not the task owner's session — reaches the terminal verdict; the task owner gates completion on that verdict alone.
 
-The helper must not treat "no checks" as success. Immediately after PR creation, GitHub may not have created check runs yet. The helper waits through a bounded settle window for expected or required checks to appear. If no acceptable check set appears before the settle deadline, the job exits with a checks-missing verdict.
-
-The merge guard is conjunctive:
-
-- review verdict is `APPROVE`;
-- QA verdict is `PASS`;
-- CI verdict is `PASS` for the pinned SHA;
-- PR head SHA is unchanged at merge time;
-- GitHub mergeability is `CLEAN`;
-- the PR is still open and not draft;
-- the helper uses the configured merge method.
-
-Do not grant agents broad raw `gh pr merge` permission to satisfy this contract. Merge is allowed only through the narrow audited helper/job path that enforces the guard above, or through an explicitly founder-reviewed job.
+Example: a task that must land a pull request waits on that PR's external CI through this path; the engineering-domain specifics (SHA-pinning, settle window, guarded-merge gates) live in the jobs skill and agent guides.
 
 ### Who emits a decision, and delegation scope
 

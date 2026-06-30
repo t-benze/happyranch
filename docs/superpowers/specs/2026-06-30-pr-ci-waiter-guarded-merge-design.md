@@ -12,6 +12,8 @@
 - `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md` — task-blocked-by-job design.
 - KB: `pr-ci-wait-guarded-merge` — founder-approved THR-047 ruling.
 
+**Framing:** This spec is the PR-CI INSTANCE of the general external-terminal-condition wait contract defined in `protocol/00-completion-contract.md` ("Completion blocked on an asynchronous external condition") and `protocol/05c-orchestrator.md` ("External waits"). The protocol layer documents the domain-agnostic mechanism (jobs + `waiting_on_job_ids` → blocked → resume → inspect-verdict); this spec documents the PR-CI-specific engine design, verdict vocabulary, and guard semantics.
+
 ## 1. Goal
 
 PR-producing engineering tasks whose requested outcome is landing code are not complete at PR creation. Today an agent can open a PR, report `done`, and the orchestrator considers the task terminal — leaving CI, merge, and the actual code landing in a founder-run tail that has no structured tracking, no bounded timeout, and no guard against stale heads or incomplete checks.
