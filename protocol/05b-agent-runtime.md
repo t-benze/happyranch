@@ -12,7 +12,16 @@ Each agent in the organization is not just an LLM call — it's a full coding-ag
 
 ### Per-agent executor selection
 
-Agents run through a configured coding-agent CLI. Today the runtime supports Claude Code (`claude -p` with `--permission-mode auto`), Codex (`codex exec --json -`), opencode (`opencode run`), and Pi (`pi -p ... --mode json`). This gives every agent full coding-agent capabilities: file system access, shell commands, web search, and git operations. Executor selection is stored per workspace in `agent.yaml`, so agents can run on different executors in the same org.
+Agents run through a configured coding-agent CLI. The runtime ships with four
+built-in adapter profiles: Claude Code (`claude -p` with `--permission-mode auto`),
+Codex (`codex exec --json -`), opencode (`opencode run`), and Pi (`pi -p ... --mode json`).
+Any agentic CLI that can accept a prompt argument and produce structured output may
+register as a custom executor profile via org configuration — the runtime validates
+argv templates against supported placeholders and builds per-profile subprocess
+launches generically (THR-052 seq 6 founder ruling). This gives every agent full
+coding-agent capabilities: file system access, shell commands, web search, and git
+operations. Executor selection is stored per workspace in `agent.yaml`, so agents
+can run on different executors in the same org.
 
 Each agent's configuration specifies context and workspace:
 
@@ -61,7 +70,10 @@ Write restrictions are role-based but minimal:
 
 ### Executor abstraction
 
-The executor interface supports multiple backends now. Claude and Codex are implemented; additional coding-agent CLIs can be added behind the same abstraction. Swapping an agent from one executor to another is a one-line config change in `agent.yaml`.
+The executor interface supports multiple backends. Four built-in adapters are
+provided; additional agentic CLIs can be registered as custom profiles via org
+configuration (THR-052). Swapping an agent from one executor to another is a
+one-line config change in `agent.yaml`.
 
 ---
 

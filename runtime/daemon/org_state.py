@@ -119,6 +119,43 @@ class OrgState:
         paths = OrgPaths(root=root)
         db = Database(paths.db_path)
         teams = TeamsRegistry.load(root)
+        # THR-052: register any custom executor profiles from the org config
+        # BEFORE validating active agent files, so agents declaring custom
+        # executors defined in the same org's config.yaml can pass validation.
+        #
+        # Error handling:
+        # - ExecutorProfileCollisionError: a different org already registered
+        #   the same profile name with incompatible semantics. This is a hard
+        #   semantic conflict — propagate it so the operator sees it (caught
+        #   by DaemonState.from_runtime for startup, propagated by add_org).
+        # - OrgConfigError / ValueError: malformed config or invalid profile
+        #   definition (missing argv, bad adapter, command not found). Logged
+        #   but does not prevent org load — the org still functions with
+        #   built-in executors. An active agent depending on an unregistered
+        #   profile will then fail validation normally below.
+        from runtime.orchestrator.org_config import (
+            load_org_config, OrgConfigError,
+        )
+        from runtime.orchestrator.executor_registry import get_registry
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfileCollisionError,
+        )
+        try:
+            org_config = load_org_config(paths)
+            if org_config.executor_profiles:
+                get_registry().register_custom_from_config(
+                    org_config.executor_profiles
+                )
+        except ExecutorProfileCollisionError:
+            raise  # hard semantic conflict — propagate
+        except (OrgConfigError, ValueError) as exc:
+            logger.error(
+                "org %r: failed to register executor_profiles: %s", slug, exc
+            )
+        except Exception as exc:
+            logger.error(
+                "org %r: failed to register executor_profiles: %s", slug, exc
+            )
         # Refuse to attach if agent files and teams.yaml disagree. Raises
         # OrgConsistencyError on drift; DaemonState.from_runtime catches
         # per-org so one broken org cannot crash daemon startup, while

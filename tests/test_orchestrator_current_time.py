@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -239,13 +239,13 @@ class TestRunAgentMemoryDigest:
         task_id = orch.create_task("Test memory digest budget=0")
         monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-test")
 
-        with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
-            mock_executor = MockExecutor.return_value
-            mock_executor.run.return_value = ExecutorResult(
-                success=True, duration_seconds=1, session_id="sess-test",
-            )
+        mock_executor = MagicMock()
+        mock_executor.run.return_value = ExecutorResult(
+            success=True, duration_seconds=1, session_id="sess-test",
+        )
+        with patch.object(orch, "_build_executor", return_value=mock_executor):
             orch._run_agent(task_id, "dev_agent", "")
-            prompt = mock_executor.run.call_args.kwargs["prompt"]
+        prompt = mock_executor.run.call_args.kwargs["prompt"]
 
         assert "MEMORY-DIGEST" not in prompt
         assert "Test memory digest budget=0" in prompt
@@ -258,13 +258,13 @@ class TestRunAgentMemoryDigest:
         task_id = orch.create_task("Test without memory dir")
         monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-test")
 
-        with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
-            mock_executor = MockExecutor.return_value
-            mock_executor.run.return_value = ExecutorResult(
-                success=True, duration_seconds=1, session_id="sess-test",
-            )
+        mock_executor = MagicMock()
+        mock_executor.run.return_value = ExecutorResult(
+            success=True, duration_seconds=1, session_id="sess-test",
+        )
+        with patch.object(orch, "_build_executor", return_value=mock_executor):
             orch._run_agent(task_id, "dev_agent", "")
-            prompt = mock_executor.run.call_args.kwargs["prompt"]
+        prompt = mock_executor.run.call_args.kwargs["prompt"]
 
         assert "MEMORY-DIGEST" not in prompt
 
@@ -277,13 +277,13 @@ class TestRunAgentMemoryDigest:
         task_id = orch.create_task("Test memory digest injection")
         monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-test")
 
-        with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
-            mock_executor = MockExecutor.return_value
-            mock_executor.run.return_value = ExecutorResult(
-                success=True, duration_seconds=1, session_id="sess-test",
-            )
+        mock_executor = MagicMock()
+        mock_executor.run.return_value = ExecutorResult(
+            success=True, duration_seconds=1, session_id="sess-test",
+        )
+        with patch.object(orch, "_build_executor", return_value=mock_executor):
             orch._run_agent(task_id, "dev_agent", "")
-            prompt = mock_executor.run.call_args.kwargs["prompt"]
+        prompt = mock_executor.run.call_args.kwargs["prompt"]
 
         assert "=== MEMORY-DIGEST (system) ===" in prompt
         assert "MEM-001" in prompt
@@ -324,13 +324,13 @@ class TestRunAgentMemoryDigest:
         task_id = orch.create_task("Test directive scope boost")
         monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-test")
 
-        with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
-            mock_executor = MockExecutor.return_value
-            mock_executor.run.return_value = ExecutorResult(
-                success=True, duration_seconds=1, session_id="sess-test",
-            )
+        mock_executor = MagicMock()
+        mock_executor.run.return_value = ExecutorResult(
+            success=True, duration_seconds=1, session_id="sess-test",
+        )
+        with patch.object(orch, "_build_executor", return_value=mock_executor):
             orch._run_agent(task_id, "dev_agent", "")
-            prompt = mock_executor.run.call_args.kwargs["prompt"]
+        prompt = mock_executor.run.call_args.kwargs["prompt"]
 
         assert "=== MEMORY-DIGEST (system) ===" in prompt
         # Agent-scope directive (MEM-011) gets +10 boost → ranks above experiential (MEM-010)
@@ -394,13 +394,13 @@ class TestRunAgentMemoryDigest:
 
         monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-test")
 
-        with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
-            mock_executor = MockExecutor.return_value
-            mock_executor.run.return_value = ExecutorResult(
-                success=True, duration_seconds=1, session_id="sess-test",
-            )
+        mock_executor = MagicMock()
+        mock_executor.run.return_value = ExecutorResult(
+            success=True, duration_seconds=1, session_id="sess-test",
+        )
+        with patch.object(orch, "_build_executor", return_value=mock_executor):
             orch._run_agent("TASK-102", "dev_agent", "")
-            prompt = mock_executor.run.call_args.kwargs["prompt"]
+        prompt = mock_executor.run.call_args.kwargs["prompt"]
 
         assert "=== MEMORY-DIGEST (system) ===" in prompt
         # MEM-003 (60 + 20 ancestor boost = 80) should rank above

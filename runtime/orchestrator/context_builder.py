@@ -6,6 +6,7 @@ from pathlib import Path
 
 from runtime.config import Settings
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
@@ -27,15 +28,23 @@ class ContextBuilder:
         self._pi = PiWorkspaceAdapter(settings, paths, slug=slug)
 
     def _adapter(self, provider: str = "claude"):
-        if provider == "claude":
+        """Return the workspace adapter for a registered executor profile.
+
+        The adapter is determined by the profile's ``adapter_id`` field, not
+        the profile name — a custom profile may use the pi adapter while being
+        named ``openclaw``.
+        """
+        profile = get_registry().get_profile(provider)
+        adapter_id = profile.adapter_id if profile else "claude"
+        if adapter_id == "claude":
             return self._claude
-        if provider == "codex":
+        if adapter_id == "codex":
             return self._codex
-        if provider == "opencode":
+        if adapter_id == "opencode":
             return self._opencode
-        if provider == "pi":
+        if adapter_id == "pi":
             return self._pi
-        raise ValueError(f"unknown workspace provider: {provider}")
+        raise ValueError(f"unknown workspace adapter: {adapter_id}")
 
     def write_settings_json(self, workspace: Path, repo_names: list[str] | None = None) -> None:
         self._claude.write_settings_json(workspace, repo_names=repo_names)

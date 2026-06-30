@@ -22,11 +22,9 @@ from runtime.models import (
     ThreadRecord,
 )
 from runtime.orchestrator.executors import (
-    ClaudeExecutor,
-    CodexExecutor,
-    OpencodeExecutor,
-    PiExecutor,
+    GenericCliExecutor,
 )
+from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.orchestrator.org_config import (
     OrgConfig,
     render_current_time_line,
@@ -86,12 +84,14 @@ async def _publish_invocation_event(
         logger.warning("invocation event publish failed: %s", exc)
 
 
-_EXECUTOR_MAP = {
-    "claude": "claude",
-    "codex": "codex",
-    "opencode": "opencode",
-    "pi": "pi",
-}
+# Executor validation is registry-driven (THR-052). The registry singleton
+# is the single source of truth for which executors are valid.
+_EXECUTOR_MAP: dict[str, str] = {}  # populated lazily from registry
+
+
+def _is_registered_executor(name: str) -> bool:
+    """True when ``name`` resolves to a registered executor profile."""
+    return get_registry().is_registered(name)
 
 
 def _render_attachments_for_prompt(m: ThreadMessage) -> str:
@@ -406,26 +406,11 @@ def build_thread_delta_prompt(
 
 
 def _build_executor_for_provider(provider: str, settings: Settings, paths):
-    """Construct the right executor for a given provider string."""
-    if provider == "codex":
-        return CodexExecutor(
-            codex_cli_path=settings.codex_cli_path,
-            sandbox_mode=settings.codex_sandbox_mode,
-        )
-    if provider == "opencode":
-        return OpencodeExecutor(
-            opencode_cli_path=settings.opencode_cli_path,
-        )
-    if provider == "pi":
-        return PiExecutor(
-            pi_cli_path=settings.pi_cli_path,
-        )
-    return ClaudeExecutor(
-        claude_cli_path=settings.claude_cli_path,
-        permission_mode=settings.permission_mode,
-        settings=settings,
-        paths=paths,
-    )
+    """Construct the right executor for a given provider string.
+
+    Delegates to the shared registry factory (THR-052).
+    """
+    return build_executor(provider, settings, paths)
 
 
 def _persist_thread_token_usage(
@@ -498,7 +483,7 @@ async def run_invocation(
     except Exception:
         agent_yaml = {}
     executor_name = (agent_yaml.get("executor") or "claude").lower()
-    if executor_name not in _EXECUTOR_MAP:
+    if not _is_registered_executor(executor_name):
         executor_name = "claude"
 
     # Build OrgPaths so ClaudeExecutor can resolve allow rules.

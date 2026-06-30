@@ -2053,7 +2053,9 @@ def test_set_executor_subcommand_clean_and_org():
     assert args.executor == "codex"
 
 
-def test_set_executor_rejects_unknown_executor():
+def test_set_executor_accepts_registered_profile_name():
     parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["set-executor", "dev_agent", "--executor", "gpt"])
+    # The CLI no longer restricts to a hardcoded set — the server validates
+    # against the registry. Any string passes argparse.
+    args = parser.parse_args(["set-executor", "dev_agent", "--executor", "openclaw"])
+    assert args.executor == "openclaw"

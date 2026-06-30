@@ -354,8 +354,8 @@ def register(sub) -> None:
     p_setexec.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_setexec.add_argument("agent", help="Agent name to switch")
     p_setexec.add_argument(
-        "--executor", required=True, choices=["claude", "codex", "opencode", "pi"],
-        help="New executor",
+        "--executor", required=True, metavar="EXECUTOR",
+        help="New executor (registered profile name)",
     )
     p_setexec.add_argument(
         "--clean", action="store_true",

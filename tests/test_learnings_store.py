@@ -1509,9 +1509,9 @@ class TestImprovedSearch:
 
     def test_tag_match_contributes(self, mem_store: MemoryStore):
         _make_memory_item(mem_store, "MEM-001", "a", "Never Match", tags=["workflow"])
-        _make_memory_item(mem_store, "MEM-002", "b", "Something Else")
+        _make_memory_item(mem_store, "MEM-002", "b", "Something Else", topic="other")
         hits = mem_store.search("workflow")
-        assert len(hits) >= 1
+        assert len(hits) == 1
         assert hits[0].id == "MEM-001"
 
     def test_unrelated_query_returns_no_hits(self, mem_store: MemoryStore):

@@ -179,6 +179,10 @@ class OrgConfig:
     # THR-032 P3b/P4a: memory search and compaction config
     memory_search: MemorySearchConfig = field(default_factory=MemorySearchConfig)
     memory_compaction: MemoryCompactionConfig = field(default_factory=MemoryCompactionConfig)
+    # THR-052: per-org custom executor profiles. Each entry maps a profile name
+    # to {command, argv_template, adapter?}. Parsed but NOT validated for PATH
+    # resolution at parse time (that happens during registration).
+    executor_profiles: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def load_from_text(cls, text: str, path: str = "<text>") -> "OrgConfig":
@@ -695,6 +699,28 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
             ),
         )
 
+    # THR-052: executor_profiles — parse and retain but do NOT validate
+    # command resolution here. Registration (which resolves shutil.which)
+    # happens during OrgState.load so profiles are registered before any
+    # route handler validates executors.
+    executor_profiles: dict[str, dict] = {}
+    exec_profiles_block = data.get("executor_profiles")
+    if exec_profiles_block is not None:
+        if not isinstance(exec_profiles_block, dict):
+            raise OrgConfigError(
+                f"{path}: executor_profiles must be a mapping"
+            )
+        for key, val in exec_profiles_block.items():
+            if not isinstance(key, str) or not key:
+                raise OrgConfigError(
+                    f"{path}: executor_profiles keys must be non-empty strings"
+                )
+            if not isinstance(val, dict):
+                raise OrgConfigError(
+                    f"{path}: executor_profiles.{key} must be a mapping"
+                )
+        executor_profiles = dict(exec_profiles_block)
+
     return OrgConfig(
         session_timeout_seconds=timeout,
         timezone=org_timezone,
@@ -703,6 +729,7 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
         memory_digest_budget=digest_budget,
         memory_search=search_cfg,
         memory_compaction=comp_cfg,
+        executor_profiles=executor_profiles,
         **threads_kwargs,
     )
 

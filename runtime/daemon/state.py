@@ -11,6 +11,9 @@ from runtime.daemon.assistant_pty import AssistantSessionManager
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.queue import TaskQueue
 from runtime.orchestrator.org_validation import OrgConsistencyError
+from runtime.orchestrator.executor_registry import (
+    ExecutorProfileCollisionError,
+)
 from runtime.runtime import RuntimeDir
 
 logger = logging.getLogger(__name__)
@@ -22,9 +25,11 @@ class DaemonState:
     settings: Settings
     orgs: dict[str, OrgState] = field(default_factory=dict)
     # Orgs whose folder is on disk but failed to attach (typically an
-    # OrgConsistencyError from validate_team_membership). Surfaced via
-    # GET /orgs so the founder isn't left guessing why an org went
-    # missing after a restart.
+    # OrgConsistencyError from validate_team_membership, an
+    # ExecutorProfileCollisionError from custom profile registration,
+    # or a ValueError / AgentParseError from agent file validation).
+    # Surfaced via GET /orgs so the founder isn't left guessing why an
+    # org went missing after a restart.
     broken_orgs: dict[str, str] = field(default_factory=dict)
     queue: TaskQueue = field(default_factory=TaskQueue)
     orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -43,7 +48,8 @@ class DaemonState:
         for slug, root in runtime.iter_org_roots():
             try:
                 org = OrgState.load(slug=slug, root=root, settings=settings)
-            except OrgConsistencyError as exc:
+            except (OrgConsistencyError, ExecutorProfileCollisionError,
+                    ValueError) as exc:
                 # One broken org must not crash the daemon. Record the
                 # error for GET /orgs and skip; the folder stays intact
                 # on disk so the founder can fix teams.yaml and restart.

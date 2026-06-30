@@ -6,7 +6,7 @@ A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-p
 
 ## How It Works
 
-HappyRanch runs as a local **HTTP daemon** that dispatches tasks to AI agents running as coding-agent CLI sessions. The `happyranch` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace and a defined role within its org. Executor selection is per-agent: agents may run on [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, opencode, or Pi.
+HappyRanch runs as a local **HTTP daemon** that dispatches tasks to AI agents running as coding-agent CLI sessions. The `happyranch` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace and a defined role within its org. Executor selection is per-agent: agents run on registered executor profiles — built-in profiles ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, opencode, Pi) plus org-config custom profiles for any agentic CLI.
 
 A single runtime container hosts **multiple orgs** under `<runtime>/orgs/<slug>/`, each with its own DB, workspaces, KB, and threads. One daemon serves them all concurrently.
 
@@ -347,7 +347,7 @@ happyranch reject-agent  --org <slug> content_writer
 
 Agent names must be lowercase with underscores only (e.g., `content_writer`, `seo_agent`).
 
-To enroll an agent that runs on Codex, opencode, or Pi instead of Claude, the manager's `manage-agent` payload sets `executor` accordingly:
+To enroll an agent with a non-default executor, the manager's `manage-agent` payload sets `executor` to the registered profile name (built-in or custom):
 
 ```json
 {
@@ -364,7 +364,7 @@ To enroll an agent that runs on Codex, opencode, or Pi instead of Claude, the ma
 }
 ```
 
-After approval, the new workspace will have `executor: codex` (or `opencode` or `pi`) in `agent.yaml` and will be bootstrapped with `AGENTS.md` instead of a Claude-only workspace surface.
+After approval, the new workspace will have the requested executor in `agent.yaml` and will be bootstrapped with the matching workspace surface (`AGENTS.md` for non-Claude executors, `CLAUDE.md` for Claude).
 
 ### Managing the daemon
 
@@ -416,7 +416,7 @@ repos:
   docs: https://github.com/user/docs.git
 ```
 
-`executor` may be `claude`, `codex`, `opencode`, or `pi`. If omitted in an older workspace, it defaults to `claude`.
+`executor` is a registered executor profile name. Built-in profiles are `claude`, `codex`, `opencode`, and `pi`; org-config custom profiles are also valid once registered. If omitted, it defaults to `claude`.
 
 Repos are cloned into the agent's workspace on `happyranch init-agent` and auto-pulled before each task.
 
