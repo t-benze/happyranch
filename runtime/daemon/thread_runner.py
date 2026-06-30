@@ -688,6 +688,16 @@ async def run_invocation(
                 )
             return
 
+        # Externally-failed / timed-out invocation: the row was already set to a
+        # terminal state by another path (e.g. founder abort, archive reap).
+        # Preserve the existing reason — do not overwrite with no_callback.
+        if after.status in {ThreadInvocationStatus.FAILED, ThreadInvocationStatus.TIMEOUT}:
+            logger.info(
+                "run_invocation: token %s already terminal (%s), skipping auto-decline",
+                invocation_token[:8], after.status.value,
+            )
+            return
+
         # Subprocess exited without consuming → auto-decline.
         err_text = str(getattr(result, "error", "") or "").lower()
         rc = getattr(result, "returncode", "?")

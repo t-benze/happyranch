@@ -2,6 +2,7 @@ import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { server } from '../../test/server';
 import {
+  abortReplies,
   archiveThread,
   composeThread,
   extendThreadCap,
@@ -130,6 +131,7 @@ describe('threads api mirror', () => {
     ['inviteToThread', () => inviteToThread(SLUG, 'THR-001', { agent_name: 'a' }), '/invite'],
     ['extendThreadCap', () => extendThreadCap(SLUG, 'THR-001', { new_cap: 999 }), '/extend'],
     ['archiveThread', () => archiveThread(SLUG, 'THR-001', { summary: 'done' }), '/archive'],
+    ['abortReplies', () => abortReplies(SLUG, 'THR-001'), '/abort-replies'],
   ])('%s hits the correct path', async (_name, call, suffix) => {
     seedToken();
     let hit = false;

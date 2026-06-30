@@ -13,6 +13,7 @@ from runtime.infrastructure.database import Database
 from runtime.models import (
     ThreadAttachment,
     ThreadInvocationPurpose,
+    ThreadInvocationStatus,
     ThreadMessage,
     ThreadMessageKind,
     ThreadParticipant,
@@ -833,3 +834,57 @@ async def test_same_agent_distinct_threads_can_overlap(tmp_path, monkeypatch):
     )
     # Same agent on distinct threads can overlap.
     assert counter["max"] == 2
+
+
+@pytest.mark.asyncio
+async def test_externally_failed_invocation_preserves_abort_reason(tmp_path, monkeypatch):
+    """When a subprocess exits after the invocation was externally failed
+    (e.g. founder abort), the runner must NOT overwrite the abort reason."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    class _AbortDuringExec:
+        """Fake executor that simulates a founder abort during execution."""
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            # Simulate external abort: mark the invocation as failed with
+            # founder_aborted reason while the "subprocess" is running.
+            db.fail_invocation(
+                inv.invocation_token,
+                status=ThreadInvocationStatus.FAILED,
+                decline_reason="founder_aborted",
+            )
+            return FakeExecutorResult(success=True)
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _AbortDuringExec(),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    inv_after = db.get_invocation_any_status(inv.invocation_token)
+    assert inv_after.status == ThreadInvocationStatus.FAILED
+    assert inv_after.decline_reason == "founder_aborted"

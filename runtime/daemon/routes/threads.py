@@ -23,6 +23,7 @@ from runtime.models import (
     TaskRecord,
     ThreadAttachment,
     ThreadInvocationPurpose,
+    ThreadInvocationStatus,
     ThreadMessageKind,
     ThreadRecord,
     ThreadStatus,
@@ -1541,3 +1542,55 @@ async def resume_thread_endpoint(
     )
 
     return {"thread_id": thread_id, "status": "open"}
+
+
+# ---------------------------------------------------------------------------
+# POST /threads/{id}/abort-replies — founder aborts pending reply invocations
+# ---------------------------------------------------------------------------
+
+
+@router.post("/threads/{thread_id}/abort-replies")
+async def abort_replies_endpoint(
+    slug: str, thread_id: str, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+
+    # Collect triggering seqs BEFORE reaping so we know which seqs to publish.
+    from runtime.daemon.thread_runner import _publish_invocation_event
+    pending = org.db.list_thread_invocations(
+        thread_id, status=ThreadInvocationStatus.PENDING,
+    )
+    affected_seqs: set[int] = {
+        inv.triggering_seq for inv in pending
+        if inv.purpose in (
+            ThreadInvocationPurpose.REPLY,
+            ThreadInvocationPurpose.BOOTSTRAP,
+            ThreadInvocationPurpose.TASK_FOLLOWUP,
+        )
+    }
+
+    aborted_count = 0
+    async with org.db_lock:
+        aborted_count = org.db.reap_pending_invocations(
+            thread_id,
+            purposes=[
+                ThreadInvocationPurpose.REPLY,
+                ThreadInvocationPurpose.BOOTSTRAP,
+                ThreadInvocationPurpose.TASK_FOLLOWUP,
+            ],
+            decline_reason="founder_aborted",
+        )
+
+    # Publish seq-bearing events for each affected triggering seq so the web
+    # client invalidates its responder_status and clears in-flight indicators.
+    for seq in sorted(affected_seqs):
+        await _publish_invocation_event(
+            org, thread_id=thread_id, agent_name="founder",
+            seq=seq, kind="invocation_settled", status="failed",
+        )
+
+    return {"thread_id": thread_id, "aborted_count": aborted_count}
