@@ -227,6 +227,66 @@ class AuditLogger:
             },
         )
 
+    def log_fanout_spawned(
+        self,
+        task_id: str,
+        agent: str,
+        width: int,
+        children_ids: list[str],
+    ) -> None:
+        """Written when run_step_impl atomically spawns all fan-out children."""
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=agent,
+            action="fanout_spawned",
+            payload={
+                "agent": agent,
+                "width": width,
+                "children_ids": children_ids,
+            },
+        )
+
+    def log_fanout_review_not_approved(
+        self,
+        task_id: str,
+        *,
+        reason: str,
+    ) -> None:
+        """Written when a pending-review fan-out re-enters and the review
+        job was rejected or failed — children will NOT be spawned.
+
+        Uses its own action so it does not suppress BLOCKED-JOBS-RESULTS
+        (unlike ``log_orchestration_step``, which always writes
+        ``action="orchestration_step"`` and would hide the job-outcome
+        header from the manager prompt).
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="orchestrator",
+            action="fanout_review_not_approved",
+            payload={"reason": reason},
+        )
+
+    def log_fanout_join(
+        self,
+        task_id: str,
+        width: int,
+        children_ids: list[str],
+        context_markdown: str,
+    ) -> None:
+        """Written after try_claim_for_step wins on a fan-out parent and join
+        context is built. Read by the fan-out join header injector."""
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="orchestrator",
+            action="fanout_join",
+            payload={
+                "width": width,
+                "children_ids": children_ids,
+                "context_markdown": context_markdown,
+            },
+        )
+
     def log_task_resumed_from_jobs(
         self,
         task_id: str,

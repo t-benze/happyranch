@@ -870,6 +870,12 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN active_fanout TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_dispatched_from_thread_id "
             "ON tasks(dispatched_from_thread_id) "
@@ -1134,14 +1140,15 @@ class Database:
             task.orchestration_step_count,
             task.session_timeout_seconds,
             task.task_type,
+            task.active_fanout,
         )
         self._conn.execute(
             """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                revision_count, created_at, updated_at, completed_at, parent_task_id,
                revisit_of_task_id, dispatched_from_thread_id,
                block_kind, note,
-               orchestration_step_count, session_timeout_seconds, task_type)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               orchestration_step_count, session_timeout_seconds, task_type, active_fanout)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             params,
         )
         self._conn.commit()
@@ -1168,6 +1175,7 @@ class Database:
             block_kind=row["block_kind"],
             blocked_on_job_ids=row["blocked_on_job_ids"],
             active_chain=row["active_chain"],
+            active_fanout=row["active_fanout"],
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
             final_output_dir=row["final_output_dir"],
@@ -1611,6 +1619,95 @@ class Database:
             (active_chain, now, task_id),
         )
         self._conn.commit()
+
+    @_synchronized
+    def update_task_active_fanout(self, task_id: str, active_fanout: str | None) -> None:
+        """Set or clear tasks.active_fanout. Pass None to clear (fan-out join
+        claimed or parent terminal)."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "UPDATE tasks SET active_fanout = ?, updated_at = ? WHERE id = ?",
+            (active_fanout, now, task_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def try_delegate_many(
+        self, parent_id: str, children: list, *, parent_note: str,
+        active_fanout_json: str | None = None,
+    ) -> bool:
+        """Atomic CAS: insert N child tasks + transition parent to
+        IN_PROGRESS(DELEGATED) under a single explicit SQL transaction.
+
+        All child inserts, parent status/block_kind/active_fanout update,
+        and note write happen in one transaction. On any exception the
+        transaction rolls back — no partial children, no orphan rows.
+
+        Same cancel-race semantics as try_delegate (single-child): if the
+        parent is cancelled or already terminal at the time of the guarded
+        SELECT, no children are inserted and the parent is not overwritten.
+
+        On True: all children exist and parent has transitioned.
+        On False: no DB changes were made.
+
+        Children must already have their IDs allocated (caller calls
+        next_task_id() N times before invoking this method).
+        """
+        cursor = self._conn.execute(
+            "SELECT status, cancelled_at FROM tasks WHERE id = ?", (parent_id,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return False
+        if row["cancelled_at"] is not None or row["status"] in (
+            "completed", "failed", "resolved_superseded", "cancelled",
+        ):
+            return False
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            # One explicit transaction: all child inserts + parent transition.
+            self._conn.execute("BEGIN IMMEDIATE")
+            for child in children:
+                self._conn.execute(
+                    """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                       revision_count, created_at, updated_at, completed_at, parent_task_id,
+                       revisit_of_task_id, dispatched_from_thread_id,
+                       block_kind, note,
+                       orchestration_step_count, session_timeout_seconds, task_type, active_fanout)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        child.id,
+                        child.status.value,
+                        child.assigned_agent,
+                        child.team,
+                        child.brief,
+                        child.revision_count,
+                        child.created_at.isoformat(),
+                        child.updated_at.isoformat(),
+                        child.completed_at.isoformat() if child.completed_at else None,
+                        child.parent_task_id,
+                        child.revisit_of_task_id,
+                        child.dispatched_from_thread_id,
+                        child.block_kind.value if child.block_kind else None,
+                        child.note,
+                        child.orchestration_step_count,
+                        child.session_timeout_seconds,
+                        child.task_type,
+                        child.active_fanout,
+                    ),
+                )
+            self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = ?, note = ?, active_fanout = ?, updated_at = ?
+                   WHERE id = ?""",
+                (TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value, parent_note,
+                 active_fanout_json, now, parent_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def try_claim_for_step(

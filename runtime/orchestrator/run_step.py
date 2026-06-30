@@ -202,6 +202,56 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             job_outcomes=job_outcomes,
         )
 
+    # Fan-out dispatch: active_fanout can be "pending_review" (review gate
+    # job just completed — spawn children only if the founder approved) or
+    # "spawned" (all children terminal — inject join context).
+    if task.active_fanout is not None:
+        from runtime.orchestrator.fanout import FanoutState as _FanoutState
+        fanout_state = _FanoutState.deserialize(task.active_fanout)
+        if fanout_state.status == "pending_review":
+            # Review gate: inspect the actual blocking review job outcome.
+            # Only spawn children if the founder approved (job completed).
+            # Rejected or failed review jobs → clear pending fan-out and
+            # fall through to agent re-run so the manager sees the
+            # BLOCKED-JOBS-RESULTS header and decides next steps.
+            import json as _json
+            try:
+                job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+            except _json.JSONDecodeError:
+                job_ids = []
+            can_spawn = bool(job_ids) and all(
+                db.get_job_status(jid) == "completed"
+                for jid in job_ids
+            )
+            if can_spawn:
+                # Founder approved: spawn children from the stored plan,
+                # then return without re-running the agent.
+                _spawn_fanout_children(
+                    orch, task, task_id, next_count,
+                    children=fanout_state.children_details,
+                    width=fanout_state.width,
+                    manager_agent=fanout_state.manager_agent,
+                    join_summary=fanout_state.join_summary,
+                )
+                return
+            # Review was rejected or failed: clear the pending fan-out and
+            # fall through to agent re-run so the manager sees the
+            # BLOCKED-JOBS-RESULTS header and decides next steps.
+            # Use a dedicated audit action (NOT orchestration_step) so the
+            # BLOCKED-JOBS-RESULTS header is not suppressed —
+            # _blocked_jobs_resume_header_if_applicable only masks on
+            # action="orchestration_step" entries.
+            db.update_task_active_fanout(task_id, None)
+            orch._audit.log_fanout_review_not_approved(
+                task_id,
+                reason=f"review job(s) {job_ids} not approved",
+            )
+            # Fall through to agent run (step 4).
+        elif fanout_state.status == "spawned":
+            # status == "spawned" → all children terminal; inject join context.
+            _inject_fanout_join_context(orch, task_id, task.active_fanout)
+            db.update_task_active_fanout(task_id, None)
+
     # ---- 4. Run the agent subprocess ----
     agent = task.assigned_agent or _default_agent_for_root(orch, task)
     if task.assigned_agent is None:
@@ -410,6 +460,161 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         )
         _maybe_post_thread_escalation(orch, task_id, reason=reason)
         # parent stays in_progress(delegated) until this task reaches a terminal.
+        return
+
+    if decision.action == "fanout":
+        # Phase 1: read-only native fan-out core.
+        # Validate structural correctness (width, cap ack, no per-child then/verdict).
+        from runtime.orchestrator.fanout import (
+            MAX_FANOUT_WIDTH,
+            FANOUT_REVIEW_THRESHOLD,
+            FanoutState,
+            fanout_child_targets,
+            fanout_needs_review,
+            validate_fanout_decision,
+        )
+        err = validate_fanout_decision(decision)
+        if err is not None:
+            note = f"invalid fanout: {err}"
+            _fail(orch, task_id, note=note)
+            _enqueue_parent_if_waiting(orch, task_id)
+            _maybe_post_thread_followup(
+                orch, task_id,
+                status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            )
+            return
+
+        # Validate each child's workspace exists (reuse _validate_one_leg).
+        for i, child in enumerate(decision.children):
+            child_err = _validate_one_leg(
+                orch, agent=child.agent, where=f"fanout child {i + 1}",
+            )
+            if child_err is not None:
+                note = f"invalid fanout: {child_err}"
+                _fail(orch, task_id, note=note)
+                _enqueue_parent_if_waiting(orch, task_id)
+                _maybe_post_thread_followup(
+                    orch, task_id,
+                    status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                )
+                return
+
+        # Scope validation: manager own-team/self only; non-manager self-only.
+        # Reuse _legs_out_of_scope with the fan-out child targets.
+        targets = fanout_child_targets(decision)
+        out_of_scope: list[tuple[str, str]] = []
+        if orch.teams.is_team_manager(agent):
+            caller_team = orch.teams.team_for_manager(agent)
+            for a in targets:
+                if not a or a == agent:
+                    continue
+                t = orch.teams.team_for_agent(a)
+                if caller_team is None or t != caller_team:
+                    out_of_scope.append((a, f"on team {t!r}" if t else "not on a team"))
+        else:
+            for a in targets:
+                if not a or a == agent:
+                    continue
+                out_of_scope.append(
+                    (a, "non-manager owners may only delegate to themselves"),
+                )
+        if out_of_scope:
+            parts = [f"{name!r} ({reason})" for name, reason in out_of_scope]
+            if orch.teams.is_team_manager(agent):
+                caller_team = orch.teams.team_for_manager(agent)
+                feedback = (
+                    f"Invalid fan-out: you are on team {caller_team!r}, but "
+                    f"{'; '.join(parts)}. Pick agents on your own team or "
+                    "yourself, or escalate."
+                )
+            else:
+                feedback = (
+                    f"Invalid fan-out: {'; '.join(parts)}. You may only "
+                    f"fan-out sub-tasks to yourself ({agent!r}), or escalate."
+                )
+            db.insert_task_result(
+                task_id=task_id,
+                agent=agent,
+                session_id="",
+                status="completed",
+                confidence_score=0,
+                output_summary=feedback,
+                risks_flagged=[],
+            )
+            orch._audit.log_orchestration_step(
+                task_id, next_count, {"action": "feedback", "reason": feedback},
+            )
+            db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
+            if orch._queue is not None:
+                orch._queue.put_nowait(orch._slug, task_id)
+            return
+
+        # Review gate: width > threshold → self-block via review_required.
+        # Mutating fan-out is always review_required but is out of scope.
+        # Reuse the existing jobs review-gate pattern: create a review_required
+        # job and park the parent on BLOCKED_ON_JOB. On re-entry after founder
+        # approval, the CAS-winner detects active_fanout status="pending_review"
+        # and proceeds directly to child spawn without re-running the agent.
+        width = len(decision.children)
+        if fanout_needs_review(width):
+            import json as _json
+            from datetime import datetime as _dt, timezone as _tz
+            from runtime.models import JobRecord, JobStatus, JobInterpreter
+            note = (
+                f"fan-out width {width} exceeds review threshold "
+                f"({FANOUT_REVIEW_THRESHOLD}); requires founder review"
+            )
+            # Build the pending fan-out state so it survives the review cycle.
+            child_details = [
+                {"agent": c.agent, "prompt": c.prompt}
+                for c in decision.children
+            ]
+            pending_fanout = FanoutState(
+                children_ids=[],  # allocated on spawn, not now
+                children_details=child_details,
+                width=width,
+                manager_agent=agent,
+                join_summary=decision.join_summary,
+                status="pending_review",
+            )
+            # Create a review_required job to gate founder approval.
+            job_id = db.next_job_id()
+            now = _dt.now(_tz.utc).isoformat()
+            db.insert_job(JobRecord(
+                id=job_id,
+                task_id=task_id,
+                agent_name=agent,
+                title=f"Review fan-out (width={width}) for {task_id}",
+                rationale=note,
+                script_text="",
+                interpreter=JobInterpreter.BASH,
+                status=JobStatus.PENDING,
+                review_required=True,
+                created_at=now,
+            ))
+            # Park the parent on BLOCKED_ON_JOB waiting for founder review.
+            db.update_task(
+                task_id,
+                status=TaskStatus.IN_PROGRESS,
+                block_kind=BlockKind.BLOCKED_ON_JOB,
+                blocked_on_job_ids=_json.dumps([job_id]),
+                note=note,
+            )
+            db.update_task_active_fanout(task_id, pending_fanout.serialize())
+            orch._audit.log_orchestration_step(
+                task_id, next_count,
+                {"action": "fanout_review_required", "reason": note},
+            )
+            return
+
+        # Spawn children via shared helper (also used by review-gate re-entry).
+        _spawn_fanout_children(
+            orch, task, task_id, next_count,
+            children=[{"agent": c.agent, "prompt": c.prompt} for c in decision.children],
+            width=width,
+            manager_agent=agent,
+            join_summary=decision.join_summary,
+        )
         return
 
     if decision.action == "delegate":
@@ -654,6 +859,10 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     resolved = _resolved_escalation_header_if_applicable(orch, task.id)
     if resolved is not None:
         headers.append(resolved)
+    # Fan-out join header
+    fanout_join = _fanout_join_header_if_applicable(orch, task.id)
+    if fanout_join is not None:
+        headers.append(fanout_join)
     if headers:
         return "".join(headers) + base
     return base
@@ -1084,6 +1293,7 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     # cheap and works for cascade-fail, self-blocked, invalid-delegate, and
     # session-failure failure modes.
     orch._db.update_task_active_chain(task_id, None)
+    orch._db.update_task_active_fanout(task_id, None)
     orch._db.update_task(
         task_id,
         status=TaskStatus.FAILED,
@@ -1347,6 +1557,8 @@ def _enqueue_parent_if_waiting(
             )
             if parent.active_chain is not None:
                 orch._db.update_task_active_chain(parent.id, None)
+            if parent.active_fanout is not None:
+                orch._db.update_task_active_fanout(parent.id, None)
             if is_root(parent):
                 # Root parent escalates to the founder (unchanged).
                 if orch._db.try_escalate(parent.id, reason=reason):
@@ -1363,6 +1575,10 @@ def _enqueue_parent_if_waiting(
             return
         # Within the bound: clear chain, enqueue parent for a fresh
         # manager decision step. Do NOT cascade-fail.
+        # NOTE: active_fanout is NOT cleared here — the CAS-winner needs
+        # it to inject structured join context (child verdict, confidence,
+        # output_dir, failure note) via _inject_fanout_join_context. The
+        # CAS-winner clears active_fanout after injecting join context.
         if parent.active_chain is not None:
             orch._db.update_task_active_chain(parent.id, None)
         queue = getattr(orch, "_queue", None)
@@ -2034,3 +2250,184 @@ def _session_failed_note(result, report) -> str:
     if report is None and getattr(result, "success", False):
         bits.append("no completion callback")
     return f"agent session failed ({'; '.join(bits)})"
+
+
+# --- Fan-out spawn + join context helpers ---
+
+
+def _spawn_fanout_children(
+    orch: "Orchestrator",
+    parent: "TaskRecord",
+    task_id: str,
+    next_count: int,
+    *,
+    children: list[dict],
+    width: int,
+    manager_agent: str,
+    join_summary: str | None = None,
+) -> None:
+    """Allocate child IDs, build TaskRecords, atomically insert all N children
+    and park the parent in in_progress(delegated) with active_fanout set.
+    Shared by the fresh dispatch path and the review-gate re-entry path.
+
+    On cancel-race (try_delegate_many returns False), logs and returns
+    silently — the parent was cancelled between validation and spawn.
+    """
+    from runtime.models import TaskRecord
+    from runtime.orchestrator.fanout import FanoutState
+
+    db = orch._db
+
+    # Allocate sequential child IDs.
+    child_records: list[TaskRecord] = []
+    children_ids: list[str] = []
+    base_id = db.next_task_id()
+    base_num = int(base_id.split("-")[-1])
+    for i, child_info in enumerate(children):
+        cid = f"TASK-{base_num + i:03d}"
+        children_ids.append(cid)
+        child_records.append(TaskRecord(
+            id=cid,
+            team=parent.team,
+            brief=child_info["prompt"] or "",
+            assigned_agent=child_info["agent"],
+            parent_task_id=task_id,
+            status=TaskStatus.PENDING,
+            session_timeout_seconds=parent.session_timeout_seconds,
+            task_type="subtask",
+        ))
+
+    # Build FanoutState BEFORE the atomic insert so it's ready to persist.
+    fanout_state = FanoutState(
+        children_ids=children_ids,
+        children_details=children,
+        width=width,
+        manager_agent=manager_agent,
+        join_summary=join_summary,
+        status="spawned",
+    )
+    parent_note = (
+        f"Fan-out to {width} children: "
+        + ", ".join(
+            f"{c['agent']}={cid}"
+            for c, cid in zip(children, children_ids)
+        )
+    )
+
+    # Atomic insert-N + parent transition under a single explicit SQL
+    # transaction. active_fanout is written in the same transaction as
+    # child inserts + parent park — no crash gap between spawn and
+    # metadata persistence.
+    if not db.try_delegate_many(
+        task_id, child_records, parent_note=parent_note,
+        active_fanout_json=fanout_state.serialize(),
+    ):
+        logger.debug(
+            "run_step %s: cancelled between re-check and fanout spawn, dropping",
+            task_id,
+        )
+        return
+
+    orch._audit.log_fanout_spawned(
+        task_id=task_id,
+        agent=manager_agent,
+        width=width,
+        children_ids=children_ids,
+    )
+
+    # Enqueue all children.
+    if orch._queue is not None:
+        for cid in children_ids:
+            orch._queue.put_nowait(orch._slug, cid)
+
+
+def _inject_fanout_join_context(
+    orch: "Orchestrator", task_id: str, active_fanout_json: str,
+) -> None:
+    """On CAS win for a fan-out parent: collect child results, build join
+    context, and write a fanout_join audit row so the manager's prompt can
+    include it. Also clears active_fanout on the parent (caller must do this
+    separately or here; we just write the audit row).
+
+    The audit row written here is read by _fanout_join_header_if_applicable
+    in the prompt-build step.
+    """
+    from runtime.orchestrator.fanout import (
+        FanoutState,
+        build_fanout_join_context,
+        collect_child_join_info,
+    )
+    try:
+        fanout = FanoutState.deserialize(active_fanout_json)
+    except Exception:
+        logger.debug("run_step %s: active_fanout unparseable, skipping join", task_id)
+        return
+
+    db = orch._db
+    # Collect child results for all children in the fan-out.
+    children = []
+    child_reports: dict[str, dict | None] = {}
+    for cid in fanout.children_ids:
+        child = db.get_task(cid)
+        if child is not None:
+            children.append(child)
+        # Fetch the latest completion report for verdict/confidence.
+        report = db.get_latest_completion_report(cid)
+        if report is not None:
+            child_reports[cid] = {
+                "verdict": report.verdict,
+                "confidence_score": report.confidence,
+            }
+        else:
+            child_reports[cid] = None
+
+    join_infos = collect_child_join_info(children, child_reports=child_reports)
+    join_context = build_fanout_join_context(
+        parent_task_id=task_id,
+        fanout=fanout,
+        child_results=join_infos,
+    )
+
+    # Write a fanout_join audit row that the prompt builder reads.
+    orch._audit.log_fanout_join(
+        task_id=task_id,
+        width=fanout.width,
+        children_ids=fanout.children_ids,
+        context_markdown=join_context,
+    )
+
+
+def _fanout_join_header_if_applicable(
+    orch: "Orchestrator", task_id: str,
+) -> str | None:
+    """Return the fan-out join context header on the first manager step after
+    a fan-out join, otherwise None.
+
+    Trigger: the most recent 'fanout_join' audit entry for this task has a
+    higher row id than the most recent 'orchestration_step' entry — i.e. the
+    fan-out children are all terminal AND the manager hasn't run yet. Once
+    the manager produces its first decision after join,
+    ``log_orchestration_step`` writes a row with a higher id and this helper
+    returns None on every subsequent call.
+    """
+    logs = orch._db.get_audit_logs(task_id)
+    last_join = None
+    last_step = None
+    for entry in logs:
+        action = entry["action"]
+        if action == "fanout_join":
+            last_join = entry
+        elif action == "orchestration_step":
+            last_step = entry
+    if last_join is None:
+        return None
+    if last_step is not None and last_step["id"] > last_join["id"]:
+        return None
+    payload = last_join.get("payload") or {}
+    if isinstance(payload, str):
+        import json as _json
+        try:
+            payload = _json.loads(payload)
+        except Exception:
+            payload = {}
+    return payload.get("context_markdown")

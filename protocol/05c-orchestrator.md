@@ -193,6 +193,36 @@ cascade-failed. Instead:
    next decision step (existing behavior). REVISE-verdict auto-advance is
    unchanged.
 
+#### Fan-out (parallel delegation, Phase 1)
+
+A manager may declare a fan-out decision (`action: fanout`) to spawn N children
+in parallel (2 ≤ N ≤ 8, read-only only). The orchestrator:
+
+1. **Validates** width, width_cap_ack, workspace presence, scope, and rejects
+   per-child `then`/`expect_verdict` (read-only Phase 1 only; mutating fan-out
+   is out of scope).
+2. **Atomically mints** all N children via `try_delegate_many`, transitioning
+   the parent to `in_progress(delegated)` with `active_fanout` set (an additive
+   JSON metadata column).
+3. **Parks** the parent — the existing `DELEGATED` barrier wakes it once when
+   all N children are terminal (same CAS as single-child delegation).
+4. **Injects join context** into the manager's wake prompt: a structured block
+   listing each child's id, agent, status, summary excerpt, output_dir, and
+   failure note.
+5. **Clears** `active_fanout` after successful join claim or terminal parent
+   close.
+
+Failure-join reuses bounded failure-recovery (§Failure-recovery contract):
+failed fan-out children individually consume re-spawn rounds; the parent wakes
+on each terminal child, and exhaustion escalates the parent after
+`_FAILURE_ROUND_BOUND` (2) failed children. No partial-join or cascade-fail
+semantics are introduced.
+
+Startup recovery (daemon restart) re-enqueues parked `in_progress(delegated)`
+fan-out parents when all children are already terminal (same as
+single-delegation). The join context is built from persisted audit rows when
+the CAS winner processes the wake.
+
 #### Transitions
 
 ```

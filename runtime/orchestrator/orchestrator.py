@@ -469,7 +469,7 @@ class Orchestrator:
                     "Task owner omitted the `decision` field and its "
                     "`output_summary` is not JSON. The completion payload "
                     "must include a `decision` object "
-                    "(delegate/done/escalate). "
+                    "(delegate/done/escalate/fanout). "
                     f"Preview: {preview!r}"
                 ),
             )

@@ -846,6 +846,90 @@ describe('TaskDetailPage — workflow chain timeline', () => {
     expect(screen.getByText(/Blocked on:/)).toBeInTheDocument();
     expect(screen.getByText(/JOB-0042/)).toBeInTheDocument();
   });
+
+  test('renders fan-out approval copy for pending-review wide fan-out', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Pending wide fan-out approval: in_progress + blocked_on_job with a
+    // review job AND active_fanout.status='pending_review' (width > threshold).
+    // The task detail should render fan-out-specific approval copy, not
+    // generic job IDs.
+    stubHandlers(
+      { ...ACTIVE_CHAIN, step_index: 0 },
+      {
+        status: 'in_progress',
+        block_kind: 'blocked_on_job',
+        active_fanout: JSON.stringify({ status: 'pending_review', width: 5 }),
+      },
+      [{ job_id: 'JOB-0099', status: 'pending' }],
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    expect(await screen.findByText(/Workflow chain/i)).toBeInTheDocument();
+    expect(screen.getByText(/Blocked on:/)).toBeInTheDocument();
+    // Must show fan-out approval copy with width
+    expect(
+      screen.getByText(/awaiting approval to spawn 5 subtasks/),
+    ).toBeInTheDocument();
+    // Must NOT show generic job ID copy
+    expect(screen.queryByText(/JOB-0099/)).not.toBeInTheDocument();
+  });
+
+  test('renders generic job wait for ordinary blocked_on_job without fan-out', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Ordinary blocked_on_job: no active_fanout at all. Must still render
+    // generic job-waiting copy, not fan-out approval language.
+    stubHandlers(
+      { ...ACTIVE_CHAIN, step_index: 0 },
+      {
+        status: 'in_progress',
+        block_kind: 'blocked_on_job',
+        active_fanout: undefined,
+      },
+      [{ job_id: 'JOB-0077', status: 'pending' }],
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    expect(await screen.findByText(/Workflow chain/i)).toBeInTheDocument();
+    expect(screen.getByText(/Blocked on:/)).toBeInTheDocument();
+    // Must show generic job ID
+    expect(screen.getByText(/JOB-0077/)).toBeInTheDocument();
+    // Must NOT show fan-out approval copy
+    expect(
+      screen.queryByText(/awaiting approval/),
+    ).not.toBeInTheDocument();
+  });
+
+  test('renders waiting-on-subtasks copy for active spawned fan-out', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Active spawned fan-out: delegated block_kind with active_fanout.status='spawned'.
+    // Should render width-aware delegation copy, not fan-out approval nor job IDs.
+    stubHandlers(
+      { ...ACTIVE_CHAIN, step_index: 0 },
+      {
+        status: 'in_progress',
+        block_kind: 'delegated',
+        active_fanout: JSON.stringify({ status: 'spawned', width: 3 }),
+      },
+      null,
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    expect(await screen.findByText(/Workflow chain/i)).toBeInTheDocument();
+    expect(screen.getByText(/Blocked on:/)).toBeInTheDocument();
+    // Must show width-aware delegation copy
+    expect(
+      screen.getByText(/waiting on 3 subtasks/),
+    ).toBeInTheDocument();
+    // Must NOT show fan-out approval copy
+    expect(
+      screen.queryByText(/awaiting approval/),
+    ).not.toBeInTheDocument();
+    // Must NOT show generic delegation copy
+    expect(screen.queryByText(/^delegation$/)).not.toBeInTheDocument();
+  });
 });
 
 describe('TaskDetailPage — execution subtasks', () => {

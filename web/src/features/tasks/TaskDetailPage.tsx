@@ -125,13 +125,60 @@ interface ChainTimelineBlockInfo {
 
 type BlockedJobEntry = { job_id: string; status: string };
 
+/** Sanitized fan-out display context extracted from the active_fanout JSON
+ *  payload on the task record. Exposes only status + width — deliberately
+ *  omits child prompts and agent details (presentation-only contract). */
+interface FanoutDisplayContext {
+  status: 'pending_review' | 'spawned';
+  width: number;
+}
+
+/** Parse a task's active_fanout JSON string into a sanitized display context.
+ *  Returns null when the field is absent, unparseable, or missing required
+ *  keys — the caller falls back to ordinary block_kind display. */
+function parseActiveFanout(raw: unknown): FanoutDisplayContext | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      const status = typeof parsed.status === 'string' ? parsed.status : '';
+      const width = typeof parsed.width === 'number' ? parsed.width : 0;
+      if ((status === 'pending_review' || status === 'spawned') && width > 0) {
+        return { status, width };
+      }
+    }
+  } catch {
+    /* not valid JSON — fall through to generic copy */
+  }
+  return null;
+}
+
 /** Derive a human-readable blocker name from the task block context.
  *  THR-037 Change B: escalation is a top-level status now (not a block_kind),
- *  so it no longer appears here — only the in_progress waiting reasons do. */
+ *  so it no longer appears here — only the in_progress waiting reasons do.
+ *
+ *  When fanout is present:
+ *  - `pending_review` fan-out overrides generic job-waiting copy with
+ *    founder-readable fan-out approval language ("awaiting approval to
+ *    spawn N subtasks").
+ *  - `spawned` fan-out replaces bare "delegation" with descriptive
+ *    "waiting on N subtasks".
+ *  Otherwise, ordinary block_kind/blocked_on_jobs display is preserved. */
 function deriveBlockerName(
   blockKind: string | null | undefined,
   blockedOnJobs: BlockedJobEntry[] | null | undefined,
+  fanout?: FanoutDisplayContext | null,
 ): string | undefined {
+  // Pending wide fan-out approval: the task is parked on a review_required
+  // job waiting for founder sign-off. Show fan-out terms, not job IDs.
+  if (fanout?.status === 'pending_review') {
+    return `awaiting approval to spawn ${fanout.width} subtasks`;
+  }
+  // Active spawned fan-out: children are alive, parent waits for all to
+  // become terminal. Show width-aware delegation copy.
+  if (fanout?.status === 'spawned' && blockKind === 'delegated') {
+    return `waiting on ${fanout.width} subtasks`;
+  }
   if (blockedOnJobs && blockedOnJobs.length > 0) {
     const jobIds = blockedOnJobs.map((e) => e.job_id);
     return `job(s) ${jobIds.join(', ')}`;
@@ -523,6 +570,7 @@ export function TaskDetailPage(): JSX.Element {
   // Build block info for the chain timeline. The red "blocked" timeline node
   // fires for a genuine escalation OR a parked in_progress task waiting on its
   // children/jobs (THR-037 §F.2) — `blocked` as a status is retired.
+  const fanoutCtx = parseActiveFanout(task.data?.active_fanout);
   const blockInfo: ChainTimelineBlockInfo | undefined = useMemo(() => {
     if (!task.data) return undefined;
     const isBlocked =
@@ -537,9 +585,10 @@ export function TaskDetailPage(): JSX.Element {
         : deriveBlockerName(
             task.data.block_kind,
             chainQuery.data?.blockedOnJobs ?? null,
+            fanoutCtx,
           );
     return { isBlocked: true, blockerName };
-  }, [task.data, chainQuery.data]);
+  }, [task.data, chainQuery.data, fanoutCtx]);
 
   return (
     <>
