@@ -107,6 +107,14 @@ If you need to stay in-session for a fast `review_required=false` job, the
 existing `happyranch jobs wait JOB-NNN --timeout-seconds 30` pattern still works.
 Prefer block-and-resume for any wait long enough to risk session timeout.
 
+## PR CI / guarded merge helper
+
+For PR-producing engineering tasks, do not hand-roll CI polling scripts. Use the first-class HappyRanch PR CI helper to create a bounded job, then self-block on that job id with `waiting_on_job_ids`.
+
+The helper takes at minimum: repository, PR number, pinned head SHA, expected check policy, timeout, settle window, merge method, and the review/QA evidence ids. It exits successfully only when the PR is merged after all merge guards pass. It exits non-zero for CI failure, stale PR head, timeout, missing checks after settle, non-clean mergeability, rejected job, or failed merge.
+
+The CI-wait portion can auto-run without founder interaction. The merge portion must stay inside the guarded helper or a founder-reviewed job; do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
+
 ## Cleanup
 
 Before reporting your task complete, stop any of your own jobs you no longer need. Persistent jobs you forget about will be auto-killed when your task transitions terminal, but explicit cleanup makes the audit log cleaner and avoids ambiguous "did the agent forget about this?" questions.
