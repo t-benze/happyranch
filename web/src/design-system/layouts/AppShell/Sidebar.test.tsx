@@ -217,57 +217,50 @@ describe('BUG-08: real Day-N context line (wired to org_age_days)', () => {
   });
 });
 
-describe('BUG-03: real nav badges (honest, no placeholder noise)', () => {
-  test('Agents and Audit render badges from positive narrative_counts', async () => {
+describe('THR-046: nav count badges removed — no badge rendered anywhere', () => {
+  test('Agents, Audit, Jobs nav items render WITHOUT any count badge', async () => {
     seedSidebarShell({
       narrative_counts: { agents_active_now: 3, escalated_open: 2 },
-    });
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
-
-    await waitFor(() => {
-      const agents = screen.getByText('Agents').closest('a');
-      expect(agents).not.toBeNull();
-      expect(within(agents!).getByTestId('nav-count-badge')).toHaveTextContent('3');
-
-      const audit = screen.getByText('Audit').closest('a');
-      expect(audit).not.toBeNull();
-      expect(within(audit!).getByTestId('nav-count-badge')).toHaveTextContent('2');
-    });
-  });
-
-  test('zero / undefined count suppresses the badge (no "0" noise)', async () => {
-    seedSidebarShell({
-      narrative_counts: { agents_active_now: 0, escalated_open: 0 },
     });
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
       expect(screen.getByText('Agents').closest('a')).not.toBeNull();
+      expect(screen.getByText('Audit').closest('a')).not.toBeNull();
+      expect(screen.getByText('Jobs').closest('a')).not.toBeNull();
     });
-    expect(
-      within(screen.getByText('Agents').closest('a')!).queryByTestId('nav-count-badge'),
-    ).toBeNull();
-    expect(
-      within(screen.getByText('Audit').closest('a')!).queryByTestId('nav-count-badge'),
-    ).toBeNull();
+    // No nav-count-badge rendered anywhere in the entire sidebar
+    const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+    expect(aside.queryByTestId('nav-count-badge')).toBeNull();
   });
 
-  test('Threads / Tasks / Dreams render badge-less (no client-side count exists)', async () => {
-    // Even with rich counts present, these rows have NO backing field in
-    // narrative_counts, so they must stay badge-less (scope fence).
+  test('all nav items still render with labels, icons, and routing', async () => {
     seedSidebarShell({
       narrative_counts: { agents_active_now: 3, escalated_open: 2 },
     });
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      expect(screen.getByText('Threads').closest('a')).not.toBeNull();
+      // Scope to the sidebar — the AppBar mirrors the page name (e.g. "Home"),
+      // so unscoped getByText would match twice.
+      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+      // Primary group
+      expect(aside.getByText('Home').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dashboard`);
+      expect(aside.getByText('Threads').closest('a')).toBeInTheDocument();
+      expect(aside.getByText('Tasks').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/tasks`);
+      expect(aside.getByText('Agents').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/agents`);
+      expect(aside.getByText('Knowledge').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/kb`);
+      expect(aside.getByText('Artifacts').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/artifacts`);
+      // Operate group
+      expect(aside.getByText('Spend').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/spend`);
+      expect(aside.getByText('Dreams').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dreams`);
+      expect(aside.getByText('Work Hours').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/work-hours`);
+      expect(aside.getByText('Audit').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/audit`);
+      expect(aside.getByText('Jobs').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/jobs`);
+      // Footer
+      expect(aside.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', `/orgs/${SLUG}/settings`);
+      expect(aside.getByText('You')).toBeInTheDocument();
     });
-    for (const label of ['Threads', 'Tasks', 'Dreams']) {
-      const row = screen.getByText(label).closest('a');
-      expect(row).not.toBeNull();
-      expect(within(row!).queryByTestId('nav-count-badge')).toBeNull();
-    }
   });
 });
 

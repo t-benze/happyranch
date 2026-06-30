@@ -30,7 +30,7 @@ import {
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
 import { useAgentsRoutes } from '@/hooks/agents';
 import { useDashboardSummary } from '@/hooks/dashboard';
-import { useJobsList } from '@/hooks/jobs';
+
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
 import { useTasksRoutes } from '@/hooks/tasks';
@@ -53,22 +53,10 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
  * Global search and the theme toggle moved to the AppBar (BUG-04/05/06).
  *
  * Jobs is reinstated as the approval queue per founder ruling (THR-030 seq 91,
- * TASK-907), with a pending-count badge sourced from the real jobs list.
+ * TASK-907).
  */
 
 const ADD_ORG_VALUE = '__add_org__';
-
-// BUG-03: nav badges show REAL counts from the shared dashboard summary
-// (Agents <- agents_active_now, Audit <- escalated_open). A badge renders only
-// for a positive, finite count; 0 / undefined / NaN render no badge (no "0"
-// noise). Threads/Tasks/Dreams have no backing field in narrative_counts, so
-// they stay badge-less — wiring a count there would need a new daemon/SQLite
-// data path, out of this presentation-only scope.
-function positiveCount(value: number | undefined): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? value
-    : undefined;
-}
 
 export function Sidebar(): JSX.Element {
   const { slug: urlSlug } = useParams<{ slug: string }>();
@@ -84,19 +72,12 @@ export function Sidebar(): JSX.Element {
   const agentsRoutes = useAgentsRoutes();
   const kbRoutes = useKbRoutes();
 
-  // BUG-08/BUG-03: Day-N + nav counts come from the SAME dashboard-summary
-  // query DashboardPage consumes — React Query dedupes by key, so this is not a
-  // new data path. The hook self-gates on the active org slug, so non-org
-  // routes issue no fetch.
+  // BUG-08: Day-N comes from the SAME dashboard-summary query DashboardPage
+  // consumes — React Query dedupes by key, so this is not a new data path.
+  // The hook self-gates on the active org slug, so non-org routes issue no
+  // fetch.
   const summary = useDashboardSummary().data;
   const orgAgeDays = summary?.org_age_days;
-  const counts = summary?.narrative_counts;
-
-  // Jobs nav badge = count of pending (founder-blocking) jobs. Sourced from the
-  // existing jobs list endpoint (GET /jobs/?status=pending); the hook self-gates
-  // on the active org slug, so non-org routes issue no fetch. narrative_counts
-  // carries no jobs field, so this is the honest source for the pending count.
-  const pendingJobsCount = useJobsList({ status: 'pending', limit: 200 }).data?.jobs.length;
 
   // Global jump chords — reused from TopBar verbatim
   useGlobalJump('d', () => {
@@ -225,7 +206,6 @@ export function Sidebar(): JSX.Element {
           <SidebarNavItem
             {...sidebarLink('agents', true)}
             icon={Users}
-            badge={positiveCount(counts?.agents_active_now)}
           >
             Agents
           </SidebarNavItem>
@@ -254,14 +234,12 @@ export function Sidebar(): JSX.Element {
           <SidebarNavItem
             {...sidebarLink('audit', true)}
             icon={ScrollText}
-            badge={positiveCount(counts?.escalated_open)}
           >
             Audit
           </SidebarNavItem>
           <SidebarNavItem
             {...sidebarLink('jobs', true)}
             icon={Terminal}
-            badge={positiveCount(pendingJobsCount)}
           >
             Jobs
           </SidebarNavItem>
@@ -345,32 +323,18 @@ function SidebarGroupLabel({ children }: { children: React.ReactNode }): JSX.Ele
   );
 }
 
-function NavCountBadge({ value }: { value: number }): JSX.Element {
-  return (
-    <span
-      data-testid="nav-count-badge"
-      aria-hidden="true"
-      className="bg-bg-raised text-fg-subtle ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[0.65rem] font-medium tabular-nums"
-    >
-      {value}
-    </span>
-  );
-}
-
 function SidebarNavItem({
   to,
   enabled,
   children,
   icon: Icon,
   tooltip,
-  badge,
 }: {
   to: string;
   enabled: boolean;
   children: React.ReactNode;
   icon: LucideIcon;
   tooltip?: string;
-  badge?: number;
 }): JSX.Element {
   if (!enabled) {
     const span = (
@@ -380,7 +344,6 @@ function SidebarNavItem({
       >
         <Icon size={16} aria-hidden="true" className="shrink-0" />
         <span>{children}</span>
-        {badge !== undefined && <NavCountBadge value={badge} />}
       </span>
     );
     if (!tooltip) return span;
@@ -404,7 +367,6 @@ function SidebarNavItem({
     >
       <Icon size={16} aria-hidden="true" className="shrink-0" />
       <span>{children}</span>
-      {badge !== undefined && <NavCountBadge value={badge} />}
     </NavLink>
   );
 }
