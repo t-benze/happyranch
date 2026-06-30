@@ -108,6 +108,18 @@ class ExecutorProfile:
 
 
 # ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class ExecutorProfileCollisionError(ValueError):
+    """Raised when a custom profile name collides with a different existing
+    custom profile. This is a hard semantic conflict — two orgs define the
+    same profile name with incompatible definitions. The operator must
+    rename one of the profiles."""
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -169,15 +181,33 @@ class ExecutorRegistry:
     def register_custom_profile(self, profile: ExecutorProfile) -> None:
         """Register a custom executor profile.
 
-        Raises ValueError if the name collides with a built-in or if
-        argv_template is invalid.
+        Raises:
+            ExecutorProfileCollisionError: if the name collides with a
+                different custom profile already registered (hard semantic
+                conflict — the operator must resolve it by renaming).
+            ValueError: if the name collides with a built-in or if
+                argv_template is invalid.
+
+        If a custom profile with the same name AND identical definition is
+        already registered, the call is a no-op (idempotent re-registration).
         """
-        if profile.name.lower() in self._profiles:
-            existing = self._profiles[profile.name.lower()]
+        key = profile.name.lower()
+        if key in self._profiles:
+            existing = self._profiles[key]
             if existing.kind == "builtin":
                 raise ValueError(
                     f"Cannot override built-in executor profile {profile.name!r}"
                 )
+            # Custom profile with same name: if identical -> no-op;
+            # if different -> hard collision that the operator must resolve.
+            if existing == profile:
+                return  # idempotent re-registration
+            raise ExecutorProfileCollisionError(
+                f"Custom executor profile {profile.name!r} is already "
+                f"registered with a different definition. The existing "
+                f"profile and the new definition conflict; rename one of "
+                f"the profiles to resolve the collision."
+            )
         if profile.kind != "builtin":
             if profile.argv_template is None:
                 raise ValueError(
@@ -188,7 +218,7 @@ class ExecutorRegistry:
                 raise ValueError(
                     f"Invalid argv_template for {profile.name!r}: {'; '.join(errors)}"
                 )
-        self._profiles[profile.name.lower()] = profile
+        self._profiles[key] = profile
 
     def register_custom_from_config(
         self, profiles: dict[str, dict]

@@ -133,20 +133,34 @@ class OrgState:
         )
         # THR-052: register any custom executor profiles from the org config
         # so executor validation surfaces accept them before any route handler
-        # is called. Registration is process-wide (last-write-wins across
-        # multi-org setups); profile name collisions across orgs overwrite
-        # silently — a deliberate bounded behavior until org-scoped registries
-        # are needed.
-        # Malformed profiles are logged but do not prevent org load — the org
-        # still functions with built-in executors.
+        # is called.
+        #
+        # Error handling:
+        # - ExecutorProfileCollisionError: a different org already registered
+        #   the same profile name with incompatible semantics. This is a hard
+        #   semantic conflict — propagate it so the operator sees it (caught
+        #   by DaemonState.from_runtime for startup, propagated by add_org).
+        # - OrgConfigError / ValueError: malformed config or invalid profile
+        #   definition (missing argv, bad adapter, command not found). Logged
+        #   but does not prevent org load — the org still functions with
+        #   built-in executors.
         from runtime.orchestrator.org_config import load_org_config
         from runtime.orchestrator.executor_registry import get_registry
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfileCollisionError,
+        )
         try:
             org_config = load_org_config(paths)
             if org_config.executor_profiles:
                 get_registry().register_custom_from_config(
                     org_config.executor_profiles
                 )
+        except ExecutorProfileCollisionError:
+            raise  # hard semantic conflict — propagate
+        except (OrgConfigError, ValueError) as exc:
+            logger.error(
+                "org %r: failed to register executor_profiles: %s", slug, exc
+            )
         except Exception as exc:
             logger.error(
                 "org %r: failed to register executor_profiles: %s", slug, exc

@@ -217,6 +217,85 @@ executor_profiles:
     assert profile.adapter_id == "pi"
 
 
+def test_executor_profiles_multi_org_collision_prevented(tmp_path: Path) -> None:
+    """Multi-org regression: two orgs with the same custom profile name
+    but different command/argv semantics. The second org load must fail
+    loudly (ExecutorProfileCollisionError) and the first org's profile
+    must remain unchanged. One org must not be able to silently alter
+    another org's profile semantics."""
+    from runtime.orchestrator.executor_registry import (
+        ExecutorProfileCollisionError,
+        get_registry,
+        reset_registry,
+    )
+    from runtime.orchestrator.org_config import OrgConfig
+    reset_registry()
+
+    # Org alpha defines executor_profiles.shared with echo
+    cfg_alpha = OrgConfig.load_from_text("""
+executor_profiles:
+  shared:
+    command: echo
+    adapter: pi
+    argv_template:
+      - echo
+      - "{prompt}"
+""")
+    assert cfg_alpha.executor_profiles
+    get_registry().register_custom_from_config(cfg_alpha.executor_profiles)
+    assert get_registry().is_registered("shared")
+
+    # Org beta defines executor_profiles.shared with printf — different command
+    cfg_beta = OrgConfig.load_from_text("""
+executor_profiles:
+  shared:
+    command: printf
+    adapter: pi
+    argv_template:
+      - printf
+      - "{prompt}"
+""")
+    assert cfg_beta.executor_profiles
+
+    # The second registration must fail because 'shared' already means echo
+    with pytest.raises(ExecutorProfileCollisionError, match="shared"):
+        get_registry().register_custom_from_config(cfg_beta.executor_profiles)
+
+    # Alpha's profile is unchanged — NOT overwritten by beta
+    p = get_registry().get_profile("shared")
+    assert p is not None
+    assert p.argv_template == ["echo", "{prompt}"]
+    assert p.command == "echo"
+
+
+def test_executor_profiles_non_conflicting_custom_registers(tmp_path: Path) -> None:
+    """A config-declared fake custom executor registers/validates through
+    the production path without conflicting with built-ins."""
+    from runtime.orchestrator.executor_registry import get_registry, reset_registry
+    from runtime.orchestrator.org_config import OrgConfig
+    reset_registry()
+
+    cfg = OrgConfig.load_from_text("""
+executor_profiles:
+  testcli:
+    command: echo
+    adapter: pi
+    argv_template:
+      - echo
+      - "--input"
+      - "{prompt}"
+""")
+    assert cfg.executor_profiles
+    get_registry().register_custom_from_config(cfg.executor_profiles)
+
+    assert get_registry().is_registered("testcli")
+    p = get_registry().get_profile("testcli")
+    assert p is not None
+    assert p.kind == "custom"
+    assert p.adapter_id == "pi"
+    assert p.command == "echo"
+
+
 @pytest.mark.parametrize(
     "bad_value,err_fragment",
     [

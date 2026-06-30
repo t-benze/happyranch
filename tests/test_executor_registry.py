@@ -7,6 +7,7 @@ import pytest
 from runtime.config import Settings
 from runtime.orchestrator.executor_registry import (
     ExecutorProfile,
+    ExecutorProfileCollisionError,
     ExecutorRegistry,
     build_executor,
     get_registry,
@@ -137,6 +138,86 @@ class TestExecutorRegistry:
         )
         with pytest.raises(ValueError, match="Cannot override built-in"):
             registry.register_custom_profile(profile)
+
+    def test_register_custom_profile_rejects_custom_collision(self) -> None:
+        """Registering a custom profile with the same name but different
+        definition raises ExecutorProfileCollisionError."""
+        registry = ExecutorRegistry()
+        profile_alpha = ExecutorProfile(
+            name="shared",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+        )
+        registry.register_custom_profile(profile_alpha)
+        assert registry.is_registered("shared")
+
+        profile_beta = ExecutorProfile(
+            name="shared",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["printf", "{prompt}"],
+            command="printf",
+        )
+        with pytest.raises(ExecutorProfileCollisionError, match="shared"):
+            registry.register_custom_profile(profile_beta)
+
+        # Alpha's profile is unchanged
+        p = registry.get_profile("shared")
+        assert p is not None
+        assert p.argv_template == ["echo", "{prompt}"]
+        assert p.command == "echo"
+
+    def test_register_custom_profile_accepts_identical_duplicate(self) -> None:
+        """Registering the exact same profile twice is a no-op (idempotent)."""
+        registry = ExecutorRegistry()
+        profile = ExecutorProfile(
+            name="shared",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+        )
+        registry.register_custom_profile(profile)
+        # Second registration with identical profile — no error
+        registry.register_custom_profile(profile)
+        assert registry.is_registered("shared")
+        p = registry.get_profile("shared")
+        assert p is not None
+        assert p.argv_template == ["echo", "{prompt}"]
+
+    def test_register_custom_from_config_collision(self) -> None:
+        """register_custom_from_config also detects collisions between
+        custom profiles from different orgs."""
+        registry = ExecutorRegistry()
+        config_alpha = {
+            "shared": {
+                "command": None,  # skip which()
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            }
+        }
+        registry.register_custom_from_config(config_alpha)
+        assert registry.is_registered("shared")
+
+        config_beta = {
+            "shared": {
+                "command": None,
+                "argv_template": ["printf", "{prompt}"],
+                "adapter": "pi",
+            }
+        }
+        with pytest.raises(ExecutorProfileCollisionError, match="shared"):
+            registry.register_custom_from_config(config_beta)
+
+        # Alpha's profile unchanged
+        p = registry.get_profile("shared")
+        assert p is not None
+        assert p.argv_template == ["echo", "{prompt}"]
 
     def test_register_custom_profile_rejects_missing_argv_template(self) -> None:
         registry = ExecutorRegistry()
