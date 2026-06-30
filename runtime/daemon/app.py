@@ -19,6 +19,7 @@ from runtime.daemon.routes import (
     jobs,
     kb,
     orgs,
+    pr_ci,
     runtime,
     tasks,
     teams,
@@ -198,6 +199,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(jobs.router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(jobs.dual_router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(artifacts.router, prefix="/api/v1/orgs/{slug}", tags=["artifacts"])
+    app.include_router(pr_ci.router, prefix="/api/v1/orgs/{slug}", tags=["pr-ci"])
     app.include_router(dashboard.router, prefix="/api/v1/orgs/{slug}", tags=["dashboard"])
     app.include_router(settings_routes.router, prefix="/api/v1/orgs/{slug}", tags=["settings"])
     from runtime.daemon.routes import web_static
