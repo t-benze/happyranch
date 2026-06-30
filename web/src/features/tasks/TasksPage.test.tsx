@@ -176,7 +176,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(within(pending).getByText('1')).toBeInTheDocument();
   });
 
-  test('renders severity_rollup badge in TaskCard (worst subtree status)', async () => {
+  test('renders severity_rollup as inline subtitle in the title column', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     // Root is pending but has an escalated child → severity_rollup = 'escalated'
     // (Path B: escalated is the worst rollup severity).
@@ -193,8 +193,10 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
-      // The badge should show 'escalated' from severity_rollup, not 'pending'
-      expect(screen.getByText('escalated')).toBeInTheDocument();
+      // STATUS column shows the primary status ('pending'), NOT the rollup.
+      expect(screen.getByText('pending')).toBeInTheDocument();
+      // The rollup renders inline in the TITLE column as "subtask escalated".
+      expect(screen.getByText('subtask escalated')).toBeInTheDocument();
       expect(screen.getByText(/Root task that has a stuck child/)).toBeInTheDocument();
     });
   });
@@ -204,6 +206,9 @@ describe('TasksPage — read path (roots endpoint)', () => {
   // derivation of severity_rollup vs the root's own status; count-free (the
   // count-decorated design form "1 of 2 subtasks blocked" needs per-status
   // subtask counts that the roots payload does not carry — deferred).
+  //
+  // Also verifies the STATUS column carries only the compact primary status
+  // (no block_kind qualifier) when the rollup matches.
   test('surfaces worst-child subtask rollup inline on root rows (TASKS-05)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     // Root is in_progress but a descendant is escalated → severity_rollup='escalated'.
@@ -232,6 +237,52 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(rollup).toHaveClass('text-status-escalated');
     // The healthy root surfaces no inline rollup (no fabricated subtask state).
     expect(screen.queryByText('subtask in progress')).not.toBeInTheDocument();
+    // STATUS column for the worse-child root shows compact primary 'in_progress'
+    // (the task's own status, NOT the severity rollup).
+    const worseRow = screen.getByText('TASK-0500').closest('a')!;
+    expect(within(worseRow).getByText('in_progress')).toBeInTheDocument();
+    // STATUS column for the no-worse-child root also shows compact 'in_progress'.
+    const healthyRow = screen.getByText('TASK-0501').closest('a')!;
+    expect(within(healthyRow).getByText('in_progress')).toBeInTheDocument();
+  });
+
+  test('stacks subtask rollup under title inside the title column', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const taskWithRollup = rootTask({
+      task_id: 'TASK-0502',
+      status: 'in_progress',
+      severity_rollup: 'escalated',
+      brief:
+        'A long root title that needs truncation before it can collide with the task id column',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [taskWithRollup] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    const rollup = await screen.findByText('subtask escalated');
+    const title = screen.getByText(/A long root title/);
+    // The rollup lives inside a nested context div, which is a child of the
+    // outer title column (the title headline's parent).
+    const contextRow = rollup.parentElement!;
+    const titleColumn = contextRow.parentElement!;
+
+    expect(titleColumn).toBe(title.parentElement);
+    expect(titleColumn).toHaveClass('min-w-0');
+    expect(titleColumn).toHaveClass('flex-1');
+    expect(titleColumn).toHaveClass('flex-col');
+    expect(titleColumn).toHaveClass('items-start');
+    expect(title).toHaveClass('w-full');
+    expect(title).toHaveClass('min-w-0');
+    expect(rollup).not.toHaveClass('shrink-0');
+    expect(rollup).toHaveClass('max-w-full');
+    expect(rollup).toHaveClass('overflow-hidden');
+    // Context row clips inside the title column.
+    expect(contextRow).toHaveClass('max-w-full');
+    expect(contextRow).toHaveClass('overflow-hidden');
+    expect(contextRow).toHaveClass('whitespace-nowrap');
   });
 
   test('groups by thread on dispatched_from_thread_id, with no-thread bucket', async () => {
@@ -498,6 +549,132 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
 
   // THR-041: long titles truncate cleanly with ellipsis so they cannot
   // overlap the Agent/Thread/Updated columns.
+  // THR-049 msg-9 + task/TASK-1223: STATUS column renders compact primary
+  // task status only — no block_kind derived qualifier ('waiting on subtasks'
+  // / 'waiting on jobs') and no severity rollup. Both the waiting qualifier
+  // and worst-child rollup render as second-line context in the TITLE column.
+  // The reduced scope covers the founder-reported case where status=in_progress,
+  // block_kind=delegated, severity_rollup=in_progress — the waiting qualifier
+  // was still leaking into the STATUS column through StatusBadge.
+  //
+  // Case 1: status='in_progress' + block_kind='delegated' + severity_rollup='in_progress'
+  //   → STATUS shows compact 'in_progress', TITLE shows 'waiting on subtasks'.
+  test('STATUS compact for delegated in_progress task — waiting qualifier in TITLE context (THR-049)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const delegated = rootTask({
+      task_id: 'TASK-0800',
+      status: 'in_progress',
+      block_kind: 'delegated',
+      severity_rollup: 'in_progress',
+      brief: 'Delegated root waiting on its children',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [delegated] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText('TASK-0800')).toBeInTheDocument();
+    });
+    const row = document.querySelector('a[href*="/tasks/TASK-0800"]') as HTMLElement;
+    // STATUS column: compact 'in_progress' only, no 'waiting on subtasks'.
+    const statusCell = row.querySelector('.whitespace-nowrap') as HTMLElement;
+    const statusText = statusCell?.textContent ?? '';
+    expect(statusText).toContain('in_progress');
+    expect(statusText).not.toContain('waiting on subtasks');
+    expect(statusText).not.toContain('waiting on jobs');
+    // TITLE column: 'waiting on subtasks' appears as second-line context.
+    expect(within(row).getByText('waiting on subtasks')).toBeInTheDocument();
+    // No rollup line when rollup matches own status.
+    expect(within(row).queryByText('subtask')).not.toBeInTheDocument();
+  });
+
+  test('STATUS compact when rollup worse than own status — rollup in TITLE context', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const aggravated = rootTask({
+      task_id: 'TASK-0801',
+      status: 'in_progress',
+      block_kind: null,
+      severity_rollup: 'escalated',
+      brief: 'Root in progress with an escalated child',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [aggravated] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText('TASK-0801')).toBeInTheDocument();
+    });
+    const row = document.querySelector('a[href*="/tasks/TASK-0801"]') as HTMLElement;
+    // STATUS column: compact primary 'in_progress' only.
+    const statusCell = row.querySelector('.whitespace-nowrap') as HTMLElement;
+    const statusText = statusCell?.textContent ?? '';
+    expect(statusText).toContain('in_progress');
+    expect(statusText).not.toContain('escalated');
+    // TITLE column: 'subtask escalated' appears as second-line context.
+    const rollup = within(row).getByText('subtask escalated');
+    expect(rollup).toHaveClass('text-status-escalated');
+  });
+
+  test('STATUS compact when delegated + worse rollup — both waiting and rollup in TITLE', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const both = rootTask({
+      task_id: 'TASK-0802',
+      status: 'in_progress',
+      block_kind: 'delegated',
+      severity_rollup: 'escalated',
+      brief: 'Root waiting AND has escalated child',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [both] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText('TASK-0802')).toBeInTheDocument();
+    });
+    const row = document.querySelector('a[href*="/tasks/TASK-0802"]') as HTMLElement;
+    // STATUS column: compact 'in_progress' only.
+    const statusCell = row.querySelector('.whitespace-nowrap') as HTMLElement;
+    const statusText = statusCell?.textContent ?? '';
+    expect(statusText).toContain('in_progress');
+    expect(statusText).not.toContain('waiting');
+    expect(statusText).not.toContain('escalated');
+    // TITLE column: both 'waiting on subtasks' and 'subtask escalated' appear.
+    expect(within(row).getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(within(row).getByText('subtask escalated')).toBeInTheDocument();
+  });
+
+  test('STATUS compact for in_progress + blocked_on_job — waiting on jobs in TITLE', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const waitingJob = rootTask({
+      task_id: 'TASK-0803',
+      status: 'in_progress',
+      block_kind: 'blocked_on_job',
+      severity_rollup: 'in_progress',
+      brief: 'Root waiting on a job',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [waitingJob] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText('TASK-0803')).toBeInTheDocument();
+    });
+    const row = document.querySelector('a[href*="/tasks/TASK-0803"]') as HTMLElement;
+    const statusCell = row.querySelector('.whitespace-nowrap') as HTMLElement;
+    const statusText = statusCell?.textContent ?? '';
+    expect(statusText).toContain('in_progress');
+    expect(statusText).not.toContain('waiting');
+    expect(within(row).getByText('waiting on jobs')).toBeInTheDocument();
+  });
+
   test('truncates long titles with ellipsis and keeps status on one line', async () => {
     const longBrief = 'A'.repeat(500) + ' should be clipped';
     mountTasks([
