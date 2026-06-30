@@ -119,21 +119,9 @@ class OrgState:
         paths = OrgPaths(root=root)
         db = Database(paths.db_path)
         teams = TeamsRegistry.load(root)
-        # Refuse to attach if agent files and teams.yaml disagree. Raises
-        # OrgConsistencyError on drift; DaemonState.from_runtime catches
-        # per-org so one broken org cannot crash daemon startup, while
-        # add_org propagates so explicit founder actions fail loudly.
-        validate_team_membership(paths, teams)
-        orchestrator = Orchestrator(
-            db=db,
-            settings=settings,
-            paths=paths,
-            slug=slug,
-            teams=teams,
-        )
         # THR-052: register any custom executor profiles from the org config
-        # so executor validation surfaces accept them before any route handler
-        # is called.
+        # BEFORE validating active agent files, so agents declaring custom
+        # executors defined in the same org's config.yaml can pass validation.
         #
         # Error handling:
         # - ExecutorProfileCollisionError: a different org already registered
@@ -143,8 +131,11 @@ class OrgState:
         # - OrgConfigError / ValueError: malformed config or invalid profile
         #   definition (missing argv, bad adapter, command not found). Logged
         #   but does not prevent org load — the org still functions with
-        #   built-in executors.
-        from runtime.orchestrator.org_config import load_org_config
+        #   built-in executors. An active agent depending on an unregistered
+        #   profile will then fail validation normally below.
+        from runtime.orchestrator.org_config import (
+            load_org_config, OrgConfigError,
+        )
         from runtime.orchestrator.executor_registry import get_registry
         from runtime.orchestrator.executor_registry import (
             ExecutorProfileCollisionError,
@@ -165,6 +156,18 @@ class OrgState:
             logger.error(
                 "org %r: failed to register executor_profiles: %s", slug, exc
             )
+        # Refuse to attach if agent files and teams.yaml disagree. Raises
+        # OrgConsistencyError on drift; DaemonState.from_runtime catches
+        # per-org so one broken org cannot crash daemon startup, while
+        # add_org propagates so explicit founder actions fail loudly.
+        validate_team_membership(paths, teams)
+        orchestrator = Orchestrator(
+            db=db,
+            settings=settings,
+            paths=paths,
+            slug=slug,
+            teams=teams,
+        )
         return cls(
             slug=slug,
             root=root,
