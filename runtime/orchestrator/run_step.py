@@ -1780,6 +1780,20 @@ def _maybe_spawn_auto_revisit(
         return False
     root = chain[-1]
 
+    # Walk the revisit chain from the root to find the original
+    # thread-dispatched task, so the auto-revisit successor inherits
+    # the thread linkage. Without this, the task list treats the
+    # successor as "no thread" even though the originate thread
+    # still needs it for grouping. Uses the same pattern as
+    # _maybe_post_thread_escalation and _maybe_post_thread_followup.
+    from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle
+    try:
+        revisit_chain = db.walk_revisit_chain(root.id, max_hops=200, truncate=True)
+    except LineageTooDeep:
+        revisit_chain = []
+    original = revisit_chain[-1] if revisit_chain else root
+    thread_id = original.dispatched_from_thread_id
+
     prior = _count_prior_auto_revisits_by_kind(orch, root.id, failure_kind)
     if prior >= _AUTO_REVISIT_CAP_PER_KIND:
         return False
@@ -1795,6 +1809,7 @@ def _maybe_spawn_auto_revisit(
         status=TaskStatus.PENDING,
         parent_task_id=None,
         revisit_of_task_id=root.id,
+        dispatched_from_thread_id=thread_id,
         session_timeout_seconds=root.session_timeout_seconds,
     ))
 

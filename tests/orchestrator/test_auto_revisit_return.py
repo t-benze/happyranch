@@ -138,3 +138,172 @@ def test_returns_false_when_cap_hit(tmp_path: Path, monkeypatch):
         error_context={},
     )
     assert spawned is False
+
+
+# --- Thread linkage inheritance tests (THR-046 message 64) ---
+
+
+def test_auto_revisit_inherits_thread_linkage_from_root(tmp_path: Path):
+    """Thread-dispatched root's auto-revisit successor inherits
+    dispatched_from_thread_id so the task list does not treat it as
+    'no thread'."""
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import TaskRecord, TaskStatus
+    from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_task(TaskRecord(
+        id="TASK-1", brief="x", team="engineering",
+        assigned_agent="manager", status=TaskStatus.FAILED,
+        dispatched_from_thread_id="THR-0046",
+    ))
+    audit = AuditLogger(db)
+    orch = MagicMock()
+    orch._db = db
+    orch._audit = audit
+    orch._queue = MagicMock()
+    orch._slug = "acme"
+
+    spawned = _maybe_spawn_auto_revisit(
+        orch, "TASK-1", "manager",
+        failure_kind="session_timeout",
+        error_context={},
+    )
+    assert spawned is True
+
+    # The auto-revisit successor inherits the thread linkage from the root.
+    # next_task_id() returns TASK-NNN format based on MAX numeric suffix.
+    successor = db.get_task("TASK-002")
+    assert successor is not None
+    assert successor.revisit_of_task_id == "TASK-1"
+    assert successor.dispatched_from_thread_id == "THR-0046"
+
+
+def test_auto_revisit_walks_revisit_chain_for_thread_linkage(tmp_path: Path):
+    """When an auto-revisit fires on a root that is itself a revisit of a
+    thread-dispatched original, the successor inherits the thread linkage
+    from the original found by walking the revisit chain."""
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import TaskRecord, TaskStatus
+    from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
+
+    db = Database(tmp_path / "happyranch.db")
+    # Original: thread-dispatched
+    db.insert_task(TaskRecord(
+        id="TASK-1", brief="x", team="engineering",
+        assigned_agent="manager", status=TaskStatus.FAILED,
+        dispatched_from_thread_id="THR-0046",
+    ))
+    # Revisit of original (founder revisit or prior auto-revisit).
+    # The revisit root itself does NOT carry dispatched_from_thread_id
+    # (matching current revisit behavior).
+    db.insert_task(TaskRecord(
+        id="TASK-002", brief="x", team="engineering",
+        assigned_agent="manager", status=TaskStatus.FAILED,
+        revisit_of_task_id="TASK-1",
+    ))
+    audit = AuditLogger(db)
+    orch = MagicMock()
+    orch._db = db
+    orch._audit = audit
+    orch._queue = MagicMock()
+    orch._slug = "acme"
+
+    spawned = _maybe_spawn_auto_revisit(
+        orch, "TASK-002", "manager",
+        failure_kind="session_timeout",
+        error_context={},
+    )
+    assert spawned is True
+
+    successor = db.get_task("TASK-003")
+    assert successor is not None
+    assert successor.revisit_of_task_id == "TASK-002"
+    # Must inherit from the original thread-dispatched root (TASK-1),
+    # found by walking the revisit chain: TASK-002 → TASK-1.
+    assert successor.dispatched_from_thread_id == "THR-0046"
+
+
+def test_auto_revisit_non_thread_task_has_no_thread_linkage(tmp_path: Path):
+    """Non-thread-dispatched root's auto-revisit successor correctly has
+    dispatched_from_thread_id=None."""
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import TaskRecord, TaskStatus
+    from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_task(TaskRecord(
+        id="TASK-1", brief="x", team="engineering",
+        assigned_agent="manager", status=TaskStatus.FAILED,
+    ))
+    audit = AuditLogger(db)
+    orch = MagicMock()
+    orch._db = db
+    orch._audit = audit
+    orch._queue = MagicMock()
+    orch._slug = "acme"
+
+    spawned = _maybe_spawn_auto_revisit(
+        orch, "TASK-1", "manager",
+        failure_kind="session_timeout",
+        error_context={},
+    )
+    assert spawned is True
+
+    successor = db.get_task("TASK-002")
+    assert successor is not None
+    assert successor.revisit_of_task_id == "TASK-1"
+    assert successor.dispatched_from_thread_id is None
+
+
+def test_auto_revisit_thread_linkage_preserves_existing_behavior(tmp_path: Path):
+    """The existing revisit_of_task_id, auto_revisit_of audit, and
+    revisit_spawned audit behavior remain intact when adding thread
+    linkage inheritance."""
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import TaskRecord, TaskStatus
+    from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_task(TaskRecord(
+        id="TASK-1", brief="x", team="engineering",
+        assigned_agent="manager", status=TaskStatus.FAILED,
+        dispatched_from_thread_id="THR-0046",
+    ))
+    audit = AuditLogger(db)
+    orch = MagicMock()
+    orch._db = db
+    orch._audit = audit
+    orch._queue = MagicMock()
+    orch._slug = "acme"
+
+    spawned = _maybe_spawn_auto_revisit(
+        orch, "TASK-1", "manager",
+        failure_kind="session_timeout",
+        error_context={},
+    )
+    assert spawned is True
+
+    successor = db.get_task("TASK-002")
+    assert successor is not None
+    assert successor.parent_task_id is None
+    assert successor.revisit_of_task_id == "TASK-1"
+    assert successor.dispatched_from_thread_id == "THR-0046"
+    assert successor.status == TaskStatus.PENDING
+    assert successor.brief == "x"
+
+    # auto_revisit_of is written to the new root.
+    successor_rows = db.get_audit_logs("TASK-002")
+    successor_actions = [r["action"] for r in successor_rows]
+    assert "auto_revisit_of" in successor_actions
+    # revisit_spawned is written to the predecessor.
+    predecessor_rows = db.get_audit_logs("TASK-1")
+    predecessor_actions = [r["action"] for r in predecessor_rows]
+    assert "revisit_spawned" in predecessor_actions
+
+    # Queue received an enqueue for the new root.
+    orch._queue.put_nowait.assert_called_once_with("acme", "TASK-002")
