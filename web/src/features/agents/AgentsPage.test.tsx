@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
@@ -314,6 +314,184 @@ describe('AgentDetailPane — editable fields', () => {
     expect(within(dialog).getByText('New thread')).toBeInTheDocument();
     const recipientsInput = within(dialog).getByLabelText(/^Recipients/i);
     expect(recipientsInput).toHaveValue('engineering_head');
+  });
+
+  test('Start Thread dialog double-click Send creates exactly one thread (synchronous in-flight guard)', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+
+    // Delay the POST so a second submit can enter before resolution.
+    // Use fireEvent.click (synchronous) instead of user.click (sequential)
+    // so the second click arrives before React re-renders to disable the
+    // button. Without the in-flight latch, this triggers two POSTs.
+    let resolvePost: (v: unknown) => void;
+    const postDeferred = new Promise((r) => { resolvePost = r; });
+    let postCount = 0;
+    let detailGetCount = 0;
+
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async () => {
+        postCount++;
+        await postDeferred;
+        return HttpResponse.json(
+          { thread_id: 'THR-AGENT-DBL', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-AGENT-DBL`, () => {
+        detailGetCount++;
+        return HttpResponse.json({
+          thread_id: 'THR-AGENT-DBL',
+          subject: 'Only one',
+          status: 'open',
+          started_at: 'now',
+          archived_at: null,
+          forwarded_from_id: null,
+          forwarded_from_kind: null,
+          turn_cap: 500,
+          turns_used: 0,
+          summary: null,
+          transcript_path: null,
+          participants: ['engineering_head'],
+          messages: [],
+        });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-AGENT-DBL/messages`, () =>
+        HttpResponse.json({ messages: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-AGENT-DBL/tail`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => {
+      expect(screen.getByText('manager')).toBeInTheDocument();
+    });
+
+    // Click Start Thread to open dialog
+    await user.click(screen.getByRole('button', { name: /Start Thread/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText(/^Subject$/i), 'Only one');
+    // Recipients already pre-filled to engineering_head
+    await user.type(within(dialog).getByLabelText(/^Body \(Markdown\)$/i), 'Body');
+
+    // fireEvent.click is synchronous — two clicks in the same tick.
+    // The first starts the delayed POST; the second must be rejected
+    // by the synchronous in-flight latch before React re-renders.
+    const sendBtn = within(dialog).getByRole('button', { name: /^Send$/i });
+    fireEvent.click(sendBtn);
+    fireEvent.click(sendBtn);
+
+    // Release the deferred POST.
+    resolvePost!({});
+
+    // Assert exactly one POST reached the server.
+    await waitFor(() => {
+      expect(postCount).toBe(1);
+    });
+    // Assert exactly one navigation happened.
+    await waitFor(() => {
+      expect(detailGetCount).toBe(1);
+    });
+    // Navigated once to thread detail.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Only one/i })).toBeInTheDocument(),
+    );
+  });
+
+  test('Start Thread dialog MentionTextarea Enter + Send button race creates exactly one thread (cross-path guard)', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+
+    // Delay the POST so cross-path submit can race before resolution.
+    let resolvePost: (v: unknown) => void;
+    const postDeferred = new Promise((r) => { resolvePost = r; });
+    let postCount = 0;
+    let detailGetCount = 0;
+
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async () => {
+        postCount++;
+        await postDeferred;
+        return HttpResponse.json(
+          { thread_id: 'THR-AGENT-CROSS', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-AGENT-CROSS`, () => {
+        detailGetCount++;
+        return HttpResponse.json({
+          thread_id: 'THR-AGENT-CROSS',
+          subject: 'Cross path',
+          status: 'open',
+          started_at: 'now',
+          archived_at: null,
+          forwarded_from_id: null,
+          forwarded_from_kind: null,
+          turn_cap: 500,
+          turns_used: 0,
+          summary: null,
+          transcript_path: null,
+          participants: ['engineering_head'],
+          messages: [],
+        });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-AGENT-CROSS/messages`, () =>
+        HttpResponse.json({ messages: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-AGENT-CROSS/tail`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => {
+      expect(screen.getByText('manager')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Start Thread/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText(/^Subject$/i), 'Cross path');
+    // Recipients already pre-filled to engineering_head
+    await user.type(within(dialog).getByLabelText(/^Body \(Markdown\)$/i), 'Body');
+
+    const sendBtn = within(dialog).getByRole('button', { name: /^Send$/i });
+    const bodyTextarea = within(dialog).getByLabelText(/^Body \(Markdown\)$/i);
+
+    // MentionTextarea onSubmit fires on Enter (when popup is closed).
+    // Fire Enter synchronously, then immediately click Send before React
+    // re-renders to disable either path. The latch must reject the second.
+    fireEvent.keyDown(bodyTextarea, { key: 'Enter' });
+    fireEvent.click(sendBtn);
+
+    resolvePost!({});
+
+    await waitFor(() => {
+      expect(postCount).toBe(1);
+    });
+    await waitFor(() => {
+      expect(detailGetCount).toBe(1);
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Cross path/i })).toBeInTheDocument(),
+    );
   });
 
   test('Start Thread dialog posts compose body and navigates to new thread detail', async () => {

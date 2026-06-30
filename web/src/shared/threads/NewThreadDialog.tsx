@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Paperclip, X } from 'lucide-react';
 import {
   Dialog,
@@ -53,6 +53,10 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Synchronous in-flight latch — prevents duplicate submits before
+  // React Query's isPending state propagates (double-click, Enter+Send).
+  const submittingRef = useRef(false);
+
   const idBase = useId();
   const subjectId = `${idBase}-subject`;
   const recipientsId = `${idBase}-recipients`;
@@ -60,6 +64,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
 
   useEffect(() => {
     if (!open) return;
+    submittingRef.current = false;
     setSubject(prefill?.subject ?? '');
     setRecipientsRaw(prefill?.recipients?.join(', ') ?? '');
     setBody(prefill?.body ?? '');
@@ -67,7 +72,12 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     setErrorMsg(null);
   }, [open, prefill]);
 
-  const submit = async () => {
+  const submit = useCallback(async () => {
+    // Guard against double-submit (double-click, Enter+Send race).
+    // The ref is synchronous — no React render needed to block re-entry.
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+
     setErrorMsg(null);
     const recipients = recipientsRaw
       .split(',')
@@ -75,6 +85,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       .filter(Boolean);
     if (!subject.trim() || !recipients.length || (!body.trim() && !pendingAttachments.length)) {
       setErrorMsg('Subject, recipients, and a body or attachment are required.');
+      submittingRef.current = false;
       return;
     }
     try {
@@ -113,12 +124,15 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       onCreated(result.thread_id);
       setPendingAttachments([]);
       onClose();
+      // submittingRef remains true — dialog closes on success, so no
+      // further re-entry is possible.
     } catch (err) {
       setErrorMsg(
         err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
       );
+      submittingRef.current = false;
     }
-  };
+  }, [subject, recipientsRaw, body, pendingAttachments, prefill, compose, slug, onCreated, onClose]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -158,7 +172,8 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               value={body}
               onChange={setBody}
               agents={agents}
-              onSubmit={() => { submit(); }}
+              onSubmit={() => { if (!submittingRef.current) submit(); }}
+              disabled={submittingRef.current || compose.isPending}
               rows={6}
             />
           </FormField>
@@ -219,8 +234,8 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} disabled={compose.isPending}>
-            {compose.isPending ? 'Sending…' : 'Send'}
+          <Button onClick={submit} disabled={submittingRef.current || compose.isPending}>
+            {submittingRef.current || compose.isPending ? 'Sending…' : 'Send'}
           </Button>
         </DialogFooter>
       </DialogContent>

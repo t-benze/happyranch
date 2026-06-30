@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test, vi } from 'vitest';
@@ -24,6 +24,168 @@ function stubBaseHandlers() {
 }
 
 describe('ThreadsPage — write path', () => {
+  test('double-click Send creates exactly one thread (synchronous in-flight guard)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+
+    // Delay the POST so the second click can enter before React Query
+    // sets isPending — this is the exact scenario that produced duplicate
+    // threads (THR-046 message 49).
+    // Use fireEvent.click (synchronous) instead of user.click (sequential)
+    // so the second click arrives before React re-renders and disables the
+    // button. Without the in-flight latch, this triggers two POSTs.
+    let resolvePost: (v: unknown) => void;
+    const postDeferred = new Promise((r) => { resolvePost = r; });
+    let postCount = 0;
+    let detailGetCount = 0;
+
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async () => {
+        postCount++;
+        await postDeferred;
+        return HttpResponse.json(
+          { thread_id: 'THR-007', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-007`, () => {
+        detailGetCount++;
+        return HttpResponse.json({
+          thread_id: 'THR-007',
+          subject: 'Only one',
+          status: 'open',
+          started_at: 'now',
+          archived_at: null,
+          forwarded_from_id: null,
+          forwarded_from_kind: null,
+          turn_cap: 500,
+          turns_used: 0,
+          summary: null,
+          transcript_path: null,
+          participants: ['agent_a'],
+          messages: [],
+        });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-007/messages`, () =>
+        HttpResponse.json({ messages: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-007/tail`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
+
+    // Open dialog, fill fields
+    await user.click(await screen.findByRole('button', { name: /New thread/i }));
+    await user.type(screen.getByLabelText(/^Subject$/i), 'Only one');
+    await user.type(screen.getByLabelText(/^Recipients/i), 'agent_a');
+    await user.type(screen.getByLabelText(/^Body \(Markdown\)$/i), 'Body');
+
+    const sendBtn = screen.getByRole('button', { name: /^Send$/i });
+
+    // fireEvent.click is synchronous — two clicks in the same tick. The
+    // first starts the (delayed) POST; the second must be rejected by the
+    // synchronous in-flight latch (submittingRef). React hasn't re-rendered
+    // yet, so compose.isPending hasn't disabled the DOM button.
+    fireEvent.click(sendBtn);
+    fireEvent.click(sendBtn);
+
+    // Release the deferred POST so both clicks (if both entered submit) resolve.
+    resolvePost!({});
+
+    // Assert exactly one POST reached the server.
+    await waitFor(() => {
+      expect(postCount).toBe(1);
+    });
+
+    // Assert exactly one navigation happened (one thread detail GET).
+    await waitFor(() => {
+      expect(detailGetCount).toBe(1);
+    });
+
+    // Navigated once to thread detail.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Only one/i })).toBeInTheDocument(),
+    );
+  });
+
+  test('MentionTextarea Enter + Send button race creates exactly one thread (cross-path in-flight guard)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+
+    // Delay the POST so cross-path submit can race before resolution.
+    let resolvePost: (v: unknown) => void;
+    const postDeferred = new Promise((r) => { resolvePost = r; });
+    let postCount = 0;
+    let detailGetCount = 0;
+
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async () => {
+        postCount++;
+        await postDeferred;
+        return HttpResponse.json(
+          { thread_id: 'THR-ENTER', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-ENTER`, () => {
+        detailGetCount++;
+        return HttpResponse.json({
+          thread_id: 'THR-ENTER',
+          subject: 'Enter race',
+          status: 'open',
+          started_at: 'now',
+          archived_at: null,
+          forwarded_from_id: null,
+          forwarded_from_kind: null,
+          turn_cap: 500,
+          turns_used: 0,
+          summary: null,
+          transcript_path: null,
+          participants: ['agent_a'],
+          messages: [],
+        });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-ENTER/messages`, () =>
+        HttpResponse.json({ messages: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-ENTER/tail`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
+
+    await user.click(await screen.findByRole('button', { name: /New thread/i }));
+    await user.type(screen.getByLabelText(/^Subject$/i), 'Enter race');
+    await user.type(screen.getByLabelText(/^Recipients/i), 'agent_a');
+    await user.type(screen.getByLabelText(/^Body \(Markdown\)$/i), 'Body');
+
+    const sendBtn = screen.getByRole('button', { name: /^Send$/i });
+    const bodyTextarea = screen.getByLabelText(/^Body \(Markdown\)$/i);
+
+    // MentionTextarea onSubmit fires on Enter (when popup is closed, not
+    // Shift+Enter, not IME-composing). Fire Enter synchronously, then
+    // immediately click Send before React re-renders to disable either path.
+    fireEvent.keyDown(bodyTextarea, { key: 'Enter' });
+    fireEvent.click(sendBtn);
+
+    resolvePost!({});
+
+    await waitFor(() => {
+      expect(postCount).toBe(1);
+    });
+    await waitFor(() => {
+      expect(detailGetCount).toBe(1);
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Enter race/i })).toBeInTheDocument(),
+    );
+  });
+
   test('NewThreadDialog posts compose body and navigates to the new thread', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
