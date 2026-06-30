@@ -476,7 +476,7 @@ export function ThreadsPage(): JSX.Element {
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
           onExtend={() => setShowExtend(true)}
-          onAbort={() => abortReplies.mutate()}
+          onAbort={() => abortReplies.mutateAsync(undefined)}
           abortPending={abortReplies.isPending}
           hasInFlightResponders={hasInFlightResponders}
           composer={

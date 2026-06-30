@@ -861,11 +861,23 @@ async def test_run_invocation_preserves_abort_reason_when_externally_failed(
 
     import runtime.daemon.thread_runner as runner_mod
 
+    # Capture the fake executor instance so we can assert it was invoked.
+    fake_exec_instance = []
+
     class _FakeExec:
         def __init__(self, **kwargs):
-            pass
+            fake_exec_instance.append(self)
 
         def run(self, **kwargs):
+            # Simulate external abort during subprocess execution: the founder
+            # aborts replies while the subprocess is running, and fail_invocation
+            # is called from the abort route before the subprocess exits.
+            self.was_invoked = True
+            db.fail_invocation(
+                inv.invocation_token,
+                status=ThreadInvocationStatus.FAILED,
+                decline_reason="founder_aborted",
+            )
             return FakeExecutorResult(success=True)
 
     monkeypatch.setattr(
@@ -874,23 +886,21 @@ async def test_run_invocation_preserves_abort_reason_when_externally_failed(
         lambda provider, settings, paths: _FakeExec(),
     )
 
-    # Simulate external abort during execution: fail the invocation before
-    # the runner inspects post-subprocess state.
-    db.fail_invocation(
-        inv.invocation_token,
-        status=ThreadInvocationStatus.FAILED,
-        decline_reason="founder_aborted",
-    )
-
     org = FakeOrgState(db=db, root=tmp_path)
 
-    # Run invocation — should detect externally-failed token and return
-    # without overwriting the abort reason.
+    # Run invocation — the fake executor runs the subprocess and the
+    # external abort happens during execution. The runner must detect the
+    # externally-failed token after the subprocess exits and preserve the
+    # abort reason without overwriting it.
     await run_invocation(
         org_state=org,
         invocation_token=inv.invocation_token,
         settings=Settings(),
     )
+
+    # The fake executor must have been invoked (the run() path was exercised).
+    assert len(fake_exec_instance) == 1
+    assert fake_exec_instance[0].was_invoked is True
 
     # The invocation should still be failed with founder_aborted reason.
     after = db.get_invocation_any_status(inv.invocation_token)
