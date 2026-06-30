@@ -23,16 +23,13 @@ struct WebView: NSViewRepresentable {
     }
 }
 
-/// Main content view: toolbar + WebView + diagnostics.
+/// Main content view: full-window WebView (no in-window toolbar).
+/// Daemon controls live in the Daemon menu bar menu.
 struct ContentView: View {
     @EnvironmentObject var appDelegate: AppDelegate
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Toolbar
-            toolbarView
-
-            // Content area
+        Group {
             if let urlString = appDelegate.webViewURL, let url = URL(string: urlString) {
                 WebView(url: url)
             } else {
@@ -42,73 +39,12 @@ struct ContentView: View {
         .sheet(isPresented: $appDelegate.showDiagnostics) {
             DiagnosticsView(diagnostics: appDelegate.diagnostics, supervisor: appDelegate.supervisor)
         }
+        .navigationTitle(windowTitle)
     }
 
-    // MARK: - Toolbar
-
-    private var toolbarView: some View {
-        HStack(spacing: 12) {
-            Text("HappyRanch")
-                .font(.headline)
-                .padding(.leading, 12)
-
-            Divider()
-                .frame(height: 20)
-
-            stateBadge
-
-            Spacer()
-
-            HStack(spacing: 8) {
-                Button(action: { appDelegate.startDaemon() }) {
-                    Label("Start", systemImage: "play.fill")
-                }
-                .disabled(!canStart)
-
-                Button(action: { appDelegate.stopDaemonWithConfirmation() }) {
-                    Label("Stop", systemImage: "stop.fill")
-                }
-                .disabled(!canStop)
-
-                Button(action: { appDelegate.showDiagnostics = true }) {
-                    Label("Diagnostics", systemImage: "gearshape")
-                }
-            }
-            .padding(.trailing, 12)
-        }
-        .frame(height: 36)
-        .background(.ultraThinMaterial)
-    }
-
-    private var stateBadge: some View {
-        Text(appDelegate.stateText)
-            .font(.caption)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(stateColor.opacity(0.2))
-            .foregroundColor(stateColor)
-            .cornerRadius(4)
-    }
-
-    private var stateColor: Color {
-        switch appDelegate.supervisor.state {
-        case .running: return .green
-        case .starting, .stopping: return .orange
-        case .externalRunning: return .blue
-        case .crashed, .failed: return .red
-        case .unhealthy: return .yellow
-        case .stalePid: return .purple
-        case .stopped, .notConfigured: return .secondary
-        }
-    }
-
-    private var canStart: Bool {
-        let s = appDelegate.supervisor.state
-        return s == .stopped || s == .crashed || s == .stalePid
-    }
-
-    private var canStop: Bool {
-        appDelegate.supervisor.state.canStop
+    private var windowTitle: String {
+        let state = appDelegate.supervisor.state.description
+        return "HappyRanch — \(state)"
     }
 
     // MARK: - Placeholder

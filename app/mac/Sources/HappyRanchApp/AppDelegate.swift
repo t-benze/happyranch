@@ -24,6 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var stateText: String = DaemonState.notConfigured.description
     @Published var showDiagnostics = false
 
+    /// Derived state published for menu-command enable/disable bindings.
+    @Published var canStart = false
+    @Published var canStop = false
+    @Published var canRestart = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Foreground the app as a regular Dock-present application so a bare
         // `swift run` executable gets a visible window without requiring a .app bundle.
@@ -32,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         let home = daemonHome()
         supervisor.configure(homeDir: home)
-        stateText = supervisor.state.description
+        refreshDerivedState()
 
         // Check for existing daemon
         discoverExistingDaemon()
@@ -82,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             if processIsAlive(pid: pid) {
                 // External daemon detected
                 supervisor.onExternalDaemonDetected(pid: pid, port: port)
-                stateText = supervisor.state.description
+                refreshDerivedState()
 
                 // Probe health before loading the URL
                 Task {
@@ -92,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             } else {
                 // Stale PID
                 supervisor.onStalePidDetected(pid: pid)
-                stateText = supervisor.state.description
+                refreshDerivedState()
                 return
             }
         }
@@ -100,23 +105,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: - Daemon actions
 
+    /// Restart the managed daemon: stop then start.
+    /// Only valid for app-managed daemons; external daemons are never restarted.
+    func restartDaemon() {
+        guard supervisor.isManagedBySelf, canStop else { return }
+        stopDaemon(confirmed: true)
+        // After stop completes (process terminated or forced crashed),
+        // start if the state permits it.
+        if canStart {
+            startDaemon()
+        }
+    }
+
     func startDaemon() {
         do {
             try supervisor.start()
-            stateText = supervisor.state.description
+            refreshDerivedState()
             diagnostics.recordStartCommand("uv run python -m runtime.daemon")
 
             // Launch the daemon process
             launchDaemonProcess()
         } catch {
             stateText = "Error: \(error.localizedDescription)"
+            refreshDerivedState()
         }
     }
 
     func stopDaemon(confirmed: Bool = false) {
         do {
             try supervisor.stop(confirmed: confirmed)
-            stateText = supervisor.state.description
+            refreshDerivedState()
 
             // Only terminate the managed process; external daemons are never touched
             if supervisor.isManagedBySelf {
@@ -124,8 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         } catch DaemonSupervisorError.externalStopRequiresConfirmation {
             stateText = "Stop requires confirmation for external daemon"
+            refreshDerivedState()
         } catch {
             stateText = "Error: \(error.localizedDescription)"
+            refreshDerivedState()
         }
     }
 
@@ -162,7 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         }
                         self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
                         self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
-                        self.stateText = self.supervisor.state.description
+                        self.refreshDerivedState()
                     }
                 }
             )
@@ -179,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             currentHandle = nil
             stateText = "Launch failed: \(error.localizedDescription)"
             supervisor.onProcessExited(exitCode: -1, signal: nil)
+            refreshDerivedState()
         }
     }
 
@@ -190,7 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
 
         try? supervisor.stop()
-        stateText = supervisor.state.description
+        refreshDerivedState()
 
         handle.terminate() // SIGTERM
 
@@ -204,7 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // Escalate: process didn't respond to SIGTERM
             diagnostics.recordExit(exitCode: -1, signal: 9)
             supervisor.forceState(.crashed)
-            stateText = supervisor.state.description
+            refreshDerivedState()
         }
     }
 
@@ -240,12 +261,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         supervisor.onHealthCheckPassed(pid: pid, port: port)
                         diagnostics.recordHealthProbe(success: true, latencyMs: latencyMs, errorMessage: nil)
                         diagnostics.recordDaemonState(pid: pid, port: port, bindHost: "127.0.0.1", state: "running")
-                        stateText = supervisor.state.description
+                        refreshDerivedState()
                         webViewURL = baseURL
                     } else {
                         supervisor.onHealthCheckFailed()
                         diagnostics.recordHealthProbe(success: false, latencyMs: latencyMs, errorMessage: errorMessage)
-                        stateText = supervisor.state.description
+                        refreshDerivedState()
                     }
                 }
             }
@@ -275,6 +296,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     // MARK: - Helpers
+
+    /// Refresh derived @Published properties from the current supervisor state.
+    /// Call this after every state change so menu-command bindings stay in sync.
+    private func refreshDerivedState() {
+        stateText = supervisor.state.description
+        let s = supervisor.state
+        canStart = (s == .stopped || s == .crashed || s == .stalePid)
+        canStop = s.canStop
+        canRestart = canStop && supervisor.isManagedBySelf
+    }
 
     private func processIsAlive(pid: Int32) -> Bool {
         let result = kill(pid, 0)

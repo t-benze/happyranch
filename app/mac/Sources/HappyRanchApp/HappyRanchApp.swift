@@ -13,6 +13,34 @@ struct HappyRanchApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {}
+
+            CommandMenu("Daemon") {
+                Button("Start Daemon") {
+                    appDelegate.startDaemon()
+                }
+                .disabled(!appDelegate.canStart)
+
+                Button("Stop Daemon") {
+                    appDelegate.stopDaemonWithConfirmation()
+                }
+                .disabled(!appDelegate.canStop)
+
+                Button("Restart Daemon") {
+                    appDelegate.restartDaemon()
+                }
+                .disabled(!appDelegate.canRestart)
+
+                Divider()
+
+                Button("Show Diagnostics…") {
+                    appDelegate.showDiagnostics = true
+                }
+
+                Divider()
+
+                // Status line — disabled to appear as a non-interactive indicator
+                Text("Status: \(appDelegate.stateText)")
+            }
         }
     }
 }
