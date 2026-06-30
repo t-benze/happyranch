@@ -29,6 +29,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var canStop = false
     @Published var canRestart = false
 
+    /// When true, the termination-completion path will start the daemon
+    /// after it settles to .stopped.  Set by restartDaemon(), cleared
+    /// after the follow-on start is issued.
+    private var pendingRestart = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Foreground the app as a regular Dock-present application so a bare
         // `swift run` executable gets a visible window without requiring a .app bundle.
@@ -107,17 +112,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Restart the managed daemon: stop then start.
     /// Only valid for app-managed daemons; external daemons are never restarted.
+    ///
+    /// The restart is genuinely two-phase: the stop is issued synchronously,
+    /// and a pending-restart flag instructs the termination-completion path
+    /// (which settles the supervisor to .stopped ASYNCHRONOUSLY) to perform
+    /// the follow-on start.  This fixes the previous bug where the synchronous
+    /// canStart check after stopDaemon() was always false because the
+    /// supervisor was still .stopping.
     func restartDaemon() {
         guard supervisor.isManagedBySelf, canStop else { return }
+        pendingRestart = true
         stopDaemon(confirmed: true)
-        // After stop completes (process terminated or forced crashed),
-        // start if the state permits it.
-        if canStart {
-            startDaemon()
-        }
     }
 
     func startDaemon() {
+        // Always clear the restart flag — a direct start supersedes any
+        // pending restart (safety net; the termination handler clears it
+        // before issuing the follow-on start, but an unrelated start while
+        // waiting for a restart's termination handler shouldn't leave a
+        // stale flag).
+        pendingRestart = false
         do {
             try supervisor.start()
             refreshDerivedState()
@@ -183,6 +197,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
                         self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
                         self.refreshDerivedState()
+
+                        // Restart continuation: if a restart was requested,
+                        // the termination-completion path performs the
+                        // follow-on start now that the supervisor has settled.
+                        if self.pendingRestart {
+                            self.pendingRestart = false
+                            self.startDaemon()
+                        }
                     }
                 }
             )
@@ -299,7 +321,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Refresh derived @Published properties from the current supervisor state.
     /// Call this after every state change so menu-command bindings stay in sync.
-    private func refreshDerivedState() {
+    /// Internal so tests can verify menu-command enable/disable derivation
+    /// across all supervisor states.
+    func refreshDerivedState() {
         stateText = supervisor.state.description
         let s = supervisor.state
         canStart = (s == .stopped || s == .crashed || s == .stalePid)
