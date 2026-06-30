@@ -12,15 +12,15 @@ A native macOS WebView dev-shell for HappyRanch. Built in Swift using SwiftUI + 
 
 ## Build
 
-Requires **Xcode 16+** (macOS 15+).
+Requires **Xcode 16+** (macOS 15+) and Swift 6.
 
 ```bash
 # Set Xcode path if needed
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
-# Build the app
+# Build the app (SwiftPM)
 cd app/mac
-xcodebuild -scheme HappyRanchApp -sdk macosx build
+swift build
 
 # Run tests
 swift test
@@ -28,19 +28,19 @@ swift test
 
 ## Run (unsigned, local only)
 
-```bash
-# From the happyranch repo root:
-open app/mac/.build/debug/HappyRanchApp.app
-```
+The app is a SwiftPM executable (not a `.app` bundle). Run it from `app/mac`:
 
-Or via `swift run`:
 ```bash
 cd app/mac
 swift run HappyRanchApp
 ```
 
-> **Note:** The app runs unsigned. macOS Gatekeeper may block it on first launch.
-> Right-click → Open in Finder to bypass, or run `xattr -cr <app>`.
+The bare executable lives at `app/mac/.build/debug/HappyRanchApp`.
+
+> **Note:** The app runs unsigned. `swift run` from a terminal launches the
+> bare executable directly, so Gatekeeper does not block it as a quarantined
+> bundle. If you later package this into a signed `.app`, standard Gatekeeper
+> checks will apply.
 
 ## Architecture
 

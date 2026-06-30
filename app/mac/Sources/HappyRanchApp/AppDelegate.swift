@@ -25,6 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var showDiagnostics = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Foreground the app as a regular Dock-present application so a bare
+        // `swift run` executable gets a visible window without requiring a .app bundle.
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
         let home = daemonHome()
         supervisor.configure(homeDir: home)
         stateText = supervisor.state.description
