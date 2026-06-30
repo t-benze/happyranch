@@ -15,6 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// replaced with a FakeProcessController in tests.
     var processController: ProcessControlling = RealProcessController()
 
+    /// The handle for the currently active managed daemon process.
+    /// Set on each launch; used to guard stale exit callbacks by identity.
+    /// Internal to allow tests to inject a handle for termination-path coverage.
+    var currentHandle: (any ProcessHandle)?
+
     @Published var webViewURL: String?
     @Published var stateText: String = DaemonState.notConfigured.description
     @Published var showDiagnostics = false
@@ -128,19 +133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func launchDaemonProcess() {
         let pc = processController
 
-        pc.terminationHandler = { @Sendable [weak self] process in
-            let exitCode = process.terminationStatus
-            let signal = process.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
-                self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
-                self.stateText = self.supervisor.state.description
-            }
-        }
-
         do {
-            try pc.launch(
+            let handle = try pc.launch(
                 executableURL: URL(fileURLWithPath: "/usr/bin/env"),
                 arguments: ["uv", "run", "python", "-m", "runtime.daemon"],
                 currentDirectoryURL: URL(fileURLWithPath: repoRoot()),
@@ -149,7 +143,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     parentEnvironment: ProcessInfo.processInfo.environment
                 )
             )
-            let pid = pc.processIdentifier
+            currentHandle = handle
+            let pid = handle.processIdentifier
+
+            pc.terminationHandler = { @Sendable [weak self] exitedHandle in
+                let exitCode = exitedHandle.terminationStatus
+                let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    // Guard: only process exit if this handle matches the
+                    // current lifecycle.  A stale callback from a prior launch
+                    // must NOT stop/crash the new daemon.
+                    guard exitedHandle.processIdentifier == self.currentHandle?.processIdentifier else {
+                        return
+                    }
+                    self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
+                    self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
+                    self.stateText = self.supervisor.state.description
+                }
+            }
+
             diagnostics.recordDaemonState(pid: pid, port: 0, bindHost: "127.0.0.1", state: "starting")
 
             // Start health probing loop
@@ -157,6 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 await healthProbeLoop(pid: pid)
             }
         } catch {
+            currentHandle = nil
             stateText = "Launch failed: \(error.localizedDescription)"
             supervisor.onProcessExited(exitCode: -1, signal: nil)
         }
@@ -165,24 +179,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Send SIGTERM to the managed daemon and wait for exit.
     /// Escalates (forces state to crashed) if the process doesn't exit within a bounded wait.
     func terminateManagedProcess() {
-        let pc = processController
-
-        guard pc.isRunning else {
+        guard let handle = currentHandle, handle.isRunning else {
             return
         }
 
         try? supervisor.stop()
         stateText = supervisor.state.description
 
-        pc.terminate() // SIGTERM
+        handle.terminate() // SIGTERM
 
         // Bounded wait for the process to exit
         let deadline = Date().addingTimeInterval(5.0)
-        while pc.isRunning && Date() < deadline {
+        while handle.isRunning && Date() < deadline {
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
         }
 
-        if pc.isRunning {
+        if handle.isRunning {
             // Escalate: process didn't respond to SIGTERM
             diagnostics.recordExit(exitCode: -1, signal: 9)
             supervisor.forceState(.crashed)

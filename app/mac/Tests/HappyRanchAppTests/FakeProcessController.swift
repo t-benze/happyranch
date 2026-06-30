@@ -6,18 +6,88 @@ enum FakeProcessControllerError: Error, Equatable {
     case processAlreadyExited
 }
 
+// MARK: - FakeProcessHandle
+
+/// Per-launch handle for the FakeProcessController.
+/// Each FakeProcessHandle models ONE launched daemon process.
+/// Once exited (via terminate() or simulateCrash()), the handle is
+/// single-use: attempting to reuse it throws processAlreadyExited.
+final class FakeProcessHandle: ProcessHandle, @unchecked Sendable {
+    private var _isRunning: Bool
+    private var _processIdentifier: Int32
+    private var _terminationStatus: Int32
+    private var _terminationReason: Process.TerminationReason
+    private var _hasExited: Bool
+
+    /// If set, calling launch() on this handle (i.e. reusing it) fires this
+    /// block.  Used by the controller to detect reuse.
+    var onRelaunchAttempt: (() -> Void)?
+
+    /// Fired when terminate() is called.  The controller wires this to
+    /// increment its call counter and fire the terminationHandler.
+    var onTerminate: (() -> Void)?
+
+    init(
+        isRunning: Bool = true,
+        processIdentifier: Int32 = 12345,
+        terminationStatus: Int32 = 0,
+        terminationReason: Process.TerminationReason = .exit,
+        hasExited: Bool = false
+    ) {
+        self._isRunning = isRunning
+        self._processIdentifier = processIdentifier
+        self._terminationStatus = terminationStatus
+        self._terminationReason = terminationReason
+        self._hasExited = hasExited
+    }
+
+    var isRunning: Bool { _isRunning }
+    var processIdentifier: Int32 { _processIdentifier }
+    var terminationStatus: Int32 { _terminationStatus }
+    var terminationReason: Process.TerminationReason { _terminationReason }
+
+    func terminate() {
+        _isRunning = false
+        _hasExited = true
+        _terminationReason = .exit
+        _terminationStatus = 0
+        onTerminate?()
+    }
+
+    /// Mark this handle as exited with a crash status.
+    func simulateCrash(exitCode: Int32) {
+        _isRunning = false
+        _hasExited = true
+        _terminationReason = .uncaughtSignal
+        _terminationStatus = exitCode
+    }
+
+    var hasExited: Bool { _hasExited }
+
+    /// Called by the controller when it attempts to reuse this handle.
+    func assertNotExited() throws {
+        if _hasExited {
+            onRelaunchAttempt?()
+            throw FakeProcessControllerError.processAlreadyExited
+        }
+    }
+}
+
+// MARK: - FakeProcessController
+
 /// Test double for ProcessControlling that records calls and allows
-/// test-driven control of isRunning / process state.
+/// test-driven control of process lifecycle.
 ///
-/// Models Foundation.Process single-use semantics: `launch()` throws
-/// `processAlreadyExited` if called again after the underlying process
-/// has exited (via `terminate()` or `simulateCrash()`).
+/// Acts as a LONG-LIVED FACTORY: each `launch()` call creates a fresh
+/// `FakeProcessHandle`.  The controller tracks call counts and stores
+/// the active handle.  When `terminate()` is called on the active handle,
+/// the controller fires its `terminationHandler` with that handle.
+///
+/// Models Foundation.Process single-use semantics: if a test attempts to
+/// reuse an already-exited handle via the controller, it throws
+/// `processAlreadyExited`.
 final class FakeProcessController: ProcessControlling, @unchecked Sendable {
-    var isRunning: Bool = false
-    var processIdentifier: Int32 = 0
-    var terminationStatus: Int32 = 0
-    var terminationReason: Process.TerminationReason = .exit
-    var terminationHandler: (@Sendable (any ProcessControlling) -> Void)?
+    var terminationHandler: (@Sendable (any ProcessHandle) -> Void)?
 
     // Call counters for verification
     var launchCallCount = 0
@@ -29,45 +99,81 @@ final class FakeProcessController: ProcessControlling, @unchecked Sendable {
     var lastCurrentDirectoryURL: URL?
     var lastEnvironment: [String: String]?
 
-    /// Tracks whether the underlying process has exited.
-    /// Once true, subsequent `launch()` calls throw `processAlreadyExited`.
-    private var hasExited = false
+    /// The most recent handle returned by launch().
+    private(set) var activeHandle: FakeProcessHandle?
+
+    /// All handles ever created by this controller.
+    private var allHandles: [FakeProcessHandle] = []
+
+    // MARK: - Configuration
+
+    private var nextPID: Int32 = 12345
+
+    /// Configure a custom PID for the next launch. Subsequent launches
+    /// auto-increment.
+    func setNextPID(_ pid: Int32) {
+        nextPID = pid
+    }
+
+    // MARK: - ProcessControlling
 
     func launch(
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL?,
         environment: [String: String]?
-    ) throws {
-        if hasExited {
-            throw FakeProcessControllerError.processAlreadyExited
+    ) throws -> any ProcessHandle {
+        let handle = FakeProcessHandle(
+            isRunning: true,
+            processIdentifier: nextPID,
+            terminationStatus: 0,
+            terminationReason: .exit,
+            hasExited: false
+        )
+        // Wire handle.terminate() to increment call counter and fire handler.
+        handle.onTerminate = { [weak self] in
+            guard let self else { return }
+            self.terminateCallCount += 1
+            self.terminationHandler?(handle)
         }
+
+        nextPID += 1
+
         launchCallCount += 1
         lastExecutableURL = executableURL
         lastArguments = arguments
         lastCurrentDirectoryURL = currentDirectoryURL
         lastEnvironment = environment
-        isRunning = true
-        processIdentifier = 12345
+
+        activeHandle = handle
+        allHandles.append(handle)
+        return handle
     }
 
-    func terminate() {
-        terminateCallCount += 1
-        isRunning = false
-        hasExited = true
-        terminationReason = .exit
-        terminationStatus = 0
-        // Fire termination handler so AppDelegate processes the exit
-        terminationHandler?(self)
+    // MARK: - Test helpers
+
+    /// Convenience: terminate the active handle.
+    /// onTerminate already increments terminateCallCount and fires
+    /// terminationHandler, so callers should NOT double-count.
+    func terminateActive() {
+        guard let handle = activeHandle else { return }
+        handle.terminate()  // onTerminate wired by launch() handles the rest
     }
 
-    /// Simulate a crash exit without going through `terminate()`.
-    /// Fires the termination handler so AppDelegate transitions to .crashed.
+    /// Fire a termination callback for the given handle.
+    /// Used for stale-callback regression tests: fire a handle's callback
+    /// without going through terminateActive.
+    func fireTermination(for handle: FakeProcessHandle) {
+        terminationHandler?(handle)
+    }
+
+    /// Simulate a crash for the active handle (via uncaughtSignal).
     func simulateCrash(exitCode: Int32) {
-        isRunning = false
-        hasExited = true
-        terminationReason = .uncaughtSignal
-        terminationStatus = exitCode
-        terminationHandler?(self)
+        guard let handle = activeHandle else { return }
+        handle.simulateCrash(exitCode: exitCode)
+        terminationHandler?(handle)
     }
+
+    /// All handles created by this controller, in order.
+    var handles: [FakeProcessHandle] { allHandles }
 }
