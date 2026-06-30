@@ -44,7 +44,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     public func recordHealthProbe(success: Bool, latencyMs: Int, errorMessage: String?) {
         lastHealthProbeSuccess = success
         lastHealthProbeLatencyMs = latencyMs
-        lastHealthProbeError = errorMessage
+        lastHealthProbeError = errorMessage.map { DiagnosticsRedactor.redact($0) }
     }
 
     public func recordExit(exitCode: Int32, signal: Int32?) {
@@ -53,7 +53,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     }
 
     public func recordStartCommand(_ command: String) {
-        startCommand = command
+        startCommand = DiagnosticsRedactor.redact(command)
     }
 
     public func recordActiveRuntimePath(_ path: String) {
@@ -67,21 +67,24 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     // MARK: - Collect
 
     /// Returns a dictionary of all collected diagnostics.
-    /// All string values are redacted before inclusion.
+    /// All string values are redacted at the boundary — live display and
+    /// export share ONE redaction guarantee.
     public func collect() -> [String: Any] {
         var bundle: [String: Any] = [:]
 
-        bundle["app_version"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
-        bundle["app_build"] = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        bundle["runtime_home"] = homeDir
+        bundle["app_version"] = DiagnosticsRedactor.redact(
+            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")
+        bundle["app_build"] = DiagnosticsRedactor.redact(
+            Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")
+        bundle["runtime_home"] = DiagnosticsRedactor.redact(homeDir)
 
         if let pid = daemonPid { bundle["daemon_pid"] = pid }
         if let port = daemonPort { bundle["daemon_port"] = port }
-        if let host = daemonBindHost { bundle["daemon_bind_host"] = host }
-        if let st = daemonStateValue { bundle["daemon_state"] = st }
+        if let host = daemonBindHost { bundle["daemon_bind_host"] = DiagnosticsRedactor.redact(host) }
+        if let st = daemonStateValue { bundle["daemon_state"] = DiagnosticsRedactor.redact(st) }
 
-        if let log = launchLogContent { bundle["launcher_log"] = log }
-        if let log = daemonLogTailContent { bundle["daemon_log_tail"] = log }
+        if let log = launchLogContent { bundle["launcher_log"] = DiagnosticsRedactor.redact(log) }
+        if let log = daemonLogTailContent { bundle["daemon_log_tail"] = DiagnosticsRedactor.redact(log) }
 
         if let success = lastHealthProbeSuccess {
             bundle["last_health_probe_success"] = success
@@ -90,20 +93,22 @@ public final class DiagnosticsCollector: @unchecked Sendable {
             bundle["last_health_probe_latency_ms"] = latency
         }
         if let error = lastHealthProbeError {
-            bundle["last_health_probe_error"] = error
+            bundle["last_health_probe_error"] = DiagnosticsRedactor.redact(error)
         }
 
         if let code = lastExitCode { bundle["last_exit_code"] = code }
         if let sig = lastExitSignal { bundle["last_exit_signal"] = sig }
 
-        if let cmd = startCommand { bundle["start_command"] = cmd }
-        if let path = activeRuntimePath { bundle["active_runtime_path"] = path }
-        if let token = tokenValue { bundle["token"] = token }
+        if let cmd = startCommand { bundle["start_command"] = DiagnosticsRedactor.redact(cmd) }
+        if let path = activeRuntimePath { bundle["active_runtime_path"] = DiagnosticsRedactor.redact(path) }
+        if let token = tokenValue { bundle["token"] = DiagnosticsRedactor.redact(token) }
 
         return bundle
     }
 
-    /// Exports the diagnostics bundle as a redacted JSON string.
+    /// Exports the diagnostics bundle as a JSON string.
+    /// collect() already redacts all string values at the boundary,
+    /// so exportJSON inherits the same redaction guarantee.
     public func exportJSON() -> String {
         let bundle = collect()
         // Convert to JSON-serializable dictionary, filtering out nil values
@@ -114,6 +119,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
             else if let v = value as? UInt16 { jsonDict[key] = v }
             else if let v = value as? Bool { jsonDict[key] = v }
             else if let v = value as? String {
+                // collect() already redacted — extra redact is a no-op defense-in-depth
                 jsonDict[key] = DiagnosticsRedactor.redact(v)
             }
         }

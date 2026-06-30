@@ -54,7 +54,9 @@ app/mac/
 │   │   ├── PortReader.swift      # Read daemon.port
 │   │   ├── HealthProbe.swift     # Health check endpoint
 │   │   ├── DiagnosticsRedactor.swift  # Secret redaction
-│   │   └── DiagnosticsCollector.swift # Diagnostics bundle
+│   │   ├── DiagnosticsCollector.swift # Diagnostics bundle
+│   │   ├── EnvironmentSanitizer.swift # Child-process env sanitization
+│   │   └── RuntimeTransport.swift   # URL transport protocol (local/remote)
 │   └── HappyRanchApp/            # GUI shell (SwiftUI + WKWebView)
 │       ├── HappyRanchApp.swift
 │       ├── ContentView.swift
@@ -76,10 +78,13 @@ External daemon: `notConfigured → externalRunning` (no managed stop without co
 
 ## Verified Behaviors
 
-- **Managed vs external:** App-launched daemon is managed; externally-started daemon is attached as `externalRunning` and requires explicit user confirmation before any stop.
+- **Managed vs external:** App-launched daemon is managed; externally-started daemon is attached as `externalRunning`. External daemon stop is **disabled** in the Phase 1 UI (no confirmation dialog yet). The supervisor guard (unconfirmed external stop rejected) remains the source of truth.
 - **Stale PID:** If a PID file exists but the referenced process is dead, state moves to `stalePid`.
-- **Diagnostics redaction:** All bearer tokens (`daemon.token`), allow-rules, and API secrets are redacted from live diagnostics panel AND export bundles.
+- **Diagnostics redaction:** All bearer tokens (`daemon.token`), allow-rules, API secrets, and log/error strings are redacted at the `collect()` boundary — live display and export share ONE redaction guarantee.
 - **Loopback-only:** Always binds to `127.0.0.1`. Never sets `HAPPYRANCH_DAEMON_BIND_HOST` to anything else.
+- **Environment sanitization:** The daemon child Process receives a sanitized environment (PATH, HOME, HAPPYRANCH_DAEMON_HOME, and optionally HAPPYRANCH_WEB_DIST). No other HAPPYRANCH_* overrides, CORS/auth/debug vars, or secrets leak from the parent process.
+- **Managed process lifecycle:** The app retains the Process handle for the managed daemon. On stop/quit, it sends SIGTERM (via `Process.terminate()`) and waits for exit with a bounded 5-second timeout; escalation to `crashed` if the process doesn't respond. External daemons are **never** terminated by stop/quit.
+- **RuntimeTransport protocol:** Only `LocalLoopbackTransport` (constructs `http://127.0.0.1:<port>/`) is wired to the UI. `RemoteTransport` is an internal placeholder with no founder-facing controls.
 
 ## Founder-Run Manual GUI Acceptance
 

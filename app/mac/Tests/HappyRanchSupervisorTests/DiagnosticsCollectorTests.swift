@@ -132,4 +132,76 @@ struct DiagnosticsCollectorTests {
         let bundle = collector.collect()
         #expect(bundle["active_runtime_path"] as? String == "/Users/user/happyranch")
     }
+
+    // MARK: - Live redaction at collect() boundary
+
+    @Test("live-collected struct redacts probe error with bearer token")
+    func liveCollectRedactsProbeErrorWithBearerToken() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+
+        // Feed a probe error containing a bearer token
+        collector.recordHealthProbe(
+            success: false,
+            latencyMs: 0,
+            errorMessage: "HTTP 401: Unauthorized — Bearer hr_token_abc123def456ghi789"
+        )
+
+        // Feed a daemon log tail containing an API key
+        collector.recordDaemonLogTail("""
+        2026-01-01 INFO Starting daemon
+        2026-01-01 DEBUG Using API key: secret-api-key-12345
+        2026-01-01 DEBUG allow-rules: pattern: "secret-pattern-value"
+        """)
+
+        // Feed a start command (no secrets, should pass through)
+        collector.recordStartCommand("uv run python -m runtime.daemon")
+
+        let bundle = collector.collect()
+
+        // last_health_probe_error must be redacted
+        let probeError = bundle["last_health_probe_error"] as? String ?? ""
+        #expect(!probeError.contains("hr_token_abc123def456ghi789"),
+                "Bearer token in probe error must be redacted in live-collected struct")
+        #expect(probeError.contains("[REDACTED]"),
+                "Redaction marker must be present in live-collected probe error")
+
+        // daemon_log_tail must be redacted
+        let logTail = bundle["daemon_log_tail"] as? String ?? ""
+        #expect(!logTail.contains("secret-api-key-12345"),
+                "API key in log tail must be redacted in live-collected struct")
+        #expect(!logTail.contains("secret-pattern-value"),
+                "Allow-rules pattern in log tail must be redacted in live-collected struct")
+        #expect(logTail.contains("[REDACTED]"),
+                "Redaction marker must be present in live-collected log tail")
+        #expect(logTail.contains("Starting daemon"),
+                "Non-sensitive log content must survive")
+
+        // start_command has no secrets — should be intact
+        let startCmd = bundle["start_command"] as? String ?? ""
+        #expect(startCmd == "uv run python -m runtime.daemon",
+                "Clean start command must pass through unmodified")
+    }
+
+    @Test("live-collected struct redacts secrets — live and export identical")
+    func liveAndExportRedactionIdentical() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+
+        // Feed a launch log containing secrets
+        collector.recordLaunchLog("Bearer token=hr_token_topsecret")
+        collector.recordHealthProbe(success: true, latencyMs: 10, errorMessage: nil)
+        collector.recordToken("hr_token_raw_value")
+
+        let liveBundle = collector.collect()
+        let exportJSON = collector.exportJSON()
+
+        // Both live bundle and export JSON must redact
+        let liveLaunchLog = liveBundle["launcher_log"] as? String ?? ""
+        let liveToken = liveBundle["token"] as? String ?? ""
+
+        #expect(!liveLaunchLog.contains("hr_token_topsecret"))
+        #expect(!liveToken.contains("hr_token_raw_value"))
+        #expect(!exportJSON.contains("hr_token_topsecret"))
+        #expect(!exportJSON.contains("hr_token_raw_value"))
+        #expect(exportJSON.contains("[REDACTED]"))
+    }
 }

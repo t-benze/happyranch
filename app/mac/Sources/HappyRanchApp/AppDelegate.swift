@@ -8,6 +8,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let supervisor = DaemonSupervisor()
     let diagnostics = DiagnosticsCollector(homeDir: daemonHome())
 
+    /// Transport for constructing daemon URLs. Only LocalLoopbackTransport is wired.
+    let localTransport: RuntimeTransport = LocalLoopbackTransport()
+
+    /// Handle to the app-managed daemon Process. Retained so we can send
+    /// SIGTERM on stop/quit. nil when no managed daemon is running.
+    private var managedProcess: Process?
+
     @Published var webViewURL: String?
     @Published var stateText: String = DaemonState.notConfigured.description
     @Published var showDiagnostics = false
@@ -22,9 +29,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // If we launched the daemon and it's still running, attempt graceful stop
-        if supervisor.isManagedBySelf && supervisor.state.isRunning {
-            try? supervisor.stop()
+        // Terminate the managed daemon if it's still alive.
+        // External daemons are NEVER terminated on quit.
+        if supervisor.isManagedBySelf,
+           supervisor.state == .running || supervisor.state == .starting || supervisor.state == .unhealthy {
+            terminateManagedProcess()
         }
     }
 
@@ -98,9 +107,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         do {
             try supervisor.stop(confirmed: confirmed)
             stateText = supervisor.state.description
+
+            // Only terminate the managed process; external daemons are never touched
+            if supervisor.isManagedBySelf {
+                terminateManagedProcess()
+            }
         } catch DaemonSupervisorError.externalStopRequiresConfirmation {
             stateText = "Stop requires confirmation for external daemon"
-            // In a real app, show a confirmation dialog
         } catch {
             stateText = "Error: \(error.localizedDescription)"
         }
@@ -118,27 +131,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         task.arguments = ["uv", "run", "python", "-m", "runtime.daemon"]
         task.currentDirectoryURL = URL(fileURLWithPath: repoRoot())
 
-        // Set operational env
-        var env = ProcessInfo.processInfo.environment
-        env["HAPPYRANCH_DAEMON_HOME"] = daemonHome()
-        // Set web dist if available
-        if let webDist = ProcessInfo.processInfo.environment["HAPPYRANCH_WEB_DIST"] {
-            env["HAPPYRANCH_WEB_DIST"] = webDist
-        }
-        task.environment = env
+        // Build a SANITIZED environment — do NOT inherit full parent env.
+        // Only PATH, HOME, and operational HAPPYRANCH vars survive.
+        task.environment = EnvironmentSanitizer.buildChildEnvironment(
+            daemonHome: daemonHome(),
+            parentEnvironment: ProcessInfo.processInfo.environment
+        )
 
         task.terminationHandler = { @Sendable [weak self] process in
             let exitCode = process.terminationStatus
             let signal = process.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
             Task { @MainActor [weak self] in
-                self?.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
-                self?.diagnostics.recordExit(exitCode: exitCode, signal: signal)
-                self?.stateText = self?.supervisor.state.description ?? "unknown"
+                guard let self else { return }
+                self.managedProcess = nil
+                self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
+                self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
+                self.stateText = self.supervisor.state.description
             }
         }
 
         do {
             try task.run()
+            managedProcess = task
             let pid = Int32(task.processIdentifier)
             diagnostics.recordDaemonState(pid: pid, port: 0, bindHost: "127.0.0.1", state: "starting")
 
@@ -149,6 +163,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         } catch {
             stateText = "Launch failed: \(error.localizedDescription)"
             supervisor.onProcessExited(exitCode: -1, signal: nil)
+        }
+    }
+
+    /// Send SIGTERM to the managed daemon and wait for exit.
+    /// Escalates (forces state to crashed) if the process doesn't exit within a bounded wait.
+    private func terminateManagedProcess() {
+        guard let process = managedProcess, process.isRunning else {
+            managedProcess = nil
+            return
+        }
+
+        try? supervisor.stop()
+        stateText = supervisor.state.description
+
+        process.terminate() // SIGTERM
+
+        // Bounded wait for the process to exit
+        let deadline = Date().addingTimeInterval(5.0)
+        while process.isRunning && Date() < deadline {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+        }
+
+        if process.isRunning {
+            // Escalate: process didn't respond to SIGTERM
+            diagnostics.recordExit(exitCode: -1, signal: 9)
+            supervisor.forceState(.crashed)
+            stateText = supervisor.state.description
+            managedProcess = nil
         }
     }
 
@@ -175,7 +217,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
             // Try to read the port
             if let port = try? reader.readPort(from: portFile) {
-                let probe = HealthProbe(baseURL: "http://127.0.0.1:\(port)/")
+                let baseURL = localTransport.baseURL(for: port)
+                let probe = HealthProbe(baseURL: baseURL)
                 let (success, latencyMs, errorMessage) = await probe.check()
 
                 await MainActor.run {
@@ -184,7 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         diagnostics.recordHealthProbe(success: true, latencyMs: latencyMs, errorMessage: nil)
                         diagnostics.recordDaemonState(pid: pid, port: port, bindHost: "127.0.0.1", state: "running")
                         stateText = supervisor.state.description
-                        webViewURL = "http://127.0.0.1:\(port)/"
+                        webViewURL = baseURL
                     } else {
                         supervisor.onHealthCheckFailed()
                         diagnostics.recordHealthProbe(success: false, latencyMs: latencyMs, errorMessage: errorMessage)
@@ -203,13 +246,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func probeAndLoad(port: UInt16) async {
-        let probe = HealthProbe(baseURL: "http://127.0.0.1:\(port)/")
+        let baseURL = localTransport.baseURL(for: port)
+        let probe = HealthProbe(baseURL: baseURL)
         let (success, latencyMs, errorMessage) = await probe.check()
 
         await MainActor.run {
             if success {
                 diagnostics.recordHealthProbe(success: true, latencyMs: latencyMs, errorMessage: nil)
-                webViewURL = "http://127.0.0.1:\(port)/"
+                webViewURL = baseURL
             } else {
                 diagnostics.recordHealthProbe(success: false, latencyMs: latencyMs, errorMessage: errorMessage)
             }

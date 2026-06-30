@@ -192,8 +192,8 @@ public final class DaemonSupervisor: @unchecked Sendable {
 
     // MARK: - Diagnostics
 
-    /// Forces a specific state (for testing).
-    func forceState(_ newState: DaemonState) {
+    /// Forces a specific state (for testing and escalation).
+    public func forceState(_ newState: DaemonState) {
         state = newState
     }
 
