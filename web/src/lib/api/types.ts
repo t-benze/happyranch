@@ -118,6 +118,9 @@ export interface TaskDetailResponse {
   direct_revisits: unknown[];
   predecessor_prior_status: string | null;
   active_chain: ActiveChainResponse | null;
+  /** DERIVE from escalation_superseded audit: successor task_id when this
+   *  task was auto-resolved to RESOLVED_SUPERSEDED. Null otherwise. */
+  superseded_by_task_id: string | null;
   [extra: string]: unknown;
 }
 

@@ -397,6 +397,9 @@ interface ChainWithBlock {
   blockedOnJobs: BlockedJobEntry[] | null;
   /** THR-037 §G: derived escalated flavor from the latest escalation audit. */
   escalationFlavor: string | null;
+  /** DERIVE from escalation_superseded audit: successor task_id when this
+   *  task was auto-resolved to RESOLVED_SUPERSEDED. Null otherwise. */
+  superseded_by_task_id: string | null;
 }
 
 function useChainWithBlock(slug: string | undefined, taskId: string | undefined) {
@@ -404,7 +407,8 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
     queryKey: ['task-chain-block', slug, taskId],
     queryFn: () => getTask(slug as string, taskId as string),
     select: (r): ChainWithBlock => {
-      const bj = (r as Record<string, unknown>).blocked_on_jobs;
+      const rr = r as Record<string, unknown>;
+      const bj = rr.blocked_on_jobs;
       const blockedOnJobs: BlockedJobEntry[] | null =
         Array.isArray(bj)
           ? bj.filter(
@@ -414,12 +418,15 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
                 typeof (v as Record<string, unknown>).job_id === 'string',
             )
           : null;
+      const sbti = rr.superseded_by_task_id;
       return {
         chain: r.active_chain ?? null,
         blockedOnJobs,
         escalationFlavor: classifyEscalationFlavor(
           latestEscalationReason(r.audit_log),
         ),
+        superseded_by_task_id:
+          typeof sbti === 'string' && sbti ? sbti : null,
       };
     },
     enabled: !!slug && !!taskId,
@@ -647,6 +654,17 @@ export function TaskDetailPage(): JSX.Element {
                       className="text-id-task hover:underline"
                     >
                       {task.data.revisit_of_task_id}
+                    </Link>
+                  </span>
+                )}
+                {chainQuery.data?.superseded_by_task_id && (
+                  <span>
+                    · superseded by{' '}
+                    <Link
+                      to={routes.detail(chainQuery.data.superseded_by_task_id)}
+                      className="text-id-task hover:underline"
+                    >
+                      {chainQuery.data.superseded_by_task_id}
                     </Link>
                   </span>
                 )}

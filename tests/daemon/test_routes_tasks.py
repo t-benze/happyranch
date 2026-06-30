@@ -1868,6 +1868,60 @@ def test_task_detail_active_chain_is_null_when_no_chain(
     assert body["active_chain"] is None
 
 
+# ---------------------------------------------------------------------------
+# superseded_by_task_id — DERIVE from escalation_superseded audit
+# ---------------------------------------------------------------------------
+
+def test_get_task_superseded_by_task_id_when_superseded(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """A resolved_superseded task with an escalation_superseded audit entry
+    returns superseded_by_task_id from the audit row's successor_root."""
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import TaskRecord, TaskStatus
+
+    db = org_state.db
+    db.insert_task(TaskRecord(id="TASK-PRE", brief="predecessor"))
+    db.update_task(
+        "TASK-PRE",
+        status=TaskStatus.RESOLVED_SUPERSEDED,
+        block_kind=None,
+        note="Resolved: superseded by continuation TASK-SUCC",
+        completed_at="2026-06-30T01:00:00+00:00",
+    )
+    AuditLogger(db).log_escalation_superseded(
+        "TASK-PRE",
+        successor_root="TASK-SUCC",
+        prior_block_kind="escalated",
+        actor="founder",
+    )
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/TASK-PRE", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["superseded_by_task_id"] == "TASK-SUCC"
+
+
+def test_get_task_superseded_by_task_id_null_for_non_superseded(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """A non-superseded task (no escalation_superseded audit row) returns
+    superseded_by_task_id: null."""
+    from runtime.models import TaskRecord
+
+    db = org_state.db
+    db.insert_task(TaskRecord(id="TASK-OK", brief="normal task"))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/TASK-OK", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["superseded_by_task_id"] is None
+
+
 def test_cancel_records_declared_actor(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
