@@ -5,19 +5,19 @@ import Foundation
 public final class DiagnosticsCollector: @unchecked Sendable {
 
     private let homeDir: String
-    private var daemonPid: Int32?
-    private var daemonPort: UInt16?
-    private var daemonBindHost: String?
-    private var daemonStateValue: String?
-    private var launchLogContent: String?
-    private var daemonLogTailContent: String?
-    private var healthProbeSuccess: Bool?
-    private var healthProbeLatencyMs: Int?
-    private var healthProbeError: String?
-    private var exitCode: Int32?
-    private var exitSignal: Int32?
-    private var startCommandValue: String?
-    private var activeRuntimePathValue: String?
+    public private(set) var daemonPid: Int32?
+    public private(set) var daemonPort: UInt16?
+    public private(set) var daemonBindHost: String?
+    public private(set) var daemonStateValue: String?
+    public private(set) var launchLogContent: String?
+    public private(set) var daemonLogTailContent: String?
+    public private(set) var lastHealthProbeSuccess: Bool?
+    public private(set) var lastHealthProbeLatencyMs: Int?
+    public private(set) var lastHealthProbeError: String?
+    public private(set) var lastExitCode: Int32?
+    public private(set) var lastExitSignal: Int32?
+    public private(set) var startCommand: String?
+    public private(set) var activeRuntimePath: String?
     private var tokenValue: String?
 
     public init(homeDir: String) {
@@ -42,22 +42,22 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     }
 
     public func recordHealthProbe(success: Bool, latencyMs: Int, errorMessage: String?) {
-        healthProbeSuccess = success
-        healthProbeLatencyMs = latencyMs
-        healthProbeError = errorMessage
+        lastHealthProbeSuccess = success
+        lastHealthProbeLatencyMs = latencyMs
+        lastHealthProbeError = errorMessage
     }
 
     public func recordExit(exitCode: Int32, signal: Int32?) {
-        self.exitCode = exitCode
-        exitSignal = signal
+        self.lastExitCode = exitCode
+        lastExitSignal = signal
     }
 
     public func recordStartCommand(_ command: String) {
-        startCommandValue = command
+        startCommand = command
     }
 
     public func recordActiveRuntimePath(_ path: String) {
-        activeRuntimePathValue = path
+        activeRuntimePath = path
     }
 
     public func recordToken(_ token: String) {
@@ -83,21 +83,21 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         if let log = launchLogContent { bundle["launcher_log"] = log }
         if let log = daemonLogTailContent { bundle["daemon_log_tail"] = log }
 
-        if let success = healthProbeSuccess {
+        if let success = lastHealthProbeSuccess {
             bundle["last_health_probe_success"] = success
         }
-        if let latency = healthProbeLatencyMs {
+        if let latency = lastHealthProbeLatencyMs {
             bundle["last_health_probe_latency_ms"] = latency
         }
-        if let error = healthProbeError {
+        if let error = lastHealthProbeError {
             bundle["last_health_probe_error"] = error
         }
 
-        if let code = exitCode { bundle["last_exit_code"] = code }
-        if let sig = exitSignal { bundle["last_exit_signal"] = sig }
+        if let code = lastExitCode { bundle["last_exit_code"] = code }
+        if let sig = lastExitSignal { bundle["last_exit_signal"] = sig }
 
-        if let cmd = startCommandValue { bundle["start_command"] = cmd }
-        if let path = activeRuntimePathValue { bundle["active_runtime_path"] = path }
+        if let cmd = startCommand { bundle["start_command"] = cmd }
+        if let path = activeRuntimePath { bundle["active_runtime_path"] = path }
         if let token = tokenValue { bundle["token"] = token }
 
         return bundle
