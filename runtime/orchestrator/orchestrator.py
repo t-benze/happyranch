@@ -18,6 +18,7 @@ from runtime.config import Settings
 from runtime.daemon.agent_config import load_agent_config
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
+from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.models import (
     CompletionReport,
     NextStep,
@@ -278,35 +279,15 @@ class Orchestrator:
         return self._settings.session_timeout_seconds
 
     def _readiness_marker(self, workspace: Path, provider: str) -> Path:
-        if provider == "codex":
-            return workspace / "AGENTS.md"
-        if provider in {"opencode", "pi"}:
-            # These providers read AGENTS.md and use the shared .agents/skills/
-            # tree. AGENTS.md alone is sufficient as the readiness signal —
-            # its presence implies the adapter ran and copied the skills tree.
-            return workspace / "AGENTS.md"
-        return workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
+        """Return the readiness marker path for a registered executor profile."""
+        profile = get_registry().get_profile(provider)
+        if profile is not None:
+            return workspace / profile.readiness_marker_fragment
+        return workspace / "AGENTS.md"
 
     def _build_executor(self, provider: str):
-        if provider == "codex":
-            return CodexExecutor(
-                codex_cli_path=self._settings.codex_cli_path,
-                sandbox_mode=self._settings.codex_sandbox_mode,
-            )
-        if provider == "opencode":
-            return OpencodeExecutor(
-                opencode_cli_path=self._settings.opencode_cli_path,
-            )
-        if provider == "pi":
-            return PiExecutor(
-                pi_cli_path=self._settings.pi_cli_path,
-            )
-        return ClaudeExecutor(
-            claude_cli_path=self._settings.claude_cli_path,
-            permission_mode=self._settings.permission_mode,
-            settings=self._settings,
-            paths=self._paths,
-        )
+        """Build an executor instance for a registered profile."""
+        return build_executor(provider, self._settings, self._paths)
 
     def _current_time_line(self, now: Callable[[], datetime] | None) -> str:
         """Render the localized current-time value injected into every agent

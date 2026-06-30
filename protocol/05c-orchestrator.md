@@ -24,7 +24,7 @@ The orchestrator is the application code that ties everything together. It spawn
 │                                                   │
 │  ┌──────────────────────────────────────────┐    │
 │  │         Agent Executor Abstraction        │    │
-│  │   Claude Code │ Codex │ OpenCode │ …      │    │
+│  │   Claude Code │ Codex │ OpenCode │ Pi │ … │    │
 │  └──────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────┘
         │              │              │

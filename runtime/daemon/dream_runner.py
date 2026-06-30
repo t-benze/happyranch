@@ -9,6 +9,7 @@ from typing import Callable
 from runtime.config import Settings, settings as global_settings
 from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.orchestrator.executor_registry import get_registry
 from runtime.models import DreamRecord, DreamStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
@@ -131,7 +132,7 @@ async def run_dream(
     )
 
     executor_name = _executor_name(workspace)
-    if executor_name not in {"claude", "codex", "opencode", "pi"}:
+    if not get_registry().is_registered(executor_name):
         executor_name = "claude"
     executor = executor_factory(executor_name, settings, paths) if executor_factory else _build_executor_for_provider(executor_name, settings, paths)
 

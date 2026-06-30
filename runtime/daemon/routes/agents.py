@@ -10,7 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, field_validator, model_validator
@@ -110,7 +110,7 @@ class ManageAgentBody(BaseModel):
     description: str | None = None
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
-    executor: Literal["claude", "codex", "opencode", "pi"] | None = None
+    executor: str | None = None
     allow_rules: list[str] | None = None
     target_team: str | None = None
 
@@ -135,7 +135,7 @@ class FounderCreateAgentBody(BaseModel):
     role: Literal["worker", "manager"]
     team: str | None = None
     new_team: str | None = None
-    executor: Literal["claude", "codex", "opencode", "pi"] = "claude"
+    executor: str = "claude"
     description: str
     system_prompt: str
     allow_rules: list[str] | None = None
@@ -379,6 +379,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
     if body.action == ManageAgentAction.enroll:
         if not body.description or not body.system_prompt:
             raise HTTPException(status_code=422, detail="description and system_prompt required for enroll")
+        _validate_executor(body.executor or "claude")
         # Check for duplicate: look in both pending and active.
         if (prompt_loader.load_pending_agent(paths, body.name) is not None
                 or prompt_loader.load_agent(paths, body.name) is not None):
@@ -436,6 +437,8 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                         "agent_team": agent_team,
                     },
                 )
+        if body.executor is not None:
+            _validate_executor(body.executor)
         # Build the updated AgentDef, preserving fields not being updated.
         updated = AgentDef(
             name=existing.name,
@@ -547,6 +550,7 @@ async def founder_create_agent(
             status_code=422,
             detail={"code": "missing_required_field"},
         )
+    _validate_executor(body.executor)
     if body.role == "worker":
         if not body.team or body.new_team:
             raise HTTPException(
@@ -674,10 +678,14 @@ async def founder_create_agent(
 # Founder surface: switch an existing agent's executor end-to-end.
 # ---------------------------------------------------------------------------
 
-# Single source of truth for the supported executor set: the Executor Literal
-# in agent_def. Deriving it here keeps validation from drifting if the set
-# changes.
-_VALID_EXECUTORS: tuple[str, ...] = get_args(Executor)
+# Executor validation is now registry-driven (THR-052). The registry
+# singleton is the single source of truth for which executors are valid.
+# We derive _VALID_EXECUTORS lazily to avoid a module-level import cycle.
+def _get_valid_executors() -> tuple[str, ...]:
+    from runtime.orchestrator.executor_registry import get_registry as _gr
+    return tuple(_gr().list_profile_names())
+
+_VALID_EXECUTORS: tuple[str, ...] = ()  # populated lazily
 
 # Claude-only workspace files that go stale when an agent switches AWAY from
 # the Claude executor: the new adapter writes AGENTS.md/.agents/ and never
@@ -691,18 +699,20 @@ class SetExecutorBody(BaseModel):
 
 
 def _validate_executor(executor: str) -> None:
-    """Reject an unsupported executor with an actionable error.
+    """Reject an unregistered executor with an actionable error.
 
-    Raises HTTPException(422) listing the valid values. Kept as a standalone
+    Raises HTTPException(422) listing the registered values. Kept as a standalone
     helper so the validation is unit-testable without an HTTP round trip.
     """
-    if executor not in _VALID_EXECUTORS:
+    from runtime.orchestrator.executor_registry import get_registry as _gr
+    registry = _gr()
+    if not registry.is_registered(executor):
         raise HTTPException(
             status_code=422,
             detail={
                 "code": "invalid_executor",
                 "got": executor,
-                "valid": list(_VALID_EXECUTORS),
+                "valid": registry.list_profile_names(),
             },
         )
 
@@ -792,10 +802,12 @@ async def set_agent_executor(
             existing.system_prompt,
             provider=body.executor,
         )
-        # 4. stale Claude-only files when switching AWAY from Claude.
-        #    Existence-based so it is drift-safe and never warns when the
-        #    files were never written (e.g. codex → pi).
-        if body.executor != "claude":
+        # 4. stale Claude-only files when switching AWAY from a Claude
+        #    adapter. Check the profile's adapter_id, not the name — a
+        #    custom profile might use the pi adapter but not be named "pi".
+        from runtime.orchestrator.executor_registry import get_registry as _gr
+        profile = _gr().get_profile(body.executor)
+        if profile is not None and profile.adapter_id != "claude":
             stale_files = [
                 name for name in _CLAUDE_ONLY_WORKSPACE_FILES
                 if (workspace / name).exists()

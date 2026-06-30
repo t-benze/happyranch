@@ -687,4 +687,64 @@ class PiExecutor:
         )
 
 
+class GenericCliExecutor:
+    """Executor for registered custom CLI profiles (THR-052).
+
+    Unlike the built-in executors, a GenericCliExecutor does not know the
+    CLI's semantics — it builds a subprocess argv from a template with
+    supported placeholders and delegates to ``_run_command`` like every
+    other executor. No shell string, no concatenation beyond placeholder
+    substitution.
+
+    The template argv is a list of strings. Each element may contain
+    ``{placeholders}`` which are replaced at launch time:
+    - ``{prompt}`` → the full prompt text (passed as a single argv element;
+      the underlying CLI is responsible for any shell-safe embedding)
+    - ``{timeout_seconds}`` → the timeout in seconds
+    - ``{workspace}`` → absolute path to the agent workspace
+
+    The session-lifetime preamble is prepended to the prompt before
+    substitution, same as every other executor.
+    """
+
+    def __init__(
+        self,
+        *,
+        profile_name: str,
+        argv_template: list[str],
+        provider: str,
+    ) -> None:
+        self._profile_name = profile_name
+        self._argv_template = list(argv_template)
+        self._provider = provider
+
+    def run(
+        self,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        timeout_seconds: int = 1800,
+        on_started: Callable[[int], None] | None = None,
+        on_throttle_event: "OnThrottleEvent | None" = None,
+    ) -> ExecutorResult:
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+        cmd: list[str] = []
+        for elem in self._argv_template:
+            elem = elem.replace("{prompt}", prompt)
+            elem = elem.replace("{timeout_seconds}", str(timeout_seconds))
+            elem = elem.replace("{workspace}", str(workspace))
+            # All placeholders resolve to a single string — no splitting.
+            cmd.append(elem)
+        return _run_command(
+            cmd,
+            workspace,
+            session_id,
+            timeout_seconds,
+            on_started=on_started,
+            usage_parser=None,  # custom CLI usage parsing is not supported yet
+            provider=self._provider,
+            on_throttle_event=on_throttle_event,
+        )
+
+
 AgentExecutor = ClaudeExecutor
