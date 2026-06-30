@@ -759,3 +759,120 @@ def test_timeout_checked_every_iteration() -> None:
         clock=clock,
     )
     assert verdict.verdict == "timeout"
+
+
+# ── timeout dominates settle window (regression) ────────────────────────────
+
+
+def test_timeout_dominates_settle_window_absent_checks() -> None:
+    """Regression: settle window must NOT bypass the total-timeout ceiling.
+
+    Reviewer repro (d16f95d): settle_seconds=120, timeout_seconds=30,
+    absent expected checks → was returning checks_missing at elapsed ~120.
+    Fixed: timeout ceiling dominates — must return timeout (exit code 4)
+    once timeout_seconds is reached, not checks_missing."""
+    clock = FakeClock()
+
+    def fetch_pr() -> PRState:
+        return _pr()
+
+    def fetch_checks(sha: str) -> list[CheckState]:
+        # Checks never appear — absent forever
+        return []
+
+    verdict = wait_for_ci(
+        repo="test-owner/test-repo",
+        pr_number=1,
+        pinned_head_sha="a" * 40,
+        expected_checks=["ci"],
+        settle_seconds=120.0,
+        poll_interval_seconds=5.0,
+        timeout_seconds=30.0,
+        fetch_pr_state=fetch_pr,
+        fetch_checks=fetch_checks,
+        clock=clock,
+    )
+    # Must return timeout, NOT checks_missing
+    assert verdict.verdict == "timeout", (
+        f"expected timeout (exit 4) but got {verdict.verdict} "
+        f"at elapsed={verdict.elapsed_seconds:.1f}s"
+    )
+    assert VERDICT_EXIT_CODES["timeout"] == 4
+    # Elapsed must not exceed timeout_seconds (precision within one poll interval)
+    assert verdict.elapsed_seconds is not None
+    assert verdict.elapsed_seconds <= 30.0, (
+        f"elapsed {verdict.elapsed_seconds:.1f}s should not exceed timeout 30s"
+    )
+
+
+def test_settle_sleep_capped_to_remaining_deadlines() -> None:
+    """Each settle-window sleep is capped to min(remaining_settle,
+    remaining_timeout, poll_interval). This prevents overshooting
+    the timeout by a full poll interval."""
+    clock = FakeClock()
+
+    def fetch_pr() -> PRState:
+        return _pr()
+
+    def fetch_checks(sha: str) -> list[CheckState]:
+        return []  # never appear
+
+    verdict = wait_for_ci(
+        repo="test-owner/test-repo",
+        pr_number=1,
+        pinned_head_sha="a" * 40,
+        expected_checks=["ci"],
+        settle_seconds=120.0,
+        poll_interval_seconds=8.0,
+        timeout_seconds=30.0,
+        fetch_pr_state=fetch_pr,
+        fetch_checks=fetch_checks,
+        clock=clock,
+    )
+    assert verdict.verdict == "timeout"
+    # Each sleep must not exceed the remaining timeout or remaining settle
+    cumulative = 0.0
+    for s in clock.sleeps:
+        assert s <= 8.0, f"sleep {s}s should respect poll_interval cap"
+        remaining_timeout = 30.0 - cumulative
+        assert s <= remaining_timeout, (
+            f"sleep {s}s at cumulative={cumulative:.1f}s exceeds "
+            f"remaining timeout {remaining_timeout:.1f}s"
+        )
+        cumulative += s
+    # Total elapsed must be ≤ timeout_seconds
+    assert verdict.elapsed_seconds is not None
+    assert verdict.elapsed_seconds <= 30.0
+
+
+def test_non_terminal_sleep_capped_to_remaining_timeout() -> None:
+    """When checks are pending (not absent), the poll-interval sleep
+    is capped to the remaining timeout so the engine does not overshoot."""
+    clock = FakeClock()
+
+    def fetch_pr() -> PRState:
+        return _pr()
+
+    def fetch_checks(sha: str) -> list[CheckState]:
+        return [_check("ci", "in_progress")]
+
+    verdict = wait_for_ci(
+        repo="test-owner/test-repo",
+        pr_number=1,
+        pinned_head_sha="a" * 40,
+        expected_checks=["ci"],
+        settle_seconds=0.0,
+        poll_interval_seconds=15.0,
+        timeout_seconds=10.0,
+        fetch_pr_state=fetch_pr,
+        fetch_checks=fetch_checks,
+        clock=clock,
+    )
+    assert verdict.verdict == "timeout"
+    # The engine must not oversleep: with poll_interval=15, timeout=10,
+    # the first (and only) sleep must be capped to 10, not 15.
+    assert len(clock.sleeps) == 1
+    assert clock.sleeps[0] <= 10.0
+    # Elapsed must be exactly at the timeout boundary
+    assert verdict.elapsed_seconds is not None
+    assert verdict.elapsed_seconds == pytest.approx(10.0)

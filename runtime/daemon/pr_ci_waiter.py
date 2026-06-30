@@ -222,12 +222,23 @@ def wait_for_ci(
         # ── 6. Settle window — absent expected checks → keep polling ──
         missing_expected = expected - set(checks_by_name.keys())
         if missing_expected and _elapsed() < settle_seconds:
-            # Keep polling — checks may not have materialized yet
-            _sleep(clock, poll_interval_seconds)
+            # Timeout ceiling dominates — never extend past timeout_seconds
+            if _elapsed() >= timeout_seconds:
+                return _verdict("timeout", checks=all_checks)
+            # Cap sleep to remaining settle AND remaining timeout
+            remaining = min(
+                settle_seconds - _elapsed(),
+                timeout_seconds - _elapsed(),
+                poll_interval_seconds,
+            )
+            _sleep(clock, remaining)
             continue
 
         # ── 7. After settle: expected checks never appeared ──
         if missing_expected:
+            # Timeout ceiling still dominates — if deadline reached, return timeout
+            if _elapsed() >= timeout_seconds:
+                return _verdict("timeout", checks=all_checks)
             return _verdict("checks_missing", checks=all_checks)
 
         # ── 8. Classify expected checks ──
@@ -258,7 +269,8 @@ def wait_for_ci(
             return _verdict("timeout", checks=all_checks)
 
         # ── non-terminal — sleep, then poll again ──
-        _sleep(clock, poll_interval_seconds)
+        remaining = min(timeout_seconds - _elapsed(), poll_interval_seconds)
+        _sleep(clock, remaining)
 
 
 def _sleep(clock: object, seconds: float) -> None:
