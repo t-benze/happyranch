@@ -888,3 +888,71 @@ async def test_externally_failed_invocation_preserves_abort_reason(tmp_path, mon
     inv_after = db.get_invocation_any_status(inv.invocation_token)
     assert inv_after.status == ThreadInvocationStatus.FAILED
     assert inv_after.decline_reason == "founder_aborted"
+
+
+@pytest.mark.asyncio
+async def test_externally_aborted_invocation_skips_session_update(tmp_path, monkeypatch):
+    """When an invocation is externally aborted during subprocess execution,
+    the runner must NOT persist the stale agent_session_id or advance
+    last_resumed_seq — an aborted invocation must not become the resumable
+    Claude session for a later reply."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    class _AbortDuringExecWithSession:
+        """Fake executor that simulates founder abort during execution and
+        returns a stale agent_session_id — the runner must NOT store it for
+        future resume."""
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            db.fail_invocation(
+                inv.invocation_token,
+                status=ThreadInvocationStatus.FAILED,
+                decline_reason="founder_aborted",
+            )
+            result = FakeExecutorResult(success=True)
+            result.agent_session_id = "stale-aborted-session"
+            return result
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _AbortDuringExecWithSession(),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    # Invocation row must still reflect the abort reason.
+    inv_after = db.get_invocation_any_status(inv.invocation_token)
+    assert inv_after.status == ThreadInvocationStatus.FAILED
+    assert inv_after.decline_reason == "founder_aborted"
+
+    # Thread session must NOT be polluted with the stale aborted session.
+    sid, watermark = db.get_thread_session("THR-001", "alice")
+    assert sid != "stale-aborted-session", (
+        "aborted invocation must not store its agent_session_id for future resume"
+    )
+    assert watermark == 0, (
+        "aborted invocation must not advance last_resumed_seq"
+    )

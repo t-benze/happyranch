@@ -654,9 +654,58 @@ async def run_invocation(
             invocation_token=invocation_token,
         )
 
-        # Persist the (possibly forked / freshly-minted) session id + delta watermark.
-        # Advanced only on a successful subprocess — a failed turn leaves the watermark
-        # so the next resume re-includes the skipped messages.
+        # Inspect post-subprocess token state BEFORE updating thread session.
+        # An invocation that became terminal via an external path during subprocess
+        # execution (e.g. founder abort) must NOT have its agent_session_id stored
+        # as the resumable Claude session for a later reply.
+        after = org_state.db.get_invocation_any_status(invocation_token)
+        if after is None:
+            return
+        if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
+            # A reply (CONSUMED) already publishes a seq-bearing message event via
+            # the reply route, which clears the indicator. A silent decline only
+            # publishes decline_status with seq=null (ignored by the tail consumer),
+            # so emit a settled event here to clear the "working" indicator live.
+            #
+            # On a CONSUMED/DECLINED turn, the subprocess produced a real callback;
+            # the agent_session_id is valid and should be persisted for future resume.
+            if is_claude and result.success and getattr(result, "agent_session_id", None):
+                new_watermark = max(shown_seqs) if shown_seqs else last_seq
+                new_watermark = max(new_watermark, last_seq)
+                org_state.db.update_thread_session(
+                    inv.thread_id, inv.agent_name,
+                    agent_session_id=result.agent_session_id,
+                    last_resumed_seq=new_watermark,
+                )
+                if resume_sid:
+                    audit.log_agent_session_reused(
+                        inv.thread_id, agent_name=inv.agent_name, executor="claude",
+                        agent_session_id=result.agent_session_id,
+                        triggering_seq=inv.triggering_seq,
+                    )
+            if after.status is ThreadInvocationStatus.DECLINED:
+                await _publish_invocation_event(
+                    org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
+                    seq=inv.triggering_seq, kind="invocation_settled", status="declined",
+                )
+            return
+
+        # Externally-failed / timed-out invocation: the row was already set to a
+        # terminal state by another path (e.g. founder abort, archive reap).
+        # Preserve the existing reason — do not overwrite with no_callback.
+        # Crucial: do NOT call update_thread_session here — the aborted invocation's
+        # agent_session_id must never become the resumable Claude session.
+        if after.status in {ThreadInvocationStatus.FAILED, ThreadInvocationStatus.TIMEOUT}:
+            logger.info(
+                "run_invocation: token %s already terminal (%s), skipping auto-decline",
+                invocation_token[:8], after.status.value,
+            )
+            return
+
+        # Invocation is still pending — subprocess exited without consuming.
+        # Persist the (possibly forked / freshly-minted) session id + delta
+        # watermark. Advanced only on a successful subprocess — a failed turn
+        # leaves the watermark so the next resume re-includes the skipped messages.
         if is_claude and result.success and getattr(result, "agent_session_id", None):
             new_watermark = max(shown_seqs) if shown_seqs else last_seq
             new_watermark = max(new_watermark, last_seq)
@@ -671,32 +720,6 @@ async def run_invocation(
                     agent_session_id=result.agent_session_id,
                     triggering_seq=inv.triggering_seq,
                 )
-
-        # Inspect post-subprocess token state.
-        after = org_state.db.get_invocation_any_status(invocation_token)
-        if after is None:
-            return
-        if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
-            # A reply (CONSUMED) already publishes a seq-bearing message event via
-            # the reply route, which clears the indicator. A silent decline only
-            # publishes decline_status with seq=null (ignored by the tail consumer),
-            # so emit a settled event here to clear the "working" indicator live.
-            if after.status is ThreadInvocationStatus.DECLINED:
-                await _publish_invocation_event(
-                    org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
-                    seq=inv.triggering_seq, kind="invocation_settled", status="declined",
-                )
-            return
-
-        # Externally-failed / timed-out invocation: the row was already set to a
-        # terminal state by another path (e.g. founder abort, archive reap).
-        # Preserve the existing reason — do not overwrite with no_callback.
-        if after.status in {ThreadInvocationStatus.FAILED, ThreadInvocationStatus.TIMEOUT}:
-            logger.info(
-                "run_invocation: token %s already terminal (%s), skipping auto-decline",
-                invocation_token[:8], after.status.value,
-            )
-            return
 
         # Subprocess exited without consuming → auto-decline.
         err_text = str(getattr(result, "error", "") or "").lower()
