@@ -451,6 +451,146 @@ def test_valid_merge_methods_accepted() -> None:
         assert call_log == [method], f"perform_merge should receive {method!r}"
 
 
+# ── github_error on fetcher exception (spec §4.3 terminal-verdict contract) ──
+
+
+def test_fetch_pr_state_raises_returns_github_error() -> None:
+    """When fetch_pr_state raises, return github_error verdict (match waiter contract)."""
+    call_log: list[str] = []
+
+    def failing_fetch() -> PRState:
+        raise RuntimeError("gh api /repos/.../pulls/N: 502 Bad Gateway")
+
+    def track_merge(method: str) -> MergeResult:
+        call_log.append("perform_merge_called")
+        return _result()
+
+    verdict = _merge(
+        fetch_pr_state=failing_fetch,
+        perform_merge=track_merge,
+    )
+    assert verdict.verdict == "github_error"
+    assert "502 Bad Gateway" in (verdict.error_detail or "")
+    assert verdict.merged_sha is None
+    assert verdict.merged_at is None
+    assert "perform_merge_called" not in call_log
+    assert VERDICT_EXIT_CODES["github_error"] != 0
+
+
+def test_fetch_mergeable_raises_returns_github_error() -> None:
+    """When fetch_mergeable raises, return github_error verdict; perform_merge NOT called."""
+    call_log: list[str] = []
+
+    def failing_fetch() -> MergeableState:
+        raise ConnectionError("failed to connect to GitHub API")
+
+    def track_merge(method: str) -> MergeResult:
+        call_log.append("perform_merge_called")
+        return _result()
+
+    verdict = _merge(
+        fetch_mergeable=failing_fetch,
+        perform_merge=track_merge,
+    )
+    assert verdict.verdict == "github_error"
+    assert "failed to connect" in (verdict.error_detail or "")
+    assert verdict.merged_sha is None
+    assert "perform_merge_called" not in call_log
+
+
+def test_fetch_review_verdict_raises_returns_github_error() -> None:
+    """When fetch_review_verdict raises, return github_error verdict; perform_merge NOT called."""
+    call_log: list[str] = []
+
+    def failing_fetch() -> str:
+        raise OSError("API error fetching review evidence")
+
+    def track_merge(method: str) -> MergeResult:
+        call_log.append("perform_merge_called")
+        return _result()
+
+    verdict = _merge(
+        fetch_review_verdict=failing_fetch,
+        perform_merge=track_merge,
+    )
+    assert verdict.verdict == "github_error"
+    assert "API error" in (verdict.error_detail or "")
+    assert "perform_merge_called" not in call_log
+
+
+def test_fetch_qa_verdict_raises_returns_github_error() -> None:
+    """When fetch_qa_verdict raises, return github_error verdict; perform_merge NOT called."""
+    call_log: list[str] = []
+
+    def failing_fetch() -> str:
+        raise TimeoutError("QA evidence fetch timed out")
+
+    def track_merge(method: str) -> MergeResult:
+        call_log.append("perform_merge_called")
+        return _result()
+
+    verdict = _merge(
+        fetch_qa_verdict=failing_fetch,
+        perform_merge=track_merge,
+    )
+    assert verdict.verdict == "github_error"
+    assert "timed out" in (verdict.error_detail or "")
+    assert "perform_merge_called" not in call_log
+
+
+# ── unknown/malformed ci_verdict → github_error (spec §4.3) ──────────────────
+
+
+def test_unknown_ci_verdict_maps_to_github_error() -> None:
+    """A malformed ci_verdict not in the known waiter vocabulary → github_error."""
+    call_log: list[str] = []
+
+    def track_merge(method: str) -> MergeResult:
+        call_log.append("perform_merge_called")
+        return _result()
+
+    verdict = _merge(
+        ci_verdict="unexpected_value_xyz",
+        perform_merge=track_merge,
+    )
+    assert verdict.verdict == "github_error"
+    assert "unknown ci_verdict" in (verdict.error_detail or "")
+    assert "unexpected_value_xyz" in (verdict.error_detail or "")
+    assert verdict.merged_sha is None
+    assert "perform_merge_called" not in call_log
+    # github_error has a valid exit code
+    assert verdict.verdict in VERDICT_EXIT_CODES
+    assert VERDICT_EXIT_CODES[verdict.verdict] != 0
+
+
+def test_unknown_ci_verdict_empty_string() -> None:
+    """An empty string ci_verdict is unknown → github_error."""
+    call_log: list[str] = []
+
+    def track_merge(method: str) -> MergeResult:
+        call_log.append("perform_merge_called")
+        return _result()
+
+    verdict = _merge(
+        ci_verdict="",
+        perform_merge=track_merge,
+    )
+    assert verdict.verdict == "github_error"
+    assert "unknown ci_verdict" in (verdict.error_detail or "")
+    assert "perform_merge_called" not in call_log
+    assert verdict.verdict in VERDICT_EXIT_CODES
+
+
+def test_known_waiter_verdicts_still_pass_through() -> None:
+    """All known waiter failure verdicts still pass through unchanged."""
+    known = {"ci_failed", "stale_head", "checks_missing", "timeout",
+             "pr_closed", "pr_draft", "github_error"}
+    for v in known:
+        verdict = _merge(ci_verdict=v)
+        assert verdict.verdict == v, f"verdict {v!r} should pass through"
+        assert verdict.verdict in VERDICT_EXIT_CODES
+
+
 # ── exit code mapping ────────────────────────────────────────────────────────
 
 

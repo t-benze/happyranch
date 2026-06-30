@@ -93,6 +93,18 @@ VERDICT_EXIT_CODES: dict[str, int] = {
 
 _VALID_MERGE_METHODS: set[str] = {"merge", "squash", "rebase"}
 
+# ── known waiter failure verdicts (spec §4.3) ──────────────────────────────
+
+_KNOWN_WAITER_FAILURE_VERDICTS: set[str] = {
+    "ci_failed",
+    "stale_head",
+    "checks_missing",
+    "timeout",
+    "pr_closed",
+    "pr_draft",
+    "github_error",
+}
+
 
 # ── engine ───────────────────────────────────────────────────────────────────
 
@@ -161,7 +173,15 @@ def guarded_merge(
         )
 
     # ── 1. Review evidence ──
-    review_v = fetch_review_verdict()
+    try:
+        review_v = fetch_review_verdict()
+    except Exception as exc:
+        return GuardedMergeVerdict(
+            verdict="github_error",
+            pr_number=pr_number,
+            pinned_head_sha=pinned_head_sha,
+            error_detail=str(exc),
+        )
     if review_v != "APPROVE":
         return GuardedMergeVerdict(
             verdict="merge_guard_review",
@@ -170,7 +190,15 @@ def guarded_merge(
         )
 
     # ── 2. QA evidence ──
-    qa_v = fetch_qa_verdict()
+    try:
+        qa_v = fetch_qa_verdict()
+    except Exception as exc:
+        return GuardedMergeVerdict(
+            verdict="github_error",
+            pr_number=pr_number,
+            pinned_head_sha=pinned_head_sha,
+            error_detail=str(exc),
+        )
     if qa_v != "PASS":
         return GuardedMergeVerdict(
             verdict="merge_guard_qa",
@@ -180,6 +208,13 @@ def guarded_merge(
 
     # ── 3. CI verdict pass-through ──
     if ci_verdict != "ci_pass":
+        if ci_verdict not in _KNOWN_WAITER_FAILURE_VERDICTS:
+            return GuardedMergeVerdict(
+                verdict="github_error",
+                pr_number=pr_number,
+                pinned_head_sha=pinned_head_sha,
+                error_detail=f"unknown ci_verdict {ci_verdict!r}",
+            )
         return GuardedMergeVerdict(
             verdict=ci_verdict,
             pr_number=pr_number,
@@ -187,7 +222,15 @@ def guarded_merge(
         )
 
     # ── 4. Re-fetch PR state — SHA guard (spec §4.2 pt 3 / §7 trap 1) ──
-    pr = fetch_pr_state()
+    try:
+        pr = fetch_pr_state()
+    except Exception as exc:
+        return GuardedMergeVerdict(
+            verdict="github_error",
+            pr_number=pr_number,
+            pinned_head_sha=pinned_head_sha,
+            error_detail=str(exc),
+        )
     if pr.head_sha != pinned_head_sha:
         return GuardedMergeVerdict(
             verdict="stale_head",
@@ -212,7 +255,15 @@ def guarded_merge(
         )
 
     # ── 6. GitHub mergeability (spec §4.2 pt 6 / §7 trap 3) ──
-    mergeability = fetch_mergeable()
+    try:
+        mergeability = fetch_mergeable()
+    except Exception as exc:
+        return GuardedMergeVerdict(
+            verdict="github_error",
+            pr_number=pr_number,
+            pinned_head_sha=pinned_head_sha,
+            error_detail=str(exc),
+        )
     if mergeability.mergeable != "CLEAN":
         return GuardedMergeVerdict(
             verdict="merge_guard_mergeable",
