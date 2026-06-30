@@ -803,6 +803,73 @@ def test_events_stream_yields_completion(tmp_home, app, daemon_state, org_state,
     assert b"task_complete" in body
 
 
+def test_events_stream_includes_subtree_activity(tmp_home, app, org_state, auth_headers) -> None:
+    """The SSE event stream for a parent task must replay audit rows
+    from the root task AND all descendant subtasks (children, grandchildren),
+    in chronological order by audit-log id, without duplicating rows.
+
+    Current main replays only the root task's own audit rows — this test
+    MUST FAIL on main and pass after the subtree-activity fix.
+    """
+    from runtime.models import TaskRecord, TaskStatus
+    import json as _json
+
+    db = org_state.db
+
+    # Seed a root task with two children and one grandchild.
+    root = TaskRecord(id="TASK-R", brief="root", parent_task_id=None)
+    child_a = TaskRecord(id="TASK-A", brief="child A", parent_task_id="TASK-R")
+    child_b = TaskRecord(id="TASK-B", brief="child B", parent_task_id="TASK-R")
+    grandchild = TaskRecord(id="TASK-G", brief="grandchild", parent_task_id="TASK-A")
+    db.insert_task(root)
+    db.insert_task(child_a)
+    db.insert_task(child_b)
+    db.insert_task(grandchild)
+
+    # Insert audit logs with known agents/actions so we can distinguish rows.
+    db.insert_audit_log("TASK-R", "engineering_manager", "task_created", {"brief": "root"})
+    db.insert_audit_log("TASK-A", "engineering_manager", "subtask_created", {"parent": "TASK-R"})
+    db.insert_audit_log("TASK-A", "dev_agent", "report_completion", {})
+    db.insert_audit_log("TASK-B", "dev_agent", "report_completion", {})
+    db.insert_audit_log("TASK-G", "dev_agent", "report_completion", {})
+    db.insert_audit_log("TASK-R", "engineering_manager", "task_delegated", {"to": "TASK-A"})
+
+    # Set the root task terminal so history_loader synthesizes a task_complete
+    # event on subscribe — the stream closes deterministically.
+    db.update_task("TASK-R", status=TaskStatus.COMPLETED)
+
+    with TestClient(app).stream(
+        "GET", "/api/v1/orgs/alpha/tasks/TASK-R/events", headers=auth_headers,
+    ) as r:
+        assert r.status_code == 200
+        body = b"".join(r.iter_bytes())
+
+    raw = body.decode()
+    lines = [line for line in raw.split("\n") if line.startswith("data:")]
+    events = [_json.loads(line[5:].lstrip()) for line in lines]
+
+    # Terminal event must be present.
+    assert any(e["type"] == "task_complete" for e in events)
+
+    # All audit rows (from root, child A, child B, grandchild) must be present.
+    audit_events = [e for e in events if e["type"] == "audit"]
+    actions = {(e["task_id"], e["action"]) for e in audit_events}
+
+    assert ("TASK-R", "task_created") in actions
+    assert ("TASK-R", "task_delegated") in actions
+    assert ("TASK-A", "subtask_created") in actions
+    assert ("TASK-A", "report_completion") in actions
+    assert ("TASK-B", "report_completion") in actions
+    assert ("TASK-G", "report_completion") in actions
+
+    # Must have exactly 6 audit events (no duplicates, no missing).
+    assert len(audit_events) == 6, f"expected 6 audit rows, got {len(audit_events)}"
+
+    # Chronological order: audit log ids must be strictly increasing.
+    ids = [e["id"] for e in audit_events]
+    assert ids == sorted(ids), f"audit events not in chronological order: {ids}"
+
+
 def test_resolve_escalation_rejects_non_escalated_task(client_with_runtime):
     """Under the Phase 3 model, the precondition is status=ESCALATED.
     A task that is merely in_progress(delegated) must 409."""

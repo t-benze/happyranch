@@ -65,11 +65,31 @@ class OrgState:
 
     def __post_init__(self) -> None:
         def loader(task_id: str) -> list[dict]:
-            history: list[dict] = [
-                {"type": "audit", **log}
-                for log in self.db.get_audit_logs(task_id)
-            ]
             task = self.db.get_task(task_id)
+            if task is not None:
+                # Task Activity: gather audit logs for the root task and all
+                # descendants (children, grandchildren, etc.), then merge and
+                # deduplicate in chronological order (by audit-log id).
+                task_ids = [task_id]
+                task_ids.extend(self.db.get_descendant_task_ids(task_id))
+                all_logs: list[dict] = []
+                for tid in task_ids:
+                    all_logs.extend(self.db.get_audit_logs(tid))
+                # Deduplicate by id, sort chronologically.
+                seen: set[int] = set()
+                history: list[dict] = []
+                for log in sorted(all_logs, key=lambda x: x["id"]):
+                    if log["id"] not in seen:
+                        seen.add(log["id"])
+                        history.append({"type": "audit", **log})
+            else:
+                # Non-task topic (thread:*, job:*) or unknown task id:
+                # preserve existing behavior — try audit logs for the raw
+                # topic string (always empty for non-task topics).
+                history = [
+                    {"type": "audit", **log}
+                    for log in self.db.get_audit_logs(task_id)
+                ]
             terminal = self._synthesize_terminal_event(task) if task else None
             if terminal is not None:
                 history.append(terminal)
