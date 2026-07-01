@@ -183,7 +183,7 @@ describe('SettingsDialog', () => {
     // Input fields exist for editable values (text + number inputs)
     const textInputs = screen.getAllByRole('textbox');
     const numberInputs = screen.getAllByRole('spinbutton');
-    expect(textInputs.length + numberInputs.length).toBeGreaterThanOrEqual(7);
+    expect(textInputs.length + numberInputs.length).toBeGreaterThanOrEqual(6);
   });
 
   test('shows restart-required badges for CLI paths and orchestration fields', async () => {
@@ -343,10 +343,6 @@ describe('SettingsDialog', () => {
     // Dreaming time input should show 02:00
     const timeInput = screen.getByDisplayValue('02:00');
     expect(timeInput).toBeInTheDocument();
-
-    // Threads cap input should show 500
-    const capInput = screen.getByDisplayValue('500');
-    expect(capInput).toBeInTheDocument();
 
     // Excluded agents should show qa_engineer
     const excludeInput = screen.getByDisplayValue('qa_engineer');

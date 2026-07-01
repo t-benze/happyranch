@@ -944,7 +944,7 @@ No new top-level `OPC_` env vars in v1. Org-level config is the customization su
 | Agent reply when not a participant | 403 `not_participant`. |
 | Agent reply with `in_response_to_seq` referencing a message that didn't address them | 400 `not_addressed`. |
 | `addressed_to` contains an agent who is not a current participant | 422 `addressee_not_participant`. |
-| `turns_used + addressed_count > turn_cap` | 429 `turn_cap_exceeded` with `{used, cap, requested}`. |
+| Turn cap tracking is soft/display-only — no 429 gate remains after THR-046 msg86 removal. |
 | Invocation subprocess exits without terminal callback within `session_timeout_seconds` | Daemon marks token `status='timeout'`; auto-decline inserted for `reply`/`bootstrap` purposes; close-out failures are silent. Audit `thread_invocation_timeout` / `thread_invocation_failed`. |
 | `POST /archive` while thread is `archiving` (re-entry) | 409 `archive_in_progress` with `{archive_requested_at, pending_close_outs}`. |
 | `POST /archive` while thread is `archived` | 200 idempotent with existing `transcript_path`. |

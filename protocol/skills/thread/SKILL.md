@@ -252,8 +252,7 @@ contributes:
 
 Posting appends the message attributed to you, increments the thread's turn
 count by one, and mints a reply turn for every **other** participant (not
-you). It fails if you are not a participant, the thread is not open, or the
-turn cap is reached.
+you). It fails if you are not a participant or the thread is not open.
 
 ## What NOT to do
 

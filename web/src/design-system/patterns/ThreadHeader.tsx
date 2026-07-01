@@ -4,7 +4,7 @@
  * list + actions.
  *
  * Direction-A Pasture: subject title uses --font-display (Newsreader serif),
- * turn budget is a display-num readout, status pill matches ds.css .tag pattern.
+ * status pill matches ds.css .tag pattern.
  *
  * Pure prop-driven. Actions are handed in as a slot so the composition can
  * compose Button primitives with its own onClick wiring.
@@ -19,8 +19,6 @@ interface ThreadHeaderProps {
   subject: string;
   status: 'open' | 'archived';
   participants: string[];
-  turnsUsed: number;
-  turnCap: number;
   archiveSummary?: string | null;
   /** When true, renders a crescent-moon badge (dream-originated marker, A4). */
   dreamOriginated?: boolean;
@@ -32,8 +30,6 @@ export function ThreadHeader({
   subject,
   status,
   participants,
-  turnsUsed,
-  turnCap,
   archiveSummary,
   dreamOriginated,
   actions,
@@ -62,11 +58,7 @@ export function ThreadHeader({
             <IdBadge id={threadId} kind="thread" />
             <span aria-hidden="true">·</span>
             <span>{participants.join(', ') || 'no participants'}</span>
-            <span aria-hidden="true">·</span>
-            <span className="font-mono text-xs tabular-nums">
-              {turnsUsed}/{turnCap}
-            </span>
-            <span className="text-text-muted text-xs">turns</span>
+
           </div>
         }
         actions={actions}
@@ -87,5 +79,5 @@ export const meta = {
   import: "@/design-system/patterns/ThreadHeader",
   variants: { status: ["open", "archived"] },
   consumes: ["layout.grid.threads_page"],
-  example: "<ThreadHeader threadId='THR-042' subject='Refund policy' status='open' participants={['founder', 'compliance_head']} turnsUsed={3} turnCap={20} />",
+  example: "<ThreadHeader threadId='THR-042' subject='Refund policy' status='open' participants={['founder', 'compliance_head']} />",
 } as const;

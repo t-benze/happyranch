@@ -17,7 +17,7 @@ A structured-markdown UX specification with one section per screen (Purpose / La
 1. App shell (TopBar, Statusbar, nav, org switcher)
 2. Threads — Inbox pane
 3. Threads — Detail pane
-4. Threads — Dialogs (NewThread / Invite / Archive / Abandon / Extend)
+4. Threads — Dialogs (NewThread / Invite / Archive / Abandon)
 5. Threads — HelpDrawer
 6. Empty states (cross-screen)
 7. Error and disconnected states
@@ -183,13 +183,13 @@ A row is `active` when `:thread_id` matches its id: gets `accent.muted` backgrou
 
 ### Purpose
 
-Read messages, send a reply, manage thread lifecycle (invite, archive, abandon, extend). Right column, 1fr, fills remaining width.
+Read messages, send a reply, manage thread lifecycle (invite, archive, abandon). Right column, 1fr, fills remaining width.
 
 ### Layout
 
 ```
 +------------------------------------------------------------------+
-| Subject of the thread          [open]      [Invite] [Extend] [A] |  ThreadHeader, ~64px
+| Subject of the thread          [open]      [Invite] [A] |  ThreadHeader, ~64px
 | THR-0123 · founder, content_writer, content_manager · 47/500     |
 +------------------------------------------------------------------+
 |                                                                  |
@@ -213,7 +213,7 @@ Read messages, send a reply, manage thread lifecycle (invite, archive, abandon, 
 
 ### ThreadHeader anatomy
 
-- Line 1, left: subject in `h2`, with a status `Badge` (open / archiving / archived / abandoned) immediately after. Right: action button row — Invite, Extend, Archive (all `ghost`), then a `·` divider, then Abandon (`danger` variant).
+- Line 1, left: subject in `h2`, with a status `Badge` (open / archiving / archived / abandoned) immediately after. Right: action button row — Invite, Archive (all `ghost`), then a `·` divider, then Abandon (`danger` variant).
 - Line 2, all `caption` size, all `text.muted`: monospace `THR-NNN`, then `·`, then participant AgentChips (comma-separated, with role dots), then `·`, then turn meter "47/500 turns".
 - Optional row 3: if `archive_summary` present, render in a `surface.raised` box with a `text.primary` "Archive summary:" lead-in.
 
@@ -226,7 +226,7 @@ Vertical stack, gap = `spacing.3`. Three bubble shapes:
 - **Agent message (worker or manager):** standard `MessageBubble` — `surface.raised` background, `border.subtle` 1px, `radius.lg`. Header line: AgentChip (with role dot) + optional `→ addressed_to` chip-list in `text.muted` + right-aligned `#{seq} · {ts}` in `mono_sm`. Body: markdown in `body_lg` with `prose` styling. Max width 72ch, left-aligned.
 - **Founder message:** same as agent but with `founder` variant — `accent.muted` background, accent-tinted border. The AgentChip dot uses the founder accent color. Bubble is still left-aligned (no chat-app "your messages on the right" — this is a record of decisions, not a conversation).
 - **Decline:** `tier.red_tint` background, red-tinted border, body renders as `Declined: {reason}` in `tier.red` text.
-- **System event:** pill-shaped, dashed border, centered horizontally, `caption` size, format `[seq] {description} · {ts}` — invitations, archive requests, turn-cap extensions.
+- **System event:** pill-shaped, dashed border, centered horizontally, `caption` size, format `[seq] {description} · {ts}` — invitations, archive requests.
 
 Auto-scroll to bottom on message-count change. The scroll respects user-initiated scroll-up (don't yank back if they're reading history) — implemented with a "scrolled-up" sentinel and a floating "↓ Jump to latest" button at elevation 2.
 
@@ -261,7 +261,7 @@ Future-extension: a `To:` chip-picker right above the Send button, constrained t
 - `GET /threads/{id}` via `useThread(slug, threadId)` — header + initial messages.
 - `GET /threads/{id}/tail?since_seq=N` SSE via `useThreadTailSSE` — appends.
 - `POST /threads/{id}/send` via `useSendFollowUp` — composer submit.
-- All four dialog mutations (`/invite`, `/archive`, `/abandon`, `/extend`) — see §4.
+- All dialog mutations (`/invite`, `/archive`, `/abandon`) — see §4.
 
 ### A11y
 
@@ -334,20 +334,6 @@ All dialogs use the `dialog` component token (elevation 3, 32rem max width, scri
 **Footer:** Cancel + Abandon thread (`destructive_filled`, the only red filled button in the product).
 
 **Confirmation:** Above the footer, a `caption` warning in `tier.red`: "Abandoning is irreversible. Use Archive if the thread completed successfully."
-
-### 4.5 ExtendDialog
-
-**Title:** "Extend turn cap"
-
-**Fields:**
-- `New turn cap` — number input, default = `currentCap + 100`. Required, must be > current cap.
-- Helper text: "Current cap: 500. Threads abandon automatically when the cap is reached."
-
-**Footer:** Cancel + Extend.
-
-**Validation:** New cap > current. Inline error if not.
-
----
 
 ## 5. Threads — HelpDrawer
 

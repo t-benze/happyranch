@@ -300,7 +300,7 @@ to **§A**.
   transcript + 300px rail (Participants / Linked tasks / Artifacts / stats:
   messages, **token churn**, opened). System/execution events visually distinct
   from prose (backed by `ThreadMessage.kind` + `system_payload.kind_tag`).
-  **Turn budget (X/500)** visible before the cap. **Dream-origin marker** (A4)
+  Turn budget removed from UI per THR-046 msg126. **Dream-origin marker** (A4)
   where applicable.
 - **Deferred.** Real @mention routing (→ §6, D3); in-transcript agent-own-execution
   `ran:` cards (new store → §6, D7).

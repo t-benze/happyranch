@@ -218,7 +218,7 @@ the Direction A sidebar.
 - **Target user + problem.** Founder needs one async place to coordinate across
   teams and stay human-in-the-loop without babysitting. Today: broadcast legibility
   is poor ("who will act on this?"), system events and messages share a flat
-  transcript, and the turn budget is invisible.
+  transcript, and the turn budget is hidden (removed per THR-046 msg126).
 - **Desired interaction logic.** [FACT]
   - **List:** segmented filter (`All / Waiting on you / Active / Done`) with counts;
     each row leads with the **last speaker** ("**engineering_manager:** JOB-083 is
@@ -246,7 +246,7 @@ the Direction A sidebar.
   - AC1: From the list, the founder can tell *who spoke last* and *whether it needs
     them* without opening the thread. **[verifiable]**
   - AC2: System/tool-run events are visually distinct from human/agent prose. **[verifiable]**
-  - AC3: Turn budget (X/500) is visible before the cap is reached. **[verifiable]**
+  - AC3: Turn cap enforcement is removed per THR-046 msg86; turn budget is no longer displayed per THR-046 msg126. **[verifiable]**
   - AC4: @mention semantics resolve to a real participant set — if @mention does not
     actually change routing in the daemon, the affordance must not imply it does (P1). **[NEEDS-VALIDATION]**
 
@@ -521,7 +521,7 @@ the Direction A sidebar.
   - A dedicated **page** with a sticky left sub-nav (e.g. `Assistant · System ·
     Organization · Agents · Executors · Billing`) + a field panel + a sticky save bar.
   - **Org section editable** (Nightly dreaming: enabled / schedule / timezone / agent
-    mode / catch-up; Threads: default turn cap / session timeout) with **explicit
+    mode / catch-up; Threads: session timeout) with **explicit
     live-vs-restart labeling per field** ("Applies immediately" vs "restart to
     apply") — a trust/transparency affordance.
   - **[FACT]** Agent-name fields use **chips with autocomplete**, replacing the

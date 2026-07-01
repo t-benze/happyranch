@@ -166,7 +166,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     });
   });
 
-  test('lists threads with turn budget and last speaker', async () => {
+  test('lists threads with last speaker (turn budget removed from UI)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
@@ -186,9 +186,9 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       // Thread subjects appear in InboxRow
       expect(screen.getByText(/Launch plan/)).toBeInTheDocument();
       expect(screen.getByText(/Budget review/)).toBeInTheDocument();
-      // Turn budgets should appear
-      expect(screen.getByText('3/500')).toBeInTheDocument();
-      expect(screen.getByText('487/500')).toBeInTheDocument();
+      // Turn budgets should NOT appear (removed per THR-046 msg126)
+      expect(screen.queryByText('3/500')).toBeNull();
+      expect(screen.queryByText('487/500')).toBeNull();
       // Last speakers should appear
       expect(screen.getByText(/dev_agent/)).toBeInTheDocument();
       expect(screen.getByText(/founder/)).toBeInTheDocument();

@@ -188,7 +188,7 @@ Effort: S/M/L/XL (engineering re-size of product's guess). "Class" per §0 legen
 |---|---|---|---|---|
 | List w/ last-speaker + avatar + status pills | Subject/chip/turn cards | RENDER-ONLY | M | |
 | System/tool-run events visually distinct | **Structured already:** `ThreadMessage.kind` + `system_payload.kind_tag` (`models.py:242-303`, `routes/threads.py`) | RENDER-ONLY | M | **CORRECTION: backed.** *Caveat:* thread system events are dispatch/participant/cap/archive/resume — **in-transcript "tool-run cards"/"ran: cmd" of an agent's own execution are NOT thread messages** (would be NEW-STORE if wanted). |
-| Turn budget visible before cap | Turn cap stored; rendered late | RENDER-ONLY | S | |
+| Turn cap removal | Turn cap removed from UI per THR-046 msg126; turn count still tracked internally | RENDER-ONLY | S | |
 | **@mention routing** | **Pure broadcast — no @mention parsing anywhere** (`routes/threads.py:340-344,372-380`) | **NEW-LOGIC 🚩** | M | **P1 honesty: the UI must NOT imply routing the daemon does not do.** Honest v1 = no @mention affordance, or render as broadcast. Real routing = new daemon logic (founder-gated direction). |
 
 ### Tasks
