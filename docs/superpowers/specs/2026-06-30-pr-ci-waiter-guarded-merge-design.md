@@ -208,3 +208,23 @@ Do not merge implementation PRs (2-5) until:
 - `gh pr merge --auto` is not proof of safety when branch protection lacks required checks on `main`.
 - Merge is allowed only through the guarded helper or a founder-reviewed job — never through broad worker `gh pr merge` allow-rules.
 - The waiter engine must be pure (command-runner-injected) so all verdict paths are testable without GitHub network access.
+
+## 8. SUPERSEDED: §4.4 Daemon route + CLI helper and §6 PR-4 (Founder redesign, THR-047 msg 36, 2026-07-01)
+
+**The daemon-route approach described in §4.4 and the PR-4 bullet in §6 is SUPERSEDED.** The founder's redesign dissolves the dedicated `/pr-ci/complete` daemon route entirely. The replacement model separates polling and merging into two distinct mechanisms, neither of which requires a new daemon route:
+
+### Poll job (pure CI-status poller)
+
+The `wait_for_ci` engine is invoked as a plain job submitted through the **existing generic jobs path** (`happyranch jobs submit` / `POST /jobs/submit`, already token-gated, unchanged). A real-`gh`-backed CLI entrypoint (`python -m runtime.daemon.pr_ci_waiter --repo ... --pr N --head-sha <sha> --expected-check ...`) runs the waiter engine with real GitHub callables, prints the structured verdict JSON to stdout, and exits with the mapped code from `VERDICT_EXIT_CODES`. The job is submitted with `review_required=false` so it auto-runs. The job performs **NO merge** — it is strictly a CI-status poller.
+
+### Merge triggered by the resumed task
+
+On resume, the task inspects the blocked poll-job verdict. If `ci_pass`, the task owner triggers `guarded_merge` as a **short daemon-run step** via a second CLI entrypoint (`python -m runtime.daemon.pr_ci_merge --org ... --repo ... --pr N --head-sha <sha> --merge-method squash --ci-verdict ci_pass --review-task-id TASK-xxx --qa-task-id TASK-yyy`). This re-enforces all guards (review APPROVE + QA PASS + mergeable CLEAN + unchanged head SHA + open/non-draft) before performing the merge. The merge runs on the daemon-run / EM-authority path — agents never get raw `gh pr merge` grants.
+
+### What was built (PR #4, reworked)
+
+- `runtime/daemon/pr_ci_waiter.py`: added `__main__` entrypoint with real-`gh` adapters (`_gh_fetch_pr_state`, `_gh_fetch_checks`, `_RealClock`).
+- `runtime/daemon/pr_ci_merge.py`: added `__main__` entrypoint with real-`gh` adapters (`_gh_fetch_pr_state`, `_gh_fetch_mergeable`, `_gh_perform_merge`) and recall-based verdict fetching (`_recall_fetch_verdict` via `happyranch recall`).
+- Unit tests: `tests/daemon/test_pr_ci_waiter_gh.py`, `tests/daemon/test_pr_ci_merge_gh.py` (mock subprocess — NO network).
+- The pure engine functions (`wait_for_ci`, `guarded_merge`) are **unchanged** — only additive `__main__` blocks were appended.
+- **No new daemon route was created.** The abandoned route branch (PR #253, `task/TASK-1354`) is superseded and should not be referenced for guidance.
