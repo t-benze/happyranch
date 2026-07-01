@@ -789,6 +789,64 @@ def _supersede_predecessor_locked(
         )
 
 
+def _collect_eligible_revisit_family(
+    org,
+    *,
+    explicit_predecessor_id: str,
+    successor_root: str,
+) -> list[TaskRecord]:
+    """Find eligible revisit-family siblings that should be superseded alongside
+    the explicit predecessor on a human-authorized continuation.
+
+    Walks the revisit_of_task_id chain from the explicit predecessor to the
+    family root, then collects all tasks reachable through revisit_of_task_id
+    in the same family tree. Each collected task is filtered through
+    ``_eligible_supersede_block_kind`` — escalated and in_progress(delegated)
+    with all-terminal children are eligible; completed, failed, cancelled,
+    pending, in_progress(non-delegated), and already resolved_superseded tasks
+    are skipped. The explicit predecessor and the new successor root are also
+    excluded.
+
+    THR-046 msg127 option 3: broader sibling revisit-family closure.
+    Caller MUST hold ``org.db_lock`` so eligibility checks are consistent.
+    """
+    # Find the family root by walking the revisit_of_task_id chain up.
+    family_root_id = explicit_predecessor_id
+    while True:
+        task = org.db.get_task(family_root_id)
+        if task is None or task.revisit_of_task_id is None:
+            break
+        family_root_id = task.revisit_of_task_id
+
+    # Collect all tasks in the revisit-family tree via BFS.
+    eligible: list[TaskRecord] = []
+    to_process = [family_root_id]
+    visited: set[str] = {family_root_id, successor_root, explicit_predecessor_id}
+
+    while to_process:
+        current_id = to_process.pop()
+        for r_id in org.db.get_direct_revisits(current_id):
+            if r_id in visited:
+                continue
+            visited.add(r_id)
+            to_process.append(r_id)
+
+            task = org.db.get_task(r_id)
+            if task is None:
+                continue
+
+            # Skip the explicit predecessor and successor — already handled / new.
+            if r_id == explicit_predecessor_id or r_id == successor_root:
+                continue
+
+            # Eligibility gate: only escalated or in_progress(delegated) with
+            # all-terminal children may be superseded.
+            if _eligible_supersede_block_kind(org, task) is not None:
+                eligible.append(task)
+
+    return eligible
+
+
 async def revisit_from_notification(
     org,
     state,
@@ -910,6 +968,22 @@ async def revisit_from_notification(
                 actor=actor,
                 note_suffix=founder_note,
             )
+            # THR-046 msg127: broader revisit-family closure — also supersede
+            # eligible sibling/ancestor revisits in the same revisit family.
+            for family_task in _collect_eligible_revisit_family(
+                org,
+                explicit_predecessor_id=predecessor.id,
+                successor_root=new_id,
+            ):
+                family_block_kind = _eligible_supersede_block_kind(org, family_task)
+                _supersede_predecessor_locked(
+                    org, audit,
+                    predecessor_id=family_task.id,
+                    successor_root=new_id,
+                    prior_block_kind=family_block_kind,
+                    actor=actor,
+                    note_suffix=founder_note,
+                )
         # When the founder revisits via CLI, any open failure notification row
         # for this task is implicitly resolved — consume it with cli-fallback
         # so it doesn't dangle. Mirrors resolve_escalation_in_process's behavior.

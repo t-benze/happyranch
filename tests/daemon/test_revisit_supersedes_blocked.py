@@ -184,6 +184,75 @@ async def test_manual_resolve_escalation_approve_does_not_supersede(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_revisit_supersedes_escalated_sibling_in_family(tmp_path: Path):
+    """Founder revisit of an escalated root also closes eligible escalated
+    sibling revisits in the same family, while leaving failed/completed/cancelled
+    siblings untouched. THR-046 msg127 broader family closure."""
+    from runtime.daemon.routes.tasks import revisit_from_notification
+
+    org, state, db = _build_org(tmp_path)
+
+    # Original escalated root (the explicit predecessor).
+    db.insert_task(TaskRecord(
+        id="TASK-1", brief="original escalation", team="engineering",
+        assigned_agent="m",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+    # Escalated sibling revisit — should be closed.
+    db.insert_task(TaskRecord(
+        id="TASK-2", brief="escalated sibling", team="engineering",
+        assigned_agent="m",
+        status=TaskStatus.ESCALATED, block_kind=None,
+        revisit_of_task_id="TASK-1",
+    ))
+    # Failed sibling revisit — should NOT be touched.
+    db.insert_task(TaskRecord(
+        id="TASK-3", brief="failed sibling", team="engineering",
+        assigned_agent="m",
+        status=TaskStatus.FAILED, block_kind=None,
+        revisit_of_task_id="TASK-1",
+    ))
+    # Completed sibling revisit — should NOT be touched.
+    db.insert_task(TaskRecord(
+        id="TASK-4", brief="completed sibling", team="engineering",
+        assigned_agent="m",
+        status=TaskStatus.COMPLETED, block_kind=None,
+        revisit_of_task_id="TASK-1",
+    ))
+
+    result = await revisit_from_notification(
+        org, state, task_id="TASK-1", founder_note="ruled in THR-X", actor="cli",
+    )
+
+    # Explicit predecessor superseded.
+    pred = db.get_task("TASK-1")
+    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.block_kind is None
+    pred_payload = _audit_payload(db, "TASK-1", "escalation_superseded")
+    assert pred_payload["successor_root"] == result.new_root_id
+    assert pred_payload["prior_block_kind"] == "escalated"
+
+    # Escalated sibling superseded.
+    sib = db.get_task("TASK-2")
+    assert sib.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert sib.block_kind is None
+    sib_payload = _audit_payload(db, "TASK-2", "escalation_superseded")
+    assert sib_payload["successor_root"] == result.new_root_id
+    assert sib_payload["prior_block_kind"] == "escalated"
+
+    # Failed sibling untouched.
+    assert db.get_task("TASK-3").status == TaskStatus.FAILED
+    assert "escalation_superseded" not in _audit_actions(db, "TASK-3")
+
+    # Completed sibling untouched.
+    assert db.get_task("TASK-4").status == TaskStatus.COMPLETED
+    assert "escalation_superseded" not in _audit_actions(db, "TASK-4")
+
+    # Gap-A: only the new root is enqueued.
+    state.queue.enqueue.assert_called_with("acme", result.new_root_id)
+
+
+@pytest.mark.asyncio
 async def test_unruled_escalation_with_no_continuation_stays_escalated(tmp_path: Path):
     """The escalation backlog only auto-closes via the revisit/dispatch
     forcing function. With no continuation created, an `escalated` task
