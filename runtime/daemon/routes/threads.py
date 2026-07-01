@@ -800,18 +800,6 @@ async def reply_thread_endpoint(
     # _verify_addressed removed: broadcast model; any participant can reply to
     # any message as long as they hold a valid invocation token.
 
-    # Turn-cap projection — agent replies must respect the same brake as
-    # founder /send; without this an agent ping-pong can blow past the cap.
-    projected = t.turns_used + 1
-    if projected > t.turn_cap:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "code": "turn_cap_exceeded",
-                "used": t.turns_used, "cap": t.turn_cap, "requested": 1,
-            },
-        )
-
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
         inv = org.db.get_pending_invocation(body.invocation_token)
@@ -1151,13 +1139,6 @@ async def _send_thread_message_inprocess(
     # The founder is not a participant, so she is never a mint target.
     addressed = list(participants)
 
-    projected = t.turns_used + 1
-    if projected > t.turn_cap:
-        raise _SendThreadError(
-            429, "turn_cap_exceeded",
-            used=t.turns_used, cap=t.turn_cap, requested=1,
-        )
-
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
         seq = org.db.append_thread_message(
@@ -1275,15 +1256,6 @@ async def post_thread_as_agent(
         org, body.attachments, uploaded_by=body.composer,
     )
     body_text = _normalize_message_body(body.body_markdown, attachments)
-
-    # Turn-cap guard mirrors _send_thread_message_inprocess.
-    projected = t.turns_used + 1
-    if projected > t.turn_cap:
-        raise HTTPException(
-            status_code=429,
-            detail={"code": "turn_cap_exceeded",
-                    "used": t.turns_used, "cap": t.turn_cap, "requested": 1},
-        )
 
     # Broadcast model: mint REPLY for every OTHER participant (exclude the
     # composer — they are the speaker).
