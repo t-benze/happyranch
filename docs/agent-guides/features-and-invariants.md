@@ -180,7 +180,7 @@ Traps:
 
 - Broadcast is unconditional; declines are silent.
 - Decline-by-default doctrine is prompt-injected for `REPLY`, not in `protocol/skills/thread/SKILL.md`.
-- Agent replies no longer enforce a hard `turn_cap` ceiling; turn count is still tracked and displayed but cap enforcement was removed per THR-046.
+- Agent replies no longer enforce a hard `turn_cap` ceiling; turn count/cap fields may still be tracked for compatibility/history but no longer gate posting/minting and are not surfaced as a turn budget UI per THR-046.
 
 ## Thread Agent-Session Resume
 

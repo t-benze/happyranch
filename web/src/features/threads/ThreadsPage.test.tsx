@@ -172,8 +172,8 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
         HttpResponse.json({
           threads: [
-            mkThread('THR-001', 'Launch plan', { last_speaker: 'dev_agent' }),
-            mkThread('THR-002', 'Budget review', { last_speaker: 'founder' }),
+            mkThread('THR-001', 'Launch plan', { turns_used: 3, turn_cap: 500, last_speaker: 'dev_agent' }),
+            mkThread('THR-002', 'Budget review', { turns_used: 487, turn_cap: 500, last_speaker: 'founder' }),
           ],
         }),
       ),
