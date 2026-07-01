@@ -185,6 +185,10 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/dreams/{dream_id}/complete', 'agent callback'],
   // work-hours wake spawn — agent callback (single-line --from-file), not browser-callable
   ['POST /api/v1/orgs/{slug}/work-hours/{work_hour_id}/spawn', 'agent callback'],
+  // registration-token mint — founder-only (master-bearer + loopback); minted by the
+  // PR-3 settings-page generator, no SPA client wrapper yet — promote to INCLUDED_PATHS
+  // when PR-3 adds the wrapper
+  ['POST /api/v1/auth/registration-token', 'founder-only registration-token mint; PR-3 will add SPA wrapper'],
 
 ]);
 
