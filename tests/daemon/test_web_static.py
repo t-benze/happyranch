@@ -60,3 +60,43 @@ def test_no_dist_renders_placeholder(tmp_path, monkeypatch):
     r = client.get("/")
     assert r.status_code == 200
     assert "build_web.sh" in r.text
+
+
+def test_web_dist_resolves_via_settings_project_root_not_file(tmp_path, monkeypatch):
+    """web/dist resolves to settings.project_root/web/dist — NOT via
+    Path(__file__).resolve().parents[3] — so the SPA is anchored to a
+    canonical, configurable project root independent of which copy of
+    `runtime` was imported."""
+    from runtime.daemon.routes.web_static import _resolve_dist_dir
+
+    # Set up a canonical project root with web/dist in a tmp location.
+    project = tmp_path / "canonical-project"
+    project.mkdir()
+    (project / "web" / "dist").mkdir(parents=True)
+    (project / "web" / "dist" / "index.html").write_text("<!doctype html><title>Canonical</title>")
+    (project / "web" / "dist" / "assets").mkdir()
+
+    settings = Settings(project_root=project)
+    # Ensure HAPPYRANCH_WEB_DIST is NOT set — we're testing the fallback.
+    monkeypatch.delenv("HAPPYRANCH_WEB_DIST", raising=False)
+    resolved = _resolve_dist_dir(settings=settings)
+    assert resolved is not None
+    assert resolved == project / "web" / "dist"
+
+
+def test_web_dist_env_override_still_highest_precedence(tmp_path, monkeypatch):
+    """HAPPYRANCH_WEB_DIST override is checked FIRST and wins over
+    settings.project_root.  This preserves the existing behaviour."""
+    from runtime.daemon.routes.web_static import _resolve_dist_dir
+
+    project = tmp_path / "canonical-project"
+    project.mkdir()
+    (project / "web" / "dist").mkdir(parents=True)
+
+    override = tmp_path / "override-dist"
+    override.mkdir()
+    monkeypatch.setenv("HAPPYRANCH_WEB_DIST", str(override))
+
+    settings = Settings(project_root=project)
+    resolved = _resolve_dist_dir(settings=settings)
+    assert resolved == override

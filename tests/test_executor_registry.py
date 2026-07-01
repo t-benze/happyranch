@@ -400,7 +400,7 @@ class TestGenericCliExecutor:
         executor = GenericCliExecutor(
             profile_name="openclaw",
             argv_template=[
-                "openclaw", "agent", "--json", "--message", "{prompt}",
+                "echo", "agent", "--json", "--message", "{prompt}",
                 "--timeout", "{timeout_seconds}",
             ],
             provider="openclaw",
@@ -413,7 +413,7 @@ class TestGenericCliExecutor:
 
         assert result.success is True
         cmd = mock_subprocess.Popen.call_args[0][0]
-        assert cmd[0] == "openclaw"
+        assert cmd[0].endswith("echo")
         assert cmd[1] == "agent"
         assert cmd[2] == "--json"
         assert cmd[3] == "--message"
@@ -436,7 +436,7 @@ class TestGenericCliExecutor:
 
         executor = GenericCliExecutor(
             profile_name="custom",
-            argv_template=["mycli", "--dir", "{workspace}", "--input", "{prompt}"],
+            argv_template=["echo", "--dir", "{workspace}", "--input", "{prompt}"],
             provider="custom",
         )
         result = executor.run(
@@ -461,9 +461,9 @@ class TestGenericCliExecutor:
         mock_subprocess.Popen.return_value = proc
 
         executor = GenericCliExecutor(
-            profile_name="brokencli",
-            argv_template=["brokencli", "{prompt}"],
-            provider="brokencli",
+            profile_name="failing",
+            argv_template=["bash", "-c", "echo 'something went wrong' >&2 ; exit 1"],
+            provider="failing",
         )
         result = executor.run(
             workspace=workspace,

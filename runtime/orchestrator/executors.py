@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
 import subprocess
 import time
 import uuid
@@ -55,6 +57,61 @@ class ExecutorResult:
 
 
 _TAIL_BYTES = 2000
+
+# Standard tool directories prepended to PATH at daemon startup so executor
+# binaries resolve under Finder/launchd (which pass PATH=/usr/bin:/bin).
+# Overridable in tests via monkeypatch of the module-level list.
+_STANDARD_TOOL_DIRS: list[str] = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    os.path.expanduser("~/.local/bin"),
+]
+
+
+def _normalize_path() -> None:
+    """Prepend standard tool directories to ``os.environ['PATH']`` if absent.
+
+    Called once at daemon startup so executor binaries (claude, codex,
+    opencode, pi) are findable even when the daemon was launched by
+    Finder/launchd with PATH=/usr/bin:/bin (issue #254).
+
+    Idempotent: dirs already present are not duplicated.
+    """
+    current = os.environ.get("PATH", "")
+    entries = current.split(":") if current else []
+    # Prepend only those not already present.
+    to_prepend = [d for d in _STANDARD_TOOL_DIRS if d not in entries]
+    if to_prepend:
+        os.environ["PATH"] = ":".join(to_prepend + entries)
+
+
+def _resolve_binary(cli_path: str) -> str:
+    """Resolve an executor binary name to an absolute path.
+
+    - If ``cli_path`` is already absolute (founder configured it explicitly
+      in Settings), return it unchanged.
+    - Otherwise, resolve via ``shutil.which`` over the current PATH.
+    - If unresolvable, raise ``RuntimeError`` with an actionable diagnostic
+      naming the binary and the search directories — NOT a bare ENOENT.
+    """
+    if os.path.isabs(cli_path):
+        # Founder-configured absolute path — trust it as-is.
+        return cli_path
+    resolved = shutil.which(cli_path)
+    if resolved is None:
+        search_dirs = os.environ.get("PATH", "(empty)")
+        raise RuntimeError(
+            f"Cannot locate executor binary '{cli_path}' — "
+            f"not found on PATH. Searched: {search_dirs}"
+        )
+    return resolved
+
+
+def _callee_env() -> dict[str, str]:
+    """Return a copy of ``os.environ`` suitable for passing as ``env=``
+    to ``subprocess.Popen`` so the child inherits the daemon's normalized
+    PATH instead of the stripped Finder/launchd PATH."""
+    return dict(os.environ)
 
 
 def _claude_canonical_model(obj: dict) -> str | None:
@@ -394,6 +451,7 @@ def _run_command(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=_callee_env(),
         )
         if on_started is not None:
             on_started(proc.pid)
@@ -521,7 +579,7 @@ class ClaudeExecutor:
         # directory name is the canonical agent identifier.
         allowed = " ".join(allow_rules_for_agent(self._paths, workspace.name, cli=True))
         cmd = [
-            self._cli_path,
+            _resolve_binary(self._cli_path),
             "-p",
             prompt,
             "--permission-mode",
@@ -565,7 +623,7 @@ class CodexExecutor:
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = [
-            self._cli_path,
+            _resolve_binary(self._cli_path),
             "exec",
             "--sandbox",
             self._sandbox_mode,
@@ -626,7 +684,7 @@ class OpencodeExecutor:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # opencode >= 1.14.0 rejects --prompt; use positional prompt (issue #216).
         cmd = [
-            self._cli_path,
+            _resolve_binary(self._cli_path),
             "run",
             "--dir",
             str(workspace),
@@ -669,7 +727,7 @@ class PiExecutor:
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = [
-            self._cli_path,
+            _resolve_binary(self._cli_path),
             "-p",
             prompt,
             "--mode",
@@ -729,11 +787,14 @@ class GenericCliExecutor:
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd: list[str] = []
-        for elem in self._argv_template:
+        for i, elem in enumerate(self._argv_template):
             elem = elem.replace("{prompt}", prompt)
             elem = elem.replace("{timeout_seconds}", str(timeout_seconds))
             elem = elem.replace("{workspace}", str(workspace))
             # All placeholders resolve to a single string — no splitting.
+            # Resolve the first element (the CLI binary) to an absolute path.
+            if i == 0:
+                elem = _resolve_binary(elem)
             cmd.append(elem)
         return _run_command(
             cmd,

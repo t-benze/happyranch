@@ -1,11 +1,36 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from runtime.config import Settings
 from runtime.orchestrator.executors import ClaudeExecutor, CodexExecutor, OpencodeExecutor, PiExecutor, ExecutorResult
+
+_EXECUTOR_NAMES = frozenset({"claude", "codex", "opencode", "pi"})
+
+
+@pytest.fixture(autouse=True)
+def _mock_shutil_which(monkeypatch):
+    """Patch shutil.which inside executors so the executor constructors'
+    _resolve_binary calls resolve deterministically regardless of host PATH."""
+    import runtime.orchestrator.executors as _ex_mod
+
+    _real_which = shutil.which
+
+    def _patched_which(name, path=None):
+        real = _real_which(name, path=path)
+        if real is not None:
+            return real
+        if name in _EXECUTOR_NAMES:
+            return f"/usr/local/bin/{os.path.basename(name)}"
+        return None
+
+    monkeypatch.setattr(_ex_mod.shutil, "which", _patched_which)
 
 
 def _make_completed_proc(stdout: str, returncode: int = 0):
