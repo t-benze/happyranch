@@ -607,3 +607,121 @@ def test_threads_compose_shared_uses_artifact(monkeypatch, tmp_path: Path) -> No
 
     # put_artifact (shared) was called, not multipart.
     fake.put_artifact.assert_called_once()
+
+
+def test_threads_attachments_list_passes_agent_and_token(
+    monkeypatch, capsys,
+) -> None:
+    """attachments list passes agent + invocation_token to the client."""
+    from cli.commands.threads import cmd_threads_attachments_list
+    fake = Mock()
+    fake.list_thread_attachments.return_value = {"attachments": []}
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001", from_file=None,
+        agent="dev_agent", invocation_token="tok-abc",
+    )
+    cmd_threads_attachments_list(args)
+
+    assert fake.list_thread_attachments.call_args.kwargs["agent"] == "dev_agent"
+    assert fake.list_thread_attachments.call_args.kwargs["invocation_token"] == "tok-abc"
+    assert fake.list_thread_attachments.call_args.kwargs["thread_id"] == "THR-001"
+
+
+def test_threads_attachments_list_from_file(
+    monkeypatch, capsys, tmp_path: Path,
+) -> None:
+    """attachments list --from-file loads agent + token from JSON."""
+    from cli.commands.threads import cmd_threads_attachments_list
+    payload_path = tmp_path / "proof.json"
+    payload_path.write_text(json.dumps({
+        "thread_id": "THR-001",
+        "agent": "dev_agent",
+        "invocation_token": "tok-xyz",
+    }))
+    fake = Mock()
+    fake.list_thread_attachments.return_value = {"attachments": []}
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha", thread_id=None, from_file=str(payload_path),
+        agent=None, invocation_token=None,
+    )
+    cmd_threads_attachments_list(args)
+
+    assert fake.list_thread_attachments.call_args.kwargs["agent"] == "dev_agent"
+    assert fake.list_thread_attachments.call_args.kwargs["invocation_token"] == "tok-xyz"
+    assert fake.list_thread_attachments.call_args.kwargs["thread_id"] == "THR-001"
+
+
+def test_threads_attachments_get_passes_agent_and_token(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """attachments get passes agent + invocation_token to the client."""
+    from cli.commands.threads import cmd_threads_attachments_get
+    fake = Mock()
+    fake.get_thread_attachment.return_value = b"content"
+    _stub_client(monkeypatch, fake)
+
+    out = tmp_path / "out.bin"
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001", attachment_id="att-1",
+        from_file=None, agent="dev_agent", invocation_token="tok-abc",
+        output=str(out),
+    )
+    cmd_threads_attachments_get(args)
+
+    assert fake.get_thread_attachment.call_args.kwargs["agent"] == "dev_agent"
+    assert fake.get_thread_attachment.call_args.kwargs["invocation_token"] == "tok-abc"
+    assert fake.get_thread_attachment.call_args.kwargs["thread_id"] == "THR-001"
+    assert fake.get_thread_attachment.call_args.kwargs["attachment_id"] == "att-1"
+
+
+def test_threads_attachments_get_from_file(
+    monkeypatch, capsys, tmp_path: Path,
+) -> None:
+    """attachments get --from-file loads agent + token from JSON."""
+    from cli.commands.threads import cmd_threads_attachments_get
+    payload_path = tmp_path / "proof.json"
+    payload_path.write_text(json.dumps({
+        "thread_id": "THR-001",
+        "attachment_id": "att-1",
+        "agent": "dev_agent",
+        "invocation_token": "tok-xyz",
+    }))
+    fake = Mock()
+    fake.get_thread_attachment.return_value = b"content"
+    _stub_client(monkeypatch, fake)
+
+    out = tmp_path / "out.bin"
+    args = argparse.Namespace(
+        org="alpha", thread_id=None, attachment_id=None,
+        from_file=str(payload_path), agent=None, invocation_token=None,
+        output=str(out),
+    )
+    cmd_threads_attachments_get(args)
+
+    assert fake.get_thread_attachment.call_args.kwargs["agent"] == "dev_agent"
+    assert fake.get_thread_attachment.call_args.kwargs["invocation_token"] == "tok-xyz"
+    assert out.read_bytes() == b"content"
+
+
+def test_threads_attachments_list_bearer_only(
+    monkeypatch, capsys,
+) -> None:
+    """attachments list without agent/token works (founder bearer path)."""
+    from cli.commands.threads import cmd_threads_attachments_list
+    fake = Mock()
+    fake.list_thread_attachments.return_value = {"attachments": []}
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001", from_file=None,
+        agent=None, invocation_token=None,
+    )
+    cmd_threads_attachments_list(args)
+
+    # No agent or token passed.
+    assert fake.list_thread_attachments.call_args.kwargs["agent"] is None
+    assert fake.list_thread_attachments.call_args.kwargs["invocation_token"] is None

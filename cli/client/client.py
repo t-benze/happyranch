@@ -205,26 +205,46 @@ class OpcClient:
 
     def list_thread_attachments(
         self, *, slug: str, thread_id: str,
+        agent: str | None = None,
+        invocation_token: str | None = None,
     ) -> dict:
         """List a thread's scoped attachments.
 
         Calls ``GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments``.
+        When ``agent`` and ``invocation_token`` are provided, the daemon
+        validates thread participation + invocation proof.
         """
+        params = {}
+        if agent is not None:
+            params["agent"] = agent
+        if invocation_token is not None:
+            params["invocation_token"] = invocation_token
         r = self._client.get(
             f"/api/v1/orgs/{slug}/threads/{thread_id}/attachments",
+            params=params or None,
         )
         r.raise_for_status()
         return r.json()
 
     def get_thread_attachment(
         self, *, slug: str, thread_id: str, attachment_id: str,
+        agent: str | None = None,
+        invocation_token: str | None = None,
     ) -> bytes:
         """Download a thread-scoped attachment by id.
 
         Calls ``GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments/{attachment_id}``.
+        When ``agent`` and ``invocation_token`` are provided, the daemon
+        validates thread participation + invocation proof.
         """
+        params = {}
+        if agent is not None:
+            params["agent"] = agent
+        if invocation_token is not None:
+            params["invocation_token"] = invocation_token
         r = self._client.get(
             f"/api/v1/orgs/{slug}/threads/{thread_id}/attachments/{attachment_id}",
+            params=params or None,
         )
         r.raise_for_status()
         return r.content

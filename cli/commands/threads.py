@@ -449,13 +449,33 @@ def cmd_threads_abort_replies(args: argparse.Namespace) -> None:
 
 def cmd_threads_attachments_list(args: argparse.Namespace) -> None:
     import json as _json
+    import sys
     client = OpcClient.from_env()
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    agent: str | None = getattr(args, "agent", None)
+    invocation_token: str | None = getattr(args, "invocation_token", None)
+    from_file: str | None = getattr(args, "from_file", None)
+    if from_file:
+        try:
+            proof = _json.loads(Path(from_file).read_text())
+        except (OSError, ValueError) as exc:
+            print(f"Error reading {from_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        agent = proof.get("agent", "")
+        invocation_token = proof.get("invocation_token", "")
+        thread_id = proof.get("thread_id") or args.thread_id or ""
+    else:
+        thread_id = args.thread_id or ""
+    if not thread_id:
+        print("error: --thread-id is required (or --from-file with thread_id)", file=sys.stderr)
+        sys.exit(2)
     r = client.list_thread_attachments(
         slug=slug,
-        thread_id=args.thread_id,
+        thread_id=thread_id,
+        agent=agent,
+        invocation_token=invocation_token,
     )
     # list_thread_attachments returns {"attachments": [...]}
     data = r if isinstance(r, dict) else r
@@ -472,14 +492,40 @@ def cmd_threads_attachments_list(args: argparse.Namespace) -> None:
 
 
 def cmd_threads_attachments_get(args: argparse.Namespace) -> None:
+    import json as _json
+    import sys
     client = OpcClient.from_env()
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    agent: str | None = getattr(args, "agent", None)
+    invocation_token: str | None = getattr(args, "invocation_token", None)
+    from_file: str | None = getattr(args, "from_file", None)
+    if from_file:
+        try:
+            proof = _json.loads(Path(from_file).read_text())
+        except (OSError, ValueError) as exc:
+            print(f"Error reading {from_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        agent = proof.get("agent", "")
+        invocation_token = proof.get("invocation_token", "")
+        thread_id = proof.get("thread_id") or args.thread_id or ""
+        attachment_id = proof.get("attachment_id") or args.attachment_id or ""
+    else:
+        thread_id = getattr(args, "thread_id", None) or ""
+        attachment_id = getattr(args, "attachment_id", None) or ""
+    if not thread_id:
+        print("error: --thread-id is required (or --from-file with thread_id)", file=sys.stderr)
+        sys.exit(2)
+    if not attachment_id:
+        print("error: attachment_id is required (or --from-file with attachment_id)", file=sys.stderr)
+        sys.exit(2)
     content = client.get_thread_attachment(
         slug=slug,
-        thread_id=args.thread_id,
-        attachment_id=args.attachment_id,
+        thread_id=thread_id,
+        attachment_id=attachment_id,
+        agent=agent,
+        invocation_token=invocation_token,
     )
     out_path = Path(args.output)
     out_path.write_bytes(content)
@@ -661,13 +707,31 @@ def register(sub) -> None:
 
     p_att_list = att_sub.add_parser("list", help="List thread-scoped attachments for a thread")
     p_att_list.add_argument("--org", default=None, help="Org slug")
-    p_att_list.add_argument("--thread-id", dest="thread_id", required=True)
+    p_att_list.add_argument("--thread-id", dest="thread_id")
+    p_att_list.add_argument(
+        "--from-file", default=None, dest="from_file",
+        help="JSON payload with thread_id, agent, invocation_token (agent path)",
+    )
+    p_att_list.add_argument("--agent", default=None, help="Agent name (alternative to --from-file)")
+    p_att_list.add_argument(
+        "--invocation-token", default=None, dest="invocation_token",
+        help="Thread invocation token (alternative to --from-file)",
+    )
     p_att_list.set_defaults(func=cmd_threads_attachments_list)
 
     p_att_get = att_sub.add_parser("get", help="Download a thread-scoped attachment")
     p_att_get.add_argument("--org", default=None, help="Org slug")
-    p_att_get.add_argument("--thread-id", dest="thread_id", required=True)
-    p_att_get.add_argument("attachment_id")
+    p_att_get.add_argument("--thread-id", dest="thread_id")
+    p_att_get.add_argument("attachment_id", nargs="?")
+    p_att_get.add_argument(
+        "--from-file", default=None, dest="from_file",
+        help="JSON payload with thread_id, attachment_id, agent, invocation_token (agent path)",
+    )
+    p_att_get.add_argument("--agent", default=None, help="Agent name (alternative to --from-file)")
+    p_att_get.add_argument(
+        "--invocation-token", default=None, dest="invocation_token",
+        help="Thread invocation token (alternative to --from-file)",
+    )
     p_att_get.add_argument("--output", "-o", dest="output", required=True)
     p_att_get.set_defaults(func=cmd_threads_attachments_get)
 

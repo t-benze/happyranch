@@ -1836,6 +1836,10 @@
             "header"
           ],
           [
+            "invocation_token",
+            "query"
+          ],
+          [
             "slug",
             "path"
           ],
@@ -1888,6 +1892,10 @@
           [
             "authorization",
             "header"
+          ],
+          [
+            "invocation_token",
+            "query"
           ],
           [
             "slug",

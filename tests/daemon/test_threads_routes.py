@@ -1980,14 +1980,39 @@ def test_upload_attachment_allows_participant(
 def test_list_attachments_rejects_non_participant(
     client, auth_headers, org_state,
 ) -> None:
-    """A non-participant agent cannot list thread-scoped attachments."""
+    """A non-participant agent cannot list thread-scoped attachments (missing token)."""
     _seed_agent(org_state, "dev_agent")
     _seed_agent(org_state, "intruder")
     tid = _seed_open_thread(org_state, participants=["dev_agent"])
 
+    # Non-participant without invocation token → 401 (proof required).
     resp = client.get(
         f"/api/v1/orgs/alpha/threads/{tid}/attachments",
         params={"agent": "intruder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["code"] == "invocation_token_required"
+
+
+def test_list_attachments_rejects_non_participant_with_token(
+    client, auth_headers, org_state,
+) -> None:
+    """A non-participant agent with a valid invocation token is still rejected."""
+    from runtime.models import ThreadInvocationPurpose
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "intruder")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Mint a token for the intruder on this thread (contrived but proves the gate).
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="intruder", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "intruder", "invocation_token": token},
         headers=auth_headers,
     )
     assert resp.status_code == 403
@@ -1997,9 +2022,15 @@ def test_list_attachments_rejects_non_participant(
 def test_list_attachments_allows_participant(
     client, auth_headers, org_state,
 ) -> None:
-    """A thread participant CAN list thread-scoped attachments."""
+    """A thread participant with a valid invocation token CAN list."""
+    from runtime.models import ThreadInvocationPurpose
     _seed_agent(org_state, "dev_agent")
     tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="dev_agent", triggering_seq=0,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
 
     # Upload a file first.
     client.post(
@@ -2011,7 +2042,7 @@ def test_list_attachments_allows_participant(
 
     resp = client.get(
         f"/api/v1/orgs/alpha/threads/{tid}/attachments",
-        params={"agent": "dev_agent"},
+        params={"agent": "dev_agent", "invocation_token": token},
         headers=auth_headers,
     )
     assert resp.status_code == 200
@@ -2021,7 +2052,7 @@ def test_list_attachments_allows_participant(
 def test_get_attachment_rejects_non_participant(
     client, auth_headers, org_state,
 ) -> None:
-    """A non-participant agent cannot download thread-scoped attachments."""
+    """A non-participant agent cannot download (missing token)."""
     _seed_agent(org_state, "dev_agent")
     _seed_agent(org_state, "intruder")
     tid = _seed_open_thread(org_state, participants=["dev_agent"])
@@ -2035,13 +2066,124 @@ def test_get_attachment_rejects_non_participant(
     )
     att_id = upload.json()["attachment_id"]
 
+    # Non-participant without invocation token → 401.
     resp = client.get(
         f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
         params={"agent": "intruder"},
         headers=auth_headers,
     )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["code"] == "invocation_token_required"
+
+
+def test_get_attachment_rejects_non_participant_with_token(
+    client, auth_headers, org_state,
+) -> None:
+    """A non-participant with a valid invocation token is still rejected."""
+    from runtime.models import ThreadInvocationPurpose
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "intruder")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Upload as participant.
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("secret.txt", b"secret", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    att_id = upload.json()["attachment_id"]
+
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="intruder", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "intruder", "invocation_token": token},
+        headers=auth_headers,
+    )
     assert resp.status_code == 403
     assert resp.json()["detail"]["code"] == "not_participant"
+
+
+def test_get_attachment_allows_participant_with_token(
+    client, auth_headers, org_state,
+) -> None:
+    """A thread participant with a valid invocation token CAN download."""
+    from runtime.models import ThreadInvocationPurpose
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="dev_agent", triggering_seq=0,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("ok.txt", b"ok", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    att_id = upload.json()["attachment_id"]
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "dev_agent", "invocation_token": token},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"ok"
+
+
+def test_list_attachments_rejects_bogus_token(
+    client, auth_headers, org_state,
+) -> None:
+    """A participant with a bogus invocation token is rejected."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "dev_agent", "invocation_token": "not-a-real-token"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["code"] == "invocation_token_invalid"
+
+
+def test_get_attachment_rejects_mismatched_token(
+    client, auth_headers, org_state,
+) -> None:
+    """A token for a different thread is rejected."""
+    from runtime.models import ThreadInvocationPurpose
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+    tid2 = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    token2 = org_state.db.mint_thread_invocation(
+        thread_id=tid2, agent_name="dev_agent", triggering_seq=0,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("x.txt", b"x", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    att_id = upload.json()["attachment_id"]
+
+    # Token is for tid2, not tid → rejected.
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "dev_agent", "invocation_token": token2},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["code"] == "invocation_token_invalid"
 
 
 def test_founder_bypasses_participation_check(

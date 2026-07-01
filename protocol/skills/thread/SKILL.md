@@ -70,10 +70,34 @@ attachment store and are NOT visible to the rest of the org.
 This uploads the file to the thread's private store and includes an
 `attachment_id` ref in the payload. Compose attachments are sent as
 multipart form data and stored thread-scoped by default. Recipients
-list and download with:
+list and download using their invocation token for proof:
 
-    happyranch threads attachments list --org <slug> --thread-id <id>
-    happyranch threads attachments get --org <slug> --thread-id <id> <attachment-id> --output /tmp/file.ext
+Write `/tmp/att-list-<thread_id>.json`:
+```json
+{"thread_id": "<id>", "agent": "<your name>", "invocation_token": "<token>"}
+```
+Then:
+
+    happyranch threads attachments list --org <slug> --from-file /tmp/att-list-<id>.json
+
+Or inline (single-line):
+
+    happyranch threads attachments list --org <slug> --thread-id <id> --agent <your name> --invocation-token <token>
+
+To download an attachment, write `/tmp/att-get-<thread_id>.json`:
+```json
+{"thread_id": "<id>", "attachment_id": "<att-id>", "agent": "<your name>", "invocation_token": "<token>"}
+```
+Then:
+
+    happyranch threads attachments get --org <slug> --from-file /tmp/att-get-<id>.json --output /tmp/file.ext
+
+Or inline:
+
+    happyranch threads attachments get --org <slug> --thread-id <id> <attachment-id> --agent <your name> --invocation-token <token> --output /tmp/file.ext
+
+The founder (web UI / bearer token) may also list/download without these
+proofs. Agent callers must provide both `agent` and `invocation_token`.
 
 **Explicit shared-artifact escape hatch (for cross-task handoffs):**
 

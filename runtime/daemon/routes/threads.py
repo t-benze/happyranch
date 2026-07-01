@@ -2111,11 +2111,28 @@ class ThreadAttachmentRefBody(BaseModel):
 async def list_thread_attachments(
     slug: str, thread_id: str, org: OrgDep, request: Request,
     agent: str | None = Query(None),
+    invocation_token: str | None = Query(None),
 ) -> dict:
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
+    # Agent-facing access must carry proof. Founder/web bearer path (no agent)
+    # remains unrestricted — that caller already has the org bearer token.
     if agent is not None and agent != "founder":
+        if not invocation_token:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "invocation_token_required"},
+            )
+        _validate_invocation_token(
+            org, token=invocation_token,
+            expected_agent=agent, expected_thread_id=thread_id,
+            require_purposes=[
+                ThreadInvocationPurpose.REPLY,
+                ThreadInvocationPurpose.BOOTSTRAP,
+                ThreadInvocationPurpose.TASK_FOLLOWUP,
+            ],
+        )
         if not org.db.is_thread_participant(thread_id, agent):
             raise HTTPException(status_code=403, detail={"code": "not_participant"})
     rows = org.db.list_thread_scoped_attachments(thread_id)
@@ -2139,11 +2156,28 @@ async def list_thread_attachments(
 async def get_thread_attachment(
     slug: str, thread_id: str, attachment_id: str, org: OrgDep, request: Request,
     agent: str | None = Query(None),
+    invocation_token: str | None = Query(None),
 ):
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
+    # Agent-facing access must carry proof. Founder/web bearer path (no agent)
+    # remains unrestricted — that caller already has the org bearer token.
     if agent is not None and agent != "founder":
+        if not invocation_token:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "invocation_token_required"},
+            )
+        _validate_invocation_token(
+            org, token=invocation_token,
+            expected_agent=agent, expected_thread_id=thread_id,
+            require_purposes=[
+                ThreadInvocationPurpose.REPLY,
+                ThreadInvocationPurpose.BOOTSTRAP,
+                ThreadInvocationPurpose.TASK_FOLLOWUP,
+            ],
+        )
         if not org.db.is_thread_participant(thread_id, agent):
             raise HTTPException(status_code=403, detail={"code": "not_participant"})
     row = org.db.get_thread_scoped_attachment(thread_id, attachment_id)
