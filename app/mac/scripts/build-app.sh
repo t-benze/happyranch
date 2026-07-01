@@ -35,6 +35,7 @@ echo ""
 # ---- Stage 2: Build web frontend ----
 echo "[2/5] Building web frontend (Vite)..."
 cd "$REPO_ROOT/web"
+npm ci 2>&1 | tail -5
 npm run build 2>&1 | tail -3
 echo "  Web dist built at: $REPO_ROOT/web/dist/"
 echo ""
