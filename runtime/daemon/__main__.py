@@ -152,6 +152,15 @@ def _sweep_on_startup(
         # The boot-time migration flips any legacy blocked(escalated) row
         # before startup; this branch is reached only via new escalated rows.
 
+    # Branch 6 — orphaned pending thread invocations: every reply subprocess
+    # was killed by the restart, so every pending invocation is orphaned.
+    # Reap them to 'failed' with decline_reason='daemon_restart' so the UI
+    # reply box (queued/working render) clears on next poll.
+    # Uses the thread-agnostic bulk variant of reap_pending_invocations —
+    # a pending invocation is orphaned regardless of thread status (open or
+    # archived), so we reap across ALL threads.
+    db.reap_all_pending_invocations(decline_reason="daemon_restart")
+
 
 def _build_state(settings: Settings) -> DaemonState:
     reg = runtimes.load()
