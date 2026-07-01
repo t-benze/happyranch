@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
 import subprocess
 import time
 import uuid
@@ -18,6 +20,61 @@ if TYPE_CHECKING:
     from runtime.orchestrator.throttle import OnThrottleEvent
 
 logger = logging.getLogger(__name__)
+
+# Standard tool dirs prepended to PATH at daemon startup (GH #254).
+# Under Finder/launchd the inherited PATH is /usr/bin:/bin and none of
+# these are present; prepending them lets shutil.which resolve the
+# agent CLIs without the founder having to configure absolute paths.
+_STANDARD_PATH_DIRS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    os.path.expanduser("~/.local/bin"),
+    # npm global bin (common location)
+    os.path.expanduser("~/.npm-global/bin"),
+]
+
+
+def normalize_daemon_path() -> None:
+    """Prepend standard tool dirs to ``os.environ['PATH']``.
+
+    Called once at daemon startup (``runtime/daemon/__main__.py``) so that
+    ``shutil.which`` can resolve bare executor names (``claude``, ``codex``,
+    ``opencode``, ``pi``) even when the daemon was launched from Finder or
+    launchd where PATH is /usr/bin:/bin.
+    """
+    current = os.environ.get("PATH", "")
+    parts = current.split(os.pathsep) if current else []
+    for d in reversed(_STANDARD_PATH_DIRS):
+        if d and d not in parts:
+            parts.insert(0, d)
+    os.environ["PATH"] = os.pathsep.join(parts)
+
+
+def resolve_executor_binary(cli_path: str) -> str:
+    """Resolve an executor binary name/path to an absolute path.
+
+    * If ``cli_path`` is already absolute, returns it as-is (after a basic
+      existence check).
+    * Otherwise resolves via ``shutil.which`` against the current PATH.
+
+    Raises ``FileNotFoundError`` with an actionable diagnostic (WHICH
+    executor, WHICH dirs were searched) when the binary cannot be located
+    — never a bare ENOENT from the OS.
+    """
+    if os.path.isabs(cli_path):
+        if os.path.isfile(cli_path) and os.access(cli_path, os.X_OK):
+            return cli_path
+        raise FileNotFoundError(
+            f"Executor binary {cli_path!r} does not exist or is not executable"
+        )
+    resolved = shutil.which(cli_path)
+    if resolved is None:
+        path_dirs = (os.environ.get("PATH", "") or "").split(os.pathsep)
+        raise FileNotFoundError(
+            f"Cannot locate executor {cli_path!r} on PATH. "
+            f"Searched: {', '.join(p for p in path_dirs if p) or '(empty PATH)'}"
+        )
+    return resolved
 
 
 @dataclass
@@ -394,6 +451,7 @@ def _run_command(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=os.environ.copy(),
         )
         if on_started is not None:
             on_started(proc.pid)
@@ -520,8 +578,9 @@ class ClaudeExecutor:
         # Workspace layout is `<runtime>/workspaces/<agent_name>`, so the
         # directory name is the canonical agent identifier.
         allowed = " ".join(allow_rules_for_agent(self._paths, workspace.name, cli=True))
+        cli_path = resolve_executor_binary(self._cli_path)
         cmd = [
-            self._cli_path,
+            cli_path,
             "-p",
             prompt,
             "--permission-mode",
@@ -564,8 +623,9 @@ class CodexExecutor:
         on_throttle_event: "OnThrottleEvent | None" = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+        cli_path = resolve_executor_binary(self._cli_path)
         cmd = [
-            self._cli_path,
+            cli_path,
             "exec",
             "--sandbox",
             self._sandbox_mode,
@@ -625,8 +685,9 @@ class OpencodeExecutor:
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # opencode >= 1.14.0 rejects --prompt; use positional prompt (issue #216).
+        cli_path = resolve_executor_binary(self._cli_path)
         cmd = [
-            self._cli_path,
+            cli_path,
             "run",
             "--dir",
             str(workspace),
@@ -668,8 +729,9 @@ class PiExecutor:
         on_throttle_event: "OnThrottleEvent | None" = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+        cli_path = resolve_executor_binary(self._cli_path)
         cmd = [
-            self._cli_path,
+            cli_path,
             "-p",
             prompt,
             "--mode",

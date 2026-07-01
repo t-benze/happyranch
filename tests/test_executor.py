@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -68,7 +69,9 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
 
     call_args = mock_subprocess.Popen.call_args
     cmd = call_args[0][0]
-    assert cmd[:2] == ["claude", "-p"]
+    assert cmd[1] == "-p"
+    assert os.path.isabs(cmd[0]), f"Expected absolute path, got {cmd[0]!r}"
+    assert cmd[0].endswith("claude") or "claude" in cmd[0]
     # The executor prepends the shared session-lifetime preamble to every prompt.
     sent = cmd[2]
     assert sent.endswith("Implement Alipay support")
@@ -129,7 +132,9 @@ def test_codex_executor_launches_exec_with_explicit_sandbox(mock_subprocess, tmp
 
     call_args = mock_subprocess.Popen.call_args
     cmd = call_args[0][0]
-    assert cmd[:2] == ["codex", "exec"]
+    assert cmd[1] == "exec"
+    assert os.path.isabs(cmd[0]), f"Expected absolute path, got {cmd[0]!r}"
+    assert cmd[0].endswith("codex") or "codex" in cmd[0]
     assert "--sandbox" in cmd
     assert "workspace-write" in cmd
     assert "--skip-git-repo-check" in cmd
@@ -205,7 +210,9 @@ def test_opencode_executor_launches_run_with_workspace_dir(mock_subprocess, tmp_
     assert result.session_id is not None
 
     cmd = mock_subprocess.Popen.call_args[0][0]
-    assert cmd[:2] == ["opencode", "run"]
+    assert cmd[1] == "run"
+    assert os.path.isabs(cmd[0]), f"Expected absolute path, got {cmd[0]!r}"
+    assert cmd[0].endswith("opencode") or "opencode" in cmd[0]
     assert "--dir" in cmd
     assert cmd[cmd.index("--dir") + 1] == str(workspace)
     assert "--format" in cmd
@@ -237,7 +244,9 @@ def test_pi_executor_launches_print_mode_with_json_events(mock_subprocess, tmp_p
     assert result.session_id is not None
 
     cmd = mock_subprocess.Popen.call_args[0][0]
-    assert cmd[:2] == ["pi", "-p"]
+    assert cmd[1] == "-p"
+    assert os.path.isabs(cmd[0]), f"Expected absolute path, got {cmd[0]!r}"
+    assert cmd[0].endswith("pi") or "pi" in cmd[0]
     # The executor prepends the shared session-lifetime preamble to every prompt.
     sent = cmd[cmd.index("-p") + 1]
     assert sent.endswith("Implement Alipay support")

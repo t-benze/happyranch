@@ -198,6 +198,12 @@ def _install_signal_handlers(state: DaemonState) -> None:
 
 
 def main() -> None:
+    # GH #254: normalize PATH so executor binaries (claude, codex, opencode, pi)
+    # can be resolved even when the daemon was launched from Finder/launchd
+    # where the inherited PATH is /usr/bin:/bin.
+    from runtime.orchestrator.executors import normalize_daemon_path
+    normalize_daemon_path()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

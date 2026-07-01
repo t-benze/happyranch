@@ -45,15 +45,22 @@ code{background:#1a1d22;padding:.15rem .4rem;border-radius:.25rem}</style></head
 """
 
 
-def _resolve_dist_dir() -> Path | None:
+def _resolve_dist_dir(project_root: Path | None = None) -> Path | None:
+    # Precedence order:
+    #   1. HAPPYRANCH_WEB_DIST env var (highest — override for tests and
+    #      non-standard installs).
+    #   2. <project_root>/web/dist (canonical location — independent of
+    #      which copy of `runtime` was imported; GH #254).
+    #   3. Neither resolves → placeholder.
     override = os.environ.get("HAPPYRANCH_WEB_DIST")
     if override:
         p = Path(override)
         return p if p.is_dir() else None
-    # ``src/daemon/routes/web_static.py`` → parents[3] is repo root.
-    repo_root = Path(__file__).resolve().parents[3]
-    candidate = repo_root / "web" / "dist"
-    return candidate if candidate.is_dir() else None
+    if project_root is not None:
+        candidate = project_root / "web" / "dist"
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def _is_spa_route(path: str) -> bool:
@@ -65,12 +72,12 @@ def _is_spa_route(path: str) -> bool:
     return True
 
 
-def register(app: FastAPI) -> None:
+def register(app: FastAPI, project_root: Path | None = None) -> None:
     """Attach SPA static mount or placeholder to the FastAPI app.
 
     Call this AFTER all API routers are registered.
     """
-    dist = _resolve_dist_dir()
+    dist = _resolve_dist_dir(project_root)
 
     if dist is not None:
         assets_dir = dist / "assets"
