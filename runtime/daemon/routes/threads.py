@@ -1322,7 +1322,8 @@ async def invite_thread_endpoint(
         raise HTTPException(status_code=404, detail={"code": "unknown_agent"})
 
     # Spec §7: "invite is free" — no turn-cap projection here.
-    # The cap check happens at message-send time (turns_used + 1 projection).
+    # turns_used is still incremented at message-send time for display,
+    # but cap enforcement was removed per THR-046 msg86.
 
     token_to_enqueue: str | None = None
     async with org.db_lock:
