@@ -15,6 +15,12 @@ import type { AssistantRegisterBody, AssistantStatus } from './types';
 export const getAssistantStatus = (): Promise<AssistantStatus> =>
   request('/assistant/status');
 
+export const getAssistantAModeStatus = (): Promise<{
+  available: boolean;
+  executor?: string | null;
+  reason?: string | null;
+}> => request('/assistant/a-mode/status');
+
 export const initAssistant = (body: {
   reconfigure: boolean;
 }): Promise<AssistantStatus> => request('/assistant/init', { method: 'POST', body });

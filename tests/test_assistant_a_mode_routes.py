@@ -82,6 +82,21 @@ def test_client(tmp_home: Path, tmp_path: Path) -> TestClient:
 # ---------------------------------------------------------------------------
 
 class TestAModeStatus:
+    def test_status_rejects_without_token(self, tmp_home: Path) -> None:
+        """GET /assistant/a-mode/status MUST be bearer-gated (reviewer finding §2).
+        Sibling /assistant/status uses require_token() — this route must
+        follow the same pattern."""
+        # Create a bare app with no Authorization header.
+        rt = _setup_runtime(tmp_home)
+        state = DaemonState.from_runtime(rt, Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        # Intentionally omit the Authorization header.
+        resp = client.get("/api/v1/assistant/a-mode/status")
+        assert resp.status_code in (401, 403), (
+            f"expected 401/403 for unauthed request, got {resp.status_code}"
+        )
+
     def test_status_available(self, test_client: TestClient) -> None:
         resp = test_client.get("/api/v1/assistant/a-mode/status")
         assert resp.status_code == 200
@@ -188,9 +203,76 @@ class TestAModeWebSocket:
             assert frame["type"] == "error"
             assert "invalid JSON" in frame.get("message", "")
 
+    def test_ws_reconnect_replays_history(self, test_client: TestClient) -> None:
+        """Reconnect MUST replay the persisted structured conversation log
+        before status{ready} (reviewer finding §3 / PR-1 item 6 / design §4).
+
+        We pre-populate the assistant-workspace conversation.json with a prior
+        turn, then connect — the first frame should be history (containing the
+        prior turn), THEN status{ready}."""
+        import datetime
+
+        state: DaemonState = test_client.app.state.daemon
+        rt = state.runtime
+        assert rt is not None
+        from runtime.system_assistant import system_assistant_paths
+        workspace = system_assistant_paths(rt.root).workspace
+
+        # Pre-populate a conversation.json with one completed turn.
+        conv_path = workspace / "conversation.json"
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        prior_data = {
+            "executor": "_null",
+            "resume_session_id": "sess-prior",
+            "workspace": str(workspace),
+            "turns": [
+                {
+                    "id": "turn-prior",
+                    "prompt": "what is 2+2?",
+                    "frames": [
+                        {"type": "turn_start", "role": "assistant"},
+                        {"type": "text_delta", "text": "4"},
+                        {"type": "turn_end", "role": "assistant"},
+                    ],
+                    "started_at": now,
+                    "finished_at": now,
+                    "session_id": "sess-prior",
+                }
+            ],
+        }
+        conv_path.write_text(json.dumps(prior_data, indent=2) + "\n")
+
+        with test_client.websocket_connect("/api/v1/assistant/a-mode") as ws:
+            # First frame MUST be history (replay), NOT status.
+            msg1 = ws.receive_text()
+            frame1 = json.loads(msg1)
+            assert frame1["type"] == "history", (
+                f"reconnect must replay history first, got type={frame1.get('type')}"
+            )
+            assert len(frame1.get("turns", [])) == 1
+            assert frame1["turns"][0]["id"] == "turn-prior"
+            assert frame1["turns"][0]["prompt"] == "what is 2+2?"
+
+            # Second frame MUST be status{ready}.
+            msg2 = ws.receive_text()
+            frame2 = json.loads(msg2)
+            assert frame2["type"] == "status"
+            assert frame2["code"] == "ready", (
+                f"status{ready} must follow history replay, got code={frame2.get('code')}"
+            )
+
+    def test_ws_empty_history_no_replay(self, test_client: TestClient) -> None:
+        """Fresh workspace (no turns) should NOT emit a history frame."""
+        with test_client.websocket_connect("/api/v1/assistant/a-mode") as ws:
+            msg = ws.receive_text()
+            frame = json.loads(msg)
+            # First frame should be directly status{ready}, NOT history.
+            assert frame["type"] == "status"
+            assert frame["code"] == "ready"
+
     def test_ws_close_message(self, test_client: TestClient) -> None:
         with test_client.websocket_connect("/api/v1/assistant/a-mode") as ws:
-            ws.receive_text()  # drain ready
+            ws.receive_text()  # drain ready (or history if present)
             ws.send_text(json.dumps({"type": "close"}))
             msg = ws.receive_text()
             frame = json.loads(msg)

@@ -22,6 +22,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
     status,
+    Depends,
 )
 from pydantic import BaseModel, ConfigDict
 
@@ -33,6 +34,7 @@ from runtime.daemon.headless_assistant import (
     get_adapter,
     run_headless_turn,
 )
+from runtime.daemon.auth import require_token
 from runtime.daemon.routes.assistant import (
     _websocket_token_is_valid,
     _websocket_bearer_subprotocol,
@@ -59,7 +61,7 @@ class AStatusResponse(BaseModel):
     reason: str | None = None
 
 
-@router.get("/assistant/a-mode/status")
+@router.get("/assistant/a-mode/status", dependencies=[require_token()])
 async def get_a_mode_status(request: Request) -> dict[str, Any]:
     """Check whether A-mode is available for the system assistant.
 
@@ -168,6 +170,14 @@ async def attach_assistant_a_mode(websocket: WebSocket) -> None:
     headless_manager: HeadlessAssistantManager = state_obj.headless_assistant
     conversation = await headless_manager.get_conversation(workspace=workspace)
 
+    # Replay the persisted structured conversation log (design §4).
+    if conversation.turns:
+        serialised = _serialise_turns(conversation.turns)
+        await _safe_websocket_send_text(
+            websocket,
+            TurnFrame.history(turns=serialised).model_dump_json(),
+        )
+
     # Send initial ready status.
     await _safe_websocket_send_text(
         websocket,
@@ -236,3 +246,24 @@ async def attach_assistant_a_mode(websocket: WebSocket) -> None:
     finally:
         with contextlib.suppress(WebSocketDisconnect, RuntimeError, OSError):
             await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _serialise_turns(turns: list[Any]) -> list[dict[str, Any]]:
+    """Serialise a list of _TurnRecord objects into dicts suitable for a
+    history frame (TurnFrame.history).  Uses model_dump(exclude_none=True) on
+    each TurnFrame so the shape matches the save() format."""
+    out: list[dict[str, Any]] = []
+    for t in turns:
+        out.append({
+            "id": t.id,
+            "prompt": t.prompt,
+            "frames": [f.model_dump(exclude_none=True) for f in t.frames],
+            "started_at": t.started_at,
+            "finished_at": t.finished_at,
+            "session_id": t.session_id,
+        })
+    return out

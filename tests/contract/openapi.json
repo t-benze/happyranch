@@ -2,9 +2,15 @@
   "paths": {
     "/api/v1/assistant/a-mode/status": {
       "GET": {
-        "params": [],
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
         "responses": [
-          "200"
+          "200",
+          "422"
         ]
       }
     },

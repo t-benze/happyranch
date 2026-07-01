@@ -422,6 +422,49 @@ class TestHeadlessAssistantManager:
         assert conv2.turns[0].frames[1].name == "bash"
 
     @pytest.mark.asyncio
+    async def test_finish_inflight_flushes_buffered_frames_to_turn_record(
+        self, tmp_path: Path
+    ) -> None:
+        """finish_inflight MUST flush buffered_frames into the turn_record before
+        save — otherwise a finished-in-background turn persists with EMPTY frames
+        (reviewer finding §1).  This test only buffers frames via
+        buffer_inflight_frame (does NOT also call conv.append_frame), so it
+        fails on the unfixed code."""
+        manager = HeadlessAssistantManager()
+        conv = await manager.get_conversation(workspace=tmp_path)
+
+        turn_record = conv.begin_turn(turn_id="turn-flush", prompt="test")
+        await manager.start_inflight(
+            workspace=tmp_path,
+            turn_id="turn-flush",
+            prompt="test",
+            turn_record=turn_record,
+        )
+
+        # Buffer frames ONLY via inflight — the "real" path taken by
+        # run_headless_turn.  No conv.append_frame() call.
+        f1 = TurnFrame.text_delta(text="streamed chunk 1")
+        f2 = TurnFrame.tool_call(name="bash", input={"cmd": "ls"})
+        await manager.buffer_inflight_frame(workspace=tmp_path, frame=f1)
+        await manager.buffer_inflight_frame(workspace=tmp_path, frame=f2)
+
+        await manager.finish_inflight(workspace=tmp_path, session_id="sess-post")
+
+        # Reload from disk — finishing should have flushed all frames.
+        conv2 = AssistantConversation(tmp_path)
+        assert conv2.load()
+        assert len(conv2.turns) == 1
+        assert conv2.turns[0].id == "turn-flush"
+        assert len(conv2.turns[0].frames) == 2, (
+            "finish_inflight must flush buffered_frames into turn_record.frames"
+        )
+        assert conv2.turns[0].frames[0].text == "streamed chunk 1"
+        assert conv2.turns[0].frames[1].name == "bash"
+        assert conv2.turns[0].finished_at is not None, (
+            "finish_inflight must stamp finished_at"
+        )
+
+    @pytest.mark.asyncio
     async def test_close_all_buffers_all_inflight(self, tmp_path: Path) -> None:
         manager = HeadlessAssistantManager()
         ws = tmp_path / "sub"

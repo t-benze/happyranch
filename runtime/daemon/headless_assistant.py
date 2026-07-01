@@ -57,7 +57,7 @@ class TurnFrame(BaseModel):
     """Normalized frame sent from backend to dock over WebSocket (JSON)."""
     model_config = ConfigDict(extra="forbid")
 
-    type: str  # turn_start | text_delta | tool_call | tool_result | turn_end | status | error
+    type: str  # turn_start | text_delta | tool_call | tool_result | turn_end | status | error | history
     role: str | None = None           # "assistant" (turn_start, turn_end)
     text: str | None = None           # text_delta payload
     name: str | None = None           # tool_call / tool_result name
@@ -67,6 +67,7 @@ class TurnFrame(BaseModel):
     code: str | None = None           # status code (ready | working | session_closed | error)
     detail: str | None = None         # status detail (optional)
     message: str | None = None        # error message
+    turns: list[dict[str, Any]] | None = None  # history frame: serialised turns
 
     # ---- factory helpers ----
 
@@ -97,6 +98,15 @@ class TurnFrame(BaseModel):
     @classmethod
     def error(cls, *, message: str) -> TurnFrame:
         return cls(type="error", message=message)
+
+    @classmethod
+    def history(cls, *, turns: list[dict[str, Any]]) -> TurnFrame:
+        """Replay envelope carrying the persisted structured conversation log.
+
+        Emitted once at WS connect (before status{ready}) so the dock can
+        render the full history from conversation.turns.
+        """
+        return cls(type="history", turns=turns)
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +407,7 @@ class HeadlessAssistantManager:
         async with self._lock:
             inflight = self._in_flight.pop(key, None)
             if inflight is not None and not inflight.finished:
-                self._buffer_inflight_frames(inflight)
+                self._flush_buffered(inflight)
             conv = self._conversations.pop(key, None)
             if conv is not None:
                 conv.save()
@@ -407,7 +417,7 @@ class HeadlessAssistantManager:
         async with self._lock:
             for key, inflight in list(self._in_flight.items()):
                 if not inflight.finished:
-                    self._buffer_inflight_frames(inflight)
+                    self._flush_buffered(inflight)
             self._in_flight.clear()
             for conv in self._conversations.values():
                 conv.save()
@@ -442,6 +452,8 @@ class HeadlessAssistantManager:
             inflight = self._in_flight.pop(key, None)
             if inflight is not None:
                 inflight.finished = True
+                # Flush buffered frames into the turn record before persisting.
+                self._flush_buffered(inflight)
                 conv = self._conversations.get(key)
                 if conv is not None:
                     conv.finish_turn(inflight.turn_record, session_id=session_id)
@@ -457,8 +469,12 @@ class HeadlessAssistantManager:
                 inflight.buffered_frames.append(frame)
                 inflight.frames_sent += 1
 
-    def _buffer_inflight_frames(self, inflight: _InFlightTurn) -> None:
-        """Append buffered frames to the conversation log (non-async, lock held)."""
+    def _flush_buffered(self, inflight: _InFlightTurn) -> None:
+        """Append buffered frames to the turn record (non-async, lock held).
+
+        Called both from finish_inflight (normal turn completion) and from
+        close_workspace/close_all (dock-disconnect buffering).
+        """
         for frame in inflight.buffered_frames:
             inflight.turn_record.frames.append(frame)
 
