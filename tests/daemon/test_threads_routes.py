@@ -1411,6 +1411,15 @@ def test_post_as_agent_succeeds_past_turn_cap(tmp_home, app, org_state, auth_hea
     after_turns = org_state.db.get_thread(tid).turns_used
     assert after_turns == before_turns + 1
 
+    # qa_engineer (other participant) must get a pending REPLY invocation;
+    # dev_agent (the speaker) is excluded.
+    from runtime.models import ThreadInvocationStatus as TIS_P
+    pending = {}
+    for inv in org_state.db.list_thread_invocations(tid):
+        if inv.status == TIS_P.PENDING:
+            pending[inv.agent_name] = pending.get(inv.agent_name, 0) + 1
+    assert pending == {"qa_engineer": 1}, f"got {pending}"
+
 
 def test_post_as_agent_rejects_missing_binding(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)

@@ -944,7 +944,7 @@ No new top-level `OPC_` env vars in v1. Org-level config is the customization su
 | Agent reply when not a participant | 403 `not_participant`. |
 | Agent reply with `in_response_to_seq` referencing a message that didn't address them | 400 `not_addressed`. |
 | `addressed_to` contains an agent who is not a current participant | 422 `addressee_not_participant`. |
-| `turns_used + addressed_count > turn_cap` | 429 `turn_cap_exceeded` with `{used, cap, requested}`. |
+| `turns_used + addressed_count > turn_cap` | Tracked/displayed only — no 429 gate. `/extend` still bumps `turn_cap` (soft, vestigial). |
 | Invocation subprocess exits without terminal callback within `session_timeout_seconds` | Daemon marks token `status='timeout'`; auto-decline inserted for `reply`/`bootstrap` purposes; close-out failures are silent. Audit `thread_invocation_timeout` / `thread_invocation_failed`. |
 | `POST /archive` while thread is `archiving` (re-entry) | 409 `archive_in_progress` with `{archive_requested_at, pending_close_outs}`. |
 | `POST /archive` while thread is `archived` | 200 idempotent with existing `transcript_path`. |
@@ -975,7 +975,7 @@ Talks remain unchanged. Their existing data model and lifecycle continue to work
 - Reply / decline validation: thread-open, participant-check, not-addressed.
 - **Invocation-token validation**: missing → 401; wrong agent → 401; consumed → 409; wrong purpose → 400; reply-with-close_out token rejected; close-out-with-reply token rejected; dispatch twice on same token → 409.
 - Dispatch authority gates: worker self-only, manager team-only, cross-team forbidden.
-- Turn-cap accounting: replies and declines count; system messages and close-outs do NOT count; cap-exceeded returns 429.
+- Turn-cap accounting: replies and declines count; system messages and close-outs do NOT count. Turn-cap is tracked/displayed only — past the old numeric cap, posts, replies, and invocation minting still succeed (no 429 gate, per THR-046 msg86).
 - System-message renderers: `participant_added`, `task_dispatched`, `turn_cap_extended`, `archived`.
 - Forward source resolution: thread and talk both produce valid quoted bodies.
 - Mutual exclusion of `dispatched_from_*` columns on tasks.
@@ -988,7 +988,7 @@ Talks remain unchanged. Their existing data model and lifecycle continue to work
 - `compose → invite → new agent bootstrap invocation happens with full prior history → reply lands`.
 - `compose → agent dispatches a task → system message appears in thread → task lands on assignee → original thread still open`.
 - `forward (talk → thread) → new thread carries quoted body → forwarded_from_id resolves`.
-- `turn_cap exhaustion → 429 → extend → next send succeeds`.
+- Thread past the old numeric cap → send/post still succeeds and mints invocations for other participants (turn-cap tracked/displayed only, no hard reject).
 - `archive with request_close_outs=true → status='archiving' immediately → all participants invoked → close-outs land while archiving → status flips to 'archived' → transcript written with rollup`.
 - `archive → during 'archiving', reply/decline/dispatch from any agent return 400 thread_not_open; close-out from a non-participant is rejected; late close-out after 'archived' returns 409`.
 - `abandon → no close-out invocations → no transcript file → still-pending invocation rows reaped to status='failed'`.

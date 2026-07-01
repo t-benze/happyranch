@@ -233,6 +233,13 @@ def test_founder_send_succeeds_past_turn_cap(tmp_home, app, org_state, auth_head
     org_state.db._conn.commit()
     before_turns = org_state.db.get_thread(thread_id).turns_used
 
+    # Consume all pending invocations so we can detect NEW ones from the
+    # past-cap send.
+    from runtime.models import ThreadInvocationStatus as TIS
+    for inv in org_state.db.list_thread_invocations(thread_id):
+        if inv.status == TIS.PENDING:
+            org_state.db.consume_invocation(inv.invocation_token)
+
     r2 = client.post(
         f"/api/v1/orgs/alpha/threads/{thread_id}/send",
         json={"body_markdown": "any thoughts?"},
@@ -243,6 +250,13 @@ def test_founder_send_succeeds_past_turn_cap(tmp_home, app, org_state, auth_head
     # turns_used must still increment.
     after_turns = org_state.db.get_thread(thread_id).turns_used
     assert after_turns == before_turns + 1
+
+    # After send: reply invocations minted for each participant.
+    pending = {}
+    for inv in org_state.db.list_thread_invocations(thread_id):
+        if inv.status == TIS.PENDING:
+            pending[inv.agent_name] = pending.get(inv.agent_name, 0) + 1
+    assert pending == {"alpha": 1, "bravo": 1}, f"got {pending}"
 
 
 def test_decline_writes_no_transcript_row(
@@ -324,6 +338,13 @@ def test_agent_reply_succeeds_past_turn_cap(
     )
     db._conn.commit()
 
+    # Consume bravo + charlie's existing pending invocations so we can
+    # cleanly detect the NEW ones minted by alpha's past-cap reply.
+    from runtime.models import ThreadInvocationStatus as TIS_S
+    for inv in org_state.db.list_thread_invocations(thread_id):
+        if inv.agent_name in ("bravo", "charlie") and inv.status == TIS_S.PENDING:
+            org_state.db.consume_invocation(inv.invocation_token)
+
     pre_msgs = db._conn.execute(
         "SELECT COUNT(*) AS n FROM thread_messages WHERE thread_id=?",
         (thread_id,),
@@ -367,3 +388,12 @@ def test_agent_reply_succeeds_past_turn_cap(
         (alpha_inv["invocation_token"],),
     ).fetchone()
     assert inv_row["status"] == "consumed"
+
+    # Other participants (bravo, charlie) must get NEW pending REPLY invocations.
+    pending = {}
+    for inv in org_state.db.list_thread_invocations(thread_id):
+        if inv.status == TIS_S.PENDING:
+            pending[inv.agent_name] = pending.get(inv.agent_name, 0) + 1
+    assert pending.get("bravo") == 1, f"bravo should have 1 pending, got {pending}"
+    assert pending.get("charlie") == 1, f"charlie should have 1 pending, got {pending}"
+    assert "alpha" not in pending, f"alpha should have no pending, got {pending}"
