@@ -227,9 +227,9 @@ def test_manager_prompt_shows_fanout_constraints():
     assert "exactly match" in p.lower() or "exact" in p.lower()
     # review_required for width > 4
     assert "review_required" in p
-    # Read-only Phase 1 — no per-child then/expect_verdict
-    assert "Phase 1" in p
-    assert "then" in p.lower() or "expect_verdict" in p  # should mention they are rejected
+    # Phase 2 pipeline — per-child then/expect_verdict now supported
+    assert "pipeline" in p  # Phase 2 mention
+    assert "then" in p.lower() or "expect_verdict" in p  # should mention these fields
     # Parent parks in_progress(delegated)
     assert "delegated" in p.lower()
     # Wakes once when all children terminal

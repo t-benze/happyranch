@@ -498,6 +498,21 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                     status=TaskStatus.FAILED, auto_revisit_spawned=False,
                 )
                 return
+            # Validate carrier chain legs for pipeline children (Phase 2).
+            for j, leg in enumerate(child.then):
+                leg_err = _validate_one_leg(
+                    orch, agent=leg.agent,
+                    where=f"fanout child {i + 1} then leg {j + 1}",
+                )
+                if leg_err is not None:
+                    note = f"invalid fanout: {leg_err}"
+                    _fail(orch, task_id, note=note)
+                    _enqueue_parent_if_waiting(orch, task_id)
+                    _maybe_post_thread_followup(
+                        orch, task_id,
+                        status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                    )
+                    return
 
         # Scope validation: manager own-team/self only; non-manager self-only.
         # Reuse _legs_out_of_scope with the fan-out child targets.
@@ -565,10 +580,18 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 f"({FANOUT_REVIEW_THRESHOLD}); requires founder review"
             )
             # Build the pending fan-out state so it survives the review cycle.
-            child_details = [
-                {"agent": c.agent, "prompt": c.prompt}
-                for c in decision.children
-            ]
+            child_details = []
+            for c in decision.children:
+                cd = {"agent": c.agent, "prompt": c.prompt}
+                if c.expect_verdict is not None:
+                    cd["expect_verdict"] = c.expect_verdict
+                if c.then:
+                    cd["then"] = [
+                        {"agent": l.agent, "prompt": l.prompt,
+                         "expect_verdict": l.expect_verdict}
+                        for l in c.then
+                    ]
+                child_details.append(cd)
             pending_fanout = FanoutState(
                 children_ids=[],  # allocated on spawn, not now
                 children_details=child_details,
@@ -608,12 +631,25 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             return
 
         # Spawn children via shared helper (also used by review-gate re-entry).
+        children_payload = []
+        for c in decision.children:
+            cd = {"agent": c.agent, "prompt": c.prompt}
+            if c.expect_verdict is not None:
+                cd["expect_verdict"] = c.expect_verdict
+            if c.then:
+                cd["then"] = [
+                    {"agent": l.agent, "prompt": l.prompt,
+                     "expect_verdict": l.expect_verdict}
+                    for l in c.then
+                ]
+            children_payload.append(cd)
         _spawn_fanout_children(
             orch, task, task_id, next_count,
-            children=[{"agent": c.agent, "prompt": c.prompt} for c in decision.children],
+            children=children_payload,
             width=width,
             manager_agent=agent,
             join_summary=decision.join_summary,
+            step_audit_id=_step_audit_id,
         )
         return
 
@@ -1471,6 +1507,62 @@ def _advance_chain_for_completed_child(
     return "advance"
 
 
+def _is_carrier(orch: "Orchestrator", parent: "TaskRecord") -> bool:
+    """True if ``parent`` is a pipeline carrier — its own parent has active_fanout set.
+    Carrier detection is schema-free: a carrier is any task whose id is in its
+    parent's active_fanout.children_ids and which has (or had) an active_chain.
+    We detect it by checking if the grandparent has active_fanout."""
+    if parent.parent_task_id is None:
+        return False
+    grandparent = orch._db.get_task(parent.parent_task_id)
+    return grandparent is not None and grandparent.active_fanout is not None
+
+
+def _carrier_fail_on_verdict_mismatch(
+    orch: "Orchestrator", parent: "TaskRecord",
+    child_task_id: str, chain_snapshot: str | None,
+) -> bool:
+    """After a carrier's chain leg completed but the chain did not advance
+    (outcome == "wake"), check if this was a verdict mismatch.  If so, fail
+    the carrier immediately (fail-closed at carrier).  Returns True if the
+    carrier was failed, False otherwise (including non-carriers)."""
+    if chain_snapshot is None:
+        return False
+    if not _is_carrier(orch, parent):
+        return False
+    from runtime.orchestrator.chain import ChainState
+    chain = ChainState.deserialize(chain_snapshot)
+    expected = chain.current_expect_verdict()
+    if expected is None:
+        return False  # no verdict expectation → chain_complete, not a mismatch
+    report = orch._db.get_latest_completion_report(child_task_id)
+    actual = report.verdict if report else None
+    if actual == expected:
+        return False  # chain_complete, not a mismatch
+    # Carrier verdict mismatch: fail the whole carrier.
+    _fail(orch, parent.id,
+           note=f"carrier verdict mismatch: expected {expected!r}, got {actual!r}")
+    # Feed carrier failure into the fan-out parent's barrier.
+    _enqueue_parent_if_waiting(orch, parent.id)
+    return True
+
+
+def _carrier_fail_immediate(
+    orch: "Orchestrator", parent: "TaskRecord",
+    child_task_id: str,
+) -> bool:
+    """A carrier's chain leg failed: fail the whole carrier immediately
+    (fail-closed at carrier).  Returns True if the carrier was failed,
+    False for non-carriers."""
+    if not _is_carrier(orch, parent):
+        return False
+    _fail(orch, parent.id,
+           note=f"carrier chain leg {child_task_id} failed")
+    # Feed carrier failure into the fan-out parent's barrier.
+    _enqueue_parent_if_waiting(orch, parent.id)
+    return True
+
+
 _FAILURE_ROUND_BOUND = 2  # at most 2 re-spawn rounds before escalation
 
 
@@ -1523,20 +1615,33 @@ def _enqueue_parent_if_waiting(
     # terminated subtask completed cleanly, try to auto-advance to the next
     # leg instead of waking the parent. FAILED subtasks clear the chain and
     # fall through to the bounded-wake logic below.
+    #
+    # Phase 2 carrier fail-closed: when the parent is a carrier (its own
+    # parent has active_fanout), a verdict-mismatch or a failed leg fails
+    # the whole carrier immediately — no partial-chain completion.
     child = orch._db.get_task(task_id)
     if child is not None and parent.active_chain is not None:
         if child.status == TaskStatus.COMPLETED:
+            # Snapshot the chain BEFORE advance (which may clear it).
+            chain_snapshot = parent.active_chain
             outcome = _advance_chain_for_completed_child(
                 orch=orch, parent_task_id=parent.id, child_task_id=task_id,
             )
             if outcome == "advance":
                 return  # next leg spawned; parent stays in_progress(delegated)
-            # outcome == "wake" → chain cleared; fall through to sibling-check
-            # + parent-wake path below.
+            # outcome == "wake" → chain cleared; carrier fail-closed?
+            if _carrier_fail_on_verdict_mismatch(
+                orch, parent, task_id, chain_snapshot,
+            ):
+                return  # carrier failed; outer _enqueue_parent_if_waiting skipped
+            # fall through to sibling-check + parent-wake path below.
         else:
             # FAILED chain leg: clear the chain so the parent's next decision
-            # step doesn't see a stale chain. Fall through to bounded-wake.
+            # step doesn't see a stale chain. Carrier: fail-closed.
             orch._db.update_task_active_chain(parent.id, None)
+            if _carrier_fail_immediate(orch, parent, task_id):
+                return  # carrier failed; outer _enqueue_parent_if_waiting skipped
+            # fall through to sibling-check + bounded-wake below.
 
     siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
@@ -2280,10 +2385,17 @@ def _spawn_fanout_children(
     width: int,
     manager_agent: str,
     join_summary: str | None = None,
+    step_audit_id: int | None = None,
 ) -> None:
     """Allocate child IDs, build TaskRecords, atomically insert all N children
     and park the parent in in_progress(delegated) with active_fanout set.
     Shared by the fresh dispatch path and the review-gate re-entry path.
+
+    Phase 2 pipeline: a child with non-empty ``then`` or ``expect_verdict`` is a
+    *carrier* — its inline chain is materialized (active_chain set) and its first
+    leg is spawned as a subtask of the carrier.  The carrier itself parks as
+    delegated; it does NOT run an agent session.  Plain children (empty ``then``,
+    no ``expect_verdict``) are dispatched as bare PENDING subtasks, unchanged.
 
     On cancel-race (try_delegate_many returns False), logs and returns
     silently — the parent was cancelled between validation and spawn.
@@ -2301,13 +2413,15 @@ def _spawn_fanout_children(
     for i, child_info in enumerate(children):
         cid = f"TASK-{base_num + i:03d}"
         children_ids.append(cid)
+        has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
         child_records.append(TaskRecord(
             id=cid,
             team=parent.team,
             brief=child_info["prompt"] or "",
             assigned_agent=child_info["agent"],
             parent_task_id=task_id,
-            status=TaskStatus.PENDING,
+            status=TaskStatus.IN_PROGRESS if has_pipeline else TaskStatus.PENDING,
+            block_kind=BlockKind.DELEGATED if has_pipeline else None,
             session_timeout_seconds=parent.session_timeout_seconds,
             task_type="subtask",
         ))
@@ -2350,10 +2464,55 @@ def _spawn_fanout_children(
         children_ids=children_ids,
     )
 
-    # Enqueue all children.
-    if orch._queue is not None:
-        for cid in children_ids:
-            orch._queue.put_nowait(orch._slug, cid)
+    # Post-insert: materialize carrier chains for pipeline children.
+    # MUST happen BEFORE enqueueing any first leg — a fast worker could
+    # otherwise complete and reach _enqueue_parent_if_waiting while the
+    # carrier's active_chain is still NULL (same race as inline chains).
+    for i, child_info in enumerate(children):
+        cid = children_ids[i]
+        has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
+        if not has_pipeline:
+            # Plain child: enqueue directly (Phase 1 behavior, unchanged).
+            if orch._queue is not None:
+                orch._queue.put_nowait(orch._slug, cid)
+            continue
+
+        # Pipeline carrier: materialize chain on the child.
+        # Reuses the same ChainState builder as inline delegate chains (~:718-740).
+        from runtime.orchestrator.chain import ChainState
+        from runtime.models import ChainLeg
+        then_legs = [
+            ChainLeg(
+                agent=leg["agent"], prompt=leg["prompt"],
+                expect_verdict=leg.get("expect_verdict"),
+            )
+            for leg in child_info.get("then", []) or []
+        ]
+        carrier_chain = ChainState(
+            step_index=0,
+            first_leg_expect_verdict=child_info.get("expect_verdict"),
+            legs=then_legs,
+            step_audit_id=step_audit_id or 0,
+        )
+        db.update_task_active_chain(cid, carrier_chain.serialize())
+
+        # Create and insert the first leg of the carrier's chain.
+        first_leg_id = db.next_task_id()
+        first_leg = TaskRecord(
+            id=first_leg_id,
+            team=parent.team,
+            brief=child_info["prompt"] or "",
+            assigned_agent=child_info["agent"],
+            parent_task_id=cid,
+            status=TaskStatus.PENDING,
+            session_timeout_seconds=parent.session_timeout_seconds,
+            task_type="subtask",
+        )
+        db.insert_task(first_leg)
+
+        # Enqueue the first leg (NOT the carrier itself).
+        if orch._queue is not None:
+            orch._queue.put_nowait(orch._slug, first_leg_id)
 
 
 def _inject_fanout_join_context(
