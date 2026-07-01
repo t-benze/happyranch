@@ -515,7 +515,7 @@ export function ThreadsPage(): JSX.Element {
             open={showArchive}
             onClose={() => setShowArchive(false)}
           />
-    
+
         </>
       )}
     </>
