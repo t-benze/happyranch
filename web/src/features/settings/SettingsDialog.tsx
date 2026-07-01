@@ -130,7 +130,6 @@ function EditableOrgSection({
   const [dreamInclude, setDreamInclude] = useState(org.dreaming.agents.include.join(', '));
   const [dreamExclude, setDreamExclude] = useState(org.dreaming.agents.exclude.join(', '));
   const [threadsEnabled, setThreadsEnabled] = useState(org.threads.enabled);
-  const [threadsCap, setThreadsCap] = useState(String(org.threads.default_turn_cap));
   const [threadsTimeout, setThreadsTimeout] = useState(
     org.threads.invocation_timeout_seconds === null ? '' : String(org.threads.invocation_timeout_seconds),
   );
@@ -150,7 +149,6 @@ function EditableOrgSection({
     setDreamInclude(org.dreaming.agents.include.join(', '));
     setDreamExclude(org.dreaming.agents.exclude.join(', '));
     setThreadsEnabled(org.threads.enabled);
-    setThreadsCap(String(org.threads.default_turn_cap));
     setThreadsTimeout(
       org.threads.invocation_timeout_seconds === null ? '' : String(org.threads.invocation_timeout_seconds),
     );
@@ -180,11 +178,9 @@ function EditableOrgSection({
     };
 
     // threads
-    const parsedCap = Number(threadsCap);
     const parsedThreadTimeout = threadsTimeout.trim() ? Number(threadsTimeout) : null;
     patch.threads = {
       enabled: threadsEnabled,
-      default_turn_cap: !isNaN(parsedCap) ? parsedCap : undefined,
       invocation_timeout_seconds: parsedThreadTimeout,
     };
 
@@ -201,7 +197,6 @@ function EditableOrgSection({
       setDreamInclude(data.org.dreaming.agents.include.join(', '));
       setDreamExclude(data.org.dreaming.agents.exclude.join(', '));
       setThreadsEnabled(data.org.threads.enabled);
-      setThreadsCap(String(data.org.threads.default_turn_cap));
       setThreadsTimeout(
         data.org.threads.invocation_timeout_seconds === null ? '' : String(data.org.threads.invocation_timeout_seconds),
       );
@@ -292,15 +287,6 @@ function EditableOrgSection({
         <div className="border-border divide-border divide-y rounded-md border">
           <EditableRow label="Enabled">
             <BooleanToggle value={threadsEnabled} onChange={setThreadsEnabled} />
-          </EditableRow>
-          <EditableRow label="Default turn cap">
-            <input
-              type="number"
-              min={1}
-              value={threadsCap}
-              onChange={(e) => setThreadsCap(e.target.value)}
-              className="bg-surface-sunken border-border-default text-text-primary w-28 rounded-lg border px-2 py-0.5 text-sm"
-            />
           </EditableRow>
           <EditableRow label="Invocation timeout (s)">
             <input

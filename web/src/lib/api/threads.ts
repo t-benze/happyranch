@@ -60,13 +60,6 @@ export const inviteToThread = (
 ): Promise<{ thread_id: string; agent_name: string; system_message_seq: number }> =>
   request(`/orgs/${slug}/threads/${threadId}/invite`, { method: 'POST', body });
 
-export const extendThreadCap = (
-  slug: string,
-  threadId: string,
-  body: { new_cap: number },
-): Promise<{ thread_id: string; turn_cap: number }> =>
-  request(`/orgs/${slug}/threads/${threadId}/extend`, { method: 'POST', body });
-
 export const archiveThread = (
   slug: string,
   threadId: string,
