@@ -8,6 +8,7 @@ from pathlib import Path
 
 from runtime.config import Settings
 from runtime.daemon.assistant_pty import AssistantSessionManager
+from runtime.daemon.headless_assistant import HeadlessAssistantManager
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.queue import TaskQueue
 from runtime.daemon.registration_token import RegistrationTokenStore
@@ -40,6 +41,9 @@ class DaemonState:
     assistant_lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     assistant_sessions: AssistantSessionManager = field(
         default_factory=AssistantSessionManager
+    )
+    headless_assistant: HeadlessAssistantManager = field(
+        default_factory=HeadlessAssistantManager
     )
 
     @classmethod
@@ -119,6 +123,7 @@ class DaemonState:
 
     async def close_all(self) -> None:
         await self.assistant_sessions.close_all()
+        await self.headless_assistant.close_all()
         async with self.orgs_lock:
             for org in self.orgs.values():
                 org.close()

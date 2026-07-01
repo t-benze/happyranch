@@ -1,5 +1,19 @@
 {
   "paths": {
+    "/api/v1/assistant/a-mode/status": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/assistant/init": {
       "POST": {
         "params": [
