@@ -220,3 +220,130 @@ describe('Composer / mentions', () => {
     expect(onSend).toHaveBeenCalledWith('heads-up @all', []);
   });
 });
+
+/* ------------------------------------------------------------------ */
+/*  Abort replies control — threads-only surface                      */
+/* ------------------------------------------------------------------ */
+
+describe('Composer / abort replies', () => {
+  it('does not render abort button when onAbortReplies is not provided', () => {
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-001"
+        orgSlug="test-org"
+        pending={false}
+        onSend={vi.fn(async () => {})}
+      />,
+    );
+    expect(
+      screen.queryByRole('button', { name: /Abort replies/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders abort button next to Send when onAbortReplies is provided', () => {
+    const onAbort = vi.fn();
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-001"
+        orgSlug="test-org"
+        pending={false}
+        onSend={vi.fn(async () => {})}
+        hasInFlightResponders={false}
+        onAbortReplies={onAbort}
+      />,
+    );
+    const abortBtn = screen.getByRole('button', { name: /Abort replies/i });
+    const sendBtn = screen.getByRole('button', { name: /^Send$/i });
+    // Abort button must be immediately before Send in DOM order
+    expect(abortBtn.nextSibling).toBe(sendBtn);
+  });
+
+  it('abort button is disabled when hasInFlightResponders is false', () => {
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-001"
+        orgSlug="test-org"
+        pending={false}
+        onSend={vi.fn(async () => {})}
+        hasInFlightResponders={false}
+        onAbortReplies={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: /Abort replies/i }),
+    ).toBeDisabled();
+  });
+
+  it('abort button is enabled when hasInFlightResponders is true', () => {
+    const onAbort = vi.fn();
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-001"
+        orgSlug="test-org"
+        pending={false}
+        onSend={vi.fn(async () => {})}
+        hasInFlightResponders={true}
+        onAbortReplies={onAbort}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeEnabled();
+  });
+
+  it('clicking enabled abort button calls onAbortReplies', async () => {
+    const onAbort = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-001"
+        orgSlug="test-org"
+        pending={false}
+        onSend={vi.fn(async () => {})}
+        hasInFlightResponders={true}
+        onAbortReplies={onAbort}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /Abort replies/i }));
+    expect(onAbort).toHaveBeenCalledTimes(1);
+  });
+
+  it('abort button is disabled when Composer is disabled', () => {
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-001"
+        orgSlug="test-org"
+        disabled={true}
+        pending={false}
+        onSend={vi.fn(async () => {})}
+        hasInFlightResponders={true}
+        onAbortReplies={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: /Abort replies/i }),
+    ).toBeDisabled();
+  });
+
+  it('abort button shows "Aborting…" when isAborting is true', () => {
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-001"
+        orgSlug="test-org"
+        pending={false}
+        onSend={vi.fn(async () => {})}
+        hasInFlightResponders={true}
+        isAborting={true}
+        onAbortReplies={vi.fn()}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: /Aborting…/i });
+    expect(btn).toBeDisabled();
+  });
+});

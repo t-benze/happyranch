@@ -473,9 +473,6 @@ export function ThreadsPage(): JSX.Element {
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
           onExtend={() => setShowExtend(true)}
-          hasInFlightResponders={inFlight.length > 0}
-          aborting={abortReplies.isPending}
-          onAbortReplies={() => { abortReplies.mutateAsync().catch(() => {}); }}
           composer={
             <Composer
               agents={agents}
@@ -489,6 +486,9 @@ export function ThreadsPage(): JSX.Element {
               attachments={pendingAttachments}
               onAttachmentsChange={setPendingAttachments}
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
+              hasInFlightResponders={inFlight.length > 0}
+              isAborting={abortReplies.isPending}
+              onAbortReplies={() => { abortReplies.mutateAsync().catch(() => {}); }}
             />
           }
           slug={slug}
@@ -559,9 +559,6 @@ interface DetailColumnProps {
   onInvite: () => void;
   onArchive: () => void;
   onExtend: () => void;
-  hasInFlightResponders: boolean;
-  aborting: boolean;
-  onAbortReplies: () => void;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -578,9 +575,6 @@ function DetailColumn({
   onInvite,
   onArchive,
   onExtend,
-  hasInFlightResponders,
-  aborting,
-  onAbortReplies,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -664,17 +658,6 @@ function DetailColumn({
         dreamOriginated={isDreamOriginated}
         actions={
           <>
-            {open && hasInFlightResponders && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onAbortReplies}
-                disabled={aborting}
-                title="Abort pending replies"
-              >
-                {aborting ? 'Aborting…' : 'Abort replies'}
-              </Button>
-            )}
             <Button variant="ghost" size="sm" onClick={onInvite} disabled={!open} title="Invite (I)">Invite</Button>
             <Button variant="ghost" size="sm" onClick={onExtend} disabled={!open} title="Extend turn cap">Extend</Button>
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
