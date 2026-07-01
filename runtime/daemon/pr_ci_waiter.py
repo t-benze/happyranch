@@ -276,3 +276,194 @@ def wait_for_ci(
 def _sleep(clock: object, seconds: float) -> None:
     """Sleep using the injected clock."""
     clock.sleep(seconds)  # type: ignore[union-attr]
+
+
+# ── real-gh adapter + CLI entrypoint ───────────────────────────────────────
+
+
+def _gh_fetch_pr_state(repo: str, pr_number: int) -> PRState:
+    """Fetch PR state via `gh pr view`.
+
+    Returns a PRState with head_sha, open, draft from the GitHub API.
+    Raises RuntimeError on gh failure.
+    """
+    import json
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "gh", "pr", "view", str(pr_number),
+            "--repo", repo,
+            "--json", "headRefOid,state,isDraft",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh pr view failed (exit {result.returncode}): {result.stderr.strip()}"
+        )
+    data = json.loads(result.stdout)
+    return PRState(
+        head_sha=data["headRefOid"],
+        open=(data["state"] == "OPEN"),
+        draft=data.get("isDraft", False),
+    )
+
+
+def _gh_fetch_checks(repo: str, sha: str) -> list[CheckState]:
+    """Fetch check runs + commit statuses for a SHA via `gh api`.
+
+    Returns a combined list of CheckState objects from both check-runs
+    and commit-statuses endpoints.  Raises RuntimeError on gh failure.
+    """
+    import json
+    import subprocess
+
+    checks: list[CheckState] = []
+
+    # ── check runs ──
+    result = subprocess.run(
+        [
+            "gh", "api",
+            f"repos/{repo}/commits/{sha}/check-runs",
+            "--jq", "[.check_runs[] | {name:.name, status:.status, conclusion:.conclusion}]",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh api check-runs failed (exit {result.returncode}): {result.stderr.strip()}"
+        )
+    if result.stdout.strip():
+        for item in json.loads(result.stdout):
+            checks.append(CheckState(
+                name=item["name"],
+                status=item["status"],
+                conclusion=item.get("conclusion"),
+            ))
+
+    # ── commit statuses ──
+    result = subprocess.run(
+        [
+            "gh", "api",
+            f"repos/{repo}/commits/{sha}/status",
+            "--jq", "[.statuses[]? | {name:.context, status:\"completed\", conclusion:.state}]",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh api commit-status failed (exit {result.returncode}): {result.stderr.strip()}"
+        )
+    if result.stdout.strip():
+        for item in json.loads(result.stdout):
+            checks.append(CheckState(
+                name=item["name"],
+                status=item["status"],
+                conclusion=item.get("conclusion"),
+            ))
+
+    return checks
+
+
+class _RealClock:
+    """Real monotonic clock wrapping time.monotonic / time.sleep."""
+
+    @staticmethod
+    def monotonic() -> float:
+        import time
+        return time.monotonic()
+
+    @staticmethod
+    def sleep(seconds: float) -> None:
+        import time
+        time.sleep(seconds)
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="PR CI waiter — poll GitHub checks for a pinned PR head SHA.",
+    )
+    parser.add_argument("--repo", required=True, help="owner/repo")
+    parser.add_argument("--pr", required=True, type=int, help="PR number")
+    parser.add_argument("--head-sha", required=True, help="Pinned 40-char head SHA")
+    parser.add_argument(
+        "--expected-check", action="append", default=[],
+        dest="expected_checks",
+        help="Check name that must pass (repeatable)",
+    )
+    parser.add_argument(
+        "--settle-seconds", type=float, default=120.0,
+        help="Seconds to wait for expected checks to appear (default: 120)",
+    )
+    parser.add_argument(
+        "--poll-interval-seconds", type=float, default=15.0,
+        help="Seconds between polls (default: 15)",
+    )
+    parser.add_argument(
+        "--timeout-seconds", type=float, default=3600.0,
+        help="Total bounded wait ceiling in seconds (default: 3600)",
+    )
+    args = parser.parse_args()
+
+    # ── Entrypoint guard: reject empty expected-check policy ──
+    # The load-bearing PR-CI invariant is 'no checks is not pass'.
+    # An empty expected_checks list would cause the engine to return
+    # ci_pass without any check actually passing, which breaches the
+    # invariant that a CI poll job must verify at least one check.
+    # This guard enforces the invariant at the entrypoint layer so the
+    # pure engine (unchanged) never receives an empty list.
+    if not args.expected_checks:
+        output = {
+            "verdict": "checks_missing",
+            "observed_head_sha": None,
+            "elapsed_seconds": 0.0,
+            "error_detail": (
+                "No --expected-check supplied; at least one expected check "
+                "is required. 'No checks is not pass.'"
+            ),
+            "checks": [],
+        }
+        json.dump(output, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        sys.exit(VERDICT_EXIT_CODES["checks_missing"])
+
+    verdict = wait_for_ci(
+        repo=args.repo,
+        pr_number=args.pr,
+        pinned_head_sha=args.head_sha,
+        expected_checks=args.expected_checks,
+        settle_seconds=args.settle_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        timeout_seconds=args.timeout_seconds,
+        fetch_pr_state=lambda: _gh_fetch_pr_state(args.repo, args.pr),
+        fetch_checks=lambda sha: _gh_fetch_checks(args.repo, sha),
+        clock=_RealClock(),
+    )
+
+    # Print structured JSON verdict to stdout
+    output = {
+        "verdict": verdict.verdict,
+        "observed_head_sha": verdict.observed_head_sha,
+        "elapsed_seconds": verdict.elapsed_seconds,
+        "error_detail": verdict.error_detail,
+        "checks": [
+            {"name": c.name, "status": c.status, "conclusion": c.conclusion}
+            for c in (verdict.checks or [])
+        ],
+    }
+    json.dump(output, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+
+    exit_code = VERDICT_EXIT_CODES.get(verdict.verdict, 7)
+    sys.exit(exit_code)

@@ -297,3 +297,239 @@ def guarded_merge(
         merged_sha=result.merged_sha,
         merged_at=result.merged_at,
     )
+
+
+# ── real-gh adapter + CLI entrypoint ───────────────────────────────────────
+
+
+def _gh_fetch_pr_state(repo: str, pr_number: int) -> PRState:
+    """Fetch PR state via `gh pr view`."""
+    import json
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "gh", "pr", "view", str(pr_number),
+            "--repo", repo,
+            "--json", "headRefOid,state,isDraft",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh pr view failed (exit {result.returncode}): {result.stderr.strip()}"
+        )
+    data = json.loads(result.stdout)
+    return PRState(
+        head_sha=data["headRefOid"],
+        open=(data["state"] == "OPEN"),
+        draft=data.get("isDraft", False),
+    )
+
+
+def _gh_fetch_mergeable(repo: str, pr_number: int) -> MergeableState:
+    """Fetch mergeability status via `gh pr view`."""
+    import json
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "gh", "pr", "view", str(pr_number),
+            "--repo", repo,
+            "--json", "mergeable,mergeStateStatus",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh pr view (mergeable) failed (exit {result.returncode}): {result.stderr.strip()}"
+        )
+    data = json.loads(result.stdout)
+    raw = data.get("mergeStateStatus", data.get("mergeable", "UNKNOWN"))
+    detail = f"mergeable={data.get('mergeable')}, mergeStateStatus={data.get('mergeStateStatus')}"
+    return MergeableState(mergeable=raw, detail=detail)
+
+
+def _gh_perform_merge(repo: str, pr_number: int, merge_method: str) -> MergeResult:
+    """Perform the merge via `gh pr merge`.
+
+    Returns MergeResult with merged_sha and merged_at.
+    Raises RuntimeError on failure.
+    """
+    import datetime
+    import json
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "gh", "pr", "merge", str(pr_number),
+            "--repo", repo,
+            f"--{merge_method}",
+            "--admin",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh pr merge failed (exit {result.returncode}): {result.stderr.strip()}"
+        )
+    # After merge, fetch the merge commit SHA
+    sha_result = subprocess.run(
+        [
+            "gh", "pr", "view", str(pr_number),
+            "--repo", repo,
+            "--json", "mergeCommit",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    merged_sha = ""
+    if sha_result.returncode == 0:
+        try:
+            data = json.loads(sha_result.stdout)
+            merged_sha = data.get("mergeCommit", {}).get("oid", "")
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return MergeResult(
+        merged_sha=merged_sha,
+        merged_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    )
+
+
+def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
+    """Fetch a task's verdict via `happyranch recall`.
+
+    Calls happyranch recall --org <org> <task_id> and parses the verdict
+    from the completion report output.  Returns the verdict string, or
+    raises RuntimeError on failure.
+
+    Parsing strategy (in priority order):
+    1. Parse entire stdout as a single JSON blob.
+       a. If it has a top-level ``verdict`` field, return it.
+       b. If it has an ``output_summary`` field, extract the ``Verdict:`` line.
+    2. Fall back to line-by-line JSON parsing (legacy).
+    3. Fall back to line-by-line ``verdict:`` prefix search (legacy).
+    """
+    import json
+    import re
+    import subprocess
+
+    result = subprocess.run(
+        ["happyranch", "recall", "--org", org, task_id],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"happyranch recall {task_id} failed (exit {result.returncode}): {result.stderr.strip()}"
+        )
+
+    stdout = result.stdout.strip()
+
+    # ── 1. Parse entire stdout as a single JSON blob ──
+    try:
+        data = json.loads(stdout)
+        if isinstance(data, dict):
+            # 1a. Top-level verdict field (when present)
+            if "verdict" in data:
+                return data["verdict"]
+            # 1b. Verdict embedded in output_summary (real-world shape)
+            output_summary = data.get("output_summary", "")
+            if output_summary:
+                m = re.search(r"^Verdict:\s*(.+)$", output_summary, re.MULTILINE)
+                if m:
+                    return m.group(1).strip()
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    # ── 2-3. Legacy fallbacks for non-JSON output ──
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        # Try to parse as JSON (legacy)
+        try:
+            data = json.loads(stripped)
+            if isinstance(data, dict) and "verdict" in data:
+                return data["verdict"]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Fallback: look for "verdict: <value>" pattern (legacy)
+        if stripped.lower().startswith("verdict:"):
+            return stripped.split(":", 1)[1].strip()
+
+    raise RuntimeError(
+        f"Could not extract {verdict_key} verdict from recall output for {task_id}"
+    )
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="Guarded PR-CI merge — re-verify all guards and merge.",
+    )
+    parser.add_argument("--org", required=True, help="HappyRanch org slug")
+    parser.add_argument("--repo", required=True, help="owner/repo")
+    parser.add_argument("--pr", required=True, type=int, help="PR number")
+    parser.add_argument("--head-sha", required=True, help="Pinned 40-char head SHA")
+    parser.add_argument(
+        "--merge-method", required=True,
+        choices=["merge", "squash", "rebase"],
+        help="Merge method",
+    )
+    parser.add_argument(
+        "--ci-verdict", required=True,
+        help="CI verdict from the waiter engine",
+    )
+    parser.add_argument(
+        "--review-task-id", required=True,
+        help="Task ID whose completion report carries the review verdict",
+    )
+    parser.add_argument(
+        "--qa-task-id", required=True,
+        help="Task ID whose completion report carries the QA verdict",
+    )
+    args = parser.parse_args()
+
+    verdict = guarded_merge(
+        repo=args.repo,
+        pr_number=args.pr,
+        pinned_head_sha=args.head_sha,
+        merge_method=args.merge_method,
+        ci_verdict=args.ci_verdict,
+        fetch_pr_state=lambda: _gh_fetch_pr_state(args.repo, args.pr),
+        fetch_mergeable=lambda: _gh_fetch_mergeable(args.repo, args.pr),
+        fetch_review_verdict=lambda: _recall_fetch_verdict(
+            args.org, args.review_task_id, "review"
+        ),
+        fetch_qa_verdict=lambda: _recall_fetch_verdict(
+            args.org, args.qa_task_id, "qa"
+        ),
+        perform_merge=lambda m: _gh_perform_merge(args.repo, args.pr, m),
+    )
+
+    # Print structured JSON verdict to stdout
+    output = {
+        "verdict": verdict.verdict,
+        "pr_number": verdict.pr_number,
+        "pinned_head_sha": verdict.pinned_head_sha,
+        "merged_sha": verdict.merged_sha,
+        "merged_at": verdict.merged_at,
+        "observed_head_sha": verdict.observed_head_sha,
+        "error_detail": verdict.error_detail,
+    }
+    json.dump(output, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+
+    exit_code = VERDICT_EXIT_CODES.get(verdict.verdict, 7)
+    sys.exit(exit_code)

@@ -109,19 +109,33 @@ Prefer block-and-resume for any wait long enough to risk session timeout.
 
 ## PR CI / guarded merge helper
 
-For PR-producing engineering tasks, do not hand-roll CI polling scripts. Use the first-class HappyRanch PR CI helper to create a bounded job, then self-block on that job id with `waiting_on_job_ids`.
+For PR-producing engineering tasks, do not hand-roll CI polling scripts. Submit a poll job and use the guarded-merge entrypoint on task resume.
 
-The helper takes at minimum: repository, PR number, pinned head SHA, expected check policy, timeout, settle window, merge method, and the review/QA evidence ids.
+**Poll job:** submit a `review_required=false` job through the existing jobs path whose script invokes the poller entrypoint:
 
-The helper must be SHA-pinned. Every poll re-checks that the PR head still equals the submitted head SHA. If the head changes, the job exits with a stale-head verdict and does not merge.
+```bash
+python -m runtime.daemon.pr_ci_waiter \
+  --repo owner/repo --pr N --head-sha <40-char-sha> \
+  --expected-check "Python CI" --expected-check "Web CI" \
+  --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
+```
 
-The helper must not treat "no checks" as success. Immediately after PR creation, GitHub may not have created check runs yet. The helper waits through a bounded settle window for expected or required checks to appear. If no acceptable check set appears before the settle deadline, the job exits with a checks-missing verdict.
+This polls GitHub checks for the pinned head SHA and prints a structured verdict JSON to stdout. It exits 0 for `ci_pass`, non-zero for all other verdicts. **The poll job performs NO merge.**
 
-The merge guard is conjunctive — all must pass before the helper attempts merge:
+After the poll job completes, the resumed task inspects the verdict. If `ci_pass`, the task owner triggers the guarded-merge entrypoint as a short daemon-run step:
+
+```bash
+python -m runtime.daemon.pr_ci_merge \
+  --org <org-slug> --repo owner/repo --pr N --head-sha <40-char-sha> \
+  --merge-method squash --ci-verdict ci_pass \
+  --review-task-id TASK-xxx --qa-task-id TASK-yyy
+```
+
+The merge guard is conjunctive — all must pass before the engine attempts merge:
 
 - review verdict is `APPROVE`;
 - QA verdict is `PASS`;
-- CI verdict is `PASS` for the pinned SHA;
+- CI verdict is `ci_pass` for the pinned SHA;
 - PR head SHA is unchanged at merge time;
 - GitHub mergeability is `CLEAN`;
 - the PR is still open and not draft;
@@ -129,7 +143,7 @@ The merge guard is conjunctive — all must pass before the helper attempts merg
 
 It exits successfully only when the PR is merged after all merge guards pass. It exits non-zero for CI failure, stale PR head, timeout, missing checks after settle, non-clean mergeability, rejected job, or failed merge.
 
-The CI-wait portion can auto-run without founder interaction. The merge portion must stay inside the guarded helper or a founder-reviewed job; do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
+The poll job can auto-run without founder interaction. The merge runs inside the guarded-merge entrypoint on the daemon-run / EM-authority path; do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
 
 ## Cleanup
 
