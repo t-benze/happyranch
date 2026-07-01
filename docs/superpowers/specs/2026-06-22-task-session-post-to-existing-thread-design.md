@@ -78,7 +78,7 @@ Evaluated in this order (first failure wins):
 | `not_found` | 404 | thread does not exist |
 | `not_a_participant` | 403 | composer not in the thread's participant list |
 | `thread_not_open` | 400 | thread status is not `OPEN` |
-| Turn cap is tracked/displayed only; no 429 gate after THR-046 msg86 removal. |
+| Turn cap is a vestigial internal counter, not displayed in the UI; no 429 gate after THR-046 msg86 removal. |
 
 Notes:
 

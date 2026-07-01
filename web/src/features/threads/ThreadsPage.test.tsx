@@ -88,17 +88,19 @@ function mkSystemMessage(seq: number, speaker: string, payload: Record<string, u
 function setupThreadWithMessages(
   threadId: string,
   messages: ReturnType<typeof mkMessage | typeof mkSystemMessage>[],
+  threadOverrides?: Parameters<typeof mkThread>[2],
 ) {
+  const base = mkThread(threadId, 'Test thread', threadOverrides);
   server.use(
     http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-      HttpResponse.json({ threads: [mkThread(threadId, 'Test thread')] }),
+      HttpResponse.json({ threads: [base] }),
     ),
     http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
     ),
     http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}`, () =>
       HttpResponse.json({
-        ...mkThread(threadId, 'Test thread'),
+        ...base,
         participants: ['agent_a'],
         messages,
       }),
@@ -411,6 +413,27 @@ describe('ThreadsPage — detail (design-overhaul reshape)', () => {
     await waitFor(() => {
       expect(screen.getByText(/Loading messages/i)).toBeInTheDocument();
     });
+  });
+
+  test('detail view has no visible turn-budget or extend UI', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages(
+      'THR-010',
+      [mkMessage(1, 'founder', 'message', 'Hello')],
+      { turns_used: 47, turn_cap: 500 },
+    );
+    mountAt(`/orgs/${SLUG}/threads/THR-010`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Test thread/i })).toBeInTheDocument();
+    });
+    // Turn budget text must NOT appear
+    expect(screen.queryByText('Turn budget')).toBeNull();
+    // '/500' budget text must NOT appear
+    expect(screen.queryByText('/500')).toBeNull();
+    // 'Extend' action button must NOT appear
+    expect(screen.queryByRole('button', { name: /^Extend$/ })).toBeNull();
+    // 'Extend turn cap' dialog or copy must NOT appear
+    expect(screen.queryByText(/Extend turn cap/i)).toBeNull();
   });
 });
 

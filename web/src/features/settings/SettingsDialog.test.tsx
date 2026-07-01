@@ -184,6 +184,9 @@ describe('SettingsDialog', () => {
     const textInputs = screen.getAllByRole('textbox');
     const numberInputs = screen.getAllByRole('spinbutton');
     expect(textInputs.length + numberInputs.length).toBeGreaterThanOrEqual(6);
+
+    // Default turn cap must NOT appear as a visible UI field (removed per THR-046 msg126)
+    expect(screen.queryByText('Default turn cap')).toBeNull();
   });
 
   test('shows restart-required badges for CLI paths and orchestration fields', async () => {

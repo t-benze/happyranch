@@ -190,7 +190,7 @@ Read messages, send a reply, manage thread lifecycle (invite, archive, abandon).
 ```
 +------------------------------------------------------------------+
 | Subject of the thread          [open]      [Invite] [A] |  ThreadHeader, ~64px
-| THR-0123 · founder, content_writer, content_manager · 47/500     |
+| THR-0123 · founder, content_writer, content_manager             |
 +------------------------------------------------------------------+
 |                                                                  |
 |  ● content_writer                              #1 · Apr 11 14:32 |  MessageBubble (worker)
@@ -214,7 +214,7 @@ Read messages, send a reply, manage thread lifecycle (invite, archive, abandon).
 ### ThreadHeader anatomy
 
 - Line 1, left: subject in `h2`, with a status `Badge` (open / archiving / archived / abandoned) immediately after. Right: action button row — Invite, Archive (all `ghost`), then a `·` divider, then Abandon (`danger` variant).
-- Line 2, all `caption` size, all `text.muted`: monospace `THR-NNN`, then `·`, then participant AgentChips (comma-separated, with role dots), then `·`, then turn meter "47/500 turns".
+- Line 2, all `caption` size, all `text.muted`: monospace `THR-NNN`, then `·`, then participant AgentChips (comma-separated, with role dots).
 - Optional row 3: if `archive_summary` present, render in a `surface.raised` box with a `text.primary` "Archive summary:" lead-in.
 
 When status ≠ "open", all action buttons are disabled.
