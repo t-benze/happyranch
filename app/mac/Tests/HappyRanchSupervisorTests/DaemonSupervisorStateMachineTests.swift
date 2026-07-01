@@ -184,19 +184,18 @@ struct DaemonSupervisorStateMachineTests {
         #expect(supervisor.state == .stopped)
     }
 
-    @Test("start is rejected in terminal states")
-    func startRejectedInTerminal() throws {
+    @Test("failed -> starting on recovery restart")
+    func failedToStarting() throws {
         let supervisor = DaemonSupervisor()
         supervisor.configure(homeDir: "/tmp/test-hr")
-        supervisor.forceState(.failed)
 
-        do {
-            try supervisor.start()
-            Issue.record("Expected start to throw in failed state")
-        } catch DaemonSupervisorError.invalidStateTransition {
-            // Expected
-        } catch {
-            Issue.record("Unexpected error: \(error)")
-        }
+        // Simulate a failed state — e.g. daemon exited with unrecoverable error
+        supervisor.forceState(.failed)
+        #expect(supervisor.state == .failed)
+
+        // Recovery restart must transition to .starting and launch the daemon
+        try supervisor.start()
+        #expect(supervisor.state == .starting)
+        #expect(supervisor.isManagedBySelf == true)
     }
 }

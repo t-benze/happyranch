@@ -57,20 +57,18 @@ public final class DaemonSupervisor: @unchecked Sendable {
     // MARK: - Managed lifecycle
 
     /// Start the daemon process (app-managed).
-    /// Moves from `.stopped`, `.crashed`, or `.stalePid` to `.starting`.
+    /// Moves from `.stopped`, `.crashed`, `.stalePid`, or `.failed` to `.starting`.
     public func start() throws {
         guard state != .notConfigured else {
             throw DaemonSupervisorError.notConfigured
         }
 
         switch state {
-        case .stopped, .crashed, .stalePid:
+        case .stopped, .crashed, .stalePid, .failed:
             break
         case .running, .starting, .externalRunning, .unhealthy:
             throw DaemonSupervisorError.processAlreadyRunning
         case .stopping:
-            throw DaemonSupervisorError.invalidStateTransition(from: state, to: .starting)
-        case .failed:
             throw DaemonSupervisorError.invalidStateTransition(from: state, to: .starting)
         case .notConfigured:
             throw DaemonSupervisorError.notConfigured
