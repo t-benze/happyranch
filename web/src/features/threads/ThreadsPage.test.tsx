@@ -166,7 +166,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     });
   });
 
-  test('lists threads with turn budget and last speaker', async () => {
+  test('lists threads without turn budget and with last speaker', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
@@ -186,9 +186,9 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       // Thread subjects appear in InboxRow
       expect(screen.getByText(/Launch plan/)).toBeInTheDocument();
       expect(screen.getByText(/Budget review/)).toBeInTheDocument();
-      // Turn budgets should appear
-      expect(screen.getByText('3/500')).toBeInTheDocument();
-      expect(screen.getByText('487/500')).toBeInTheDocument();
+      // Turn budgets must NOT appear (THR-046 msg126 — turn cap UI removed)
+      expect(screen.queryByText('3/500')).not.toBeInTheDocument();
+      expect(screen.queryByText('487/500')).not.toBeInTheDocument();
       // Last speakers should appear
       expect(screen.getByText(/dev_agent/)).toBeInTheDocument();
       expect(screen.getByText(/founder/)).toBeInTheDocument();
@@ -295,6 +295,26 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
 /* ------------------------------------------------------------------ */
 
 describe('ThreadsPage — detail (design-overhaul reshape)', () => {
+  test('detail pane has no Extend button, no turn budget rail, no turn meter (THR-046 msg126 regression)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-001', [mkMessage(1, 'founder', 'message', 'Hello team')]);
+    mountAt(`/orgs/${SLUG}/threads/THR-001`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Test thread/i })).toBeInTheDocument();
+    });
+    // No Extend action button in the detail header actions
+    expect(screen.queryByRole('button', { name: /Extend/i })).not.toBeInTheDocument();
+    // No turn meter like "47/500" or "turns used" anywhere in the detail
+    expect(screen.queryByText(/\/500/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/turns? used/i)).not.toBeInTheDocument();
+    // Properties rail has no "Turn budget" section
+    const rail = screen.getByLabelText('Thread properties');
+    expect(within(rail).queryByText(/turn budget/i)).not.toBeInTheDocument();
+    expect(within(rail).queryByText(/turn cap/i)).not.toBeInTheDocument();
+    // No extend dialog rendered
+    expect(screen.queryByRole('dialog', { name: /extend/i })).not.toBeInTheDocument();
+  });
+
   test('renders detail pane with messages when thread selected', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
