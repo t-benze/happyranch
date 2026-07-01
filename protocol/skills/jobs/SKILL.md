@@ -109,41 +109,119 @@ Prefer block-and-resume for any wait long enough to risk session timeout.
 
 ## PR CI / guarded merge helper
 
-For PR-producing engineering tasks, do not hand-roll CI polling scripts. Submit a poll job and use the guarded-merge entrypoint on task resume.
+For PR-producing engineering tasks, do not hand-roll CI polling scripts. Use the first-class HappyRanch PR CI helper to create a bounded poll job, then self-block on that job id. **PR creation is NOT task completion.** A task whose requested outcome is landing code stays alive through the CI wait and merge.
 
-**Poll job:** submit a `review_required=false` job through the existing jobs path whose script invokes the poller entrypoint:
+### End-to-end workflow
 
-```bash
-python -m runtime.daemon.pr_ci_waiter \
-  --repo owner/repo --pr N --head-sha <40-char-sha> \
-  --expected-check "Python CI" --expected-check "Web CI" \
-  --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
+1. **After review APPROVE + QA PASS** — submit the CI poll job:
+
+   ```bash
+   python -m runtime.daemon.pr_ci_waiter \
+     --repo owner/repo --pr N --head-sha <40-char-sha> \
+     --expected-check "Python CI" --expected-check "Web CI" \
+     --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
+   ```
+
+   This polls GitHub checks for the pinned head SHA and prints a structured verdict JSON to stdout. It exits 0 for `ci_pass`, non-zero for all other verdicts. **The poll job performs NO merge.**
+
+2. **Report blocked** — the task does NOT report `status=completed` at PR creation. Instead:
+
+   ```json
+   {
+     "status": "blocked",
+     "confidence": 0,
+     "waiting_on_job_ids": ["JOB-NNN"],
+     "summary": "PR #N open at head SHA <sha>. CI poll running via JOB-NNN."
+   }
+   ```
+
+   The system resumes the task automatically when the poll job reaches a terminal state.
+
+3. **Resume — inspect the poll verdict.** The resume context includes a `BLOCKED-JOBS-RESULTS` block. Fetch the poll job's output:
+
+   ```bash
+   happyranch jobs output JOB-NNN --org <slug>
+   ```
+
+   The output is a JSON verdict object. **Decision tree:**
+
+   | Verdict | Action |
+   |---------|--------|
+   | `ci_pass` | Proceed to step 4 (guarded merge). |
+   | `ci_failed` | Report `status=failed` with the failing check details. **Do NOT merge.** |
+   | `stale_head` | Report `status=failed` — the PR head SHA changed from pinned; re-pin and retry. |
+   | `checks_missing` | Report `status=failed` — expected checks never appeared. |
+   | `timeout` | Report `status=failed` — CI did not complete within the bounded window. |
+   | `pr_closed` / `pr_draft` | Report `status=failed` — PR was closed or converted to draft. |
+   | `github_error` | Report `status=failed` with the error detail from GitHub. |
+
+   Every non-`ci_pass` verdict must include the CI verdict and output in the completion summary so the next cycle (founder revisit or REVISE) has the evidence to re-ground.
+
+4. **Guarded merge (ci_pass only).** Trigger the guarded-merge entrypoint:
+
+   ```bash
+   python -m runtime.daemon.pr_ci_merge \
+     --org <org-slug> --repo owner/repo --pr N --head-sha <40-char-sha> \
+     --merge-method squash --ci-verdict ci_pass \
+     --review-task-id TASK-xxx --qa-task-id TASK-yyy
+   ```
+
+   The merge guard is conjunctive — all must pass before the engine attempts merge:
+
+   - review verdict is `APPROVE`;
+   - QA verdict is `PASS`;
+   - CI verdict is `ci_pass` for the pinned SHA;
+   - PR head SHA is unchanged at merge time;
+   - GitHub mergeability is `CLEAN`;
+   - the PR is still open and not draft;
+   - the helper uses the configured merge method.
+
+   On success, report `status=completed` with the merge commit SHA. On guard failure, the structured verdict (e.g. `merge_guard_review`, `stale_head`, `merge_failed`) tells you which guard failed — report `status=failed` with the details.
+
+### End-to-end example
+
 ```
+# 1. PR opened, review APPROVE, QA PASS — submit poll job
+happyranch jobs submit --from-file /tmp/poll-job.json --org happyranch
+# → ok: submitted JOB-042
 
-This polls GitHub checks for the pinned head SHA and prints a structured verdict JSON to stdout. It exits 0 for `ci_pass`, non-zero for all other verdicts. **The poll job performs NO merge.**
+# 2. Report blocked
+happyranch report-completion --from-file /tmp/completion-blocked.json
+# payload: {"status":"blocked","waiting_on_job_ids":["JOB-042"], ...}
 
-After the poll job completes, the resumed task inspects the verdict. If `ci_pass`, the task owner triggers the guarded-merge entrypoint as a short daemon-run step:
+# --- session ends; system resumes when JOB-042 completes ---
 
-```bash
+# 3. Resume — inspect verdict
+happyranch jobs output JOB-042 --org happyranch
+# → {"verdict":"ci_pass","observed_head_sha":"abc123...","checks":[...]}
+
+# 4. ci_pass — trigger guarded merge
 python -m runtime.daemon.pr_ci_merge \
-  --org <org-slug> --repo owner/repo --pr N --head-sha <40-char-sha> \
+  --org <org-slug> --repo owner/repo --pr 245 --head-sha abc123... \
   --merge-method squash --ci-verdict ci_pass \
-  --review-task-id TASK-xxx --qa-task-id TASK-yyy
+  --review-task-id TASK-100 --qa-task-id TASK-101
+# → {"verdict":"merged","merged_sha":"def456...","merged_at":"2026-..."}
+
+# 5. Report completed
+happyranch report-completion --from-file /tmp/completion-done.json
+# payload: {"status":"completed","summary":"PR #245 merged as def456..."}
 ```
 
-The merge guard is conjunctive — all must pass before the engine attempts merge:
+If step 3 produces a non-`ci_pass` verdict (e.g. `ci_failed`), skip step 4 and report `status=failed`:
 
-- review verdict is `APPROVE`;
-- QA verdict is `PASS`;
-- CI verdict is `ci_pass` for the pinned SHA;
-- PR head SHA is unchanged at merge time;
-- GitHub mergeability is `CLEAN`;
-- the PR is still open and not draft;
-- the helper uses the configured merge method.
+```
+# 3.a Non-pass verdict — report failed with evidence
+happyranch jobs output JOB-042 --org happyranch
+# → {"verdict":"ci_failed","checks":[{"name":"Python CI","conclusion":"failure"}]}
 
-It exits successfully only when the PR is merged after all merge guards pass. It exits non-zero for CI failure, stale PR head, timeout, missing checks after settle, non-clean mergeability, rejected job, or failed merge.
+# Report failed — do NOT attempt merge
+happyranch report-completion --from-file /tmp/completion-failed.json
+# payload: {"status":"failed","summary":"CI failed: Python CI returned failure..."}
+```
 
-The poll job can auto-run without founder interaction. The merge runs inside the guarded-merge entrypoint on the daemon-run / EM-authority path; do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
+### Merge authority
+
+**Merge is allowed only through the guarded-merge entrypoint.** The poll job runs the waiter engine only (checks polling, no merge). The merge step runs inside the guarded-merge entrypoint on the daemon-run / EM-authority path. Raw `gh pr merge` is never added to worker allow-rules, and workers must not attempt merge shell commands directly. If the merge engine returns a guard-failure verdict instead of `merged`, report the failure — do not retry the merge or bypass the guard.
 
 ## Cleanup
 
