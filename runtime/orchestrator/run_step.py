@@ -1904,8 +1904,9 @@ def _append_followup_system_and_reinvoke(
     original_id: str,
     source_task_id: str,
     system_payload: dict,
+    reinvoke: bool = True,
 ) -> None:
-    """Append a SYSTEM message + mint/enqueue a TASK_FOLLOWUP re-invocation.
+    """Append a SYSTEM message + optionally mint/enqueue a TASK_FOLLOWUP re-invocation.
 
     Shared tail for `_maybe_post_thread_followup` (terminal) and
     `_maybe_post_thread_escalation`. Race-aware: the atomic cap-projection +
@@ -1913,6 +1914,13 @@ def _append_followup_system_and_reinvoke(
     `mint_followup_invocation_with_cap_extend`. `original_id` is the original
     dispatched task id (for audit keying); `source_task_id` is the task that
     triggered this followup (terminal task or escalated task).
+
+    When `reinvoke=False`, only the SYSTEM message is appended; the
+    dispatcher re-invocation (cap-extend + mint + enqueue) is suppressed.
+    This is used for intermediate auto-revisit failures (THR-046 msg99):
+    the thread surface needs the 'revisiting as <SUCCESSOR>' system message,
+    but the successor fires its own followup at its terminal, so
+    double-invocation is avoided here.
     """
     db = orch._db
     audit = orch._audit
@@ -1926,6 +1934,19 @@ def _append_followup_system_and_reinvoke(
         kind=_TMK.SYSTEM,
         system_payload=system_payload,
     )
+
+    if not reinvoke:
+        # System-message-only path: the thread surface receives the
+        # task_failed notification (with revisit_task_id for 'revisiting as
+        # <SUCCESSOR>' rendering), but the dispatcher is NOT re-invoked.
+        # The revisit successor will fire its own followup (with
+        # re-invocation) at its terminal.
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+            reason="auto_revisit_spawned",
+            successor_task_id=system_payload.get("revisit_task_id"),
+        )
+        return
 
     # Atomic cap-projection + conditional bump + mint.  Closes the TOCTOU race
     # where two concurrent root completions on the same thread both read the
@@ -2231,33 +2252,15 @@ def _maybe_post_thread_followup(
         "revisit_task_id": revisit_task_id,
     }
 
-    if auto_revisit_spawned:
-        # Fire system-message-only: the thread surface needs the
-        # failure-with-successor notification ('revisiting as <SUCCESSOR>'),
-        # but we suppress the dispatcher re-invocation because the revisit
-        # successor will fire its own followup (with re-invocation) at its
-        # terminal. Without this suppression, a single revisit chain would
-        # produce duplicate TASK_FOLLOWUP turns and double-message the thread.
-        from runtime.models import ThreadMessageKind as _TMK
-        db.append_thread_message(
-            thread_id=thread_id, speaker=dispatcher,
-            kind=_TMK.SYSTEM,
-            system_payload=system_payload,
-        )
-        audit.log_thread_followup_skipped(
-            thread_id, original_task_id=original.id, terminal_task_id=task_id,
-            reason="auto_revisit_spawned",
-            successor_task_id=revisit_task_id,
-        )
-    else:
-        _append_followup_system_and_reinvoke(
-            orch,
-            thread_id=thread_id,
-            dispatcher=dispatcher,
-            original_id=original.id,
-            source_task_id=task_id,
-            system_payload=system_payload,
-        )
+    _append_followup_system_and_reinvoke(
+        orch,
+        thread_id=thread_id,
+        dispatcher=dispatcher,
+        original_id=original.id,
+        source_task_id=task_id,
+        system_payload=system_payload,
+        reinvoke=not auto_revisit_spawned,
+    )
 
 
 def _payload_dict(row: dict) -> dict:
