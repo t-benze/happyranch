@@ -1521,7 +1521,8 @@ class TestFanoutPipeline:
 
     def test_carrier_defers_terminal_until_chain_completes(self, runtime, db, monkeypatch):
         """Cᵢ does NOT count toward P's barrier until its final leg
-        matches expect_verdict."""
+        matches expect_verdict.  When the chain completes, the carrier
+        auto-completes DIRECTLY — NO orch._run_agent call, NO manager-wake."""
         import json
         from runtime.orchestrator.orchestrator import Orchestrator
         from runtime.orchestrator.teams import TeamsRegistry
@@ -1545,8 +1546,11 @@ class TestFanoutPipeline:
         )
         q = _SlugQueue()
         orch._queue = q
-        # Mock _run_agent so the carrier auto-completion doesn't spawn a real subprocess.
-        monkeypatch.setattr(orch, "_run_agent", lambda tid, ag, pr, **kw: (_make_result(), _make_report("done")))
+        # Spy on _run_agent: the carrier must NEVER call _run_agent.
+        _run_agent_calls = []
+        monkeypatch.setattr(orch, "_run_agent", lambda tid, ag, pr, **kw: (
+            _run_agent_calls.append(tid), _make_result(), _make_report("done"),
+        )[-2:])
 
         # Spawn fan-out: 1 pipeline child + 1 plain child
         children_payload = [
@@ -1630,21 +1634,25 @@ class TestFanoutPipeline:
             status="completed", confidence_score=80,
             output_summary="reviewed", verdict="APPROVE",
         )
-        # Trigger carrier wake → chain complete → carrier auto-completes
+        # Trigger carrier wake → chain complete → carrier auto-completes.
+        # The carrier must auto-complete DIRECTLY, with NO _run_agent call.
         _enqueue_parent_if_waiting(orch, second_leg_id)
-        # Run the carrier (it was enqueued by the chain-complete path)
-        orch.run_step(carrier_id)
 
-        # Carrier should now be terminal
+        # Carrier should now be terminal — auto-completed by the chain-complete handler.
         carrier = db.get_task(carrier_id)
         assert carrier.status == TaskStatus.COMPLETED, (
-            f"carrier should be terminal after chain completes, got {carrier.status}"
+            f"carrier should auto-complete after chain completes, got {carrier.status}"
+        )
+        # Verify _run_agent was NEVER called for the carrier.
+        assert carrier_id not in _run_agent_calls, (
+            f"carrier {carrier_id} must NOT call _run_agent — it has no session of its own"
         )
 
     # ── §3.6 test 3: barrier fires once ──
 
     def test_barrier_fires_once_after_all_carriers_complete(self, runtime, db, monkeypatch):
-        """P wakes exactly once, only after ALL carriers' chains complete."""
+        """P wakes exactly once, only after ALL carriers' chains complete.
+        Carriers auto-complete DIRECTLY — NO _run_agent call for any carrier."""
         import json
         from runtime.orchestrator.orchestrator import Orchestrator
         from runtime.orchestrator.teams import TeamsRegistry
@@ -1686,8 +1694,11 @@ class TestFanoutPipeline:
             def __bool__(self):
                 return bool(self._items)
         orch._queue = CountQueue()
-        # Mock _run_agent so carrier auto-completion doesn't spawn a real subprocess.
-        monkeypatch.setattr(orch, "_run_agent", lambda tid, ag, pr, **kw: (_make_result(), _make_report("done")))
+        # Spy on _run_agent: carriers must NEVER call _run_agent.
+        _run_agent_calls = []
+        monkeypatch.setattr(orch, "_run_agent", lambda tid, ag, pr, **kw: (
+            _run_agent_calls.append(tid), _make_result(), _make_report("done"),
+        )[-2:])
 
         # Spawn 2 pipeline carriers
         children_payload = [
@@ -1743,10 +1754,18 @@ class TestFanoutPipeline:
                     )
                     _enqueue_parent_if_waiting(orch, sl_id)
 
-        # Run the carriers (enqueued by chain-complete) to auto-complete them
-        # and feed P's barrier.
+        # Carriers should auto-complete DIRECTLY after the last leg's
+        # _enqueue_parent_if_waiting — NO separate orch.run_step needed.
         for cid in children:
-            orch.run_step(cid)
+            carrier = db.get_task(cid)
+            assert carrier.status == TaskStatus.COMPLETED, (
+                f"carrier {cid} should auto-complete after chain completes, got {carrier.status}"
+            )
+        # Verify _run_agent was NEVER called for any carrier.
+        for cid in children:
+            assert cid not in _run_agent_calls, (
+                f"carrier {cid} must NOT call _run_agent — it has no session of its own"
+            )
 
         # P should have been enqueued exactly once
         assert enqueued_parent_count[0] == 1, (

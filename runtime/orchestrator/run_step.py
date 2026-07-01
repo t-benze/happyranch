@@ -1563,6 +1563,26 @@ def _carrier_fail_immediate(
     return True
 
 
+def _carrier_complete_on_chain_complete(
+    orch: "Orchestrator", parent: "TaskRecord",
+) -> bool:
+    """After a carrier's chain completed successfully (all legs done,
+    final leg verdict matched), complete the carrier DIRECTLY — NO
+    orch._run_agent session, NO manager-wake.  Then feed the carrier's
+    completion into the fan-out parent's barrier EXACTLY ONCE.
+
+    Returns True if the carrier was completed, False for non-carriers.
+    """
+    if not _is_carrier(orch, parent):
+        return False
+    # Complete the carrier directly — it has no session of its own.
+    _complete(orch, parent.id,
+              note="carrier chain complete")
+    # Feed carrier completion into the fan-out parent's barrier.
+    _enqueue_parent_if_waiting(orch, parent.id)
+    return True
+
+
 _FAILURE_ROUND_BOUND = 2  # at most 2 re-spawn rounds before escalation
 
 
@@ -1634,7 +1654,11 @@ def _enqueue_parent_if_waiting(
                 orch, parent, task_id, chain_snapshot,
             ):
                 return  # carrier failed; outer _enqueue_parent_if_waiting skipped
-            # fall through to sibling-check + parent-wake path below.
+            # Chain complete + verdict matched → carrier auto-completes
+            # directly (no _run_agent session, no manager-wake).
+            if _carrier_complete_on_chain_complete(orch, parent):
+                return  # carrier completed; outer _enqueue_parent_if_waiting skipped
+            # Non-carrier: fall through to sibling-check + parent-wake path below.
         else:
             # FAILED chain leg: clear the chain so the parent's next decision
             # step doesn't see a stale chain. Carrier: fail-closed.
