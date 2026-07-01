@@ -198,12 +198,11 @@ cascade-failed. Instead:
 A manager may declare a fan-out decision (`action: fanout`) to spawn N children
 in parallel (2 ≤ N ≤ 8, read-only only). The orchestrator:
 
-1. **Validates** width, width_cap_ack, workspace presence, scope, and rejects
-   per-child `then`/`expect_verdict` (read-only Phase 1 only; mutating fan-out
-   is out of scope).
+1. **Validates** width, width_cap_ack, workspace presence, and scope. A child may optionally carry `then`/`expect_verdict` — a *pipeline carrier* (Phase 2) — whose legs are validated exactly like an inline `delegate + then` chain (each leg needs `agent` + `prompt`). Pipeline children stay read-only in this slice; mutating/worktree fan-out remains out of scope.
 2. **Atomically mints** all N children via `try_delegate_many`, transitioning
    the parent to `in_progress(delegated)` with `active_fanout` set (an additive
-   JSON metadata column).
+   JSON metadata column). For pipeline carriers, the child's inline chain is
+   materialized on its own row (see Pipeline carriers below).
 3. **Parks** the parent — the existing `DELEGATED` barrier wakes it once when
    all N children are terminal (same CAS as single-child delegation).
 4. **Injects join context** into the manager's wake prompt: a structured block
@@ -212,11 +211,16 @@ in parallel (2 ≤ N ≤ 8, read-only only). The orchestrator:
 5. **Clears** `active_fanout` after successful join claim or terminal parent
    close.
 
+**Pipeline carriers (Phase 2).** A fan-out child that carries a non-empty `then` is a *carrier*: on spawn the orchestrator materializes its inline chain (`active_chain` on the child's row, via the same path as an ordinary `delegate + then`) instead of dispatching a bare read-only child. The composition is safe because `active_fanout` lives on the parent's row and `active_chain` lives on each child's row — **two independent columns on two different rows, never the same row, so there is no clobber** (the two-column-two-row invariant). Carrier detection is schema-free: a carrier is any task whose id is in its parent's `active_fanout.children_ids` and which has a non-empty `active_chain`; no new column. **Lifecycle rule: a carrier reaches a terminal state only after its own chain completes.** When a carrier's final leg matches its `expect_verdict`, the carrier has no session of its own to run — it terminates directly and feeds the parent's fan-out barrier (`_enqueue_parent_if_waiting`) without waking a manager. A carrier's internal legs never wake the parent; only the carrier's own terminal status counts toward the barrier.
+
 Failure-join reuses bounded failure-recovery (§Failure-recovery contract):
 failed fan-out children individually consume re-spawn rounds; the parent wakes
 on each terminal child, and exhaustion escalates the parent after
-`_FAILURE_ROUND_BOUND` (2) failed children. No partial-join or cascade-fail
-semantics are introduced.
+`_FAILURE_ROUND_BOUND` (2) failed children. For a pipeline carrier this is
+**fail-closed at the carrier**: a leg verdict-mismatch or a failed leg fails
+the whole carrier (no partial-chain completion), and the failed carrier then
+feeds the parent's barrier exactly as any failed child does. No partial-join
+or cascade-fail semantics are introduced.
 
 Startup recovery (daemon restart) re-enqueues parked `in_progress(delegated)`
 fan-out parents when all children are already terminal (same as

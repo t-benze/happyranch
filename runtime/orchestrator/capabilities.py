@@ -125,8 +125,8 @@ def build_capabilities_prompt(
         "```json",
         '{"action": "escalate", "reason": "<why this needs escalation>"}',
         "```\n",
-        "**fanout** (`parallel` accepted as alias) -- Spawn N parallel read-only sub-tasks "
-        "(Phase 1, team-manager only):\n",
+        "**fanout** (`parallel` accepted as alias) -- Spawn N parallel sub-tasks "
+        "(Phase 2 with pipeline, team-manager only):\n",
         "```json\n",
         '{"action": "fanout",',
         ' "children": [',
@@ -142,7 +142,8 @@ def build_capabilities_prompt(
         "- `width_cap_ack` MUST exactly match the child count.\n",
         "- `join_summary` is optional prose for the rejoin prompt.\n",
         "- Width > 4 enters founder `review_required` before children spawn.\n",
-        "- Read-only Phase 1 only; per-child `then` / `expect_verdict` are REJECTED.\n",
+        "- Each child may optionally carry `then` / `expect_verdict` (pipeline carrier — Phase 2); "
+        "pipeline children stay read-only in this slice.\n",
         "- Children spawn through the normal child/session path; the parent "
         "parks `in_progress(delegated)` with `active_fanout` set and wakes "
         "once when all children are terminal.\n",
