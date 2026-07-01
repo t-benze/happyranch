@@ -1,4 +1,5 @@
 import os
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,36 @@ from runtime.orchestrator.executors import (
 )
 from runtime.orchestrator._paths import OrgPaths
 from runtime.runtime import RuntimeDir
+
+# Executor binary names used in the tests that mock subprocess but don't
+# install real agent CLI binaries (the CI runner environment).
+_EXECUTOR_NAMES = frozenset({"claude", "codex", "opencode", "pi"})
+
+
+@pytest.fixture(autouse=True)
+def _mock_shutil_which(monkeypatch):
+    """Patch shutil.which inside executors so the executor constructors'
+    _resolve_binary calls resolve deterministically regardless of host PATH.
+
+    The real shutil.which is consulted first: when it returns a path (host
+    has the binary, or a test sets up a tmpdir on PATH), that real path is
+    honoured.  Only when the real lookup returns None and the name is a
+    recognised executor binary does this fixture inject a stable synthetic
+    path so the existing Popen-mocked tests don't crash on CI.
+    """
+    import runtime.orchestrator.executors as _ex_mod
+
+    _real_which = shutil.which
+
+    def _patched_which(name, path=None):
+        real = _real_which(name, path=path)
+        if real is not None:
+            return real
+        if name in _EXECUTOR_NAMES:
+            return f"/usr/local/bin/{os.path.basename(name)}"
+        return None
+
+    monkeypatch.setattr(_ex_mod.shutil, "which", _patched_which)
 
 
 @pytest.fixture
