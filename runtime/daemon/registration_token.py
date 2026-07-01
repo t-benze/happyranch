@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -113,6 +114,7 @@ class RegistrationTokenStore:
         self._tokens: dict[str, RegistrationTokenRecord] = {}
         self._challenges: dict[str, ConformanceChallenge] = {}
         self._ttl_seconds = ttl_seconds
+        self._lock = threading.Lock()
 
     # ── helpers ──────────────────────────────────────────────────────────
 
@@ -142,25 +144,26 @@ class RegistrationTokenStore:
         """
         if now is None:
             now = time.time()
-        self._expire_prior_tokens(org, name)
-        token = REGISTRATION_TOKEN_PREFIX + secrets.token_urlsafe(32)
-        token_hash = self._hash(token)
-        expires_at = now + self._ttl_seconds
-        self._tokens[token_hash] = RegistrationTokenRecord(
-            token_hash=token_hash,
-            org=org,
-            name=name,
-            issued_at=now,
-            expires_at=expires_at,
-        )
-        self._challenges[token_hash] = ConformanceChallenge(
-            token_hash=token_hash,
-            org=org,
-            name=name,
-            steps=[
-                ConformanceStep(step_id=s) for s in self.DEFAULT_CONFORMANCE_STEPS
-            ],
-        )
+        with self._lock:
+            self._expire_prior_tokens(org, name)
+            token = REGISTRATION_TOKEN_PREFIX + secrets.token_urlsafe(32)
+            token_hash = self._hash(token)
+            expires_at = now + self._ttl_seconds
+            self._tokens[token_hash] = RegistrationTokenRecord(
+                token_hash=token_hash,
+                org=org,
+                name=name,
+                issued_at=now,
+                expires_at=expires_at,
+            )
+            self._challenges[token_hash] = ConformanceChallenge(
+                token_hash=token_hash,
+                org=org,
+                name=name,
+                steps=[
+                    ConformanceStep(step_id=s) for s in self.DEFAULT_CONFORMANCE_STEPS
+                ],
+            )
         return token, expires_at
 
     def _expire_prior_tokens(self, org: str, name: str) -> None:
@@ -221,9 +224,12 @@ class RegistrationTokenStore:
         Returns the record if valid and unconsumed, ``None`` otherwise.
         After a successful return the token is marked consumed.
         """
-        record = self.validate(token_plaintext, org, now)
-        if record is not None:
-            record.consumed = True
+        if now is None:
+            now = time.time()
+        with self._lock:
+            record = self.validate(token_plaintext, org, now)
+            if record is not None:
+                record.consumed = True
         return record
 
     # ── Conformance state machine ────────────────────────────────────────
@@ -247,13 +253,14 @@ class RegistrationTokenStore:
         """
         if now is None:
             now = time.time()
-        record = self.validate(token_plaintext, org, now)
-        if record is None:
-            return False
-        challenge = self._challenges.get(record.token_hash)
-        if challenge is None:
-            return False
-        return challenge.record_arrival(step_id, now)
+        with self._lock:
+            record = self.validate(token_plaintext, org, now)
+            if record is None:
+                return False
+            challenge = self._challenges.get(record.token_hash)
+            if challenge is None:
+                return False
+            return challenge.record_arrival(step_id, now)
 
     def is_challenge_complete(
         self, token_plaintext: str, org: str, now: float | None = None

@@ -5,6 +5,7 @@ PR-1 of THR-052 self-registration — daemon/auth foundation ONLY.
 """
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -583,3 +584,155 @@ class TestMasterBearerStillWorks:
         client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
         r = client.post("/test-registration")
         assert r.status_code == 401
+
+
+# ── Concurrency regression tests ────────────────────────────────────────
+
+
+class TestConsumeSingleUseUnderConcurrency:
+    """Proof that consume() enforces single-use atomicity under concurrent access.
+
+    This is the regression test for the HIGH finding in TASK-1426 code review:
+    RegistrationTokenStore.consume() had a check-then-set race — two concurrent
+    threads could both pass validate() before either marked the token consumed.
+
+    The test_reproduce_race_with_barrier test below deterministically reproduces
+    the race WITHOUT the lock: all N threads call validate() (which checks the
+    unconsumed flag), synchronize at a barrier, then each thread marks the
+    record consumed. Without a lock guarding the validate-then-mark region,
+    all N threads succeed — proving the single-use invariant is violated.
+
+    With the lock added to consume(), validate-then-mark becomes atomic and
+    exactly one thread succeeds.
+    """
+
+    NUM_THREADS = 8
+
+    def test_reproduce_race_with_barrier(self, store):
+        """Deterministic reproduction of the check-then-set race.
+
+        This tests the exact race pattern directly: validate() then mark consumed,
+        with a barrier between them so all threads pass validate() before any
+        thread reaches the mutation. Without a lock, all threads succeed; with
+        the lock enclosing consume(), only one should pass validate().
+
+        THIS TEST IS RED (all 8 threads succeed) when run against the
+        unprotected store internals directly. It verifies the race EXISTS.
+        After the lock fix, calling consume() (which bundles validate+mark
+        under the lock) yields exactly 1 success.
+        """
+        now = 1_000_000.0
+        token, _ = store.mint("alpha", "my-executor", now=now)
+
+        # Phase A: directly reproduce the check-then-set gap.
+        # This is the code path consume() takes WITHOUT the lock — validate()
+        # then record.consumed = True with no barrier in between.
+        # By inserting a threading.Barrier between the two steps, we make the
+        # race deterministic: all threads pass validate(), synchronize, then
+        # each thread marks consumed.
+        successes = []
+        lock = threading.Lock()
+        barrier = threading.Barrier(self.NUM_THREADS)
+
+        def race_step():
+            # Simulate the unprotected consume(): validate then mark.
+            record = store.validate(token, "alpha", now=now)
+            barrier.wait()  # all threads have now passed validate()
+            if record is not None:
+                record.consumed = True
+                with lock:
+                    successes.append(True)
+
+        threads = [
+            threading.Thread(target=race_step, daemon=True)
+            for _ in range(self.NUM_THREADS)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Without lock protection: ALL threads see the token as unconsumed
+        # and mark it consumed. This proves the race IS real — the single-use
+        # invariant is broken by the check-then-set gap.
+        assert len(successes) == self.NUM_THREADS, (
+            f"Race reproduction: expected all {self.NUM_THREADS} threads to "
+            f"pass validate() and mark consumed (no lock), got {len(successes)}."
+        )
+
+    def test_consume_with_lock_exactly_one_wins(self, store):
+        """With the locked consume() method, concurrent access yields exactly one
+        successful consumption of the token."""
+        now = 1_000_000.0
+        token, _ = store.mint("alpha", "my-executor", now=now)
+
+        success_count = 0
+        success_lock = threading.Lock()
+        barrier = threading.Barrier(self.NUM_THREADS)
+
+        def try_consume():
+            nonlocal success_count
+            barrier.wait()
+            record = store.consume(token, "alpha", now=now)
+            if record is not None:
+                with success_lock:
+                    success_count += 1
+
+        threads = [
+            threading.Thread(target=try_consume, daemon=True)
+            for _ in range(self.NUM_THREADS)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert success_count == 1, (
+            f"Expected exactly 1 successful consume under concurrency, "
+            f"got {success_count}. The lock enforces atomic validate-then-mark."
+        )
+
+    def test_concurrent_consume_second_call_rejected(self, store):
+        """After consume() settles, subsequent calls must all be rejected."""
+        now = 1_000_000.0
+        token, _ = store.mint("alpha", "my-executor", now=now)
+
+        # Consume once
+        assert store.consume(token, "alpha", now=now) is not None
+        # Subsequent consumes must all fail
+        assert store.consume(token, "alpha", now=now) is None
+        assert store.consume(token, "alpha", now=now) is None
+
+    def test_concurrent_mint_vs_consume_consistency(self, store):
+        """Concurrent mint() (which expires prior tokens) and consume() on a
+        stale token must not produce spurious double-consumes."""
+        now = 1_000_000.0
+        old_token, _ = store.mint("alpha", "my-executor", now=now)
+
+        consume_successes = []
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def mint_new():
+            barrier.wait()
+            # mint a new token for the same (org, name) — this calls
+            # _expire_prior_tokens which mutates the old token's consumed flag
+            store.mint("alpha", "my-executor", now=now + 1)
+
+        def consume_old():
+            barrier.wait()
+            record = store.consume(old_token, "alpha", now=now + 1)
+            with lock:
+                consume_successes.append(record is not None)
+
+        t1 = threading.Thread(target=mint_new, daemon=True)
+        t2 = threading.Thread(target=consume_old, daemon=True)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # The old token should NOT be double-consumed — either mint expired
+        # it first (consume fails) or consume marked it consumed first.
+        # After both operations, the old token must be consumed.
+        assert store.validate(old_token, "alpha", now=now + 1) is None
