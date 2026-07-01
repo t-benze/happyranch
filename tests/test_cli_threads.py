@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 
 def _json_response(body: dict) -> Mock:
     response = Mock()
@@ -477,7 +479,10 @@ def test_threads_attachments_list_prints_rows(monkeypatch, capsys) -> None:
     }
     _stub_client(monkeypatch, fake)
 
-    args = argparse.Namespace(org="alpha", thread_id="THR-001")
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001", from_file=None,
+        agent="founder", invocation_token=None,
+    )
     cmd_threads_attachments_list(args)
 
     out = capsys.readouterr().out
@@ -495,7 +500,10 @@ def test_threads_attachments_list_empty(monkeypatch, capsys) -> None:
     fake.list_thread_attachments.return_value = {"attachments": []}
     _stub_client(monkeypatch, fake)
 
-    args = argparse.Namespace(org="alpha", thread_id="THR-001")
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001", from_file=None,
+        agent="founder", invocation_token=None,
+    )
     cmd_threads_attachments_list(args)
 
     out = capsys.readouterr().out
@@ -514,6 +522,8 @@ def test_threads_attachments_get_saves_file(monkeypatch, capsys, tmp_path: Path)
         org="alpha", thread_id="THR-001",
         attachment_id="att-001",
         output=str(out_path),
+        from_file=None,
+        agent="founder", invocation_token=None,
     )
     cmd_threads_attachments_get(args)
 
@@ -707,10 +717,10 @@ def test_threads_attachments_get_from_file(
     assert out.read_bytes() == b"content"
 
 
-def test_threads_attachments_list_bearer_only(
+def test_threads_attachments_list_missing_agent_exits_nonzero(
     monkeypatch, capsys,
 ) -> None:
-    """attachments list without agent/token works (founder bearer path)."""
+    """attachments list without --agent exits nonzero and does not call client."""
     from cli.commands.threads import cmd_threads_attachments_list
     fake = Mock()
     fake.list_thread_attachments.return_value = {"attachments": []}
@@ -720,8 +730,88 @@ def test_threads_attachments_list_bearer_only(
         org="alpha", thread_id="THR-001", from_file=None,
         agent=None, invocation_token=None,
     )
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_threads_attachments_list(args)
+    assert exc_info.value.code != 0
+    fake.list_thread_attachments.assert_not_called()
+
+
+def test_threads_attachments_list_missing_token_exits_nonzero(
+    monkeypatch, capsys,
+) -> None:
+    """attachments list with agent but no invocation_token exits nonzero."""
+    from cli.commands.threads import cmd_threads_attachments_list
+    fake = Mock()
+    fake.list_thread_attachments.return_value = {"attachments": []}
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001", from_file=None,
+        agent="dev_agent", invocation_token=None,
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_threads_attachments_list(args)
+    assert exc_info.value.code != 0
+    fake.list_thread_attachments.assert_not_called()
+
+
+def test_threads_attachments_get_missing_agent_exits_nonzero(
+    monkeypatch, capsys, tmp_path: Path,
+) -> None:
+    """attachments get without --agent exits nonzero and does not call client."""
+    from cli.commands.threads import cmd_threads_attachments_get
+    fake = Mock()
+    fake.get_thread_attachment.return_value = b"x"
+    _stub_client(monkeypatch, fake)
+
+    out = tmp_path / "out.bin"
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001", attachment_id="att-1",
+        from_file=None, agent=None, invocation_token=None,
+        output=str(out),
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_threads_attachments_get(args)
+    assert exc_info.value.code != 0
+    fake.get_thread_attachment.assert_not_called()
+
+
+def test_threads_attachments_get_missing_token_exits_nonzero(
+    monkeypatch, capsys, tmp_path: Path,
+) -> None:
+    """attachments get with agent but no invocation_token exits nonzero."""
+    from cli.commands.threads import cmd_threads_attachments_get
+    fake = Mock()
+    fake.get_thread_attachment.return_value = b"x"
+    _stub_client(monkeypatch, fake)
+
+    out = tmp_path / "out.bin"
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001", attachment_id="att-1",
+        from_file=None, agent="dev_agent", invocation_token=None,
+        output=str(out),
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_threads_attachments_get(args)
+    assert exc_info.value.code != 0
+    fake.get_thread_attachment.assert_not_called()
+
+
+def test_threads_attachments_list_founder_works(
+    monkeypatch, capsys,
+) -> None:
+    """attachments list with agent=founder works (founder bearer path)."""
+    from cli.commands.threads import cmd_threads_attachments_list
+    fake = Mock()
+    fake.list_thread_attachments.return_value = {"attachments": []}
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001", from_file=None,
+        agent="founder", invocation_token=None,
+    )
     cmd_threads_attachments_list(args)
 
-    # No agent or token passed.
-    assert fake.list_thread_attachments.call_args.kwargs["agent"] is None
+    # Founder path: agent passed, no token required.
+    assert fake.list_thread_attachments.call_args.kwargs["agent"] == "founder"
     assert fake.list_thread_attachments.call_args.kwargs["invocation_token"] is None

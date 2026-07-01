@@ -2116,9 +2116,14 @@ async def list_thread_attachments(
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
-    # Agent-facing access must carry proof. Founder/web bearer path (no agent)
-    # remains unrestricted — that caller already has the org bearer token.
-    if agent is not None and agent != "founder":
+    # Agent-facing access must carry proof. No-agent requests are rejected
+    # so a caller cannot bypass by omitting params. Founder bearer path
+    # (agent='founder') remains unrestricted.
+    if not agent:
+        raise HTTPException(
+            status_code=401, detail={"code": "agent_required"},
+        )
+    if agent != "founder":
         if not invocation_token:
             raise HTTPException(
                 status_code=401,
@@ -2161,9 +2166,14 @@ async def get_thread_attachment(
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
-    # Agent-facing access must carry proof. Founder/web bearer path (no agent)
-    # remains unrestricted — that caller already has the org bearer token.
-    if agent is not None and agent != "founder":
+    # Agent-facing access must carry proof. No-agent requests are rejected
+    # so a caller cannot bypass by omitting params. Founder bearer path
+    # (agent='founder') remains unrestricted.
+    if not agent:
+        raise HTTPException(
+            status_code=401, detail={"code": "agent_required"},
+        )
+    if agent != "founder":
         if not invocation_token:
             raise HTTPException(
                 status_code=401,

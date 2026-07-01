@@ -1686,6 +1686,7 @@ def test_list_thread_attachments(client, auth_headers, org_state) -> None:
 
     resp = client.get(
         f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "founder"},
         headers=auth_headers,
     )
     assert resp.status_code == 200
@@ -1710,6 +1711,7 @@ def test_get_thread_attachment_download(client, auth_headers, org_state) -> None
 
     resp = client.get(
         f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "founder"},
         headers=auth_headers,
     )
     assert resp.status_code == 200
@@ -1724,6 +1726,7 @@ def test_get_thread_attachment_not_found(client, auth_headers, org_state) -> Non
 
     resp = client.get(
         f"/api/v1/orgs/alpha/threads/{tid}/attachments/nonexistent",
+        params={"agent": "founder"},
         headers=auth_headers,
     )
     assert resp.status_code == 404
@@ -2220,10 +2223,10 @@ def test_founder_bypasses_participation_check(
     assert get_resp.status_code == 200
 
 
-def test_no_agent_param_allows_bearer_only(
+def test_no_agent_param_rejected(
     client, auth_headers, org_state,
 ) -> None:
-    """Without agent param, list/get succeed for bearer-authenticated callers."""
+    """Without agent param, list/get are rejected — no bearer-only bypass."""
     _seed_agent(org_state, "dev_agent")
     tid = _seed_open_thread(org_state, participants=["dev_agent"])
 
@@ -2235,19 +2238,21 @@ def test_no_agent_param_allows_bearer_only(
     )
     att_id = upload.json()["attachment_id"]
 
-    # List without agent param — succeeds for bearer-authenticated callers.
+    # List without agent param — rejected.
     list_resp = client.get(
         f"/api/v1/orgs/alpha/threads/{tid}/attachments",
         headers=auth_headers,
     )
-    assert list_resp.status_code == 200
+    assert list_resp.status_code == 401
+    assert list_resp.json()["detail"]["code"] == "agent_required"
 
-    # Get without agent param — succeeds.
+    # Get without agent param — rejected.
     get_resp = client.get(
         f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
         headers=auth_headers,
     )
-    assert get_resp.status_code == 200
+    assert get_resp.status_code == 401
+    assert get_resp.json()["detail"]["code"] == "agent_required"
 
 
 # ── Compose-as-agent multipart (TASK-1616) ─────────────────────────────────

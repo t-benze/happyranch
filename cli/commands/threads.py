@@ -471,6 +471,21 @@ def cmd_threads_attachments_list(args: argparse.Namespace) -> None:
     if not thread_id:
         print("error: --thread-id is required (or --from-file with thread_id)", file=sys.stderr)
         sys.exit(2)
+    if not agent:
+        print(
+            "error: --agent is required (or --from-file with agent).\n"
+            "  Agent callers must provide proof of thread participation.\n"
+            "  Use --agent founder for bearer-only founder access.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if agent != "founder" and not invocation_token:
+        print(
+            "error: --invocation-token is required for agent access.\n"
+            "  Use --from-file with invocation_token or --invocation-token directly.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     r = client.list_thread_attachments(
         slug=slug,
         thread_id=thread_id,
@@ -519,6 +534,21 @@ def cmd_threads_attachments_get(args: argparse.Namespace) -> None:
         sys.exit(2)
     if not attachment_id:
         print("error: attachment_id is required (or --from-file with attachment_id)", file=sys.stderr)
+        sys.exit(2)
+    if not agent:
+        print(
+            "error: --agent is required (or --from-file with agent).\n"
+            "  Agent callers must provide proof of thread participation.\n"
+            "  Use --agent founder for bearer-only founder access.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if agent != "founder" and not invocation_token:
+        print(
+            "error: --invocation-token is required for agent access.\n"
+            "  Use --from-file with invocation_token or --invocation-token directly.",
+            file=sys.stderr,
+        )
         sys.exit(2)
     content = client.get_thread_attachment(
         slug=slug,
