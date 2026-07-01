@@ -18,6 +18,9 @@ dependencies = [
 happyranch = "cli.main:main"
 
 [dependency-groups]
+build = [
+    "pyinstaller>=6.21.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio",
