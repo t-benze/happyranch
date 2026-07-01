@@ -201,6 +201,111 @@ describe('Composer / mentions', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('renders abort button when onAbort is provided, disabled when !abortEnabled', async () => {
+    const onAbort = vi.fn();
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-006"
+        orgSlug="test-org"
+        pending={false}
+        onSend={NOOP_SEND}
+        abortLabel="Abort replies"
+        onAbort={onAbort}
+        abortEnabled={false}
+      />,
+    );
+    // Button is rendered but disabled.
+    const btn = screen.getByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeDisabled();
+    // Clicking a disabled button does not call onAbort.
+    await userEvent.setup().click(btn);
+    expect(onAbort).not.toHaveBeenCalled();
+  });
+
+  it('calls onAbort when enabled and clicked', async () => {
+    const onAbort = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-007"
+        orgSlug="test-org"
+        pending={false}
+        onSend={NOOP_SEND}
+        abortLabel="Abort replies"
+        onAbort={onAbort}
+        abortEnabled={true}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: /Abort replies/i });
+    expect(btn).not.toBeDisabled();
+    await user.click(btn);
+    expect(onAbort).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders abort button immediately before Send in DOM order', async () => {
+    const onAbort = vi.fn();
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-008"
+        orgSlug="test-org"
+        pending={false}
+        onSend={NOOP_SEND}
+        abortLabel="Abort replies"
+        onAbort={onAbort}
+        abortEnabled={true}
+      />,
+    );
+    const buttons = screen.getAllByRole('button');
+    // Find the buttons of interest
+    const abortIdx = buttons.findIndex((b) => b.textContent === 'Abort replies');
+    const sendIdx = buttons.findIndex((b) => b.textContent === 'Send');
+    expect(abortIdx).toBeGreaterThan(-1);
+    expect(sendIdx).toBeGreaterThan(-1);
+    // Abort must come before Send in DOM order.
+    expect(abortIdx).toBeLessThan(sendIdx);
+  });
+
+  it('shows Aborting… when abortPending is true and disables the button', async () => {
+    const onAbort = vi.fn();
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-009"
+        orgSlug="test-org"
+        pending={false}
+        onSend={NOOP_SEND}
+        abortLabel="Abort replies"
+        onAbort={onAbort}
+        abortEnabled={true}
+        abortPending={true}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: /Aborting…/i });
+    expect(btn).toBeDisabled();
+  });
+
+  it('respects composer disabled prop when abort is provided', async () => {
+    const onAbort = vi.fn();
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-010"
+        orgSlug="test-org"
+        disabled={true}
+        pending={false}
+        onSend={NOOP_SEND}
+        abortLabel="Abort replies"
+        onAbort={onAbort}
+        abortEnabled={true}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeDisabled();
+  });
+
   it('literal @all is recognized regardless of agents list', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn(async () => {});
