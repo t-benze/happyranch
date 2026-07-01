@@ -259,6 +259,8 @@ Traps:
 
 ## PR CI Wait / Guarded Merge
 
+- **PR creation is not task completion.** A task whose requested outcome is landing code reports `status=blocked` with `waiting_on_job_ids` after submitting the CI poll job, not `status=completed` at PR creation. The CI wait and guarded merge are part of the task lifecycle.
+
 Traps:
 
 - SHA-pin every wait. If the PR head changes, stop with `stale_head`; do not continue polling the new head silently.
