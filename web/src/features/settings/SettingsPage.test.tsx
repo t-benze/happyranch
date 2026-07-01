@@ -200,7 +200,7 @@ describe('SettingsPage — Organization section', () => {
 
     // All org fields show "Applies live" badge
     const liveBadges = within(content).getAllByText('Applies live');
-    expect(liveBadges.length).toBeGreaterThanOrEqual(8); // timeout + dreaming fields + threads fields
+    expect(liveBadges.length).toBeGreaterThanOrEqual(7); // timeout + dreaming fields + threads fields (no turn cap)
   });
 
   test('Clean⇄Dirty: save bar appears when form is dirty', async () => {
