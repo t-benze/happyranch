@@ -156,10 +156,27 @@ def _sweep_on_startup(
     # was killed by the restart, so every pending invocation is orphaned.
     # Reap them to 'failed' with decline_reason='daemon_restart' so the UI
     # reply box (queued/working render) clears on next poll.
-    # Uses the thread-agnostic bulk variant of reap_pending_invocations —
-    # a pending invocation is orphaned regardless of thread status (open or
+    # A pending invocation is orphaned regardless of thread status (open or
     # archived), so we reap across ALL threads.
-    db.reap_all_pending_invocations(decline_reason="daemon_restart")
+    #
+    # This uses db._conn directly (bypassing the Database._synchronized
+    # lock) because _sweep_on_startup runs synchronously at boot, before
+    # the event loop or worker pool starts — there is no concurrent access
+    # to the DB connection at this point. The UPDATE is guarded by
+    # WHERE status='pending' so already-terminal rows are preserved.
+    from datetime import datetime, timezone
+    _now = datetime.now(timezone.utc).isoformat()
+    cursor = db._conn.execute(
+        "UPDATE thread_invocations SET status = 'failed', "
+        "decline_reason = ?, consumed_at = ? "
+        "WHERE status = 'pending'",
+        ("daemon_restart", _now),
+    )
+    db._conn.commit()
+    logger.debug(
+        "startup sweep: reaped %d orphaned pending thread invocations",
+        cursor.rowcount,
+    )
 
 
 def _build_state(settings: Settings) -> DaemonState:

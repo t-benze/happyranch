@@ -3539,29 +3539,6 @@ class Database:
         return cursor.rowcount
 
     @_synchronized
-    def reap_all_pending_invocations(
-        self,
-        *,
-        decline_reason: str,
-    ) -> int:
-        """Reap EVERY pending thread invocation across ALL threads to failed.
-
-        Used by the daemon startup sweep (Branch 6) to clear orphaned pending
-        invocations left by a daemon restart. Unlike ``reap_pending_invocations``
-        this has no thread_id filter — at restart every reply subprocess is dead
-        and every pending invocation is by definition orphaned.
-        """
-        now = _now().isoformat()
-        cursor = self._conn.execute(
-            "UPDATE thread_invocations SET status = 'failed', "
-            "decline_reason = ?, consumed_at = ? "
-            "WHERE status = 'pending'",
-            (decline_reason, now),
-        )
-        self._conn.commit()
-        return cursor.rowcount
-
-    @_synchronized
     def increment_thread_turns_used(self, thread_id: str, *, by: int = 1) -> None:
         self._conn.execute(
             "UPDATE threads SET turns_used = turns_used + ? WHERE id = ?",
