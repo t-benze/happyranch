@@ -485,7 +485,7 @@ Valid from any non-terminal state (`open` or `archiving`). From `archiving` it f
 
 ### 5.9 Extend — `POST /threads/{id}/extend`
 
-Request: `{"new_cap": 1000}`. Validation: `new_cap > current turn_cap`. Inserts `kind='system', kind_tag='turn_cap_extended'` message. The `turns_used` / `turn_cap` counters are tracked for visibility but no longer enforce a hard gate — the turn-cap guard was removed per THR-046 msg86. `/extend` still bumps the counter (soft, vestigial).
+Request: `{"new_cap": 1000}`. Validation: `new_cap > current turn_cap`. Inserts `kind='system', kind_tag='turn_cap_extended'` message. `turns_used` / `turn_cap` are vestigial internal tracking fields only — not displayed in the UI. The turn-cap enforcement guard was removed per THR-046 msg86. `/extend` still bumps the counter (soft, vestigial).
 
 ### 5.10 SSE — live updates
 
@@ -527,7 +527,7 @@ This callback does NOT count toward `turns_used` — close-outs are bookkeeping,
 
 ### 5.11 Turn tracking
 
-**Hard enforcement was removed per THR-046 msg86.** Before that change, each fan-out (compose, send, invite-bootstrap) projected `turns_used + addressed_count` against `turn_cap` and returned HTTP 429 `turn_cap_exceeded`. Today, `turns_used` is still incremented per agent invocation and displayed, but it no longer gates posting, replying, or invocation-minting. `/extend` still bumps `turn_cap` (soft, vestigial).
+**Hard enforcement was removed per THR-046 msg86.** Before that change, each fan-out (compose, send, invite-bootstrap) projected `turns_used + addressed_count` against `turn_cap` and returned HTTP 429 `turn_cap_exceeded`. Today, `turns_used` is still incremented per agent invocation as a vestigial internal counter — it no longer gates posting, replying, or invocation-minting, and it is not displayed in the web UI. `/extend` still bumps `turn_cap` (soft, vestigial).
 
 What counts toward `turns_used`: each **agent invocation** (reply, decline, bootstrap-on-invite, close-out). System messages (founder-archive, dispatch-system, turn-cap-extend, participant-added) do NOT count — they're zero-cost daemon-generated rows. Founder-sent messages themselves don't count either; only the resulting agent fan-out does. The cap measures agent-time spent, not message volume.
 
@@ -586,7 +586,7 @@ The executor receives a system prompt containing:
    Consult `protocol/skills/thread/SKILL.md` and respond.
    ```
 
-For large threads, the full history is sent verbatim — no condensation in v1. The `turns_used` counter and soft `/extend` remain for visibility, but hard enforcement was removed per THR-046 msg86.
+For large threads, the full history is sent verbatim — no condensation in v1. `turns_used` and `turn_cap` are vestigial internal counters not displayed in the UI; hard enforcement was removed per THR-046 msg86.
 
 ### 6.3 Invocation execution
 
@@ -944,7 +944,7 @@ No new top-level `OPC_` env vars in v1. Org-level config is the customization su
 | Agent reply when not a participant | 403 `not_participant`. |
 | Agent reply with `in_response_to_seq` referencing a message that didn't address them | 400 `not_addressed`. |
 | `addressed_to` contains an agent who is not a current participant | 422 `addressee_not_participant`. |
-| `turns_used + addressed_count > turn_cap` | 429 `turn_cap_exceeded` with `{used, cap, requested}`. |
+| Turn cap tracking is soft/display-only — no 429 gate remains after THR-046 msg86 removal. |
 | Invocation subprocess exits without terminal callback within `session_timeout_seconds` | Daemon marks token `status='timeout'`; auto-decline inserted for `reply`/`bootstrap` purposes; close-out failures are silent. Audit `thread_invocation_timeout` / `thread_invocation_failed`. |
 | `POST /archive` while thread is `archiving` (re-entry) | 409 `archive_in_progress` with `{archive_requested_at, pending_close_outs}`. |
 | `POST /archive` while thread is `archived` | 200 idempotent with existing `transcript_path`. |

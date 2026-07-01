@@ -78,7 +78,7 @@ parallel, since they have the fewest dependencies on existing code.
 |---|---|---|---|---|
 | List leads with last-speaker + avatar stack + status pills | Cards show subject/chip/turn counter | NEEDS-REWORK | M | Low |
 | **System/tool-run events visually distinct** from prose (embedded run cards, task-ref cards) | Flat transcript; system events inline (current §B) | NEEDS-REWORK | M | Med — needs the daemon to expose structured event/tool-run data |
-| Turn budget visible before cap | Invisible until near cap (current §B) | NEEDS-REWORK | S | Low |
+| Turn budget visible before cap | Removed from UI per THR-046 msg126 | RESOLVED | S | Low |
 | @mention routing | Broadcast, no @mention routing | MISSING / DIVERGENT | M | **High (P1)** — must not imply routing that doesn't exist |
 
 ### Tasks
@@ -167,7 +167,7 @@ surfaces (Spend, Dreams, Schedule) + Assistant dock + editable Agents. Of these,
 correctness; action chips that execute privileged ops).
 
 **Quick wins (S, low risk):** default-landing route (IA-2), auto-resolution positive
-metric on Home, turn-budget visibility, KB usage surfacing, Settings autocomplete,
+metric on Home, KB usage surfacing, Settings autocomplete,
 nav grouping. Several of these are "surface data the daemon already stores."
 
 **Already largely done:** editable Org settings (#102) — reuse, don't rebuild.

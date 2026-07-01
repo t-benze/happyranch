@@ -189,7 +189,8 @@ criteria** with P1 as the dominant lens. Ordered by the Direction A sidebar.
     text, but **no affordance may imply an @mention changes routing or wakes a
     specific agent** (P1 honesty). Render @mentions as plain broadcast references,
     not as a routing control.
-  - **Turn budget (X/500)** visible before the cap.
+  - Turn budget is tracked internally but no longer displayed in the UI per
+    THR-046 msg126 turn-cap removal.
 - **Deferred.** Real @mention routing (NEW-LOGIC → §6); agent's-own-execution
   tool-run cards inside the thread transcript (new store → §6).
 - **Acceptance criteria.**
@@ -197,9 +198,8 @@ criteria** with P1 as the dominant lens. Ordered by the Direction A sidebar.
     them* without opening the thread. **[verifiable]**
   - AC2: System/dispatch events are visually distinct from human/agent prose.
     **[verifiable]**
-  - AC3: Turn budget (X/500) is visible before the cap. **[verifiable]**
-  - AC4 (P1): No UI element implies @mention routing the daemon does not perform.
-    **[verifiable — dominant lens here]**
+  - AC3: No P1 (honesty): no UI element implies @mention routing the daemon does
+    not perform. **[verifiable — dominant lens here]**
 
 ---
 
@@ -479,7 +479,7 @@ criteria** with P1 as the dominant lens. Ordered by the Direction A sidebar.
     Organization · Agents · Executors · Usage`) + field panel + sticky save bar;
     a real bookmarkable **`/settings` route**.
   - **Org section editable** (Nightly dreaming: enabled / schedule / timezone /
-    agent mode / catch-up; Threads: default turn cap / session timeout) — **already
+    agent mode / catch-up; Threads: session timeout) — **already
     shipped (#102)**; reuse. **Real saves in v1 (Q7).**
   - **Per-field live-vs-restart labeling** ("Applies immediately" vs "restart to
     apply"), matching actual daemon behavior (P1).

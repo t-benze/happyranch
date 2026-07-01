@@ -164,7 +164,7 @@ Each step gates the next:
 7. **External recipients required**: after dedup and removing the composer, `recipients` minus `{composer}` must be non-empty OR `@founder` must be addressed. Else 422 `empty_external_recipients`.
 8. **`body_markdown`** non-empty after strip. Else 422 `empty_body`.
 9. **`addressed_to`** is either `["@all"]` or a non-empty subset of `recipients`. The literal `@founder` is a permitted member of `recipients` (it skips the agent-existence check in step 6) and is therefore also permitted in `addressed_to` whenever it's present in `recipients`. Else 422 `addressed_to_not_subset`. `@all` mixed with explicit names is still rejected per v1.
-10. **Turn cap**: `addressed_count` (agent-only — `@founder` doesn't count) + `0` (new thread) ≤ `turn_cap`. Else 429 `turn_cap_exceeded` (almost impossible at thread start; included for symmetry).
+10. **Turn tracking** (internal only): `turns_used` is incremented per agent invocation as a vestigial internal counter. It is not displayed in the UI and hard enforcement was removed per THR-046 msg86.
 
 ### 5.3 Effect
 
