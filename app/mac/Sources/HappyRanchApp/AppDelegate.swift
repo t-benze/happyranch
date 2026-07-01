@@ -135,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         do {
             try supervisor.start()
             refreshDerivedState()
-            diagnostics.recordStartCommand("uv run python -m runtime.daemon")
+            diagnostics.recordStartCommand(Self.startCommandForCurrentMode())
 
             // Launch the daemon process
             launchDaemonProcess()
@@ -167,11 +167,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         stopDaemon(confirmed: true)
     }
 
+    // MARK: - Packaging mode
+
+    /// Test seam: override in tests to simulate bundled mode without setting
+    /// the real process environment.  Production code never sets this.
+    nonisolated(unsafe) static var _testPackagingMode: String?
+
+    /// Returns the packaging mode: "bundled" when running inside a .app bundle
+    /// with PACKAGING_MODE=bundled, "dev" otherwise.
+    nonisolated static func packagingMode() -> String {
+        if let override = _testPackagingMode { return override }
+        return ProcessInfo.processInfo.environment["PACKAGING_MODE"] ?? "dev"
+    }
+
+    /// Returns the display string for the start command in the current mode.
+    nonisolated static func startCommandForCurrentMode() -> String {
+        if packagingMode() == "bundled" {
+            return "Contents/Resources/daemon/happyranch-daemon"
+        }
+        return "uv run python -m runtime.daemon"
+    }
+
+    /// Returns the filesystem path to the frozen daemon binary inside the .app bundle.
+    /// Bundle.main.resourceURL is the Contents/Resources directory.
+    nonisolated static func bundledDaemonPath() -> String? {
+        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+        return resourceURL
+            .appendingPathComponent("daemon")
+            .appendingPathComponent("happyranch-daemon")
+            .path
+    }
+
+    /// Returns the filesystem path to the bundled web/dist directory inside the .app bundle.
+    nonisolated static func bundledWebDistPath() -> String? {
+        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+        return resourceURL
+            .appendingPathComponent("web")
+            .appendingPathComponent("dist")
+            .path
+    }
+
     // MARK: - Process management
 
     private func launchDaemonProcess() {
         let pc = processController
+        let mode = Self.packagingMode()
 
+        if mode == "bundled" {
+            launchBundledDaemon(pc: pc)
+        } else {
+            launchDevDaemon(pc: pc)
+        }
+    }
+
+    /// Launch the frozen daemon binary from inside the .app bundle (bundled mode).
+    private func launchBundledDaemon(pc: ProcessControlling) {
+        guard let daemonPath = Self.bundledDaemonPath() else {
+            stateText = "Bundled daemon not found in app bundle"
+            return
+        }
+
+        var childEnv = EnvironmentSanitizer.buildChildEnvironment(
+            daemonHome: daemonHome(),
+            parentEnvironment: ProcessInfo.processInfo.environment
+        )
+        // In bundled mode, point HAPPYRANCH_WEB_DIST at the bundled web/dist.
+        if let webDistPath = Self.bundledWebDistPath() {
+            childEnv["HAPPYRANCH_WEB_DIST"] = webDistPath
+        }
+
+        do {
+            let handle = try pc.launch(
+                executableURL: URL(fileURLWithPath: daemonPath),
+                arguments: [],
+                currentDirectoryURL: URL(fileURLWithPath: daemonHome()),
+                environment: childEnv,
+                terminationHandler: { @Sendable [weak self] exitedHandle in
+                    let exitCode = exitedHandle.terminationStatus
+                    let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if let ch = self.currentHandle,
+                           ch.processIdentifier != exitedHandle.processIdentifier {
+                            return
+                        }
+                        self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
+                        self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
+                        self.refreshDerivedState()
+                        if self.pendingRestart {
+                            self.pendingRestart = false
+                            self.startDaemon()
+                        }
+                    }
+                }
+            )
+            currentHandle = handle
+            let pid = handle.processIdentifier
+
+            diagnostics.recordDaemonState(pid: pid, port: 0, bindHost: "127.0.0.1", state: "starting")
+
+            Task {
+                await healthProbeLoop(pid: pid)
+            }
+        } catch {
+            currentHandle = nil
+            stateText = "Launch failed: \(error.localizedDescription)"
+            supervisor.onProcessExited(exitCode: -1, signal: nil)
+            refreshDerivedState()
+        }
+    }
+
+    /// Launch the daemon via `uv run` from the repo root (dev mode).
+    private func launchDevDaemon(pc: ProcessControlling) {
         do {
             let handle = try pc.launch(
                 executableURL: URL(fileURLWithPath: "/usr/bin/env"),
@@ -326,7 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func refreshDerivedState() {
         stateText = supervisor.state.description
         let s = supervisor.state
-        canStart = (s == .stopped || s == .crashed || s == .stalePid)
+        canStart = (s == .stopped || s == .crashed || s == .stalePid || s == .failed)
         canStop = s.canStop
         canRestart = canStop && supervisor.isManagedBySelf
     }

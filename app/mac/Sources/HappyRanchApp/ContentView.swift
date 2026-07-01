@@ -29,9 +29,15 @@ struct ContentView: View {
     @EnvironmentObject var appDelegate: AppDelegate
 
     var body: some View {
-        Group {
+        ZStack {
             if let urlString = appDelegate.webViewURL, let url = URL(string: urlString) {
                 WebView(url: url)
+                    .overlay(alignment: .top) {
+                        if appDelegate.supervisor.state == .unhealthy ||
+                           appDelegate.supervisor.state == .failed {
+                            unhealthyBanner
+                        }
+                    }
             } else {
                 placeholderView
             }
@@ -64,7 +70,8 @@ struct ContentView: View {
             if appDelegate.supervisor.state == .notConfigured ||
                appDelegate.supervisor.state == .stopped ||
                appDelegate.supervisor.state == .crashed ||
-               appDelegate.supervisor.state == .stalePid {
+               appDelegate.supervisor.state == .stalePid ||
+               appDelegate.supervisor.state == .failed {
                 Button("Start Daemon") {
                     appDelegate.startDaemon()
                 }
@@ -88,5 +95,41 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Unhealthy / failed banner
+
+    /// Lightweight in-window warning banner shown when the daemon is
+    /// unhealthy or failed WHILE the WebView is up (the WebView stays visible;
+    /// the banner overlays the top edge with a recovery action).
+    private var unhealthyBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.yellow)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Daemon issue")
+                    .font(.headline)
+                Text(appDelegate.supervisor.state == .unhealthy
+                     ? "Health check is failing — daemon may recover on its own."
+                     : "Daemon has failed and needs a restart.")
+                    .font(.caption)
+            }
+            Spacer()
+            if appDelegate.supervisor.state == .failed {
+                Button("Restart Daemon") {
+                    appDelegate.startDaemon()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .shadow(radius: 4)
+        )
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
     }
 }

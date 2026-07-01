@@ -62,7 +62,7 @@ struct MenuCommandDerivationTests {
     /// Verifies canStart / canStop / canRestart for every supervisor state
     /// reachable by the menu, across both managed and external ownership.
     ///
-    /// canStart = .stopped, .crashed, .stalePid
+    /// canStart = .stopped, .crashed, .stalePid, .failed
     /// canStop  = .running, .unhealthy, .starting
     /// canRestart = canStop && isManagedBySelf
     @Test("derived booleans across all supervisor states, managed and external",
@@ -81,7 +81,8 @@ struct MenuCommandDerivationTests {
             (DaemonState.stalePid,      false, true,  false, false),
             (DaemonState.stopping,      true,  false, false, false),
             (DaemonState.crashed,       true,  true,  false, false),
-            (DaemonState.failed,        false, false, false, false),
+            (DaemonState.failed,        false, true,  false, false),
+            (DaemonState.failed,        true,  true,  false, false),
           ] as [(DaemonState, Bool, Bool, Bool, Bool)])
     func derivedBooleans(
         state: DaemonState,
