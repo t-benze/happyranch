@@ -485,7 +485,7 @@ Valid from any non-terminal state (`open` or `archiving`). From `archiving` it f
 
 ### 5.9 Extend — `POST /threads/{id}/extend`
 
-Request: `{"new_cap": 1000}`. Validation: `new_cap > current turn_cap`. Inserts `kind='system', kind_tag='turn_cap_extended'` message. Cap is a soft circuit-breaker, not a hard cost lid.
+Request: `{"new_cap": 1000}`. Validation: `new_cap > current turn_cap`. Inserts `kind='system', kind_tag='turn_cap_extended'` message. The `turns_used` / `turn_cap` counters are tracked for visibility but no longer enforce a hard gate — the turn-cap guard was removed per THR-046 msg86. `/extend` still bumps the counter (soft, vestigial).
 
 ### 5.10 SSE — live updates
 
@@ -525,9 +525,9 @@ Effect:
 
 This callback does NOT count toward `turns_used` — close-outs are bookkeeping, not conversational turns, and the founder has already opted to archive at this point so the cap is moot.
 
-### 5.11 Turn-cap enforcement
+### 5.11 Turn tracking
 
-Before each fan-out (compose, send, invite-bootstrap), compute pending invocations: `addressed_count`. If `threads.turns_used + addressed_count > threads.turn_cap`, return HTTP 429 `turn_cap_exceeded` with `{used, cap, requested}` body. Founder bumps via `/extend`.
+**Hard enforcement was removed per THR-046 msg86.** Before that change, each fan-out (compose, send, invite-bootstrap) projected `turns_used + addressed_count` against `turn_cap` and returned HTTP 429 `turn_cap_exceeded`. Today, `turns_used` is still incremented per agent invocation and displayed, but it no longer gates posting, replying, or invocation-minting. `/extend` still bumps `turn_cap` (soft, vestigial).
 
 What counts toward `turns_used`: each **agent invocation** (reply, decline, bootstrap-on-invite, close-out). System messages (founder-archive, dispatch-system, turn-cap-extend, participant-added) do NOT count — they're zero-cost daemon-generated rows. Founder-sent messages themselves don't count either; only the resulting agent fan-out does. The cap measures agent-time spent, not message volume.
 
@@ -586,7 +586,7 @@ The executor receives a system prompt containing:
    Consult `protocol/skills/thread/SKILL.md` and respond.
    ```
 
-For large threads, the full history is sent verbatim — no condensation in v1. The `turn_cap` guard exists precisely because prompt cost grows linearly with thread length × invocation count.
+For large threads, the full history is sent verbatim — no condensation in v1. The `turns_used` counter and soft `/extend` remain for visibility, but hard enforcement was removed per THR-046 msg86.
 
 ### 6.3 Invocation execution
 
