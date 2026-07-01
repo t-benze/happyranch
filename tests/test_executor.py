@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -68,7 +69,8 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
 
     call_args = mock_subprocess.Popen.call_args
     cmd = call_args[0][0]
-    assert cmd[:2] == ["claude", "-p"]
+    assert cmd[0].endswith("claude")
+    assert cmd[1] == "-p"
     # The executor prepends the shared session-lifetime preamble to every prompt.
     sent = cmd[2]
     assert sent.endswith("Implement Alipay support")
@@ -129,7 +131,8 @@ def test_codex_executor_launches_exec_with_explicit_sandbox(mock_subprocess, tmp
 
     call_args = mock_subprocess.Popen.call_args
     cmd = call_args[0][0]
-    assert cmd[:2] == ["codex", "exec"]
+    assert cmd[0].endswith("codex")
+    assert cmd[1] == "exec"
     assert "--sandbox" in cmd
     assert "workspace-write" in cmd
     assert "--skip-git-repo-check" in cmd
@@ -205,7 +208,8 @@ def test_opencode_executor_launches_run_with_workspace_dir(mock_subprocess, tmp_
     assert result.session_id is not None
 
     cmd = mock_subprocess.Popen.call_args[0][0]
-    assert cmd[:2] == ["opencode", "run"]
+    assert cmd[0].endswith("opencode")
+    assert cmd[1] == "run"
     assert "--dir" in cmd
     assert cmd[cmd.index("--dir") + 1] == str(workspace)
     assert "--format" in cmd
@@ -237,7 +241,8 @@ def test_pi_executor_launches_print_mode_with_json_events(mock_subprocess, tmp_p
     assert result.session_id is not None
 
     cmd = mock_subprocess.Popen.call_args[0][0]
-    assert cmd[:2] == ["pi", "-p"]
+    assert cmd[0].endswith("pi")
+    assert cmd[1] == "-p"
     # The executor prepends the shared session-lifetime preamble to every prompt.
     sent = cmd[cmd.index("-p") + 1]
     assert sent.endswith("Implement Alipay support")
@@ -541,3 +546,149 @@ def test_clean_run_is_not_rate_limited(mock_subprocess, tmp_path, runtime):
     executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
     result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
     assert result.rate_limited is False
+
+
+# ── executor PATH resolution / binary normalisation (issue #254) ───────────
+
+
+def test_normalize_path_restores_standard_tool_dirs(monkeypatch):
+    """After _normalize_path, the executor search PATH includes standard tool
+    directories even when the inherited PATH was minimal (/usr/bin:/bin).  This
+    simulates a Finder/launchd-launched daemon."""
+    from runtime.orchestrator.executors import _normalize_path
+
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    _normalize_path()
+    pathenv = os.environ["PATH"]
+    paths = pathenv.split(":")
+    # /opt/homebrew/bin and /usr/local/bin must be present.
+    assert "/opt/homebrew/bin" in paths
+    assert "/usr/local/bin" in paths
+    # Original minimal dirs still present.
+    assert "/usr/bin" in paths
+    assert "/bin" in paths
+
+
+def test_normalize_path_does_not_duplicate_existing_entries(monkeypatch):
+    """Normalisation is idempotent: dirs already present are not duplicated."""
+    from runtime.orchestrator.executors import _normalize_path
+
+    monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/bin")
+    _normalize_path()
+    pathenv = os.environ["PATH"]
+    # Count occurrences of /opt/homebrew/bin
+    assert pathenv.split(":").count("/opt/homebrew/bin") == 1
+
+
+def test_resolve_binary_absolute_path_passthrough():
+    """An absolute cli_path is returned unchanged — the founder configured it
+    explicitly."""
+    from runtime.orchestrator.executors import _resolve_binary
+
+    result = _resolve_binary("/usr/local/bin/claude")
+    assert result == "/usr/local/bin/claude"
+
+
+def test_resolve_binary_bare_name_via_which(tmp_path, monkeypatch):
+    """A bare name resolves to an absolute path via shutil.which when the
+    binary exists on PATH."""
+    from runtime.orchestrator.executors import _resolve_binary
+
+    # Place a fake 'claude' binary in a tmp dir and add it to PATH.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "claude").touch(mode=0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:/usr/bin:/bin")
+
+    result = _resolve_binary("claude")
+    assert result == str(fake_bin / "claude")
+    assert os.path.isabs(result)
+
+
+def test_resolve_binary_bare_name_stripped_path_still_finds_binary(monkeypatch, tmp_path):
+    """When the inherited PATH is stripped to /usr/bin:/bin, the normalisation
+    prepends standard dirs and a bare name still resolves to an absolute path
+    (e.g., /opt/homebrew/bin/claude).  This is the precise failure mode from
+    a Finder-launched daemon."""
+    from runtime.orchestrator.executors import _resolve_binary, _normalize_path
+
+    # Simulate a standard tool dir containing the binary.
+    fake_homebrew = tmp_path / "opt" / "homebrew" / "bin"
+    fake_homebrew.mkdir(parents=True)
+    (fake_homebrew / "claude").touch(mode=0o755)
+    (fake_homebrew / "codex").touch(mode=0o755)
+    (fake_homebrew / "opencode").touch(mode=0o755)
+    (fake_homebrew / "pi").touch(mode=0o755)
+
+    # Override the standard-dir list so _normalize_path prepends our temp dir.
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    import runtime.orchestrator.executors as ex_mod
+    original = ex_mod._STANDARD_TOOL_DIRS
+    ex_mod._STANDARD_TOOL_DIRS = [str(fake_homebrew)]
+    try:
+        _normalize_path()
+
+        result = _resolve_binary("claude")
+        assert result == str(fake_homebrew / "claude")
+        assert os.path.isabs(result)
+
+        result2 = _resolve_binary("codex")
+        assert result2 == str(fake_homebrew / "codex")
+        assert os.path.isabs(result2)
+    finally:
+        ex_mod._STANDARD_TOOL_DIRS = original
+
+
+def test_resolve_binary_unresolvable_raises_actionable_diagnostic():
+    """An unresolvable binary raises an error that names WHICH executor and
+    WHICH dirs were searched — not a bare ENOENT."""
+    from runtime.orchestrator.executors import _resolve_binary, _normalize_path
+
+    error_msg = None
+    try:
+        _resolve_binary("nonexistent-cli-tool-xyz")
+    except RuntimeError as exc:
+        error_msg = str(exc)
+
+    assert error_msg is not None, "Expected RuntimeError for unresolvable binary"
+    assert "nonexistent-cli-tool-xyz" in error_msg
+    # Must mention search dirs.
+    assert "PATH" in error_msg.lower() or "searched" in error_msg.lower() or "directory" in error_msg.lower()
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_executor_passes_explicit_env_to_popen(mock_subprocess, tmp_path):
+    """After the PATH fix, _run_command passes an explicit env= dict to Popen
+    so the subprocess does not ride the inherited (possibly stripped) PATH."""
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = CodexExecutor(codex_cli_path="codex", sandbox_mode="workspace-write")
+    executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+
+    popen_kwargs = mock_subprocess.Popen.call_args[1]
+    assert "env" in popen_kwargs, "Popen should receive an explicit env= dict"
+    env_dict = popen_kwargs["env"]
+    assert "PATH" in env_dict
+    assert "/opt/homebrew/bin" in env_dict["PATH"] or "/usr/local/bin" in env_dict["PATH"]
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_absolute_cli_path_preserved_in_cmd_zero(mock_subprocess, tmp_path, runtime):
+    """When claude_cli_path is an absolute path (founder-configured), it
+    appears as-is in cmd[0]."""
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = ClaudeExecutor(
+        claude_cli_path="/opt/homebrew/bin/claude",
+        permission_mode="auto",
+        settings=Settings(),
+        paths=runtime,
+    )
+    executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    assert cmd[0] == "/opt/homebrew/bin/claude"

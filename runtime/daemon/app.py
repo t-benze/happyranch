@@ -201,5 +201,5 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(dashboard.router, prefix="/api/v1/orgs/{slug}", tags=["dashboard"])
     app.include_router(settings_routes.router, prefix="/api/v1/orgs/{slug}", tags=["settings"])
     from runtime.daemon.routes import web_static
-    web_static.register(app)
+    web_static.register(app, settings=state.settings)
     return app
