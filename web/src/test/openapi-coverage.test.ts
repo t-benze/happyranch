@@ -125,6 +125,7 @@ const INCLUDED_PATHS = new Set<string>([
   // (web/src/features/system-assistant) via lib/api/assistant.ts. The
   // WebSocket PTY at /assistant/session is not in OpenAPI (FastAPI omits WS).
   'GET /api/v1/assistant/status',
+  'GET /api/v1/assistant/a-mode/status',
   'POST /api/v1/assistant/init',
   'POST /api/v1/assistant/register',
   'POST /api/v1/assistant/repair',

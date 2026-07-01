@@ -1,5 +1,13 @@
 {
   "paths": {
+    "/api/v1/assistant/a-mode/status": {
+      "GET": {
+        "params": [],
+        "responses": [
+          "200"
+        ]
+      }
+    },
     "/api/v1/assistant/init": {
       "POST": {
         "params": [

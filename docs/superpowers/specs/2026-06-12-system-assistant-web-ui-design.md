@@ -73,7 +73,15 @@ structural errors verbatim: `assistant_registration_invalid`,
 `workspace_path` from runtime root, not user input). Single active executor is enforced
 server-side. The UI carries no workspace input and says so in copy.
 
-### 2.4 In-browser terminal
+### 2.4 In-browser terminal — **SUPERSEDED by Approach A (headless, structured-output)**
+
+> **Note (2026-07-01, PR-1 of TASK-1399):** This section's raw-PTY-tunnel-as-chat model
+> is superseded by the **Approach A headless A-mode design** (see **§6 — Approach A
+> (Headless) Design** below). The xterm "Full session" hatch is **RETAINED and frozen**
+> — the PTY path (`AssistantPtySession`, `AssistantSessionManager`,
+> `attach_assistant_session`) is preserved byte-identical as a legacy fallback.
+> New development targets the headless A-mode WS route at `/assistant/a-mode`.
+
 xterm.js + fit addon attached to the `/assistant/session` WS. Protocol (mirrors the CLI
 reference client `cli/commands/assistant.py`):
 - **stdin:** `term.onData(d => ws.send(d))` (text frames).
@@ -121,3 +129,91 @@ spec status updated in the **same** PR; test suites run **via happyranch jobs** 
 evidence); engineering_manager merges only on clean review + QA (no `--no-verify`,
 no force-push). The daemon WS-auth edit respects the call-ordering / opaque-failure and
 audit-row invariants and keeps `secrets.compare_digest` (THR-006 ruling 4).
+
+---
+
+## 6. Approach A (Headless, Structured-Output) Design
+
+> **Added 2026-07-01, PR-1 of TASK-1399 (THR-056).** This section documents the
+> architecture for the headless A-mode assistant dock rebuild. The full design
+> spec lives at the engineering_manager artifact
+> `engineering_manager/2026-07-01-assistant-dock-approach-A-design.md`;
+> this appendix summaries the backend foundation built in PR-1.
+
+### 6.1 Architecture
+
+Today the dock tunnels a raw interactive PTY stream (`{type:'output',text}` frames).
+Approach A replaces that with a **per-turn headless executor invocation**: one user
+message → one non-interactive structured-output run, each emitting a normalized
+stream of **turn frames** the dock renders identically to a thread conversation
+via `MessageBubble` + `TypingBubble`.
+
+### 6.2 TurnFrame vocabulary (backend → WS)
+
+```
+{type:"turn_start",  role:"assistant"}
+{type:"text_delta",  text:"..."}
+{type:"tool_call",   name:"bash", input:{...}}
+{type:"tool_result", name:"bash", ok:true}
+{type:"turn_end",    role:"assistant", usage:{...}}
+{type:"status",      code:"ready|working|session_closed|error", detail?:"..."}
+{type:"error",       message:"..."}
+```
+
+This replaces today's `{type:"output",text}` raw-chunk frame. No ANSI reaches the
+client. Turn frames are serialized as Pydantic `TurnFrame` objects in
+`runtime/daemon/headless_assistant.py`.
+
+### 6.3 HeadlessAdapter interface
+
+Per-executor Python Protocol in `runtime/daemon/headless_assistant.py`:
+```python
+class HeadlessAdapter(Protocol):
+    def build_turn_argv(self, *, prompt: str, resume_id: str | None,
+                        permission_posture: PermissionPosture) -> list[str]: ...
+    def parse_event(self, raw_line: str) -> TurnFrame | None: ...
+    def extract_session_id(self, frame: TurnFrame) -> str | None: ...
+```
+
+Registry keyed by `config.selected_executor`. Unknown executor → `None` →
+"a-mode-unavailable, use full session". PR-1 ships only the interface +
+registry + a null/echo test adapter. Real adapters land in PR-2 (opencode/pi),
+PR-3 (claude), PR-4 (codex).
+
+### 6.4 AssistantConversation persistence
+
+Per-workspace JSON file at `<workspace>/conversation.json` (NOT a SQLite table).
+Survives dock close/open AND daemon restart. Per-turn model: each user message
+spawns a short-lived headless run; continuity via executor's own session-id.
+
+### 6.5 New A-mode WS route
+
+`/api/v1/assistant/a-mode` — new WebSocket route, structured from frame zero.
+Status endpoint at `GET /api/v1/assistant/a-mode/status`.
+The existing PTY path (`/api/v1/assistant/session`) is **frozen — no edits**.
+
+### 6.6 Lifecycle (founder-RATIFIED finish-in-background)
+
+Dock close: in-flight turn frames are buffered to the conversation log.
+Reconnect: loads the persisted STRUCTURED log, not raw scrollback replay.
+
+### 6.7 Build decomposition
+
+| PR | Scope | Status |
+|---|---|---|
+| PR-1 | Adapter interface + TurnFrame vocabulary + Conversation persistence + A-mode route | ✅ this PR |
+| PR-2 | opencode + pi adapters | pending |
+| PR-3 | claude adapter + permission posture (gated) | pending |
+| PR-4 | codex adapter + sandbox/approval (gated) | pending |
+| PR-5 | Dock frontend: MessageBubble/TypingBubble reuse | pending |
+| PR-6 | AppBar avatar entry point | pending |
+
+### 6.8 Frozen symbols
+
+- `AssistantPtySession` — byte-identical preserved
+- `AssistantSessionManager` — byte-identical preserved
+- `attach_assistant_session` — legacy PTY-tunnel branch, frozen
+- Resize control string `__HAPPYRANCH_ASSISTANT_RESIZE__` — unchanged
+- Bearer-subprotocol auth (THR-006 Option A) — unchanged
+
+The xterm "Full session" hatch is retained as a fallback.
