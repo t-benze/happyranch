@@ -177,6 +177,64 @@ struct BundledLaunchTests {
         #expect(cmd == "Contents/Resources/daemon/happyranch-daemon",
                 "Diagnostics should record bundled start command, got \(cmd)")
     }
+
+    @Test("startDaemon from failed state in bundled mode launches recovery process")
+    func startDaemonFromFailedInBundledModeLaunchesRecoveryProcess() async throws {
+        AppDelegate._testPackagingMode = "bundled"
+        let oldHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        setenv("HAPPYRANCH_DAEMON_HOME", "/tmp/test-hr-bundled", 1)
+        defer {
+            AppDelegate._testPackagingMode = nil
+            if let old = oldHome {
+                setenv("HAPPYRANCH_DAEMON_HOME", old, 1)
+            } else {
+                unsetenv("HAPPYRANCH_DAEMON_HOME")
+            }
+        }
+
+        let (delegate, fake) = makeAppDelegateForBundled(
+            state: .failed,
+            isManagedBySelf: true
+        )
+
+        // Verify pre-condition: supervisor is in .failed
+        #expect(delegate.supervisor.state == .failed,
+                "Pre-condition: supervisor must be .failed before recovery launch")
+
+        delegate.startDaemon()
+
+        // The recovery path must launch one process
+        #expect(fake.launchCallCount == 1,
+                "Recovery from .failed must launch exactly one process, got \(fake.launchCallCount)")
+
+        // Supervisor must transition to .starting
+        #expect(delegate.supervisor.state == .starting,
+                "Recovery from .failed must transition to .starting, got \(delegate.supervisor.state)")
+
+        // Bundled mode: must launch the frozen daemon binary (not /usr/bin/env)
+        if let url = fake.lastExecutableURL {
+            #expect(url.path.hasSuffix("/daemon/happyranch-daemon"),
+                    "Recovery launch in bundled mode must use frozen daemon binary, got \(url.path)")
+            #expect(url.path != "/usr/bin/env",
+                    "Recovery launch in bundled mode must NOT use /usr/bin/env")
+        }
+
+        // Arguments must be empty (no uv/python wrappers in bundled mode)
+        #expect(fake.lastArguments?.isEmpty == true,
+                "Recovery launch in bundled mode must have no arguments, got \(fake.lastArguments ?? [])")
+
+        // Working directory must be daemon home
+        if let cwd = fake.lastCurrentDirectoryURL {
+            #expect(cwd.path == "/tmp/test-hr-bundled",
+                    "Recovery launch cwd must be daemon home, got \(cwd.path)")
+        }
+
+        // Diagnostics must record the bundled start command
+        let bundle = delegate.diagnostics.collect()
+        let cmd = bundle["start_command"] as? String ?? ""
+        #expect(cmd == "Contents/Resources/daemon/happyranch-daemon",
+                "Recovery diagnostics must record bundled start command, got \(cmd)")
+    }
 }
 
 // MARK: - Dev launch (existing path unchanged)
@@ -217,6 +275,45 @@ struct DevLaunchTests {
         let bundle = delegate.diagnostics.collect()
         let cmd = bundle["start_command"] as? String ?? ""
         #expect(cmd == "uv run python -m runtime.daemon")
+    }
+
+    @Test("startDaemon from failed state in dev mode launches recovery process via uv run")
+    func startDaemonFromFailedInDevModeLaunchesRecoveryProcess() async throws {
+        AppDelegate._testPackagingMode = nil  // default dev mode
+        defer { AppDelegate._testPackagingMode = nil }
+
+        let (delegate, fake) = makeAppDelegateForBundled(
+            state: .failed,
+            isManagedBySelf: true
+        )
+
+        // Verify pre-condition: supervisor is in .failed
+        #expect(delegate.supervisor.state == .failed,
+                "Pre-condition: supervisor must be .failed before recovery launch")
+
+        delegate.startDaemon()
+
+        // The recovery path must launch one process
+        #expect(fake.launchCallCount == 1,
+                "Recovery from .failed must launch exactly one process, got \(fake.launchCallCount)")
+
+        // Supervisor must transition to .starting
+        #expect(delegate.supervisor.state == .starting,
+                "Recovery from .failed must transition to .starting, got \(delegate.supervisor.state)")
+
+        // Dev mode: must use /usr/bin/env (not bundled binary)
+        #expect(fake.lastExecutableURL?.path == "/usr/bin/env",
+                "Recovery launch in dev mode must use /usr/bin/env, got \(fake.lastExecutableURL?.path ?? "nil")")
+
+        // Dev mode: must pass uv run arguments
+        #expect(fake.lastArguments == ["uv", "run", "python", "-m", "runtime.daemon"],
+                "Recovery launch in dev mode must use uv run arguments, got \(fake.lastArguments ?? [])")
+
+        // Diagnostics must record the dev start command
+        let bundle = delegate.diagnostics.collect()
+        let cmd = bundle["start_command"] as? String ?? ""
+        #expect(cmd == "uv run python -m runtime.daemon",
+                "Recovery diagnostics must record dev start command, got \(cmd)")
     }
 }
 
