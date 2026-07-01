@@ -40,29 +40,43 @@ def _merge_uploaded_attachments(
     attach_paths: list[Path] | None,
     agent: str,
     thread_id: str | None,
+    use_shared_artifacts: bool = False,
 ) -> dict:
+    """Merge --attach files into the payload as attachment refs.
+
+    By default, uses thread-scoped attachments when thread_id is available
+    (TASK-1616). Set use_shared_artifacts=True for the explicit cross-task
+    handoff escape hatch.
+    """
     refs = list(payload.get("attachments") or [])
-    generated_names: dict[str, int] = {}
     for path in attach_paths or []:
-        artifact_name = _artifact_name_for_attach(thread_id, path)
-        generated_names[artifact_name] = generated_names.get(artifact_name, 0) + 1
-        if generated_names[artifact_name] > 1:
-            artifact_name = _artifact_name_for_attach(
-                thread_id,
-                path,
-                collision_index=generated_names[artifact_name],
+        if thread_id is not None and not use_shared_artifacts:
+            # Thread-scoped upload (default for reply/send/post-as-agent).
+            info = client.upload_thread_attachment(
+                slug=slug,
+                thread_id=thread_id,
+                local_path=path,
+                agent=agent,
             )
-        info = client.put_artifact(
-            slug=slug,
-            local_path=path,
-            name=artifact_name,
-            agent=agent,
-        )
-        refs.append({
-            "artifact_name": info["name"],
-            "display_name": path.name,
-            "content_type": mimetypes.guess_type(path.name)[0],
-        })
+            refs.append({
+                "attachment_id": info["attachment_id"],
+                "display_name": path.name,
+                "content_type": mimetypes.guess_type(path.name)[0],
+            })
+        else:
+            # Shared artifact upload (explicit escape hatch or compose).
+            artifact_name = _artifact_name_for_attach(thread_id, path)
+            info = client.put_artifact(
+                slug=slug,
+                local_path=path,
+                name=artifact_name,
+                agent=agent,
+            )
+            refs.append({
+                "artifact_name": info["name"],
+                "display_name": path.name,
+                "content_type": mimetypes.guess_type(path.name)[0],
+            })
     if refs or attach_paths:
         payload["attachments"] = refs
     return payload

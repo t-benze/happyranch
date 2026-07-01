@@ -5,8 +5,8 @@ import json as _json
 import mimetypes
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from runtime.daemon.auth import require_token
@@ -17,6 +17,7 @@ from runtime.daemon.state import DaemonState
 from runtime.daemon.thread_queue import ThreadJob
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifactName
+from runtime.infrastructure.thread_scoped_attachment_store import MAX_THREAD_ATTACHMENT_BYTES
 from runtime.infrastructure.thread_store import render_transcript_body
 from runtime.models import (
     ResponderStatusEntry,
@@ -154,9 +155,11 @@ def _create_agent_thread_locked(
 
 
 class AttachmentRefBody(BaseModel):
-    artifact_name: str
+    artifact_name: str = ""
     display_name: str | None = None
     content_type: str | None = None
+    # Thread-scoped attachment id (TASK-1616). Mutually exclusive with artifact_name.
+    attachment_id: str | None = None
 
 
 class ComposeBody(BaseModel):
@@ -277,6 +280,95 @@ def _normalize_attachments(
     return out
 
 
+def _normalize_all_attachments(
+    org: object,
+    refs: list[AttachmentRefBody] | None,
+    *,
+    uploaded_by: str,
+    thread_id: str | None = None,
+) -> list[ThreadAttachment]:
+    """Dispatch attachment refs to shared-artifact or thread-scoped normalizer.
+
+    Splits the ref list by whether `attachment_id` is set (thread-scoped) or
+    `artifact_name` is non-empty (shared artifact). Both types can coexist in
+    a single message payload.
+    """
+    if not refs:
+        return []
+
+    shared_refs: list[AttachmentRefBody] = []
+    thread_refs: list[ThreadAttachmentRefBody] = []
+    for ref in refs:
+        if ref.attachment_id:
+            if ref.artifact_name:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "ambiguous_attachment_ref",
+                        "message": "Provide either artifact_name or attachment_id, not both.",
+                    },
+                )
+            thread_refs.append(
+                ThreadAttachmentRefBody(
+                    attachment_id=ref.attachment_id,
+                    display_name=ref.display_name,
+                    content_type=ref.content_type,
+                )
+            )
+        else:
+            if not ref.artifact_name:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "empty_attachment_ref",
+                        "message": "Provide artifact_name or attachment_id.",
+                    },
+                )
+            shared_refs.append(ref)
+
+    # Validate total count across both types.
+    total = len(shared_refs) + len(thread_refs)
+    if total > MAX_THREAD_ATTACHMENTS:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "too_many_attachments", "max": MAX_THREAD_ATTACHMENTS},
+        )
+
+    # Dedupe across both types.
+    all_ids: set[str] = set()
+    for ref in shared_refs:
+        if ref.artifact_name in all_ids:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "duplicate_attachment",
+                    "artifact_name": ref.artifact_name,
+                },
+            )
+        all_ids.add(ref.artifact_name)
+    for ref in thread_refs:
+        if ref.attachment_id in all_ids:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "duplicate_attachment",
+                    "attachment_id": ref.attachment_id,
+                },
+            )
+        all_ids.add(ref.attachment_id)
+
+    out: list[ThreadAttachment] = []
+    if shared_refs:
+        out.extend(_normalize_attachments(org, shared_refs, uploaded_by=uploaded_by))
+    if thread_refs and thread_id is not None:
+        out.extend(
+            _normalize_thread_attachments(
+                org, thread_refs, thread_id=thread_id, uploaded_by=uploaded_by,
+            )
+        )
+    return out
+
+
 def _normalize_message_body(
     body_markdown: str | None,
     attachments: list[ThreadAttachment],
@@ -287,11 +379,205 @@ def _normalize_message_body(
     return body_text or None
 
 
+async def _compose_thread_multipart(
+    slug: str, org: OrgDep, request: Request, *, uploaded_by: str,
+) -> dict:
+    """Handle compose as multipart/form-data for thread-scoped attachment uploads."""
+    import json as _json
+    from fastapi import UploadFile
+
+    # Parse multipart form: expect a 'body' field with JSON, and optional 'files' fields.
+    form = await request.form()
+    body_raw = form.get("body")
+    if body_raw is None:
+        raise HTTPException(
+            status_code=422, detail={"code": "missing_body_field"},
+        )
+    try:
+        body_data = _json.loads(
+            body_raw if isinstance(body_raw, str) else await body_raw.read()
+        )
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=422, detail={"code": "invalid_body_json"},
+        )
+    body = ComposeBody(**body_data)
+    file_fields = [
+        v for k, v in form.multi_items()
+        if k == "files" and hasattr(v, "read")
+    ]
+
+    state: DaemonState = request.app.state.daemon
+    subject = body.subject.strip()
+    if not subject:
+        raise HTTPException(status_code=422, detail={"code": "empty_subject"})
+    if not body.recipients:
+        raise HTTPException(status_code=422, detail={"code": "empty_recipients"})
+
+    # Validate shared artifact refs (if any) via existing path.
+    shared_attachments = _normalize_attachments(
+        org, body.attachments, uploaded_by=uploaded_by,
+    )
+
+    # Validate recipients.
+    org_paths = OrgPaths(root=org.root)
+    for name in body.recipients:
+        agent_def = prompt_loader.load_agent(org_paths, name)
+        workspace_exists = (org.root / "workspaces" / name).exists()
+        if agent_def is None or not workspace_exists:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "unknown_agent", "agent": name},
+            )
+
+    if (body.forwarded_from_id is None) != (body.forwarded_from_kind is None):
+        raise HTTPException(
+            status_code=422, detail={"code": "forwarded_fields_must_pair"},
+        )
+    if body.forwarded_from_kind not in (None, "thread"):
+        raise HTTPException(
+            status_code=422, detail={"code": "forwarded_kind_invalid"},
+        )
+    if body.forwarded_from_id is not None:
+        if body.forwarded_from_kind == "thread":
+            src = org.db.get_thread(body.forwarded_from_id)
+        else:
+            src = None
+        if src is None:
+            raise HTTPException(
+                status_code=404, detail={"code": "forwarded_source_not_found"},
+            )
+
+    org_cfg = load_org_config(org_paths)
+    turn_cap = org_cfg.threads_default_turn_cap
+    addressed_agents = list(body.recipients)
+
+    total_file_count = len(file_fields) + len(shared_attachments)
+    if total_file_count > MAX_THREAD_ATTACHMENTS:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "too_many_attachments", "max": MAX_THREAD_ATTACHMENTS},
+        )
+
+    async with org.db_lock:
+        thread_id = org.db.next_thread_id()
+        org.db.insert_thread(ThreadRecord(
+            id=thread_id, subject=subject, turn_cap=turn_cap,
+            forwarded_from_id=body.forwarded_from_id,
+            forwarded_from_kind=body.forwarded_from_kind,
+        ))
+        for name in body.recipients:
+            org.db.add_thread_participant(thread_id, name, added_by="founder")
+
+        # Store uploaded files in thread-scoped store.
+        thread_attachments: list[ThreadAttachment] = []
+        for file_field in file_fields:
+            content = await file_field.read()
+            if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail={
+                        "code": "attachment_too_large",
+                        "max_bytes": MAX_THREAD_ATTACHMENT_BYTES,
+                    },
+                )
+            display_name = (
+                file_field.filename if hasattr(file_field, "filename") else "attachment"
+            ) or "attachment"
+            _validate_display_name(display_name)
+            content_type = (
+                file_field.content_type
+                if hasattr(file_field, "content_type")
+                else None
+            ) or mimetypes.guess_type(display_name)[0]
+            attachment_id = org.db.next_thread_attachment_id()
+            size_bytes = _attachment_store(org).put(
+                thread_id, attachment_id, content,
+            )
+            org.db.insert_thread_scoped_attachment(
+                attachment_id=attachment_id,
+                thread_id=thread_id,
+                display_name=display_name,
+                size_bytes=size_bytes,
+                content_type=content_type,
+                uploaded_by=uploaded_by,
+            )
+            thread_attachments.append(
+                ThreadAttachment(
+                    artifact_name="",
+                    display_name=display_name,
+                    size_bytes=size_bytes,
+                    content_type=content_type,
+                    uploaded_by=uploaded_by,
+                    thread_attachment_id=attachment_id,
+                )
+            )
+
+        all_attachments = shared_attachments + thread_attachments
+        body_text = _normalize_message_body(body.body_markdown, all_attachments)
+        seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker="founder",
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown=body_text,
+            attachments=all_attachments,
+        )
+        org.db.increment_thread_turns_used(thread_id, by=1)
+        AuditLogger(org.db).log_thread_started(
+            thread_id,
+            subject=subject,
+            initial_recipients=body.recipients,
+            forwarded_from_id=body.forwarded_from_id,
+        )
+        AuditLogger(org.db).log_thread_message_sent(
+            thread_id, seq=seq, speaker="founder", kind="message",
+            attachment_names=[
+                a.artifact_name or a.thread_attachment_id or ""
+                for a in all_attachments
+            ],
+        )
+        tokens_to_enqueue: list[str] = []
+        for name in addressed_agents:
+            inv = org.db.mint_thread_invocation(
+                thread_id=thread_id, agent_name=name,
+                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+            )
+            tokens_to_enqueue.append(inv.invocation_token)
+
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(
+            ThreadJob(org_slug=slug, invocation_token=token),
+        )
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=seq, speaker="founder",
+        kind="message",
+        preview=body_text or _attachments_preview(all_attachments),
+        status="open",
+    )
+
+    return {
+        "thread_id": thread_id,
+        "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
+        "pending_replies": addressed_agents,
+    }
+
+
 @router.post("/threads")
 async def compose_thread(
-    slug: str, body: ComposeBody, org: OrgDep, request: Request
+    slug: str, org: OrgDep, request: Request
 ) -> dict:
     state: DaemonState = request.app.state.daemon
+
+    # Support both JSON and multipart/form-data for thread-scoped attachments (TASK-1616).
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        return await _compose_thread_multipart(
+            slug, org, request, uploaded_by="founder",
+        )
+    # JSON path (backward compatible).
+    body_data = await request.json()
+    body = ComposeBody(**body_data)
 
     subject = body.subject.strip()
     if not subject:
@@ -781,8 +1067,8 @@ async def reply_thread_endpoint(
     if t.status is not ThreadStatus.OPEN:
         raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
 
-    attachments = _normalize_attachments(
-        org, body.attachments, uploaded_by=body.speaker,
+    attachments = _normalize_all_attachments(
+        org, body.attachments, uploaded_by=body.speaker, thread_id=thread_id,
     )
     body_text = _normalize_message_body(body.body_markdown, attachments)
 
@@ -1128,8 +1414,8 @@ async def _send_thread_message_inprocess(
         raise _SendThreadError(404, "not_found")
     if t.status is not ThreadStatus.OPEN:
         raise _SendThreadError(400, "thread_not_open")
-    normalized_attachments = _normalize_attachments(
-        org, attachments, uploaded_by="founder",
+    normalized_attachments = _normalize_all_attachments(
+        org, attachments, uploaded_by="founder", thread_id=thread_id,
     )
     body_text = _normalize_message_body(body_markdown, normalized_attachments)
 
@@ -1252,8 +1538,8 @@ async def post_thread_as_agent(
     if t.status is not ThreadStatus.OPEN:
         raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
 
-    attachments = _normalize_attachments(
-        org, body.attachments, uploaded_by=body.composer,
+    attachments = _normalize_all_attachments(
+        org, body.attachments, uploaded_by=body.composer, thread_id=thread_id,
     )
     body_text = _normalize_message_body(body.body_markdown, attachments)
 
@@ -1567,3 +1853,175 @@ async def abort_replies_endpoint(
         )
 
     return {"thread_id": thread_id, "aborted_count": aborted_count}
+
+
+# ---------------------------------------------------------------------------
+# Thread-scoped attachment routes (TASK-1616)
+# ---------------------------------------------------------------------------
+
+
+def _attachment_store(org: object) -> "ThreadScopedAttachmentStore":
+    from runtime.infrastructure.thread_scoped_attachment_store import (
+        ThreadScopedAttachmentStore,
+    )
+    return ThreadScopedAttachmentStore(OrgPaths(org.root).threads_dir)
+
+
+class ThreadAttachmentRefBody(BaseModel):
+    """Reference to a thread-scoped attachment already uploaded."""
+    attachment_id: str
+    display_name: str | None = None
+    content_type: str | None = None
+
+
+@router.get("/threads/{thread_id}/attachments")
+async def list_thread_attachments(
+    slug: str, thread_id: str, org: OrgDep, request: Request,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    rows = org.db.list_thread_scoped_attachments(thread_id)
+    return {
+        "attachments": [
+            {
+                "attachment_id": r.attachment_id,
+                "thread_id": r.thread_id,
+                "display_name": r.display_name,
+                "size_bytes": r.size_bytes,
+                "content_type": r.content_type,
+                "uploaded_by": r.uploaded_by,
+                "created_at": r.created_at,
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.get("/threads/{thread_id}/attachments/{attachment_id}")
+async def get_thread_attachment(
+    slug: str, thread_id: str, attachment_id: str, org: OrgDep, request: Request,
+):
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    row = org.db.get_thread_scoped_attachment(thread_id, attachment_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "attachment_not_found"}
+        )
+    try:
+        content = _attachment_store(org).read(thread_id, attachment_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail={"code": "attachment_not_found"}
+        )
+    media_type = row.content_type or "application/octet-stream"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{row.display_name}"'
+        },
+    )
+
+
+@router.post("/threads/{thread_id}/attachments")
+async def upload_thread_attachment(
+    slug: str,
+    thread_id: str,
+    org: OrgDep,
+    request: Request,
+    file: UploadFile = File(...),
+    agent: str = Query(...),
+) -> dict:
+    from fastapi import UploadFile
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+
+    content = await file.read(MAX_THREAD_ATTACHMENT_BYTES + 1)
+    if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "attachment_too_large",
+                "max_bytes": MAX_THREAD_ATTACHMENT_BYTES,
+                "size_bytes": len(content),
+            },
+        )
+
+    display_name = file.filename or "attachment"
+    _validate_display_name(display_name)
+    content_type = file.content_type or mimetypes.guess_type(display_name)[0]
+
+    attachment_id = org.db.next_thread_attachment_id()
+    size_bytes = _attachment_store(org).put(thread_id, attachment_id, content)
+    org.db.insert_thread_scoped_attachment(
+        attachment_id=attachment_id,
+        thread_id=thread_id,
+        display_name=display_name,
+        size_bytes=size_bytes,
+        content_type=content_type,
+        uploaded_by=agent,
+    )
+
+    return {
+        "attachment_id": attachment_id,
+        "thread_id": thread_id,
+        "display_name": display_name,
+        "size_bytes": size_bytes,
+        "content_type": content_type,
+        "uploaded_by": agent,
+    }
+
+
+def _normalize_thread_attachments(
+    org: object,
+    refs: list[ThreadAttachmentRefBody] | None,
+    *,
+    thread_id: str,
+    uploaded_by: str,
+) -> list[ThreadAttachment]:
+    """Validate thread-scoped attachment refs and return ThreadAttachment list."""
+    if not refs:
+        return []
+    seen: set[str] = set()
+    out: list[ThreadAttachment] = []
+    for ref in refs:
+        attachment_id = ref.attachment_id.strip()
+        if attachment_id in seen:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "duplicate_attachment",
+                    "attachment_id": attachment_id,
+                },
+            )
+        seen.add(attachment_id)
+        row = org.db.get_thread_scoped_attachment(thread_id, attachment_id)
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "thread_attachment_not_found", "attachment_id": attachment_id},
+            )
+        display_name = (
+            ref.display_name.strip() if ref.display_name else row.display_name
+        )
+        _validate_display_name(display_name)
+        content_type = _normalize_content_type(ref.content_type, display_name)
+        if content_type is None:
+            content_type = row.content_type
+        out.append(
+            ThreadAttachment(
+                artifact_name="",
+                display_name=display_name,
+                size_bytes=row.size_bytes,
+                content_type=content_type,
+                uploaded_by=uploaded_by,
+                thread_attachment_id=attachment_id,
+            )
+        )
+    return out

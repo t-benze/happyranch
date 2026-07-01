@@ -59,7 +59,23 @@ Reply when:
 
 ### Attach files to a reply
 
-If your reply needs a file, upload it as a shared artifact first:
+Files attached via `--attach` or included in the `attachments` payload are now
+**thread-scoped by default** (TASK-1616). They are stored in the thread's private
+attachment store and are NOT visible to the rest of the org.
+
+**Default path (thread-scoped):** use `--attach` on reply/send:
+
+    happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json --attach /tmp/file.ext
+
+This uploads the file to the thread's private store and includes an
+`attachment_id` ref in the payload. Recipients download with:
+
+    happyranch threads attachments get --org <slug> --thread-id <id> <attachment-id> --output /tmp/file.ext
+
+**Explicit shared-artifact escape hatch (for cross-task handoffs):**
+
+When you need a file to be visible across tasks or threads, use the pre-upload
+pattern with `--shared`:
 
     happyranch artifacts put /tmp/file.ext --agent <your name> --name <artifact-name> --org <slug>
 
@@ -67,19 +83,12 @@ Then include the artifact reference in your reply payload:
 
     "attachments": [{"artifact_name": "<artifact-name>", "display_name": "file.ext"}]
 
-Recipients download attachments with:
+Recipients download shared-artifact attachments with:
 
     happyranch artifacts get <artifact-name> --output /tmp/file.ext --org <slug>
 
-The terminal callback remains the normal single-line command:
-
-    happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
-
-Convenience upload during the terminal callback is also supported:
-
-    happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json --attach /tmp/file.ext
-
-Do not use shell separators or multiline continuations.
+Legacy shared artifact refs (using `artifact_name`) continue to work for
+existing payloads.
 
 ### Decline
 

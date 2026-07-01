@@ -132,6 +132,12 @@ def test_threads_send_attach_uploads_and_merges_refs(tmp_path: Path, monkeypatch
     local = tmp_path / "report.pdf"
     local.write_bytes(b"pdf")
     fake = Mock()
+    # Thread-scoped upload (default, TASK-1616).
+    fake.upload_thread_attachment.return_value = {
+        "attachment_id": "att-001",
+        "display_name": "report.pdf",
+        "size_bytes": 3,
+    }
     fake.put_artifact.return_value = {
         "name": "THR-001-20260609T000000Z-report.pdf",
         "size_bytes": 3,
@@ -149,15 +155,15 @@ def test_threads_send_attach_uploads_and_merges_refs(tmp_path: Path, monkeypatch
 
     cmd_threads_send(args)
 
-    fake.put_artifact.assert_called_once()
-    assert fake.put_artifact.call_args.kwargs["agent"] == "founder"
-    assert fake.put_artifact.call_args.kwargs["name"] == "THR-001-20260609T000000Z-report.pdf"
+    # Default path: thread-scoped upload (since thread_id is set).
+    fake.upload_thread_attachment.assert_called_once()
+    fake.put_artifact.assert_not_called()
     sent = fake.post.call_args.kwargs["json"]
     assert sent["body_markdown"] == "see attached"
     assert sent["attachments"] == [
         {"artifact_name": "existing.pdf", "display_name": "existing.pdf"},
         {
-            "artifact_name": "THR-001-20260609T000000Z-report.pdf",
+            "attachment_id": "att-001",
             "display_name": "report.pdf",
             "content_type": "application/pdf",
         },
@@ -175,11 +181,11 @@ def test_threads_send_attach_disambiguates_duplicate_generated_names(
     local = tmp_path / "report.pdf"
     local.write_bytes(b"pdf")
     fake = Mock()
-    fake.put_artifact.side_effect = lambda **kwargs: {
-        "name": kwargs["name"],
-        "size_bytes": 3,
-        "modified_at": "2026-06-09T00:00:00Z",
-    }
+    # Thread-scoped uploads each get a unique auto-generated attachment_id.
+    fake.upload_thread_attachment.side_effect = [
+        {"attachment_id": "att-001", "display_name": "report.pdf", "size_bytes": 3},
+        {"attachment_id": "att-002", "display_name": "report.pdf", "size_bytes": 3},
+    ]
     fake.post.return_value = _json_response({"thread_id": "THR-001", "seq": 2})
     _stub_client(monkeypatch, fake)
 
@@ -192,20 +198,17 @@ def test_threads_send_attach_disambiguates_duplicate_generated_names(
 
     cmd_threads_send(args)
 
-    names = [call.kwargs["name"] for call in fake.put_artifact.call_args_list]
-    assert names == [
-        "THR-001-20260609T000000Z-report.pdf",
-        "THR-001-20260609T000000Z-2-report.pdf",
-    ]
+    # Thread-scoped uploads are called twice, each returns a unique attachment_id.
+    assert fake.upload_thread_attachment.call_count == 2
     sent = fake.post.call_args.kwargs["json"]
     assert sent["attachments"] == [
         {
-            "artifact_name": "THR-001-20260609T000000Z-report.pdf",
+            "attachment_id": "att-001",
             "display_name": "report.pdf",
             "content_type": "application/pdf",
         },
         {
-            "artifact_name": "THR-001-20260609T000000Z-2-report.pdf",
+            "attachment_id": "att-002",
             "display_name": "report.pdf",
             "content_type": "application/pdf",
         },
@@ -232,6 +235,11 @@ def test_threads_reply_attach_uses_speaker_for_upload_attribution(
     local = tmp_path / "analysis.md"
     local.write_text("analysis", encoding="utf-8")
     fake = Mock()
+    fake.upload_thread_attachment.return_value = {
+        "attachment_id": "att-001",
+        "display_name": "analysis.md",
+        "size_bytes": 8,
+    }
     fake.put_artifact.return_value = {
         "name": "THR-001-20260609T000000Z-analysis.md",
         "size_bytes": 8,
@@ -249,12 +257,13 @@ def test_threads_reply_attach_uses_speaker_for_upload_attribution(
 
     cmd_threads_reply(args)
 
-    assert fake.put_artifact.call_args.kwargs["agent"] == "dev_agent"
-    assert fake.put_artifact.call_args.kwargs["name"] == "THR-001-20260609T000000Z-analysis.md"
+    # Thread-scoped upload (reply has thread_id).
+    assert fake.upload_thread_attachment.call_args.kwargs["agent"] == "dev_agent"
+    assert fake.upload_thread_attachment.call_args.kwargs["thread_id"] == "THR-001"
     sent = fake.post.call_args.kwargs["json"]
     assert sent["attachments"] == [
         {
-            "artifact_name": "THR-001-20260609T000000Z-analysis.md",
+            "attachment_id": "att-001",
             "display_name": "analysis.md",
             "content_type": "text/markdown",
         },

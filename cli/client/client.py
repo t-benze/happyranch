@@ -176,6 +176,59 @@ class OpcClient:
         r.raise_for_status()
         return r.content
 
+    # --- Thread-scoped attachments (TASK-1616) ---
+
+    def upload_thread_attachment(
+        self,
+        *,
+        slug: str,
+        thread_id: str,
+        local_path: Path,
+        agent: str,
+    ) -> dict:
+        """Upload a file to a thread's private attachment store.
+
+        Calls ``POST /api/v1/orgs/{slug}/threads/{thread_id}/attachments``
+        with multipart form data. Returns the attachment metadata dict.
+        """
+        with local_path.open("rb") as fh:
+            files = {
+                "file": (local_path.name, fh, "application/octet-stream"),
+            }
+            r = self._client.post(
+                f"/api/v1/orgs/{slug}/threads/{thread_id}/attachments",
+                files=files,
+                params={"agent": agent},
+            )
+        r.raise_for_status()
+        return r.json()
+
+    def list_thread_attachments(
+        self, *, slug: str, thread_id: str,
+    ) -> dict:
+        """List a thread's scoped attachments.
+
+        Calls ``GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments``.
+        """
+        r = self._client.get(
+            f"/api/v1/orgs/{slug}/threads/{thread_id}/attachments",
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def get_thread_attachment(
+        self, *, slug: str, thread_id: str, attachment_id: str,
+    ) -> bytes:
+        """Download a thread-scoped attachment by id.
+
+        Calls ``GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments/{attachment_id}``.
+        """
+        r = self._client.get(
+            f"/api/v1/orgs/{slug}/threads/{thread_id}/attachments/{attachment_id}",
+        )
+        r.raise_for_status()
+        return r.content
+
     def stream(self, method: str, path: str, **kwargs) -> Iterator[str]:
         """Yield server-sent event payload lines (data: ... only)."""
         with self._client.stream(method, path, **kwargs) as response:

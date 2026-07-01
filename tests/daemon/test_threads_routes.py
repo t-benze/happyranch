@@ -192,6 +192,7 @@ def test_get_thread_response_includes_attachments(client, auth_headers, org_stat
             "size_bytes": 3,
             "content_type": None,
             "uploaded_by": "founder",
+            "thread_attachment_id": None,
         }
     ]
 
@@ -852,6 +853,7 @@ def test_thread_messages_response_includes_attachments(client, auth_headers, org
             "size_bytes": 3,
             "content_type": None,
             "uploaded_by": "founder",
+            "thread_attachment_id": None,
         }
     ]
 
@@ -1624,3 +1626,313 @@ def test_abort_replies_does_not_break_normal_decline(tmp_home, app, org_state, a
     )
     assert resp.status_code == 200, resp.text
     assert org_state.db.get_invocation_any_status(token).status.value == "declined"
+
+
+# ---------------------------------------------------------------------------
+# Thread-scoped attachment tests (TASK-1616)
+# ---------------------------------------------------------------------------
+
+
+def test_upload_thread_attachment_success(client, auth_headers, org_state) -> None:
+    """Upload to an existing thread's attachment store succeeds."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("hello.txt", b"hello world", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["attachment_id"].startswith("att-")
+    assert data["thread_id"] == tid
+    assert data["display_name"] == "hello.txt"
+    assert data["size_bytes"] == 11
+    assert data["content_type"] == "text/plain"
+    assert data["uploaded_by"] == "founder"
+
+    # Verify stored in DB.
+    row = org_state.db.get_thread_scoped_attachment(tid, data["attachment_id"])
+    assert row is not None
+    assert row.display_name == "hello.txt"
+
+
+def test_upload_thread_attachment_nonexistent_thread(client, auth_headers, org_state) -> None:
+    """Upload to a nonexistent thread returns 404."""
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads/nonexistent/attachments",
+        files={"file": ("h.txt", b"hi", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+
+
+def test_list_thread_attachments(client, auth_headers, org_state) -> None:
+    """List returns all attachments for a thread."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Upload two files.
+    for name, content in [("a.txt", b"aa"), ("b.txt", b"bbb")]:
+        client.post(
+            f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+            files={"file": (name, content, "text/plain")},
+            params={"agent": "founder"},
+            headers=auth_headers,
+        )
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["attachments"]) == 2
+    names = {a["display_name"] for a in data["attachments"]}
+    assert names == {"a.txt", "b.txt"}
+
+
+def test_get_thread_attachment_download(client, auth_headers, org_state) -> None:
+    """Download a thread-scoped attachment works."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    upload_resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("hello.txt", b"hello world", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    att_id = upload_resp.json()["attachment_id"]
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"hello world"
+    assert "text/plain" in resp.headers.get("content-type", "")
+
+
+def test_get_thread_attachment_not_found(client, auth_headers, org_state) -> None:
+    """Download nonexistent attachment returns 404."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/nonexistent",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+
+
+def test_upload_attachment_too_large(client, auth_headers, org_state) -> None:
+    """Uploading an oversized attachment returns 413."""
+    from runtime.infrastructure.thread_scoped_attachment_store import MAX_THREAD_ATTACHMENT_BYTES
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    big_content = b"x" * (MAX_THREAD_ATTACHMENT_BYTES + 1)
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("big.bin", big_content, "application/octet-stream")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 413
+
+
+def test_reply_with_thread_scoped_attachment(client, auth_headers, org_state) -> None:
+    """Reply route accepts thread-scoped attachment refs and stores them."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+
+    # Create thread via compose to get invocations for both agents.
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "Test", "recipients": ["dev_agent", "qa_engineer"], "body_markdown": "hello"},
+        headers=auth_headers,
+    )
+    tid = r.json()["thread_id"]
+
+    # First upload a thread-scoped attachment.
+    upload_resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("data.csv", b"a,b,c", "text/csv")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    att_id = upload_resp.json()["attachment_id"]
+
+    # Get an invocation token for dev_agent.
+    invs = org_state.db.list_thread_invocations(tid)
+    dev_inv = [i for i in invs if i.agent_name == "dev_agent"][0]
+
+    # Reply with thread-scoped attachment ref.
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": dev_inv.invocation_token,
+            "speaker": "dev_agent",
+            "body_markdown": "data attached",
+            "attachments": [{"attachment_id": att_id}],
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Verify the attachment appears in the thread messages.
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}",
+        headers=auth_headers,
+    )
+    msgs = get_resp.json()["messages"]
+    reply_msg = [m for m in msgs if m["speaker"] == "dev_agent"][0]
+    assert len(reply_msg["attachments"]) == 1
+    att = reply_msg["attachments"][0]
+    assert att["thread_attachment_id"] == att_id
+    assert att["display_name"] == "data.csv"
+    assert att["content_type"] == "text/csv"
+
+
+def test_reply_with_thread_scoped_attachment_not_found(client, auth_headers, org_state) -> None:
+    """Reply with a nonexistent thread-scoped attachment id returns 404."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "Test", "recipients": ["dev_agent", "qa_engineer"], "body_markdown": "hello"},
+        headers=auth_headers,
+    )
+    tid = r.json()["thread_id"]
+
+    invs = org_state.db.list_thread_invocations(tid)
+    dev_inv = [i for i in invs if i.agent_name == "dev_agent"][0]
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": dev_inv.invocation_token,
+            "speaker": "dev_agent",
+            "body_markdown": "bad ref",
+            "attachments": [{"attachment_id": "nonexistent"}],
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+
+
+def test_legacy_shared_artifact_attachment_still_works(client, auth_headers, org_state) -> None:
+    """Legacy shared artifact refs in attachments still render in responses."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "Test", "recipients": ["dev_agent", "qa_engineer"], "body_markdown": "hello"},
+        headers=auth_headers,
+    )
+    tid = r.json()["thread_id"]
+
+    # Create a shared artifact.
+    artifact_store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+    artifact_store.put("test-legacy.pdf", b"legacy content")
+
+    invs = org_state.db.list_thread_invocations(tid)
+    dev_inv = [i for i in invs if i.agent_name == "dev_agent"][0]
+
+    # Reply with a shared artifact ref (legacy path).
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": dev_inv.invocation_token,
+            "speaker": "dev_agent",
+            "body_markdown": "legacy attachment",
+            "attachments": [{"artifact_name": "test-legacy.pdf"}],
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Verify the legacy attachment still renders.
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}",
+        headers=auth_headers,
+    )
+    msgs = get_resp.json()["messages"]
+    reply_msg = [m for m in msgs if m["speaker"] == "dev_agent"][0]
+    atts = reply_msg["attachments"]
+    assert any(a["artifact_name"] == "test-legacy.pdf" for a in atts)
+
+    # Verify the attachment can still be downloaded via artifacts route.
+    dl_resp = client.get(
+        f"/api/v1/orgs/alpha/artifacts/test-legacy.pdf",
+        headers=auth_headers,
+    )
+    assert dl_resp.status_code == 200
+    assert dl_resp.content == b"legacy content"
+
+
+def test_mixed_attachments_shared_and_thread_scoped(client, auth_headers, org_state) -> None:
+    """A message can carry both shared artifact refs and thread-scoped refs."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "Test", "recipients": ["dev_agent", "qa_engineer"], "body_markdown": "hello"},
+        headers=auth_headers,
+    )
+    tid = r.json()["thread_id"]
+
+    # Create a shared artifact.
+    artifact_store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+    artifact_store.put("shared.pdf", b"shared")
+
+    # Upload a thread-scoped attachment.
+    upload_resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("private.txt", b"private", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    att_id = upload_resp.json()["attachment_id"]
+
+    invs = org_state.db.list_thread_invocations(tid)
+    dev_inv = [i for i in invs if i.agent_name == "dev_agent"][0]
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": dev_inv.invocation_token,
+            "speaker": "dev_agent",
+            "body_markdown": "mixed",
+            "attachments": [
+                {"artifact_name": "shared.pdf"},
+                {"attachment_id": att_id},
+            ],
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}",
+        headers=auth_headers,
+    )
+    msgs = get_resp.json()["messages"]
+    reply_msg = [m for m in msgs if m["speaker"] == "dev_agent"][0]
+    assert len(reply_msg["attachments"]) == 2
+    has_shared = any(a.get("artifact_name") == "shared.pdf" for a in reply_msg["attachments"])
+    has_thread = any(a.get("thread_attachment_id") == att_id for a in reply_msg["attachments"])
+    assert has_shared
+    assert has_thread
