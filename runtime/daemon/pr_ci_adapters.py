@@ -26,6 +26,7 @@ import time
 from typing import Any
 
 from runtime.daemon.pr_ci_merge import (
+    GuardedMergeVerdict,
     MergeResult,
     MergeableState,
     VERDICT_EXIT_CODES as MERGE_EXIT_CODES,
@@ -94,10 +95,15 @@ def gh_fetch_checks(repo: str, sha: str) -> list[CheckState]:
                 status=cr.get("status", "completed"),
                 conclusion=cr.get("conclusion"),
             ))
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as exc:
         # Check Runs endpoint may 404 for repos without GitHub Actions;
         # treat as zero check runs rather than a fatal error.
-        pass
+        # All other errors (auth, rate-limit, 5xx) MUST propagate so the
+        # engine yields github_error.
+        if _is_404_or_empty(exc):
+            pass
+        else:
+            raise
 
     # ── Commit Statuses (legacy Status API, e.g. external CI) ──
     try:
@@ -126,9 +132,13 @@ def gh_fetch_checks(repo: str, sha: str) -> list[CheckState]:
                 status="completed" if conclusion is not None else "pending",
                 conclusion=conclusion,
             ))
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as exc:
         # Status endpoint may 404 for repos without statuses configured.
-        pass
+        # All other errors MUST propagate.
+        if _is_404_or_empty(exc):
+            pass
+        else:
+            raise
 
     return checks
 
@@ -262,6 +272,25 @@ def guarded_merge_main(argv: list[str] | None = None) -> int:
     parser = _guarded_merge_arg_parser()
     args = parser.parse_args(argv)
 
+    # Fail-closed: missing verdicts must refuse the merge.
+    # No defaults — the caller must supply real HappyRanch chain evidence.
+    if args.review_verdict is None:
+        _print_verdict(GuardedMergeVerdict(
+            verdict="merge_guard_review",
+            pr_number=args.pr_number,
+            pinned_head_sha=args.head_sha,
+            error_detail="--review-verdict is required (fail-closed)",
+        ))
+        return MERGE_EXIT_CODES["merge_guard_review"]
+    if args.qa_verdict is None:
+        _print_verdict(GuardedMergeVerdict(
+            verdict="merge_guard_qa",
+            pr_number=args.pr_number,
+            pinned_head_sha=args.head_sha,
+            error_detail="--qa-verdict is required (fail-closed)",
+        ))
+        return MERGE_EXIT_CODES["merge_guard_qa"]
+
     verdict = guarded_merge(
         repo=args.repo,
         pr_number=args.pr_number,
@@ -282,6 +311,122 @@ def guarded_merge_main(argv: list[str] | None = None) -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Internal helpers
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _is_404_or_empty(exc: subprocess.CalledProcessError) -> bool:
+    """Return True when a gh error is a benign no-checks-yet/404 situation.
+
+    gh exits 1 for both 404 and auth errors.  We inspect stderr for
+    'Not Found' / 'not found' (the 404 message) to distinguish from auth,
+    rate-limit, and server errors which must propagate.
+    """
+    stderr = (exc.stderr or "").lower()
+    return "not found" in stderr
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Module-level dispatcher — routes subcommand to the correct adapter.
+
+    ``python -m runtime.daemon.pr_ci_adapters ci-poll ...``
+    ``python -m runtime.daemon.pr_ci_adapters guarded-merge ...``
+
+    Returns the adapter's exit code.
+    """
+    parser = argparse.ArgumentParser(
+        prog="pr-ci-adapters",
+        description="PR CI waiter + guarded-merge adapters",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    # Register sub-parsers by cloning the existing arg definitions.
+    # We build fresh parsers here to keep the per-command help disjoint.
+    _add_ci_poll_args(sub.add_parser("ci-poll", help="Poll CI for a PR"))
+    _add_guarded_merge_args(sub.add_parser("guarded-merge", help="Run guarded merge"))
+
+    args = parser.parse_args(argv)
+    if args.command == "ci-poll":
+        return ci_poll_main(_ci_poll_args_from(args))
+    elif args.command == "guarded-merge":
+        return guarded_merge_main(_guarded_merge_args_from(args))
+    else:
+        parser.print_help()
+        return 2
+
+
+def _add_ci_poll_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--repo", required=True, help="owner/repo")
+    p.add_argument("--pr-number", type=int, required=True, help="GitHub PR number")
+    p.add_argument("--head-sha", required=True, help="pinned 40-char head SHA")
+    p.add_argument(
+        "--expected-check", action="append", default=[],
+        dest="expected_check",
+        help="check-run/status context name (repeatable)",
+    )
+    p.add_argument(
+        "--settle-seconds", type=float, default=120.0,
+        help="how long to wait for checks to appear (default: 120)",
+    )
+    p.add_argument(
+        "--poll-interval", type=float, default=30.0,
+        help="seconds between polls (default: 30)",
+    )
+    p.add_argument(
+        "--timeout-seconds", type=float, default=3600.0,
+        help="total bounded wait ceiling (default: 3600)",
+    )
+
+
+def _add_guarded_merge_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--repo", required=True, help="owner/repo")
+    p.add_argument("--pr-number", type=int, required=True, help="GitHub PR number")
+    p.add_argument("--head-sha", required=True, help="pinned 40-char head SHA")
+    p.add_argument(
+        "--merge-method", required=True,
+        choices=["merge", "squash", "rebase"],
+        help="merge method",
+    )
+    p.add_argument(
+        "--ci-verdict", required=True,
+        help="CI verdict from the waiter (ci_pass or failure verdict)",
+    )
+    p.add_argument(
+        "--review-verdict", required=False, default=None,
+        help="review evidence verdict from the HappyRanch chain (e.g. APPROVE, REQUEST_CHANGES)",
+    )
+    p.add_argument(
+        "--qa-verdict", required=False, default=None,
+        help="QA evidence verdict from the HappyRanch chain (e.g. PASS, FAIL)",
+    )
+
+
+def _ci_poll_args_from(args: argparse.Namespace) -> list[str]:
+    """Convert a namespace from the module dispatcher back to argv for ci_poll_main."""
+    argv = [
+        "--repo", args.repo,
+        "--pr-number", str(args.pr_number),
+        "--head-sha", args.head_sha,
+        "--settle-seconds", str(args.settle_seconds),
+        "--poll-interval", str(args.poll_interval),
+        "--timeout-seconds", str(args.timeout_seconds),
+    ]
+    for check in args.expected_check:
+        argv.extend(["--expected-check", check])
+    return argv
+
+
+def _guarded_merge_args_from(args: argparse.Namespace) -> list[str]:
+    """Convert a namespace from the module dispatcher back to argv for guarded_merge_main."""
+    argv = [
+        "--repo", args.repo,
+        "--pr-number", str(args.pr_number),
+        "--head-sha", args.head_sha,
+        "--merge-method", args.merge_method,
+        "--ci-verdict", args.ci_verdict,
+    ]
+    if args.review_verdict is not None:
+        argv.extend(["--review-verdict", args.review_verdict])
+    if args.qa_verdict is not None:
+        argv.extend(["--qa-verdict", args.qa_verdict])
+    return argv
 
 
 def _print_verdict(verdict: Any) -> None:
@@ -353,11 +498,19 @@ def _guarded_merge_arg_parser() -> argparse.ArgumentParser:
         help="CI verdict from the waiter (ci_pass or failure verdict)",
     )
     p.add_argument(
-        "--review-verdict", default="APPROVE",
-        help="review evidence verdict (default: APPROVE)",
+        "--review-verdict", required=False, default=None,
+        help="review evidence verdict from the HappyRanch chain (e.g. APPROVE, REQUEST_CHANGES)",
     )
     p.add_argument(
-        "--qa-verdict", default="PASS",
-        help="QA evidence verdict (default: PASS)",
+        "--qa-verdict", required=False, default=None,
+        help="QA evidence verdict from the HappyRanch chain (e.g. PASS, FAIL)",
     )
     return p
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Module entry point
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    raise SystemExit(main())

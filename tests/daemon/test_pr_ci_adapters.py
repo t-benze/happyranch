@@ -19,6 +19,7 @@ from runtime.daemon.pr_ci_adapters import (
     gh_fetch_pr_state,
     gh_perform_merge,
     guarded_merge_main,
+    main,
 )
 from runtime.daemon.pr_ci_merge import MergeableState, MergeResult, VERDICT_EXIT_CODES as MERGE_EXIT_CODES
 from runtime.daemon.pr_ci_waiter import CheckState, PRState
@@ -827,3 +828,192 @@ def test_real_clock_sleep() -> None:
         clock = RealClock()
         clock.sleep(0.5)
         mock_sleep.assert_called_once_with(0.5)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FINDING 1 — main() dispatcher (dead entry point)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_main_dispatches_ci_poll() -> None:
+    """main(['ci-poll', ...]) routes to ci_poll_main and returns its exit code."""
+    pr_json = json.dumps({"state": "OPEN", "headRefOid": "a" * 40, "isDraft": False})
+    checks_out = json.dumps({"name": "ci", "status": "completed", "conclusion": "success"})
+    fake = _ci_poll_gh_output(pr_json, checks_out + "\n")
+
+    with patch("subprocess.run", side_effect=fake):
+        with patch("time.sleep"):
+            exit_code = main([
+                "ci-poll",
+                "--repo", "owner/repo", "--pr-number", "1",
+                "--head-sha", "a" * 40,
+                "--expected-check", "ci",
+                "--settle-seconds", "0", "--poll-interval", "1",
+                "--timeout-seconds", "10",
+            ])
+
+    assert exit_code == 0
+
+
+def test_main_dispatches_guarded_merge() -> None:
+    """main(['guarded-merge', ...]) routes to guarded_merge_main and returns its exit code."""
+    pr_json = json.dumps({"state": "OPEN", "headRefOid": "a" * 40, "isDraft": False})
+    mergeable_json = json.dumps({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"})
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        if "pr merge" in cmd_str:
+            return MagicMock(stdout="m" * 40 + "\n", stderr="")
+        if "pr view" in cmd_str and "isDraft" in cmd_str:
+            return MagicMock(stdout=pr_json, stderr="")
+        if "pr view" in cmd_str:
+            return MagicMock(stdout=mergeable_json, stderr="")
+        raise RuntimeError(f"unexpected cmd: {cmd_str}")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        exit_code = main([
+            "guarded-merge",
+            "--repo", "owner/repo", "--pr-number", "1",
+            "--head-sha", "a" * 40,
+            "--merge-method", "squash",
+            "--ci-verdict", "ci_pass",
+            "--review-verdict", "APPROVE",
+            "--qa-verdict", "PASS",
+        ])
+
+    assert exit_code == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FINDING 2 — fail-closed merge guard (missing verdicts → refuse merge)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_guarded_merge_missing_review_verdict_is_guard_blocked() -> None:
+    """Omitting --review-verdict must refuse the merge (guard-blocked), never proceed."""
+    pr_json = json.dumps({"state": "OPEN", "headRefOid": "a" * 40, "isDraft": False})
+    mergeable_json = json.dumps({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"})
+
+    merge_called = []
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        if "pr merge" in cmd_str:
+            merge_called.append(True)
+            return MagicMock(stdout="x\n", stderr="")
+        if "pr view" in cmd_str and "isDraft" in cmd_str:
+            return MagicMock(stdout=pr_json, stderr="")
+        if "pr view" in cmd_str:
+            return MagicMock(stdout=mergeable_json, stderr="")
+        raise RuntimeError(f"unexpected cmd: {cmd_str}")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        # --review-verdict omitted; --qa-verdict PASS
+        exit_code = guarded_merge_main([
+            "--repo", "owner/repo", "--pr-number", "1",
+            "--head-sha", "a" * 40,
+            "--merge-method", "squash",
+            "--ci-verdict", "ci_pass",
+            "--qa-verdict", "PASS",
+        ])
+
+    # Must NOT merge; must return merge_guard_review (exit code 11)
+    assert exit_code != 0, f"missing --review-verdict must not proceed, got exit={exit_code}"
+    assert exit_code == MERGE_EXIT_CODES["merge_guard_review"], f"expected merge_guard_review (11), got {exit_code}"
+    assert not merge_called, "gh pr merge must NOT be called when --review-verdict is missing"
+
+
+def test_guarded_merge_missing_qa_verdict_is_guard_blocked() -> None:
+    """Omitting --qa-verdict must refuse the merge (guard-blocked), never proceed."""
+    pr_json = json.dumps({"state": "OPEN", "headRefOid": "a" * 40, "isDraft": False})
+    mergeable_json = json.dumps({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"})
+
+    merge_called = []
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        if "pr merge" in cmd_str:
+            merge_called.append(True)
+            return MagicMock(stdout="x\n", stderr="")
+        if "pr view" in cmd_str and "isDraft" in cmd_str:
+            return MagicMock(stdout=pr_json, stderr="")
+        if "pr view" in cmd_str:
+            return MagicMock(stdout=mergeable_json, stderr="")
+        raise RuntimeError(f"unexpected cmd: {cmd_str}")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        # --qa-verdict omitted; --review-verdict APPROVE
+        exit_code = guarded_merge_main([
+            "--repo", "owner/repo", "--pr-number", "1",
+            "--head-sha", "a" * 40,
+            "--merge-method", "squash",
+            "--ci-verdict", "ci_pass",
+            "--review-verdict", "APPROVE",
+        ])
+
+    # Must NOT merge; must return merge_guard_qa (exit code 12)
+    assert exit_code != 0, f"missing --qa-verdict must not proceed, got exit={exit_code}"
+    assert exit_code == MERGE_EXIT_CODES["merge_guard_qa"], f"expected merge_guard_qa (12), got {exit_code}"
+    assert not merge_called, "gh pr merge must NOT be called when --qa-verdict is missing"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FINDING 3 — error masking in gh_fetch_checks (non-404 errors → github_error)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_ci_poll_adapter_check_runs_auth_error_is_github_error() -> None:
+    """Non-404 check-runs API error (e.g. auth) → github_error, NOT checks_missing."""
+    pr_json = json.dumps({"state": "OPEN", "headRefOid": "a" * 40, "isDraft": False})
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        if "pr view" in cmd_str:
+            return MagicMock(stdout=pr_json, stderr="")
+        if "check-runs" in cmd_str:
+            raise subprocess.CalledProcessError(22, "gh", stderr="Bad credentials")
+        if "/status" in cmd_str:
+            return MagicMock(stdout="", stderr="")
+        raise RuntimeError(f"unexpected cmd: {cmd_str}")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with patch("time.sleep"):
+            exit_code = ci_poll_main([
+                "--repo", "owner/repo", "--pr-number", "1",
+                "--head-sha", "a" * 40,
+                "--expected-check", "ci",
+                "--settle-seconds", "0", "--poll-interval", "1",
+                "--timeout-seconds", "10",
+            ])
+
+    # Must be github_error (7), NOT checks_missing (3) or timeout (4)
+    assert exit_code == 7, f"auth error must yield github_error (7), got {exit_code}"
+
+
+def test_ci_poll_adapter_status_api_auth_error_is_github_error() -> None:
+    """Non-404 status API error (e.g. rate limit) → github_error, NOT checks_missing."""
+    pr_json = json.dumps({"state": "OPEN", "headRefOid": "a" * 40, "isDraft": False})
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        if "pr view" in cmd_str:
+            return MagicMock(stdout=pr_json, stderr="")
+        if "check-runs" in cmd_str:
+            # Check-runs succeeds but returns nothing
+            return MagicMock(stdout="", stderr="")
+        if "/status" in cmd_str:
+            raise subprocess.CalledProcessError(1, "gh", stderr="API rate limit exceeded")
+        raise RuntimeError(f"unexpected cmd: {cmd_str}")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with patch("time.sleep"):
+            exit_code = ci_poll_main([
+                "--repo", "owner/repo", "--pr-number", "1",
+                "--head-sha", "a" * 40,
+                "--expected-check", "ci",
+                "--settle-seconds", "0", "--poll-interval", "1",
+                "--timeout-seconds", "10",
+            ])
+
+    # Must be github_error (7), NOT checks_missing (3) or timeout (4)
+    assert exit_code == 7, f"rate-limit error must yield github_error (7), got {exit_code}"
