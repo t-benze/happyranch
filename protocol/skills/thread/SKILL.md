@@ -63,13 +63,16 @@ Files attached via `--attach` or included in the `attachments` payload are now
 **thread-scoped by default** (TASK-1616). They are stored in the thread's private
 attachment store and are NOT visible to the rest of the org.
 
-**Default path (thread-scoped):** use `--attach` on reply/send:
+**Default path (thread-scoped):** use `--attach` on reply/send/compose:
 
     happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json --attach /tmp/file.ext
 
 This uploads the file to the thread's private store and includes an
-`attachment_id` ref in the payload. Recipients download with:
+`attachment_id` ref in the payload. Compose attachments are sent as
+multipart form data and stored thread-scoped by default. Recipients
+list and download with:
 
+    happyranch threads attachments list --org <slug> --thread-id <id>
     happyranch threads attachments get --org <slug> --thread-id <id> <attachment-id> --output /tmp/file.ext
 
 **Explicit shared-artifact escape hatch (for cross-task handoffs):**

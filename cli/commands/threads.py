@@ -98,10 +98,13 @@ def cmd_threads_tui(args: argparse.Namespace) -> None:
 def cmd_threads_compose(args: argparse.Namespace) -> None:
     import json as _json
     import sys
+    from pathlib import Path
     client = OpcClient.from_env()
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    attach_paths: list[Path] = getattr(args, "attach", None) or []
+    use_shared: bool = getattr(args, "shared", False)
     # Agent-initiated compose: requires --from-file with a JSON payload that
     # includes `composer` + task binding flags supplied on the CLI.
     if getattr(args, "task_id", None):
@@ -116,17 +119,31 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         payload["task_id"] = args.task_id
         if args.session_id:
             payload["session_id"] = args.session_id
-        payload = _merge_uploaded_attachments(
-            client=client,
-            slug=slug,
-            payload=payload,
-            attach_paths=getattr(args, "attach", None),
-            agent=payload.get("composer", ""),
-            thread_id=None,
-        )
-        r = client.post(
-            f"/api/v1/orgs/{slug}/threads/compose-as-agent", json=payload,
-        )
+
+        if attach_paths and not use_shared:
+            # Thread-scoped multipart upload (TASK-1616).
+            import mimetypes as _mime
+            files = []
+            for p in attach_paths:
+                ct = _mime.guess_type(p.name)[0] or "application/octet-stream"
+                files.append(("files", (p.name, p.open("rb"), ct)))
+            data = {"body": _json.dumps(payload)}
+            r = client.post(
+                f"/api/v1/orgs/{slug}/threads/compose-as-agent",
+                files=files, data=data,
+            )
+        else:
+            if attach_paths:
+                payload = _merge_uploaded_attachments(
+                    client=client, slug=slug, payload=payload,
+                    attach_paths=attach_paths,
+                    agent=payload.get("composer", ""),
+                    thread_id=None,
+                    use_shared_artifacts=True,
+                )
+            r = client.post(
+                f"/api/v1/orgs/{slug}/threads/compose-as-agent", json=payload,
+            )
         if not _ok(r):
             return
         body = r.json()
@@ -137,8 +154,8 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         )
         return
 
-    # Founder path — unchanged.
-    if not (args.subject and args.recipients and (args.body or getattr(args, "attach", None))):
+    # Founder path.
+    if not (args.subject and args.recipients and (args.body or attach_paths)):
         print(
             "error: --subject, --recipients, and --body or --attach required for founder compose",
             file=sys.stderr,
@@ -150,15 +167,28 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         "recipients": recipients,
         "body_markdown": args.body or "",
     }
-    payload = _merge_uploaded_attachments(
-        client=client,
-        slug=slug,
-        payload=payload,
-        attach_paths=getattr(args, "attach", None),
-        agent="founder",
-        thread_id=None,
-    )
-    r = client.post(f"/api/v1/orgs/{slug}/threads", json=payload)
+
+    if attach_paths and not use_shared:
+        # Thread-scoped multipart upload (TASK-1616).
+        import mimetypes as _mime
+        files = []
+        for p in attach_paths:
+            ct = _mime.guess_type(p.name)[0] or "application/octet-stream"
+            files.append(("files", (p.name, p.open("rb"), ct)))
+        data = {"body": _json.dumps(payload)}
+        r = client.post(
+            f"/api/v1/orgs/{slug}/threads",
+            files=files, data=data,
+        )
+    else:
+        if attach_paths:
+            payload = _merge_uploaded_attachments(
+                client=client, slug=slug, payload=payload,
+                attach_paths=attach_paths, agent="founder",
+                thread_id=None,
+                use_shared_artifacts=True,
+            )
+        r = client.post(f"/api/v1/orgs/{slug}/threads", json=payload)
     if not _ok(r):
         return
     body = r.json()
@@ -208,6 +238,7 @@ def cmd_threads_reply(args: argparse.Namespace) -> None:
         attach_paths=getattr(args, "attach", None),
         agent=body.get("speaker", ""),
         thread_id=thread_id,
+        use_shared_artifacts=getattr(args, "shared", False),
     )
     r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/reply", json=body)
     if not _ok(r):
@@ -326,6 +357,7 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
         attach_paths=getattr(args, "attach", None),
         agent="founder",
         thread_id=args.thread_id,
+        use_shared_artifacts=getattr(args, "shared", False),
     )
     r = client.post(f"/api/v1/orgs/{slug}/threads/{args.thread_id}/send", json=payload)
     if not _ok(r):
@@ -415,6 +447,45 @@ def cmd_threads_abort_replies(args: argparse.Namespace) -> None:
     print(_json.dumps(r.json(), indent=2))
 
 
+def cmd_threads_attachments_list(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    r = client.list_thread_attachments(
+        slug=slug,
+        thread_id=args.thread_id,
+    )
+    # list_thread_attachments returns {"attachments": [...]}
+    data = r if isinstance(r, dict) else r
+    if not data.get("attachments"):
+        print("(no thread-scoped attachments)")
+        return
+    for a in data["attachments"]:
+        size = a.get("size_bytes")
+        size_text = f" {size}B" if size is not None else ""
+        print(
+            f"{a['attachment_id']}  {a['display_name']}{size_text}"
+            f"  ({a.get('content_type', 'unknown')})"
+        )
+
+
+def cmd_threads_attachments_get(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    content = client.get_thread_attachment(
+        slug=slug,
+        thread_id=args.thread_id,
+        attachment_id=args.attachment_id,
+    )
+    out_path = Path(args.output)
+    out_path.write_bytes(content)
+    print(f"Saved {len(content)}B to {out_path}")
+
+
 def cmd_threads_forward(args: argparse.Namespace) -> None:
     import json as _json
     from datetime import datetime
@@ -499,6 +570,10 @@ def register(sub) -> None:
         help="Opening message body (founder path)",
     )
     p_threads_compose.add_argument("--attach", action="append", type=Path, default=None)
+    p_threads_compose.add_argument(
+        "--shared", action="store_true", default=False,
+        help="Store attachments in shared org artifacts instead of thread-scoped (cross-task handoff escape hatch)",
+    )
     p_threads_compose.set_defaults(func=cmd_threads_compose)
 
     p_threads_list = threads_sub.add_parser("list", help="List threads")
@@ -512,6 +587,10 @@ def register(sub) -> None:
     p_threads_reply.add_argument("--thread-id", dest="thread_id", default=None)
     p_threads_reply.add_argument("--from-file", required=True)
     p_threads_reply.add_argument("--attach", action="append", type=Path, default=None)
+    p_threads_reply.add_argument(
+        "--shared", action="store_true", default=False,
+        help="Store attachments in shared org artifacts instead of thread-scoped",
+    )
     p_threads_reply.set_defaults(func=cmd_threads_reply)
 
     p_threads_decline = threads_sub.add_parser("decline", help="Agent callback: decline a thread turn")
@@ -537,6 +616,10 @@ def register(sub) -> None:
     p_threads_send.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_send.add_argument("--from-file", dest="from_file", required=True)
     p_threads_send.add_argument("--attach", action="append", type=Path, default=None)
+    p_threads_send.add_argument(
+        "--shared", action="store_true", default=False,
+        help="Store attachments in shared org artifacts instead of thread-scoped",
+    )
     p_threads_send.set_defaults(func=cmd_threads_send)
 
     p_threads_invite = threads_sub.add_parser("invite", help="Founder: invite a participant to a thread")
@@ -570,6 +653,23 @@ def register(sub) -> None:
     p_threads_abort.add_argument("--org", default=None, help="Org slug")
     p_threads_abort.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_abort.set_defaults(func=cmd_threads_abort_replies)
+
+    p_threads_attachments = threads_sub.add_parser(
+        "attachments", help="Thread-scoped attachment operations",
+    )
+    att_sub = p_threads_attachments.add_subparsers(dest="att_command", required=True)
+
+    p_att_list = att_sub.add_parser("list", help="List thread-scoped attachments for a thread")
+    p_att_list.add_argument("--org", default=None, help="Org slug")
+    p_att_list.add_argument("--thread-id", dest="thread_id", required=True)
+    p_att_list.set_defaults(func=cmd_threads_attachments_list)
+
+    p_att_get = att_sub.add_parser("get", help="Download a thread-scoped attachment")
+    p_att_get.add_argument("--org", default=None, help="Org slug")
+    p_att_get.add_argument("--thread-id", dest="thread_id", required=True)
+    p_att_get.add_argument("attachment_id")
+    p_att_get.add_argument("--output", "-o", dest="output", required=True)
+    p_att_get.set_defaults(func=cmd_threads_attachments_get)
 
     p_threads_forward = threads_sub.add_parser("forward", help="Founder: forward a thread into a new thread")
     p_threads_forward.add_argument("--org", default=None, help="Org slug")

@@ -279,11 +279,7 @@ def test_threads_compose_attach_uploads_with_founder_attribution(
     local = tmp_path / "data.csv"
     local.write_text("a,b\n", encoding="utf-8")
     fake = Mock()
-    fake.put_artifact.return_value = {
-        "name": "thread-draft-20260609T000000Z-data.csv",
-        "size_bytes": 4,
-        "modified_at": "2026-06-09T00:00:00Z",
-    }
+    fake.put_artifact = Mock()
     fake.post.return_value = _json_response(
         {
             "thread_id": "THR-001",
@@ -306,16 +302,17 @@ def test_threads_compose_attach_uploads_with_founder_attribution(
 
     cmd_threads_compose(args)
 
-    assert fake.put_artifact.call_args.kwargs["agent"] == "founder"
-    assert fake.put_artifact.call_args.kwargs["name"] == "thread-draft-20260609T000000Z-data.csv"
-    sent = fake.post.call_args.kwargs["json"]
-    assert sent["attachments"] == [
-        {
-            "artifact_name": "thread-draft-20260609T000000Z-data.csv",
-            "display_name": "data.csv",
-            "content_type": "text/csv",
-        },
-    ]
+    # Compose with --attach uses thread-scoped multipart (TASK-1616).
+    # put_artifact (shared artifacts) is NOT called.
+    fake.put_artifact.assert_not_called()
+    # POST uses multipart form data with body + files fields.
+    call_kwargs = fake.post.call_args.kwargs
+    assert "files" in call_kwargs
+    assert "data" in call_kwargs
+    assert "body" in call_kwargs["data"]
+    body_json = json.loads(call_kwargs["data"]["body"])
+    assert body_json["subject"] == "Review data"
+    assert body_json["recipients"] == ["dev_agent"]
 
 
 def test_threads_compose_as_agent_attach_uses_composer_attribution(
@@ -337,11 +334,7 @@ def test_threads_compose_as_agent_attach_uses_composer_attribution(
     local = tmp_path / "notes.md"
     local.write_text("notes", encoding="utf-8")
     fake = Mock()
-    fake.put_artifact.return_value = {
-        "name": "thread-draft-20260609T000000Z-notes.md",
-        "size_bytes": 5,
-        "modified_at": "2026-06-09T00:00:00Z",
-    }
+    fake.put_artifact = Mock()
     fake.post.return_value = _json_response(
         {
             "thread_id": "THR-001",
@@ -365,16 +358,18 @@ def test_threads_compose_as_agent_attach_uses_composer_attribution(
 
     cmd_threads_compose(args)
 
-    assert fake.put_artifact.call_args.kwargs["agent"] == "dev_agent"
-    assert fake.put_artifact.call_args.kwargs["name"] == "thread-draft-20260609T000000Z-notes.md"
-    sent = fake.post.call_args.kwargs["json"]
-    assert sent["attachments"] == [
-        {
-            "artifact_name": "thread-draft-20260609T000000Z-notes.md",
-            "display_name": "notes.md",
-            "content_type": "text/markdown",
-        },
-    ]
+    # Compose-as-agent with --attach uses thread-scoped multipart (TASK-1616).
+    # put_artifact (shared artifacts) is NOT called.
+    fake.put_artifact.assert_not_called()
+    # POST uses multipart form data with body + files fields.
+    call_kwargs = fake.post.call_args.kwargs
+    assert "files" in call_kwargs
+    assert "data" in call_kwargs
+    assert "body" in call_kwargs["data"]
+    body_json = json.loads(call_kwargs["data"]["body"])
+    assert body_json["composer"] == "dev_agent"
+    assert body_json["task_id"] == "TASK-001"
+    assert body_json["session_id"] == "sess-1"
 
 
 def test_threads_dispatch_prints_superseded_task_id(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -455,3 +450,160 @@ def test_threads_abort_replies_prints_json(monkeypatch, capsys) -> None:
     result = json.loads(out)
     assert result["thread_id"] == "THR-001"
     assert result["aborted_count"] == 2
+
+
+# ── CLI attachments list/get tests (TASK-1616) ─────────────────────────────
+
+
+def test_threads_attachments_list_prints_rows(monkeypatch, capsys) -> None:
+    from cli.commands.threads import cmd_threads_attachments_list
+
+    fake = Mock()
+    fake.list_thread_attachments.return_value = {
+        "attachments": [
+            {
+                "attachment_id": "att-001",
+                "display_name": "data.csv",
+                "size_bytes": 100,
+                "content_type": "text/csv",
+            },
+            {
+                "attachment_id": "att-002",
+                "display_name": "notes.md",
+                "size_bytes": 50,
+                "content_type": "text/markdown",
+            },
+        ]
+    }
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(org="alpha", thread_id="THR-001")
+    cmd_threads_attachments_list(args)
+
+    out = capsys.readouterr().out
+    assert "att-001" in out
+    assert "data.csv" in out
+    assert "100B" in out
+    assert "att-002" in out
+    assert "notes.md" in out
+
+
+def test_threads_attachments_list_empty(monkeypatch, capsys) -> None:
+    from cli.commands.threads import cmd_threads_attachments_list
+
+    fake = Mock()
+    fake.list_thread_attachments.return_value = {"attachments": []}
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(org="alpha", thread_id="THR-001")
+    cmd_threads_attachments_list(args)
+
+    out = capsys.readouterr().out
+    assert "no thread-scoped attachments" in out
+
+
+def test_threads_attachments_get_saves_file(monkeypatch, capsys, tmp_path: Path) -> None:
+    from cli.commands.threads import cmd_threads_attachments_get
+
+    fake = Mock()
+    fake.get_thread_attachment.return_value = b"hello world"
+    _stub_client(monkeypatch, fake)
+
+    out_path = tmp_path / "downloaded.txt"
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001",
+        attachment_id="att-001",
+        output=str(out_path),
+    )
+    cmd_threads_attachments_get(args)
+
+    out = capsys.readouterr().out
+    assert "11B" in out
+    assert out_path.read_bytes() == b"hello world"
+
+
+def test_threads_attachments_parser_list(monkeypatch) -> None:
+    """Parser accepts 'threads attachments list --thread-id X'."""
+    from cli.main import build_parser
+    p = build_parser()
+    ns = p.parse_args(["threads", "attachments", "list", "--org", "alpha", "--thread-id", "THR-001"])
+    assert ns.func is not None
+    assert ns.thread_id == "THR-001"
+
+
+def test_threads_attachments_parser_get(monkeypatch) -> None:
+    """Parser accepts 'threads attachments get --thread-id X ATT_ID -o out'."""
+    from cli.main import build_parser
+    p = build_parser()
+    ns = p.parse_args([
+        "threads", "attachments", "get",
+        "--org", "alpha", "--thread-id", "THR-001",
+        "att-001", "-o", "/tmp/out.txt",
+    ])
+    assert ns.func is not None
+    assert ns.attachment_id == "att-001"
+    assert ns.output == "/tmp/out.txt"
+
+
+# ── CLI --shared flag (escape hatch) tests ─────────────────────────────────
+
+
+def test_threads_reply_shared_uses_artifact(monkeypatch, tmp_path: Path) -> None:
+    """reply --shared uses shared artifacts instead of thread-scoped."""
+    from cli.commands.threads import cmd_threads_reply
+    payload_path = tmp_path / "reply.json"
+    payload_path.write_text(json.dumps({
+        "thread_id": "THR-001",
+        "invocation_token": "tok",
+        "speaker": "dev_agent",
+        "body_markdown": "hi",
+        "in_response_to_seq": 1,
+    }))
+    local = tmp_path / "report.pdf"
+    local.write_text("report", encoding="utf-8")
+
+    fake = Mock()
+    fake.put_artifact.return_value = {
+        "name": "report-shared.pdf", "size_bytes": 6,
+        "modified_at": "2026-01-01T00:00:00Z",
+    }
+    fake.post.return_value = _json_response({"thread_id": "THR-001", "seq": 2, "kind": "message"})
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001",
+        from_file=str(payload_path), attach=[local],
+        shared=True,
+    )
+    cmd_threads_reply(args)
+
+    # put_artifact (shared) was called, not upload_thread_attachment.
+    fake.put_artifact.assert_called_once()
+
+
+def test_threads_compose_shared_uses_artifact(monkeypatch, tmp_path: Path) -> None:
+    """compose --shared --attach uses shared artifacts."""
+    from cli.main import cmd_threads_compose
+    local = tmp_path / "notes.md"
+    local.write_text("notes", encoding="utf-8")
+
+    fake = Mock()
+    fake.put_artifact.return_value = {
+        "name": "shared-notes.md", "size_bytes": 5,
+        "modified_at": "2026-01-01T00:00:00Z",
+    }
+    fake.post.return_value = _json_response({
+        "thread_id": "THR-001", "started_at": "2026-01-01T00:00:00Z",
+        "pending_replies": [],
+    })
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha", task_id=None, session_id=None, from_file=None,
+        subject="Review", recipients="dev_agent", body="",
+        attach=[local], shared=True,
+    )
+    cmd_threads_compose(args)
+
+    # put_artifact (shared) was called, not multipart.
+    fake.put_artifact.assert_called_once()

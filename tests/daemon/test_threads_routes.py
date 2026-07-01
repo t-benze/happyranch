@@ -1936,3 +1936,235 @@ def test_mixed_attachments_shared_and_thread_scoped(client, auth_headers, org_st
     has_thread = any(a.get("thread_attachment_id") == att_id for a in reply_msg["attachments"])
     assert has_shared
     assert has_thread
+
+
+# ── Thread-scoped attachment authorization tests (TASK-1616) ──────────────
+
+
+def test_upload_attachment_rejects_non_participant(
+    client, auth_headers, org_state,
+) -> None:
+    """A non-participant agent cannot upload thread-scoped attachments."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "intruder")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("secret.txt", b"secret", "text/plain")},
+        params={"agent": "intruder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "not_participant"
+
+
+def test_upload_attachment_allows_participant(
+    client, auth_headers, org_state,
+) -> None:
+    """A thread participant CAN upload thread-scoped attachments."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("ok.txt", b"ok", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["uploaded_by"] == "dev_agent"
+
+
+def test_list_attachments_rejects_non_participant(
+    client, auth_headers, org_state,
+) -> None:
+    """A non-participant agent cannot list thread-scoped attachments."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "intruder")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "intruder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "not_participant"
+
+
+def test_list_attachments_allows_participant(
+    client, auth_headers, org_state,
+) -> None:
+    """A thread participant CAN list thread-scoped attachments."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Upload a file first.
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("a.txt", b"aa", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()["attachments"]) == 1
+
+
+def test_get_attachment_rejects_non_participant(
+    client, auth_headers, org_state,
+) -> None:
+    """A non-participant agent cannot download thread-scoped attachments."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "intruder")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Upload as participant.
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("secret.txt", b"secret", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    att_id = upload.json()["attachment_id"]
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "intruder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "not_participant"
+
+
+def test_founder_bypasses_participation_check(
+    client, auth_headers, org_state,
+) -> None:
+    """Founder (agent='founder') bypasses participation checks for all routes."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Upload as founder works even though founder is not a participant row.
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("founder.txt", b"founder", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert upload.status_code == 200
+    att_id = upload.json()["attachment_id"]
+
+    # List as founder works.
+    list_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert list_resp.status_code == 200
+
+    # Get as founder works.
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert get_resp.status_code == 200
+
+
+def test_no_agent_param_allows_bearer_only(
+    client, auth_headers, org_state,
+) -> None:
+    """Without agent param, list/get succeed for bearer-authenticated callers."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("public.txt", b"public", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    att_id = upload.json()["attachment_id"]
+
+    # List without agent param — succeeds for bearer-authenticated callers.
+    list_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        headers=auth_headers,
+    )
+    assert list_resp.status_code == 200
+
+    # Get without agent param — succeeds.
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        headers=auth_headers,
+    )
+    assert get_resp.status_code == 200
+
+
+# ── Compose-as-agent multipart (TASK-1616) ─────────────────────────────────
+
+
+def test_compose_as_agent_multipart_with_files(
+    client, auth_headers, org_state,
+) -> None:
+    """Agent compose with multipart stores files thread-scoped."""
+    import json, mimetypes
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "review_agent")
+
+    body = {
+        "composer": "dev_agent",
+        "subject": "Files attached",
+        "recipients": ["review_agent"],
+        "body_markdown": "see attached",
+        "task_id": "TASK-001",
+        "session_id": "sess-1",
+    }
+    # Seed a task owned by dev_agent.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-001", brief="test", assigned_agent="dev_agent",
+        task_type="task", status=TaskStatus.IN_PROGRESS,
+        session_timeout_seconds=600,
+        block_kind=BlockKind.DELEGATED,
+    ))
+    org_state.sessions.set_active("TASK-001", "dev_agent", "sess-1")
+
+    files = [
+        ("files", ("data.csv", b"a,b,c", "text/csv")),
+        ("files", ("notes.txt", b"notes", "text/plain")),
+    ]
+    data = {"body": json.dumps(body)}
+
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        files=files, data=data,
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    thread_id = resp.json()["thread_id"]
+
+    # Verify thread-scoped attachments exist.
+    rows = org_state.db.list_thread_scoped_attachments(thread_id)
+    assert len(rows) == 2
+    names = {r.display_name for r in rows}
+    assert names == {"data.csv", "notes.txt"}
+
+    # Verify the thread message includes thread-scoped attachment refs.
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{thread_id}",
+        headers=auth_headers,
+    )
+    msgs = get_resp.json()["messages"]
+    assert len(msgs) == 1
+    atts = msgs[0]["attachments"]
+    assert len(atts) == 2
+    for a in atts:
+        assert a["thread_attachment_id"].startswith("att-")
+        assert a["artifact_name"] == ""

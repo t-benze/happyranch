@@ -694,10 +694,243 @@ async def compose_thread(
 # ---------------------------------------------------------------------------
 
 
+async def _compose_agent_thread_multipart(
+    slug: str, org: OrgDep, request: Request,
+) -> dict:
+    """Handle compose-as-agent as multipart/form-data for thread-scoped attachment uploads."""
+    import json as _json
+    from fastapi import UploadFile
+
+    form = await request.form()
+    body_raw = form.get("body")
+    if body_raw is None:
+        raise HTTPException(
+            status_code=422, detail={"code": "missing_body_field"},
+        )
+    try:
+        body_data = _json.loads(
+            body_raw if isinstance(body_raw, str) else await body_raw.read()
+        )
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=422, detail={"code": "invalid_body_json"},
+        )
+    body = ComposeAsAgentBody(**body_data)
+    file_fields = [
+        v for k, v in form.multi_items()
+        if k == "files" and hasattr(v, "read")
+    ]
+
+    subject = body.subject.strip()
+    if not subject:
+        raise HTTPException(status_code=422, detail={"code": "empty_subject"})
+    if not body.recipients:
+        raise HTTPException(status_code=422, detail={"code": "empty_recipients"})
+
+    # Composer must be an approved agent with a workspace.
+    org_paths = OrgPaths(root=org.root)
+    composer_def = prompt_loader.load_agent(org_paths, body.composer)
+    composer_workspace = (org.root / "workspaces" / body.composer).exists()
+    if composer_def is None or not composer_workspace:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_composer", "agent": body.composer},
+        )
+
+    # Task binding.
+    if not body.task_id or not body.session_id:
+        raise HTTPException(status_code=422, detail={"code": "binding_required"})
+    task = org.db.get_task(body.task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "unknown_task", "task_id": body.task_id}
+        )
+    if task.assigned_agent != body.composer:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "composer_not_task_owner",
+                    "composer": body.composer, "assigned_agent": task.assigned_agent},
+        )
+    if task.status.value not in ("pending", "in_progress"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "task_not_active", "status": task.status.value},
+        )
+    active_sid = org.sessions.get_active(body.task_id, body.composer)
+    if active_sid is None or active_sid != body.session_id:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
+        )
+
+    # Dedupe recipients.
+    seen_rcpt: set[str] = set()
+    recipients: list[str] = []
+    for name in body.recipients:
+        if name in seen_rcpt:
+            continue
+        seen_rcpt.add(name)
+        recipients.append(name)
+
+    # Validate each non-@founder recipient.
+    for name in recipients:
+        if name == FOUNDER_LITERAL:
+            continue
+        agent_def = prompt_loader.load_agent(org_paths, name)
+        workspace_exists = (org.root / "workspaces" / name).exists()
+        if agent_def is None or not workspace_exists:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "unknown_agent", "agent": name},
+            )
+
+    external = [r for r in recipients if r != body.composer]
+    founder_in_recipients = FOUNDER_LITERAL in recipients
+    if not external and not founder_in_recipients:
+        raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
+
+    org_cfg = load_org_config(org_paths)
+    turn_cap = org_cfg.threads_default_turn_cap
+
+    # Validate shared artifact refs (if any).
+    shared_attachments = _normalize_attachments(
+        org, body.attachments, uploaded_by=body.composer,
+    )
+
+    total_file_count = len(file_fields) + len(shared_attachments)
+    if total_file_count > MAX_THREAD_ATTACHMENTS:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "too_many_attachments", "max": MAX_THREAD_ATTACHMENTS},
+        )
+
+    # Inline thread creation (same as _create_agent_thread_locked but we store
+    # thread-scoped files before appending the message).
+    addressed_agents = [
+        name for name in recipients if name != FOUNDER_LITERAL and name != body.composer
+    ]
+
+    async with org.db_lock:
+        thread_id = org.db.next_thread_id()
+        org.db.insert_thread(ThreadRecord(
+            id=thread_id, subject=subject, turn_cap=turn_cap,
+            composed_by=body.composer,
+            composed_from_task_id=body.task_id,
+        ))
+        org.db.add_thread_participant(thread_id, body.composer, added_by=body.composer)
+        for name in recipients:
+            if name == FOUNDER_LITERAL or name == body.composer:
+                continue
+            org.db.add_thread_participant(thread_id, name, added_by=body.composer)
+
+        # Store uploaded files in thread-scoped store.
+        thread_attachments: list[ThreadAttachment] = []
+        for file_field in file_fields:
+            content = await file_field.read()
+            if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail={
+                        "code": "attachment_too_large",
+                        "max_bytes": MAX_THREAD_ATTACHMENT_BYTES,
+                    },
+                )
+            display_name = (
+                file_field.filename if hasattr(file_field, "filename") else "attachment"
+            ) or "attachment"
+            _validate_display_name(display_name)
+            content_type = (
+                file_field.content_type
+                if hasattr(file_field, "content_type")
+                else None
+            ) or mimetypes.guess_type(display_name)[0]
+            attachment_id = org.db.next_thread_attachment_id()
+            size_bytes = _attachment_store(org).put(
+                thread_id, attachment_id, content,
+            )
+            org.db.insert_thread_scoped_attachment(
+                attachment_id=attachment_id,
+                thread_id=thread_id,
+                display_name=display_name,
+                size_bytes=size_bytes,
+                content_type=content_type,
+                uploaded_by=body.composer,
+            )
+            thread_attachments.append(
+                ThreadAttachment(
+                    artifact_name="",
+                    display_name=display_name,
+                    size_bytes=size_bytes,
+                    content_type=content_type,
+                    uploaded_by=body.composer,
+                    thread_attachment_id=attachment_id,
+                )
+            )
+
+        all_attachments = shared_attachments + thread_attachments
+        body_text = _normalize_message_body(body.body_markdown, all_attachments)
+
+        seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker=body.composer,
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown=body_text,
+            attachments=all_attachments,
+        )
+        org.db.increment_thread_turns_used(thread_id, by=1)
+        AuditLogger(org.db).log_thread_started(
+            thread_id,
+            subject=subject,
+            initial_recipients=recipients,
+            forwarded_from_id=None,
+            composed_by=body.composer,
+            composed_from_task_id=body.task_id,
+        )
+        AuditLogger(org.db).log_thread_message_sent(
+            thread_id, seq=seq, speaker=body.composer, kind="message",
+            attachment_names=[
+                a.artifact_name or a.thread_attachment_id or ""
+                for a in all_attachments
+            ],
+        )
+
+        tokens_to_enqueue: list[str] = []
+        for name in addressed_agents:
+            inv = org.db.mint_thread_invocation(
+                thread_id=thread_id, agent_name=name,
+                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+            )
+            tokens_to_enqueue.append(inv.invocation_token)
+
+    for tok in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=seq, speaker=body.composer,
+        kind="message",
+        preview=body_text or _attachments_preview(all_attachments),
+        status="open",
+    )
+
+    return {
+        "thread_id": thread_id,
+        "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
+        "composed_by": body.composer,
+        "composed_from_task_id": body.task_id,
+        "pending_replies": addressed_agents,
+    }
+
+
 @router.post("/threads/compose-as-agent")
 async def compose_thread_as_agent(
-    slug: str, body: ComposeAsAgentBody, org: OrgDep,
+    slug: str, org: OrgDep, request: Request,
 ) -> dict:
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        return await _compose_agent_thread_multipart(slug, org, request)
+    # JSON path.
+    body_data = await request.json()
+    body = ComposeAsAgentBody(**body_data)
     subject = body.subject.strip()
     if not subject:
         raise HTTPException(status_code=422, detail={"code": "empty_subject"})
@@ -1877,10 +2110,14 @@ class ThreadAttachmentRefBody(BaseModel):
 @router.get("/threads/{thread_id}/attachments")
 async def list_thread_attachments(
     slug: str, thread_id: str, org: OrgDep, request: Request,
+    agent: str | None = Query(None),
 ) -> dict:
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if agent is not None and agent != "founder":
+        if not org.db.is_thread_participant(thread_id, agent):
+            raise HTTPException(status_code=403, detail={"code": "not_participant"})
     rows = org.db.list_thread_scoped_attachments(thread_id)
     return {
         "attachments": [
@@ -1901,10 +2138,14 @@ async def list_thread_attachments(
 @router.get("/threads/{thread_id}/attachments/{attachment_id}")
 async def get_thread_attachment(
     slug: str, thread_id: str, attachment_id: str, org: OrgDep, request: Request,
+    agent: str | None = Query(None),
 ):
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if agent is not None and agent != "founder":
+        if not org.db.is_thread_participant(thread_id, agent):
+            raise HTTPException(status_code=403, detail={"code": "not_participant"})
     row = org.db.get_thread_scoped_attachment(thread_id, attachment_id)
     if row is None:
         raise HTTPException(
@@ -1941,6 +2182,10 @@ async def upload_thread_attachment(
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     if t.status is not ThreadStatus.OPEN:
         raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+    # Non-founder agents must be thread participants.
+    if agent != "founder":
+        if not org.db.is_thread_participant(thread_id, agent):
+            raise HTTPException(status_code=403, detail={"code": "not_participant"})
 
     content = await file.read(MAX_THREAD_ATTACHMENT_BYTES + 1)
     if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
