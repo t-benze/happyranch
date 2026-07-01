@@ -107,6 +107,44 @@ If you need to stay in-session for a fast `review_required=false` job, the
 existing `happyranch jobs wait JOB-NNN --timeout-seconds 30` pattern still works.
 Prefer block-and-resume for any wait long enough to risk session timeout.
 
+## PR CI / guarded merge helper
+
+For PR-producing engineering tasks, do not hand-roll CI polling scripts. Submit a poll job and use the guarded-merge entrypoint on task resume.
+
+**Poll job:** submit a `review_required=false` job through the existing jobs path whose script invokes the poller entrypoint:
+
+```bash
+python -m runtime.daemon.pr_ci_waiter \
+  --repo owner/repo --pr N --head-sha <40-char-sha> \
+  --expected-check "Python CI" --expected-check "Web CI" \
+  --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
+```
+
+This polls GitHub checks for the pinned head SHA and prints a structured verdict JSON to stdout. It exits 0 for `ci_pass`, non-zero for all other verdicts. **The poll job performs NO merge.**
+
+After the poll job completes, the resumed task inspects the verdict. If `ci_pass`, the task owner triggers the guarded-merge entrypoint as a short daemon-run step:
+
+```bash
+python -m runtime.daemon.pr_ci_merge \
+  --org <org-slug> --repo owner/repo --pr N --head-sha <40-char-sha> \
+  --merge-method squash --ci-verdict ci_pass \
+  --review-task-id TASK-xxx --qa-task-id TASK-yyy
+```
+
+The merge guard is conjunctive — all must pass before the engine attempts merge:
+
+- review verdict is `APPROVE`;
+- QA verdict is `PASS`;
+- CI verdict is `ci_pass` for the pinned SHA;
+- PR head SHA is unchanged at merge time;
+- GitHub mergeability is `CLEAN`;
+- the PR is still open and not draft;
+- the helper uses the configured merge method.
+
+It exits successfully only when the PR is merged after all merge guards pass. It exits non-zero for CI failure, stale PR head, timeout, missing checks after settle, non-clean mergeability, rejected job, or failed merge.
+
+The poll job can auto-run without founder interaction. The merge runs inside the guarded-merge entrypoint on the daemon-run / EM-authority path; do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
+
 ## Cleanup
 
 Before reporting your task complete, stop any of your own jobs you no longer need. Persistent jobs you forget about will be auto-killed when your task transitions terminal, but explicit cleanup makes the audit log cleaner and avoids ambiguous "did the agent forget about this?" questions.

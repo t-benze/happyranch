@@ -176,6 +176,22 @@ structured join context block with each child's outcome.
 See KB `fanout-primitive-founder-ratification` and
 `output/TASK-1101/native-fanout-phase1-refresh.md`.
 
+## Completion blocked on an asynchronous external condition
+
+A task whose requested outcome depends on an ASYNCHRONOUS EXTERNAL TERMINAL CONDITION — a long-running external job, a deploy, an external approval workflow, an external CI run — is NOT complete until that condition resolves. The task owner may not report `done` at an intermediate milestone (e.g., submission, handoff, or initiation) when completion requires the external system's terminal verdict.
+
+The runtime primitive for waiting on external conditions is the existing jobs plus `waiting_on_job_ids` path:
+
+1. The task owner captures the identity of the external artifact or process it must wait on.
+2. The task owner submits a bounded poller job that monitors the external condition to a terminal verdict.
+3. The task owner reports `status="blocked"` with `waiting_on_job_ids=["JOB-NNN"]`.
+4. The task remains `in_progress(blocked_on_job)` until the job is terminal. The normal blocked-on-job resume path reinvokes the task owner with the job result.
+5. On resume, the task owner inspects the job output. It reports `done` only if the job proves the external condition resolved successfully. Failure, timeout, or a missing/disputed result must produce a revise/fail/escalate decision — never a false completion.
+
+Do not infer external success from an intermediate signal. The poller job — not the task owner's session — reaches the terminal verdict; the task owner gates completion on that verdict alone.
+
+Example: a task that must land a pull request waits on that PR's external CI through this path; the engineering-domain specifics (SHA-pinning, settle window, guarded-merge gates) live in the jobs skill and agent guides.
+
 ### Who emits a decision, and delegation scope
 
 **Decision emitters:** Any agent that owns a `task_type=task` task must emit a `decision` field — not only `role: manager` agents. Conversely, an agent owning a `task_type=subtask` task is a leaf: it reports `status` + `output_summary` and omits `decision` entirely. The orchestration gate keys on `task.task_type`, not on agent role.

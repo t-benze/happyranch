@@ -91,6 +91,29 @@ WS), so it is not part of the `openapi-coverage` route set. See
 
 Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 
+### PR CI wait / guarded merge entrypoints
+
+Two CLI entrypoints (invoked as jobs or on task resume, not as `happyranch` subcommands) provide the PR CI polling and guarded-merge mechanisms:
+
+```bash
+# Poll job (submitted via happyranch jobs submit):
+python -m runtime.daemon.pr_ci_waiter \
+  --repo owner/repo --pr N --head-sha <40-char-sha> \
+  --expected-check "Python CI" --expected-check "Web CI" \
+  --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
+
+# Merge (triggered by resumed task):
+python -m runtime.daemon.pr_ci_merge \
+  --org <org-slug> --repo owner/repo --pr N --head-sha <40-char-sha> \
+  --merge-method squash --ci-verdict ci_pass \
+  --review-task-id TASK-xxx --qa-task-id TASK-yyy
+```
+
+Both print structured JSON verdicts to stdout and exit with mapped codes (0 = success).
+The poll job runs with `review_required=false` through the existing jobs path; agents never
+get raw `gh pr merge` grants. Full workflow narrative (submit → blocked → resume →
+inspect → merge/revise) is deferred to PR #5.
+
 ### Token usage
 
 `happyranch tokens` shows `session_token_usage`. Default is the most recent rows;

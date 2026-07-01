@@ -11,6 +11,7 @@ from runtime.daemon.routes import (
     agents,
     artifacts,
     assistant,
+    assistant_a_mode,
     audit,
     auth,
     dashboard,
@@ -185,6 +186,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(runtime.router, prefix="/api/v1")
     app.include_router(orgs.router, prefix="/api/v1")
     app.include_router(assistant.router, prefix="/api/v1")
+    app.include_router(assistant_a_mode.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(agents.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(teams.router, prefix="/api/v1/orgs/{slug}")
@@ -201,5 +203,5 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(dashboard.router, prefix="/api/v1/orgs/{slug}", tags=["dashboard"])
     app.include_router(settings_routes.router, prefix="/api/v1/orgs/{slug}", tags=["settings"])
     from runtime.daemon.routes import web_static
-    web_static.register(app)
+    web_static.register(app, settings=state.settings)
     return app

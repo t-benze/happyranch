@@ -8,8 +8,10 @@ from pathlib import Path
 
 from runtime.config import Settings
 from runtime.daemon.assistant_pty import AssistantSessionManager
+from runtime.daemon.headless_assistant import HeadlessAssistantManager
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.queue import TaskQueue
+from runtime.daemon.registration_token import RegistrationTokenStore
 from runtime.orchestrator.org_validation import OrgConsistencyError
 from runtime.orchestrator.executor_registry import (
     ExecutorProfileCollisionError,
@@ -32,10 +34,16 @@ class DaemonState:
     # org went missing after a restart.
     broken_orgs: dict[str, str] = field(default_factory=dict)
     queue: TaskQueue = field(default_factory=TaskQueue)
+    registration_token_store: RegistrationTokenStore = field(
+        default_factory=RegistrationTokenStore
+    )
     orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     assistant_lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     assistant_sessions: AssistantSessionManager = field(
         default_factory=AssistantSessionManager
+    )
+    headless_assistant: HeadlessAssistantManager = field(
+        default_factory=HeadlessAssistantManager
     )
 
     @classmethod
@@ -115,6 +123,7 @@ class DaemonState:
 
     async def close_all(self) -> None:
         await self.assistant_sessions.close_all()
+        await self.headless_assistant.close_all()
         async with self.orgs_lock:
             for org in self.orgs.values():
                 org.close()

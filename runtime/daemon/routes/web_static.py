@@ -26,11 +26,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+if TYPE_CHECKING:
+    from runtime.config import Settings
 
 
 _PLACEHOLDER_HTML = """<!doctype html>
@@ -45,12 +49,21 @@ code{background:#1a1d22;padding:.15rem .4rem;border-radius:.25rem}</style></head
 """
 
 
-def _resolve_dist_dir() -> Path | None:
+def _resolve_dist_dir(settings: "Settings | None" = None) -> Path | None:
+    # 1. HAPPYRANCH_WEB_DIST override (highest precedence).
     override = os.environ.get("HAPPYRANCH_WEB_DIST")
     if override:
         p = Path(override)
         return p if p.is_dir() else None
-    # ``src/daemon/routes/web_static.py`` → parents[3] is repo root.
+    # 2. Canonical project root via Settings (configurable, survives
+    #    source-location changes).  Falls back to the source-relative
+    #    parents[3] only when no Settings object is available (test
+    #    harnesses that don't construct one).
+    if settings is not None:
+        candidate = settings.project_root / "web" / "dist"
+        return candidate if candidate.is_dir() else None
+    # 3. Legacy: source-relative (kept for back-compat with callers
+    #    that don't thread settings through).
     repo_root = Path(__file__).resolve().parents[3]
     candidate = repo_root / "web" / "dist"
     return candidate if candidate.is_dir() else None
@@ -65,12 +78,12 @@ def _is_spa_route(path: str) -> bool:
     return True
 
 
-def register(app: FastAPI) -> None:
+def register(app: FastAPI, settings: "Settings | None" = None) -> None:
     """Attach SPA static mount or placeholder to the FastAPI app.
 
     Call this AFTER all API routers are registered.
     """
-    dist = _resolve_dist_dir()
+    dist = _resolve_dist_dir(settings=settings)
 
     if dist is not None:
         assets_dir = dist / "assets"

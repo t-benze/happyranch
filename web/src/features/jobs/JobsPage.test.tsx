@@ -180,16 +180,13 @@ describe('JobsPage — approval-queue list', () => {
     );
   });
 
-  test('Sidebar Jobs nav item shows a pending-count badge', async () => {
+  test('Sidebar Jobs nav item renders without a count badge (THR-046)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobsList();
     mountAt(`/orgs/${SLUG}/jobs`);
 
     const jobsNav = await screen.findByRole('link', { name: 'Jobs' });
-    // Badge value = pending count (1) sourced from GET /jobs/?status=pending.
-    await waitFor(() =>
-      expect(within(jobsNav).getByText('1')).toBeInTheDocument(),
-    );
+    expect(within(jobsNav).queryByTestId('nav-count-badge')).toBeNull();
   });
 });
 

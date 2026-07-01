@@ -1385,25 +1385,31 @@ def test_post_as_agent_rejects_archived_thread(tmp_home, app, org_state, auth_he
     assert resp.json()["detail"]["code"] == "thread_not_open"
 
 
-def test_post_as_agent_rejects_turn_cap_exceeded(tmp_home, app, org_state, auth_headers):
+def test_post_as_agent_succeeds_past_turn_cap(tmp_home, app, org_state, auth_headers):
+    """THR-046: turn-cap guard removed — agent reply succeeds even when
+    turns_used has reached turn_cap. Verifies turns_used still increments."""
     client = TestClient(app)
     tid = org_state.db.next_thread_id()
     org_state.db.insert_thread(ThreadRecord(id=tid, subject="cap", turn_cap=1))
     org_state.db.add_thread_participant(tid, "dev_agent", added_by="founder")
+    org_state.db.add_thread_participant(tid, "qa_engineer", added_by="founder")
     org_state.db.increment_thread_turns_used(tid, by=1)  # turns_used == cap
+    before_turns = org_state.db.get_thread(tid).turns_used
     _bind_task_session(org_state, agent="dev_agent", task_id="TASK-905", sid="sess-905")
 
     resp = client.post(
         f"/api/v1/orgs/alpha/threads/{tid}/post-as-agent",
         json={
             "composer": "dev_agent", "task_id": "TASK-905",
-            "session_id": "sess-905", "body_markdown": "one too many",
+            "session_id": "sess-905", "body_markdown": "one more turn",
         },
         headers=auth_headers,
     )
 
-    assert resp.status_code == 429, resp.text
-    assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
+    assert resp.status_code == 200, resp.text
+    # turns_used must still increment (display path intact).
+    after_turns = org_state.db.get_thread(tid).turns_used
+    assert after_turns == before_turns + 1
 
 
 def test_post_as_agent_rejects_missing_binding(tmp_home, app, org_state, auth_headers):

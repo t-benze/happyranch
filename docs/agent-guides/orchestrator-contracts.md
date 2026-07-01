@@ -62,6 +62,14 @@ Example:
 }
 ```
 
+## PR CI Wait / Guarded Merge
+
+Merge-scoped engineering tasks are complete only after the PR is merged. PR creation, review APPROVE, or QA PASS alone are not terminal completion.
+
+Use the first-class PR CI helper to submit a bounded job pinned to the PR head SHA, then block with `waiting_on_job_ids`. On resume, complete only if the job's structured verdict proves the PR was merged at that SHA. If the helper reports stale head, timeout, CI failure, missing checks, non-clean mergeability, or merge failure, re-ground instead of marking done.
+
+The helper must enforce: review APPROVE, QA PASS, CI PASS, unchanged head SHA, mergeable CLEAN, open/non-draft PR, configured merge method. It must not rely on `gh pr merge --auto` when branch protection lacks required checks.
+
 ## Task/Subtask Terminology
 
 The data model uses `task_type` `Literal['task','subtask']`:
