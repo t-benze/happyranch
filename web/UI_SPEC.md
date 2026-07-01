@@ -335,18 +335,6 @@ All dialogs use the `dialog` component token (elevation 3, 32rem max width, scri
 
 **Confirmation:** Above the footer, a `caption` warning in `tier.red`: "Abandoning is irreversible. Use Archive if the thread completed successfully."
 
-### 4.5 ExtendDialog
-
-**Title:** "Extend turn cap"
-
-**Fields:**
-- `New turn cap` — number input, default = `currentCap + 100`. Required, must be > current cap.
-- Helper text: "Current cap: 500. Threads abandon automatically when the cap is reached."
-
-**Footer:** Cancel + Extend.
-
-**Validation:** New cap > current. Inline error if not.
-
 ---
 
 ## 5. Threads — HelpDrawer

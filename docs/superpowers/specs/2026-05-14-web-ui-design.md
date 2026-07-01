@@ -197,7 +197,7 @@ Two-pane grid. Top bar with org dropdown + feature tabs. Left pane: inbox. Right
 | `InboxList` | Virtualized list, status filter chips, client-side text filter |
 | `InboxRow` | Subject, last speaker, preview, age, "needs you" badge if last `addressed_to` includes founder |
 | `ThreadDetailPane` | Header + messages + composer for selected thread |
-| `ThreadHeader` | Subject, status, participants chips (tier-colored), turns used/cap, archive summary if archived |
+| `ThreadHeader` | Subject, status, participants chips (tier-colored), archive summary if archived |
 | `MessageList` | Virtualized rows |
 | `MessageBubble` | Speaker chip, timestamp, `addressed_to` chips, markdown body; `kind='decline'` in red; `kind='system'` as a slim event row |
 | `Composer` | Markdown textarea + `To:` chip-picker (default `@all`, picker constrained to current participants), Send button, Ctrl+Enter |

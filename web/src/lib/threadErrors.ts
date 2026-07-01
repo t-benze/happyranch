@@ -16,7 +16,7 @@ export const THREAD_ERROR_STRINGS: Record<string, string> = {
   unknown_team: "That team doesn't exist in this org.",
   thread_not_open: 'This thread is no longer open.',
   not_found: 'Thread not found.',
-  turn_cap_exceeded: 'Turn cap exceeded. Use Extend to raise it.',
+
   invalid_token: 'Invalid invocation token (agent operation).',
 };
 

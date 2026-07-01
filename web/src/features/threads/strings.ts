@@ -22,8 +22,7 @@ export const THREADS_STRINGS = {
   noThreads: 'No threads yet. Press N to compose.',
 
   /* Inbox row */
-  turnBudget: (used: number, cap: number) => `${used}/${cap}`,
-  nearCap: (used: number, cap: number) => `Turn budget near cap (${used}/${cap})`,
+
 
   /* Detail empty / no-messages */
   selectThread: 'Select a thread',
@@ -67,6 +66,4 @@ export const THREADS_STRINGS = {
   railTokenChurn: 'token churn',
   railOpened: 'opened',
 
-  /* Caps */
-  capDisabledReason: 'Turn cap reached — extend to continue.',
 } as const;

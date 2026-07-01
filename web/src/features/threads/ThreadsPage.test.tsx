@@ -166,14 +166,14 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     });
   });
 
-  test('lists threads with turn budget and last speaker', async () => {
+  test('lists threads with last speaker (no turn budget)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
         HttpResponse.json({
           threads: [
-            mkThread('THR-001', 'Launch plan', { turns_used: 3, turn_cap: 500, last_speaker: 'dev_agent' }),
-            mkThread('THR-002', 'Budget review', { turns_used: 487, turn_cap: 500, last_speaker: 'founder' }),
+            mkThread('THR-001', 'Launch plan', { last_speaker: 'dev_agent' }),
+            mkThread('THR-002', 'Budget review', { last_speaker: 'founder' }),
           ],
         }),
       ),
@@ -186,9 +186,9 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       // Thread subjects appear in InboxRow
       expect(screen.getByText(/Launch plan/)).toBeInTheDocument();
       expect(screen.getByText(/Budget review/)).toBeInTheDocument();
-      // Turn budgets should appear
-      expect(screen.getByText('3/500')).toBeInTheDocument();
-      expect(screen.getByText('487/500')).toBeInTheDocument();
+      // Turn budgets should NOT appear (THR-046 msg126 removed)
+      expect(screen.queryByText('3/500')).not.toBeInTheDocument();
+      expect(screen.queryByText('487/500')).not.toBeInTheDocument();
       // Last speakers should appear
       expect(screen.getByText(/dev_agent/)).toBeInTheDocument();
       expect(screen.getByText(/founder/)).toBeInTheDocument();
