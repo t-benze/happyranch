@@ -169,13 +169,14 @@ def test_thread_store_renders_task_failed_with_cancelled_and_revisits():
             "final_output_dir": None,
             "cancelled": True,
             "revisit_chain_length": 3,
+            "revisit_task_id": None,
         },
     )
     out = render_transcript_body([msg])
     assert "Task TASK-031" in out
     assert "failed" in out
     assert "founder-cancelled" in out
-    assert "2 revisits" in out
+    assert "no further revisits" in out
 
 
 def test_thread_forward_renders_task_completed_and_failed():
@@ -1085,3 +1086,201 @@ def test_thread_forward_renders_task_escalated():
     assert "Task TASK-2 escalated" in out
     assert "chain root TASK-1" in out
     assert "deep blocker" in out
+
+
+# ---------------------------------------------------------------------------
+# Task 11 — revisit_task_id in followup system_payload + rendering
+# ---------------------------------------------------------------------------
+
+
+def test_revisit_task_id_in_system_payload(orch_with_db):
+    """When a task_failed followup fires with revisit_task_id set, the
+    system_payload carries the successor task id."""
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.models import ThreadInvocationPurpose, ThreadMessageKind
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    orch._db.update_task("TASK-1", status=TaskStatus.FAILED)
+    _maybe_post_thread_followup(
+        orch, "TASK-1",
+        status=TaskStatus.FAILED,
+        auto_revisit_spawned=False,
+        revisit_task_id="TASK-002",
+    )
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+    sys_msgs = [
+        m for m in orch._db.list_thread_messages("THR-1")
+        if m.kind == ThreadMessageKind.SYSTEM
+    ]
+    assert sys_msgs
+    payload = sys_msgs[-1].system_payload
+    assert payload["revisit_task_id"] == "TASK-002"
+    assert payload["kind_tag"] == "task_failed"
+
+
+def test_revisit_task_id_none_when_not_provided(orch_with_db):
+    """When revisit_task_id is omitted (None default), the system_payload
+    carries revisit_task_id=None."""
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.models import ThreadInvocationPurpose, ThreadMessageKind
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    orch._db.update_task("TASK-1", status=TaskStatus.FAILED)
+    _maybe_post_thread_followup(
+        orch, "TASK-1",
+        status=TaskStatus.FAILED,
+        auto_revisit_spawned=False,
+    )
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+    sys_msgs = [
+        m for m in orch._db.list_thread_messages("THR-1")
+        if m.kind == ThreadMessageKind.SYSTEM
+    ]
+    assert sys_msgs
+    payload = sys_msgs[-1].system_payload
+    assert payload.get("revisit_task_id") is None
+
+
+def test_thread_store_renders_revisit_successor():
+    """thread_store: when revisit_task_id is present, render 'revisiting as TASK-X'."""
+    from runtime.infrastructure.thread_store import render_transcript_body
+
+    msg = _make_system_msg(
+        50,
+        {
+            "kind_tag": "task_failed",
+            "task_id": "TASK-050",
+            "original_task_id": "TASK-050",
+            "status": "failed",
+            "final_output_summary": "",
+            "final_output_dir": None,
+            "cancelled": False,
+            "revisit_chain_length": 1,
+            "revisit_task_id": "TASK-051",
+        },
+    )
+    out = render_transcript_body([msg])
+    assert "Task TASK-050" in out
+    assert "failed" in out
+    assert "revisiting as TASK-051" in out
+    # The old 'after N revisits' annotation is gone.
+    assert "after" not in out
+
+
+def test_thread_store_renders_no_further_revisits():
+    """thread_store: when revisit_task_id is None but chain_length > 1,
+    render 'no further revisits'."""
+    from runtime.infrastructure.thread_store import render_transcript_body
+
+    msg = _make_system_msg(
+        51,
+        {
+            "kind_tag": "task_failed",
+            "task_id": "TASK-051",
+            "original_task_id": "TASK-051",
+            "status": "failed",
+            "final_output_summary": "",
+            "final_output_dir": None,
+            "cancelled": False,
+            "revisit_chain_length": 3,
+            "revisit_task_id": None,
+        },
+    )
+    out = render_transcript_body([msg])
+    assert "Task TASK-051" in out
+    assert "failed" in out
+    assert "no further revisits" in out
+    # The old 'after N revisits' annotation is gone.
+    assert "after" not in out
+    assert "2 revisits" not in out
+
+
+def test_thread_store_renders_ordinary_failure_no_revisit_suffix():
+    """thread_store: ordinary failure (chain_length=1, no revisit_task_id)
+    shows no revisit suffix."""
+    from runtime.infrastructure.thread_store import render_transcript_body
+
+    msg = _make_system_msg(
+        52,
+        {
+            "kind_tag": "task_failed",
+            "task_id": "TASK-052",
+            "original_task_id": "TASK-052",
+            "status": "failed",
+            "final_output_summary": "",
+            "final_output_dir": None,
+            "cancelled": False,
+            "revisit_chain_length": 1,
+            "revisit_task_id": None,
+        },
+    )
+    out = render_transcript_body([msg])
+    assert "Task TASK-052" in out
+    assert "failed" in out
+    assert "revisiting" not in out
+    assert "no further revisits" not in out
+    assert "after" not in out
+
+
+def test_thread_forward_renders_revisit_successor():
+    """thread_forward: when revisit_task_id is present, render 'revisiting as TASK-X'."""
+    from cli.thread_forward import build_forward_body_from_thread
+    from runtime.models import ThreadMessage, ThreadMessageKind
+    from datetime import datetime, timezone
+
+    msg = ThreadMessage(
+        thread_id="THR-1", seq=50, speaker="alice",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={
+            "kind_tag": "task_failed",
+            "task_id": "TASK-050",
+            "original_task_id": "TASK-050",
+            "status": "failed",
+            "final_output_summary": "",
+            "cancelled": False,
+            "revisit_chain_length": 1,
+            "revisit_task_id": "TASK-051",
+        },
+        created_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+    out = build_forward_body_from_thread(
+        source_id="THR-1", messages=[msg], subject="s",
+    )
+    assert "TASK-050" in out
+    assert "revisiting as TASK-051" in out
+    assert "after" not in out
+
+
+def test_thread_forward_renders_no_further_revisits():
+    """thread_forward: when revisit_task_id is None but chain_length > 1,
+    render 'no further revisits'."""
+    from cli.thread_forward import build_forward_body_from_thread
+    from runtime.models import ThreadMessage, ThreadMessageKind
+    from datetime import datetime, timezone
+
+    msg = ThreadMessage(
+        thread_id="THR-1", seq=51, speaker="alice",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={
+            "kind_tag": "task_failed",
+            "task_id": "TASK-051",
+            "original_task_id": "TASK-051",
+            "status": "failed",
+            "final_output_summary": "",
+            "cancelled": False,
+            "revisit_chain_length": 3,
+            "revisit_task_id": None,
+        },
+        created_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+    out = build_forward_body_from_thread(
+        source_id="THR-1", messages=[msg], subject="s",
+    )
+    assert "TASK-051" in out
+    assert "no further revisits" in out
+    assert "after" not in out
+    assert "2 revisits" not in out

@@ -132,10 +132,13 @@ def render_transcript_body(messages: list) -> str:
                 annotations: list[str] = []
                 if payload.get("cancelled"):
                     annotations.append("founder-cancelled")
-                chain_len = payload.get("revisit_chain_length", 1)
-                if chain_len and chain_len > 1:
-                    n = chain_len - 1
-                    annotations.append(f"after {n} {'revisit' if n == 1 else 'revisits'}")
+                revisit_task_id = payload.get("revisit_task_id")
+                if revisit_task_id:
+                    annotations.append(f"revisiting as {revisit_task_id}")
+                else:
+                    chain_len = payload.get("revisit_chain_length", 1)
+                    if chain_len and chain_len > 1:
+                        annotations.append("no further revisits")
                 if annotations:
                     rendered += " · " + "; ".join(annotations)
             elif tag == "task_escalated":

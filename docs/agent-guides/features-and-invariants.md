@@ -115,7 +115,7 @@ Failure kinds: `session_timeout`, `no_callback`, `rate_limit`, `executor_error`,
 
 Traps:
 
-- `_AUTO_REVISIT_CAP_PER_KIND = 2`; it is per kind, not global.
+- `_AUTO_REVISIT_CAP_PER_KIND = 1`; it is per kind, not global.
 - `_maybe_spawn_auto_revisit` must run before `_enqueue_parent_if_waiting`.
 - `failure_kind` is top-level on `auto_revisit_of`, not under `error_context`.
 - Bounded failure-recovery wakes the parent (not cascade-fail) on subtask failure;

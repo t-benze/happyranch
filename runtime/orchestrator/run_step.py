@@ -264,17 +264,19 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         note = f"agent invocation failed: {exc}"
         _fail(orch, task_id, note=note)
         failure_kind = _classify_failure_kind(None, None, mode="exception")
-        spawned = _maybe_spawn_auto_revisit(
+        revisit_id = _maybe_spawn_auto_revisit(
             orch, task_id, agent,
             failure_kind=failure_kind,
             error_context={"mode": "exception", "detail": str(exc)},
         )
+        spawned = revisit_id is not None
         _enqueue_parent_if_waiting(
             orch, task_id, root_auto_revisit_spawned=spawned,
         )
         _maybe_post_thread_followup(
             orch, task_id,
             status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
+            revisit_task_id=revisit_id,
         )
         return
 
@@ -327,17 +329,19 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         failure_kind = _classify_failure_kind(
             result, report, mode="session_failure",
         )
-        spawned = _maybe_spawn_auto_revisit(
+        revisit_id = _maybe_spawn_auto_revisit(
             orch, task_id, agent,
             failure_kind=failure_kind,
             error_context=_executor_failure_context(result, report),
         )
+        spawned = revisit_id is not None
         _enqueue_parent_if_waiting(
             orch, task_id, root_auto_revisit_spawned=spawned,
         )
         _maybe_post_thread_followup(
             orch, task_id,
             status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
+            revisit_task_id=revisit_id,
         )
         return
 
@@ -1591,7 +1595,7 @@ def _enqueue_parent_if_waiting(
         queue.put_nowait(orch._slug, parent.id)
 
 
-_AUTO_REVISIT_CAP_PER_KIND = 2
+_AUTO_REVISIT_CAP_PER_KIND = 1
 
 # Triad of "agent died mid-flight, retry as-is" kinds. Routed identically by
 # the auto-revisit machinery in v1; constant exists so future per-class policy
@@ -1737,7 +1741,7 @@ def _maybe_spawn_auto_revisit(
     *,
     failure_kind: str,
     error_context: dict,
-) -> bool:
+) -> str | None:
     """Spawn an orchestrator-triggered revisit on an opaque agent failure.
 
     Triggered ONLY by the two opaque agent-error paths in run_step (an
@@ -1763,13 +1767,13 @@ def _maybe_spawn_auto_revisit(
     not count toward the cap (they're intentional human retries). See
     spec 2026-05-25-session-timeout-auto-route-design.md §5.
 
-    Returns True if a revisit row was inserted, False otherwise (no chain,
-    cap hit, or future not-eligible cases).
+    Returns the newly-inserted revisit task id on success, None otherwise
+    (no chain, cap hit, or future not-eligible cases).
     """
     db = orch._db
     chain = db.walk_ancestors(failed_task_id)
     if not chain:
-        return False
+        return None
     # Founder cancellation gate: /cancel stamps cancelled_at + flips status to
     # FAILED, then SIGTERMs the running subprocess. The dying subprocess returns
     # rc=-15, which run_step's classifier reads as executor_error and routes
@@ -1777,7 +1781,7 @@ def _maybe_spawn_auto_revisit(
     # revisit_of_task_id and re-enqueue it — exactly the "respawn on cancel"
     # bug. Mirrors the docstring's explicit exclusion of founder cancellations.
     if chain[0].cancelled_at is not None:
-        return False
+        return None
     root = chain[-1]
 
     # Walk the revisit chain from the root to find the original
@@ -1796,7 +1800,7 @@ def _maybe_spawn_auto_revisit(
 
     prior = _count_prior_auto_revisits_by_kind(orch, root.id, failure_kind)
     if prior >= _AUTO_REVISIT_CAP_PER_KIND:
-        return False
+        return None
 
     from runtime.models import TaskRecord
 
@@ -1831,7 +1835,7 @@ def _maybe_spawn_auto_revisit(
     queue = getattr(orch, "_queue", None)
     if queue is not None:
         queue.put_nowait(orch._slug, new_id)
-    return True
+    return new_id
 
 
 def _maybe_resume_blocked_task(
@@ -2080,6 +2084,7 @@ def _maybe_post_thread_followup(
     *,
     status: TaskStatus,
     auto_revisit_spawned: bool,
+    revisit_task_id: str | None = None,
 ) -> None:
     """Post a task-followup system message + mint a re-invocation for the dispatcher.
 
@@ -2217,6 +2222,7 @@ def _maybe_post_thread_followup(
         "final_output_dir": terminal_task.final_output_dir,
         "cancelled": terminal_task.cancelled_at is not None,
         "revisit_chain_length": len(chain) if chain else 1,
+        "revisit_task_id": revisit_task_id,
     }
 
     _append_followup_system_and_reinvoke(

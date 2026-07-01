@@ -634,7 +634,7 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
     });
   });
 
-  test('renders task_failed system card with cancelled and revisit annotations', async () => {
+  test('renders task_failed system card with cancelled and no-further-revisits annotations', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     setupThreadWithMessages('THR-011', [
       mkSystemMessage(1, 'agent_a', {
@@ -644,13 +644,57 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
         final_output_summary: '',
         cancelled: true,
         revisit_chain_length: 3,
+        revisit_task_id: null,
       }),
     ]);
     mountAt(`/orgs/${SLUG}/threads/THR-011`);
     await waitFor(() => {
       expect(screen.getByText(/TASK-031/)).toBeInTheDocument();
       expect(screen.getByText(/founder-cancelled/)).toBeInTheDocument();
-      expect(screen.getByText(/2 revisits/)).toBeInTheDocument();
+      expect(screen.getByText(/no further revisits/)).toBeInTheDocument();
+    });
+  });
+
+  test('renders task_failed system card with revisiting-as successor link', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-014', [
+      mkSystemMessage(1, 'agent_a', {
+        kind_tag: 'task_failed',
+        task_id: 'TASK-032',
+        status: 'failed',
+        final_output_summary: '',
+        cancelled: false,
+        revisit_chain_length: 1,
+        revisit_task_id: 'TASK-033',
+      }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-014`);
+    await waitFor(() => {
+      expect(screen.getByText(/TASK-032/)).toBeInTheDocument();
+      expect(screen.getByText(/revisiting as/)).toBeInTheDocument();
+      expect(screen.getByText(/TASK-033/)).toBeInTheDocument();
+    });
+  });
+
+  test('renders ordinary task_failed with no revisit suffix', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-015', [
+      mkSystemMessage(1, 'agent_a', {
+        kind_tag: 'task_failed',
+        task_id: 'TASK-034',
+        status: 'failed',
+        final_output_summary: '',
+        cancelled: false,
+        revisit_chain_length: 1,
+        revisit_task_id: null,
+      }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-015`);
+    await waitFor(() => {
+      expect(screen.getByText(/TASK-034/)).toBeInTheDocument();
+      expect(screen.getByText(/failed/)).toBeInTheDocument();
+      expect(screen.queryByText(/revisiting/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/no further revisits/)).not.toBeInTheDocument();
     });
   });
 
