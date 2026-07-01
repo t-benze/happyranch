@@ -204,6 +204,90 @@ def test_recall_fetch_verdict_no_verdict() -> None:
             _recall_fetch_verdict("happyranch", "TASK-000", "review")
 
 
+def test_recall_fetch_verdict_real_output_fixture() -> None:
+    """HIGH: _recall_fetch_verdict must parse real happyranch recall output.
+
+    The current parser treats each line as standalone JSON and falls back to
+    a 'verdict:' line prefix.  Real recall output is a SINGLE multi-line
+    pretty-printed JSON blob — so line-by-line JSON parsing ALWAYS fails.
+
+    This test uses a fixture COPIED FROM a real `happyranch recall` call
+    (TASK-1496, a code_reviewer task with verdict APPROVE).  The verdict
+    lives in output_summary as 'Verdict: APPROVE'.
+    """
+    import json
+
+    # REAL recall output shape — multi-line pretty-printed JSON.
+    # The verdict is "APPROVE", embedded in output_summary.
+    real_recall_json = json.dumps({
+        "task_id": "TASK-1496",
+        "parent_task_id": "TASK-1479",
+        "assigned_agent": "code_reviewer",
+        "brief": "Code-review the REVISE pushed to PR #257 ...",
+        "status": "completed",
+        "output_summary": "Verdict: APPROVE\n\nSubsystems touched: system assistant A-mode ...",
+        "output_dir": None,
+        "children": []
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=real_recall_json, stderr=""
+        )
+        verdict = _recall_fetch_verdict("happyranch", "TASK-1496", "review")
+
+    # The current parser FAILS here because:
+    # - Line 1 is "{"  → not JSON, not "verdict:"
+    # - Line 2 is `  "task_id": "TASK-1496",` → not a complete JSON object, not "verdict:"
+    # - ... eventually hits RuntimeError("Could not extract ... verdict")
+    assert verdict == "APPROVE", (
+        f"Expected 'APPROVE' from output_summary, got {verdict!r}. "
+        "The parser must parse the ENTIRE stdout as JSON first, "
+        "then extract the verdict from output_summary."
+    )
+
+
+def test_recall_fetch_verdict_top_level_verdict_field() -> None:
+    """Top-level verdict JSON property is used when present."""
+    import json
+
+    # Some recall output may carry a top-level 'verdict' field
+    recall_json = json.dumps({
+        "task_id": "TASK-XXX",
+        "verdict": "APPROVE",
+        "status": "completed",
+        "output_summary": "Review passed.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        verdict = _recall_fetch_verdict("happyranch", "TASK-XXX", "review")
+
+    assert verdict == "APPROVE"
+
+
+def test_recall_fetch_verdict_output_summary_verdict_line() -> None:
+    """Extract verdict from output_summary's 'Verdict:' line."""
+    import json
+
+    # Verdict in output_summary but NO top-level verdict field
+    recall_json = json.dumps({
+        "task_id": "TASK-YYY",
+        "status": "completed",
+        "output_summary": "Verdict: PASS\n\nQA checks completed.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        verdict = _recall_fetch_verdict("happyranch", "TASK-YYY", "qa")
+
+    assert verdict == "PASS"
+
+
 def test_recall_fetch_verdict_correct_command() -> None:
     """Correct CLI command passed to subprocess."""
     with patch("subprocess.run") as mock_run:

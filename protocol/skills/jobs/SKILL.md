@@ -135,7 +135,7 @@ The merge guard is conjunctive — all must pass before the engine attempts merg
 
 - review verdict is `APPROVE`;
 - QA verdict is `PASS`;
-- CI verdict is `PASS` for the pinned SHA;
+- CI verdict is `ci_pass` for the pinned SHA;
 - PR head SHA is unchanged at merge time;
 - GitHub mergeability is `CLEAN`;
 - the PR is still open and not draft;

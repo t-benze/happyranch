@@ -410,8 +410,16 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
     Calls happyranch recall --org <org> <task_id> and parses the verdict
     from the completion report output.  Returns the verdict string, or
     raises RuntimeError on failure.
+
+    Parsing strategy (in priority order):
+    1. Parse entire stdout as a single JSON blob.
+       a. If it has a top-level ``verdict`` field, return it.
+       b. If it has an ``output_summary`` field, extract the ``Verdict:`` line.
+    2. Fall back to line-by-line JSON parsing (legacy).
+    3. Fall back to line-by-line ``verdict:`` prefix search (legacy).
     """
     import json
+    import re
     import subprocess
 
     result = subprocess.run(
@@ -424,20 +432,39 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
         raise RuntimeError(
             f"happyranch recall {task_id} failed (exit {result.returncode}): {result.stderr.strip()}"
         )
-    # The recall output contains the completion report as structured text.
-    # Look for a verdict line in the output.
-    for line in result.stdout.splitlines():
+
+    stdout = result.stdout.strip()
+
+    # ── 1. Parse entire stdout as a single JSON blob ──
+    try:
+        data = json.loads(stdout)
+        if isinstance(data, dict):
+            # 1a. Top-level verdict field (when present)
+            if "verdict" in data:
+                return data["verdict"]
+            # 1b. Verdict embedded in output_summary (real-world shape)
+            output_summary = data.get("output_summary", "")
+            if output_summary:
+                m = re.search(r"^Verdict:\s*(.+)$", output_summary, re.MULTILINE)
+                if m:
+                    return m.group(1).strip()
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    # ── 2-3. Legacy fallbacks for non-JSON output ──
+    for line in stdout.splitlines():
         stripped = line.strip()
-        # Try to parse as JSON first (for structured completion output)
+        # Try to parse as JSON (legacy)
         try:
             data = json.loads(stripped)
             if isinstance(data, dict) and "verdict" in data:
                 return data["verdict"]
         except (json.JSONDecodeError, TypeError):
             pass
-        # Fallback: look for "verdict: <value>" pattern
+        # Fallback: look for "verdict: <value>" pattern (legacy)
         if stripped.lower().startswith("verdict:"):
             return stripped.split(":", 1)[1].strip()
+
     raise RuntimeError(
         f"Could not extract {verdict_key} verdict from recall output for {task_id}"
     )

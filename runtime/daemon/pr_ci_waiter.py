@@ -416,6 +416,28 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # ── Entrypoint guard: reject empty expected-check policy ──
+    # The load-bearing PR-CI invariant is 'no checks is not pass'.
+    # An empty expected_checks list would cause the engine to return
+    # ci_pass without any check actually passing, which breaches the
+    # invariant that a CI poll job must verify at least one check.
+    # This guard enforces the invariant at the entrypoint layer so the
+    # pure engine (unchanged) never receives an empty list.
+    if not args.expected_checks:
+        output = {
+            "verdict": "checks_missing",
+            "observed_head_sha": None,
+            "elapsed_seconds": 0.0,
+            "error_detail": (
+                "No --expected-check supplied; at least one expected check "
+                "is required. 'No checks is not pass.'"
+            ),
+            "checks": [],
+        }
+        json.dump(output, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        sys.exit(VERDICT_EXIT_CODES["checks_missing"])
+
     verdict = wait_for_ci(
         repo=args.repo,
         pr_number=args.pr,

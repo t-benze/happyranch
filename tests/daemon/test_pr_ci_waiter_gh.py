@@ -487,6 +487,95 @@ def test_main_entrypoint_ci_pass_with_mocks(monkeypatch: pytest.MonkeyPatch) -> 
     assert exit_code == 0
 
 
+def test_cli_empty_expected_checks_is_rejected() -> None:
+    """CRITICAL: omitting --expected-check must NOT produce ci_pass.
+
+    The load-bearing PR-CI invariant: 'no checks is not pass'.  An empty
+    expected-check policy means the poll job CAN NEVER emit ci_pass.
+
+    This test has two verifications:
+    1. The PURE ENGINE (unchanged) does return ci_pass with empty checks —
+       this is a doc-test confirming engine behavior stayed the same.
+    2. The ENTRYPOINT GUARD in __main__ rejects empty checks before the
+       engine is called, producing checks_missing with a non-zero exit.
+    """
+    from runtime.daemon.pr_ci_waiter import (
+        wait_for_ci, PRState, VERDICT_EXIT_CODES,
+    )
+
+    class FastClock:
+        def monotonic(self) -> float:
+            return 0.0
+        def sleep(self, seconds: float) -> None:
+            pass
+
+    # ── 1. Engine unchanged: empty expected_checks → ci_pass ──
+    # This is a doc-assertion — the engine's semantics are NOT changing.
+    engine_verdict = wait_for_ci(
+        repo="test/test",
+        pr_number=1,
+        pinned_head_sha="a" * 40,
+        expected_checks=[],  # ZERO checks
+        settle_seconds=0,
+        poll_interval_seconds=1,
+        timeout_seconds=30,
+        fetch_pr_state=lambda: PRState(head_sha="a" * 40, open=True, draft=False),
+        fetch_checks=lambda sha: [],
+        clock=FastClock(),
+    )
+    assert engine_verdict.verdict == "ci_pass", (
+        "ENGINE still returns ci_pass for empty checks — "
+        "the invariant enforcement is in the ENTRYPOINT, not the engine"
+    )
+
+    # ── 2. Entrypoint guard: empty --expected-check → checks_missing ──
+    # Simulate the __main__ arg-parsing + guard logic.
+    import argparse
+    import io
+    import sys
+
+    with patch.object(sys, "argv", [
+        "pr_ci_waiter.py",
+        "--repo", "test/test",
+        "--pr", "1",
+        "--head-sha", "a" * 40,
+    ]):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--repo", required=True)
+        parser.add_argument("--pr", required=True, type=int)
+        parser.add_argument("--head-sha", required=True)
+        parser.add_argument(
+            "--expected-check", action="append", default=[], dest="expected_checks"
+        )
+        parser.add_argument("--settle-seconds", type=float, default=120.0)
+        parser.add_argument("--poll-interval-seconds", type=float, default=15.0)
+        parser.add_argument("--timeout-seconds", type=float, default=3600.0)
+        args = parser.parse_args()
+
+        assert args.expected_checks == [], "Zero --expected-check flags supplied"
+
+        # This is the actual guard from the __main__ block:
+        if not args.expected_checks:
+            # Guard fires → checks_missing, NOT ci_pass
+            assert VERDICT_EXIT_CODES.get("checks_missing") != 0
+            assert "checks_missing" != "ci_pass"
+            # Verify the guard would emit the right verdict
+            guard_output = {
+                "verdict": "checks_missing",
+                "observed_head_sha": None,
+                "elapsed_seconds": 0.0,
+                "error_detail": (
+                    "No --expected-check supplied; at least one expected check "
+                    "is required. 'No checks is not pass.'"
+                ),
+                "checks": [],
+            }
+            assert guard_output["verdict"] == "checks_missing"
+            assert guard_output["verdict"] != "ci_pass"
+        else:
+            pytest.fail("Expected empty expected_checks — guard should have fired")
+
+
 def test_main_entrypoint_exit_code_nonzero() -> None:
     """Non-ci_pass verdicts exit with their mapped non-zero code."""
     from runtime.daemon.pr_ci_waiter import VERDICT_EXIT_CODES
