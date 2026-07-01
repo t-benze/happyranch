@@ -823,6 +823,16 @@ def _collect_eligible_revisit_family(
     to_process = [family_root_id]
     visited: set[str] = {family_root_id, successor_root, explicit_predecessor_id}
 
+    # Evaluate the family root through the eligibility gate (unless it IS the
+    # explicit predecessor, which the caller handles separately). When the
+    # explicit predecessor is itself a revisit, the original ancestor root
+    # must be checked for supersedability here — it is never reached by the
+    # BFS below because it is pre-seeded in `visited`.
+    if family_root_id != explicit_predecessor_id:
+        root_task = org.db.get_task(family_root_id)
+        if root_task is not None and _eligible_supersede_block_kind(org, root_task) is not None:
+            eligible.append(root_task)
+
     while to_process:
         current_id = to_process.pop()
         for r_id in org.db.get_direct_revisits(current_id):
@@ -927,6 +937,9 @@ async def revisit_from_notification(
     )
     async with org.db_lock:
         new_id = org.db.next_task_id()
+        # Track family tasks closed during the db lock so tail handling
+        # (parent-wake, thread-followup) can be applied after release.
+        family_closed: list[str] = []
         org.db.insert_task(TaskRecord(
             id=new_id,
             brief=predecessor.brief,
@@ -984,6 +997,7 @@ async def revisit_from_notification(
                     actor=actor,
                     note_suffix=founder_note,
                 )
+                family_closed.append(family_task.id)
         # When the founder revisits via CLI, any open failure notification row
         # for this task is implicitly resolved — consume it with cli-fallback
         # so it doesn't dangle. Mirrors resolve_escalation_in_process's behavior.
@@ -1001,8 +1015,23 @@ async def revisit_from_notification(
     # reject path in resolve_escalation_in_process; runs outside the db_lock.
     # The superseded task itself is NEVER re-enqueued (no queue.put_nowait).
     if prior_status in ("blocked-escalated", "blocked-delegated"):
-        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+        from runtime.orchestrator.run_step import (
+            _enqueue_parent_if_waiting,
+            _maybe_post_thread_followup,
+        )
         _enqueue_parent_if_waiting(org.orchestrator, predecessor.id)
+        _maybe_post_thread_followup(
+            org.orchestrator, predecessor.id,
+            status=TaskStatus.RESOLVED_SUPERSEDED, auto_revisit_spawned=False,
+        )
+        # Same tail for each family sibling closed — parent-wake and
+        # thread-followup where applicable (thread-dispatch path pattern).
+        for family_task_id in family_closed:
+            _enqueue_parent_if_waiting(org.orchestrator, family_task_id)
+            _maybe_post_thread_followup(
+                org.orchestrator, family_task_id,
+                status=TaskStatus.RESOLVED_SUPERSEDED, auto_revisit_spawned=False,
+            )
 
     return RevisitResult(
         new_root_id=new_id,
