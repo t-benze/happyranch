@@ -316,16 +316,31 @@ def test_followup_fires_once_after_revisit(
         f"expected exactly 1 task_completed, got {len(completed_msgs)}: {completed_msgs}"
     )
 
-    # There should be no task_failed system message (the auto-revisited failure
-    # is suppressed — only the terminal of the revisit chain fires).
-    assert "task_failed" not in tags, (
-        f"unexpected task_failed system message; tags: {tags}"
+    # The original failure now fires a task_failed system message (THR-046 msg99)
+    # carrying revisit_task_id so the thread surface can render 'revisiting as
+    # <SUCCESSOR>'. The revisit successor terminal also fires its own followup
+    # (task_completed), so we should see BOTH system messages.
+    assert "task_failed" in tags, (
+        f"missing task_failed system message; tags: {tags}"
+    )
+    # Verify the task_failed payload carries the successor task id.
+    failed_msgs = [
+        m for m in msgs
+        if m.get("kind") == "system"
+        and (m.get("system_payload") or {}).get("kind_tag") == "task_failed"
+    ]
+    assert len(failed_msgs) == 1, (
+        f"expected exactly 1 task_failed, got {len(failed_msgs)}: {failed_msgs}"
+    )
+    assert failed_msgs[0]["system_payload"].get("revisit_task_id"), (
+        "task_failed payload must carry revisit_task_id"
     )
 
     replies = _agent_replies(msgs, "dev_agent")
     assert len(replies) >= 2, f"expected 2+ agent replies, got {len(replies)}"
 
-    # The followup reply must appear after the task_completed system message.
+    # The followup reply must still appear after the task_completed system
+    # message (the revisit successor's terminal, which carries the re-invocation).
     tc_seq = completed_msgs[0]["seq"]
     followup_reply = replies[-1]
     assert followup_reply["seq"] > tc_seq, (

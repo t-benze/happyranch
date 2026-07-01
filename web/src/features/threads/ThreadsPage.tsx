@@ -983,11 +983,18 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
       const taskLink = slug && taskId
         ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
         : taskId;
-      const chainLength = typeof payload.revisit_chain_length === 'number' ? payload.revisit_chain_length : 1;
-      const revisitSuffix = chainLength > 1
-        ? ` · after ${chainLength - 1} ${chainLength - 1 === 1 ? 'revisit' : 'revisits'}`
-        : '';
       const cancelledSuffix = payload.cancelled ? ' · founder-cancelled' : '';
+      const revisitTaskId = payload.revisit_task_id ? String(payload.revisit_task_id) : null;
+      const chainLength = typeof payload.revisit_chain_length === 'number' ? payload.revisit_chain_length : 1;
+      let revisitSuffix: React.ReactNode = null;
+      if (revisitTaskId) {
+        const successorLink = slug
+          ? <Link to={`/orgs/${slug}/tasks/${revisitTaskId}`} className="underline">{revisitTaskId}</Link>
+          : revisitTaskId;
+        revisitSuffix = <> · revisiting as {successorLink}</>;
+      } else if (chainLength > 1) {
+        revisitSuffix = ' · no further revisits';
+      }
       return (
         <>
           task {taskLink} failed{cancelledSuffix}{revisitSuffix}

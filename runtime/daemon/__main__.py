@@ -106,12 +106,13 @@ def _sweep_on_startup(
                 # Earlier iteration already auto-revisited this lineage.
                 spawned = True
             else:
-                spawned = _maybe_spawn_auto_revisit(
+                revisit_id = _maybe_spawn_auto_revisit(
                     orchestrator, task_id,
                     t.assigned_agent or "(unknown)",
                     failure_kind="daemon_restart",
                     error_context={"reason": "daemon restarted mid-task"},
                 )
+                spawned = revisit_id is not None
                 if spawned:
                     revisited_roots.add(root_id)
             _enqueue_parent_if_waiting(
