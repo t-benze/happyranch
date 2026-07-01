@@ -2088,7 +2088,7 @@ def _maybe_post_thread_followup(
 ) -> None:
     """Post a task-followup system message + mint a re-invocation for the dispatcher.
 
-    Fire predicate (spec §4):
+    Fire predicate (spec §4, §4.1 — revised THR-046 msg99):
       - status == COMPLETED                                → always fire
       - status == RESOLVED_SUPERSEDED                      → always fire (terminal,
                                                              completion-class — a
@@ -2096,9 +2096,15 @@ def _maybe_post_thread_followup(
                                                              auto-resolved by a
                                                              continuation; THR-018 §3a)
       - status == FAILED and not auto_revisit_spawned      → true terminal, fire
-      - status == FAILED and auto_revisit_spawned          → no-op (revisit chain
-                                                             will call this helper
-                                                             again at its terminal)
+      - status == FAILED and auto_revisit_spawned          → fire system-message-only
+                                                             (carries revisit_task_id
+                                                             so the thread surface can
+                                                             render 'revisiting as
+                                                             <SUCCESSOR>'; dispatcher
+                                                             re-invocation is suppressed
+                                                             — the revisit successor
+                                                             will fire its own followup
+                                                             at its terminal)
 
     Only root tasks fire. Child terminals cascade-fail through the parent,
     which re-enters this helper there. The originating thread is found by
@@ -2110,8 +2116,10 @@ def _maybe_post_thread_followup(
     # Predicate gate — first pass using caller's claim (cheap early-out).
     # CANCELLED is a terminal followup status (Path B, THR-037): a founder cancel
     # writes the stored terminal CANCELLED and replays in the task_failed class.
-    if status == TaskStatus.FAILED and auto_revisit_spawned:
-        return
+    # THR-046 msg99: FAILED+auto_revisit_spawned is no longer a no-op — the
+    # system message (with revisit_task_id) fires so the thread surface can
+    # render 'revisiting as <SUCCESSOR>', but the dispatcher re-invocation is
+    # suppressed (performed conditionally at the end).
     if status not in (
         TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
         TaskStatus.CANCELLED,
@@ -2139,8 +2147,6 @@ def _maybe_post_thread_followup(
     ):
         # Row isn't terminal yet — caller raced ahead of the DB write.
         # Bail; the eventual real terminal will re-enter this helper.
-        return
-    if actual_status == TaskStatus.FAILED and auto_revisit_spawned:
         return
 
     # Only root tasks fire. Children are handled at their parent's terminal site.
@@ -2225,14 +2231,33 @@ def _maybe_post_thread_followup(
         "revisit_task_id": revisit_task_id,
     }
 
-    _append_followup_system_and_reinvoke(
-        orch,
-        thread_id=thread_id,
-        dispatcher=dispatcher,
-        original_id=original.id,
-        source_task_id=task_id,
-        system_payload=system_payload,
-    )
+    if auto_revisit_spawned:
+        # Fire system-message-only: the thread surface needs the
+        # failure-with-successor notification ('revisiting as <SUCCESSOR>'),
+        # but we suppress the dispatcher re-invocation because the revisit
+        # successor will fire its own followup (with re-invocation) at its
+        # terminal. Without this suppression, a single revisit chain would
+        # produce duplicate TASK_FOLLOWUP turns and double-message the thread.
+        from runtime.models import ThreadMessageKind as _TMK
+        db.append_thread_message(
+            thread_id=thread_id, speaker=dispatcher,
+            kind=_TMK.SYSTEM,
+            system_payload=system_payload,
+        )
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="auto_revisit_spawned",
+            successor_task_id=revisit_task_id,
+        )
+    else:
+        _append_followup_system_and_reinvoke(
+            orch,
+            thread_id=thread_id,
+            dispatcher=dispatcher,
+            original_id=original.id,
+            source_task_id=task_id,
+            system_payload=system_payload,
+        )
 
 
 def _payload_dict(row: dict) -> dict:

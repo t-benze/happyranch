@@ -398,25 +398,38 @@ def _payload(row: dict) -> dict:
     return p if isinstance(p, dict) else _json.loads(p)
 
 
-# --- Truth table (spec §4) ---
-@_pytest.mark.parametrize("status,spawned,cancelled,should_fire", [
-    (TaskStatus.COMPLETED, False, False, True),   # row 1: normal completion
-    (TaskStatus.FAILED,    True,  False, False),  # row 2: revisit will run
-    (TaskStatus.FAILED,    False, False, True),   # row 3: chain dead
-    (TaskStatus.FAILED,    False, True,  True),   # row 4: founder-cancelled (historical failed+cancelled_at)
-    (TaskStatus.CANCELLED, False, True,  True),   # row 5: Path B stored CANCELLED terminal (THR-037)
+# --- Truth table (spec §4, §4.1 — revised THR-046 msg99) ---
+#
+# Row 2 (FAILED+spawned) changed in THR-046 msg99: the system message now
+# fires (with revisit_task_id) so the thread surface can render 'revisiting
+# as <SUCCESSOR>', but the dispatcher re-invocation (TASK_FOLLOWUP) is
+# suppressed — the successor will fire its own followup at its terminal.
+@_pytest.mark.parametrize("status,spawned,cancelled,should_fire,should_invoke", [
+    (TaskStatus.COMPLETED, False, False, True,  True),   # row 1: normal completion
+    (TaskStatus.FAILED,    True,  False, True,  False),  # row 2: revisit spawned → system msg fires, no re-invoke
+    (TaskStatus.FAILED,    False, False, True,  True),   # row 3: chain dead
+    (TaskStatus.FAILED,    False, True,  True,  True),   # row 4: founder-cancelled (historical failed+cancelled_at)
+    (TaskStatus.CANCELLED, False, True,  True,  True),   # row 5: Path B stored CANCELLED terminal (THR-037)
 ])
-def test_fire_predicate_truth_table(orch_with_db, status, spawned, cancelled, should_fire):
+def test_fire_predicate_truth_table(orch_with_db, status, spawned, cancelled, should_fire, should_invoke):
     from runtime.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.models import ThreadMessageKind
     orch = orch_with_db
     _seed_dispatched_root(orch)
     if cancelled:
         orch._db.update_task("TASK-1", cancelled_at="2026-05-28T00:00:00+00:00")
     orch._db.update_task("TASK-1", status=status)
     _maybe_post_thread_followup(orch, "TASK-1", status=status, auto_revisit_spawned=spawned)
+    # System message check: the system payload must have been emitted.
+    sys_msgs = [
+        m for m in orch._db.list_thread_messages("THR-1")
+        if m.kind == ThreadMessageKind.SYSTEM
+    ]
+    assert (len(sys_msgs) >= 1) == should_fire
+    # TASK_FOLLOWUP invocation check: dispatcher re-invocation may be suppressed.
     invs = orch._db.list_thread_invocations("THR-1")
     followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
-    assert (len(followups) == 1) == should_fire
+    assert (len(followups) == 1) == should_invoke
 
 
 def test_non_root_task_does_not_fire(orch_with_db):
@@ -1143,6 +1156,87 @@ def test_revisit_task_id_none_when_not_provided(orch_with_db):
     assert sys_msgs
     payload = sys_msgs[-1].system_payload
     assert payload.get("revisit_task_id") is None
+
+
+def test_run_step_auto_revisit_emits_task_failed_with_successor_link(
+    orch_with_db, monkeypatch,
+):
+    """THR-046 msg99 regression: when run_step fails a task and spawns an
+    auto-revisit successor, the task_failed system message MUST carry
+    revisit_task_id linking the successor — so the thread surface can
+    render 'revisiting as <SUCCESSOR>'.
+
+    This exercises the REAL run_step path (not synthetic _maybe_post_thread_followup
+    call), confirming the fix: the FAILED+auto_revisit_spawned early-return guards
+    in _maybe_post_thread_followup no longer suppress the system message.
+    The TASK_FOLLOWUP re-invocation is still suppressed (the successor fires
+    its own followup at its terminal).
+    """
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.models import ThreadInvocationPurpose, ThreadMessageKind
+
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+
+    # Wire a fake queue so run_step doesn't crash on enqueue.
+    class _FakeQueue:
+        def __init__(self):
+            self.items: list[tuple[str, str]] = []
+        def put_nowait(self, slug: str, task_id: str) -> None:
+            self.items.append((slug, task_id))
+        def qsize(self) -> int:
+            return len(self.items)
+    q = _FakeQueue()
+    orch._queue = q
+
+    # Simulate an opaque agent failure: rc=0 but no callback → session_failure.
+    failing_result = ExecutorResult(
+        success=True,
+        duration_seconds=10,
+        session_id="sess-x",
+        returncode=0,
+        stdout_tail="done",
+        stderr_tail="",
+    )
+    monkeypatch.setattr(
+        orch, "_run_agent",
+        lambda *a, **k: (failing_result, None),
+    )
+
+    orch.run_step("TASK-1")
+
+    # The failed task should have spawned an auto-revisit successor.
+    assert len(q.items) >= 1, f"expected auto-revisit enqueue, got {q.items}"
+    _, successor_id = q.items[0]
+    assert successor_id != "TASK-1"
+
+    # System message check: a task_failed message must have been appended.
+    sys_msgs = [
+        m for m in orch._db.list_thread_messages("THR-1")
+        if m.kind == ThreadMessageKind.SYSTEM
+    ]
+    task_failed_msgs = [
+        m for m in sys_msgs
+        if m.system_payload.get("kind_tag") == "task_failed"
+    ]
+    assert len(task_failed_msgs) == 1, (
+        f"expected 1 task_failed system message, got {len(task_failed_msgs)}"
+    )
+    payload = task_failed_msgs[0].system_payload
+    assert payload["revisit_task_id"] == successor_id, (
+        f"revisit_task_id should be the successor {successor_id}, "
+        f"got {payload.get('revisit_task_id')}"
+    )
+    assert payload["kind_tag"] == "task_failed"
+    assert payload["task_id"] == "TASK-1"
+
+    # No TASK_FOLLOWUP invocation should have been minted (suppressed).
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 0, (
+        f"expected 0 TASK_FOLLOWUP invocations, got {len(followups)}"
+    )
 
 
 def test_thread_store_renders_revisit_successor():
