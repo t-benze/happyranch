@@ -609,6 +609,316 @@ def test_worker_self_dispatch_cannot_supersede_predecessor(
 
 
 # ---------------------------------------------------------------------------
+# THR-046 msg127 — broader revisit-family closure on human-authorized continuations
+# ---------------------------------------------------------------------------
+
+
+def test_manager_dispatch_supersedes_escalated_sibling_revisits(
+    tmp_home, app, org_state, auth_headers,
+):
+    """A manager thread-dispatch with `resolves` that supersedes one escalated
+    predecessor also closes eligible escalated sibling revisits in the same
+    revisit family (same revisit_of_task_id). Failed siblings are left alone."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(
+        client, org_state, auth_headers, recipient="engineering_head",
+    )
+
+    # Seed the family: TASK-900 is the original escalated root.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="original escalation", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+    # TASK-901 is an escalated direct revisit sibling of TASK-900.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-901", brief="escalated sibling revisit", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+        revisit_of_task_id="TASK-900",
+    ))
+    # TASK-902 is a FAILED direct revisit sibling — should NOT be touched.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-902", brief="failed sibling revisit", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.FAILED, block_kind=None,
+        revisit_of_task_id="TASK-900",
+    ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "continue the escalated work", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["superseded_task_id"] == "TASK-900"
+    new_task_id = data["task_id"]
+
+    # Explicit predecessor superseded.
+    pred = org_state.db.get_task("TASK-900")
+    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.block_kind is None
+    pred_payload = _audit_payload(org_state, "TASK-900", "escalation_superseded")
+    assert pred_payload["successor_root"] == new_task_id
+    assert pred_payload["prior_block_kind"] == "escalated"
+    assert pred_payload["thread_id"] == tid
+
+    # Escalated sibling superseded.
+    sib = org_state.db.get_task("TASK-901")
+    assert sib.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert sib.block_kind is None
+    sib_payload = _audit_payload(org_state, "TASK-901", "escalation_superseded")
+    assert sib_payload["successor_root"] == new_task_id
+    assert sib_payload["prior_block_kind"] == "escalated"
+    assert sib_payload["thread_id"] == tid
+
+    # Failed sibling untouched.
+    fail = org_state.db.get_task("TASK-902")
+    assert fail.status == TaskStatus.FAILED
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-902")
+    ]
+
+    # superseded_by_task_id is exposed via get-task for the sibling.
+    r = client.get(
+        f"/api/v1/orgs/alpha/tasks/TASK-901", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["superseded_by_task_id"] == new_task_id
+
+
+def test_manager_dispatch_supersedes_ancestor_revisit_chain(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Finding 1 (ancestor-chain): A is escalated, B is an escalated revisit
+    of A, and a manager thread-dispatch resolving B closes both B and A.
+    When the explicit predecessor is itself a revisit, the family root
+    (ancestor) must also be evaluated through the eligibility gate."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(
+        client, org_state, auth_headers, recipient="engineering_head",
+    )
+
+    # A: TASK-900 — original escalated root.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="original root escalated", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+    # B: TASK-901 — escalated revisit of A (explicit predecessor).
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-901", brief="escalated revisit of root", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+        revisit_of_task_id="TASK-900",
+    ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "continue from the revisit", "resolves": "TASK-901"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["superseded_task_id"] == "TASK-901"
+    new_task_id = data["task_id"]
+
+    # B (explicit predecessor) superseded.
+    pred_b = org_state.db.get_task("TASK-901")
+    assert pred_b.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred_b.block_kind is None
+    pb_payload = _audit_payload(org_state, "TASK-901", "escalation_superseded")
+    assert pb_payload["successor_root"] == new_task_id
+    assert pb_payload["prior_block_kind"] == "escalated"
+
+    # A (ancestor root in the family) must also be superseded.
+    pred_a = org_state.db.get_task("TASK-900")
+    assert pred_a.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred_a.block_kind is None
+    pa_payload = _audit_payload(org_state, "TASK-900", "escalation_superseded")
+    assert pa_payload["successor_root"] == new_task_id
+    assert pa_payload["prior_block_kind"] == "escalated"
+
+    # superseded_by_task_id exposed for both.
+    for tid_check in ["TASK-900", "TASK-901"]:
+        r = client.get(
+            f"/api/v1/orgs/alpha/tasks/{tid_check}", headers=auth_headers,
+        )
+        assert r.status_code == 200
+        assert r.json()["superseded_by_task_id"] == new_task_id
+
+
+def test_manager_dispatch_family_closure_leaves_non_supersedable_siblings(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Negative: completed, cancelled, pending, in_progress(non-delegated),
+    and already resolved_superseded family members are NOT rewritten."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(
+        client, org_state, auth_headers, recipient="engineering_head",
+    )
+
+    # Original root: escalated.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="original", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+    # Non-supersedable siblings of the original root.
+    for sid, st, bk in [
+        ("TASK-901", TaskStatus.COMPLETED, None),
+        ("TASK-902", TaskStatus.CANCELLED, None),
+        ("TASK-903", TaskStatus.PENDING, None),
+        ("TASK-904", TaskStatus.IN_PROGRESS, None),
+        ("TASK-905", TaskStatus.RESOLVED_SUPERSEDED, None),
+    ]:
+        org_state.db.insert_task(TaskRecord(
+            id=sid, brief="sibling", team="engineering",
+            assigned_agent="dev_agent",
+            status=st, block_kind=bk,
+            revisit_of_task_id="TASK-900",
+        ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "continue", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Explicit predecessor superseded.
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.RESOLVED_SUPERSEDED
+    # All non-supersedable siblings unchanged.
+    assert org_state.db.get_task("TASK-901").status == TaskStatus.COMPLETED
+    assert org_state.db.get_task("TASK-902").status == TaskStatus.CANCELLED
+    assert org_state.db.get_task("TASK-903").status == TaskStatus.PENDING
+    assert org_state.db.get_task("TASK-904").status == TaskStatus.IN_PROGRESS
+    assert org_state.db.get_task("TASK-905").status == TaskStatus.RESOLVED_SUPERSEDED
+    for sid in ["TASK-901", "TASK-902", "TASK-903", "TASK-904", "TASK-905"]:
+        assert "escalation_superseded" not in [
+            e["action"] for e in org_state.db.get_audit_logs(sid)
+        ]
+
+
+def test_manager_dispatch_family_closure_delegated_safety(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Delegated safety: an in_progress(delegated) family sibling with a live
+    child is NOT closed; a delegated sibling with all terminal children MAY be
+    closed. Live children are never mutated."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(
+        client, org_state, auth_headers, recipient="engineering_head",
+    )
+
+    # Original root: escalated.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="original", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+
+    # Delegated sibling with a LIVE child — should NOT be closed.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-910", brief="delegated with live child", team="engineering",
+        assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+        revisit_of_task_id="TASK-900",
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-911", brief="live child", parent_task_id="TASK-910",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+
+    # Delegated sibling with ALL terminal children — MAY be closed.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-920", brief="delegated all done", team="engineering",
+        assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+        revisit_of_task_id="TASK-900",
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-921", brief="done child", parent_task_id="TASK-920",
+        status=TaskStatus.COMPLETED,
+    ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "continue", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    new_task_id = resp.json()["task_id"]
+
+    # Explicit predecessor superseded.
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.RESOLVED_SUPERSEDED
+
+    # Delegated sibling with live child NOT closed.
+    assert org_state.db.get_task("TASK-910").status == TaskStatus.IN_PROGRESS
+    assert org_state.db.get_task("TASK-910").block_kind == BlockKind.DELEGATED
+    assert org_state.db.get_task("TASK-911").status == TaskStatus.IN_PROGRESS
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-910")
+    ]
+
+    # Delegated sibling with all terminal children IS closed.
+    sib = org_state.db.get_task("TASK-920")
+    assert sib.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert sib.block_kind is None
+    sib_payload = _audit_payload(org_state, "TASK-920", "escalation_superseded")
+    assert sib_payload["successor_root"] == new_task_id
+    assert sib_payload["prior_block_kind"] == "delegated"
+
+    # Live child untouched.
+    assert org_state.db.get_task("TASK-921").status == TaskStatus.COMPLETED
+
+
+def test_plain_revisit_lineage_does_not_close_predecessor(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Negative: tasks with revisit_of_task_id / auto-revisit_spawned lineage
+    do NOT close their active predecessor before a human-authorized
+    continuation (thread dispatch or founder revisit). Seeding revisit_of
+    rows WITHOUT calling dispatch leaves all statuses unchanged."""
+    # Seed a family WITHOUT doing a dispatch — just insert revisits directly.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="original escalation", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+    # Seeded revisit siblings (simulating auto-revisit_spawned lineage).
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-901", brief="auto-revisit", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+        revisit_of_task_id="TASK-900",
+    ))
+
+    # Assert statuses are unchanged — no dispatch happened, nothing should close.
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.ESCALATED
+    assert org_state.db.get_task("TASK-901").status == TaskStatus.ESCALATED
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-900")
+    ]
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-901")
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Task 24 — POST /threads/{id}/send (founder follow-up)
 # ---------------------------------------------------------------------------
 
