@@ -10,6 +10,7 @@ from runtime.config import Settings
 from runtime.daemon.assistant_pty import AssistantSessionManager
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.queue import TaskQueue
+from runtime.daemon.registration_token import RegistrationTokenStore
 from runtime.orchestrator.org_validation import OrgConsistencyError
 from runtime.runtime import RuntimeDir
 
@@ -27,6 +28,9 @@ class DaemonState:
     # missing after a restart.
     broken_orgs: dict[str, str] = field(default_factory=dict)
     queue: TaskQueue = field(default_factory=TaskQueue)
+    registration_token_store: RegistrationTokenStore = field(
+        default_factory=RegistrationTokenStore
+    )
     orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     assistant_lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     assistant_sessions: AssistantSessionManager = field(
