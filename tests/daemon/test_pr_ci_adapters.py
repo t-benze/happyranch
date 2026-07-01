@@ -5,8 +5,11 @@ mocked subprocess calls — no live ``gh`` invocations.
 """
 from __future__ import annotations
 
+import io
 import json
+import runpy
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1017,3 +1020,162 @@ def test_ci_poll_adapter_status_api_auth_error_is_github_error() -> None:
 
     # Must be github_error (7), NOT checks_missing (3) or timeout (4)
     assert exit_code == 7, f"rate-limit error must yield github_error (7), got {exit_code}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Module entry-point tests — prove ``python -m`` __main__ guard works
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_module_entrypoint_ci_poll_ci_pass() -> None:
+    """``python -m runtime.daemon.pr_ci_adapters ci-poll ...`` executes
+    the ``if __name__ == '__main__': raise SystemExit(main())`` guard
+    and exits with the engine exit code."""
+    pr_json = json.dumps({"state": "OPEN", "headRefOid": "a" * 40, "isDraft": False})
+    checks_out = json.dumps({"name": "ci", "status": "completed", "conclusion": "success"})
+    fake = _ci_poll_gh_output(pr_json, checks_out + "\n")
+
+    test_argv = [
+        "pr_ci_adapters",
+        "ci-poll",
+        "--repo", "owner/repo", "--pr-number", "1",
+        "--head-sha", "a" * 40,
+        "--expected-check", "ci",
+        "--settle-seconds", "0", "--poll-interval", "1",
+        "--timeout-seconds", "10",
+    ]
+
+    stdout = io.StringIO()
+    with patch("subprocess.run", side_effect=fake):
+        with patch("time.sleep"):
+            with patch.object(sys, "argv", test_argv):
+                with patch("sys.stdout", stdout):
+                    with pytest.raises(SystemExit) as exc_info:
+                        runpy.run_module("runtime.daemon.pr_ci_adapters", run_name="__main__")
+
+    assert exc_info.value.code == 0, f"expected exit 0, got {exc_info.value.code}"
+    output = stdout.getvalue()
+    verdict = json.loads(output)
+    assert verdict.get("verdict") == "ci_pass", f"verdict JOON must include verdict=ci_pass, got {verdict}"
+
+
+def test_module_entrypoint_ci_poll_github_error() -> None:
+    """``python -m ... ci-poll ...`` with an invalid repo → exit 7 (github_error),
+    and the structured verdict text is printed to stdout."""
+    test_argv = [
+        "pr_ci_adapters",
+        "ci-poll",
+        "--repo", "owner/nonexistent", "--pr-number", "1",
+        "--head-sha", "a" * 40,
+        "--expected-check", "ci",
+        "--settle-seconds", "0", "--poll-interval", "1",
+        "--timeout-seconds", "10",
+    ]
+
+    stdout = io.StringIO()
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = subprocess.CalledProcessError(1, "gh", stderr="Could not resolve to a Repository")
+        with patch("time.sleep"):
+            with patch.object(sys, "argv", test_argv):
+                with patch("sys.stdout", stdout):
+                    with pytest.raises(SystemExit) as exc_info:
+                        runpy.run_module("runtime.daemon.pr_ci_adapters", run_name="__main__")
+
+    assert exc_info.value.code == 7, f"expected exit 7 (github_error), got {exc_info.value.code}"
+    output = stdout.getvalue()
+    verdict = json.loads(output)
+    assert verdict.get("verdict") == "github_error", f"verdict JOON must include verdict=github_error, got {verdict}"
+
+
+def test_module_entrypoint_guarded_merge_merged() -> None:
+    """``python -m ... guarded-merge ...`` with all guards green → exit 0 (merged),
+    and the structured verdict text is printed to stdout."""
+    pr_json = json.dumps({"state": "OPEN", "headRefOid": "a" * 40, "isDraft": False})
+    mergeable_json = json.dumps({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"})
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        if "pr merge" in cmd_str:
+            return MagicMock(stdout="m" * 40 + "\n", stderr="")
+        if "pr view" in cmd_str and "isDraft" in cmd_str:
+            return MagicMock(stdout=pr_json, stderr="")
+        if "pr view" in cmd_str:
+            return MagicMock(stdout=mergeable_json, stderr="")
+        raise RuntimeError(f"unexpected cmd: {cmd_str}")
+
+    test_argv = [
+        "pr_ci_adapters",
+        "guarded-merge",
+        "--repo", "owner/repo", "--pr-number", "1",
+        "--head-sha", "a" * 40,
+        "--merge-method", "squash",
+        "--ci-verdict", "ci_pass",
+        "--review-verdict", "APPROVE",
+        "--qa-verdict", "PASS",
+    ]
+
+    stdout = io.StringIO()
+    with patch("subprocess.run", side_effect=fake_run):
+        with patch.object(sys, "argv", test_argv):
+            with patch("sys.stdout", stdout):
+                with pytest.raises(SystemExit) as exc_info:
+                    runpy.run_module("runtime.daemon.pr_ci_adapters", run_name="__main__")
+
+    assert exc_info.value.code == 0, f"expected exit 0, got {exc_info.value.code}"
+    output = stdout.getvalue()
+    verdict = json.loads(output)
+    assert verdict.get("verdict") == "merged", f"verdict JOON must include verdict=merged, got {verdict}"
+
+
+def test_module_entrypoint_guarded_merge_missing_review_verdict() -> None:
+    """``python -m ... guarded-merge ...`` without --review-verdict → exit 11
+    (merge_guard_review), and the structured verdict text is printed."""
+    test_argv = [
+        "pr_ci_adapters",
+        "guarded-merge",
+        "--repo", "owner/repo", "--pr-number", "1",
+        "--head-sha", "a" * 40,
+        "--merge-method", "squash",
+        "--ci-verdict", "ci_pass",
+        "--qa-verdict", "PASS",
+    ]
+
+    stdout = io.StringIO()
+    with patch.object(sys, "argv", test_argv):
+        with patch("sys.stdout", stdout):
+            with pytest.raises(SystemExit) as exc_info:
+                runpy.run_module("runtime.daemon.pr_ci_adapters", run_name="__main__")
+
+    assert exc_info.value.code == 11, f"expected exit 11 (merge_guard_review), got {exc_info.value.code}"
+    output = stdout.getvalue()
+    verdict = json.loads(output)
+    assert verdict.get("verdict") == "merge_guard_review", (
+        f"verdict JOON must include verdict=merge_guard_review, got {verdict}"
+    )
+
+
+def test_module_entrypoint_guarded_merge_missing_qa_verdict() -> None:
+    """``python -m ... guarded-merge ...`` without --qa-verdict → exit 12
+    (merge_guard_qa), and the structured verdict text is printed."""
+    test_argv = [
+        "pr_ci_adapters",
+        "guarded-merge",
+        "--repo", "owner/repo", "--pr-number", "1",
+        "--head-sha", "a" * 40,
+        "--merge-method", "squash",
+        "--ci-verdict", "ci_pass",
+        "--review-verdict", "APPROVE",
+    ]
+
+    stdout = io.StringIO()
+    with patch.object(sys, "argv", test_argv):
+        with patch("sys.stdout", stdout):
+            with pytest.raises(SystemExit) as exc_info:
+                runpy.run_module("runtime.daemon.pr_ci_adapters", run_name="__main__")
+
+    assert exc_info.value.code == 12, f"expected exit 12 (merge_guard_qa), got {exc_info.value.code}"
+    output = stdout.getvalue()
+    verdict = json.loads(output)
+    assert verdict.get("verdict") == "merge_guard_qa", (
+        f"verdict JOON must include verdict=merge_guard_qa, got {verdict}"
+    )
