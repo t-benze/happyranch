@@ -971,24 +971,27 @@ describe('ThreadsPage — abort replies', () => {
     return mountAt(`/orgs/${SLUG}/threads/${threadId}`);
   }
 
-  test('abort button appears when thread has queued/working responders', async () => {
+  test('abort button renders in composer row, enabled when thread has queued/working responders', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithResponders([
       { agent_name: 'dev_agent', status: 'working' },
     ]);
 
-    await screen.findByRole('button', { name: /Abort replies/i });
+    const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    expect(btn).not.toBeDisabled();
+    // The abort button lives in the composer footer, immediately before Send.
+    const footer = btn.closest('footer');
+    expect(footer).not.toBeNull();
   });
 
-  test('abort button is hidden when no in-flight responders', async () => {
+  test('abort button renders but is disabled when no in-flight responders', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithResponders([]);
 
     // Wait for detail to render.
     await screen.findByText('Test thread');
-    expect(
-      screen.queryByRole('button', { name: /Abort replies/i }),
-    ).not.toBeInTheDocument();
+    const btn = screen.getByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeDisabled();
   });
 
   test('abort button calls POST /abort-replies and invalidates queries', async () => {

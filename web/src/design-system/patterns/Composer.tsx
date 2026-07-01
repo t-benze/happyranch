@@ -104,6 +104,16 @@ interface ComposerProps {
    * must not call @/lib/orgSlug directly).
    */
   orgSlug: string;
+
+  // Optional abort control — renders in the footer row immediately left of Send.
+  /** Label for the abort button. Defaults to 'Abort replies'. */
+  abortLabel?: string;
+  /** Called when the abort button is clicked. When omitted, the button is not rendered. */
+  onAbort?: () => void;
+  /** Whether the abort button is clickable. Defaults to false. */
+  abortEnabled?: boolean;
+  /** Whether an abort mutation is in flight — shows 'Aborting…' and disables the button. */
+  abortPending?: boolean;
 }
 
 export function Composer({
@@ -119,6 +129,10 @@ export function Composer({
   agents = [],
   threadId = '',
   orgSlug,
+  abortLabel = 'Abort replies',
+  onAbort,
+  abortEnabled = false,
+  abortPending = false,
 }: ComposerProps): JSX.Element {
   const { draft, setDraft, clearDraft } = useThreadDraft(orgSlug, threadId);
   const canSend = Boolean(draft.trim() || attachments.length);
@@ -206,9 +220,22 @@ export function Composer({
         ) : (
           <span className="text-caption text-text-muted">{helper ?? ''}</span>
         )}
-        <Button onClick={submit} disabled={disabled || !canSend || pending}>
-          {pending ? 'Sending…' : 'Send'}
-        </Button>
+        <div className="flex items-center gap-2">
+          {onAbort && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onAbort}
+              disabled={!abortEnabled || disabled || abortPending}
+              title="Abort pending replies"
+            >
+              {abortPending ? 'Aborting…' : abortLabel}
+            </Button>
+          )}
+          <Button onClick={submit} disabled={disabled || !canSend || pending}>
+            {pending ? 'Sending…' : 'Send'}
+          </Button>
+        </div>
       </div>
     </div>
   );
