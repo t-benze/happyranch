@@ -469,10 +469,6 @@ export function ThreadsPage(): JSX.Element {
           backHref={routes.inbox()}
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
-
-          hasInFlightResponders={inFlight.length > 0}
-          aborting={abortReplies.isPending}
-          onAbortReplies={() => { abortReplies.mutateAsync().catch(() => {}); }}
           composer={
             <Composer
               agents={agents}
@@ -486,6 +482,9 @@ export function ThreadsPage(): JSX.Element {
               attachments={pendingAttachments}
               onAttachmentsChange={setPendingAttachments}
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
+              hasInFlightResponders={inFlight.length > 0}
+              isAborting={abortReplies.isPending}
+              onAbortReplies={() => { abortReplies.mutateAsync().catch(() => {}); }}
             />
           }
           slug={slug}
@@ -548,9 +547,6 @@ interface DetailColumnProps {
   backHref: string;
   onInvite: () => void;
   onArchive: () => void;
-  hasInFlightResponders: boolean;
-  aborting: boolean;
-  onAbortReplies: () => void;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -566,9 +562,6 @@ function DetailColumn({
   backHref,
   onInvite,
   onArchive,
-  hasInFlightResponders,
-  aborting,
-  onAbortReplies,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -650,17 +643,6 @@ function DetailColumn({
         dreamOriginated={isDreamOriginated}
         actions={
           <>
-            {open && hasInFlightResponders && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onAbortReplies}
-                disabled={aborting}
-                title="Abort pending replies"
-              >
-                {aborting ? 'Aborting…' : 'Abort replies'}
-              </Button>
-            )}
             <Button variant="ghost" size="sm" onClick={onInvite} disabled={!open} title="Invite (I)">Invite</Button>
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
             {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}

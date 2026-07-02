@@ -171,6 +171,10 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/threads/compose-as-agent', 'agent callback — not exercised from the Web UI'],
   // task-session post into an existing thread (agent callback — not exercised from the Web UI)
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/post-as-agent', 'agent callback — not exercised from the Web UI'],
+  // Thread-scoped attachments (TASK-1616) — agent/CLI facing; no SPA wrapper yet
+  ['GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments', 'thread-scoped attachments — agent/CLI facing'],
+  ['POST /api/v1/orgs/{slug}/threads/{thread_id}/attachments', 'thread-scoped attachments — agent/CLI facing'],
+  ['GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments/{attachment_id}', 'thread-scoped attachments — agent/CLI facing'],
   // jobs agent callback
   ['POST /api/v1/orgs/{slug}/jobs/submit', 'agent callback (matches /report-completion pattern)'],
   // Artifacts — agent-facing v1, also surfaced read+create in the founder

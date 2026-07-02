@@ -192,6 +192,7 @@ def test_get_thread_response_includes_attachments(client, auth_headers, org_stat
             "size_bytes": 3,
             "content_type": None,
             "uploaded_by": "founder",
+            "thread_attachment_id": None,
         }
     ]
 
@@ -609,6 +610,316 @@ def test_worker_self_dispatch_cannot_supersede_predecessor(
 
 
 # ---------------------------------------------------------------------------
+# THR-046 msg127 — broader revisit-family closure on human-authorized continuations
+# ---------------------------------------------------------------------------
+
+
+def test_manager_dispatch_supersedes_escalated_sibling_revisits(
+    tmp_home, app, org_state, auth_headers,
+):
+    """A manager thread-dispatch with `resolves` that supersedes one escalated
+    predecessor also closes eligible escalated sibling revisits in the same
+    revisit family (same revisit_of_task_id). Failed siblings are left alone."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(
+        client, org_state, auth_headers, recipient="engineering_head",
+    )
+
+    # Seed the family: TASK-900 is the original escalated root.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="original escalation", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+    # TASK-901 is an escalated direct revisit sibling of TASK-900.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-901", brief="escalated sibling revisit", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+        revisit_of_task_id="TASK-900",
+    ))
+    # TASK-902 is a FAILED direct revisit sibling — should NOT be touched.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-902", brief="failed sibling revisit", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.FAILED, block_kind=None,
+        revisit_of_task_id="TASK-900",
+    ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "continue the escalated work", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["superseded_task_id"] == "TASK-900"
+    new_task_id = data["task_id"]
+
+    # Explicit predecessor superseded.
+    pred = org_state.db.get_task("TASK-900")
+    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.block_kind is None
+    pred_payload = _audit_payload(org_state, "TASK-900", "escalation_superseded")
+    assert pred_payload["successor_root"] == new_task_id
+    assert pred_payload["prior_block_kind"] == "escalated"
+    assert pred_payload["thread_id"] == tid
+
+    # Escalated sibling superseded.
+    sib = org_state.db.get_task("TASK-901")
+    assert sib.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert sib.block_kind is None
+    sib_payload = _audit_payload(org_state, "TASK-901", "escalation_superseded")
+    assert sib_payload["successor_root"] == new_task_id
+    assert sib_payload["prior_block_kind"] == "escalated"
+    assert sib_payload["thread_id"] == tid
+
+    # Failed sibling untouched.
+    fail = org_state.db.get_task("TASK-902")
+    assert fail.status == TaskStatus.FAILED
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-902")
+    ]
+
+    # superseded_by_task_id is exposed via get-task for the sibling.
+    r = client.get(
+        f"/api/v1/orgs/alpha/tasks/TASK-901", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["superseded_by_task_id"] == new_task_id
+
+
+def test_manager_dispatch_supersedes_ancestor_revisit_chain(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Finding 1 (ancestor-chain): A is escalated, B is an escalated revisit
+    of A, and a manager thread-dispatch resolving B closes both B and A.
+    When the explicit predecessor is itself a revisit, the family root
+    (ancestor) must also be evaluated through the eligibility gate."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(
+        client, org_state, auth_headers, recipient="engineering_head",
+    )
+
+    # A: TASK-900 — original escalated root.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="original root escalated", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+    # B: TASK-901 — escalated revisit of A (explicit predecessor).
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-901", brief="escalated revisit of root", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+        revisit_of_task_id="TASK-900",
+    ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "continue from the revisit", "resolves": "TASK-901"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["superseded_task_id"] == "TASK-901"
+    new_task_id = data["task_id"]
+
+    # B (explicit predecessor) superseded.
+    pred_b = org_state.db.get_task("TASK-901")
+    assert pred_b.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred_b.block_kind is None
+    pb_payload = _audit_payload(org_state, "TASK-901", "escalation_superseded")
+    assert pb_payload["successor_root"] == new_task_id
+    assert pb_payload["prior_block_kind"] == "escalated"
+
+    # A (ancestor root in the family) must also be superseded.
+    pred_a = org_state.db.get_task("TASK-900")
+    assert pred_a.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred_a.block_kind is None
+    pa_payload = _audit_payload(org_state, "TASK-900", "escalation_superseded")
+    assert pa_payload["successor_root"] == new_task_id
+    assert pa_payload["prior_block_kind"] == "escalated"
+
+    # superseded_by_task_id exposed for both.
+    for tid_check in ["TASK-900", "TASK-901"]:
+        r = client.get(
+            f"/api/v1/orgs/alpha/tasks/{tid_check}", headers=auth_headers,
+        )
+        assert r.status_code == 200
+        assert r.json()["superseded_by_task_id"] == new_task_id
+
+
+def test_manager_dispatch_family_closure_leaves_non_supersedable_siblings(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Negative: completed, cancelled, pending, in_progress(non-delegated),
+    and already resolved_superseded family members are NOT rewritten."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(
+        client, org_state, auth_headers, recipient="engineering_head",
+    )
+
+    # Original root: escalated.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="original", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+    # Non-supersedable siblings of the original root.
+    for sid, st, bk in [
+        ("TASK-901", TaskStatus.COMPLETED, None),
+        ("TASK-902", TaskStatus.CANCELLED, None),
+        ("TASK-903", TaskStatus.PENDING, None),
+        ("TASK-904", TaskStatus.IN_PROGRESS, None),
+        ("TASK-905", TaskStatus.RESOLVED_SUPERSEDED, None),
+    ]:
+        org_state.db.insert_task(TaskRecord(
+            id=sid, brief="sibling", team="engineering",
+            assigned_agent="dev_agent",
+            status=st, block_kind=bk,
+            revisit_of_task_id="TASK-900",
+        ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "continue", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Explicit predecessor superseded.
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.RESOLVED_SUPERSEDED
+    # All non-supersedable siblings unchanged.
+    assert org_state.db.get_task("TASK-901").status == TaskStatus.COMPLETED
+    assert org_state.db.get_task("TASK-902").status == TaskStatus.CANCELLED
+    assert org_state.db.get_task("TASK-903").status == TaskStatus.PENDING
+    assert org_state.db.get_task("TASK-904").status == TaskStatus.IN_PROGRESS
+    assert org_state.db.get_task("TASK-905").status == TaskStatus.RESOLVED_SUPERSEDED
+    for sid in ["TASK-901", "TASK-902", "TASK-903", "TASK-904", "TASK-905"]:
+        assert "escalation_superseded" not in [
+            e["action"] for e in org_state.db.get_audit_logs(sid)
+        ]
+
+
+def test_manager_dispatch_family_closure_delegated_safety(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Delegated safety: an in_progress(delegated) family sibling with a live
+    child is NOT closed; a delegated sibling with all terminal children MAY be
+    closed. Live children are never mutated."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(
+        client, org_state, auth_headers, recipient="engineering_head",
+    )
+
+    # Original root: escalated.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="original", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+
+    # Delegated sibling with a LIVE child — should NOT be closed.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-910", brief="delegated with live child", team="engineering",
+        assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+        revisit_of_task_id="TASK-900",
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-911", brief="live child", parent_task_id="TASK-910",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+
+    # Delegated sibling with ALL terminal children — MAY be closed.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-920", brief="delegated all done", team="engineering",
+        assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+        revisit_of_task_id="TASK-900",
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-921", brief="done child", parent_task_id="TASK-920",
+        status=TaskStatus.COMPLETED,
+    ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "continue", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    new_task_id = resp.json()["task_id"]
+
+    # Explicit predecessor superseded.
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.RESOLVED_SUPERSEDED
+
+    # Delegated sibling with live child NOT closed.
+    assert org_state.db.get_task("TASK-910").status == TaskStatus.IN_PROGRESS
+    assert org_state.db.get_task("TASK-910").block_kind == BlockKind.DELEGATED
+    assert org_state.db.get_task("TASK-911").status == TaskStatus.IN_PROGRESS
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-910")
+    ]
+
+    # Delegated sibling with all terminal children IS closed.
+    sib = org_state.db.get_task("TASK-920")
+    assert sib.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert sib.block_kind is None
+    sib_payload = _audit_payload(org_state, "TASK-920", "escalation_superseded")
+    assert sib_payload["successor_root"] == new_task_id
+    assert sib_payload["prior_block_kind"] == "delegated"
+
+    # Live child untouched.
+    assert org_state.db.get_task("TASK-921").status == TaskStatus.COMPLETED
+
+
+def test_plain_revisit_lineage_does_not_close_predecessor(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Negative: tasks with revisit_of_task_id / auto-revisit_spawned lineage
+    do NOT close their active predecessor before a human-authorized
+    continuation (thread dispatch or founder revisit). Seeding revisit_of
+    rows WITHOUT calling dispatch leaves all statuses unchanged."""
+    # Seed a family WITHOUT doing a dispatch — just insert revisits directly.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="original escalation", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+    ))
+    # Seeded revisit siblings (simulating auto-revisit_spawned lineage).
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-901", brief="auto-revisit", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.ESCALATED, block_kind=None,
+        revisit_of_task_id="TASK-900",
+    ))
+
+    # Assert statuses are unchanged — no dispatch happened, nothing should close.
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.ESCALATED
+    assert org_state.db.get_task("TASK-901").status == TaskStatus.ESCALATED
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-900")
+    ]
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-901")
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Task 24 — POST /threads/{id}/send (founder follow-up)
 # ---------------------------------------------------------------------------
 
@@ -852,6 +1163,7 @@ def test_thread_messages_response_includes_attachments(client, auth_headers, org
             "size_bytes": 3,
             "content_type": None,
             "uploaded_by": "founder",
+            "thread_attachment_id": None,
         }
     ]
 
@@ -1624,3 +1936,692 @@ def test_abort_replies_does_not_break_normal_decline(tmp_home, app, org_state, a
     )
     assert resp.status_code == 200, resp.text
     assert org_state.db.get_invocation_any_status(token).status.value == "declined"
+
+
+# ---------------------------------------------------------------------------
+# Thread-scoped attachment tests (TASK-1616)
+# ---------------------------------------------------------------------------
+
+
+def test_upload_thread_attachment_success(client, auth_headers, org_state) -> None:
+    """Upload to an existing thread's attachment store succeeds."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("hello.txt", b"hello world", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["attachment_id"].startswith("att-")
+    assert data["thread_id"] == tid
+    assert data["display_name"] == "hello.txt"
+    assert data["size_bytes"] == 11
+    assert data["content_type"] == "text/plain"
+    assert data["uploaded_by"] == "founder"
+
+    # Verify stored in DB.
+    row = org_state.db.get_thread_scoped_attachment(tid, data["attachment_id"])
+    assert row is not None
+    assert row.display_name == "hello.txt"
+
+
+def test_upload_thread_attachment_nonexistent_thread(client, auth_headers, org_state) -> None:
+    """Upload to a nonexistent thread returns 404."""
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads/nonexistent/attachments",
+        files={"file": ("h.txt", b"hi", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+
+
+def test_list_thread_attachments(client, auth_headers, org_state) -> None:
+    """List returns all attachments for a thread."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Upload two files.
+    for name, content in [("a.txt", b"aa"), ("b.txt", b"bbb")]:
+        client.post(
+            f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+            files={"file": (name, content, "text/plain")},
+            params={"agent": "founder"},
+            headers=auth_headers,
+        )
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["attachments"]) == 2
+    names = {a["display_name"] for a in data["attachments"]}
+    assert names == {"a.txt", "b.txt"}
+
+
+def test_get_thread_attachment_download(client, auth_headers, org_state) -> None:
+    """Download a thread-scoped attachment works."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    upload_resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("hello.txt", b"hello world", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    att_id = upload_resp.json()["attachment_id"]
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"hello world"
+    assert "text/plain" in resp.headers.get("content-type", "")
+
+
+def test_get_thread_attachment_not_found(client, auth_headers, org_state) -> None:
+    """Download nonexistent attachment returns 404."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/nonexistent",
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+
+
+def test_upload_attachment_too_large(client, auth_headers, org_state) -> None:
+    """Uploading an oversized attachment returns 413."""
+    from runtime.infrastructure.thread_scoped_attachment_store import MAX_THREAD_ATTACHMENT_BYTES
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    big_content = b"x" * (MAX_THREAD_ATTACHMENT_BYTES + 1)
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("big.bin", big_content, "application/octet-stream")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 413
+
+
+def test_reply_with_thread_scoped_attachment(client, auth_headers, org_state) -> None:
+    """Reply route accepts thread-scoped attachment refs and stores them."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+
+    # Create thread via compose to get invocations for both agents.
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "Test", "recipients": ["dev_agent", "qa_engineer"], "body_markdown": "hello"},
+        headers=auth_headers,
+    )
+    tid = r.json()["thread_id"]
+
+    # First upload a thread-scoped attachment.
+    upload_resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("data.csv", b"a,b,c", "text/csv")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    att_id = upload_resp.json()["attachment_id"]
+
+    # Get an invocation token for dev_agent.
+    invs = org_state.db.list_thread_invocations(tid)
+    dev_inv = [i for i in invs if i.agent_name == "dev_agent"][0]
+
+    # Reply with thread-scoped attachment ref.
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": dev_inv.invocation_token,
+            "speaker": "dev_agent",
+            "body_markdown": "data attached",
+            "attachments": [{"attachment_id": att_id}],
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Verify the attachment appears in the thread messages.
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}",
+        headers=auth_headers,
+    )
+    msgs = get_resp.json()["messages"]
+    reply_msg = [m for m in msgs if m["speaker"] == "dev_agent"][0]
+    assert len(reply_msg["attachments"]) == 1
+    att = reply_msg["attachments"][0]
+    assert att["thread_attachment_id"] == att_id
+    assert att["display_name"] == "data.csv"
+    assert att["content_type"] == "text/csv"
+
+
+def test_reply_with_thread_scoped_attachment_not_found(client, auth_headers, org_state) -> None:
+    """Reply with a nonexistent thread-scoped attachment id returns 404."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "Test", "recipients": ["dev_agent", "qa_engineer"], "body_markdown": "hello"},
+        headers=auth_headers,
+    )
+    tid = r.json()["thread_id"]
+
+    invs = org_state.db.list_thread_invocations(tid)
+    dev_inv = [i for i in invs if i.agent_name == "dev_agent"][0]
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": dev_inv.invocation_token,
+            "speaker": "dev_agent",
+            "body_markdown": "bad ref",
+            "attachments": [{"attachment_id": "nonexistent"}],
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+
+
+def test_legacy_shared_artifact_attachment_still_works(client, auth_headers, org_state) -> None:
+    """Legacy shared artifact refs in attachments still render in responses."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "Test", "recipients": ["dev_agent", "qa_engineer"], "body_markdown": "hello"},
+        headers=auth_headers,
+    )
+    tid = r.json()["thread_id"]
+
+    # Create a shared artifact.
+    artifact_store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+    artifact_store.put("test-legacy.pdf", b"legacy content")
+
+    invs = org_state.db.list_thread_invocations(tid)
+    dev_inv = [i for i in invs if i.agent_name == "dev_agent"][0]
+
+    # Reply with a shared artifact ref (legacy path).
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": dev_inv.invocation_token,
+            "speaker": "dev_agent",
+            "body_markdown": "legacy attachment",
+            "attachments": [{"artifact_name": "test-legacy.pdf"}],
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Verify the legacy attachment still renders.
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}",
+        headers=auth_headers,
+    )
+    msgs = get_resp.json()["messages"]
+    reply_msg = [m for m in msgs if m["speaker"] == "dev_agent"][0]
+    atts = reply_msg["attachments"]
+    assert any(a["artifact_name"] == "test-legacy.pdf" for a in atts)
+
+    # Verify the attachment can still be downloaded via artifacts route.
+    dl_resp = client.get(
+        f"/api/v1/orgs/alpha/artifacts/test-legacy.pdf",
+        headers=auth_headers,
+    )
+    assert dl_resp.status_code == 200
+    assert dl_resp.content == b"legacy content"
+
+
+def test_mixed_attachments_shared_and_thread_scoped(client, auth_headers, org_state) -> None:
+    """A message can carry both shared artifact refs and thread-scoped refs."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "Test", "recipients": ["dev_agent", "qa_engineer"], "body_markdown": "hello"},
+        headers=auth_headers,
+    )
+    tid = r.json()["thread_id"]
+
+    # Create a shared artifact.
+    artifact_store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+    artifact_store.put("shared.pdf", b"shared")
+
+    # Upload a thread-scoped attachment.
+    upload_resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("private.txt", b"private", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    att_id = upload_resp.json()["attachment_id"]
+
+    invs = org_state.db.list_thread_invocations(tid)
+    dev_inv = [i for i in invs if i.agent_name == "dev_agent"][0]
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": dev_inv.invocation_token,
+            "speaker": "dev_agent",
+            "body_markdown": "mixed",
+            "attachments": [
+                {"artifact_name": "shared.pdf"},
+                {"attachment_id": att_id},
+            ],
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}",
+        headers=auth_headers,
+    )
+    msgs = get_resp.json()["messages"]
+    reply_msg = [m for m in msgs if m["speaker"] == "dev_agent"][0]
+    assert len(reply_msg["attachments"]) == 2
+    has_shared = any(a.get("artifact_name") == "shared.pdf" for a in reply_msg["attachments"])
+    has_thread = any(a.get("thread_attachment_id") == att_id for a in reply_msg["attachments"])
+    assert has_shared
+    assert has_thread
+
+
+# ── Thread-scoped attachment authorization tests (TASK-1616) ──────────────
+
+
+def test_upload_attachment_rejects_non_participant(
+    client, auth_headers, org_state,
+) -> None:
+    """A non-participant agent cannot upload thread-scoped attachments."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "intruder")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("secret.txt", b"secret", "text/plain")},
+        params={"agent": "intruder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "not_participant"
+
+
+def test_upload_attachment_allows_participant(
+    client, auth_headers, org_state,
+) -> None:
+    """A thread participant CAN upload thread-scoped attachments."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("ok.txt", b"ok", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["uploaded_by"] == "dev_agent"
+
+
+def test_list_attachments_rejects_non_participant(
+    client, auth_headers, org_state,
+) -> None:
+    """A non-participant agent cannot list thread-scoped attachments (missing token)."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "intruder")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Non-participant without invocation token → 401 (proof required).
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "intruder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["code"] == "invocation_token_required"
+
+
+def test_list_attachments_rejects_non_participant_with_token(
+    client, auth_headers, org_state,
+) -> None:
+    """A non-participant agent with a valid invocation token is still rejected."""
+    from runtime.models import ThreadInvocationPurpose
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "intruder")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Mint a token for the intruder on this thread (contrived but proves the gate).
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="intruder", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "intruder", "invocation_token": token},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "not_participant"
+
+
+def test_list_attachments_allows_participant(
+    client, auth_headers, org_state,
+) -> None:
+    """A thread participant with a valid invocation token CAN list."""
+    from runtime.models import ThreadInvocationPurpose
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="dev_agent", triggering_seq=0,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+
+    # Upload a file first.
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("a.txt", b"aa", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "dev_agent", "invocation_token": token},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()["attachments"]) == 1
+
+
+def test_get_attachment_rejects_non_participant(
+    client, auth_headers, org_state,
+) -> None:
+    """A non-participant agent cannot download (missing token)."""
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "intruder")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Upload as participant.
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("secret.txt", b"secret", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    att_id = upload.json()["attachment_id"]
+
+    # Non-participant without invocation token → 401.
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "intruder"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["code"] == "invocation_token_required"
+
+
+def test_get_attachment_rejects_non_participant_with_token(
+    client, auth_headers, org_state,
+) -> None:
+    """A non-participant with a valid invocation token is still rejected."""
+    from runtime.models import ThreadInvocationPurpose
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "intruder")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Upload as participant.
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("secret.txt", b"secret", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    att_id = upload.json()["attachment_id"]
+
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="intruder", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "intruder", "invocation_token": token},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "not_participant"
+
+
+def test_get_attachment_allows_participant_with_token(
+    client, auth_headers, org_state,
+) -> None:
+    """A thread participant with a valid invocation token CAN download."""
+    from runtime.models import ThreadInvocationPurpose
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="dev_agent", triggering_seq=0,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("ok.txt", b"ok", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    att_id = upload.json()["attachment_id"]
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "dev_agent", "invocation_token": token},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"ok"
+
+
+def test_list_attachments_rejects_bogus_token(
+    client, auth_headers, org_state,
+) -> None:
+    """A participant with a bogus invocation token is rejected."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "dev_agent", "invocation_token": "not-a-real-token"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["code"] == "invocation_token_invalid"
+
+
+def test_get_attachment_rejects_mismatched_token(
+    client, auth_headers, org_state,
+) -> None:
+    """A token for a different thread is rejected."""
+    from runtime.models import ThreadInvocationPurpose
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+    tid2 = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    token2 = org_state.db.mint_thread_invocation(
+        thread_id=tid2, agent_name="dev_agent", triggering_seq=0,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("x.txt", b"x", "text/plain")},
+        params={"agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    att_id = upload.json()["attachment_id"]
+
+    # Token is for tid2, not tid → rejected.
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "dev_agent", "invocation_token": token2},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["code"] == "invocation_token_invalid"
+
+
+def test_founder_bypasses_participation_check(
+    client, auth_headers, org_state,
+) -> None:
+    """Founder (agent='founder') bypasses participation checks for all routes."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    # Upload as founder works even though founder is not a participant row.
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("founder.txt", b"founder", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert upload.status_code == 200
+    att_id = upload.json()["attachment_id"]
+
+    # List as founder works.
+    list_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert list_resp.status_code == 200
+
+    # Get as founder works.
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert get_resp.status_code == 200
+
+
+def test_no_agent_param_rejected(
+    client, auth_headers, org_state,
+) -> None:
+    """Without agent param, list/get are rejected — no bearer-only bypass."""
+    _seed_agent(org_state, "dev_agent")
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    upload = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        files={"file": ("public.txt", b"public", "text/plain")},
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    att_id = upload.json()["attachment_id"]
+
+    # List without agent param — rejected.
+    list_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments",
+        headers=auth_headers,
+    )
+    assert list_resp.status_code == 401
+    assert list_resp.json()["detail"]["code"] == "agent_required"
+
+    # Get without agent param — rejected.
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/attachments/{att_id}",
+        headers=auth_headers,
+    )
+    assert get_resp.status_code == 401
+    assert get_resp.json()["detail"]["code"] == "agent_required"
+
+
+# ── Compose-as-agent multipart (TASK-1616) ─────────────────────────────────
+
+
+def test_compose_as_agent_multipart_with_files(
+    client, auth_headers, org_state,
+) -> None:
+    """Agent compose with multipart stores files thread-scoped."""
+    import json, mimetypes
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "review_agent")
+
+    body = {
+        "composer": "dev_agent",
+        "subject": "Files attached",
+        "recipients": ["review_agent"],
+        "body_markdown": "see attached",
+        "task_id": "TASK-001",
+        "session_id": "sess-1",
+    }
+    # Seed a task owned by dev_agent.
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-001", brief="test", assigned_agent="dev_agent",
+        task_type="task", status=TaskStatus.IN_PROGRESS,
+        session_timeout_seconds=600,
+        block_kind=BlockKind.DELEGATED,
+    ))
+    org_state.sessions.set_active("TASK-001", "dev_agent", "sess-1")
+
+    files = [
+        ("files", ("data.csv", b"a,b,c", "text/csv")),
+        ("files", ("notes.txt", b"notes", "text/plain")),
+    ]
+    data = {"body": json.dumps(body)}
+
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        files=files, data=data,
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    thread_id = resp.json()["thread_id"]
+
+    # Verify thread-scoped attachments exist.
+    rows = org_state.db.list_thread_scoped_attachments(thread_id)
+    assert len(rows) == 2
+    names = {r.display_name for r in rows}
+    assert names == {"data.csv", "notes.txt"}
+
+    # Verify the thread message includes thread-scoped attachment refs.
+    get_resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{thread_id}",
+        headers=auth_headers,
+    )
+    msgs = get_resp.json()["messages"]
+    assert len(msgs) == 1
+    atts = msgs[0]["attachments"]
+    assert len(atts) == 2
+    for a in atts:
+        assert a["thread_attachment_id"].startswith("att-")
+        assert a["artifact_name"] == ""

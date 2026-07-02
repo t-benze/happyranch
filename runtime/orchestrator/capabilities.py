@@ -56,7 +56,7 @@ def build_capabilities_prompt(
             "**fanout** (`parallel` accepted as alias) -- NOT available in "
             "self-only mode. "
             "Fan-out (spawning N parallel sub-tasks across multiple agents, "
-            "width 2–8, read-only Phase 1) is a team-manager-only capability. "
+            "width 2–8) is a team-manager-only capability. "
             "If you need parallel work, delegate sequentially or escalate to "
             "your parent.\n",
             "### Constraints\n",
@@ -142,8 +142,12 @@ def build_capabilities_prompt(
         "- `width_cap_ack` MUST exactly match the child count.\n",
         "- `join_summary` is optional prose for the rejoin prompt.\n",
         "- Width > 4 enters founder `review_required` before children spawn.\n",
-        "- Each child may optionally carry `then` / `expect_verdict` (pipeline carrier — Phase 2); "
-        "pipeline children stay read-only in this slice.\n",
+        "- Each child may optionally carry `then` / `expect_verdict` (pipeline carrier).\n"
+        "- Children targeted at a **team manager** are decision-capable "
+        "(mutating fan-out): they can return delegate-chain decisions that "
+        "spawn implementation subtrees inside their branch.\n"
+        "- Children targeted at regular **workers** remain read-only "
+        "(they complete with a summary; their structured decisions are ignored).\n",
         "- Children spawn through the normal child/session path; the parent "
         "parks `in_progress(delegated)` with `active_fanout` set and wakes "
         "once when all children are terminal.\n",

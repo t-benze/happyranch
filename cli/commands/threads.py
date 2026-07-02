@@ -40,29 +40,43 @@ def _merge_uploaded_attachments(
     attach_paths: list[Path] | None,
     agent: str,
     thread_id: str | None,
+    use_shared_artifacts: bool = False,
 ) -> dict:
+    """Merge --attach files into the payload as attachment refs.
+
+    By default, uses thread-scoped attachments when thread_id is available
+    (TASK-1616). Set use_shared_artifacts=True for the explicit cross-task
+    handoff escape hatch.
+    """
     refs = list(payload.get("attachments") or [])
-    generated_names: dict[str, int] = {}
     for path in attach_paths or []:
-        artifact_name = _artifact_name_for_attach(thread_id, path)
-        generated_names[artifact_name] = generated_names.get(artifact_name, 0) + 1
-        if generated_names[artifact_name] > 1:
-            artifact_name = _artifact_name_for_attach(
-                thread_id,
-                path,
-                collision_index=generated_names[artifact_name],
+        if thread_id is not None and not use_shared_artifacts:
+            # Thread-scoped upload (default for reply/send/post-as-agent).
+            info = client.upload_thread_attachment(
+                slug=slug,
+                thread_id=thread_id,
+                local_path=path,
+                agent=agent,
             )
-        info = client.put_artifact(
-            slug=slug,
-            local_path=path,
-            name=artifact_name,
-            agent=agent,
-        )
-        refs.append({
-            "artifact_name": info["name"],
-            "display_name": path.name,
-            "content_type": mimetypes.guess_type(path.name)[0],
-        })
+            refs.append({
+                "attachment_id": info["attachment_id"],
+                "display_name": path.name,
+                "content_type": mimetypes.guess_type(path.name)[0],
+            })
+        else:
+            # Shared artifact upload (explicit escape hatch or compose).
+            artifact_name = _artifact_name_for_attach(thread_id, path)
+            info = client.put_artifact(
+                slug=slug,
+                local_path=path,
+                name=artifact_name,
+                agent=agent,
+            )
+            refs.append({
+                "artifact_name": info["name"],
+                "display_name": path.name,
+                "content_type": mimetypes.guess_type(path.name)[0],
+            })
     if refs or attach_paths:
         payload["attachments"] = refs
     return payload
@@ -84,10 +98,13 @@ def cmd_threads_tui(args: argparse.Namespace) -> None:
 def cmd_threads_compose(args: argparse.Namespace) -> None:
     import json as _json
     import sys
+    from pathlib import Path
     client = OpcClient.from_env()
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    attach_paths: list[Path] = getattr(args, "attach", None) or []
+    use_shared: bool = getattr(args, "shared", False)
     # Agent-initiated compose: requires --from-file with a JSON payload that
     # includes `composer` + task binding flags supplied on the CLI.
     if getattr(args, "task_id", None):
@@ -102,17 +119,31 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         payload["task_id"] = args.task_id
         if args.session_id:
             payload["session_id"] = args.session_id
-        payload = _merge_uploaded_attachments(
-            client=client,
-            slug=slug,
-            payload=payload,
-            attach_paths=getattr(args, "attach", None),
-            agent=payload.get("composer", ""),
-            thread_id=None,
-        )
-        r = client.post(
-            f"/api/v1/orgs/{slug}/threads/compose-as-agent", json=payload,
-        )
+
+        if attach_paths and not use_shared:
+            # Thread-scoped multipart upload (TASK-1616).
+            import mimetypes as _mime
+            files = []
+            for p in attach_paths:
+                ct = _mime.guess_type(p.name)[0] or "application/octet-stream"
+                files.append(("files", (p.name, p.open("rb"), ct)))
+            data = {"body": _json.dumps(payload)}
+            r = client.post(
+                f"/api/v1/orgs/{slug}/threads/compose-as-agent",
+                files=files, data=data,
+            )
+        else:
+            if attach_paths:
+                payload = _merge_uploaded_attachments(
+                    client=client, slug=slug, payload=payload,
+                    attach_paths=attach_paths,
+                    agent=payload.get("composer", ""),
+                    thread_id=None,
+                    use_shared_artifacts=True,
+                )
+            r = client.post(
+                f"/api/v1/orgs/{slug}/threads/compose-as-agent", json=payload,
+            )
         if not _ok(r):
             return
         body = r.json()
@@ -123,8 +154,8 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         )
         return
 
-    # Founder path — unchanged.
-    if not (args.subject and args.recipients and (args.body or getattr(args, "attach", None))):
+    # Founder path.
+    if not (args.subject and args.recipients and (args.body or attach_paths)):
         print(
             "error: --subject, --recipients, and --body or --attach required for founder compose",
             file=sys.stderr,
@@ -136,15 +167,28 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         "recipients": recipients,
         "body_markdown": args.body or "",
     }
-    payload = _merge_uploaded_attachments(
-        client=client,
-        slug=slug,
-        payload=payload,
-        attach_paths=getattr(args, "attach", None),
-        agent="founder",
-        thread_id=None,
-    )
-    r = client.post(f"/api/v1/orgs/{slug}/threads", json=payload)
+
+    if attach_paths and not use_shared:
+        # Thread-scoped multipart upload (TASK-1616).
+        import mimetypes as _mime
+        files = []
+        for p in attach_paths:
+            ct = _mime.guess_type(p.name)[0] or "application/octet-stream"
+            files.append(("files", (p.name, p.open("rb"), ct)))
+        data = {"body": _json.dumps(payload)}
+        r = client.post(
+            f"/api/v1/orgs/{slug}/threads",
+            files=files, data=data,
+        )
+    else:
+        if attach_paths:
+            payload = _merge_uploaded_attachments(
+                client=client, slug=slug, payload=payload,
+                attach_paths=attach_paths, agent="founder",
+                thread_id=None,
+                use_shared_artifacts=True,
+            )
+        r = client.post(f"/api/v1/orgs/{slug}/threads", json=payload)
     if not _ok(r):
         return
     body = r.json()
@@ -194,6 +238,7 @@ def cmd_threads_reply(args: argparse.Namespace) -> None:
         attach_paths=getattr(args, "attach", None),
         agent=body.get("speaker", ""),
         thread_id=thread_id,
+        use_shared_artifacts=getattr(args, "shared", False),
     )
     r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/reply", json=body)
     if not _ok(r):
@@ -312,6 +357,7 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
         attach_paths=getattr(args, "attach", None),
         agent="founder",
         thread_id=args.thread_id,
+        use_shared_artifacts=getattr(args, "shared", False),
     )
     r = client.post(f"/api/v1/orgs/{slug}/threads/{args.thread_id}/send", json=payload)
     if not _ok(r):
@@ -401,6 +447,121 @@ def cmd_threads_abort_replies(args: argparse.Namespace) -> None:
     print(_json.dumps(r.json(), indent=2))
 
 
+def cmd_threads_attachments_list(args: argparse.Namespace) -> None:
+    import json as _json
+    import sys
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    agent: str | None = getattr(args, "agent", None)
+    invocation_token: str | None = getattr(args, "invocation_token", None)
+    from_file: str | None = getattr(args, "from_file", None)
+    if from_file:
+        try:
+            proof = _json.loads(Path(from_file).read_text())
+        except (OSError, ValueError) as exc:
+            print(f"Error reading {from_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        agent = proof.get("agent", "")
+        invocation_token = proof.get("invocation_token", "")
+        thread_id = proof.get("thread_id") or args.thread_id or ""
+    else:
+        thread_id = args.thread_id or ""
+    if not thread_id:
+        print("error: --thread-id is required (or --from-file with thread_id)", file=sys.stderr)
+        sys.exit(2)
+    if not agent:
+        print(
+            "error: --agent is required (or --from-file with agent).\n"
+            "  Agent callers must provide proof of thread participation.\n"
+            "  Use --agent founder for bearer-only founder access.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if agent != "founder" and not invocation_token:
+        print(
+            "error: --invocation-token is required for agent access.\n"
+            "  Use --from-file with invocation_token or --invocation-token directly.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    r = client.list_thread_attachments(
+        slug=slug,
+        thread_id=thread_id,
+        agent=agent,
+        invocation_token=invocation_token,
+    )
+    # list_thread_attachments returns {"attachments": [...]}
+    data = r if isinstance(r, dict) else r
+    if not data.get("attachments"):
+        print("(no thread-scoped attachments)")
+        return
+    for a in data["attachments"]:
+        size = a.get("size_bytes")
+        size_text = f" {size}B" if size is not None else ""
+        print(
+            f"{a['attachment_id']}  {a['display_name']}{size_text}"
+            f"  ({a.get('content_type', 'unknown')})"
+        )
+
+
+def cmd_threads_attachments_get(args: argparse.Namespace) -> None:
+    import json as _json
+    import sys
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    agent: str | None = getattr(args, "agent", None)
+    invocation_token: str | None = getattr(args, "invocation_token", None)
+    from_file: str | None = getattr(args, "from_file", None)
+    if from_file:
+        try:
+            proof = _json.loads(Path(from_file).read_text())
+        except (OSError, ValueError) as exc:
+            print(f"Error reading {from_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        agent = proof.get("agent", "")
+        invocation_token = proof.get("invocation_token", "")
+        thread_id = proof.get("thread_id") or args.thread_id or ""
+        attachment_id = proof.get("attachment_id") or args.attachment_id or ""
+    else:
+        thread_id = getattr(args, "thread_id", None) or ""
+        attachment_id = getattr(args, "attachment_id", None) or ""
+    if not thread_id:
+        print("error: --thread-id is required (or --from-file with thread_id)", file=sys.stderr)
+        sys.exit(2)
+    if not attachment_id:
+        print("error: attachment_id is required (or --from-file with attachment_id)", file=sys.stderr)
+        sys.exit(2)
+    if not agent:
+        print(
+            "error: --agent is required (or --from-file with agent).\n"
+            "  Agent callers must provide proof of thread participation.\n"
+            "  Use --agent founder for bearer-only founder access.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if agent != "founder" and not invocation_token:
+        print(
+            "error: --invocation-token is required for agent access.\n"
+            "  Use --from-file with invocation_token or --invocation-token directly.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    content = client.get_thread_attachment(
+        slug=slug,
+        thread_id=thread_id,
+        attachment_id=attachment_id,
+        agent=agent,
+        invocation_token=invocation_token,
+    )
+    out_path = Path(args.output)
+    out_path.write_bytes(content)
+    print(f"Saved {len(content)}B to {out_path}")
+
+
 def cmd_threads_forward(args: argparse.Namespace) -> None:
     import json as _json
     from datetime import datetime
@@ -485,6 +646,10 @@ def register(sub) -> None:
         help="Opening message body (founder path)",
     )
     p_threads_compose.add_argument("--attach", action="append", type=Path, default=None)
+    p_threads_compose.add_argument(
+        "--shared", action="store_true", default=False,
+        help="Store attachments in shared org artifacts instead of thread-scoped (cross-task handoff escape hatch)",
+    )
     p_threads_compose.set_defaults(func=cmd_threads_compose)
 
     p_threads_list = threads_sub.add_parser("list", help="List threads")
@@ -498,6 +663,10 @@ def register(sub) -> None:
     p_threads_reply.add_argument("--thread-id", dest="thread_id", default=None)
     p_threads_reply.add_argument("--from-file", required=True)
     p_threads_reply.add_argument("--attach", action="append", type=Path, default=None)
+    p_threads_reply.add_argument(
+        "--shared", action="store_true", default=False,
+        help="Store attachments in shared org artifacts instead of thread-scoped",
+    )
     p_threads_reply.set_defaults(func=cmd_threads_reply)
 
     p_threads_decline = threads_sub.add_parser("decline", help="Agent callback: decline a thread turn")
@@ -523,6 +692,10 @@ def register(sub) -> None:
     p_threads_send.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_send.add_argument("--from-file", dest="from_file", required=True)
     p_threads_send.add_argument("--attach", action="append", type=Path, default=None)
+    p_threads_send.add_argument(
+        "--shared", action="store_true", default=False,
+        help="Store attachments in shared org artifacts instead of thread-scoped",
+    )
     p_threads_send.set_defaults(func=cmd_threads_send)
 
     p_threads_invite = threads_sub.add_parser("invite", help="Founder: invite a participant to a thread")
@@ -556,6 +729,41 @@ def register(sub) -> None:
     p_threads_abort.add_argument("--org", default=None, help="Org slug")
     p_threads_abort.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_abort.set_defaults(func=cmd_threads_abort_replies)
+
+    p_threads_attachments = threads_sub.add_parser(
+        "attachments", help="Thread-scoped attachment operations",
+    )
+    att_sub = p_threads_attachments.add_subparsers(dest="att_command", required=True)
+
+    p_att_list = att_sub.add_parser("list", help="List thread-scoped attachments for a thread")
+    p_att_list.add_argument("--org", default=None, help="Org slug")
+    p_att_list.add_argument("--thread-id", dest="thread_id")
+    p_att_list.add_argument(
+        "--from-file", default=None, dest="from_file",
+        help="JSON payload with thread_id, agent, invocation_token (agent path)",
+    )
+    p_att_list.add_argument("--agent", default=None, help="Agent name (alternative to --from-file)")
+    p_att_list.add_argument(
+        "--invocation-token", default=None, dest="invocation_token",
+        help="Thread invocation token (alternative to --from-file)",
+    )
+    p_att_list.set_defaults(func=cmd_threads_attachments_list)
+
+    p_att_get = att_sub.add_parser("get", help="Download a thread-scoped attachment")
+    p_att_get.add_argument("--org", default=None, help="Org slug")
+    p_att_get.add_argument("--thread-id", dest="thread_id")
+    p_att_get.add_argument("attachment_id", nargs="?")
+    p_att_get.add_argument(
+        "--from-file", default=None, dest="from_file",
+        help="JSON payload with thread_id, attachment_id, agent, invocation_token (agent path)",
+    )
+    p_att_get.add_argument("--agent", default=None, help="Agent name (alternative to --from-file)")
+    p_att_get.add_argument(
+        "--invocation-token", default=None, dest="invocation_token",
+        help="Thread invocation token (alternative to --from-file)",
+    )
+    p_att_get.add_argument("--output", "-o", dest="output", required=True)
+    p_att_get.set_defaults(func=cmd_threads_attachments_get)
 
     p_threads_forward = threads_sub.add_parser("forward", help="Founder: forward a thread into a new thread")
     p_threads_forward.add_argument("--org", default=None, help="Org slug")
