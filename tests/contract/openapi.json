@@ -862,6 +862,42 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/executors/conformance-checkin": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/executors/register": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/jobs/": {
       "GET": {
         "params": [

@@ -190,6 +190,12 @@ const EXCLUDED_PATHS = new Map<string, string>([
   // PR-3 settings-page generator, no SPA client wrapper yet — promote to INCLUDED_PATHS
   // when PR-3 adds the wrapper
   ['POST /api/v1/auth/registration-token', 'founder-only registration-token mint; PR-3 will add SPA wrapper'],
+  // executor conformance check-in — CLI-only, scoped-token-only (THR-052 PR-2);
+  // the candidate CLI calls this to record conformance step arrivals
+  ['POST /api/v1/orgs/{slug}/executors/conformance-checkin', 'cli-only conformance check-in (THR-052 PR-2)'],
+  // executor registration — scoped-token-only (THR-052 PR-2);
+  // conformance-gated, daemon-verified write of executor_profiles to config
+  ['POST /api/v1/orgs/{slug}/executors/register', 'conformance-gated executor registration (THR-052 PR-2)'],
 
 ]);
 
