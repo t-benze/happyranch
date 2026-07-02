@@ -991,27 +991,31 @@ describe('ThreadsPage — abort replies', () => {
     return mountAt(`/orgs/${SLUG}/threads/${threadId}`);
   }
 
-  test('abort button appears when thread has queued/working responders', async () => {
+  test('abort button appears in composer footer when thread has queued/working responders', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithResponders([
       { agent_name: 'dev_agent', status: 'working' },
     ]);
 
-    await screen.findByRole('button', { name: /Abort replies/i });
+    const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeEnabled();
+    // The button must be in the composer footer, not the header actions area
+    const footer = document.querySelector('footer');
+    expect(footer).not.toBeNull();
+    expect(footer!.contains(btn)).toBe(true);
   });
 
-  test('abort button is hidden when no in-flight responders', async () => {
+  test('abort button is disabled when no in-flight responders', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithResponders([]);
 
     // Wait for detail to render.
     await screen.findByText('Test thread');
-    expect(
-      screen.queryByRole('button', { name: /Abort replies/i }),
-    ).not.toBeInTheDocument();
+    const btn = screen.getByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeDisabled();
   });
 
-  test('abort button calls POST /abort-replies and invalidates queries', async () => {
+  test('disabled abort button does not call POST when clicked', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
 
     let abortHit = false;
@@ -1028,18 +1032,60 @@ describe('ThreadsPage — abort replies', () => {
       ),
     );
 
+    mountThreadWithResponders([]);
+
+    await screen.findByText('Test thread');
+    const btn = screen.getByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeDisabled();
+
+    const user = userEvent.setup();
+    await user.click(btn);
+
+    // The POST must NOT have been made — disabled button blocks the action.
+    expect(abortHit).toBe(false);
+  });
+
+  test('abort button calls POST /abort-replies exactly once when enabled', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+
+    let abortCount = 0;
+    server.use(
+      http.post(
+        `/api/v1/orgs/${SLUG}/threads/${threadId}/abort-replies`,
+        () => {
+          abortCount++;
+          return HttpResponse.json({
+            thread_id: threadId,
+            aborted_count: 1,
+          });
+        },
+      ),
+    );
+
     mountThreadWithResponders([
       { agent_name: 'dev_agent', status: 'queued' },
     ]);
 
     const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeEnabled();
+
     const user = userEvent.setup();
     await user.click(btn);
 
-    // Verify the POST was made.
+    // Verify the POST was made exactly once.
     await waitFor(() => {
-      expect(abortHit).toBe(true);
+      expect(abortCount).toBe(1);
     });
+  });
+
+  test('abort button is enabled with queued responder', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountThreadWithResponders([
+      { agent_name: 'dev_agent', status: 'queued' },
+    ]);
+
+    const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeEnabled();
   });
 });
 
