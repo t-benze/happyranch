@@ -1,6 +1,26 @@
 import { request } from './client';
 import type { SettingsSnapshot, OrgSettingsPatch, NextWakesResponse } from './types';
 
+// ── Registration token mint (THR-052 PR-3) ──
+
+export interface RegistrationTokenMintRequest {
+  org: string;
+  name: string;
+}
+
+export interface RegistrationTokenMintResponse {
+  token: string;
+  expires_at: number;
+}
+
+export const mintRegistrationToken = (
+  body: RegistrationTokenMintRequest,
+): Promise<RegistrationTokenMintResponse> =>
+  request('/auth/registration-token', {
+    method: 'POST',
+    body,
+  });
+
 export const getSettings = (slug: string): Promise<SettingsSnapshot> =>
   request(`/orgs/${slug}/settings`);
 

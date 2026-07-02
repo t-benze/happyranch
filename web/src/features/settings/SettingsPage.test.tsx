@@ -649,18 +649,120 @@ describe('SettingsPage — Agents section', () => {
 describe('SettingsPage — Executors section', () => {
   beforeEach(() => {
     stubBaseHandlers();
+    server.use(
+      http.post('/api/v1/auth/registration-token', () =>
+        HttpResponse.json({
+          token: 'hrreg_test_token_abc123',
+          expires_at: Math.floor(Date.now() / 1000) + 600,
+        }),
+      ),
+    );
   });
 
-  test('shows gap notice with read-only config info', async () => {
+  test('renders registration form with name, command, argv_template, adapter', async () => {
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
     await waitFor(() =>
-      expect(screen.getByText('Executor configuration')).toBeInTheDocument(),
+      expect(screen.getByTestId('executor-registration-form')).toBeInTheDocument(),
     );
 
+    expect(screen.getByLabelText('Profile name')).toBeInTheDocument();
+    expect(screen.getByLabelText(/Command/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/argv_template/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Adapter')).toBeInTheDocument();
     expect(
-      screen.getByText(/configured in the daemon config file/i),
+      screen.getByRole('button', { name: /generate registration token/i }),
     ).toBeInTheDocument();
+  });
+
+  test('generate button calls mint route and renders conformance prompt + config snippet', async () => {
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('executor-registration-form')).toBeInTheDocument(),
+    );
+
+    // Fill the form
+    await user.type(screen.getByLabelText('Profile name'), 'my-exec');
+    await user.type(screen.getByLabelText(/Command/), 'my-cli');
+    await user.type(
+      screen.getByLabelText(/argv_template/),
+      '{prompt} --timeout {timeout_seconds}',
+    );
+
+    // Submit
+    await user.click(
+      screen.getByRole('button', { name: /generate registration token/i }),
+    );
+
+    // Wait for the results
+    await waitFor(() =>
+      expect(screen.getByTestId('conformance-prompt')).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('config-snippet')).toBeInTheDocument(),
+    );
+
+    // Prompt should contain the token
+    const prompt = screen.getByTestId('conformance-prompt');
+    expect(prompt.textContent).toContain('hrreg_test_token_abc123');
+    expect(prompt.textContent).toContain('workspace_access');
+    expect(prompt.textContent).toContain('loopback_reachable');
+    expect(prompt.textContent).toContain('cli_callback');
+
+    // Config snippet should contain the profile
+    const snippet = screen.getByTestId('config-snippet');
+    expect(snippet.textContent).toContain('my-exec');
+    expect(snippet.textContent).toContain('my-cli');
+    expect(snippet.textContent).toContain('pi');
+  });
+
+  test('shows error on mint failure', async () => {
+    server.use(
+      http.post('/api/v1/auth/registration-token', () =>
+        HttpResponse.json({ detail: 'not allowed' }, { status: 401 }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('executor-registration-form')).toBeInTheDocument(),
+    );
+
+    await user.type(screen.getByLabelText('Profile name'), 'bad-exec');
+    await user.type(screen.getByLabelText(/Command/), 'bad-cli');
+    await user.type(screen.getByLabelText(/argv_template/), '{prompt}');
+    await user.click(
+      screen.getByRole('button', { name: /generate registration token/i }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('registration-error')).toBeInTheDocument(),
+    );
+  });
+
+  test('shows error when required fields are empty', async () => {
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('executor-registration-form')).toBeInTheDocument(),
+    );
+
+    // Submit with empty fields
+    await user.click(
+      screen.getByRole('button', { name: /generate registration token/i }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('registration-error')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('registration-error').textContent).toContain(
+      'required',
+    );
   });
 });
 
