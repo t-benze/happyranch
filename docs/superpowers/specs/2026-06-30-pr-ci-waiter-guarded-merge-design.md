@@ -152,8 +152,11 @@ If any guard fails, the verdict is the specific failure (`stale_head`, `ci_faile
 > the merge step runs on the daemon authority path — baseline agents never
 > get raw `gh pr merge` grants.
 >
-> `protocol/skills/jobs/SKILL.md` and `docs/agent-guides/` integration
-> remains deferred to PR #5.
+> `protocol/skills/jobs/SKILL.md` and `docs/agent-guides/features-and-invariants.md`
+> now contain the canonical integration — the poll-only job entrypoint
+> (`python -m runtime.daemon.pr_ci_waiter`) and the guarded-merge entrypoint
+> (`python -m runtime.daemon.pr_ci_merge`) with the full submit → blocked →
+> resume → inspect → merge/revise workflow.
 >
 > ---
 
