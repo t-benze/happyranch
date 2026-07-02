@@ -50,4 +50,5 @@ export const realAssistantApi: AssistantApi = {
   useRegisterAssistant,
   useRepairAssistant,
   openSession: assistantApi.openAssistantSession,
+  openAModeSession: assistantApi.openAssistantAModeSession,
 };

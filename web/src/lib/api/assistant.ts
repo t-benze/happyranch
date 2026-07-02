@@ -46,6 +46,13 @@ export const assistantSessionWsUrl = (): string => {
   return `${wsProtocol}//${host}${API_PREFIX}/assistant/session`;
 };
 
+/** Absolute `ws(s)://` URL for the A-mode (structured TurnFrame) WebSocket. */
+export const assistantAModeWsUrl = (): string => {
+  const { protocol, host } = window.location;
+  const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${wsProtocol}//${host}${API_PREFIX}/assistant/a-mode`;
+};
+
 /**
  * Open the assistant PTY WebSocket, authenticating via the bearer subprotocol
  * (THR-006 Option A). Resolves once the socket is constructed (still
@@ -54,4 +61,15 @@ export const assistantSessionWsUrl = (): string => {
 export const openAssistantSession = async (): Promise<WebSocket> => {
   const token = await getToken();
   return new WebSocket(assistantSessionWsUrl(), [assistantBearerSubprotocol(token)]);
+};
+
+/**
+ * Open the A-mode WebSocket — the structured `TurnFrame` stream that drives the
+ * thread-style dock. Same bearer-subprotocol auth as the PTY session (THR-006
+ * Option A); only the route differs (`/assistant/a-mode`). Resolves once the
+ * socket is constructed; the caller wires `onopen` / `onmessage`.
+ */
+export const openAssistantAModeSession = async (): Promise<WebSocket> => {
+  const token = await getToken();
+  return new WebSocket(assistantAModeWsUrl(), [assistantBearerSubprotocol(token)]);
 };
