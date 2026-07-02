@@ -110,7 +110,10 @@ def test_codex_executor_attaches_token_usage(tmp_path: Path):
         r = ex.run(workspace, prompt="hi", session_id="sess-x")
     assert r.success
     assert r.token_usage is not None
-    assert r.token_usage.input_tokens == 34887
+    # Fix B: input_tokens normalized to net-fresh = 34887 - 15003
+    assert r.token_usage.input_tokens == 19884
+    # Fix A: codex has no model on usage events; provider="codex" is recorded
+    assert r.token_usage.model == "codex"
 
 
 def test_opencode_executor_attaches_token_usage(tmp_path: Path):
@@ -137,3 +140,37 @@ def test_pi_executor_preserves_raw_json_usage_when_schema_is_unrecognized(tmp_pa
     assert r.token_usage is not None
     assert r.token_usage.input_tokens is None
     assert "pi-model" in (r.token_usage.usage_raw_json or "")
+
+
+def test_codex_executor_model_fallback_to_provider(tmp_path: Path):
+    """Fix A: when codex usage event has no model field, the executor
+    records the provider name ('codex') as the model attribution."""
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    # turn.completed with usage but NO model field — exactly what codex emits
+    fixture = '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}\n'
+    fake_proc = _make_completed_proc(stdout=fixture)
+    with patch("runtime.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
+        ex = CodexExecutor("codex", sandbox_mode="workspace-write")
+        r = ex.run(workspace, prompt="hi", session_id="sess-x")
+    assert r.success
+    assert r.token_usage is not None
+    assert r.token_usage.model == "codex"
+
+
+def test_pi_executor_model_fallback_to_provider(tmp_path: Path):
+    """Fix A: when pi usage event has no model field, the executor
+    records the provider name ('pi') as the model attribution."""
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    # terminal pi event with usage but NO model field
+    fixture = (
+        '{"type":"message_end","message":{"usage":{"input":100,"output":50,"cacheRead":0,"cacheWrite":0,"totalTokens":150}}}\n'
+    )
+    fake_proc = _make_completed_proc(stdout=fixture)
+    with patch("runtime.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
+        ex = PiExecutor("pi")
+        r = ex.run(workspace, prompt="hi", session_id="sess-x")
+    assert r.success
+    assert r.token_usage is not None
+    assert r.token_usage.model == "pi"
