@@ -769,12 +769,15 @@ class TestRegistrationIsIsolated:
 
 class TestDuplicateProfileConflict:
     """Registering a second profile with the same name but different config
-    is rejected."""
+    is rejected, and the rejection leaves config, registry, audit, and
+    token-consumption semantics consistent."""
 
     def test_register_duplicate_name_conflict(self, app, daemon_state, monkeypatch):
         _bypass_loopback(monkeypatch)
         client = TestClient(app)
         store = daemon_state.registration_token_store
+        org_root = daemon_state.orgs["alpha"].root
+        registry = get_registry()
 
         # Register first profile
         token1, _ = store.mint("alpha", "test-executor")
@@ -787,6 +790,12 @@ class TestDuplicateProfileConflict:
         })
         assert r.status_code == 200
 
+        # Verify first registration state
+        assert registry.is_registered("test-executor")
+        first_profile = registry.get_profile("test-executor")
+        assert first_profile.command == "echo"
+        assert store.validate(token1, "alpha") is None  # token1 consumed
+
         # Try to register same name with different command
         token2, _ = store.mint("alpha", "test-executor")
         _complete_challenge(store, token2)
@@ -797,6 +806,132 @@ class TestDuplicateProfileConflict:
             "adapter": "pi",
         })
         assert r.status_code == 409
+
+        # ── Consistency checks after conflict rejection ──
+        # 1. Registry still has the FIRST definition (echo), not printf
+        still_registered = registry.get_profile("test-executor")
+        assert still_registered is not None
+        assert still_registered.command == "echo", (
+            "Registry should retain original 'echo' profile, "
+            f"got command={still_registered.command!r}"
+        )
+
+        # 2. Config still has the FIRST definition (echo), not printf
+        raw = _config_raw(org_root)
+        profiles = raw.get("executor_profiles", {})
+        assert "test-executor" in profiles
+        assert profiles["test-executor"]["command"] == "echo", (
+            f"Config should retain 'echo', got {profiles['test-executor']['command']!r}"
+        )
+
+        # 3. Token2 is NOT consumed (conflict detected pre-consumption)
+        assert store.validate(token2, "alpha") is not None, (
+            "Second token should remain valid — conflict was detected before consume"
+        )
+
+        # 4. Only one audit log (for the first, successful registration)
+        db = daemon_state.orgs["alpha"].db
+        logs = db.get_audit_logs("config:executor_profiles")
+        assert len(logs) == 1, (
+            f"Expected exactly 1 audit log, got {len(logs)}"
+        )
+
+
+# ── Concurrent different-token same-name registrations ──────────────────
+
+
+class TestConcurrentDifferentTokens:
+    """Two concurrent registrations using DIFFERENT scoped tokens for the
+    SAME profile name but with CONFLICTING definitions MUST leave config,
+    registry, and audit state consistent.
+
+    Expected outcome: at most one 200; the config entry matches the
+    in-memory profile; audit rows match the successful durable change
+    only; no 409 response leaves config that disagrees with the registry.
+    """
+
+    def test_concurrent_different_tokens_conflicting_defs(
+        self, app, daemon_state, monkeypatch,
+    ):
+        import threading
+
+        _bypass_loopback(monkeypatch)
+        store = daemon_state.registration_token_store
+        org_root = daemon_state.orgs["alpha"].root
+
+        # Mint two different tokens for the same profile name
+        token1, _ = store.mint("alpha", "test-executor")
+        token2, _ = store.mint("alpha", "test-executor")
+        _complete_challenge(store, token1)
+        _complete_challenge(store, token2)
+
+        # The per-profile lock inside the route already serialises
+        # write+register for the same name.  Both threads will pass
+        # the preflight check and consume (different tokens), then
+        # collide at the lock.  The lock's double-check rejects the
+        # loser with 409 while the winner writes config, registers,
+        # and audits.  We don't need an artificial barrier — the
+        # test verifies the key invariant: config and registry stay
+        # consistent regardless of which thread wins the lock race.
+
+        def do_register(token: str, command: str, argv: list):
+            c = TestClient(app)
+            c.headers.update({"Authorization": f"Bearer {token}"})
+            c.post("/api/v1/orgs/alpha/executors/register", json={
+                "command": command,
+                "argv_template": argv,
+                "adapter": "pi",
+            })
+
+        t1 = threading.Thread(
+            target=do_register,
+            args=(token1, "echo", ["echo", "{prompt}"]),
+        )
+        t2 = threading.Thread(
+            target=do_register,
+            args=(token2, "printf", ["printf", "%s", "{prompt}"]),
+        )
+        t1.start()
+        t2.start()
+        t1.join(timeout=15)
+        t2.join(timeout=15)
+
+        # ── Consistency checks ──
+        registry = get_registry()
+
+        # 1. Registry has exactly one profile with the winner's definition
+        registered = registry.get_profile("test-executor")
+        assert registered is not None
+        assert registered.command in ("echo", "printf")
+
+        # 2. Config matches the registry
+        raw = _config_raw(org_root)
+        profiles = raw.get("executor_profiles", {})
+        assert "test-executor" in profiles
+        config_command = profiles["test-executor"]["command"]
+        assert config_command == registered.command, (
+            f"Config command {config_command!r} must match "
+            f"registry command {registered.command!r}"
+        )
+
+        # 3. Exactly one audit row
+        db = daemon_state.orgs["alpha"].db
+        logs = db.get_audit_logs("config:executor_profiles")
+        assert len(logs) == 1, (
+            f"Expected exactly 1 audit log, got {len(logs)}"
+        )
+
+        # 4. Token state: at least one token is consumed (the winner's).
+        #    The loser may be consumed (TOCTOU race past consume before
+        #    the lock) or unconsumed (preflight caught the collision
+        #    before consume).  Both outcomes are fail-safe — the
+        #    durable state is consistent either way.
+        token1_valid = store.validate(token1, "alpha")
+        token2_valid = store.validate(token2, "alpha")
+        # At most one can be valid (the loser's, if preflight caught it)
+        assert not (token1_valid and token2_valid), (
+            "At most one token may remain valid after concurrent registration"
+        )
 
 
 # ── Non-list argv_template ──────────────────────────────────────────────

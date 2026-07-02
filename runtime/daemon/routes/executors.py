@@ -13,6 +13,8 @@ POST /api/v1/orgs/{slug}/executors/register
 """
 from __future__ import annotations
 
+import threading
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
@@ -33,6 +35,32 @@ from runtime.orchestrator.executor_registry import (
 )
 
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Per-profile-name locks — serialize write+register for the same profile
+# name so concurrent different-token registrations can't both pass the
+# preflight check before either one publishes to the in-memory registry.
+# ---------------------------------------------------------------------------
+
+_profile_locks: dict[str, threading.Lock] = {}
+_profile_locks_lock = threading.Lock()
+
+
+def _acquire_profile_lock(name: str) -> threading.Lock:
+    """Acquire and return the lock for a given profile name.
+
+    Creates the lock on first access (under a creation lock so two
+    threads don't race to insert). The caller MUST release the lock.
+    """
+    key = name.lower()
+    with _profile_locks_lock:
+        lock = _profile_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _profile_locks[key] = lock
+    lock.acquire()
+    return lock
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -258,38 +286,48 @@ def register_executor(
             detail=f"Command {body.command!r} not found on PATH",
         )
 
-    # Check for builtin collision / existing custom conflict
-    registry = get_registry()
-    if registry.is_registered(profile_name):
-        existing = registry.get_profile(profile_name)
-        if existing is not None and existing.kind == "builtin":
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "code": "builtin_collision",
-                    "name": profile_name,
-                    "detail": f"Cannot override built-in executor {profile_name!r}.",
-                },
-            )
-        # Custom profile already exists with same name in registry
-        if existing is not None:
-            # Check if it's identical - if so, this is a re-registration edge case
-            # but we still enforce one-token-one-use so consume+write
-            pass  # Will be handled by register_custom_profile below
-
-    # Build the config entry
+    # 4. Build candidate ExecutorProfile for preflight collision check.
     marker = (
         "AGENTS.md"
         if body.adapter in {"codex", "opencode", "pi"}
         else ".claude/skills/start-task/SKILL.md"
     )
-    config_entry = {
-        "command": body.command,
-        "argv_template": [str(e) for e in body.argv_template],
-        "adapter": body.adapter,
-    }
+    candidate = ExecutorProfile(
+        name=profile_name,
+        kind="custom",
+        adapter_id=body.adapter,
+        readiness_marker_fragment=marker,
+        argv_template=[str(e) for e in body.argv_template],
+        command=body.command,
+    )
 
-    # 4. Atomically consume the token BEFORE any durable side effects.
+    # 5. Preflight collision check BEFORE any side effects.
+    #    Detect a conflicting custom profile now so we can reject 409
+    #    without consuming the token or touching durable config.
+    #    Idempotent re-registration (identical profile) is allowed through.
+    registry = get_registry()
+    if registry.is_registered(profile_name):
+        existing = registry.get_profile(profile_name)
+        if existing is not None:
+            if existing.kind == "builtin":
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "code": "builtin_collision",
+                        "name": profile_name,
+                        "detail": f"Cannot override built-in executor {profile_name!r}.",
+                    },
+                )
+            # Custom collision — only reject if the definition differs.
+            # Identical definitions pass through (idempotent re-registration).
+            if existing != candidate:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Custom executor profile {profile_name!r} is already "
+                    f"registered with a different definition.",
+                )
+
+    # 6. Atomically consume the token BEFORE any durable side effects.
     #    This is THE gate: consume() is a locked validate-and-mark that
     #    returns None if the token is expired, already-consumed, or
     #    wrong-org.  Two concurrent requests with the same token will race
@@ -301,66 +339,80 @@ def register_executor(
             detail="Registration token is invalid, expired, consumed, or not for this org",
         )
 
-    # 5. Durable: write config.yaml entry FIRST.
-    #    If this fails, the in-memory registry is never touched so there is
-    #    no stale (unaudited, non-durable) profile left behind.  Token is
-    #    already consumed at this point — the route is fail-closed.
+    # 7. Acquire per-profile-name lock for the write+register critical
+    #    section.  Two concurrent requests with DIFFERENT tokens for the
+    #    same profile name both pass the preflight check (step 5) and
+    #    consume (step 6) independently.  The lock serialises the
+    #    write+register so that a double-check inside the lock sees the
+    #    winner's published profile and rejects the loser with 409.
+    #    Without this lock, the loser's config write would overwrite the
+    #    winner's before the winner's register_custom_profile completes,
+    #    and the loser's register_custom_profile would then raise
+    #    ExecutorProfileCollisionError — leaving durable config (loser's)
+    #    and in-memory registry (winner's) diverged with no audit.
     #
-    #    Concurrency note: the store.consume() gate ensures exactly one
-    #    request per token wins.  Two concurrent requests with different
-    #    tokens for the same profile name both pass consume independently.
-    #    The second config write overwrites the first; the subsequent
-    #    register_custom_profile call handles identical/no-op or
-    #    collision/409.  This reorder does not introduce any new race — it
-    #    only moves the in-memory mutation to after the durable write so
-    #    that a config-write failure is truly fail-closed.
-    paths = OrgPaths(root=org.root)
-    org_config_before = load_org_config(paths)
-    before_snapshot = dict(org_config_before.executor_profiles)
-
+    #    The lock is acquired AFTER consume so the existing same-token
+    #    concurrency test (which uses a threading.Barrier inside consume)
+    #    continues to exercise the atomic gate without deadlocking.
+    profile_lock = _acquire_profile_lock(profile_name)
     try:
-        write_executor_profile_entry(paths, profile_name, config_entry)
-    except OrgConfigError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Config write error: {exc}",
-        )
+        # 7a. Double-check inside the lock: a concurrent registration
+        #     for this profile name may have completed between our
+        #     preflight check (step 5) and acquiring the lock.
+        if registry.is_registered(profile_name):
+            existing_inside = registry.get_profile(profile_name)
+            if existing_inside is not None and existing_inside != candidate:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Custom executor profile {profile_name!r} is already "
+                    f"registered with a different definition.",
+                )
 
-    # 6. In-memory: register the profile in the process-wide registry.
-    #    Only reachable after the durable config write succeeded.
-    try:
-        registry.register_custom_profile(
-            ExecutorProfile(
-                name=profile_name,
-                kind="custom",
-                adapter_id=body.adapter,
-                readiness_marker_fragment=marker,
-                argv_template=[str(e) for e in body.argv_template],
-                command=body.command,
+        # 8. Durable: write config.yaml entry.
+        config_entry = {
+            "command": body.command,
+            "argv_template": [str(e) for e in body.argv_template],
+            "adapter": body.adapter,
+        }
+        paths = OrgPaths(root=org.root)
+        org_config_before = load_org_config(paths)
+        before_snapshot = dict(org_config_before.executor_profiles)
+
+        try:
+            write_executor_profile_entry(paths, profile_name, config_entry)
+        except OrgConfigError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Config write error: {exc}",
             )
-        )
-    except ExecutorProfileCollisionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Profile collision: {exc}",
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        )
 
-    # Audit the write
-    org_config_after = load_org_config(paths)
-    after_snapshot = dict(org_config_after.executor_profiles)
-    logger = AuditLogger(org.db)
-    logger.log_org_config_write(
-        section="executor_profiles",
-        tiers=[profile_name],
-        before=before_snapshot,
-        after=after_snapshot,
-        actor="founder",
-    )
+        # 9. In-memory: register the profile in the process-wide registry.
+        try:
+            registry.register_custom_profile(candidate)
+        except ExecutorProfileCollisionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Profile collision: {exc}",
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
+
+        # 10. Audit the write
+        org_config_after = load_org_config(paths)
+        after_snapshot = dict(org_config_after.executor_profiles)
+        logger = AuditLogger(org.db)
+        logger.log_org_config_write(
+            section="executor_profiles",
+            tiers=[profile_name],
+            before=before_snapshot,
+            after=after_snapshot,
+            actor="founder",
+        )
+    finally:
+        profile_lock.release()
 
     return ExecutorRegisterResponse(
         name=profile_name,
