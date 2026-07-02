@@ -199,9 +199,11 @@ def register_executor(
        Consume is the atomic validate-and-mark gate: if it returns None
        (expired, already-consumed, wrong-org) the route aborts with 401
        and no config/audit write occurs.
-    7. On successful consume: register in-memory profile, write config,
-       audit. Token is already consumed at this point; if a later step
-       fails the route is fail-closed (token wasted, no durable state).
+    7. On successful consume: write durable config first, then register
+       the in-memory profile. Durable config is the source of truth;
+       in-memory registration only happens after the config write
+       succeeds so that a config-write failure does not leave a stale
+       (unaudited, non-durable) profile in the process-wide registry.
 
     On success returns 200. On any validation failure returns 4xx
     without touching the config.
@@ -299,10 +301,33 @@ def register_executor(
             detail="Registration token is invalid, expired, consumed, or not for this org",
         )
 
-    # 5. Register in the in-memory registry (non-durable).
-    #    Token is already consumed at this point; if this or a later step
-    #    fails the route is fail-closed — no durable state written but
-    #    the token cannot be reused.
+    # 5. Durable: write config.yaml entry FIRST.
+    #    If this fails, the in-memory registry is never touched so there is
+    #    no stale (unaudited, non-durable) profile left behind.  Token is
+    #    already consumed at this point — the route is fail-closed.
+    #
+    #    Concurrency note: the store.consume() gate ensures exactly one
+    #    request per token wins.  Two concurrent requests with different
+    #    tokens for the same profile name both pass consume independently.
+    #    The second config write overwrites the first; the subsequent
+    #    register_custom_profile call handles identical/no-op or
+    #    collision/409.  This reorder does not introduce any new race — it
+    #    only moves the in-memory mutation to after the durable write so
+    #    that a config-write failure is truly fail-closed.
+    paths = OrgPaths(root=org.root)
+    org_config_before = load_org_config(paths)
+    before_snapshot = dict(org_config_before.executor_profiles)
+
+    try:
+        write_executor_profile_entry(paths, profile_name, config_entry)
+    except OrgConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Config write error: {exc}",
+        )
+
+    # 6. In-memory: register the profile in the process-wide registry.
+    #    Only reachable after the durable config write succeeded.
     try:
         registry.register_custom_profile(
             ExecutorProfile(
@@ -323,19 +348,6 @@ def register_executor(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
-        )
-
-    # 6. Durable: write config.yaml entry, audit log.
-    paths = OrgPaths(root=org.root)
-    org_config_before = load_org_config(paths)
-    before_snapshot = dict(org_config_before.executor_profiles)
-
-    try:
-        write_executor_profile_entry(paths, profile_name, config_entry)
-    except OrgConfigError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Config write error: {exc}",
         )
 
     # Audit the write

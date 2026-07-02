@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from textwrap import dedent
+from unittest import mock
 
 import yaml
 import pytest
@@ -24,7 +25,8 @@ from runtime.daemon.registration_token import (
 from runtime.daemon.routes import auth as auth_route
 from runtime.daemon.state import DaemonState
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.executor_registry import reset_registry
+from runtime.orchestrator.executor_registry import get_registry, reset_registry
+from runtime.orchestrator.org_config import OrgConfigError
 from runtime.runtime import RuntimeDir
 
 
@@ -818,3 +820,154 @@ class TestNonListArgvTemplate:
             "adapter": "pi",
         })
         assert r.status_code == 422
+
+
+# ── Regression: config-write failure MUST NOT leak in-memory profile ────
+
+
+class TestConfigWriteFailureDoesNotLeakRegistry:
+    """When write_executor_profile_entry raises OrgConfigError after
+    store.consume() succeeds, the route must return 422, the in-memory
+    registry must NOT contain the profile, no config file must be written,
+    and no audit row must appear.
+
+    Recovery: after the forced failure, a fresh token for the same profile
+    name with the write path restored MUST succeed — proving no stale
+    in-memory state blocks subsequent registration.
+    """
+
+    def test_config_write_failure_no_registry_leak(
+        self, app, daemon_state, monkeypatch,
+    ):
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+        org_root = daemon_state.orgs["alpha"].root
+
+        token, _ = store.mint("alpha", "test-executor")
+        _complete_challenge(store, token)
+
+        # Force write_executor_profile_entry to raise OrgConfigError
+        def _failing_write(paths, name, entry):
+            raise OrgConfigError("simulated config write failure")
+
+        from runtime.daemon.routes import executors as routes_mod
+        monkeypatch.setattr(
+            routes_mod,
+            "write_executor_profile_entry",
+            _failing_write,
+        )
+
+        # Before: registry does not have test-executor
+        registry = get_registry()
+        assert not registry.is_registered("test-executor")
+
+        # Register — must fail with 422
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 422, r.json()
+        assert "simulated config write failure" in r.json()["detail"]
+
+        # Token must be consumed (fail-closed: token wasted, no durable state)
+        assert store.validate(token, "alpha") is None
+
+        # In-memory registry MUST NOT contain the leaked profile
+        assert not registry.is_registered("test-executor"), (
+            "Profile test-executor leaked into in-memory registry after "
+            "config-write failure — the profile must not be registered"
+        )
+
+        # No config file entry written
+        raw = _config_raw(org_root)
+        assert "executor_profiles" not in raw or "test-executor" not in raw.get(
+            "executor_profiles", {}
+        ), (
+            "executor_profiles.test-executor was written to config.yaml "
+            "despite config-write failure"
+        )
+
+        # No audit log entry
+        db = daemon_state.orgs["alpha"].db
+        logs = db.get_audit_logs("config:executor_profiles")
+        assert len(logs) == 0, (
+            f"Expected 0 audit logs, got {len(logs)} — audit should not "
+            f"record a failed write"
+        )
+
+    def test_recovery_after_forced_failure(
+        self, app, daemon_state, monkeypatch,
+    ):
+        """After a forced config-write failure, a fresh token for the same
+        profile name with the write path restored MUST succeed — proving no
+        stale in-memory state blocks subsequent registration."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+        org_root = daemon_state.orgs["alpha"].root
+
+        # --- Phase 1: forced failure ---
+        token1, _ = store.mint("alpha", "test-executor")
+        _complete_challenge(store, token1)
+
+        from runtime.daemon.routes import executors as routes_mod
+        original_write = routes_mod.write_executor_profile_entry
+
+        def _failing_write(paths, name, entry):
+            raise OrgConfigError("simulated config write failure")
+
+        monkeypatch.setattr(
+            routes_mod,
+            "write_executor_profile_entry",
+            _failing_write,
+        )
+
+        client.headers.update({"Authorization": f"Bearer {token1}"})
+        r = client.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 422
+
+        registry = get_registry()
+        assert not registry.is_registered("test-executor")
+
+        # --- Phase 2: recovery — restore write, mint fresh token ---
+        # Restore only the write_executor_profile_entry patch (undo() would
+        # also remove the loopback bypass).
+        monkeypatch.setattr(
+            routes_mod,
+            "write_executor_profile_entry",
+            original_write,
+        )
+
+        token2, _ = store.mint("alpha", "test-executor")
+        _complete_challenge(store, token2)
+
+        client.headers.update({"Authorization": f"Bearer {token2}"})
+        r = client.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["name"] == "test-executor"
+        assert body["kind"] == "custom"
+
+        # Registry now has the profile
+        assert registry.is_registered("test-executor")
+
+        # Config written
+        raw = _config_raw(org_root)
+        assert "executor_profiles" in raw
+        assert "test-executor" in raw["executor_profiles"]
+
+        # Audit log written
+        db = daemon_state.orgs["alpha"].db
+        logs = db.get_audit_logs("config:executor_profiles")
+        assert len(logs) == 1
