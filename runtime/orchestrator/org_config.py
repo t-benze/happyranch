@@ -12,11 +12,15 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
 from runtime.orchestrator._paths import OrgPaths
+
+if TYPE_CHECKING:
+    from runtime.skills.models import ExposedSkill
 
 
 class OrgConfigError(ValueError):
@@ -405,6 +409,39 @@ def render_current_time_line(
     now_fn = now or (lambda: datetime.now(timezone.utc))
     local = now_fn().astimezone(tz)
     return f"{local.isoformat(timespec='minutes')} ({label})"
+
+
+def render_compact_skill_index(
+    exposed_skills: list[ExposedSkill],
+) -> str:
+    """Render a compact manifest-only skill index for session prompts.
+
+    Each line includes the spec fields: id, version, description, when_to_use,
+    source, and a short how-to-load instruction. Bodies are NOT inlined — they
+    load on demand from ``runtime/skills/<slug>/SKILL.md``.
+
+    Entries are sorted by skill id for deterministic output across identical
+    registry + config inputs. An empty list produces an empty string (no index
+    lines injected).
+
+    Format (per spec):
+        - hr:<slug>@<version> — <description>. <when_to_use> Load full
+          instructions from <source>/SKILL.md.
+    """
+    if not exposed_skills:
+        return ""
+
+    lines: list[str] = []
+    for exposed in sorted(exposed_skills, key=lambda s: s.skill.id):
+        skill = exposed.skill
+        line = (
+            f"- {skill.id}@{skill.version} — {skill.description} "
+            f"{skill.when_to_use} "
+            f"Load full instructions from {skill.source}/SKILL.md."
+        )
+        lines.append(line)
+
+    return "\n".join(lines)
 
 
 def _validate_window_time(value: object, label: str, path: str) -> str:

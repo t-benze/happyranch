@@ -323,6 +323,7 @@ def build_thread_prompt(
     triggering_seq: int,
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
+    managed_skills_index: str = "",
 ) -> str:
     triggering = next((m for m in messages if m.seq == triggering_seq), None)
     parts_str = ", ".join(p.agent_name for p in participants)
@@ -341,11 +342,12 @@ def build_thread_prompt(
     # wall clock as every other agent session.
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
+    skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
     return (
         f"{doctrine}"
         f"You are participating in thread {thread.id}: \"{thread.subject}\".\n\n"
         f"Participants: {parts_str}.\n"
-        f"current_time: {current_time}\n"
+        f"current_time: {current_time}{skills_block}\n"
         f"Started: {thread.started_at.isoformat()}. {forwarded}\n\n"
         f"Full message history follows. Most recent message is at the bottom.\n\n"
         f"---\n{history}\n\n"
@@ -369,6 +371,7 @@ def build_thread_delta_prompt(
     triggering_message: "ThreadMessage | None",
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
+    managed_skills_index: str = "",
 ) -> str:
     """Turn 2+ prompt for a resumed agent session (issue #53).
 
@@ -390,11 +393,12 @@ def build_thread_delta_prompt(
     delta = "\n".join(_render_message(m) for m in new_messages)
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
+    skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
     return (
         f"{doctrine}"
         f"Continuing thread {thread.id}: \"{thread.subject}\". "
         f"New activity since your last turn follows.\n\n"
-        f"current_time: {current_time}\n\n"
+        f"current_time: {current_time}{skills_block}\n\n"
         f"---\n{delta}\n\n"
         f"You have been invoked because:\n  {note}\n\n"
         f"Your invocation_token for this turn is: {invocation_token}\n"

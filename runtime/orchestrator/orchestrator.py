@@ -312,6 +312,7 @@ class Orchestrator:
         prompt: str,
         now: Callable[[], datetime] | None = None,
         memory_digest: str | None = None,
+        managed_skills_index: str = "",
     ) -> str:
         if provider == "codex":
             intro = (
@@ -344,6 +345,8 @@ class Orchestrator:
         # in the one literal prompt string shared by every executor.
         # Precedent: BLOCKED-JOBS-RESULTS in run_step.py.
         digest_block = f"\n{memory_digest}\n" if memory_digest else ""
+        # THR-055 managed skills index — compact manifest of eligible skills
+        skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
         return (
             f"{intro}"
             f"\n"
@@ -354,6 +357,7 @@ class Orchestrator:
             f"  brief: {brief}\n"
             f"{role_guidance_block}"
             f"{digest_block}"
+            f"{skills_block}"
         )
 
     def _read_completion_from_db(

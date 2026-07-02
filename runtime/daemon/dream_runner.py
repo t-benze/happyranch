@@ -41,6 +41,7 @@ def build_dream_prompt(
     task_history: str,
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
+    managed_skills_index: str = "",
 ) -> str:
     """Compose the private dream-session prompt.
 
@@ -51,12 +52,13 @@ def build_dream_prompt(
     """
     tz, label = resolve_dreaming_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
+    skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
     return f"""# Private Nightly Dream
 
 You are {dream.agent_name}. This is private reflection for HappyRanch org `{org_slug}`.
 This is not a task or thread. Do not call report-completion.
 
-current_time: {current_time}
+current_time: {current_time}{skills_block}
 Dream id: {dream.id}
 Window start: {dream.window_start.isoformat() if dream.window_start else "last 24 hours"}
 Window end: {dream.window_end.isoformat()}
