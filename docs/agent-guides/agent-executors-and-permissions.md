@@ -104,8 +104,13 @@ Registration succeeds **only** when ALL of the following are true:
 5. No conflicting custom profile with a different definition is already registered
    (identical re-registration is idempotent).
 
-These checks are **daemon-verified** — the candidate CLI cannot self-report
-conformance; the daemon's own store is the source of truth.
+These checks are enforced against the daemon's own token-store state —
+the register request cannot succeed by asserting conformance in its
+payload; the token must already have been driven through the token-gated
+loopback conformance check-in sequence (all three steps recorded, token
+valid, unconsumed, loopback-scoped, and org-matching) before the register
+call is accepted. The store is populated by conformance check-ins that the
+candidate CLI submits over the token-gated loopback channel.
 
 The register route uses a per-profile-name lock so two concurrent registrations
 for the same profile name cannot both pass the preflight collision check before
