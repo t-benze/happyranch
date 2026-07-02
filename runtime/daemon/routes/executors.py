@@ -195,7 +195,13 @@ def register_executor(
     4. Conformance challenge is fully complete.
     5. Static validation passes (valid adapter, command on PATH, valid
        argv_template, no builtin collision).
-    6. Atomically: write to config.yaml, consume token, audit log.
+    6. Token is atomically consumed BEFORE any durable side effects.
+       Consume is the atomic validate-and-mark gate: if it returns None
+       (expired, already-consumed, wrong-org) the route aborts with 401
+       and no config/audit write occurs.
+    7. On successful consume: register in-memory profile, write config,
+       audit. Token is already consumed at this point; if a later step
+       fails the route is fail-closed (token wasted, no durable state).
 
     On success returns 200. On any validation failure returns 4xx
     without touching the config.
@@ -281,8 +287,22 @@ def register_executor(
         "adapter": body.adapter,
     }
 
-    # 4. Try to register in the in-memory registry first (validates collisions
-    #    with builtins and semantic conflicts)
+    # 4. Atomically consume the token BEFORE any durable side effects.
+    #    This is THE gate: consume() is a locked validate-and-mark that
+    #    returns None if the token is expired, already-consumed, or
+    #    wrong-org.  Two concurrent requests with the same token will race
+    #    through this call — exactly one wins and proceeds to durable writes.
+    consumed = store.consume(token_value, slug)
+    if consumed is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Registration token is invalid, expired, consumed, or not for this org",
+        )
+
+    # 5. Register in the in-memory registry (non-durable).
+    #    Token is already consumed at this point; if this or a later step
+    #    fails the route is fail-closed — no durable state written but
+    #    the token cannot be reused.
     try:
         registry.register_custom_profile(
             ExecutorProfile(
@@ -305,7 +325,7 @@ def register_executor(
             detail=str(exc),
         )
 
-    # 5. Atomically: write config, consume token, audit
+    # 6. Durable: write config.yaml entry, audit log.
     paths = OrgPaths(root=org.root)
     org_config_before = load_org_config(paths)
     before_snapshot = dict(org_config_before.executor_profiles)
@@ -317,9 +337,6 @@ def register_executor(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Config write error: {exc}",
         )
-
-    # Consume the token
-    store.consume(token_value, slug)
 
     # Audit the write
     org_config_after = load_org_config(paths)

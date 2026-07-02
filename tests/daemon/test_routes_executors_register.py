@@ -386,6 +386,97 @@ class TestRegisterReplayRejected:
         assert r.status_code == 401
 
 
+# ── Regression: concurrent same-token ───────────────────────────────────
+
+
+class TestConcurrentSameToken:
+    """Two concurrent register requests with the same token MUST produce
+    exactly one success, one config write, one audit row.
+
+    This is the regression test for the HIGH race caught in code review:
+    the old code called ``store.consume()`` AFTER the config write without
+    checking the return value, so two concurrent requests could both pass
+    ``validate()`` and both write config/audit before one finally consumed
+    the token.
+
+    The fix moves ``store.consume()`` ahead of all durable side effects
+    (the atomic validate-and-mark gate) and checks the return value —
+    the second thread receives ``None`` and aborts with 401.
+    """
+
+    def test_concurrent_same_token_exactly_one_succeeds(
+        self, app, daemon_state, monkeypatch,
+    ):
+        import threading
+
+        _bypass_loopback(monkeypatch)
+        store = daemon_state.registration_token_store
+
+        # Mint one token, complete conformance
+        token, _ = store.mint("alpha", "test-executor")
+        _complete_challenge(store, token)
+
+        # Barrier to force both threads to race through consume()
+        # simultaneously, proving the lock inside consume picks a
+        # single winner.
+        barrier = threading.Barrier(2, timeout=5)
+        results: list[int] = []
+
+        def do_register():
+            # Each thread creates its own TestClient (Starlette
+            # TestClient is synchronous; separate instances on the
+            # same app are safe for concurrent use).
+            c = TestClient(app)
+            c.headers.update({"Authorization": f"Bearer {token}"})
+            r = c.post("/api/v1/orgs/alpha/executors/register", json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            })
+            results.append(r.status_code)
+
+        # Patch consume to synchronize both threads at the gate
+        original_consume = store.consume
+
+        def consuming_consume(token_plaintext, org, now=None):
+            barrier.wait()  # both threads rendezvous here
+            return original_consume(token_plaintext, org, now)
+
+        monkeypatch.setattr(store, "consume", consuming_consume)
+
+        t1 = threading.Thread(target=do_register)
+        t2 = threading.Thread(target=do_register)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Assertions: exactly one success
+        assert results.count(200) == 1, (
+            f"Expected exactly 1 success, got: {results}"
+        )
+        assert results.count(401) == 1, (
+            f"Expected exactly 1 401, got: {results}"
+        )
+
+        # Token is consumed — validate returns None
+        assert store.validate(token, "alpha") is None
+
+        # Exactly one config entry written
+        raw = _config_raw(daemon_state.orgs["alpha"].root)
+        assert "executor_profiles" in raw
+        assert "test-executor" in raw["executor_profiles"]
+        entry = raw["executor_profiles"]["test-executor"]
+        assert entry["command"] == "echo"
+
+        # Exactly one audit log entry
+        db = daemon_state.orgs["alpha"].db
+        logs = db.get_audit_logs("config:executor_profiles")
+        assert len(logs) == 1, (
+            f"Expected exactly 1 audit log, got {len(logs)}"
+        )
+
+
 # ── Negative: master bearer rejected ────────────────────────────────────
 
 
