@@ -1,0 +1,8 @@
+# Intentionally missing required fields
+id: hr:missing-metadata-skill
+slug: missing-metadata-skill
+name: Missing Metadata Skill
+version: 1.0.0
+policy_class: standard_operational
+approval_state: approved
+status: enabled
