@@ -19,10 +19,26 @@ function signature(ev: TaskEvent): string {
  * (`task_failed` / `task_complete` / `task_blocked`) come through with the
  * status as the `type` and no `action` — fall back to `type` for those.
  */
-function eventLabel(ev: TaskEvent): string {
+export function eventLabel(ev: TaskEvent): string {
   const action = (ev as { action?: unknown }).action;
   if (typeof action === 'string' && action) return action;
   return ev.type;
+}
+
+/**
+ * Human-readable labels for fan-out audit actions (TASK-1717 polish). Ordinary
+ * event labels pass through unchanged — only the three fan-out lifecycle
+ * actions are prettified. Kept separate from `eventLabel` so `rowTone` still
+ * matches on the raw semantic action name.
+ */
+const FANOUT_LABELS: Readonly<Record<string, string>> = {
+  fanout_spawned: 'Fan-out spawned',
+  fanout_join: 'Fan-out joined',
+  fanout_review_not_approved: 'Fan-out not approved',
+};
+
+export function prettyLabel(rawLabel: string): string {
+  return FANOUT_LABELS[rawLabel] ?? rawLabel;
 }
 
 function rowTone(label: string): string {
@@ -82,7 +98,7 @@ export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
               <span
                 className={`inline-block rounded-sm px-1.5 py-px font-mono font-semibold ${rowTone(label)}`}
               >
-                {label}
+                {prettyLabel(label)}
               </span>
               {ev.agent && <span className="text-fg-muted">· {ev.agent}</span>}
               {hasPayload && (
