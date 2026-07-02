@@ -401,9 +401,11 @@ class TestConcurrentSameToken:
     ``validate()`` and both write config/audit before one finally consumed
     the token.
 
-    The fix moves ``store.consume()`` ahead of all durable side effects
+    The fix moves ``store.reserve()`` ahead of all durable side effects
     (the atomic validate-and-mark gate) and checks the return value —
-    the second thread receives ``None`` and aborts with 401.
+    the second thread receives ``None`` and aborts with 401. The winner
+    commits (permanently consumes) the token on success; the loser's
+    reservation is released.
     """
 
     def test_concurrent_same_token_exactly_one_succeeds(
@@ -418,8 +420,8 @@ class TestConcurrentSameToken:
         token, _ = store.mint("alpha", "test-executor")
         _complete_challenge(store, token)
 
-        # Barrier to force both threads to race through consume()
-        # simultaneously, proving the lock inside consume picks a
+        # Barrier to force both threads to race through reserve()
+        # simultaneously, proving the lock inside reserve picks a
         # single winner.
         barrier = threading.Barrier(2, timeout=5)
         results: list[int] = []
@@ -437,14 +439,14 @@ class TestConcurrentSameToken:
             })
             results.append(r.status_code)
 
-        # Patch consume to synchronize both threads at the gate
-        original_consume = store.consume
+        # Patch reserve to synchronize both threads at the gate
+        original_reserve = store.reserve
 
-        def consuming_consume(token_plaintext, org, now=None):
+        def barrier_reserve(token_plaintext, org, now=None):
             barrier.wait()  # both threads rendezvous here
-            return original_consume(token_plaintext, org, now)
+            return original_reserve(token_plaintext, org, now)
 
-        monkeypatch.setattr(store, "consume", consuming_consume)
+        monkeypatch.setattr(store, "reserve", barrier_reserve)
 
         t1 = threading.Thread(target=do_register)
         t2 = threading.Thread(target=do_register)
@@ -461,7 +463,7 @@ class TestConcurrentSameToken:
             f"Expected exactly 1 401, got: {results}"
         )
 
-        # Token is consumed — validate returns None
+        # Token is consumed (winner committed) — validate returns None
         assert store.validate(token, "alpha") is None
 
         # Exactly one config entry written
@@ -982,11 +984,15 @@ class TestConfigWriteFailureDoesNotLeakRegistry:
         token, _ = store.mint("alpha", "test-executor")
         _complete_challenge(store, token)
 
+        from runtime.daemon.routes import executors as routes_mod
+
+        # Capture original write_executor_profile_entry before monkeypatching
+        original_write = routes_mod.write_executor_profile_entry
+
         # Force write_executor_profile_entry to raise OrgConfigError
         def _failing_write(paths, name, entry):
             raise OrgConfigError("simulated config write failure")
 
-        from runtime.daemon.routes import executors as routes_mod
         monkeypatch.setattr(
             routes_mod,
             "write_executor_profile_entry",
@@ -1007,16 +1013,21 @@ class TestConfigWriteFailureDoesNotLeakRegistry:
         assert r.status_code == 422, r.json()
         assert "simulated config write failure" in r.json()["detail"]
 
-        # Token must be consumed (fail-closed: token wasted, no durable state)
-        assert store.validate(token, "alpha") is None
+        # Token must NOT be consumed (retry-safe: on failure nothing is
+        # written and the token remains valid for retry within TTL).
+        assert store.validate(token, "alpha") is not None, (
+            "Token was consumed on config-write failure — it must remain "
+            "valid so the caller can retry with the same token."
+        )
 
-        # In-memory registry MUST NOT contain the leaked profile
+        # In-memory registry MUST NOT contain the leaked profile after
+        # the first (failed) attempt.
         assert not registry.is_registered("test-executor"), (
             "Profile test-executor leaked into in-memory registry after "
             "config-write failure — the profile must not be registered"
         )
 
-        # No config file entry written
+        # No config file entry written after the failed attempt
         raw = _config_raw(org_root)
         assert "executor_profiles" not in raw or "test-executor" not in raw.get(
             "executor_profiles", {}
@@ -1025,13 +1036,31 @@ class TestConfigWriteFailureDoesNotLeakRegistry:
             "despite config-write failure"
         )
 
-        # No audit log entry
+        # No audit log entry after the failed attempt
         db = daemon_state.orgs["alpha"].db
         logs = db.get_audit_logs("config:executor_profiles")
         assert len(logs) == 0, (
             f"Expected 0 audit logs, got {len(logs)} — audit should not "
             f"record a failed write"
         )
+
+        # Retry with the SAME token MUST succeed after the write path is restored
+        _complete_challenge(store, token)
+        monkeypatch.setattr(
+            routes_mod,
+            "write_executor_profile_entry",
+            original_write,
+        )
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r2 = client.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r2.status_code == 200, f"Same-token retry failed: {r2.json()}"
+
+        # After retry: registry now has the profile
+        assert registry.is_registered("test-executor")
 
     def test_recovery_after_forced_failure(
         self, app, daemon_state, monkeypatch,
@@ -1106,3 +1135,118 @@ class TestConfigWriteFailureDoesNotLeakRegistry:
         db = daemon_state.orgs["alpha"].db
         logs = db.get_audit_logs("config:executor_profiles")
         assert len(logs) == 1
+
+
+# ── Parity test: register route and startup config validation accept/reject
+#    the SAME inputs so future drift fails a test. ──────────────────────────
+
+class TestValidationParityWithStartupConfig:
+    """Assert the register route drives through the same canonical validation
+    as ``ExecutorRegistry.register_custom_from_config`` (used at startup).
+
+    Every rejection/acceptance a caller sees through the route must match what
+    a daemon restart would do with the same profile in config.yaml.
+    """
+
+    # ── Rejected profiles (must be rejected by BOTH paths) ───────────────
+
+    _INVALID_PROFILES = [
+        pytest.param(
+            {"command": "echo", "argv_template": ["echo", "{prompt}"], "adapter": "invalid"},
+            "invalid-adapter",
+            id="invalid_adapter",
+        ),
+        pytest.param(
+            {"command": "echo", "argv_template": [], "adapter": "pi"},
+            "empty-argv_template",
+            id="empty_argv_template",
+        ),
+        pytest.param(
+            {"command": "echo", "argv_template": ["echo", "{unknown}"], "adapter": "pi"},
+            "unsupported-placeholder",
+            id="unsupported_placeholder",
+        ),
+        pytest.param(
+            {"command": "definitely_not_a_command_xyzzy", "argv_template": ["echo", "{prompt}"], "adapter": "pi"},
+            "command-not-on-path",
+            id="command_not_on_path",
+        ),
+        pytest.param(
+            {"command": 123, "argv_template": ["echo", "{prompt}"], "adapter": "pi"},
+            "non-string-command",
+            id="non_string_command",
+        ),
+    ]
+
+    @pytest.mark.parametrize("cfg,label", _INVALID_PROFILES)
+    def test_invalid_profiles_rejected_by_both_paths(
+        self, cfg, label, daemon_state, monkeypatch
+    ):
+        """Invalid profiles must raise ValueError in the canonical validator
+        AND 422 from the register route."""
+        from runtime.orchestrator.executor_registry import ExecutorRegistry
+
+        # Canonical validation must reject
+        with pytest.raises(ValueError):
+            ExecutorRegistry.validate_custom_profile_config("test-parity", cfg)
+
+        # Startup config path (simulated) must also reject
+        with pytest.raises(ValueError):
+            get_registry().register_custom_from_config({"test-parity": cfg})
+
+    # ── Accepted profiles (must be accepted by BOTH paths) ───────────────
+
+    _VALID_PROFILES = [
+        pytest.param(
+            {"command": "echo", "argv_template": ["echo", "{prompt}"], "adapter": "pi"},
+            "AGENTS.md",
+            id="adapter_pi",
+        ),
+        pytest.param(
+            {"command": "echo", "argv_template": ["echo", "{prompt}"], "adapter": "claude"},
+            ".claude/skills/start-task/SKILL.md",
+            id="adapter_claude",
+        ),
+        pytest.param(
+            {"command": "echo", "argv_template": ["echo", "{prompt}"], "adapter": "codex"},
+            "AGENTS.md",
+            id="adapter_codex",
+        ),
+        pytest.param(
+            {"command": "echo", "argv_template": ["echo", "{prompt}"], "adapter": "opencode"},
+            "AGENTS.md",
+            id="adapter_opencode",
+        ),
+        pytest.param(
+            {
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}", "{timeout_seconds}", "{workspace}"],
+                "adapter": "pi",
+            },
+            "AGENTS.md",
+            id="all_placeholders",
+        ),
+    ]
+
+    @pytest.mark.parametrize("cfg,expected_marker", _VALID_PROFILES)
+    def test_valid_profiles_accepted_by_both_paths(
+        self, cfg, expected_marker, daemon_state, monkeypatch
+    ):
+        """Valid profiles must build a correct ExecutorProfile in the canonical
+        validator AND be registerable through the config path."""
+        from runtime.orchestrator.executor_registry import ExecutorRegistry
+
+        profile_name = "test-parity-valid"
+
+        # Canonical validation must produce correct ExecutorProfile
+        profile = ExecutorRegistry.validate_custom_profile_config(profile_name, cfg)
+        assert profile.name == profile_name
+        assert profile.kind == "custom"
+        assert profile.adapter_id == cfg.get("adapter", "pi")
+        assert profile.readiness_marker_fragment == expected_marker
+        assert profile.argv_template == [str(e) for e in cfg["argv_template"]]
+        assert profile.command == cfg["command"]
+
+        # Config path must register without error
+        get_registry().register_custom_from_config({profile_name: cfg})
+        assert get_registry().is_registered(profile_name)

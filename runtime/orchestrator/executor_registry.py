@@ -220,6 +220,66 @@ class ExecutorRegistry:
                 )
         self._profiles[key] = profile
 
+    @classmethod
+    def validate_custom_profile_config(
+        cls, name: str, cfg: dict
+    ) -> ExecutorProfile:
+        """Validate a custom profile config entry and return the built
+        ExecutorProfile WITHOUT registering it.
+
+        This is the CANONICAL validation path. Both the register route
+        and ``register_custom_from_config`` drive through this method so
+        validation can never silently diverge.
+
+        Raises ``ValueError`` for: invalid adapter, missing/bad argv_template,
+        unsupported placeholder, command-not-on-PATH, non-string command.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"executor_profiles key must be a non-empty string")
+        if not isinstance(cfg, dict):
+            raise ValueError(f"executor_profiles.{name} must be a mapping")
+        command = cfg.get("command")
+        argv_template = cfg.get("argv_template")
+        adapter = cfg.get("adapter", "pi")
+        if not isinstance(argv_template, list) or not argv_template:
+            raise ValueError(
+                f"executor_profiles.{name}.argv_template required"
+            )
+        if not isinstance(adapter, str) or adapter not in {
+            "claude", "codex", "opencode", "pi",
+        }:
+            raise ValueError(
+                f"executor_profiles.{name}.adapter must be one of "
+                f"claude/codex/opencode/pi, got {adapter!r}"
+            )
+        # Validate argv_template placeholders
+        argv_errors = validate_argv_template([str(e) for e in argv_template])
+        if argv_errors:
+            raise ValueError(
+                f"Invalid argv_template for {name!r}: {'; '.join(argv_errors)}"
+            )
+        # Resolve command — None means skip which (e.g., in tests)
+        if command is not None and not isinstance(command, str):
+            raise ValueError(
+                f"executor_profiles.{name}.command must be a string"
+            )
+        if command is not None:
+            resolved = shutil.which(command)
+            if resolved is None:
+                raise ValueError(
+                    f"executor_profiles.{name}: command {command!r} "
+                    f"not found on PATH"
+                )
+        marker = "AGENTS.md" if adapter in {"codex", "opencode", "pi"} else ".claude/skills/start-task/SKILL.md"
+        return ExecutorProfile(
+            name=name,
+            kind="custom",
+            adapter_id=adapter,
+            readiness_marker_fragment=marker,
+            argv_template=[str(e) for e in argv_template],
+            command=command,
+        )
+
     def register_custom_from_config(
         self, profiles: dict[str, dict]
     ) -> None:
@@ -229,45 +289,7 @@ class ExecutorRegistry:
         ``command`` is the resolved executable (or None for skip).
         """
         for name, cfg in profiles.items():
-            if not isinstance(name, str) or not name:
-                raise ValueError(f"executor_profiles key must be a non-empty string")
-            if not isinstance(cfg, dict):
-                raise ValueError(f"executor_profiles.{name} must be a mapping")
-            command = cfg.get("command")
-            argv_template = cfg.get("argv_template")
-            adapter = cfg.get("adapter", "pi")
-            if not isinstance(argv_template, list) or not argv_template:
-                raise ValueError(
-                    f"executor_profiles.{name}.argv_template required"
-                )
-            if not isinstance(adapter, str) or adapter not in {
-                "claude", "codex", "opencode", "pi",
-            }:
-                raise ValueError(
-                    f"executor_profiles.{name}.adapter must be one of "
-                    f"claude/codex/opencode/pi, got {adapter!r}"
-                )
-            # Resolve command — None means skip which (e.g., in tests)
-            if command is not None and not isinstance(command, str):
-                raise ValueError(
-                    f"executor_profiles.{name}.command must be a string"
-                )
-            if command is not None:
-                resolved = shutil.which(command)
-                if resolved is None:
-                    raise ValueError(
-                        f"executor_profiles.{name}: command {command!r} "
-                        f"not found on PATH"
-                    )
-            marker = "AGENTS.md" if adapter in {"codex", "opencode", "pi"} else ".claude/skills/start-task/SKILL.md"
-            profile = ExecutorProfile(
-                name=name,
-                kind="custom",
-                adapter_id=adapter,
-                readiness_marker_fragment=marker,
-                argv_template=[str(e) for e in argv_template],
-                command=command,
-            )
+            profile = self.validate_custom_profile_config(name, cfg)
             self.register_custom_profile(profile)
 
 

@@ -28,7 +28,7 @@ from runtime.orchestrator.org_config import (
     load_org_config,
     write_executor_profile_entry,
 )
-from runtime.orchestrator.executor_registry import get_registry
+from runtime.orchestrator.executor_registry import get_registry, ExecutorRegistry
 from runtime.orchestrator.executor_registry import (
     ExecutorProfileCollisionError,
     ExecutorProfile,
@@ -258,48 +258,24 @@ def register_executor(
             detail=f"Conformance incomplete. Pending steps: {pending}",
         )
 
-    # 3. Static validation — reuse ExecutorRegistry primitives
-    from runtime.orchestrator.executor_registry import validate_argv_template
-    import shutil
-
-    # Validate adapter
-    valid_adapters = {"claude", "codex", "opencode", "pi"}
-    if body.adapter not in valid_adapters:
+    # 3. Static validation — drive through the CANONICAL validation path
+    #    so the route can never silently diverge from startup config validation.
+    config_cfg = {
+        "command": body.command,
+        "argv_template": body.argv_template,
+        "adapter": body.adapter,
+    }
+    try:
+        candidate = ExecutorRegistry.validate_custom_profile_config(
+            profile_name, config_cfg
+        )
+    except ValueError as exc:
+        # Map canonical ValueError -> existing HTTP codes (preserving tested behavior).
+        detail = str(exc)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid adapter {body.adapter!r}. Must be one of: {sorted(valid_adapters)}",
+            detail=detail,
         )
-
-    # Validate argv_template
-    argv_errors = validate_argv_template(body.argv_template)
-    if argv_errors:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="; ".join(argv_errors),
-        )
-
-    # Validate command on PATH
-    resolved = shutil.which(body.command)
-    if resolved is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Command {body.command!r} not found on PATH",
-        )
-
-    # 4. Build candidate ExecutorProfile for preflight collision check.
-    marker = (
-        "AGENTS.md"
-        if body.adapter in {"codex", "opencode", "pi"}
-        else ".claude/skills/start-task/SKILL.md"
-    )
-    candidate = ExecutorProfile(
-        name=profile_name,
-        kind="custom",
-        adapter_id=body.adapter,
-        readiness_marker_fragment=marker,
-        argv_template=[str(e) for e in body.argv_template],
-        command=body.command,
-    )
 
     # 5. Preflight collision check BEFORE any side effects.
     #    Detect a conflicting custom profile now so we can reject 409
@@ -327,13 +303,14 @@ def register_executor(
                     f"registered with a different definition.",
                 )
 
-    # 6. Atomically consume the token BEFORE any durable side effects.
-    #    This is THE gate: consume() is a locked validate-and-mark that
-    #    returns None if the token is expired, already-consumed, or
-    #    wrong-org.  Two concurrent requests with the same token will race
-    #    through this call — exactly one wins and proceeds to durable writes.
-    consumed = store.consume(token_value, slug)
-    if consumed is None:
+    # 6. RESERVE the token (atomic gate) — same single-winner guarantee
+    #    as consume() but does NOT permanently consume it. The token is
+    #    reserved for the duration of this registration attempt.
+    #    On success the token will be committed (permanently consumed).
+    #    On ANY pre-success failure the reservation is released so the
+    #    token stays valid for retry within its unexpired TTL.
+    reserved = store.reserve(token_value, slug)
+    if reserved is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Registration token is invalid, expired, consumed, or not for this org",
@@ -342,7 +319,7 @@ def register_executor(
     # 7. Acquire per-profile-name lock for the write+register critical
     #    section.  Two concurrent requests with DIFFERENT tokens for the
     #    same profile name both pass the preflight check (step 5) and
-    #    consume (step 6) independently.  The lock serialises the
+    #    reserve (step 6) independently.  The lock serialises the
     #    write+register so that a double-check inside the lock sees the
     #    winner's published profile and rejects the loser with 409.
     #    Without this lock, the loser's config write would overwrite the
@@ -351,8 +328,8 @@ def register_executor(
     #    ExecutorProfileCollisionError — leaving durable config (loser's)
     #    and in-memory registry (winner's) diverged with no audit.
     #
-    #    The lock is acquired AFTER consume so the existing same-token
-    #    concurrency test (which uses a threading.Barrier inside consume)
+    #    The lock is acquired AFTER reserve so the existing same-token
+    #    concurrency test (which uses a threading.Barrier inside reserve)
     #    continues to exercise the atomic gate without deadlocking.
     profile_lock = _acquire_profile_lock(profile_name)
     try:
@@ -411,6 +388,14 @@ def register_executor(
             after=after_snapshot,
             actor="founder",
         )
+    except BaseException:
+        # Release reservation on ANY failure so the token stays valid
+        # for retry within its unexpired TTL.
+        store.release(token_value, slug)
+        raise
+    else:
+        # COMMIT (permanent consume) ONLY on clean success.
+        store.commit(token_value, slug)
     finally:
         profile_lock.release()
 
