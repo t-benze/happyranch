@@ -61,7 +61,7 @@ The CLI is an HTTP client. Start the daemon first.
 ```bash
 scripts/daemon.sh start
 scripts/daemon.sh status
-scripts/daemon.sh stop
+scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --force)
 happyranch web [--no-open]
 ```
 

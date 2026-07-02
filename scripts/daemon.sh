@@ -32,6 +32,19 @@ cmd_start() {
 }
 
 cmd_stop() {
+    local force_flag="${1:-}"
+    # Guard: when stopping the DEFAULT home (HAPPYRANCH_DAEMON_HOME unset),
+    # require --force to prevent agents from killing the founder's real daemon.
+    # Isolated instances (HAPPYRANCH_DAEMON_HOME set) skip this guard entirely.
+    if [ -z "${HAPPYRANCH_DAEMON_HOME:-}" ]; then
+        if [ "$force_flag" != "--force" ]; then
+            echo "Refusing to stop the default daemon at $HAPPYRANCH_HOME without --force."
+            echo "This is likely the founder's real daemon."
+            echo "Re-run: scripts/daemon.sh stop --force"
+            echo "(integration tests set HAPPYRANCH_DAEMON_HOME and are unaffected.)"
+            exit 1
+        fi
+    fi
     if [[ ! -f "$PID_FILE" ]]; then
         echo "daemon not running"
         exit 0
@@ -72,7 +85,7 @@ cmd_status() {
 
 case "${1:-}" in
     start)  cmd_start  ;;
-    stop)   cmd_stop   ;;
+    stop)   cmd_stop "${2:-}"   ;;
     status) cmd_status ;;
-    *)      echo "Usage: $0 {start|stop|status}"; exit 2 ;;
+    *)      echo "Usage: $0 {start|stop [--force]|status}"; exit 2 ;;
 esac

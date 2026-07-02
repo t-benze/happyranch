@@ -48,7 +48,7 @@ import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { ResumeButton } from './ResumeButton';
 import { selectInFlightResponders } from './inFlightResponders';
 import { describeError, THREADS_STRINGS as S } from './strings';
-import { TypingBubble } from './TypingBubble';
+import { TypingBubble } from '@/design-system/patterns/TypingBubble';
 
 /* ------------------------------------------------------------------ */
 /*  helpers                                                            */

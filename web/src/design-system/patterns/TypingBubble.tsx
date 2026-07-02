@@ -1,5 +1,5 @@
 /**
- * TypingBubble — an inline placeholder shown at the end of a thread
+ * TypingBubble — an inline placeholder shown at the end of a conversation
  * transcript while an agent is composing (or queued to compose) its reply.
  *
  * Styled like a `worker` MessageBubble so it sits where the real reply will
@@ -7,11 +7,12 @@
  *   - `working` — dots bounce, caption shows live elapsed (`replying… 5s`)
  *   - `queued`  — dots dimmed + static, caption `queued`
  *
- * Pure prop-driven. The page computes the in-flight agent list and the
- * shared `nowMs` tick; this component only renders.
+ * Pure prop-driven. The owner computes the in-flight agent list and the shared
+ * `nowMs` tick; this component only renders. Reused by the threads transcript
+ * and the System Assistant dock (THR-056).
  */
-import { AgentChip } from '@/design-system/patterns/AgentChip';
-import { formatElapsed } from './ResponderStatusStrip';
+import { AgentChip } from './AgentChip';
+import { formatElapsed } from '@/lib/elapsed';
 
 export function TypingBubble({
   agentName,
@@ -57,3 +58,12 @@ function TypingDots({ animate }: { animate: boolean }): JSX.Element {
     </div>
   );
 }
+
+export const meta = {
+  name: "TypingBubble",
+  layer: "pattern",
+  import: "@/design-system/patterns/TypingBubble",
+  variants: { status: ["queued", "working"] },
+  consumes: [],
+  example: "<TypingBubble agentName='engineering_head' status='working' startedAt={null} />",
+} as const;

@@ -884,3 +884,77 @@ def save_org_config(paths: OrgPaths, patch: dict) -> None:
         raise
 
 
+# ── Executor profile config write (THR-052 PR-2) ───────────────────────
+#
+# A dedicated helper for adding/updating a single executor_profiles entry.
+# This is deliberately separate from save_org_config (the master-bearer
+# settings PATCH path) so executor_profiles is NOT writable through the
+# generic settings surface. Only the conformance-gated registration route
+# calls this.
+
+
+def write_executor_profile_entry(
+    paths: OrgPaths,
+    name: str,
+    entry: dict,
+) -> None:
+    """Atomically add or update a single executor_profiles.<name> entry
+    in org/config.yaml.
+
+    1. Read the current raw dict from disk.
+    2. Deep-merge ``entry`` into ``raw["executor_profiles"][name]``.
+       All other keys (both top-level and within executor_profiles) are
+       carried through verbatim.
+    3. Validate the candidate via ``_build_org_config``.
+       If invalid, raise ``OrgConfigError``.
+    4. Atomic write via temp file + ``os.replace``.
+
+    This function never adds executor_profiles to ``_ORG_WRITABLE_KEYS`` —
+    it is the ONLY write path for this section.
+    """
+    config_path = paths.org_config_path
+
+    # 1. Read current raw dict
+    if config_path.exists():
+        try:
+            raw = yaml.safe_load(config_path.read_text()) or {}
+        except yaml.YAMLError as exc:
+            raise OrgConfigError(f"malformed YAML in {config_path}: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise OrgConfigError(f"{config_path}: top-level must be a mapping")
+    else:
+        raw = {}
+
+    # 2. Deep-merge the single entry
+    raw = dict(raw)
+    profiles = dict(raw.get("executor_profiles", {}))
+    if name in profiles and isinstance(profiles[name], dict) and isinstance(entry, dict):
+        # Merge into existing entry (update case)
+        profiles[name] = _deep_merge(profiles[name], entry)
+    else:
+        profiles[name] = entry
+    raw["executor_profiles"] = profiles
+
+    # 3. Validate candidate via the authoritative validator
+    try:
+        _build_org_config(raw, str(config_path))
+    except OrgConfigError:
+        raise  # re-raise so the route can return 422
+
+    # 4. Atomic write
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=".org-config.", suffix=".yaml", dir=str(config_path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            yaml.safe_dump(raw, fh, sort_keys=False)
+        os.replace(tmp, config_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+

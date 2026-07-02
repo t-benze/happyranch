@@ -492,6 +492,19 @@
         "components.trace_tree"
       ],
       "example": "<TraceTree root={{} as any} costs={{}} density=\"compact\" />"
+    },
+    {
+      "name": "TypingBubble",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/TypingBubble",
+      "variants": {
+        "status": [
+          "queued",
+          "working"
+        ]
+      },
+      "consumes": [],
+      "example": "<TypingBubble agentName='engineering_head' status='working' startedAt={null} />"
     }
   ]
 }

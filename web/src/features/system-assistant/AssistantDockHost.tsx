@@ -1,22 +1,29 @@
 /**
  * AssistantDockHost — global assistant chat dock mounted in AppShell.
  *
- * Owns open/closed state, ⌘K hotkey, WebSocket connection (structured JSON
- * protocol over the existing /api/v1/assistant/session), message history,
- * composer draft, focus-trap/restore, and state persistence across SPA
- * navigation.
+ * Owns open/closed state, ⌘K hotkey, the A-mode WebSocket connection, the
+ * conversation log, the composer draft, focus-trap/restore, and state
+ * persistence across SPA navigation.
  *
- * Per PRD §2.5.2 + §4.10 (design-overhaul v1). Structured frames ride the
- * EXISTING assistant WS — bearer-subprotocol auth + PTY attach contract
- * are frozen and unchanged. The xterm "Open full session" escape hatch is
- * in the dock header.
+ * THR-056 approach-A: the dock renders EXACTLY like a thread conversation.
+ * It rides the structured A-mode WS (`/assistant/a-mode`, PR-1) and consumes
+ * normalized `TurnFrame`s — `turn_start`/`text_delta`/`tool_call`/`tool_result`/
+ * `turn_end`/`status`/`error`/`history`. Each turn's `text_delta`s aggregate
+ * into ONE assistant `MessageBubble` (thread idiom); a `TypingBubble` shows
+ * while a turn is in flight. The user turn is rendered optimistically on send
+ * (no server input-echo). On (re)connect the server first replays a `history`
+ * frame carrying the persisted conversation, which hydrates the log.
+ *
+ * The xterm "Open full session" escape hatch (frozen PTY path) stays in the
+ * dock header.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { X, Terminal } from 'lucide-react';
-import { useAssistantStatus, useAssistantSessionOpener } from '@/hooks/assistant';
+import { useAssistantStatus, useAssistantAModeSessionOpener } from '@/hooks/assistant';
 import type { AssistantStatus } from '@/lib/api/types';
-import { AssistantTurn, type AssistantMessage } from './AssistantTurn';
+import { MessageBubble } from '@/design-system/patterns/MessageBubble';
+import { TypingBubble } from '@/design-system/patterns/TypingBubble';
 
 // ---------------------------------------------------------------------------
 // hotkey
@@ -136,41 +143,195 @@ function useFocusTrap(
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket structured session hook
+// A-mode conversation model
 // ---------------------------------------------------------------------------
 
-type WsFrame = { type: string; text?: string; code?: string; message?: string };
+/** One tool invocation surfaced transparently within an assistant turn. */
+interface ToolActivity {
+  id: string;
+  name: string;
+  /** null while pending; true/false once a tool_result arrives. */
+  ok: boolean | null;
+}
 
-interface UseAssistantChatWs {
-  messages: AssistantMessage[];
+/**
+ * One rendered turn in the dock conversation. User turns are created
+ * optimistically on send; assistant turns aggregate a turn's text_delta
+ * frames into a single body.
+ */
+interface DockTurn {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  tools: ToolActivity[];
+  timestamp: string;
+  /** Assistant turns: true once turn_end has arrived. Always true for user. */
+  done: boolean;
+}
+
+/** Normalized frame received from the A-mode WS (mirror of the backend TurnFrame). */
+interface TurnFrame {
+  type: string;
+  role?: string;
+  text?: string;
+  name?: string;
+  input?: Record<string, unknown> | null;
+  ok?: boolean;
+  usage?: Record<string, unknown> | null;
+  code?: string;
+  detail?: string;
+  message?: string;
+  turns?: PersistedTurn[];
+}
+
+/** Shape of one persisted turn in a `history` frame (design §4). */
+interface PersistedTurn {
+  id?: string;
+  prompt?: string;
+  frames?: TurnFrame[];
+  started_at?: string;
+  finished_at?: string | null;
+  session_id?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// history hydration
+// ---------------------------------------------------------------------------
+
+/**
+ * Rebuild the rendered conversation from a `history` frame's persisted turns.
+ * Each persisted turn contributes an optimistic-style user bubble (its prompt)
+ * followed by the assistant turn(s) reconstructed from its recorded frames.
+ */
+function hydrateHistory(
+  turns: PersistedTurn[],
+  nextId: () => string,
+): DockTurn[] {
+  const out: DockTurn[] = [];
+  for (const t of turns) {
+    if (t.prompt && t.prompt.trim()) {
+      out.push({
+        id: nextId(),
+        role: 'user',
+        text: t.prompt,
+        tools: [],
+        timestamp: t.started_at ?? new Date().toISOString(),
+        done: true,
+      });
+    }
+    let current: DockTurn | null = null;
+    for (const frame of t.frames ?? []) {
+      switch (frame.type) {
+        case 'turn_start':
+          current = {
+            id: nextId(),
+            role: 'assistant',
+            text: '',
+            tools: [],
+            timestamp: t.started_at ?? new Date().toISOString(),
+            done: false,
+          };
+          out.push(current);
+          break;
+        case 'text_delta':
+          if (!current) {
+            current = {
+              id: nextId(),
+              role: 'assistant',
+              text: '',
+              tools: [],
+              timestamp: t.started_at ?? new Date().toISOString(),
+              done: false,
+            };
+            out.push(current);
+          }
+          current.text += frame.text ?? '';
+          break;
+        case 'tool_call':
+          if (current) {
+            current.tools.push({ id: nextId(), name: frame.name ?? 'tool', ok: null });
+          }
+          break;
+        case 'tool_result':
+          if (current) {
+            const pending = [...current.tools]
+              .reverse()
+              .find((x) => x.name === (frame.name ?? 'tool') && x.ok === null);
+            if (pending) pending.ok = frame.ok ?? true;
+          }
+          break;
+        case 'turn_end':
+          if (current) current.done = true;
+          current = null;
+          break;
+        default:
+          break;
+      }
+    }
+    if (current) current.done = true;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// live "now" tick — drives TypingBubble elapsed while a turn is in flight
+// ---------------------------------------------------------------------------
+
+function useNowMs(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+// ---------------------------------------------------------------------------
+// A-mode WebSocket hook
+// ---------------------------------------------------------------------------
+
+interface UseAssistantAModeChat {
+  turns: DockTurn[];
   sendMessage: (text: string) => void;
   connecting: boolean;
-  // True only once the server's "ready" ack has arrived and the socket is
-  // still live — surfaces an honest, data-backed connection state for the
-  // dock header's status line. Cleared on close/error/reconnect.
+  // True only once the server's "ready" status has arrived and the socket is
+  // still live. Cleared on close/error/reconnect.
   connected: boolean;
+  // A turn is in flight (turn_start seen, turn_end not yet).
+  inFlight: boolean;
+  turnStartedAt: string | null;
   error: string | null;
 }
 
-function useAssistantChatWs(
+function useAssistantAModeChat(
   open: boolean,
   status: AssistantStatus | undefined,
   statusLoading: boolean,
-): UseAssistantChatWs {
-  const [messages, setMessages] = useState<AssistantMessage[]>([]);
+): UseAssistantAModeChat {
+  const [turns, setTurns] = useState<DockTurn[]>([]);
   const [connecting, setConnecting] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [inFlight, setInFlight] = useState(false);
+  const [turnStartedAt, setTurnStartedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const readyRef = useRef(false);
-  const openSession = useAssistantSessionOpener();
+  const openSession = useAssistantAModeSessionOpener();
 
-  // Open WS when dock opens and assistant is configured.
+  // Monotonic id source — avoids key collisions across turns/tools.
+  const idCounterRef = useRef(0);
+  const nextId = useCallback((): string => {
+    idCounterRef.current += 1;
+    return `m${idCounterRef.current}`;
+  }, []);
+
+  // Id of the assistant turn currently aggregating text_delta frames.
+  const currentAssistantIdRef = useRef<string | null>(null);
+
+  // Open the A-mode WS when the dock opens and the assistant is configured.
   useEffect(() => {
     if (!open) return;
     // Don't decide until the status query has actually resolved.
-    // On cold load Cmd-K before the query completes, status is still
-    // undefined — wait rather than emitting a permanent error.
     if (statusLoading) return;
     if (status?.state !== 'configured') {
       setError('Assistant not configured. Set it up in Settings.');
@@ -178,10 +339,112 @@ function useAssistantChatWs(
     }
 
     let disposed = false;
-    readyRef.current = false;
     setConnecting(true);
     setConnected(false);
+    setInFlight(false);
+    setTurnStartedAt(null);
     setError(null);
+    currentAssistantIdRef.current = null;
+
+    const applyFrame = (frame: TurnFrame): void => {
+      switch (frame.type) {
+        case 'history': {
+          const hydrated = hydrateHistory(frame.turns ?? [], nextId);
+          setTurns(hydrated);
+          break;
+        }
+        case 'status':
+          if (frame.code === 'ready') {
+            setConnecting(false);
+            setConnected(true);
+          } else if (frame.code === 'session_closed') {
+            setConnected(false);
+          } else if (frame.code === 'error') {
+            setError(frame.detail ?? 'Assistant error.');
+            setInFlight(false);
+          }
+          break;
+        case 'turn_start': {
+          const id = nextId();
+          currentAssistantIdRef.current = id;
+          setInFlight(true);
+          setTurnStartedAt(new Date().toISOString());
+          setTurns((prev) => [
+            ...prev,
+            {
+              id,
+              role: 'assistant',
+              text: '',
+              tools: [],
+              timestamp: new Date().toISOString(),
+              done: false,
+            },
+          ]);
+          break;
+        }
+        case 'text_delta': {
+          const id = currentAssistantIdRef.current;
+          if (!id) break;
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === id ? { ...t, text: t.text + (frame.text ?? '') } : t,
+            ),
+          );
+          break;
+        }
+        case 'tool_call': {
+          const id = currentAssistantIdRef.current;
+          if (!id) break;
+          const toolId = nextId();
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === id
+                ? { ...t, tools: [...t.tools, { id: toolId, name: frame.name ?? 'tool', ok: null }] }
+                : t,
+            ),
+          );
+          break;
+        }
+        case 'tool_result': {
+          const id = currentAssistantIdRef.current;
+          if (!id) break;
+          setTurns((prev) =>
+            prev.map((t) => {
+              if (t.id !== id) return t;
+              let patched = false;
+              const tools = [...t.tools];
+              for (let i = tools.length - 1; i >= 0; i -= 1) {
+                if (!patched && tools[i].name === (frame.name ?? 'tool') && tools[i].ok === null) {
+                  tools[i] = { ...tools[i], ok: frame.ok ?? true };
+                  patched = true;
+                }
+              }
+              return { ...t, tools };
+            }),
+          );
+          break;
+        }
+        case 'turn_end': {
+          const id = currentAssistantIdRef.current;
+          if (id) {
+            setTurns((prev) =>
+              prev.map((t) => (t.id === id ? { ...t, done: true } : t)),
+            );
+          }
+          currentAssistantIdRef.current = null;
+          setInFlight(false);
+          setTurnStartedAt(null);
+          break;
+        }
+        case 'error':
+          setError(frame.message ?? 'Unknown error');
+          setConnecting(false);
+          setInFlight(false);
+          break;
+        default:
+          break;
+      }
+    };
 
     openSession()
       .then((ws) => {
@@ -191,77 +454,33 @@ function useAssistantChatWs(
         }
         wsRef.current = ws;
 
-        ws.onopen = () => {
-          // Negotiate structured JSON-chat mode.
-          ws.send(
-            JSON.stringify({ type: 'handshake', protocol: 'json-chat', version: 1 }),
-          );
-        };
-
         ws.onmessage = (event: MessageEvent) => {
           if (disposed) return;
+          const raw = typeof event.data === 'string' ? event.data : '';
+          if (!raw) return;
+          let frame: TurnFrame;
           try {
-            const frame: WsFrame = JSON.parse(
-              typeof event.data === 'string' ? event.data : '',
-            );
-            if (frame.type === 'status') {
-              if (frame.code === 'ready') {
-                readyRef.current = true;
-                setConnecting(false);
-                setConnected(true);
-              }
-            } else if (frame.type === 'output') {
-              const text = frame.text ?? '';
-              if (text.trim()) {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    text,
-                    timestamp: new Date().toISOString(),
-                  },
-                ]);
-              }
-            } else if (frame.type === 'error') {
-              setError(frame.message ?? 'Unknown error');
-              setConnecting(false);
-            }
+            frame = JSON.parse(raw) as TurnFrame;
           } catch {
-            // OPTION 3 (founder-ruled): pre-ack raw PTY frames are
-            // buffered/ignored — the structured client sent a handshake,
-            // so it tolerates any raw frame that slipped through before
-            // the server classified the handshake.  No structured client
-            // ever surfaces a raw PTY frame to the user.
-            if (!readyRef.current) {
-              return; // pre-ack raw frame → ignore
-            }
-            // Post-ack non-JSON frame (unexpected) — handle gracefully
-            // as assistant output.
-            const text =
-              typeof event.data === 'string' ? event.data : String(event.data);
-            if (text.trim()) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  role: 'assistant',
-                  text,
-                  timestamp: new Date().toISOString(),
-                },
-              ]);
-            }
+            // A-mode is structured from frame zero — no raw frames exist.
+            // Anything unparseable is dropped rather than surfaced as chat.
+            return;
           }
+          if (frame && typeof frame.type === 'string') applyFrame(frame);
         };
 
         ws.onclose = () => {
           wsRef.current = null;
           setConnecting(false);
           setConnected(false);
+          setInFlight(false);
         };
 
         ws.onerror = () => {
           setError('WebSocket connection failed.');
           setConnecting(false);
           setConnected(false);
+          setInFlight(false);
         };
       })
       .catch((err: unknown) => {
@@ -279,29 +498,45 @@ function useAssistantChatWs(
         wsRef.current = null;
       }
     };
-  }, [open, openSession, status, statusLoading]);
+  }, [open, openSession, status, statusLoading, nextId]);
 
   const sendMessage = useCallback(
     (text: string) => {
-      if (!text.trim()) return;
       const trimmed = text.trim();
+      if (!trimmed) return;
 
-      // Add user message to history.
-      setMessages((prev) => [
+      // Optimistic user turn — rendered client-side; the server does NOT
+      // echo the prompt back.
+      setTurns((prev) => [
         ...prev,
-        { role: 'user', text: trimmed, timestamp: new Date().toISOString() },
+        {
+          id: nextId(),
+          role: 'user',
+          text: trimmed,
+          tools: [],
+          timestamp: new Date().toISOString(),
+          done: true,
+        },
       ]);
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'chat', text: trimmed }));
+        wsRef.current.send(JSON.stringify({ type: 'start', text: trimmed }));
       } else {
         setError('Not connected. Reopen the dock to reconnect.');
       }
     },
-    [],
+    [nextId],
   );
 
-  return { messages, sendMessage, connecting, connected, error };
+  return {
+    turns,
+    sendMessage,
+    connecting,
+    connected,
+    inFlight,
+    turnStartedAt,
+    error,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +548,7 @@ export function AssistantDockHost(): JSX.Element {
   const [composerDraft, setComposerDraft] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const { slug: urlSlug } = useParams<{ slug: string }>();
   const location = useLocation();
@@ -323,8 +559,17 @@ export function AssistantDockHost(): JSX.Element {
   const statusQuery = useAssistantStatus();
   const status = statusQuery.data;
 
-  const { messages, sendMessage, connecting, connected, error: wsError } =
-    useAssistantChatWs(open, status, statusQuery.isLoading);
+  const {
+    turns,
+    sendMessage,
+    connecting,
+    connected,
+    inFlight,
+    turnStartedAt,
+    error: wsError,
+  } = useAssistantAModeChat(open, status, statusQuery.isLoading);
+
+  const nowMs = useNowMs(open && inFlight);
 
   const toggle = useCallback(() => setOpen((o) => !o), []);
   useAssistantDockHotkey(toggle, open);
@@ -342,6 +587,13 @@ export function AssistantDockHost(): JSX.Element {
       return () => clearTimeout(timer);
     }
   }, [open]);
+
+  // Keep the transcript pinned to the newest turn as it streams (thread idiom).
+  useEffect(() => {
+    if (typeof transcriptEndRef.current?.scrollIntoView === 'function') {
+      transcriptEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [turns, inFlight]);
 
   // Handle [data-assistant-open] clicks anywhere in the app.
   useEffect(() => {
@@ -374,6 +626,9 @@ export function AssistantDockHost(): JSX.Element {
   const assistantConfigured = status?.state === 'configured';
   const assistantPath = activeSlug ? `/orgs/${activeSlug}/assistant` : '/assistant';
 
+  // Assistant speaker label — data-backed executor name when available.
+  const assistantSpeaker = status?.selected_executor ?? 'assistant';
+
   // DOCK-02 header — connection status line. Every label below is derived
   // from state the dock already tracks (status poll + live WS signals); no
   // connection is asserted that cannot be proven. `tone` selects a token
@@ -393,6 +648,10 @@ export function AssistantDockHost(): JSX.Element {
   // Executor pill — rendered only when the selected executor is data-backed
   // (AssistantStatus.selected_executor). Honestly omitted when null.
   const executor = status?.selected_executor ?? null;
+
+  // Show the loading skeleton only while first connecting with nothing to show;
+  // once history has hydrated (or a turn exists) render the conversation.
+  const showLoading = connecting && turns.length === 0;
 
   return (
     <>
@@ -466,7 +725,7 @@ export function AssistantDockHost(): JSX.Element {
           </button>
         </div>
 
-        {/* Messages area */}
+        {/* Messages area — thread-style transcript */}
         <div className="flex-1 overflow-y-auto px-4 py-3">
           {statusQuery.isLoading ? (
             <EmptyState text="Loading…" calm />
@@ -480,22 +739,32 @@ export function AssistantDockHost(): JSX.Element {
               error={!status}
               calm
             />
-          ) : connecting ? (
+          ) : showLoading ? (
             <LoadingState />
-          ) : messages.length === 0 ? (
+          ) : turns.length === 0 && !inFlight ? (
             <EmptyState
               text="Ask the assistant anything — or type / to run a command."
               calm
             />
           ) : (
-            <div className="flex flex-col gap-3">
-              {messages.map((msg, i) => (
-                <AssistantTurn
-                  key={i}
-                  message={msg}
-                  orgSlug={activeSlug ?? undefined}
+            <div className="flex flex-col gap-2">
+              {turns.map((turn, i) => (
+                <DockTurnView
+                  key={turn.id}
+                  turn={turn}
+                  seq={i + 1}
+                  assistantSpeaker={assistantSpeaker}
                 />
               ))}
+              {inFlight && (
+                <TypingBubble
+                  agentName={assistantSpeaker}
+                  status="working"
+                  startedAt={turnStartedAt}
+                  nowMs={nowMs}
+                />
+              )}
+              <div ref={transcriptEndRef} />
             </div>
           )}
 
@@ -546,6 +815,65 @@ export function AssistantDockHost(): JSX.Element {
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
+
+/**
+ * One conversation turn, rendered with the thread components: the user turn as
+ * a `founder`-variant MessageBubble, the assistant turn as a `worker`-variant
+ * MessageBubble (design §5). Tool activity is surfaced minimally above the
+ * assistant body.
+ */
+function DockTurnView({
+  turn,
+  seq,
+  assistantSpeaker,
+}: {
+  turn: DockTurn;
+  seq: number;
+  assistantSpeaker: string;
+}): JSX.Element {
+  if (turn.role === 'user') {
+    return (
+      <MessageBubble
+        variant="founder"
+        seq={seq}
+        speaker="you"
+        speakerRole="founder"
+        timestamp={turn.timestamp}
+        body={turn.text}
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      {turn.tools.length > 0 && (
+        <ul className="flex flex-col gap-0.5" aria-label="Tool activity">
+          {turn.tools.map((tool) => (
+            <li
+              key={tool.id}
+              className="text-text-muted flex items-center gap-1.5 font-mono text-xs"
+            >
+              <span aria-hidden="true">
+                {tool.ok === null ? '⋯' : tool.ok ? '✓' : '✗'}
+              </span>
+              <span className="truncate">{tool.name}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {turn.text.trim() !== '' && (
+        <MessageBubble
+          variant="worker"
+          seq={seq}
+          speaker={assistantSpeaker}
+          speakerRole="worker"
+          timestamp={turn.timestamp}
+          body={turn.text}
+        />
+      )}
+    </div>
+  );
+}
 
 function EmptyState({
   text,
