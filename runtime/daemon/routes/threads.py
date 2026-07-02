@@ -1563,8 +1563,13 @@ async def dispatch_from_thread_endpoint(
         )
         # Reuse the proven revisit-path supersede logic (Gap-A no-reenqueue +
         # successor citation). Parent-wake + followup run after the lock.
+        family_closed: list[str] = []
         if resolves and predecessor is not None:
-            from runtime.daemon.routes.tasks import _supersede_predecessor_locked
+            from runtime.daemon.routes.tasks import (
+                _collect_eligible_revisit_family,
+                _eligible_supersede_block_kind,
+                _supersede_predecessor_locked,
+            )
             _supersede_predecessor_locked(
                 org, audit,
                 predecessor_id=predecessor.id,
@@ -1574,6 +1579,24 @@ async def dispatch_from_thread_endpoint(
                 note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
                 thread_id=thread_id,
             )
+            # THR-046 msg127: broader revisit-family closure — also supersede
+            # eligible sibling/ancestor revisits in the same revisit family.
+            for family_task in _collect_eligible_revisit_family(
+                org,
+                explicit_predecessor_id=predecessor.id,
+                successor_root=task_id,
+            ):
+                family_block_kind = _eligible_supersede_block_kind(org, family_task)
+                _supersede_predecessor_locked(
+                    org, audit,
+                    predecessor_id=family_task.id,
+                    successor_root=task_id,
+                    prior_block_kind=family_block_kind,
+                    actor="thread-dispatch",
+                    note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
+                    thread_id=thread_id,
+                )
+                family_closed.append(family_task.id)
 
     enqueue_task(state, slug, task_id)
 
@@ -1592,6 +1615,13 @@ async def dispatch_from_thread_endpoint(
             org.orchestrator, predecessor.id,
             status=TaskStatus.RESOLVED_SUPERSEDED, auto_revisit_spawned=False,
         )
+        # Same tail for each family sibling closed.
+        for family_task_id in family_closed:
+            _enqueue_parent_if_waiting(org.orchestrator, family_task_id)
+            _maybe_post_thread_followup(
+                org.orchestrator, family_task_id,
+                status=TaskStatus.RESOLVED_SUPERSEDED, auto_revisit_spawned=False,
+            )
 
     await _publish_thread_event(
         org, slug,
