@@ -28,6 +28,7 @@ from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.orchestrator.org_config import (
     OrgConfig,
     render_current_time_line,
+    resolve_managed_skills_index,
     resolve_org_timezone_display,
 )
 
@@ -509,6 +510,14 @@ async def run_invocation(
     except Exception:
         org_config = OrgConfig()
 
+    # Resolve managed skills index once for all 3 prompt builders in this invocation.
+    try:
+        managed_skills_index = resolve_managed_skills_index(
+            paths=paths, agent_name=inv.agent_name,
+        )
+    except Exception:
+        managed_skills_index = ""
+
     # Resolve timeout (org override → code default).
     timeout: int = settings.session_timeout_seconds
     if org_config.threads_invocation_timeout_seconds is not None:
@@ -535,6 +544,7 @@ async def run_invocation(
                 invocation_token=invocation_token, invoked_agent=inv.agent_name,
                 purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                 triggering_message=triggering, org_config=org_config,
+                managed_skills_index=managed_skills_index,
             )
             resume_sid = stored_sid
             shown_seqs = [m.seq for m in new_messages]
@@ -544,6 +554,7 @@ async def run_invocation(
                 invocation_token=invocation_token, invoked_agent=inv.agent_name,
                 purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                 org_config=org_config,
+                managed_skills_index=managed_skills_index,
             )
             shown_seqs = [m.seq for m in messages]
 
@@ -600,6 +611,7 @@ async def run_invocation(
                     invocation_token=invocation_token, invoked_agent=inv.agent_name,
                     purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                     org_config=org_config,
+                    managed_skills_index=managed_skills_index,
                 )
                 # Re-apply the guardrail for the fallback prompt too.
                 escalation_note2 = _maybe_unresolved_escalations_note(

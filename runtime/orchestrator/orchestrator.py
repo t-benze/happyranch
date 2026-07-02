@@ -36,6 +36,7 @@ from runtime.orchestrator.executors import (
 from runtime.orchestrator.org_config import (
     load_org_config,
     render_current_time_line,
+    resolve_managed_skills_index,
     resolve_org_timezone_display,
 )
 from runtime.orchestrator.teams import TeamsRegistry
@@ -535,6 +536,10 @@ class Orchestrator:
                     scope="agent",
                 )
 
+        managed_skills_index = resolve_managed_skills_index(
+            paths=self._paths, agent_name=agent_name,
+        )
+
         full_prompt = self._build_agent_prompt(
             provider,
             agent_name,
@@ -543,6 +548,7 @@ class Orchestrator:
             brief,
             prompt,
             memory_digest=memory_digest,
+            managed_skills_index=managed_skills_index,
         )
 
         if self._sessions is not None:

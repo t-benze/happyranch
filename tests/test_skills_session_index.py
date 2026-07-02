@@ -535,3 +535,207 @@ class TestIntegrationResolveAndRender:
         # No reference to global skills directory
         assert "./skills/" not in result
         assert "hr:standard-skill" in result  # Only managed skills
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Call-site integration: resolve_managed_skills_index
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestResolveManagedSkillsIndex:
+    """Integration tests for resolve_managed_skills_index — the single helper
+    reused by every session-creation path (task, thread, dream, wake).
+
+    These tests exercise the REAL on-disk loading path (SkillRegistry +
+    EligibilityResolver + resolve_exposed_skills + render_compact_skill_index)
+    and assert the built prompt CONTAINS eligible skills and EXCLUDES
+    ineligible/disabled/draft/system-contract skills.
+    """
+
+    @pytest.fixture
+    def tmp_runtime(self, tmp_path):
+        """Create a minimal org runtime directory with skills + config + agent."""
+        runtime = tmp_path
+
+        # Agent definition
+        agents_dir = runtime / "org" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "dev_agent.md").write_text(
+            "---\nname: dev_agent\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\n# Dev Agent\n\nBuild software.\n"
+        )
+
+        # Org config with skills eligibility
+        org_dir = runtime / "org"
+        org_dir.mkdir(parents=True, exist_ok=True)
+        config = {
+            "timezone": "Asia/Shanghai",
+            "skills": {
+                "org": {"allow": ["hr:standard-skill"], "deny": []},
+            },
+        }
+        import yaml as _yaml
+        (org_dir / "config.yaml").write_text(_yaml.dump(config))
+
+        # Symlink skills fixtures to runtime/skills/
+        skills_dir = runtime / "runtime" / "skills"
+        skills_dir.parent.mkdir(parents=True, exist_ok=True)
+        # Copy fixtures (or symlink — copy for test isolation)
+        import shutil
+        for fixture_dir in FIXTURES.iterdir():
+            if fixture_dir.is_dir():
+                target = skills_dir / fixture_dir.name
+                shutil.copytree(fixture_dir, target)
+
+        return runtime
+
+    def test_eligible_skill_appears_in_index(self, tmp_runtime):
+        """An eligible skill that passes both gates appears in the compact index."""
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_config import resolve_managed_skills_index
+
+        paths = OrgPaths(root=tmp_runtime)
+        result = resolve_managed_skills_index(paths=paths, agent_name="dev_agent")
+
+        assert result, "Expected non-empty skills index"
+        assert "hr:standard-skill@1.0.0" in result
+        assert "Load full instructions from" in result
+        assert "SKILL.md" in result
+
+    def test_ineligible_skill_excluded(self, tmp_runtime):
+        """Skills not in the eligibility allow list are excluded."""
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_config import resolve_managed_skills_index
+
+        paths = OrgPaths(root=tmp_runtime)
+        result = resolve_managed_skills_index(paths=paths, agent_name="dev_agent")
+
+        # high-impact-skill is not in the allow list → excluded
+        assert "hr:high-impact-skill" not in result
+        # standard-skill IS in the allow list → present
+        assert "hr:standard-skill" in result
+
+    def test_disabled_skill_excluded(self, tmp_runtime):
+        """A disabled skill does not pass catalog gate → excluded from index."""
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_config import resolve_managed_skills_index
+
+        # Add disabled-skill to the allow list
+        org_dir = tmp_runtime / "org"
+        config = {
+            "timezone": "Asia/Shanghai",
+            "skills": {
+                "org": {
+                    "allow": ["hr:standard-skill", "hr:disabled-skill"],
+                    "deny": [],
+                },
+            },
+        }
+        import yaml as _yaml
+        (org_dir / "config.yaml").write_text(_yaml.dump(config))
+
+        paths = OrgPaths(root=tmp_runtime)
+        result = resolve_managed_skills_index(paths=paths, agent_name="dev_agent")
+
+        assert "hr:disabled-skill" not in result  # disabled → excluded
+        assert "hr:standard-skill" in result
+
+    def test_draft_skill_excluded(self, tmp_runtime):
+        """A draft skill does not pass catalog gate → excluded from index."""
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_config import resolve_managed_skills_index
+
+        org_dir = tmp_runtime / "org"
+        config = {
+            "timezone": "Asia/Shanghai",
+            "skills": {
+                "org": {
+                    "allow": ["hr:standard-skill", "hr:draft-skill"],
+                    "deny": [],
+                },
+            },
+        }
+        import yaml as _yaml
+        (org_dir / "config.yaml").write_text(_yaml.dump(config))
+
+        paths = OrgPaths(root=tmp_runtime)
+        result = resolve_managed_skills_index(paths=paths, agent_name="dev_agent")
+
+        assert "hr:draft-skill" not in result  # draft → excluded
+        assert "hr:standard-skill" in result
+
+    def test_system_contract_skill_excluded(self, tmp_runtime):
+        """A system_contract skill is NEVER in the toggleable catalog → excluded."""
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_config import resolve_managed_skills_index
+
+        org_dir = tmp_runtime / "org"
+        config = {
+            "timezone": "Asia/Shanghai",
+            "skills": {
+                "org": {
+                    "allow": ["hr:standard-skill", "hr:system-contract-skill"],
+                    "deny": [],
+                },
+            },
+        }
+        import yaml as _yaml
+        (org_dir / "config.yaml").write_text(_yaml.dump(config))
+
+        paths = OrgPaths(root=tmp_runtime)
+        result = resolve_managed_skills_index(paths=paths, agent_name="dev_agent")
+
+        assert "hr:system-contract-skill" not in result  # never toggleable
+        assert "hr:standard-skill" in result
+
+    def test_missing_skills_directory_returns_empty(self, tmp_path):
+        """When runtime/skills/ does not exist, return empty string gracefully."""
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_config import resolve_managed_skills_index
+
+        runtime = tmp_path
+        (runtime / "org" / "agents").mkdir(parents=True)
+        (runtime / "org" / "agents" / "dev_agent.md").write_text(
+            "---\nname: dev_agent\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\n# Dev Agent\n"
+        )
+
+        paths = OrgPaths(root=runtime)
+        result = resolve_managed_skills_index(paths=paths, agent_name="dev_agent")
+        assert result == ""
+
+    def test_no_eligibility_policy_admits_nothing(self, tmp_runtime):
+        """With no skills eligibility section in org config (empty allow union),
+        no skills are admitted — per the spec formula."""
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_config import resolve_managed_skills_index
+
+        # Remove skills eligibility from config
+        org_dir = tmp_runtime / "org"
+        config = {"timezone": "Asia/Shanghai"}
+        import yaml as _yaml
+        (org_dir / "config.yaml").write_text(_yaml.dump(config))
+
+        paths = OrgPaths(root=tmp_runtime)
+        result = resolve_managed_skills_index(paths=paths, agent_name="dev_agent")
+        assert result == ""  # empty union → nothing
+
+    def test_deny_wins_over_allow(self, tmp_runtime):
+        """When a skill is both allowed and denied, deny wins → excluded."""
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_config import resolve_managed_skills_index
+
+        org_dir = tmp_runtime / "org"
+        config = {
+            "timezone": "Asia/Shanghai",
+            "skills": {
+                "org": {
+                    "allow": ["hr:standard-skill"],
+                    "deny": ["hr:standard-skill"],
+                },
+            },
+        }
+        import yaml as _yaml
+        (org_dir / "config.yaml").write_text(_yaml.dump(config))
+
+        paths = OrgPaths(root=tmp_runtime)
+        result = resolve_managed_skills_index(paths=paths, agent_name="dev_agent")
+        assert result == ""  # deny wins → no skills

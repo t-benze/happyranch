@@ -59,16 +59,34 @@ def catalog_gate(entry: SkillEntry) -> GateResult:
             f"Skill {entry.id} has unknown approval_state: {entry.approval_state}",
         )
 
-    # High-impact policy: requires founder/designated-owner approval
+    # High-impact policy: requires version-specific founder/designated-owner approval
     if entry.policy_class == PolicyClass.HIGH_IMPACT_POLICY:
+        # Gate 1: approved_by must be founder or the skill's designated owner
         if not entry.approved_by:
             return GateResult(
                 False,
                 f"High-impact skill {entry.id}@{entry.version} has no approved_by — "
                 f"founder or designated-owner approval required",
             )
-        # approved_by is non-empty: founder or designated owner has signed off
-        # (v1 treats any non-null approved_by for high_impact_policy as valid)
+        valid_approvers = {"founder"}
+        if entry.owner:
+            valid_approvers.add(entry.owner)
+        if entry.approved_by not in valid_approvers:
+            return GateResult(
+                False,
+                f"High-impact skill {entry.id}@{entry.version} approved_by "
+                f"'{entry.approved_by}' is not founder or designated owner "
+                f"(owner={entry.owner})",
+            )
+        # Gate 2: approval must be version-specific — approved_version must
+        # match the entry's current version. If missing (back-compat with
+        # entries that predate approved_version), fail CLOSED.
+        if not entry.approved_version or entry.approved_version != entry.version:
+            return GateResult(
+                False,
+                f"High-impact skill {entry.id}@{entry.version} has not been "
+                f"approved for this version (approved_version={entry.approved_version})",
+            )
 
     return GateResult(True, f"Skill {entry.id}@{entry.version} passes catalog gate")
 

@@ -17,6 +17,7 @@ from runtime.orchestrator.org_config import (
     load_org_config,
     render_current_time_line,
     resolve_dreaming_timezone_display,
+    resolve_managed_skills_index,
 )
 
 # Cap on the agent's window audit rows folded into the dream prompt. The most
@@ -124,6 +125,9 @@ async def run_dream(
         org_config = load_org_config(paths)
     except Exception:
         org_config = OrgConfig()
+    managed_skills_index = resolve_managed_skills_index(
+        paths=paths, agent_name=dream.agent_name,
+    )
     prompt = build_dream_prompt(
         org_slug=org_state.slug,
         dream=dream,
@@ -131,6 +135,7 @@ async def run_dream(
         recent_audit=recent_audit,
         task_history=_load_task_history(workspace),
         org_config=org_config,
+        managed_skills_index=managed_skills_index,
     )
 
     executor_name = _executor_name(workspace)

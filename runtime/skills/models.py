@@ -88,6 +88,7 @@ class SkillEntry:
     supersedes: Optional[str] = None
     reviewed_at: Optional[datetime] = None
     review_notes: Optional[str] = None
+    approved_version: Optional[str] = None  # version for which this approval was granted
 
     # Internal — not from YAML
     skill_md_path: Optional[Path] = None

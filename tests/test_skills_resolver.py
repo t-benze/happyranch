@@ -26,18 +26,16 @@ def _make_approved_catalog():
 class TestEligibilityResolverBasic:
     """Basic eligibility resolution."""
 
-    def test_no_policy_allows_all_approved_catalog(self):
-        """With no eligibility policy set, all approved+enabled skills pass."""
+    def test_no_policy_allows_nothing(self):
+        """With no eligibility policy set, empty allow union admits NOTHING
+        per the spec formula: approved_catalog ∩ (org ∪ team ∪ agent) MINUS denies."""
         from runtime.skills.resolver import EligibilityResolver
 
         catalog = _make_approved_catalog()
         resolver = EligibilityResolver({})
         results = resolver.resolve(catalog, org="happyranch", team="engineering", agent="dev_agent")
 
-        resolved_ids = {r.skill.id for r in results}
-        assert "hr:standard-skill" in resolved_ids
-        assert "hr:high-impact-skill" in resolved_ids
-        assert "hr:minimal-skill" in resolved_ids
+        assert len(results) == 0, "Empty allow union must admit nothing"
 
     def test_org_allow_grants_access(self):
         """Org-level allow list grants eligibility."""

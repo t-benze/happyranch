@@ -157,5 +157,6 @@ class SkillRegistry:
             supersedes=data.get("supersedes"),
             reviewed_at=_parse_optional_datetime(data.get("reviewed_at")),
             review_notes=data.get("review_notes"),
+            approved_version=data.get("approved_version") or None,
             skill_md_path=skill_md if skill_md.is_file() else None,
         )

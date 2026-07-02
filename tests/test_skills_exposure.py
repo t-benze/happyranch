@@ -139,28 +139,52 @@ class TestCatalogGateHighImpactPolicy:
         result = catalog_gate(entry)
         assert result.passed is True
 
-    def test_high_impact_with_designated_owner_approval_passes(self):
-        """high_impact_policy with approved_by=designated_owner passes catalog gate.
-        'designated_owner' is any value that is not 'founder' — the spec says
-        'founder or designated owner'. We treat any non-empty approved_by as valid
-        but also require it to match a known approved-by list (for now, any non-null name)."""
+    def test_high_impact_with_founder_approval_passes(self):
+        """high_impact_policy with approved_by=founder AND approved_version match
+        passes catalog gate."""
         from runtime.skills.models import SkillEntry
         from runtime.skills.exposure import catalog_gate
 
         entry = SkillEntry(
-            id="hr:hi-designated",
-            slug="hi-designated",
-            name="HI Designated",
+            id="hr:hi-founder",
+            slug="hi-founder",
+            name="HI Founder",
             version="1.0.0",
-            description="Approved by designated owner.",
+            description="Approved by founder.",
             when_to_use="Testing.",
             owner="security_team",
-            source="runtime/skills/hi-designated",
+            source="runtime/skills/hi-founder",
+            policy_class="high_impact_policy",
+            approval_state="approved",
+            approved_by="founder",
+            approved_at=datetime.now(timezone.utc),
+            status="enabled",
+            approved_version="1.0.0",
+        )
+        result = catalog_gate(entry)
+        assert result.passed is True
+
+    def test_high_impact_with_owner_approval_passes(self):
+        """high_impact_policy with approved_by matching the skill's owner
+        AND matching approved_version passes catalog gate."""
+        from runtime.skills.models import SkillEntry
+        from runtime.skills.exposure import catalog_gate
+
+        entry = SkillEntry(
+            id="hr:hi-owner-approved",
+            slug="hi-owner-approved",
+            name="HI Owner Approved",
+            version="1.0.0",
+            description="Approved by the designated owner.",
+            when_to_use="Testing.",
+            owner="security_lead",
+            source="runtime/skills/hi-owner-approved",
             policy_class="high_impact_policy",
             approval_state="approved",
             approved_by="security_lead",
             approved_at=datetime.now(timezone.utc),
             status="enabled",
+            approved_version="1.0.0",
         )
         result = catalog_gate(entry)
         assert result.passed is True
@@ -240,6 +264,7 @@ class TestVersionSpecificHighImpactApproval:
             approved_by="founder",
             approved_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
             status="enabled",
+            approved_version="1.0.0",
         )
         assert catalog_gate(v1).passed is True
 
@@ -308,9 +333,63 @@ class TestVersionSpecificHighImpactApproval:
             approved_by="founder",
             approved_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
             status="enabled",
+            approved_version="1.1.0",
         )
         result = catalog_gate(re_approved)
         assert result.passed is True
+
+    def test_version_bump_with_stale_approval_fails_closed(self):
+        """A high_impact_policy skill that has version bumped but still
+        carries stale approved_version (1.0.0) fails CLOSED even though
+        approved_state=approved and approved_by=founder."""
+        from runtime.skills.models import SkillEntry
+        from runtime.skills.exposure import catalog_gate
+
+        stale = SkillEntry(
+            id="hr:versioned-hi",
+            slug="versioned-hi",
+            name="Versioned HI Skill",
+            version="1.1.0",
+            description="Version bumped, stale approval.",
+            when_to_use="Testing.",
+            owner="security_team",
+            source="runtime/skills/versioned-hi",
+            policy_class="high_impact_policy",
+            approval_state="approved",
+            approved_by="founder",
+            approved_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            status="enabled",
+            approved_version="1.0.0",
+        )
+        result = catalog_gate(stale)
+        assert result.passed is False
+        assert "approved_version" in result.reason.lower()
+
+    def test_non_owner_non_founder_approver_fails_closed(self):
+        """approved_by set to someone who is NOT founder and NOT the skill's
+        owner → fail closed."""
+        from runtime.skills.models import SkillEntry
+        from runtime.skills.exposure import catalog_gate
+
+        bad_approver = SkillEntry(
+            id="hr:bad-approver",
+            slug="bad-approver",
+            name="Bad Approver HI",
+            version="1.0.0",
+            description="Approved by wrong person.",
+            when_to_use="Testing.",
+            owner="security_team",
+            source="runtime/skills/bad-approver",
+            policy_class="high_impact_policy",
+            approval_state="approved",
+            approved_by="random_person",
+            approved_at=datetime.now(timezone.utc),
+            status="enabled",
+            approved_version="1.0.0",
+        )
+        result = catalog_gate(bad_approver)
+        assert result.passed is False
+        assert "approved_by" in result.reason.lower()
 
 
 class TestTwoGateExposure:

@@ -444,6 +444,72 @@ def render_compact_skill_index(
     return "\n".join(lines)
 
 
+def resolve_managed_skills_index(
+    *,
+    paths: OrgPaths,
+    agent_name: str,
+) -> str:
+    """Resolve the compact managed skill index for a session.
+
+    Loads the on-disk registry + eligibility policy (same path the CLI
+    ``skills effective --agent`` uses), resolves exposed skills via the
+    two-gate exposure function, and renders the compact index string.
+
+    Gracefully returns an empty string when:
+    - The skills directory doesn't exist.
+    - The org config has no skills eligibility section.
+    - No skills pass both gates.
+    - Any load error (missing agent def, etc.).
+
+    This is the SINGLE helper reused by every session-creation path
+    (task/subtask, thread, dream, wake).
+    """
+    skills_root = paths.root / "runtime" / "skills"
+    if not skills_root.is_dir():
+        return ""
+
+    try:
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=skills_root)
+        if not registry.list_all():
+            return ""
+
+        # Load eligibility policy from org config YAML (skills section)
+        policy: dict = {}
+        config_path = paths.org_config_path
+        if config_path.is_file():
+            try:
+                raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    policy = raw.get("skills", {})
+            except (yaml.YAMLError, OSError):
+                pass
+
+        # Determine the agent's team from the agent definition
+        team = "engineering"
+        try:
+            from runtime.orchestrator.prompt_loader import load_agent
+            agent_def = load_agent(paths, agent_name)
+            if agent_def is not None:
+                team = agent_def.team
+        except Exception:
+            pass
+
+        org_slug = paths.root.name
+
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org=org_slug, team=team, agent=agent_name,
+        )
+        return render_compact_skill_index(exposed)
+
+    except Exception:
+        return ""
+
+
 def _validate_window_time(value: object, label: str, path: str) -> str:
     if not isinstance(value, str) or not _HHMM_RE.match(value) or int(value[:2]) > 23:
         raise OrgConfigError(f"{path}: {label} must be HH:MM (hour 00-23)")

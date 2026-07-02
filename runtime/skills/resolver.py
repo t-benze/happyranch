@@ -86,13 +86,6 @@ class EligibilityResolver:
         # Effective: allowed minus denied
         effective_ids = allowed_ids - denied_ids
 
-        # Provision: if NO allow rules at all, ALL catalog entries are allowed
-        # (the effective = approved_catalog ∩ (org ∪ team ∪ agent) formula:
-        #  an empty union means "none explicitly allowed" → nothing passes)
-        if not all_allows:
-            effective_ids = set(catalog_by_id.keys())
-            effective_ids -= denied_ids
-
         # Build results with provenance
         results: list[ResolvedSkill] = []
         for skill_id in sorted(effective_ids):

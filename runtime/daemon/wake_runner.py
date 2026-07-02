@@ -28,6 +28,7 @@ from runtime.orchestrator.org_config import (
     OrgConfig,
     load_org_config,
     render_current_time_line,
+    resolve_managed_skills_index,
     resolve_org_timezone_display,
 )
 from runtime.orchestrator.prompt_loader import load_agent
@@ -145,6 +146,10 @@ async def run_wake(
         org_config = load_org_config(paths)
     except Exception:
         org_config = OrgConfig()
+    managed_skills_index = resolve_managed_skills_index(
+        paths=paths, agent_name=record.agent_name,
+    )
+
     prompt = build_wake_prompt(
         org_slug=org_state.slug,
         work_hour_id=work_hour_id,
@@ -158,6 +163,7 @@ async def run_wake(
         routines=parsed.routines,
         org_config=org_config,
         dropped=parsed.dropped,
+        managed_skills_index=managed_skills_index,
     )
 
     executor_name = _executor_name(workspace)
