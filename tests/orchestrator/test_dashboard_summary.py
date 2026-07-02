@@ -452,6 +452,103 @@ def test_classify_escalation_flavor_graceful_fallback() -> None:
     assert classify_escalation_flavor("anything else") == "needs-decision"
 
 
+def test_escalations_open_only_roots_excludes_children(db: Database) -> None:
+    """TASK-1763: compute_escalations_open must match list_roots semantics —
+    only root tasks (parent_task_id IS NULL) in status='escalated' count.
+    A child task in escalated status inflates the Home 'Waiting on you' badge
+    without appearing in the roots-only Tasks list."""
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    raised = now - timedelta(minutes=30)
+
+    # ROOT escalated task: this IS the founder-facing escalation.
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, parent_task_id, created_at, updated_at) "
+        "VALUES ('TASK-root', 'b', 'dev_agent', 'engineering', 'escalated', NULL, ?, ?)",
+        (raised.isoformat(), raised.isoformat()),
+    )
+    # CHILD escalated task (parent_task_id IS NOT NULL): this is a subtask that
+    # entered the escalated state but should NOT appear as a founder-facing
+    # escalation — only its root ancestor matters (per CLAUDE.md: "Only root
+    # tasks escalate to the founder").
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, parent_task_id, created_at, updated_at) "
+        "VALUES ('TASK-child', 'b', 'qa_engineer', 'engineering', 'escalated', 'TASK-parent', ?, ?)",
+        (raised.isoformat(), raised.isoformat()),
+    )
+    # The parent of the child — an in-progress root, not itself escalated.
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, parent_task_id, created_at, updated_at) "
+        "VALUES ('TASK-parent', 'b', 'engineering_manager', 'engineering', 'in_progress', NULL, ?, ?)",
+        (raised.isoformat(), raised.isoformat()),
+    )
+    db._conn.commit()
+
+    # compute_escalations_open should only list root-level escalations.
+    rows = compute_escalations_open(db, now=now)
+    task_ids = [r.task_id for r in rows]
+    assert "TASK-root" in task_ids, f"Root escalation missing: {task_ids}"
+    assert "TASK-child" not in task_ids, (
+        f"Child escalation leaked into dashboard: {task_ids}"
+    )
+    assert len(rows) == 1, f"Expected 1 root escalation, got {len(rows)}: {task_ids}"
+
+
+def test_narrative_counts_escalated_open_only_roots(db: Database) -> None:
+    """TASK-1763: narrative_counts.escalated_open must count only root tasks,
+    matching list_roots semantics — a child escalation inflates the count
+    without appearing in the Tasks list."""
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    raised = now - timedelta(minutes=30)
+
+    # Root escalated → should count.
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, parent_task_id, created_at, updated_at) "
+        "VALUES ('TASK-root', 'b', 'dev_agent', 'engineering', 'escalated', NULL, ?, ?)",
+        (raised.isoformat(), raised.isoformat()),
+    )
+    # Child escalated → should NOT count.
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, parent_task_id, created_at, updated_at) "
+        "VALUES ('TASK-child', 'b', 'qa_engineer', 'engineering', 'escalated', 'TASK-other', ?, ?)",
+        (raised.isoformat(), raised.isoformat()),
+    )
+    db._conn.commit()
+
+    counts = compute_narrative_counts_today(db, now=now, kb_store=_MockKbStore())
+    assert counts.escalated_open == 1, (
+        f"Expected escalated_open=1 (roots only), got {counts.escalated_open}"
+    )
+
+
+def test_stale_escalations_only_roots_excludes_children(db: Database) -> None:
+    """TASK-1763: compute_stale_escalations must also filter to root tasks
+    for internal consistency — 'stale escalations awaiting founder' has the
+    same roots-only semantics as the main escalation aggregations."""
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    old = now - timedelta(hours=30)  # past the 24h default threshold
+
+    # Root stale escalation → should show.
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, parent_task_id, created_at, updated_at) "
+        "VALUES ('TASK-root', 'b', 'dev_agent', 'engineering', 'escalated', NULL, ?, ?)",
+        (old.isoformat(), old.isoformat()),
+    )
+    # Child stale escalation → should NOT show.
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, parent_task_id, created_at, updated_at) "
+        "VALUES ('TASK-child', 'b', 'qa_engineer', 'engineering', 'escalated', 'TASK-other', ?, ?)",
+        (old.isoformat(), old.isoformat()),
+    )
+    db._conn.commit()
+
+    rows = compute_stale_escalations(db, now=now)
+    task_ids = [r.task_id for r in rows]
+    assert "TASK-root" in task_ids, f"Root stale escalation missing: {task_ids}"
+    assert "TASK-child" not in task_ids, (
+        f"Child stale escalation leaked: {task_ids}"
+    )
+
+
 def test_stale_escalations_empty(db: Database) -> None:
     now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
     assert compute_stale_escalations(db, now=now) == []
