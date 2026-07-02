@@ -221,12 +221,13 @@ def test_codex_session_writes_token_usage_row(
     assert codex_rows, f"no codex rows: {rows}"
     row = codex_rows[0]
     assert row["agent"] == "engineering_head"
-    assert row["input_tokens"] == 2000
+    # Fix B: input_tokens normalized to net-fresh = 2000 - 150 = 1850
+    assert row["input_tokens"] == 1850
     assert row["output_tokens"] == 800
     # Codex emits a single `cached_input_tokens` field, mapped onto cache_read;
     # it does not separate cache-creation, so that column stays NULL.
     assert row["cache_read_tokens"] == 150
     assert row["cache_creation_tokens"] is None
     assert row["reasoning_tokens"] == 100
-    # Codex `exec --json` emits no model field on any event → NULL.
-    assert row["model"] is None
+    # Fix A: codex emits no model field → provider name 'codex' recorded
+    assert row["model"] == "codex"

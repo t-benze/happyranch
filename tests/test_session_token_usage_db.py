@@ -99,6 +99,59 @@ def test_list_filters_by_task_id_and_agent(db: Database):
     assert {r["session_id"] for r in db.list_session_token_usage(agent="dev")} == {"s1", "s2"}
 
 
+def test_churn_excludes_cache_for_codex_no_double_count(db: Database):
+    """Fix B (issue #216): feed RAW codex usage through the ingest
+    normalization path (_parse_codex_usage), then verify churn aggregation
+    uses net-fresh input (cache excluded), not the raw inclusive input.
+
+    On origin/main (pre-fix), _parse_codex_usage stores raw input_tokens as-is
+    (1000 inclusive of cache), so churn double-counts (1760 instead of 860)
+    and this test FAILS. On the fix branch, normalization subtracts cache on
+    ingest (net-fresh 100), so churn is correct at 860 and the test PASSES.
+    """
+    from runtime.orchestrator.executors import _parse_codex_usage
+
+    # Raw codex NDJSON: input=1000 (inclusive of 900 cached), output=50,
+    # reasoning_output=10. The parser normalizes input → 100 (net-fresh).
+    raw = (
+        '{"type":"turn.completed","usage":{"input_tokens":1000,'
+        '"cached_input_tokens":900,"output_tokens":50,'
+        '"reasoning_output_tokens":10}}\n'
+    )
+    tu = _parse_codex_usage(raw)
+    assert tu.input_tokens == 100   # net-fresh = 1000 - 900
+    assert tu.cache_read_tokens == 900
+    assert tu.output_tokens == 50
+    assert tu.reasoning_tokens == 10
+    db.insert_session_token_usage(
+        task_id="T1", agent="code_reviewer", session_id="s1", executor="codex",
+        token_usage=tu,
+    )
+
+    # Second codex session — cache-free, input=500
+    raw2 = (
+        '{"type":"turn.completed","usage":{"input_tokens":500,'
+        '"output_tokens":200}}\n'
+    )
+    tu2 = _parse_codex_usage(raw2)
+    assert tu2.input_tokens == 500   # no cache → unchanged
+    assert tu2.output_tokens == 200
+    db.insert_session_token_usage(
+        task_id="T2", agent="code_reviewer", session_id="s2", executor="codex",
+        token_usage=tu2,
+    )
+
+    rollup = db.aggregate_session_token_usage_by_agent()
+    codex = [r for r in rollup if r["agent"] == "code_reviewer"][0]
+    # churn = input + output + reasoning (cache excluded)
+    # = (100 + 50 + 10) + (500 + 200 + 0) = 160 + 700 = 860
+    assert codex["churn_tokens"] == 860
+    # cache_read is preserved separately (only first session has cache)
+    assert codex["cache_read_tokens"] == 900
+    # context = churn + cache = 860 + 900 = 1760
+    assert codex["context_tokens"] == 1760
+
+
 def test_aggregate_by_agent_sums_correctly(db: Database):
     db.insert_session_token_usage(
         task_id="T1", agent="dev", session_id="s1", executor="claude",

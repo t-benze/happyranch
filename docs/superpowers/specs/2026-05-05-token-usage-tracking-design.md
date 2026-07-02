@@ -422,9 +422,9 @@ The original `total_tokens` was defined as `input + output + reasoning`, excludi
 
 `dream_runner.py` passed `usage=result.token_usage` to `Database.insert_session_token_usage`, but the parameter name is `token_usage=`. This caused `TypeError: unexpected keyword argument 'usage'` on every dream session that returned token usage. Fixed to `token_usage=result.token_usage`.
 
-### Codex `input_tokens` vs `cached_input_tokens` ambiguity
+### Codex `input_tokens` includes `cached_input_tokens` (CONFIRMED, issue #216)
 
-Codex CLI emits both `input_tokens` and `cached_input_tokens` on the terminal `turn.completed` event. It is NOT confirmed whether `input_tokens` already includes `cached_input_tokens` (as some OpenAI API endpoints do). If it does, then `churn_tokens` for Codex sessions double-counts cache reads relative to Claude (where cache is tracked in a separate column). Until confirmed, no normalization is applied; both fields are stored as-is. Historical rows are ambiguous.
+Codex CLI follows the OpenAI convention where `input_tokens` is the inclusive total (includes `cached_input_tokens`). Confirmed live: one code_reviewer turn recorded input=4,412,984 with cached=4,307,072. On ingest, the parser normalizes `input_tokens` to net-fresh = max(input - cached, 0), making it apples-to-apples with Claude (where cache is tracked in a separate column). `cache_read_tokens` is preserved as-is. Normalization is forward-only; historical rows are NOT retro-corrected (founder accepted).
 
 ### Opencode command shape and parser update
 
