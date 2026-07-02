@@ -156,8 +156,12 @@ def compute_narrative_counts_today(
 
     # Path B (THR-037 Change B): escalations are the stored top-level
     # status='escalated' (block_kind cleared), no longer blocked+escalated.
+    # Only root tasks (parent_task_id IS NULL) escalate to the founder;
+    # non-root tasks fail and hand back to their parent (CLAUDE.md).
+    # Match list_roots/TasksPage semantics so the Home 'Waiting on you'
+    # badge and narrative count stay coherent.
     escalated_row = db.fetch_one_readonly(
-        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'escalated'",
+        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'escalated' AND parent_task_id IS NULL",
     )
     escalated = int(escalated_row["n"]) if escalated_row else 0
 
@@ -406,7 +410,7 @@ def compute_escalations_open(db: Database, *, now: datetime) -> list[EscalationR
         "       a.payload AS escalation_payload, a.timestamp AS escalation_ts "
         "FROM tasks t "
         "LEFT JOIN audit_log a ON a.task_id = t.id AND a.action = 'escalation' "
-        "WHERE t.status = 'escalated' "
+        "WHERE t.status = 'escalated' AND t.parent_task_id IS NULL "
         "ORDER BY t.updated_at DESC"
     )
     result: list[EscalationRow] = []
@@ -453,7 +457,7 @@ def compute_stale_escalations(
     cutoff = (now - timedelta(hours=threshold_hours)).isoformat()
     rows = db.fetch_all_readonly(
         "SELECT id, assigned_agent, team, updated_at FROM tasks "
-        "WHERE status = 'escalated' AND updated_at < ? "
+        "WHERE status = 'escalated' AND parent_task_id IS NULL AND updated_at < ? "
         "ORDER BY updated_at ASC",
         (cutoff,),
     )
