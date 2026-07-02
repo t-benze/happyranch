@@ -1156,6 +1156,9 @@ class TestCallPathManagedSkillsIndex:
             assert inc in delta_prompt, f"Expected '{inc}' in delta prompt"
         for exc in expect_excludes:
             assert exc not in delta_prompt, f"Expected '{exc}' NOT in delta prompt"
+        # Empty-allow-union: NO hr: entries should appear at all
+        if allow is None and deny is None:
+            assert "hr:" not in delta_prompt
         # current_time co-injected (unchanged by skill index, THR-039)
         assert "current_time:" in delta_prompt
         assert "Asia/Shanghai" in delta_prompt
@@ -1284,6 +1287,9 @@ class TestCallPathManagedSkillsIndex:
             assert inc in fallback_prompt, f"Expected '{inc}' in fallback prompt"
         for exc in expect_excludes:
             assert exc not in fallback_prompt, f"Expected '{exc}' NOT in fallback prompt"
+        # Empty-allow-union: NO hr: entries should appear at all
+        if allow is None and deny is None:
+            assert "hr:" not in fallback_prompt
         # current_time co-injected (unchanged by skill index, THR-039)
         assert "current_time:" in fallback_prompt
         assert "Asia/Shanghai" in fallback_prompt
