@@ -214,7 +214,8 @@ def test_manager_prompt_shows_fanout_required_fields():
 
 
 def test_manager_prompt_shows_fanout_constraints():
-    """The manager prompt must surface Phase 1 fan-out constraints."""
+    """The manager prompt must surface fan-out constraints including
+    THR-056 option 3 mutating fan-out."""
     p = build_capabilities_prompt(
         agents=[{"name": "dev_agent", "description": "Implements features"}],
         step_number=1, max_steps=10,
@@ -228,12 +229,17 @@ def test_manager_prompt_shows_fanout_constraints():
     # review_required for width > 4
     assert "review_required" in p
     # Phase 2 pipeline — per-child then/expect_verdict now supported
-    assert "pipeline" in p  # Phase 2 mention
+    assert "pipeline" in p  # pipeline mention
     assert "then" in p.lower() or "expect_verdict" in p  # should mention these fields
     # Parent parks in_progress(delegated)
     assert "delegated" in p.lower()
     # Wakes once when all children terminal
     assert "terminal" in p.lower()
+    # THR-056 option 3: mutating fan-out — children targeted at team managers
+    # are decision-capable
+    assert "team manager" in p.lower()
+    assert "mutating fan-out" in p.lower() or "decision-capable" in p.lower()
+    assert "implementation subtrees" in p.lower() or "implementation children" in p.lower()
 
 
 def test_manager_prompt_no_longer_claims_only_delegate_done_escalate():

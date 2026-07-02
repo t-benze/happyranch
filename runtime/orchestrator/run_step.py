@@ -2472,6 +2472,17 @@ def _spawn_fanout_children(
         cid = f"TASK-{base_num + i:03d}"
         children_ids.append(cid)
         has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
+        # THR-056 option 3: mutating fan-out — children targeted at a team
+        # manager are task_type='task' so their delegate-chain decisions are
+        # parsed and can spawn implementation children. Pipeline carriers
+        # (has_pipeline=True) never run agent sessions themselves, so their
+        # task_type does not affect decision parsing; keep them as subtask.
+        is_manager = (
+            not has_pipeline
+            and orch.teams is not None
+            and bool(orch.teams.is_team_manager(child_info["agent"]))
+        )
+        child_task_type = "task" if is_manager else "subtask"
         child_records.append(TaskRecord(
             id=cid,
             team=parent.team,
@@ -2481,7 +2492,7 @@ def _spawn_fanout_children(
             status=TaskStatus.IN_PROGRESS if has_pipeline else TaskStatus.PENDING,
             block_kind=BlockKind.DELEGATED if has_pipeline else None,
             session_timeout_seconds=parent.session_timeout_seconds,
-            task_type="subtask",
+            task_type=child_task_type,
         ))
 
     # Build FanoutState BEFORE the atomic insert so it's ready to persist.
