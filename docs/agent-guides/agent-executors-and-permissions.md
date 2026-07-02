@@ -47,6 +47,119 @@ at registration time and substitutes placeholders at launch. No shell string
 is constructed — each template element becomes exactly one argv element, with
 placeholders replaced by their resolved values.
 
+## Self-Registration (custom executors)
+
+THR-052 adds a founder-initiated, candidate-CLI-completed registration flow for
+custom executor profiles. The flow has three phases — **Mint** (founder generates
+a scoped token from Settings), **Conform** (candidate CLI proves it can run in
+the agent workspace), and **Register** (daemon atomically writes the profile).
+
+### Registration tokens
+
+Tokens are held in an **in-memory, hashed** store (`runtime/daemon/registration_token.py`).
+No DB schema, no migration. Daemon restart invalidates outstanding tokens (they
+are short-lived — the founder re-mints in one click). Key properties:
+
+- **Prefix**: `hrreg_` — distinct from the master bearer so the two can never be
+  confused. `require_token()` (master bearer check) rejects any token that does
+  not match the daemon's token file exactly; the `hrreg_` prefix is a separate
+  namespace that never goes through the master-bearer gate.
+- **TTL**: 600 seconds (10 minutes). Minting a new token for the same `(org, name)`
+  expires any prior unconsumed token — a stale copy-paste prompt cannot be replayed.
+- **Single-use**: `consume()` is an atomic validate-and-mark gate. Replay returns 401.
+- **Reserve/commit/release**: The register route reserves the token before any
+  durable work, commits (permanently consumes) only on clean success, and releases
+  on any failure — so a config-write error does **not** consume the token; the
+  candidate can retry within the unexpired TTL.
+
+### Conformance challenge
+
+Each minted token opens a conformance challenge with three required check-in
+steps (mirrored in `RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS`):
+
+| Step | What it proves | How it arrives |
+| --- | --- | --- |
+| `workspace_access` | The candidate CLI can read the agent prompt, workspace layout, and skills | Auto-completed by the candidate CLI (it is running locally) |
+| `loopback_reachable` | The candidate CLI can reach `http://127.0.0.1` (the daemon loopback) | Auto-completed by the candidate CLI |
+| `cli_callback` | The candidate CLI can invoke `happyranch executors register` with the `hrreg_` token | Completed when the candidate runs the register verb |
+
+The candidate CLI reports step arrivals via `POST /api/v1/orgs/{slug}/executors/conformance-checkin`
+(gated by `require_registration_token()` — loopback-only; other routes' auth is
+unchanged). The daemon tracks arrivals idempotently and exposes pending steps.
+
+### Registration gate
+
+`POST /api/v1/orgs/{slug}/executors/register` (same `require_registration_token()`
+gate) consumes a fully-conformant token and writes the profile.
+
+Registration succeeds **only** when ALL of the following are true:
+
+1. Token is valid, unexpired, unconsumed, and loopback (checked by the dependency gate).
+2. Token org matches the route slug.
+3. The conformance challenge is fully complete — all three steps arrived.
+4. Static validation passes: adapter is a known value, command is on `PATH`,
+   `argv_template` is a non-empty list of strings with supported placeholders
+   (`{prompt}`, `{timeout_seconds}`, `{workspace}`), and the profile name does
+   not collide with a built-in executor.
+5. No conflicting custom profile with a different definition is already registered
+   (identical re-registration is idempotent).
+
+These checks are **daemon-verified** — the candidate CLI cannot self-report
+conformance; the daemon's own store is the source of truth.
+
+The register route uses a per-profile-name lock so two concurrent registrations
+for the same profile name cannot both pass the preflight collision check before
+either publishes. The write order is:
+
+1. **Consume** the token atomically (reserve → durable config write → in-memory
+   registry → audit → commit; release on any failure).
+2. **Write** to `org/config.yaml` (durable, audited).
+3. **Register** in the process-wide in-memory registry (only after the durable
+   write succeeds).
+
+### Settings → Executors generator
+
+The founder initiates the flow from the Settings → Executors panel
+(`web/src/features/settings/sections/ExecutorsSection.tsx`). Fill in the
+candidate CLI's profile name, command, `argv_template`, and adapter. On
+"Generate", the SPA calls `POST /auth/registration-token` (loopback-only,
+master-bearer-authed) and renders two copy-paste blocks:
+
+1. **Conformance prompt** — embeds the `hrreg_` token, the three conformance
+   steps with descriptions, and the exact `happyranch executors register`
+   command to run.
+2. **Config snippet** — the resulting `executor_profiles` YAML entry the daemon
+   will write on successful registration.
+
+### Candidate CLI verb
+
+The candidate pastes the prompt and runs:
+
+```bash
+happyranch executors register \
+  --org <slug> \
+  --token hrreg_... \
+  --exec-command <bin> \
+  --argv-template-json '<json-array-of-strings>' \
+  --adapter <claude|codex|opencode|pi>
+```
+
+`--argv-template-json` is a single JSON-encoded array — leading-dash tokens
+like `--prompt-file` live safely inside it without shell-escaping issues.
+The verb auto-completes `workspace_access` and `loopback_reachable` (the
+candidate is running locally), then posts `cli_callback` and finally the
+registration payload.
+
+### Registration ≠ enrollment
+
+A registered profile becomes a **selectable executor option** in org config;
+it is **not** an agent enrollment. Assigning an agent to a registered executor
+is a separate founder gate — see [Switching an Existing Agent's
+Executor](#switching-an-existing-agents-executor) and
+`protocol/skills/manage-agent/SKILL.md`. Registration only adds the profile
+to the executor registry; the founder must still explicitly assign it to
+individual agents.
+
 ## Executor Notes
 
 All executors converge on `executors._run_command`, which runs every launch under the **per-provider throttle** (`runtime/orchestrator/throttle.py`, issue #85): a `threading.BoundedSemaphore` ceiling per provider string, an inter-launch spacing gate, and slot-releasing 429 backoff. Each executor passes its own `provider` string (the profile name — `"claude"`, `"codex"`, `"opencode"`, `"pi"`, or a custom profile name) and an optional `on_throttle_event` audit callback. The throttle never touches the permission surface — it is purely a launch-timing wrapper. See [runtime-and-configuration.md → Executor Throttle](./runtime-and-configuration.md#executor-throttle) and `docs/adr/0001-per-provider-executor-throttle.md`.
