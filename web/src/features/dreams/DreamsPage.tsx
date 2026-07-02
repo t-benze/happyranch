@@ -266,8 +266,8 @@ export function DreamsPage(): JSX.Element {
   const nightCount = new Set(dreams.map((d) => d.local_date)).size;
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-4 py-6">
+    <div className="bg-surface-canvas h-full overflow-y-auto">
+      <div className="px-4 py-6">
         {/* DREAMS-03: Direction-A eyebrow (live night count) + Newsreader serif
             statement title, mirroring the KB-02 / AUDIT-03 / THREADS-04 /
             SCHED-02 header idiom. The "Next run tonight" pill is omitted: no
