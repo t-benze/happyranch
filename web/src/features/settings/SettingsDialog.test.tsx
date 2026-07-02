@@ -183,7 +183,7 @@ describe('SettingsDialog', () => {
     // Input fields exist for editable values (text + number inputs)
     const textInputs = screen.getAllByRole('textbox');
     const numberInputs = screen.getAllByRole('spinbutton');
-    expect(textInputs.length + numberInputs.length).toBeGreaterThanOrEqual(7);
+    expect(textInputs.length + numberInputs.length).toBeGreaterThanOrEqual(6);
   });
 
   test('shows restart-required badges for CLI paths and orchestration fields', async () => {
@@ -344,9 +344,8 @@ describe('SettingsDialog', () => {
     const timeInput = screen.getByDisplayValue('02:00');
     expect(timeInput).toBeInTheDocument();
 
-    // Threads cap input should show 500
-    const capInput = screen.getByDisplayValue('500');
-    expect(capInput).toBeInTheDocument();
+    // Default turn cap must NOT be rendered (THR-046 msg126)
+    expect(screen.queryByText('Default turn cap')).not.toBeInTheDocument();
 
     // Excluded agents should show qa_engineer
     const excludeInput = screen.getByDisplayValue('qa_engineer');
