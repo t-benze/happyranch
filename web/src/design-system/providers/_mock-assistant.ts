@@ -31,4 +31,8 @@ export const mockAssistantApi: AssistantApi = {
     Promise.reject(
       new Error('assistant terminal is unavailable in the prototype sandbox'),
     ),
+  openAModeSession: () =>
+    Promise.reject(
+      new Error('assistant is unavailable in the prototype sandbox'),
+    ),
 };

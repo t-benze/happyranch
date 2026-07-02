@@ -1,14 +1,19 @@
 /**
- * Tests for AssistantDockHost — pre-ack raw-frame tolerance (OPTION 3).
+ * Tests for AssistantDockHost — A-mode (structured TurnFrame) dock.
  *
- * The WebSocket message handler is tested by mocking the assistant hooks
- * and driving a mock WebSocket.  Key behaviours:
- *   1. Pre-ack raw (non-JSON) frames → buffered/ignored, never surfaced.
- *   2. "ready" ack transition → exit connecting state, start accepting output.
- *   3. Post-ack structured {"type":"output","text":"..."} → displayed.
- *   4. Post-ack raw frames (unexpected) → handled gracefully as output.
+ * The dock rides the /assistant/a-mode WS and renders the conversation exactly
+ * like a thread. These tests mock the assistant hooks and drive a mock
+ * WebSocket through the normalized TurnFrame protocol. Key behaviours:
+ *   1. `history` frame → hydrates the persisted conversation into bubbles.
+ *   2. `status{ready}` → exits the connecting/loading state.
+ *   3. `turn_start` + `text_delta`* → aggregate into ONE assistant bubble;
+ *      a TypingBubble shows while in flight, cleared on `turn_end`.
+ *   4. Sending a message → optimistic user bubble + a `{type:"start"}` frame,
+ *      with NO server input-echo.
+ *   5. `error` frame → inline error alert.
+ *   6. DOCK-02 header (title, live status line, data-backed executor pill).
  */
-import { waitFor, act, screen } from '@testing-library/react';
+import { waitFor, act, fireEvent, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { renderWithProviders } from '@/test/render';
 import { AssistantDockHost } from './AssistantDockHost';
@@ -74,6 +79,7 @@ vi.mock('@/hooks/assistant', () => ({
   useRegisterAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRepairAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useAssistantSessionOpener: () => h.openSession,
+  useAssistantAModeSessionOpener: () => h.openSession,
 }));
 
 // ---------------------------------------------------------------------------
@@ -95,12 +101,12 @@ function createMockSocket(): MockSocket {
   return socket;
 }
 
-function fireOnmessage(data: string) {
+function fireFrame(frame: Record<string, unknown>) {
   if (!h.socket?.onmessage) {
     throw new Error('socket.onmessage not set yet');
   }
   act(() => {
-    h.socket!.onmessage!(new MessageEvent('message', { data }));
+    h.socket!.onmessage!(new MessageEvent('message', { data: JSON.stringify(frame) }));
   });
 }
 
@@ -117,16 +123,19 @@ async function renderOpen() {
   trigger.click();
   document.body.removeChild(trigger);
 
-  // Wait for the WS connection to be established (openSession called, then
-  // onopen callback fires).
+  // Wait for the WS connection to be established and the message handler wired
+  // (the component sets onmessage inside the opener's .then()).
   await waitFor(() => expect(h.openSession).toHaveBeenCalledTimes(1));
-  // The component sets onopen inside the .then() callback, which happens
-  // after the opener resolves.  Fire onopen so the handshake is sent.
-  act(() => {
-    h.socket!.onopen?.();
-  });
+  await waitFor(() => expect(h.socket?.onmessage).not.toBeNull());
 
   return result;
+}
+
+async function ready() {
+  fireFrame({ type: 'status', code: 'ready' });
+  await waitFor(() => {
+    expect(screen.queryByLabelText('Loading')).toBeNull();
+  });
 }
 
 beforeEach(() => {
@@ -136,107 +145,128 @@ beforeEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests
+// Tests — A-mode protocol
 // ---------------------------------------------------------------------------
 
-describe('AssistantDockHost — pre-ack raw-frame tolerance (OPTION 3)', () => {
-  test('pre-ack raw frame: ignored, not surfaced to the user', async () => {
+describe('AssistantDockHost — A-mode TurnFrame protocol', () => {
+  test('opens the A-mode WS when the dock opens', async () => {
     await renderOpen();
+    expect(h.openSession).toHaveBeenCalledTimes(1);
+  });
 
-    // The handshake is sent on open.
+  test('status{ready}: exits the connecting/loading state', async () => {
+    await renderOpen();
+    fireFrame({ type: 'status', code: 'ready' });
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Loading')).toBeNull();
+    });
+  });
+
+  test('history frame hydrates the persisted conversation into bubbles', async () => {
+    await renderOpen();
+    fireFrame({
+      type: 'history',
+      turns: [
+        {
+          id: 't1',
+          prompt: 'what is my ranch status',
+          started_at: '2026-07-02T10:00:00Z',
+          frames: [
+            { type: 'turn_start', role: 'assistant' },
+            { type: 'text_delta', text: 'All systems ' },
+            { type: 'text_delta', text: 'nominal.' },
+            { type: 'turn_end', role: 'assistant' },
+          ],
+        },
+      ],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('what is my ranch status')).toBeInTheDocument();
+    });
+    expect(screen.getByText('All systems nominal.')).toBeInTheDocument();
+  });
+
+  test('turn_start + text_delta* aggregate into ONE assistant bubble', async () => {
+    await renderOpen();
+    await ready();
+
+    fireFrame({ type: 'turn_start', role: 'assistant' });
+    fireFrame({ type: 'text_delta', text: 'Hel' });
+    fireFrame({ type: 'text_delta', text: 'lo world' });
+
+    // A single aggregated bubble — not one bubble per delta.
+    await waitFor(() => {
+      expect(screen.getByText('Hello world')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Hel')).toBeNull();
+
+    // TypingBubble is shown while the turn is in flight.
+    expect(screen.getByLabelText('claude is replying')).toBeInTheDocument();
+
+    // turn_end clears the typing indicator.
+    fireFrame({ type: 'turn_end', role: 'assistant' });
+    await waitFor(() => {
+      expect(screen.queryByLabelText('claude is replying')).toBeNull();
+    });
+    // The aggregated text survives after turn_end.
+    expect(screen.getByText('Hello world')).toBeInTheDocument();
+  });
+
+  test('tool_call/tool_result surface transparently within the turn', async () => {
+    await renderOpen();
+    await ready();
+
+    fireFrame({ type: 'turn_start', role: 'assistant' });
+    fireFrame({ type: 'tool_call', name: 'bash', input: { cmd: 'ls' } });
+    fireFrame({ type: 'text_delta', text: 'done' });
+    fireFrame({ type: 'tool_result', name: 'bash', ok: true });
+    fireFrame({ type: 'turn_end', role: 'assistant' });
+
+    await waitFor(() => {
+      expect(screen.getByText('bash')).toBeInTheDocument();
+    });
+    expect(screen.getByText('done')).toBeInTheDocument();
+  });
+
+  test('sending: optimistic user bubble + start frame, no echo', async () => {
+    await renderOpen();
+    await ready();
+
+    const composer = screen.getByLabelText('Assistant composer');
+    fireEvent.change(composer, { target: { value: 'deploy the web' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    // Optimistic user bubble rendered immediately.
+    await waitFor(() => {
+      expect(screen.getByText('deploy the web')).toBeInTheDocument();
+    });
+
+    // A start frame is sent to the server (NOT a legacy chat frame).
     expect(h.socket!.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: 'handshake', protocol: 'json-chat', version: 1 }),
+      JSON.stringify({ type: 'start', text: 'deploy the web' }),
     );
 
-    // Simulate a raw PTY frame arriving BEFORE the "ready" ack.
-    // This is the "assistant ready" greeting that the PTY emits at startup.
-    fireOnmessage('assistant ready\n');
-
-    // The dock is still in "connecting" state (loading skeleton shown).
-    // The pre-ack raw frame was ignored — it doesn't appear in the DOM.
-    await waitFor(() => {
-      expect(screen.getByLabelText('Loading')).toBeInTheDocument();
-    });
-    expect(screen.queryByText('assistant ready')).toBeNull();
+    // Only ONE copy of the message exists — the server does not echo the user
+    // turn back, so no duplicate appears.
+    expect(screen.getAllByText('deploy the web')).toHaveLength(1);
   });
 
-  test('ready ack: exits connecting state', async () => {
+  test('error frame: surfaced as an inline alert', async () => {
     await renderOpen();
-
-    // Send the "ready" ack (server-side handshake response).
-    fireOnmessage(JSON.stringify({ type: 'status', code: 'ready' }));
-
-    // The loading skeleton should be gone.
+    fireFrame({ type: 'error', message: 'a-mode-unavailable: use full session.' });
     await waitFor(() => {
-      expect(screen.queryByLabelText('Loading')).toBeNull();
+      expect(screen.getByRole('alert')).toHaveTextContent('a-mode-unavailable');
     });
   });
 
-  test('post-ack structured output: displayed as a message', async () => {
+  test('non-JSON frames are dropped, never surfaced as chat', async () => {
     await renderOpen();
-
-    // Ack first.
-    fireOnmessage(JSON.stringify({ type: 'status', code: 'ready' }));
-
-    // Then structured output.
-    fireOnmessage(
-      JSON.stringify({ type: 'output', text: 'Hello from assistant' }),
-    );
-
-    // The message should appear in the DOM.
-    await waitFor(() => {
-      expect(screen.getByText('Hello from assistant')).toBeInTheDocument();
+    await ready();
+    act(() => {
+      h.socket!.onmessage!(new MessageEvent('message', { data: 'raw pty noise' }));
     });
-    // The empty-state prompt should be gone.
-    expect(screen.queryByText(/Ask the assistant anything/)).toBeNull();
-  });
-
-  test('post-ack raw frame: handled gracefully as assistant output', async () => {
-    await renderOpen();
-
-    // Ack first.
-    fireOnmessage(JSON.stringify({ type: 'status', code: 'ready' }));
-
-    // A non-JSON frame after the ack (should never happen in structured mode
-    // but handled gracefully if it does).
-    fireOnmessage('unexpected raw text');
-
-    await waitFor(() => {
-      expect(screen.getByText('unexpected raw text')).toBeInTheDocument();
-    });
-  });
-
-  test('pre-ack raw + ack + structured output: full sequence', async () => {
-    await renderOpen();
-
-    // 1. Pre-ack raw frame — must NOT surface.  Dock is in connecting/loading state.
-    fireOnmessage('assistant ready\n');
-
-    // Confirm loading state is shown (not the raw text).
-    await waitFor(() => {
-      expect(screen.getByLabelText('Loading')).toBeInTheDocument();
-    });
-    expect(screen.queryByText('assistant ready')).toBeNull();
-
-    // 2. "ready" ack.
-    fireOnmessage(JSON.stringify({ type: 'status', code: 'ready' }));
-
-    await waitFor(() => {
-      expect(screen.queryByLabelText('Loading')).toBeNull();
-    });
-
-    // 3. Structured output.
-    fireOnmessage(
-      JSON.stringify({ type: 'output', text: 'analysis complete' }),
-    );
-
-    // The structured output appears.
-    await waitFor(() => {
-      expect(screen.getByText('analysis complete')).toBeInTheDocument();
-    });
-
-    // The pre-ack raw frame is NOT visible.
-    expect(screen.queryByText('assistant ready')).toBeNull();
+    expect(screen.queryByText('raw pty noise')).toBeNull();
   });
 });
 
@@ -258,9 +288,9 @@ describe('AssistantDockHost — DOCK-02 header (THR-030)', () => {
     expect(screen.getByText(/operates your runtime/)).toBeInTheDocument();
   });
 
-  test('status line shows a live "Connected" label after the ready ack', async () => {
+  test('status line shows a live "Connected" label after the ready status', async () => {
     await renderOpen();
-    fireOnmessage(JSON.stringify({ type: 'status', code: 'ready' }));
+    fireFrame({ type: 'status', code: 'ready' });
     await waitFor(() => {
       expect(screen.getByText('Connected')).toBeInTheDocument();
     });
