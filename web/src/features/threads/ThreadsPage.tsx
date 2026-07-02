@@ -1,7 +1,7 @@
 /**
  * ThreadsPage — list + detail reshape (§4.2, design-overhaul).
  *
- * LIST: each row shows LAST SPEAKER, STATUS PILL, TURN BUDGET X/500,
+ * LIST: each row shows LAST SPEAKER, STATUS PILL,
  * and a crescent-moon marker for dream-originated threads.
  *
  * DETAIL: turn cards; SYSTEM CARDS visually distinct from agent-turn
@@ -42,7 +42,6 @@ import {
   useThreadsList,
 } from '@/hooks/threads';
 import { ArchiveDialog } from './ArchiveDialog';
-import { ExtendDialog } from './ExtendDialog';
 import { InviteDialog } from './InviteDialog';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
@@ -244,8 +243,6 @@ export function ThreadsPage(): JSX.Element {
   >(undefined);
   const [showInvite, setShowInvite] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
-  const [showExtend, setShowExtend] = useState(false);
-
   const openNew = () => {
     setNewPrefill(undefined);
     setShowNew(true);
@@ -444,7 +441,7 @@ export function ThreadsPage(): JSX.Element {
                     needsYou={false}
                     active={t.thread_id === threadId}
                     fromDream={!!t.composed_from_dream_id}
-                    meta={<span>{S.turnBudget(t.turns_used, t.turn_cap)}</span>}
+                    meta={undefined}
                     href={path}
                     onSelect={() => navigate(path)}
                   />
@@ -472,7 +469,6 @@ export function ThreadsPage(): JSX.Element {
           backHref={routes.inbox()}
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
-          onExtend={() => setShowExtend(true)}
           composer={
             <Composer
               agents={agents}
@@ -518,12 +514,7 @@ export function ThreadsPage(): JSX.Element {
             open={showArchive}
             onClose={() => setShowArchive(false)}
           />
-          <ExtendDialog
-            threadId={threadId}
-            currentCap={activeThread.data?.turn_cap ?? 500}
-            open={showExtend}
-            onClose={() => setShowExtend(false)}
-          />
+
         </>
       )}
     </>
@@ -545,8 +536,6 @@ interface DetailColumnProps {
         status: string;
         started_at: string;
         participants: string[];
-        turns_used: number;
-        turn_cap: number;
         summary: string | null;
         composed_from_dream_id?: string | null;
       }
@@ -558,7 +547,6 @@ interface DetailColumnProps {
   backHref: string;
   onInvite: () => void;
   onArchive: () => void;
-  onExtend: () => void;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -574,7 +562,6 @@ function DetailColumn({
   backHref,
   onInvite,
   onArchive,
-  onExtend,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -652,14 +639,11 @@ function DetailColumn({
         subject={thread.subject}
         status={threadStatusOrFallback(thread.status)}
         participants={thread.participants}
-        turnsUsed={thread.turns_used}
-        turnCap={thread.turn_cap}
         archiveSummary={thread.summary}
         dreamOriginated={isDreamOriginated}
         actions={
           <>
             <Button variant="ghost" size="sm" onClick={onInvite} disabled={!open} title="Invite (I)">Invite</Button>
-            <Button variant="ghost" size="sm" onClick={onExtend} disabled={!open} title="Extend turn cap">Extend</Button>
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
             {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
             {slug && thread.participants[0] && (
@@ -718,15 +702,6 @@ function DetailColumn({
             >
               {thread.status === 'open' ? 'active' : 'archived'}
             </span>
-          </div>
-
-          {/* Turn budget */}
-          <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Turn budget</h3>
-            <p className="font-display text-text-primary text-2xl font-medium tracking-tight tabular-nums">
-              {thread.turns_used}
-              <span className="text-text-muted text-lg font-normal">/{thread.turn_cap}</span>
-            </p>
           </div>
 
           {/* Opened */}
@@ -930,10 +905,6 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
       return `invited ${payload.agent}`;
     case 'participant_added':
       return `added ${payload.agent_name}`;
-    case 'extended':
-      return `turn cap raised to ${payload.new_cap}`;
-    case 'turn_cap_extended':
-      return `turn cap raised to ${payload.new_cap}`;
     case 'archive_requested':
       return 'archive requested';
     case 'archived':

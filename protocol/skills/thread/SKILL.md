@@ -59,7 +59,50 @@ Reply when:
 
 ### Attach files to a reply
 
-If your reply needs a file, upload it as a shared artifact first:
+Files attached via `--attach` or included in the `attachments` payload are now
+**thread-scoped by default** (TASK-1616). They are stored in the thread's private
+attachment store and are NOT visible to the rest of the org.
+
+**Default path (thread-scoped):** use `--attach` on reply/send/compose:
+
+    happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json --attach /tmp/file.ext
+
+This uploads the file to the thread's private store and includes an
+`attachment_id` ref in the payload. Compose attachments are sent as
+multipart form data and stored thread-scoped by default. Recipients
+list and download using their invocation token for proof:
+
+Write `/tmp/att-list-<thread_id>.json`:
+```json
+{"thread_id": "<id>", "agent": "<your name>", "invocation_token": "<token>"}
+```
+Then:
+
+    happyranch threads attachments list --org <slug> --from-file /tmp/att-list-<id>.json
+
+Or inline (single-line):
+
+    happyranch threads attachments list --org <slug> --thread-id <id> --agent <your name> --invocation-token <token>
+
+To download an attachment, write `/tmp/att-get-<thread_id>.json`:
+```json
+{"thread_id": "<id>", "attachment_id": "<att-id>", "agent": "<your name>", "invocation_token": "<token>"}
+```
+Then:
+
+    happyranch threads attachments get --org <slug> --from-file /tmp/att-get-<id>.json --output /tmp/file.ext
+
+Or inline:
+
+    happyranch threads attachments get --org <slug> --thread-id <id> <attachment-id> --agent <your name> --invocation-token <token> --output /tmp/file.ext
+
+The founder (web UI / bearer token) may also list/download without these
+proofs. Agent callers must provide both `agent` and `invocation_token`.
+
+**Explicit shared-artifact escape hatch (for cross-task handoffs):**
+
+When you need a file to be visible across tasks or threads, use the pre-upload
+pattern with `--shared`:
 
     happyranch artifacts put /tmp/file.ext --agent <your name> --name <artifact-name> --org <slug>
 
@@ -67,19 +110,12 @@ Then include the artifact reference in your reply payload:
 
     "attachments": [{"artifact_name": "<artifact-name>", "display_name": "file.ext"}]
 
-Recipients download attachments with:
+Recipients download shared-artifact attachments with:
 
     happyranch artifacts get <artifact-name> --output /tmp/file.ext --org <slug>
 
-The terminal callback remains the normal single-line command:
-
-    happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
-
-Convenience upload during the terminal callback is also supported:
-
-    happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json --attach /tmp/file.ext
-
-Do not use shell separators or multiline continuations.
+Legacy shared artifact refs (using `artifact_name`) continue to work for
+existing payloads.
 
 ### Decline
 
@@ -252,8 +288,9 @@ contributes:
 
 Posting appends the message attributed to you, increments the thread's turn
 count by one, and mints a reply turn for every **other** participant (not
-you). It fails if you are not a participant, the thread is not open, or the
-turn cap is reached.
+you). It fails if you are not a participant or the thread is not open.
+Turn count is tracked and displayed but no longer gates posting; there is
+no per-thread turn cap enforcement.
 
 ## What NOT to do
 

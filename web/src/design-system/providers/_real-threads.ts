@@ -25,7 +25,6 @@ import type {
 import type {
   ArchiveArgs,
   ComposeArgs,
-  ExtendArgs,
   InviteArgs,
   MutationLike,
   QueryLike,
@@ -252,21 +251,6 @@ function useResumeThread(threadId: string): MutationLike<
   });
 }
 
-function useExtendCap(threadId: string): MutationLike<
-  ExtendArgs,
-  Awaited<ReturnType<typeof threadsApi.extendThreadCap>>
-> {
-  const slug = useRealOrgSlug();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: ExtendArgs) =>
-      threadsApi.extendThreadCap(slug, threadId, body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
-    },
-  });
-}
-
 function useAbortReplies(threadId: string): MutationLike<
   void,
   Awaited<ReturnType<typeof threadsApi.abortReplies>>
@@ -298,6 +282,5 @@ export const realThreadsApi: ThreadsApi = {
   useInviteAgent,
   useArchiveThread,
   useResumeThread,
-  useExtendCap,
   useAbortReplies,
 };

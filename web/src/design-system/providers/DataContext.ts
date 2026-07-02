@@ -94,9 +94,6 @@ export type ArchiveResult = Awaited<ReturnType<typeof threadsApi.archiveThread>>
 export type ResumeArgs = void;
 export type ResumeResult = Awaited<ReturnType<typeof threadsApi.resumeThread>>;
 
-export type ExtendArgs = Parameters<typeof threadsApi.extendThreadCap>[2];
-export type ExtendResult = Awaited<ReturnType<typeof threadsApi.extendThreadCap>>;
-
 export type AbortRepliesArgs = void;
 export type AbortRepliesResult = Awaited<ReturnType<typeof threadsApi.abortReplies>>;
 
@@ -121,7 +118,6 @@ export interface ThreadsApi {
   useInviteAgent: (threadId: string) => MutationLike<InviteArgs, InviteResult>;
   useArchiveThread: (threadId: string) => MutationLike<ArchiveArgs, ArchiveResult>;
   useResumeThread: (threadId: string) => MutationLike<ResumeArgs, ResumeResult>;
-  useExtendCap: (threadId: string) => MutationLike<ExtendArgs, ExtendResult>;
   useAbortReplies: (threadId: string) => MutationLike<AbortRepliesArgs, AbortRepliesResult>;
 }
 

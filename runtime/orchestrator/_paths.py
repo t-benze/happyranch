@@ -40,3 +40,7 @@ class OrgPaths:
     @property
     def artifacts_dir(self) -> Path:
         return self.root / "artifacts"
+
+    @property
+    def threads_dir(self) -> Path:
+        return self.root / "threads"

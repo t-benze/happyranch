@@ -14,14 +14,15 @@ from runtime.models import (
     DreamStatus,
     TaskRecord,
     TaskStatus,
+    ThreadAttachment,
     ThreadInvocation,
     ThreadInvocationPurpose,
     ThreadInvocationStatus,
-    ThreadAttachment,
     ThreadMessage,
     ThreadMessageKind,
     ThreadParticipant,
     ThreadRecord,
+    ThreadScopedAttachment,
     ThreadStatus,
     TokenUsage,
 )
@@ -652,6 +653,20 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_thread_message_attachments_message
                 ON thread_message_attachments(thread_id, message_seq);
 
+            CREATE TABLE IF NOT EXISTS thread_scoped_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attachment_id TEXT NOT NULL UNIQUE,
+                thread_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_scoped_attachments_thread
+                ON thread_scoped_attachments(thread_id);
+
             CREATE TABLE IF NOT EXISTS thread_invocations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 thread_id TEXT NOT NULL,
@@ -732,6 +747,13 @@ class Database:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)"
         )
+        # Thread attachment thread_attachment_id column (additive, TASK-1616).
+        try:
+            self._conn.execute(
+                "ALTER TABLE thread_message_attachments ADD COLUMN thread_attachment_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
         # NOTE: the for-loop below contains DDL (RENAME COLUMN) that has no
         # explicit commit; the commit() following the UPDATE team='engineering'
         # block durably persists those DDLs. Don't insert returning code between.
@@ -3192,8 +3214,9 @@ class Database:
                 self._conn.execute(
                     "INSERT INTO thread_message_attachments ("
                     "thread_id, message_seq, ordinal, artifact_name, display_name, "
-                    "size_bytes, content_type, uploaded_by, created_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "size_bytes, content_type, uploaded_by, created_at, "
+                    "thread_attachment_id"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         thread_id,
                         next_seq,
@@ -3204,6 +3227,7 @@ class Database:
                         attachment.content_type,
                         attachment.uploaded_by,
                         _now().isoformat(),
+                        attachment.thread_attachment_id,
                     ),
                 )
             self._conn.commit()
@@ -3233,6 +3257,7 @@ class Database:
                     size_bytes=row["size_bytes"],
                     content_type=row["content_type"],
                     uploaded_by=row["uploaded_by"],
+                    thread_attachment_id=row["thread_attachment_id"],
                 )
             )
         return out
@@ -3291,6 +3316,100 @@ class Database:
             attachments=attachments_by_seq.get(seq, []),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
+
+    # --- Thread-scoped attachments (TASK-1616) ---
+
+    @_synchronized
+    def next_thread_attachment_id(self) -> str:
+        cursor = self._conn.execute(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM thread_scoped_attachments"
+        )
+        n = cursor.fetchone()[0]
+        return f"att-{n:03d}"
+
+    @_synchronized
+    def insert_thread_scoped_attachment(
+        self,
+        *,
+        attachment_id: str,
+        thread_id: str,
+        display_name: str,
+        size_bytes: int | None,
+        content_type: str | None,
+        uploaded_by: str,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO thread_scoped_attachments "
+            "(attachment_id, thread_id, display_name, size_bytes, "
+            "content_type, uploaded_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                attachment_id,
+                thread_id,
+                display_name,
+                size_bytes,
+                content_type,
+                uploaded_by,
+                _now().isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def get_thread_scoped_attachment(
+        self, thread_id: str, attachment_id: str
+    ) -> ThreadScopedAttachment | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_scoped_attachments "
+            "WHERE thread_id = ? AND attachment_id = ?",
+            (thread_id, attachment_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return ThreadScopedAttachment(
+            attachment_id=row["attachment_id"],
+            thread_id=row["thread_id"],
+            display_name=row["display_name"],
+            size_bytes=row["size_bytes"],
+            content_type=row["content_type"],
+            uploaded_by=row["uploaded_by"],
+            created_at=row["created_at"],
+        )
+
+    @_synchronized
+    def list_thread_scoped_attachments(
+        self, thread_id: str
+    ) -> list[ThreadScopedAttachment]:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_scoped_attachments "
+            "WHERE thread_id = ? ORDER BY created_at",
+            (thread_id,),
+        )
+        return [
+            ThreadScopedAttachment(
+                attachment_id=row["attachment_id"],
+                thread_id=row["thread_id"],
+                display_name=row["display_name"],
+                size_bytes=row["size_bytes"],
+                content_type=row["content_type"],
+                uploaded_by=row["uploaded_by"],
+                created_at=row["created_at"],
+            )
+            for row in cursor.fetchall()
+        ]
+
+    @_synchronized
+    def delete_thread_scoped_attachment(
+        self, thread_id: str, attachment_id: str
+    ) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM thread_scoped_attachments "
+            "WHERE thread_id = ? AND attachment_id = ?",
+            (thread_id, attachment_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     @_synchronized
     def mint_thread_invocation(

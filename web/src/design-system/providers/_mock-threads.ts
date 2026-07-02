@@ -19,8 +19,6 @@ import type {
   ArchiveResult,
   ComposeArgs,
   ComposeResult,
-  ExtendArgs,
-  ExtendResult,
   InviteArgs,
   InviteResult,
   MutationLike,
@@ -360,39 +358,6 @@ function useResumeThread(threadId: string): MutationLike<ResumeArgs, ResumeResul
   });
 }
 
-function useExtendCap(threadId: string): MutationLike<ExtendArgs, ExtendResult> {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (body: ExtendArgs) => {
-      await sleep(120);
-      const idx = store.threads.findIndex((t) => t.thread_id === threadId);
-      if (idx >= 0) {
-        store.threads[idx] = { ...store.threads[idx], turn_cap: body.new_cap };
-      }
-      const seq = nextSeq(threadId);
-      store.messages[threadId] = [
-        ...(store.messages[threadId] ?? []),
-        {
-          seq,
-          speaker: 'founder',
-          kind: 'system',
-          body_markdown: null,
-          decline_reason: null,
-          system_payload: { event: 'extended', new_cap: body.new_cap },
-          attachments: [],
-          created_at: '2026-05-15T12:00:00Z',
-          responder_status: [],
-        },
-      ];
-      return { thread_id: threadId, turn_cap: body.new_cap };
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
-      qc.invalidateQueries({ queryKey: ['mock-thread-messages', threadId] });
-    },
-  });
-}
-
 function useAbortReplies(threadId: string): MutationLike<void, { thread_id: string; aborted_count: number }> {
   const qc = useQueryClient();
   return useMutation({
@@ -431,7 +396,6 @@ export const mockThreadsApi: ThreadsApi = {
   useInviteAgent,
   useArchiveThread,
   useResumeThread,
-  useExtendCap,
   useAbortReplies,
 };
 

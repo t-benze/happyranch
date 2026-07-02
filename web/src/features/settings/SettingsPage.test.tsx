@@ -200,7 +200,10 @@ describe('SettingsPage — Organization section', () => {
 
     // All org fields show "Applies live" badge
     const liveBadges = within(content).getAllByText('Applies live');
-    expect(liveBadges.length).toBeGreaterThanOrEqual(8); // timeout + dreaming fields + threads fields
+    expect(liveBadges.length).toBeGreaterThanOrEqual(7); // timeout + dreaming fields + threads fields (minus removed turn cap)
+
+    // Default turn cap must NOT be rendered (THR-046 msg126)
+    expect(within(content).queryByText('Default turn cap')).not.toBeInTheDocument();
   });
 
   test('Clean⇄Dirty: save bar appears when form is dirty', async () => {

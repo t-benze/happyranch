@@ -41,7 +41,6 @@ interface FieldState {
   dreamInclude: string;
   dreamExclude: string;
   threadsEnabled: boolean;
-  threadsCap: string;
   threadsTimeout: string;
 }
 
@@ -62,7 +61,6 @@ function buildFieldState(org: OrgSettings): FieldState {
     dreamInclude: org.dreaming.agents.include.join(', '),
     dreamExclude: org.dreaming.agents.exclude.join(', '),
     threadsEnabled: org.threads.enabled,
-    threadsCap: String(org.threads.default_turn_cap),
     threadsTimeout:
       org.threads.invocation_timeout_seconds === null
         ? ''
@@ -131,7 +129,6 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       filteredInclude !== savedInclude ||
       filteredExclude !== savedExclude ||
       fields.threadsEnabled !== lastSaved.threadsEnabled ||
-      fields.threadsCap !== lastSaved.threadsCap ||
       fields.threadsTimeout !== lastSaved.threadsTimeout
     );
   }, [fields, lastSaved, rosterNames]);
@@ -168,11 +165,9 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       },
     };
 
-    const parsedCap = Number(fields.threadsCap);
     const parsedThreadTimeout = fields.threadsTimeout.trim() ? Number(fields.threadsTimeout) : null;
     patch.threads = {
       enabled: fields.threadsEnabled,
-      default_turn_cap: !isNaN(parsedCap) ? parsedCap : undefined,
       invocation_timeout_seconds: parsedThreadTimeout,
     };
     return patch;
@@ -316,15 +311,6 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           <BooleanToggle
             value={fields.threadsEnabled}
             onChange={(v) => update('threadsEnabled', v)}
-          />
-        </EditableRow>
-        <EditableRow label="Default turn cap" badge="Applies live">
-          <input
-            type="number"
-            min={1}
-            value={fields.threadsCap}
-            onChange={(e) => update('threadsCap', e.target.value)}
-            className="bg-surface-sunken border-border-default text-text-primary w-28 rounded-lg border px-2 py-0.5 text-sm"
           />
         </EditableRow>
         <EditableRow label="Invocation timeout (s)" badge="Applies live">
