@@ -308,3 +308,101 @@ completion report with `status=blocked` and an EMPTY `waiting_on_job_ids` is a
 MALFORMED report — the leg is treated as FAILED, and the parent wakes for a
 manager decision step (not cascade-failed). Self-blocked reviews that omit a
 verdict waste the delegation and burn a re-spawn round.
+
+---
+
+## 4. Runtime-Managed Skill Policy (CONTEXT/ADMISSION)
+
+The runtime-managed skill policy is an agent **context/admission** mechanism
+— it controls which approved skills appear in an agent session's compact skill
+index. It is **explicitly NOT a permission layer**. Capability remains
+governed ONLY by the existing permission model (§3). Skills do not grant
+tools, credentials, network access, filesystem access, sandbox policy, or
+permission-map/allow-rule/auth changes.
+
+### 4.1 Two-Gate Model
+
+A skill reaches an agent session only when **both** gates pass:
+
+1. **Catalog Gate** — the registry entry is approved for catalog use.
+   - `approval_state` must be `approved`.
+   - `status` must be `enabled`.
+   - **Founder ruling (THR-055 seq 17):** `high_impact_policy` skills require
+     founder or designated-owner approval before catalog admission AND before
+     EACH version upgrade. Approval is version-specific — approval of `1.0.0`
+     does not imply approval of `1.1.0`. Upgrading a `high_impact_policy`
+     skill returns it to `pending_review` / unavailable until the new version
+     is approved.
+   - `draft`, `pending_review`, `rejected`, `deprecated`, or missing approval
+     metadata blocks the catalog gate.
+
+2. **Eligibility Gate** — org/team/agent policy makes the skill eligible.
+   - Additive inheritance with explicit deny (`deny` wins over `allow`):
+     ```
+     effective = approved_catalog
+       ∩ (org.allow ∪ team.allow ∪ agent.allow)
+       \ (org.deny ∪ team.deny ∪ agent.deny)
+     ```
+   - An unapproved skill remains unavailable even if eligibility allows it.
+   - A disabled registry entry remains unavailable even if approved and eligible.
+   - Unknown skill ids in eligibility config produce validation warnings and
+     are excluded from the session index.
+
+### 4.2 Policy Classes
+
+| Policy class | Governance |
+| --- | --- |
+| `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids. Owner or team manager may approve. |
+| `high_impact_policy` | Pricing, legal/compliance, security, production release, escalation thresholds. Founder or designated-owner approval required for catalog admission AND each version upgrade. |
+| `system_contract` | Runtime protocol and mandatory operating-contract skills (e.g., `start-task`, `thread`, `jobs`). **Outside the toggleable catalog** — not shown, not toggleable. |
+
+### 4.3 Compact Session Skill INDEX
+
+At session creation, HappyRanch injects a compact skill **index** into the
+agent prompt — not full skill bodies. Each index line carries: `id`, `version`,
+`description`, `when_to_use`, and `source` (the on-disk path to `SKILL.md`).
+The agent loads the full skill body on demand through the executor's normal
+skill-loading mechanism.
+
+Format:
+```
+- hr:<slug>@<version> — <description>. <when_to_use> Load full instructions from <source>/SKILL.md.
+```
+
+The compact index is stable and deterministic for the same registry + config
+inputs. Skills omitted by policy do not appear. Global CLI skills are untouched.
+
+### 4.4 Admin Surface (CLI-first)
+
+V1 provides CLI commands that read the file/YAML-backed registry + resolver +
+exposure directly from disk (no daemon round-trip):
+
+- `happyranch skills catalog list` — list all registered skills.
+- `happyranch skills catalog validate` — validate registry entries and
+  eligibility policy; surfaces unknown-id warnings and malformed skill.yaml
+  entries.
+- `happyranch skills effective --agent <name>` — show effective skills for an
+  agent, with provenance (which scope+rule admitted/denied each skill).
+- `happyranch skills policy explain <skill_id> --agent <name>` — explain why
+  a skill is or isn't available, including both gate results, approval
+  records, and eligibility provenance.
+
+Registry and eligibility mutations emit audit rows under the `config:skills`
+scope prefix (matching the established `config:<section>` convention from
+THR-035).
+
+### 4.5 Fenced Non-Goals
+
+The following are **explicitly out of scope** for the runtime-managed skill
+policy:
+
+- Skills **do not** grant tools, credentials, network access, filesystem
+  access, sandbox policy, permission maps, allow-rule, or auth changes.
+- System/contract skills are **not toggleable** — they are outside the catalog.
+- **No SQLite migration** — v1 is file/YAML-backed only.
+- **No web Settings UI** or marketplace in v1.
+- **No executable/permission-bearing package surface** — v1 packages include
+  `SKILL.md`, `skill.yaml`, and optional `references/` and `assets/`
+  directories only.
+- **No auth or permission-model change** — the existing executor-native
+  sandboxing + system prompt guardrails remain the sole capability gate.

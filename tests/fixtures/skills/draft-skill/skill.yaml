@@ -1,0 +1,13 @@
+id: hr:draft-skill
+slug: draft-skill
+name: Draft Skill
+version: 1.0.0
+description: A skill that is still in draft.
+when_to_use: Should not be exposed.
+owner: engineering_manager
+source: runtime/skills/draft-skill
+policy_class: standard_operational
+approval_state: draft
+approved_by: null
+approved_at: null
+status: enabled

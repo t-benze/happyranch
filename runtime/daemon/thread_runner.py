@@ -28,6 +28,7 @@ from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.orchestrator.org_config import (
     OrgConfig,
     render_current_time_line,
+    resolve_managed_skills_index,
     resolve_org_timezone_display,
 )
 
@@ -323,6 +324,7 @@ def build_thread_prompt(
     triggering_seq: int,
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
+    managed_skills_index: str = "",
 ) -> str:
     triggering = next((m for m in messages if m.seq == triggering_seq), None)
     parts_str = ", ".join(p.agent_name for p in participants)
@@ -341,11 +343,12 @@ def build_thread_prompt(
     # wall clock as every other agent session.
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
+    skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
     return (
         f"{doctrine}"
         f"You are participating in thread {thread.id}: \"{thread.subject}\".\n\n"
         f"Participants: {parts_str}.\n"
-        f"current_time: {current_time}\n"
+        f"current_time: {current_time}{skills_block}\n"
         f"Started: {thread.started_at.isoformat()}. {forwarded}\n\n"
         f"Full message history follows. Most recent message is at the bottom.\n\n"
         f"---\n{history}\n\n"
@@ -369,6 +372,7 @@ def build_thread_delta_prompt(
     triggering_message: "ThreadMessage | None",
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
+    managed_skills_index: str = "",
 ) -> str:
     """Turn 2+ prompt for a resumed agent session (issue #53).
 
@@ -390,11 +394,12 @@ def build_thread_delta_prompt(
     delta = "\n".join(_render_message(m) for m in new_messages)
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
+    skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
     return (
         f"{doctrine}"
         f"Continuing thread {thread.id}: \"{thread.subject}\". "
         f"New activity since your last turn follows.\n\n"
-        f"current_time: {current_time}\n\n"
+        f"current_time: {current_time}{skills_block}\n\n"
         f"---\n{delta}\n\n"
         f"You have been invoked because:\n  {note}\n\n"
         f"Your invocation_token for this turn is: {invocation_token}\n"
@@ -505,6 +510,14 @@ async def run_invocation(
     except Exception:
         org_config = OrgConfig()
 
+    # Resolve managed skills index once for all 3 prompt builders in this invocation.
+    try:
+        managed_skills_index = resolve_managed_skills_index(
+            paths=paths, agent_name=inv.agent_name,
+        )
+    except Exception:
+        managed_skills_index = ""
+
     # Resolve timeout (org override → code default).
     timeout: int = settings.session_timeout_seconds
     if org_config.threads_invocation_timeout_seconds is not None:
@@ -531,6 +544,7 @@ async def run_invocation(
                 invocation_token=invocation_token, invoked_agent=inv.agent_name,
                 purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                 triggering_message=triggering, org_config=org_config,
+                managed_skills_index=managed_skills_index,
             )
             resume_sid = stored_sid
             shown_seqs = [m.seq for m in new_messages]
@@ -540,6 +554,7 @@ async def run_invocation(
                 invocation_token=invocation_token, invoked_agent=inv.agent_name,
                 purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                 org_config=org_config,
+                managed_skills_index=managed_skills_index,
             )
             shown_seqs = [m.seq for m in messages]
 
@@ -596,6 +611,7 @@ async def run_invocation(
                     invocation_token=invocation_token, invoked_agent=inv.agent_name,
                     purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                     org_config=org_config,
+                    managed_skills_index=managed_skills_index,
                 )
                 # Re-apply the guardrail for the fallback prompt too.
                 escalation_note2 = _maybe_unresolved_escalations_note(

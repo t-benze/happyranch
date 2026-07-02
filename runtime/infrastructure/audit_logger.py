@@ -1174,3 +1174,34 @@ class AuditLogger:
                 "after": after,
             },
         )
+
+    # --- Skills config writes (THR-055) ---
+    #
+    # Follows the same config:<section> scope-prefix convention as
+    # log_org_config_write (THR-035 / TASK-967). Uses ``config:skills``
+    # as the namespaced task_id for registry and eligibility policy
+    # mutation audit rows — no schema change, no task_id overload.
+
+    def log_skills_config_write(
+        self,
+        *,
+        subsection: str | None = None,
+        tiers: list[str],
+        before: dict,
+        after: dict,
+        actor: str = "founder",
+    ) -> None:
+        scope_id = "config:skills"
+        if subsection:
+            scope_id = f"config:skills:{subsection}"
+        self._db.insert_audit_log(
+            task_id=scope_id,
+            agent=actor,
+            action="skills_config_write",
+            payload={
+                "subsection": subsection,
+                "tiers": tiers,
+                "before": before,
+                "after": after,
+            },
+        )
