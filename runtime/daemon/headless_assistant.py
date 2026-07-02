@@ -256,6 +256,165 @@ register_adapter("_null", _DEFAULT_NULL_ADAPTER)
 
 
 # ---------------------------------------------------------------------------
+# OpenCodeAdapter (PR-2)
+# ---------------------------------------------------------------------------
+
+class OpenCodeAdapter:
+    """Headless adapter for opencode (v1.14.31+, ``run --format json``).
+
+    opencode emits NDJSON events: ``step_start``, ``text``, ``tool_use``,
+    ``step_finish``, ``result``.  Session continuity via ``-s <session_id>``
+    or ``-c`` (last session).
+
+    Permission posture
+    ------------------
+    opencode has no workspace-level ``opencode.json`` in the bootstrapped
+    assistant workspace (the bootstrap doesn't create one — see §3 verification
+    in the THR-056 design).  The adapter therefore adds
+    ``--dangerously-skip-permissions`` to every invocation so the headless run
+    doesn't hang on interactive approval prompts.
+
+    **This is flagged as gated** — it is a permission-posture change that
+    requires founder approval (design §3).  Until that is resolved, the adapter
+    is functional but the posture is noted in the PR.
+    """
+
+    def __init__(self) -> None:
+        self._last_session_id: str | None = None
+
+    # ---- HeadlessAdapter contract ----
+
+    def build_turn_argv(
+        self,
+        *,
+        prompt: str,
+        resume_id: str | None,
+        permission_posture: PermissionPosture,
+    ) -> list[str]:
+        argv = ["opencode", "run", "--format", "json", "--dangerously-skip-permissions"]
+        if resume_id:
+            argv.extend(["-s", resume_id])
+        else:
+            argv.append("-c")
+        argv.append(prompt)
+        return argv
+
+    def parse_event(self, raw_line: str) -> TurnFrame | None:
+        line = raw_line.strip()
+        if not line or not line.startswith("{"):
+            return None
+        try:
+            event = _json.loads(line)
+        except (_json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(event, dict):
+            return None
+
+        # Track session id from every event that carries it.
+        sid = event.get("sessionID")
+        if isinstance(sid, str) and sid:
+            self._last_session_id = sid
+
+        etype = event.get("type")
+        if etype == "text":
+            part = event.get("part")
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    return TurnFrame.text_delta(text=text)
+        elif etype == "tool_use":
+            part = event.get("part")
+            if isinstance(part, dict):
+                tool_name = part.get("tool")
+                if isinstance(tool_name, str):
+                    state = part.get("state")
+                    return TurnFrame.tool_call(
+                        name=tool_name,
+                        input=state if isinstance(state, dict) else None,
+                    )
+        return None
+
+    def extract_session_id(self, frame: TurnFrame) -> str | None:
+        return self._last_session_id
+
+
+# ---------------------------------------------------------------------------
+# PiAdapter (PR-2)
+# ---------------------------------------------------------------------------
+
+class PiAdapter:
+    """Headless adapter for pi (v0.80.2+, ``-p --mode json``).
+
+    pi emits JSONL events: ``session``, ``agent_start``, ``turn_start``,
+    ``message_start``, ``message_update`` (with ``text_delta`` sub-events),
+    ``message_end``, ``turn_end``, ``agent_end``.
+    Session continuity via ``--session-id <id>`` (exact) or ``-c`` (last).
+
+    Containment posture
+    -------------------
+    pi is accepted **uncontained** per THR-056 design §3.  ``pi -p`` runs as
+    the invoking user with full access — no sandbox, no permission flags, no
+    approval gate.  This asymmetry is documented in the design and acknowledged
+    in the PR notes.
+    """
+
+    def __init__(self) -> None:
+        self._last_session_id: str | None = None
+
+    # ---- HeadlessAdapter contract ----
+
+    def build_turn_argv(
+        self,
+        *,
+        prompt: str,
+        resume_id: str | None,
+        permission_posture: PermissionPosture,
+    ) -> list[str]:
+        argv = ["pi", "-p", "--mode", "json"]
+        if resume_id:
+            argv.extend(["--session-id", resume_id])
+        else:
+            argv.append("-c")
+        argv.append(prompt)
+        return argv
+
+    def parse_event(self, raw_line: str) -> TurnFrame | None:
+        line = raw_line.strip()
+        if not line or not line.startswith("{"):
+            return None
+        try:
+            event = _json.loads(line)
+        except (_json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(event, dict):
+            return None
+
+        etype = event.get("type")
+
+        # Track session id from the initial 'session' event.
+        if etype == "session":
+            sid = event.get("id")
+            if isinstance(sid, str) and sid:
+                self._last_session_id = sid
+
+        if etype == "message_update":
+            ame = event.get("assistantMessageEvent")
+            if isinstance(ame, dict) and ame.get("type") == "text_delta":
+                delta = ame.get("delta")
+                if isinstance(delta, str) and delta:
+                    return TurnFrame.text_delta(text=delta)
+        return None
+
+    def extract_session_id(self, frame: TurnFrame) -> str | None:
+        return self._last_session_id
+
+
+# ---- init: register PR-2 adapters ----
+register_adapter("opencode", OpenCodeAdapter())
+register_adapter("pi", PiAdapter())
+
+
+# ---------------------------------------------------------------------------
 # AssistantConversation — per-workspace file persistence
 # ---------------------------------------------------------------------------
 
