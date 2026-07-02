@@ -193,16 +193,21 @@ cascade-failed. Instead:
    next decision step (existing behavior). REVISE-verdict auto-advance is
    unchanged.
 
-#### Fan-out (parallel delegation, Phase 1)
+#### Fan-out (parallel delegation)
 
 A manager may declare a fan-out decision (`action: fanout`) to spawn N children
-in parallel (2 ≤ N ≤ 8, read-only only). The orchestrator:
+in parallel (2 ≤ N ≤ 8). The orchestrator:
 
-1. **Validates** width, width_cap_ack, workspace presence, and scope. A child may optionally carry `then`/`expect_verdict` — a *pipeline carrier* (Phase 2) — whose legs are validated exactly like an inline `delegate + then` chain (each leg needs `agent` + `prompt`). Pipeline children stay read-only in this slice; mutating/worktree fan-out remains out of scope.
+1. **Validates** width, width_cap_ack, workspace presence, and scope. A child may optionally carry `then`/`expect_verdict` — a *pipeline carrier* (Phase 2) — whose legs are validated exactly like an inline `delegate + then` chain (each leg needs `agent` + `prompt`).
 2. **Atomically mints** all N children via `try_delegate_many`, transitioning
    the parent to `in_progress(delegated)` with `active_fanout` set (an additive
    JSON metadata column). For pipeline carriers, the child's inline chain is
    materialized on its own row (see Pipeline carriers below).
+   **Child task_type:** a child targeted at a team manager receives
+   `task_type='task'` so its delegate-chain decisions are parsed (mutating
+   fan-out, THR-056 msg39); a child targeted at a worker receives
+   `task_type='subtask'` (read-only). Pipeline carriers are always `subtask`
+   (they never run agent sessions of their own).
 3. **Parks** the parent — the existing `DELEGATED` barrier wakes it once when
    all N children are terminal (same CAS as single-child delegation).
 4. **Injects join context** into the manager's wake prompt: a structured block
@@ -212,6 +217,21 @@ in parallel (2 ≤ N ≤ 8, read-only only). The orchestrator:
    close.
 
 **Pipeline carriers (Phase 2).** A fan-out child that carries a non-empty `then` is a *carrier*: on spawn the orchestrator materializes its inline chain (`active_chain` on the child's row, via the same path as an ordinary `delegate + then`) instead of dispatching a bare read-only child. The composition is safe because `active_fanout` lives on the parent's row and `active_chain` lives on each child's row — **two independent columns on two different rows, never the same row, so there is no clobber** (the two-column-two-row invariant). Carrier detection is schema-free: a carrier is any task whose id is in its parent's `active_fanout.children_ids` and which has a non-empty `active_chain`; no new column. **Lifecycle rule: a carrier reaches a terminal state only after its own chain completes.** When a carrier's final leg matches its `expect_verdict`, the carrier has no session of its own to run — it terminates directly and feeds the parent's fan-out barrier (`_enqueue_parent_if_waiting`) without waking a manager. A carrier's internal legs never wake the parent; only the carrier's own terminal status counts toward the barrier.
+
+**Mutating children (THR-056 msg39, option 3).** A fan-out child targeted at a
+team manager that does NOT pre-declare `then`/`expect_verdict` (i.e., a plain PENDING
+child, not a pipeline carrier) receives `task_type='task'` instead of
+`task_type='subtask'`. Its agent session runs, and when it returns a
+`delegate` decision with an inline chain (`then` legs), the orchestrator
+parses the decision (since `task_type='task'`) and spawns the implementation
+subtree inside that branch using the standard chain mechanism. The child parks
+as `in_progress(delegated)` with `active_chain` set, and `_enqueue_parent_if_waiting`
+handles chain auto-advance exactly as for a top-level inline delegate chain.
+When its chain completes, it terminates and feeds the original fan-out
+parent's barrier. The fan-out parent does not join until ALL children
+(including mutating ones) are terminal. A mutating child's internal chain legs
+do not count toward the fan-out parent's barrier — only the mutating child's
+own terminal status does.
 
 Failure-join reuses bounded failure-recovery (§Failure-recovery contract):
 failed fan-out children individually consume re-spawn rounds; the parent wakes

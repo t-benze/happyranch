@@ -111,8 +111,9 @@ python -m runtime.daemon.pr_ci_merge \
 
 Both print structured JSON verdicts to stdout and exit with mapped codes (0 = success).
 The poll job runs with `review_required=false` through the existing jobs path; agents never
-get raw `gh pr merge` grants. Full workflow narrative (submit → blocked → resume →
-inspect → merge/revise) is deferred to PR #5.
+get raw `gh pr merge` grants. The full workflow narrative (submit → blocked → resume → inspect →
+merge/revise) is documented in `protocol/skills/jobs/SKILL.md` and
+`docs/agent-guides/features-and-invariants.md`.
 
 ### Token usage
 

@@ -353,6 +353,21 @@ class ThreadAttachment(BaseModel):
     size_bytes: int | None = None
     content_type: str | None = None
     uploaded_by: str
+    # Thread-scoped attachment id (mutually exclusive with artifact_name when non-None).
+    # When set, the attachment is a thread-scoped file stored in the thread's
+    # private attachment store rather than the org-shared ArtifactStore.
+    thread_attachment_id: str | None = None
+
+
+class ThreadScopedAttachment(BaseModel):
+    """A file stored in a thread's private attachment store."""
+    attachment_id: str
+    thread_id: str
+    display_name: str
+    size_bytes: int | None = None
+    content_type: str | None = None
+    uploaded_by: str
+    created_at: str = ""
 
 
 class ThreadMessage(BaseModel):
