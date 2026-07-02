@@ -1044,13 +1044,38 @@ class TestCallPathManagedSkillsIndex:
     # ── Thread runner: DELTA branch ──────────────────────────────────
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("allow,deny,expect_includes,expect_excludes", [
+        # Original case: single eligible standard_operational skill
+        (
+            ["hr:standard-skill"], [],
+            ["hr:standard-skill@1.0.0", "standard operational skill"],
+            ["hr:disabled-skill", "hr:draft-skill", "hr:system-contract-skill",
+             "hr:high-impact-skill"],
+        ),
+        # DENY-OVER-ALLOW: standard-skill both allowed+denied → excluded;
+        # independently-allowed high-impact-skill → still appears.
+        (
+            ["hr:standard-skill", "hr:high-impact-skill"], ["hr:standard-skill"],
+            ["hr:high-impact-skill@1.0.0", "high-impact policy skill"],
+            ["hr:standard-skill", "hr:disabled-skill", "hr:draft-skill",
+             "hr:system-contract-skill"],
+        ),
+        # EMPTY-ALLOW-UNION: no eligibility rules → nothing admitted.
+        (
+            None, None,
+            [],
+            ["hr:standard-skill", "hr:high-impact-skill", "hr:disabled-skill",
+             "hr:draft-skill", "hr:system-contract-skill"],
+        ),
+    ], ids=["eligible_only", "deny_over_allow", "empty_allow_union"])
     async def test_thread_runner_delta_injects_skills_index(
-        self, tmp_path, monkeypatch,
+        self, tmp_path, monkeypatch, allow, deny,
+        expect_includes, expect_excludes,
     ):
         """When a stored thread session exists, run_invocation takes the
         resume/delta path and injects the skills index into the delta prompt."""
         _seed_skills_and_config(
-            tmp_path, allow=["hr:standard-skill"],
+            tmp_path, allow=allow, deny=deny,
         )
 
         db = Database(tmp_path / "happyranch.db")
@@ -1126,28 +1151,50 @@ class TestCallPathManagedSkillsIndex:
         # New message present, old message excluded
         assert "m2 newest" in delta_prompt
         assert "m1 old" not in delta_prompt
-        # Eligible skill present
-        assert "hr:standard-skill@1.0.0" in delta_prompt
-        assert "A standard operational skill for testing." in delta_prompt
-        # Ineligible skills excluded
-        assert "hr:disabled-skill" not in delta_prompt
-        assert "hr:draft-skill" not in delta_prompt
-        assert "hr:system-contract-skill" not in delta_prompt
-        assert "hr:high-impact-skill" not in delta_prompt
-        # current_time co-injected
+        # Eligibility assertions (parametrized by case)
+        for inc in expect_includes:
+            assert inc in delta_prompt, f"Expected '{inc}' in delta prompt"
+        for exc in expect_excludes:
+            assert exc not in delta_prompt, f"Expected '{exc}' NOT in delta prompt"
+        # current_time co-injected (unchanged by skill index, THR-039)
         assert "current_time:" in delta_prompt
         assert "Asia/Shanghai" in delta_prompt
 
     # ── Thread runner: FALLBACK branch ───────────────────────────────
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("allow,deny,expect_includes,expect_excludes", [
+        # Original case: single eligible standard_operational skill
+        (
+            ["hr:standard-skill"], [],
+            ["hr:standard-skill@1.0.0", "standard operational skill"],
+            ["hr:disabled-skill", "hr:draft-skill", "hr:system-contract-skill",
+             "hr:high-impact-skill"],
+        ),
+        # DENY-OVER-ALLOW: standard-skill both allowed+denied → excluded;
+        # independently-allowed high-impact-skill → still appears.
+        (
+            ["hr:standard-skill", "hr:high-impact-skill"], ["hr:standard-skill"],
+            ["hr:high-impact-skill@1.0.0", "high-impact policy skill"],
+            ["hr:standard-skill", "hr:disabled-skill", "hr:draft-skill",
+             "hr:system-contract-skill"],
+        ),
+        # EMPTY-ALLOW-UNION: no eligibility rules → nothing admitted.
+        (
+            None, None,
+            [],
+            ["hr:standard-skill", "hr:high-impact-skill", "hr:disabled-skill",
+             "hr:draft-skill", "hr:system-contract-skill"],
+        ),
+    ], ids=["eligible_only", "deny_over_allow", "empty_allow_union"])
     async def test_thread_runner_fallback_injects_skills_index(
-        self, tmp_path, monkeypatch,
+        self, tmp_path, monkeypatch, allow, deny,
+        expect_includes, expect_excludes,
     ):
         """When the evicted-session retry fires, the fallback full prompt
         also injects the skills index."""
         _seed_skills_and_config(
-            tmp_path, allow=["hr:standard-skill"],
+            tmp_path, allow=allow, deny=deny,
         )
 
         db = Database(tmp_path / "happyranch.db")
@@ -1232,14 +1279,11 @@ class TestCallPathManagedSkillsIndex:
         # Fallback prompt contains the full message history
         fallback_prompt: str = capturer.calls[1]["prompt"]
         assert "Full message history follows" in fallback_prompt
-        # Eligible skill present in fallback prompt
-        assert "hr:standard-skill@1.0.0" in fallback_prompt
-        assert "A standard operational skill for testing." in fallback_prompt
-        # Ineligible skills excluded from fallback prompt
-        assert "hr:disabled-skill" not in fallback_prompt
-        assert "hr:draft-skill" not in fallback_prompt
-        assert "hr:system-contract-skill" not in fallback_prompt
-        assert "hr:high-impact-skill" not in fallback_prompt
-        # current_time co-injected in fallback prompt
+        # Eligibility assertions (parametrized by case)
+        for inc in expect_includes:
+            assert inc in fallback_prompt, f"Expected '{inc}' in fallback prompt"
+        for exc in expect_excludes:
+            assert exc not in fallback_prompt, f"Expected '{exc}' NOT in fallback prompt"
+        # current_time co-injected (unchanged by skill index, THR-039)
         assert "current_time:" in fallback_prompt
         assert "Asia/Shanghai" in fallback_prompt
