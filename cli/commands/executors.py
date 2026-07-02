@@ -57,13 +57,45 @@ def cmd_executors_register(args: argparse.Namespace) -> None:
         print("error: --token must start with 'hrreg_'", file=sys.stderr)
         sys.exit(1)
 
-    # Parse argv_template from space-separated args.
-    argv_template = args.argv_template if args.argv_template else []
-    if not argv_template:
-        print("error: --argv-template is required and must be non-empty", file=sys.stderr)
+    # Parse argv_template_json from a JSON-encoded string.
+    # This safely carries leading-dash tokens (e.g. --prompt-file) inside
+    # a quoted JSON string that argparse sees as a single value.
+    raw_json = args.argv_template_json.strip()
+    if not raw_json:
+        print(
+            "error: --argv-template-json is required and must be a non-empty JSON array of strings",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    # Filter out empty strings from extra spaces
-    argv_template = [a for a in argv_template if a]
+    try:
+        argv_template = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        print(
+            f"error: --argv-template-json is not valid JSON: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not isinstance(argv_template, list):
+        print(
+            "error: --argv-template-json must be a JSON array (got "
+            f"{type(argv_template).__name__})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not all(isinstance(e, str) for e in argv_template):
+        bad = [e for e in argv_template if not isinstance(e, str)]
+        print(
+            f"error: --argv-template-json must contain only strings; "
+            f"found non-string element{'s' if len(bad) > 1 else ''}: {bad!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not argv_template:
+        print(
+            "error: --argv-template-json is required and must be a non-empty JSON array",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     adapter = args.adapter or "pi"
 
@@ -167,10 +199,11 @@ def register(sub) -> None:
     )
     p_reg.add_argument("--exec-command", dest="exec_command", required=True, help="Executor command (executable name)")
     p_reg.add_argument(
-        "--argv-template",
-        nargs="*",
-        default=[],
-        help="Space-separated argv template elements (e.g. --prompt-file {prompt})",
+        "--argv-template-json",
+        dest="argv_template_json",
+        required=True,
+        help="JSON-encoded argv template as a single string "
+             "(e.g. '[\"--prompt-file\", \"{prompt}\", \"--timeout\", \"{timeout_seconds}\"]')",
     )
     p_reg.add_argument(
         "--adapter",

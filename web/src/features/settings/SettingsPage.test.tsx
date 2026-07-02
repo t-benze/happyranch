@@ -711,6 +711,18 @@ describe('SettingsPage — Executors section', () => {
     expect(prompt.textContent).toContain('loopback_reachable');
     expect(prompt.textContent).toContain('cli_callback');
 
+    // Prompt must use --exec-command (not --command) matching the CLI arg name (FINDING 1)
+    expect(prompt.textContent).toContain('--exec-command');
+    // Prompt must use --argv-template-json with a valid JSON array (FINDING 2)
+    expect(prompt.textContent).toContain('--argv-template-json');
+    // The JSON array must be valid JSON wrapping argv elements.
+    // userEvent.type interprets {…} as special-key syntax, so only
+    // --timeout survives from the typed '{prompt} --timeout {timeout_seconds}'.
+    // The critical check: --argv-template-json emits properly quoted JSON.
+    expect(prompt.textContent).toMatch(
+      /--argv-template-json\s+'\[.*\]'/,
+    );
+
     // Config snippet should contain the profile
     const snippet = screen.getByTestId('config-snippet');
     expect(snippet.textContent).toContain('my-exec');
