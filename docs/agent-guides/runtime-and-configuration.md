@@ -176,7 +176,7 @@ The CLI is an HTTP client. Start the daemon once, then run CLI commands.
 ```bash
 scripts/daemon.sh start
 scripts/daemon.sh status
-scripts/daemon.sh stop
+scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --force)
 scripts/build_web.sh
 happyranch web [--no-open]
 ```

@@ -38,7 +38,7 @@ uv run python -m pytest tests/ -v -m ""            # unit + integration
 
 scripts/daemon.sh start
 scripts/daemon.sh status
-scripts/daemon.sh stop
+scripts/daemon.sh stop --force
 
 scripts/build_web.sh
 cd web && npm run dev
