@@ -1041,4 +1041,205 @@ class TestCallPathManagedSkillsIndex:
         assert "current_time:" in capturer._last_prompt
         assert "Asia/Shanghai" in capturer._last_prompt
 
+    # ── Thread runner: DELTA branch ──────────────────────────────────
 
+    @pytest.mark.asyncio
+    async def test_thread_runner_delta_injects_skills_index(
+        self, tmp_path, monkeypatch,
+    ):
+        """When a stored thread session exists, run_invocation takes the
+        resume/delta path and injects the skills index into the delta prompt."""
+        _seed_skills_and_config(
+            tmp_path, allow=["hr:standard-skill"],
+        )
+
+        db = Database(tmp_path / "happyranch.db")
+        db.insert_thread(ThreadRecord(
+            id="THR-001", subject="Test delta skills",
+            started_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
+        ))
+        db.add_thread_participant("THR-001", "alice", added_by="founder")
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="m1 old",
+        )
+        db.append_thread_message(
+            thread_id="THR-001", speaker="bob",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="m2 newest",
+        )
+        db.update_thread_session(
+            "THR-001", "alice",
+            agent_session_id="claude-prior", last_resumed_seq=1,
+        )
+        inv = db.mint_thread_invocation(
+            thread_id="THR-001", agent_name="alice",
+            triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
+        )
+        ws = tmp_path / "workspaces" / "alice"
+        ws.mkdir(parents=True)
+        (ws / "agent.yaml").write_text("executor: claude\n")
+
+        import runtime.daemon.thread_runner as runner_mod
+
+        class _FakeResult:
+            success = True
+            error = None
+            returncode = 0
+            session_id = "sess-delta"
+            duration_seconds = 1
+            agent_session_id = None
+            stdout_tail = ""
+            stderr_tail = ""
+            token_usage = None
+            rate_limited = False
+
+        # Scripted executor that records the prompt from run()
+        class _DeltaCapturingExec:
+            def __init__(self, resume_session_id=None, **kwargs):
+                self.calls = []
+            def run(self, **kwargs):
+                self.calls.append(kwargs)
+                r = _FakeResult()
+                r.agent_session_id = "claude-prior"
+                return r
+
+        capturer = _DeltaCapturingExec()
+        monkeypatch.setattr(
+            runner_mod, "_build_executor_for_provider",
+            lambda provider, settings, paths: capturer,
+        )
+
+        class Org:
+            def __init__(self):
+                self.db = db
+                self.root = tmp_path
+
+        await run_invocation(
+            org_state=Org(), invocation_token=inv.invocation_token,
+            settings=Settings(),
+        )
+
+        # Delta path was taken (resume_session_id present)
+        assert len(capturer.calls) == 1
+        assert capturer.calls[0].get("resume_session_id") == "claude-prior"
+        delta_prompt: str = capturer.calls[0]["prompt"]
+        # New message present, old message excluded
+        assert "m2 newest" in delta_prompt
+        assert "m1 old" not in delta_prompt
+        # Eligible skill present
+        assert "hr:standard-skill@1.0.0" in delta_prompt
+        assert "A standard operational skill for testing." in delta_prompt
+        # Ineligible skills excluded
+        assert "hr:disabled-skill" not in delta_prompt
+        assert "hr:draft-skill" not in delta_prompt
+        assert "hr:system-contract-skill" not in delta_prompt
+        assert "hr:high-impact-skill" not in delta_prompt
+        # current_time co-injected
+        assert "current_time:" in delta_prompt
+        assert "Asia/Shanghai" in delta_prompt
+
+    # ── Thread runner: FALLBACK branch ───────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_thread_runner_fallback_injects_skills_index(
+        self, tmp_path, monkeypatch,
+    ):
+        """When the evicted-session retry fires, the fallback full prompt
+        also injects the skills index."""
+        _seed_skills_and_config(
+            tmp_path, allow=["hr:standard-skill"],
+        )
+
+        db = Database(tmp_path / "happyranch.db")
+        db.insert_thread(ThreadRecord(
+            id="THR-001", subject="Test fallback skills",
+            started_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
+        ))
+        db.add_thread_participant("THR-001", "alice", added_by="founder")
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="hello",
+        )
+        db.update_thread_session(
+            "THR-001", "alice",
+            agent_session_id="claude-evicted", last_resumed_seq=0,
+        )
+        inv = db.mint_thread_invocation(
+            thread_id="THR-001", agent_name="alice",
+            triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+        )
+        ws = tmp_path / "workspaces" / "alice"
+        ws.mkdir(parents=True)
+        (ws / "agent.yaml").write_text("executor: claude\n")
+
+        import runtime.daemon.thread_runner as runner_mod
+
+        # Evicted result: non-success with session-not-found error
+        class _EvictedResult:
+            success = False
+            error = "No conversation found for session claude-evicted"
+            returncode = 1
+            session_id = ""
+            duration_seconds = 1
+            agent_session_id = None
+            stdout_tail = ""
+            stderr_tail = "No conversation found"
+            token_usage = None
+            rate_limited = False
+        evicted = _EvictedResult()
+
+        class _OkResult:
+            success = True
+            error = None
+            returncode = 0
+            session_id = "sess-fresh"
+            duration_seconds = 1
+            agent_session_id = "claude-fresh"
+            stdout_tail = ""
+            stderr_tail = ""
+            token_usage = None
+            rate_limited = False
+        ok_result = _OkResult()
+
+        class _FallbackCapturingExec:
+            def __init__(self, **kwargs):
+                self.calls = []
+                self._scripted = [evicted, ok_result]
+            def run(self, **kwargs):
+                self.calls.append(kwargs)
+                return self._scripted.pop(0)
+
+        capturer = _FallbackCapturingExec()
+        monkeypatch.setattr(
+            runner_mod, "_build_executor_for_provider",
+            lambda provider, settings, paths: capturer,
+        )
+
+        class Org:
+            def __init__(self):
+                self.db = db
+                self.root = tmp_path
+
+        await run_invocation(
+            org_state=Org(), invocation_token=inv.invocation_token,
+            settings=Settings(),
+        )
+
+        # Two invocations: first evicted (delta), second fallback (full)
+        assert len(capturer.calls) == 2
+        assert capturer.calls[0].get("resume_session_id") == "claude-evicted"
+        assert "resume_session_id" not in capturer.calls[1]
+        # Fallback prompt contains the full message history
+        fallback_prompt: str = capturer.calls[1]["prompt"]
+        assert "Full message history follows" in fallback_prompt
+        # Eligible skill present in fallback prompt
+        assert "hr:standard-skill@1.0.0" in fallback_prompt
+        assert "A standard operational skill for testing." in fallback_prompt
+        # Ineligible skills excluded from fallback prompt
+        assert "hr:disabled-skill" not in fallback_prompt
+        assert "hr:draft-skill" not in fallback_prompt
+        assert "hr:system-contract-skill" not in fallback_prompt
+        assert "hr:high-impact-skill" not in fallback_prompt
+        # current_time co-injected in fallback prompt
+        assert "current_time:" in fallback_prompt
+        assert "Asia/Shanghai" in fallback_prompt
