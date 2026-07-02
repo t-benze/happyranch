@@ -16,6 +16,7 @@ from runtime.daemon.routes import (
     auth,
     dashboard,
     dreams,
+    executors,
     health,
     jobs,
     kb,
@@ -202,6 +203,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(artifacts.router, prefix="/api/v1/orgs/{slug}", tags=["artifacts"])
     app.include_router(dashboard.router, prefix="/api/v1/orgs/{slug}", tags=["dashboard"])
     app.include_router(settings_routes.router, prefix="/api/v1/orgs/{slug}", tags=["settings"])
+    app.include_router(executors.router, prefix="/api/v1/orgs/{slug}", tags=["executors"])
     from runtime.daemon.routes import web_static
     web_static.register(app, settings=state.settings)
     return app
