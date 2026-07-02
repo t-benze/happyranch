@@ -15,24 +15,31 @@ dream). Tests cover:
 """
 from __future__ import annotations
 
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from runtime.config import Settings
 from runtime.daemon.dream_runner import build_dream_prompt
 from runtime.daemon.thread_runner import (
     build_thread_delta_prompt,
     build_thread_prompt,
+    run_invocation,
 )
 from runtime.daemon.wake_runner import build_wake_prompt
+from runtime.infrastructure.database import Database
 from runtime.models import (
     DreamRecord,
+    ThreadInvocationPurpose,
     ThreadMessage,
     ThreadMessageKind,
     ThreadParticipant,
     ThreadRecord,
 )
+from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.org_config import (
     OrgConfig,
     render_compact_skill_index,
@@ -739,3 +746,299 @@ class TestResolveManagedSkillsIndex:
         paths = OrgPaths(root=tmp_runtime)
         result = resolve_managed_skills_index(paths=paths, agent_name="dev_agent")
         assert result == ""  # deny wins → no skills
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Call-path integration: REAL session-creation entrypoints
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _seed_skills_and_config(
+    root: Path,
+    allow: list[str] | None = None,
+    deny: list[str] | None = None,
+    extra_config: dict | None = None,
+    agent_name: str = "dev_agent",
+    agent_executor: str = "claude",
+) -> None:
+    """Seed on-disk skill packages and org config under an org root.
+
+    ``root`` is the org root (e.g. ``test_runtime.root`` or ``org_state.root``).
+    Skills are copied into ``root/runtime/skills/``.
+    Org config is written to ``root/org/config.yaml``.
+    An agent definition is written to ``root/org/agents/<agent_name>.md``.
+    """
+    # Skills directory — copy fixture skill packages
+    skills_dir = root / "runtime" / "skills"
+    if skills_dir.exists():
+        shutil.rmtree(skills_dir)
+    skills_dir.parent.mkdir(parents=True, exist_ok=True)
+    for fixture_dir in FIXTURES.iterdir():
+        if fixture_dir.is_dir():
+            shutil.copytree(fixture_dir, skills_dir / fixture_dir.name)
+
+    # Org config with skills eligibility
+    org_dir = root / "org"
+    org_dir.mkdir(parents=True, exist_ok=True)
+    cfg: dict = {"timezone": "Asia/Shanghai"}
+    if extra_config:
+        cfg.update(extra_config)
+    if allow is not None or deny is not None:
+        cfg["skills"] = {
+            "org": {
+                "allow": allow or [],
+                "deny": deny or [],
+            },
+        }
+    import yaml as _yaml
+    (org_dir / "config.yaml").write_text(_yaml.dump(cfg))
+
+    # Agent definition
+    agents_dir = org_dir / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / f"{agent_name}.md").write_text(
+        "---\n"
+        f"name: {agent_name}\n"
+        "team: engineering\n"
+        "role: worker\n"
+        f"executor: {agent_executor}\n"
+        "---\n\n"
+        f"# {agent_name}\n\nBuild software.\n"
+        "## Routine Tasks\n\n- Triage open tickets.\n"
+    )
+
+
+def _setup_orch_workspace(test_runtime, agent: str = "dev_agent") -> None:
+    """Create a workspace with the start-task skill marker so _run_agent
+    passes the readiness check."""
+    ws = test_runtime.workspaces_dir / agent
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
+    skill = ws / ".claude" / "skills" / "start-task"
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text("# start-task\n")
+
+
+
+
+class TestCallPathManagedSkillsIndex:
+    """Call-path integration: prove resolve_managed_skills_index flows
+    through the REAL session-creation entrypoints (not just the builders).
+
+    Each test exercises the full entrypoint with a fake/stub executor
+    that captures the emitted prompt. Assertions verify:
+    - Eligible skills appear in the compact hr: index.
+    - Disabled, draft, system_contract, denied, and empty-allow-union
+      cases are EXCLUDED.
+    - The current_time line is present and unchanged (THR-039).
+    """
+
+    # ── Orchestrator._run_agent (task/subtask) ──────────────────────────
+
+    @pytest.fixture
+    def orch(self, test_settings, test_runtime):
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+
+        test_runtime.root.mkdir(parents=True, exist_ok=True)
+        db = Database(test_runtime.db_path)
+        teams = TeamsRegistry.load(test_runtime.root)
+        return Orchestrator(
+            db=db, settings=test_settings, paths=test_runtime, slug="test",
+            teams=teams,
+        )
+
+    def test_orchestrator_run_agent_injects_skills_index(
+        self, orch, test_runtime, monkeypatch,
+    ):
+        """Orchestrator._run_agent resolves skills and passes the index
+        into the prompt emitted to the executor."""
+        # Seed skills + org config under test_runtime.root
+        _seed_skills_and_config(
+            test_runtime.root, allow=["hr:standard-skill"],
+        )
+        _setup_orch_workspace(test_runtime)
+
+        task_id = orch.create_task("Test skill index in agent prompt")
+        monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-skills")
+
+        mock_executor = MagicMock()
+        mock_executor.run.return_value = ExecutorResult(
+            success=True, duration_seconds=1, session_id="sess-skills",
+        )
+        with patch.object(orch, "_build_executor", return_value=mock_executor):
+            orch._run_agent(task_id, "dev_agent", "")
+
+        prompt: str = mock_executor.run.call_args.kwargs["prompt"]
+
+        # Eligible skill present
+        assert "hr:standard-skill@1.0.0" in prompt
+        assert "A standard operational skill for testing." in prompt
+        # Ineligible skills excluded
+        assert "hr:disabled-skill" not in prompt
+        assert "hr:draft-skill" not in prompt
+        assert "hr:system-contract-skill" not in prompt
+        assert "hr:high-impact-skill" not in prompt
+        # current_time co-injected (THR-039)
+        assert "current_time:" in prompt
+        assert "Asia/Shanghai" in prompt
+
+    def test_orchestrator_no_eligible_skills_empty_index(
+        self, orch, test_runtime, monkeypatch,
+    ):
+        """When no skills match eligibility, the prompt still contains
+        current_time but no hr: entries."""
+        _seed_skills_and_config(
+            test_runtime.root, allow=["hr:disabled-skill"],
+        )
+        _setup_orch_workspace(test_runtime)
+
+        task_id = orch.create_task("Test empty skills index")
+        monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-empty")
+
+        mock_executor = MagicMock()
+        mock_executor.run.return_value = ExecutorResult(
+            success=True, duration_seconds=1, session_id="sess-empty",
+        )
+        with patch.object(orch, "_build_executor", return_value=mock_executor):
+            orch._run_agent(task_id, "dev_agent", "")
+
+        prompt = mock_executor.run.call_args.kwargs["prompt"]
+        assert "hr:" not in prompt
+        assert "current_time:" in prompt
+        assert "Asia/Shanghai" in prompt
+
+    # ── Thread runner: run_invocation ───────────────────────────────────
+
+    def _make_thread_state(self, tmp_path: Path, agent: str = "alice"):
+        """Create a FakeOrgState with thread, messages, and invocation."""
+        db = Database(tmp_path / "happyranch.db")
+        db.insert_thread(ThreadRecord(
+            id="THR-001", subject="Test thread",
+            started_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
+        ))
+        db.add_thread_participant("THR-001", agent, added_by="founder")
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="hello",
+        )
+        inv = db.mint_thread_invocation(
+            thread_id="THR-001", agent_name=agent,
+            triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+        )
+        ws = tmp_path / "workspaces" / agent
+        ws.mkdir(parents=True)
+        (ws / "agent.yaml").write_text("executor: claude\n")
+        return db, inv
+
+    @pytest.mark.asyncio
+    async def test_thread_runner_injects_skills_index(
+        self, tmp_path, monkeypatch,
+    ):
+        """run_invocation resolves skills and injects the index into the
+        full thread prompt."""
+        _seed_skills_and_config(
+            tmp_path, allow=["hr:standard-skill"],
+        )
+        db, inv = self._make_thread_state(tmp_path)
+
+        import runtime.daemon.thread_runner as runner_mod
+
+        class _FakeResult:
+            success = True
+            error = None
+            returncode = 0
+            session_id = "sess-thread"
+            duration_seconds = 1
+            agent_session_id = None
+            stdout_tail = ""
+            stderr_tail = ""
+            token_usage = None
+
+        class _CapturingExec:
+            def __init__(self, **kwargs):
+                pass
+            def run(self, **kwargs):
+                self._last_prompt = kwargs.get("prompt", "")
+                return _FakeResult()
+
+        capturer = _CapturingExec()
+        monkeypatch.setattr(
+            runner_mod, "_build_executor_for_provider",
+            lambda provider, settings, paths: capturer,
+        )
+
+        # FakeOrgState mirroring the test_thread_runner pattern
+        class Org:
+            def __init__(self):
+                self.db = db
+                self.root = tmp_path
+
+        await run_invocation(
+            org_state=Org(), invocation_token=inv.invocation_token,
+            settings=Settings(),
+        )
+
+        prompt: str = capturer._last_prompt
+        assert "hr:standard-skill@1.0.0" in prompt
+        assert "A standard operational skill for testing." in prompt
+        assert "hr:disabled-skill" not in prompt
+        assert "hr:draft-skill" not in prompt
+        assert "hr:system-contract-skill" not in prompt
+        assert "hr:high-impact-skill" not in prompt
+        assert "current_time:" in prompt
+        assert "Asia/Shanghai" in prompt
+
+    @pytest.mark.asyncio
+    async def test_thread_runner_empty_index_no_hr_entries(
+        self, tmp_path, monkeypatch,
+    ):
+        """When no skills are eligible, the thread prompt contains no
+        hr: entries."""
+        _seed_skills_and_config(
+            tmp_path, allow=["hr:disabled-skill"],
+        )
+        db, inv = self._make_thread_state(tmp_path)
+
+        import runtime.daemon.thread_runner as runner_mod
+
+        class _FakeResult:
+            success = True
+            error = None
+            returncode = 0
+            session_id = "sess-thread"
+            duration_seconds = 1
+            agent_session_id = None
+            stdout_tail = ""
+            stderr_tail = ""
+            token_usage = None
+
+        class _CapturingExec:
+            def __init__(self, **kwargs):
+                pass
+            def run(self, **kwargs):
+                self._last_prompt = kwargs.get("prompt", "")
+                return _FakeResult()
+
+        capturer = _CapturingExec()
+        monkeypatch.setattr(
+            runner_mod, "_build_executor_for_provider",
+            lambda provider, settings, paths: capturer,
+        )
+
+        class Org:
+            def __init__(self):
+                self.db = db
+                self.root = tmp_path
+
+        await run_invocation(
+            org_state=Org(), invocation_token=inv.invocation_token,
+            settings=Settings(),
+        )
+
+        assert "hr:" not in capturer._last_prompt
+        assert "current_time:" in capturer._last_prompt
+        assert "Asia/Shanghai" in capturer._last_prompt
+
+
