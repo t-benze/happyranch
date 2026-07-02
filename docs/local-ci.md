@@ -60,10 +60,8 @@ mode and hangs.
 
 ### `integration`
 
-Runs Python integration tests (`-m integration`). These spawn a real daemon
-and fake CLI scripts, so they exercise daemon lifespan, `SessionTracker`,
-callback routes, and executor callback behavior. Stop any running daemon
-first (`scripts/daemon.sh stop`). The target is explicit — it is **not**
+Runs Python integration tests (`-m integration`). The target spawns its own
+isolated daemon (via HAPPYRANCH_DAEMON_HOME). The target is explicit — it is **not**
 included in the `all` default.
 
 ## Pre-push hook (optional)
@@ -94,8 +92,9 @@ does **not** touch `.git/hooks` automatically. To disable it, remove
 - **Frozen lockfile.** `uv sync --frozen` requires an up-to-date
   `uv.lock`. Run `uv lock` first if you've changed dependencies in
   `pyproject.toml`.
-- **Integration daemon.** The `integration` target spawns a real daemon on
-  port 8765. Stop any running daemon first (`scripts/daemon.sh stop`).
+- **Integration daemon.** The `integration` target spawns its own daemon.
+  It uses `HAPPYRANCH_DAEMON_HOME` for isolation. Stop any running daemon first
+  (`scripts/daemon.sh stop --force`).
 - **Vitest non-watch.** Web tests use `npx vitest run` (non-watch), not
   bare `vitest` which enters interactive watch mode.
 - **npm ci, not npm install.** The web target uses `npm ci` to enforce

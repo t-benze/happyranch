@@ -316,7 +316,8 @@ the database for fast rendering.
 Operational notes:
 - Jobs run inside the daemon process with `os.environ` inherited from the
   daemon's launch shell. If you rotate credentials in your interactive shell,
-  restart the daemon so the new env is picked up.
+  restart the daemon so the new env is picked up:
+  `scripts/daemon.sh stop --force && scripts/daemon.sh start`.
 - `jobs run` requires a TTY. To run non-interactively, use the web UI's
   Run modal (it has the same confirm step in a visual form).
 - If the daemon is killed mid-run, the next startup recovery scan marks any
@@ -373,7 +374,7 @@ After approval, the new workspace will have the requested executor in `agent.yam
 ```bash
 scripts/daemon.sh start    # start in background (binds to localhost:8765)
 scripts/daemon.sh status   # check if running
-scripts/daemon.sh stop     # graceful shutdown
+scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --force)
 ```
 
 The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_PORT=<n>` before starting if that port is taken.
