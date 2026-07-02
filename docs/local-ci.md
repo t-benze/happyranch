@@ -12,8 +12,12 @@ feedforward signal, not a substitute.
 - Node.js 20+ and npm (for the `web` target)
 - An up-to-date `uv.lock` file (run `uv lock` if you've changed
   `pyproject.toml`; `uv sync --frozen` rejects a stale lock)
-- No running daemon on port 8765 (only required for the `integration`
-  target; the `web`, `python`, and `all` targets do not need the daemon)
+- The `integration` target spawns an isolated daemon per test (tmp
+  `HAPPYRANCH_DAEMON_HOME` + ephemeral port via
+  `HAPPYRANCH_DAEMON_PORT=0`), so a running production daemon does NOT
+  conflict and does NOT need to be stopped. Both processes share
+  machine RAM — a production daemon with active Claude sessions can
+  inflate memory during the run.
 
 ## Usage
 
@@ -40,7 +44,7 @@ scripts/local_ci.sh help         # List targets and caveats
 
 Runs `python` followed by `web`. This mirrors what the GitHub PR CI checks
 and is the recommended pre-push target. It does **not** run integration
-tests — those are nightly in GitHub and may conflict with a running daemon.
+tests — those are nightly in GitHub and run an isolated daemon (no port conflict with a running production daemon).
 
 ### `python`
 
@@ -92,9 +96,11 @@ does **not** touch `.git/hooks` automatically. To disable it, remove
 - **Frozen lockfile.** `uv sync --frozen` requires an up-to-date
   `uv.lock`. Run `uv lock` first if you've changed dependencies in
   `pyproject.toml`.
-- **Integration daemon.** The `integration` target spawns its own daemon.
-  It uses `HAPPYRANCH_DAEMON_HOME` for isolation. Stop any running daemon first
-  (`scripts/daemon.sh stop --force`).
+- **Integration daemon.** The `integration` target spawns an isolated daemon
+  per test (tmp `HAPPYRANCH_DAEMON_HOME` + ephemeral port via
+  `HAPPYRANCH_DAEMON_PORT=0`), so a running production daemon does NOT conflict
+  and does NOT need to be stopped. The two processes only share machine RAM — a
+  production daemon with active Claude sessions can inflate memory during the run.
 - **Vitest non-watch.** Web tests use `npx vitest run` (non-watch), not
   bare `vitest` which enters interactive watch mode.
 - **npm ci, not npm install.** The web target uses `npm ci` to enforce
