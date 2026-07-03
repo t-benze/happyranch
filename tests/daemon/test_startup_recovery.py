@@ -59,7 +59,8 @@ def test_sweep_in_progress_to_failed(tmp_path: Path) -> None:
 
     t = db.get_task("T-1")
     assert t.status == TaskStatus.FAILED
-    assert t.note and "daemon restart" in t.note
+    assert t.note and "daemon_restart" in t.note
+    assert "infra fault" in (t.note or "")
 
 
 def test_sweep_parked_delegated_with_all_children_terminal_reenqueues(tmp_path):
@@ -160,9 +161,10 @@ def test_sweep_leaves_escalated_alone(tmp_path):
 
 
 def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_path):
-    """TASK-573: when sweep force-fails an in-progress child of an
+    """THR-064 / TASK-573: when sweep force-fails an in-progress child of an
     in_progress(delegated) parent, the parent gets a bounded-wake decision step
-    (enqueued, NOT cascade-failed). The auto-revisit is still spawned."""
+    (enqueued, NOT cascade-failed). The parked non-terminal ancestor means
+    auto-revisit is SKIPPED — the bounded-wake recovers the work directly."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     db.insert_task(TaskRecord(
         id="T-PAR", brief="p", team="engineering",
@@ -188,19 +190,21 @@ def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_p
     # TASK-573: parent stays in_progress(delegated) for bounded-wake, not FAILED.
     assert db.get_task("T-PAR").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-PAR").block_kind == BlockKind.DELEGATED
-    # A fresh root was spawned via revisit_of_task_id=T-PAR.
+    # NO auto-revisit twin — parked non-terminal ancestor means skip.
     revisits = [
         t for t in (db.get_task(tid)
                     for tid in db.get_nonterminal_task_ids())
         if t is not None and t.revisit_of_task_id == "T-PAR"
     ]
-    assert len(revisits) == 1
-    # Queue gets BOTH the auto-revisit root AND the parent bounded-wake enqueue.
+    assert len(revisits) == 0, (
+        f"expected 0 auto-revisit twins (parked ancestor skips it); "
+        f"got {len(revisits)}"
+    )
+    # Queue gets ONLY the parent bounded-wake enqueue (no twin root).
     enqueued = []
     while not queue._queue.empty():
         enqueued.append(queue._queue.get_nowait())
     enqueued_ids = [tid for (_slug, tid, _md) in enqueued]
-    assert revisits[0].id in enqueued_ids
     assert "T-PAR" in enqueued_ids  # parent bounded-wake
 
 
@@ -247,11 +251,10 @@ def test_sweep_works_without_orchestrator_arg(tmp_path):
 
 
 def test_sweep_in_progress_spawns_auto_revisit(tmp_path):
-    """TASK-573: in-progress task at restart routes through the
-    unified auto-revisit primitive. A fresh root is spawned with
-    revisit_of_task_id=root; parent gets bounded-wake (in_progress+delegated),
-    not cascade-failed. notify_failed is suppressed because the work
-    is being retried."""
+    """THR-064: in-progress child of a parked DELEGATED root at restart
+    skips auto-revisit because a non-terminal recoverable ancestor exists.
+    Parent gets bounded-wake instead; no twin root. notify_failed is
+    suppressed because the work is being retried via parent re-enqueue."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     # Root parent task is in_progress+delegated waiting on its in-flight child.
     db.insert_task(TaskRecord(
@@ -277,31 +280,22 @@ def test_sweep_in_progress_spawns_auto_revisit(tmp_path):
     # TASK-573: bounded-wake, not cascade-fail.
     assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-ROOT").block_kind == BlockKind.DELEGATED
-    # A new root was spawned via revisit_of_task_id=T-ROOT.
+    # NO auto-revisit twin — parked non-terminal ancestor skips it.
     revisits = [
         t for t in (db.get_task(tid)
                     for tid in db.get_nonterminal_task_ids())
         if t is not None and t.revisit_of_task_id == "T-ROOT"
     ]
-    assert len(revisits) == 1, (
-        f"expected 1 auto-revisit pointing at T-ROOT; got {len(revisits)}"
+    assert len(revisits) == 0, (
+        f"expected 0 auto-revisit twins (parked ancestor); got {len(revisits)}"
     )
-    ar = revisits[0]
-    assert ar.parent_task_id is None  # new root
-    assert ar.assigned_agent == "engineering_head"  # inherited from root
-    # Audit row on the new root carries failure_kind=daemon_restart.
-    ar_actions = db.get_audit_logs(ar.id)
-    auto_rows = [r for r in ar_actions if r["action"] == "auto_revisit_of"]
-    assert len(auto_rows) == 1
-    assert auto_rows[0]["payload"]["failure_kind"] == "daemon_restart"
-    # notify_failed is suppressed because the work is being retried.
+    # notify_failed is suppressed because the work is being retried via parent wake.
     assert notify_calls == []
 
 
 def test_sweep_per_root_dedup(tmp_path):
-    """Two in-flight children of the same root at restart spawn EXACTLY ONE
-    auto-revisit — not two. The per-restart dedup avoids burning the
-    per-kind cap with parallel retry trees pointing at the same lineage."""
+    """THR-064: two in-flight children of the same parked root at restart
+    correctly skip auto-revisit (parked ancestor). No twin roots at all."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     db.insert_task(TaskRecord(
         id="T-ROOT", brief="root", team="engineering",
@@ -329,8 +323,8 @@ def test_sweep_per_root_dedup(tmp_path):
                     for tid in db.get_nonterminal_task_ids())
         if t is not None and t.revisit_of_task_id == "T-ROOT"
     ]
-    assert len(revisits) == 1, (
-        f"expected exactly 1 auto-revisit (per-root dedup); got {len(revisits)}"
+    assert len(revisits) == 0, (
+        f"expected 0 auto-revisit twins (parked ancestor); got {len(revisits)}"
     )
     # Both siblings still cascade-suppressed: zero founder pings.
     assert notify_calls == []
@@ -585,3 +579,146 @@ def test_sweep_leaves_already_terminal_invocations_alone(tmp_path):
     d = db.get_invocation_any_status(declined.invocation_token)
     assert d is not None and d.status.value == "declined", \
         f"declined invocation was altered to {d.status.value if d else 'None'}"
+
+
+# ── THR-064: daemon-restart double-recovery (TASK-1855) ──────────────────
+
+def test_thr064_parked_ancestor_skips_auto_revisit(tmp_path):
+    """THR-064: a parked manager root (in_progress/DELEGATED) with ONE
+    running child at restart -> EXACTLY ONE woken root (parent bounded-wake),
+    NO twin auto-revisit, killed child FAILED with the restart marker note."""
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    db.insert_task(TaskRecord(
+        id="T-ROOT", brief="root", team="engineering",
+        assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+        task_type="task",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-CHD", brief="child", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="T-ROOT",
+        status=TaskStatus.IN_PROGRESS,
+        task_type="subtask",
+    ))
+
+    orch.notify_failed = lambda **kw: None  # type: ignore[assignment]
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    # Child force-failed with the enriched restart note.
+    chd = db.get_task("T-CHD")
+    assert chd.status == TaskStatus.FAILED
+    assert "daemon_restart" in (chd.note or "")
+    assert "infra fault" in (chd.note or "")
+
+    # Parent stays parked (bounded-wake), NOT cascade-failed.
+    par = db.get_task("T-ROOT")
+    assert par.status == TaskStatus.IN_PROGRESS
+    assert par.block_kind == BlockKind.DELEGATED
+
+    # NO auto-revisit twin — parked ancestor recovery via bounded-wake instead.
+    revisits = [
+        t for t in (db.get_task(tid)
+                    for tid in db.get_nonterminal_task_ids())
+        if t is not None and t.revisit_of_task_id == "T-ROOT"
+    ]
+    assert len(revisits) == 0, (
+        f"expected 0 auto-revisit twins; got {len(revisits)}"
+    )
+
+    # Parent is enqueued (bounded-wake recovery).
+    enqueued = []
+    while not queue._queue.empty():
+        enqueued.append(queue._queue.get_nowait())
+    enqueued_ids = [tid for (_slug, tid, _md) in enqueued]
+    assert "T-ROOT" in enqueued_ids, (
+        f"expected parent T-ROOT to be enqueued for bounded-wake; "
+        f"got {enqueued_ids}"
+    )
+
+
+def test_thr064_guardrail1_worker_root_still_auto_revisits(tmp_path):
+    """GUARDRAIL 1: a genuine parentless worker/leaf root subprocess death
+    (no parked non-terminal ancestor) STILL auto-revisits — proves the skip
+    is not over-scoped."""
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    # A root task with NO parent and NO block_kind — a genuine worker root.
+    db.insert_task(TaskRecord(
+        id="T-WORKER", brief="worker root", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.IN_PROGRESS,
+        task_type="task",
+    ))
+
+    orch.notify_failed = lambda **kw: None  # type: ignore[assignment]
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    # Killed task is failed.
+    t = db.get_task("T-WORKER")
+    assert t.status == TaskStatus.FAILED
+
+    # Auto-revisit WAS spawned — no parked ancestor to suppress it.
+    revisits = [
+        t for t in (db.get_task(tid)
+                    for tid in db.get_nonterminal_task_ids())
+        if t is not None and t.revisit_of_task_id == "T-WORKER"
+    ]
+    assert len(revisits) == 1, (
+        f"guardrail-1: expected 1 auto-revisit for genuine worker root; "
+        f"got {len(revisits)}"
+    )
+
+
+def test_thr064_fanout_killed_child_does_not_wake_parent_early(tmp_path):
+    """Fan-out barrier: a restart-killed child among still-live siblings
+    MUST NOT wake the parked root early. Only when all children terminal
+    does the parent wake."""
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    db.insert_task(TaskRecord(
+        id="T-ROOT", brief="root", team="engineering",
+        assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+        task_type="task",
+    ))
+    # Two children — one killed by restart, one blocked_on_job (survives sweep).
+    _seed_job(db, "JOB-SIB", "T-CHD-B", status="running")
+    db.insert_task(TaskRecord(
+        id="T-CHD-A", brief="killed child", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="T-ROOT",
+        status=TaskStatus.IN_PROGRESS,
+        task_type="subtask",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-CHD-B", brief="job-blocked sibling", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="T-ROOT",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.BLOCKED_ON_JOB,
+        blocked_on_job_ids='["JOB-SIB"]',
+        task_type="subtask",
+    ))
+
+    orch.notify_failed = lambda **kw: None  # type: ignore[assignment]
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    # Killed child is failed.
+    assert db.get_task("T-CHD-A").status == TaskStatus.FAILED
+    # Job-blocked sibling survives the sweep (BLOCKED_ON_JOB, Branch 3 guard).
+    assert db.get_task("T-CHD-B").status == TaskStatus.IN_PROGRESS, (
+        f"job-blocked sibling should survive; got {db.get_task('T-CHD-B').status}"
+    )
+
+    # Parent is NOT enqueued early — sibling still in_progress blocks the wake.
+    assert queue._queue.empty(), (
+        "fan-out barrier violated: parent was woken before all siblings terminal"
+    )
+
+    # NO auto-revisit twin (parked ancestor exists → skip).
+    revisits = [
+        t for t in (db.get_task(tid)
+                    for tid in db.get_nonterminal_task_ids())
+        if t is not None and t.revisit_of_task_id == "T-ROOT"
+    ]
+    assert len(revisits) == 0, (
+        f"expected 0 auto-revisit twins; got {len(revisits)}"
+    )
