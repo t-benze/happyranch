@@ -111,9 +111,9 @@ class MetricsRegistry:
         for non-sleeping loops like the run_step worker).
         """
         self._loops[loop_name] = {
-            "last_tick": datetime.now(timezone.utc).isoformat(),
+            "last_tick_iso": datetime.now(timezone.utc).isoformat(),
             "interval_seconds": interval_seconds,
-            "last_duration": round(last_duration_s, 6),
+            "last_duration_seconds": round(last_duration_s, 6),
         }
 
     # ------------------------------------------------------------------

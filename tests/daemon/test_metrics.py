@@ -45,10 +45,10 @@ def test_record_loop_tick_populates_fields() -> None:
     assert "work_hours_scheduler" in loops
     tick = loops["work_hours_scheduler"]
     assert tick["interval_seconds"] == 60
-    assert tick["last_duration"] == 1.234
-    assert tick["last_tick"].endswith("+00:00") or "Z" in tick["last_tick"] or "+00:00" in tick["last_tick"] or tick["last_tick"].count(":") >= 2
-    # last_tick should be an ISO 8601 timestamp string
-    assert "T" in tick["last_tick"]
+    assert tick["last_duration_seconds"] == 1.234
+    assert tick["last_tick_iso"].endswith("+00:00") or "Z" in tick["last_tick_iso"] or "+00:00" in tick["last_tick_iso"] or tick["last_tick_iso"].count(":") >= 2
+    # last_tick_iso should be an ISO 8601 timestamp string
+    assert "T" in tick["last_tick_iso"]
 
 
 def test_record_loop_tick_overwrites_previous_entry() -> None:
@@ -57,7 +57,7 @@ def test_record_loop_tick_overwrites_previous_entry() -> None:
     registry.record_loop_tick("dream_scheduler", 60, 0.8)
     loops = registry.snapshot()["loops"]
     assert len(loops) == 1  # still one key
-    assert loops["dream_scheduler"]["last_duration"] == 0.8
+    assert loops["dream_scheduler"]["last_duration_seconds"] == 0.8
 
 
 def test_record_loop_tick_multiple_loops_independent() -> None:
@@ -67,7 +67,7 @@ def test_record_loop_tick_multiple_loops_independent() -> None:
     loops = registry.snapshot()["loops"]
     assert set(loops.keys()) == {"work_hours_scheduler", "run_step_worker"}
     assert loops["run_step_worker"]["interval_seconds"] == 0
-    assert loops["run_step_worker"]["last_duration"] == 2.5
+    assert loops["run_step_worker"]["last_duration_seconds"] == 2.5
 
 
 # ---------------------------------------------------------------------------
@@ -299,8 +299,8 @@ async def test_worker_loop_records_tick_on_run_step_exception() -> None:
     assert "run_step_worker" in registry._loops
     tick = registry._loops["run_step_worker"]
     assert tick["interval_seconds"] == 0
-    assert isinstance(tick["last_duration"], float)
-    assert tick["last_duration"] >= 0
+    assert isinstance(tick["last_duration_seconds"], float)
+    assert tick["last_duration_seconds"] >= 0
 
 
 @pytest.mark.asyncio
@@ -335,5 +335,5 @@ async def test_worker_loop_records_tick_on_success() -> None:
     assert "run_step_worker" in registry._loops
     tick = registry._loops["run_step_worker"]
     assert tick["interval_seconds"] == 0
-    assert isinstance(tick["last_duration"], float)
-    assert tick["last_duration"] >= 0
+    assert isinstance(tick["last_duration_seconds"], float)
+    assert tick["last_duration_seconds"] >= 0
