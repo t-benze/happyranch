@@ -133,3 +133,36 @@ Inline traps:
 - A final-leg match still wakes the manager. Chains never auto-`done`.
 - Cross-team validation runs on every leg at parse time. An off-team agent on any leg rejects the whole decision.
 - Do not pre-embed upstream context in a leg prompt; `build_prior_leg_context` appends it automatically.
+
+## Daemon-Restart Sweep (THR-064)
+
+On daemon restart, `_sweep_on_startup` recovers tasks that were killed mid-flight.
+Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the restart):
+
+1. **Mark failed with restart context.** The killed child's note is enriched to
+   `"daemon_restart -- infra fault, not a code failure; status-assess the
+   branch/PR/CI and adopt already-pushed work before re-dispatching"`. This
+   note surfaces to the parent manager via `_build_prior_steps_from_db`
+   (as `result_summary`), so the manager can ground its next decision on the
+   failure cause rather than treating it as a code bug.
+
+2. **Parked-ancestor discriminant (THR-064).** Before auto-revisiting, the sweep
+   walks the killed child's ancestors. If any STRICT ancestor (exclude the
+   failed task itself) is a parked, non-terminal, recoverable manager
+   (`in_progress` + `block_kind` in `{DELEGATED, BLOCKED_ON_JOB}`), auto-revisit
+   is **skipped** — the parked ancestor's bounded-wake (Branch 2/3) recovers
+   the child directly. This eliminates the duplicate-twin-root bug where both
+   the sweep's auto-revisit AND the parent's bounded-wake re-dispatched the
+   same work.
+
+3. **Genuine root-level death still auto-revisits.** A task with no parked
+   non-terminal ancestor (a worker/leaf root, or an EM root mid-decision with
+   no delegated children yet) still spawns an auto-revisit via
+   `_maybe_spawn_auto_revisit` exactly as before. The discriminant only
+   suppresses the visit when a recoverable parent already exists.
+
+4. **Fan-out barrier preserved.** A restart-killed child among still-live
+   siblings does NOT wake the parked root early — only marking the killed
+   child FAILED without enqueuing the parent. The existing N-wide all-children-
+   terminal barrier in `_enqueue_parent_if_waiting` resolves when all legs
+   report. The restart note survives to that eventual wake.

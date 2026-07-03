@@ -43,10 +43,16 @@ def _sweep_on_startup(
     saves it:
 
       - Branch 1 — in_progress + block_kind IS NULL → failed (we killed the
-        subprocess); route through the unified auto-revisit primitive with
-        failure_kind="daemon_restart" — same machinery that handles
-        session_timeout / executor_error etc. The cascade propagates upward;
-        founder notification is suppressed when an auto-revisit covers the work.
+        subprocess). Before spawning an auto-revisit, the sweep checks whether
+        any STRICT ancestor (exclude self) is a parked, non-terminal,
+        recoverable manager (in_progress + block_kind in {DELEGATED,
+        BLOCKED_ON_JOB}). If one exists (THR-064), the sweep skips the
+        auto-revisit entirely — the parked ancestor's bounded-wake will
+        recover the child via Branch 2/3, and spawning a root-level twin
+        alongside it is the duplicate-root bug this guard eliminates.
+        A genuine root-level subprocess death (no parked ancestor) still
+        auto-revisits as before. The cascade propagates upward; founder
+        notification is suppressed when an auto-revisit covers the work.
       - Branch 2 — in_progress + block_kind=DELEGATED with all children terminal
         → re-enqueue parent (orphaned wake-up: the daemon died after a child
         terminated but before the parent saw the signal). Else leave (children
@@ -96,25 +102,42 @@ def _sweep_on_startup(
 
         # Branch 1 — genuinely running, killed by the restart.
         if t.status == TaskStatus.IN_PROGRESS and t.block_kind is None:
-            db.update_task(task_id, status=TaskStatus.FAILED, note="daemon restart")
+            db.update_task(task_id, status=TaskStatus.FAILED,
+                           note="daemon_restart -- infra fault, not a code "
+                                "failure; status-assess the branch/PR/CI and "
+                                "adopt already-pushed work before re-dispatching")
             audit.log_daemon_restart_failure(task_id, t.assigned_agent or "daemon")
             if orchestrator is None:
                 continue
             chain = db.walk_ancestors(task_id)
-            root_id = chain[-1].id if chain else task_id
-            if root_id in revisited_roots:
-                # Earlier iteration already auto-revisited this lineage.
-                spawned = True
+            # THR-064: if any STRICT ancestor (exclude self) is a parked,
+            # non-terminal, recoverable manager, skip auto-revisit. The
+            # parked ancestor's bounded-wake will recover the work — spawning
+            # a root-level twin alongside it is the duplicate-root bug.
+            _RECOVERABLE_BLOCK_KINDS = {BlockKind.DELEGATED, BlockKind.BLOCKED_ON_JOB}
+            has_parked_ancestor = any(
+                a.id != task_id
+                and a.status == TaskStatus.IN_PROGRESS
+                and a.block_kind in _RECOVERABLE_BLOCK_KINDS
+                for a in chain
+            )
+            if has_parked_ancestor:
+                spawned = False
             else:
-                revisit_id = _maybe_spawn_auto_revisit(
-                    orchestrator, task_id,
-                    t.assigned_agent or "(unknown)",
-                    failure_kind="daemon_restart",
-                    error_context={"reason": "daemon restarted mid-task"},
-                )
-                spawned = revisit_id is not None
-                if spawned:
-                    revisited_roots.add(root_id)
+                root_id = chain[-1].id if chain else task_id
+                if root_id in revisited_roots:
+                    # Earlier iteration already auto-revisited this lineage.
+                    spawned = True
+                else:
+                    revisit_id = _maybe_spawn_auto_revisit(
+                        orchestrator, task_id,
+                        t.assigned_agent or "(unknown)",
+                        failure_kind="daemon_restart",
+                        error_context={"reason": "daemon restarted mid-task"},
+                    )
+                    spawned = revisit_id is not None
+                    if spawned:
+                        revisited_roots.add(root_id)
             _enqueue_parent_if_waiting(
                 orchestrator, task_id,
                 root_auto_revisit_spawned=spawned,
