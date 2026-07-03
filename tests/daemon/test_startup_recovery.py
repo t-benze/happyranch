@@ -584,9 +584,11 @@ def test_sweep_leaves_already_terminal_invocations_alone(tmp_path):
 # ── THR-064: daemon-restart double-recovery (TASK-1855) ──────────────────
 
 def test_thr064_parked_ancestor_skips_auto_revisit(tmp_path):
-    """THR-064: a parked manager root (in_progress/DELEGATED) with ONE
-    running child at restart -> EXACTLY ONE woken root (parent bounded-wake),
-    NO twin auto-revisit, killed child FAILED with the restart marker note."""
+    """THR-064 RED-FIRST (fails on merge-base b96e105, passes on branch head).
+
+    A parked manager root (in_progress/DELEGATED) with ONE running child at
+    restart -> EXACTLY ONE woken root (parent bounded-wake), NO twin
+    auto-revisit, killed child FAILED with the restart marker note."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     db.insert_task(TaskRecord(
         id="T-ROOT", brief="root", team="engineering",
@@ -638,9 +640,12 @@ def test_thr064_parked_ancestor_skips_auto_revisit(tmp_path):
 
 
 def test_thr064_guardrail1_worker_root_still_auto_revisits(tmp_path):
-    """GUARDRAIL 1: a genuine parentless worker/leaf root subprocess death
+    """PRESERVATION GUARD (passes pre- AND post-fix — not red-first).
+
+    GUARDRAIL 1: a genuine parentless worker/leaf root subprocess death
     (no parked non-terminal ancestor) STILL auto-revisits — proves the skip
-    is not over-scoped."""
+    is not over-scoped. This behavior existed pre-fix; the test is a
+    regression guard, not evidence of new behavior."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     # A root task with NO parent and NO block_kind — a genuine worker root.
     db.insert_task(TaskRecord(
@@ -671,9 +676,11 @@ def test_thr064_guardrail1_worker_root_still_auto_revisits(tmp_path):
 
 
 def test_thr064_fanout_killed_child_does_not_wake_parent_early(tmp_path):
-    """Fan-out barrier: a restart-killed child among still-live siblings
-    MUST NOT wake the parked root early. Only when all children terminal
-    does the parent wake."""
+    """THR-064 RED-FIRST (fails on merge-base b96e105, passes on branch head).
+
+    Fan-out barrier: a restart-killed child among still-live siblings MUST
+    NOT wake the parked root early. Only when all children terminal does the
+    parent wake."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     db.insert_task(TaskRecord(
         id="T-ROOT", brief="root", team="engineering",
