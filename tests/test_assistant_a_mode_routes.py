@@ -9,6 +9,7 @@ tests/daemon/conftest.py).
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -315,8 +316,7 @@ class TestAModeWebSocket:
             ws.send_text(json.dumps({"type": "start", "text": "test prompt"}))
 
             # Wait briefly for the async handler to process.
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.1))
+            time.sleep(0.1)
 
         assert len(posture_captured) == 1, (
             "run_headless_turn must be called exactly once"
