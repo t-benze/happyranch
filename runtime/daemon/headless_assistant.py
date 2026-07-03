@@ -243,6 +243,10 @@ class NullAdapter:
                 return sid
         return None
 
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """No-op — NullAdapter has no buffering."""
+        return []
+
 
 # ---------------------------------------------------------------------------
 # Adapter registry
@@ -357,6 +361,10 @@ class OpenCodeAdapter:
     def extract_session_id(self, frame: TurnFrame) -> str | None:
         return self._last_session_id
 
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """No-op — OpenCodeAdapter has no buffering."""
+        return []
+
 
 # ---------------------------------------------------------------------------
 # PiAdapter (PR-2)
@@ -427,6 +435,10 @@ class PiAdapter:
 
     def extract_session_id(self, frame: TurnFrame) -> str | None:
         return self._last_session_id
+
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """No-op — PiAdapter has no buffering."""
+        return []
 
 
 # ---- init: register PR-2 adapters ----

@@ -574,6 +574,74 @@ class TestRunHeadlessTurn:
         assert conv2.resume_session_id == "sess-99"
         assert len(conv2.turns) == 1
 
+    @pytest.mark.asyncio
+    async def test_concrete_adapter_no_error_frame(self, tmp_path: Path) -> None:
+        """REGRESSION GUARD: run_headless_turn with a concrete non-Claude adapter
+        (not MagicMock) must NOT emit error frames — the adapter must satisfy
+        the full HeadlessAdapter contract including drain_pending_frames().
+
+        This test uses a real subclass of NullAdapter (which is a concrete class,
+        not a MagicMock) and drives it through a normal text turn via echo.
+        Prior to the fix, NullAdapter/OpenCodeAdapter/PiAdapter lacked
+        drain_pending_frames(), causing an AttributeError at EOF that emitted
+        an error frame — but the MagicMock-based test hid this because MagicMock
+        auto-supplies mock methods for every Protocol member.
+        """
+        # Concrete adapter: NullAdapter subclass that provides a real argv.
+        class EchoAdapter(NullAdapter):
+            def build_turn_argv(
+                self,
+                *,
+                prompt: str,
+                resume_id: str | None,
+                permission_posture: PermissionPosture,
+            ) -> list[str]:
+                return [
+                    "echo",
+                    "TEXT_DELTA: hello from concrete adapter",
+                    "\n",
+                    "TEXT_DELTA: goodbye",
+                ]
+
+        adapter = EchoAdapter()
+        # Confirm this is a concrete class, not a MagicMock.
+        assert not hasattr(adapter, '_mock_methods'), \
+            "test must use a concrete class, not MagicMock"
+
+        manager = HeadlessAssistantManager()
+        conv = await manager.get_conversation(workspace=tmp_path)
+
+        frames: list[TurnFrame] = []
+        async def collector(frame: TurnFrame) -> None:
+            frames.append(frame)
+
+        result = await run_headless_turn(
+            manager=manager,
+            adapter=adapter,
+            workspace=tmp_path,
+            prompt="test prompt",
+            conversation=conv,
+            permission_posture=PermissionPosture(),
+            frame_sender=collector,
+        )
+
+        # Must NOT have any error frame.
+        error_frames = [f for f in frames if f.type == "error"]
+        assert len(error_frames) == 0, (
+            f"expected no error frames, got: {[(f.message) for f in error_frames]}"
+        )
+
+        # Must have turn_start, turn_end, and ready frames.
+        types = [f.type for f in frames]
+        assert "turn_start" in types, "missing turn_start frame"
+        assert "turn_end" in types, "missing turn_end frame"
+        assert types[-1] == "status", "last frame must be status"
+        assert frames[-1].code == "ready", "last frame must be status ready"
+
+        # Must have text_delta frames from echo output.
+        text_frames = [f for f in frames if f.type == "text_delta"]
+        assert len(text_frames) >= 1, "expected at least one text_delta"
+
 
 # ---------------------------------------------------------------------------
 # OpenCodeAdapter (PR-2)
