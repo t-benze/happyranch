@@ -20,6 +20,7 @@ from runtime.daemon.routes import (
     health,
     jobs,
     kb,
+    metrics,
     orgs,
     runtime,
     tasks,
@@ -184,6 +185,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.state.daemon = state
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(auth.router, prefix="/api/v1")
+    app.include_router(metrics.router, prefix="/api/v1")
     app.include_router(runtime.router, prefix="/api/v1")
     app.include_router(orgs.router, prefix="/api/v1")
     app.include_router(assistant.router, prefix="/api/v1")
