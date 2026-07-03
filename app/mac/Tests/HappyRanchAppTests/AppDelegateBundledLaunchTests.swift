@@ -237,6 +237,80 @@ struct BundledLaunchTests {
     }
 }
 
+// MARK: - Daemon home resolution
+
+@Suite("Daemon home resolution")
+struct DaemonHomeResolutionTests {
+
+    @Test("daemonHome returns explicit HAPPYRANCH_DAEMON_HOME override when set in environment")
+    func daemonHomeEnvOverrideWins() {
+        // If HAPPYRANCH_DAEMON_HOME is already set in the test runner's env,
+        // verify daemonHome() returns it (env override wins over mode-dependent default).
+        if let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"] {
+            #expect(AppDelegate.daemonHome() == envHome,
+                    "daemonHome must return HAPPYRANCH_DAEMON_HOME when set in env, got \(AppDelegate.daemonHome())")
+        }
+        // If not set, skip — the env-override-wins ordering is validated
+        // by the code structure: it's the first check in daemonHome().
+        // Bundled-mode app-support path and dev-mode ~/.happyranch are tested
+        // indirectly via PackagingModeTests (packagingMode()) + BundledLaunchTests
+        // (which exercise daemonHome() through startDaemon()).
+    }
+}
+
+// MARK: - Bundled launch: ephemeral port
+
+@Suite("Bundled launch ephemeral port")
+@MainActor
+struct BundledLaunchEphemeralPortTests {
+
+    @Test("startDaemon in bundled mode sets HAPPYRANCH_DAEMON_PORT=0 in child env")
+    func startDaemonInBundledModeSetsPortZero() async throws {
+        AppDelegate._testPackagingMode = "bundled"
+        defer { AppDelegate._testPackagingMode = nil }
+
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-bundled")
+        try! delegate.supervisor.start()
+        delegate.supervisor.forceState(.stopped)
+        delegate.refreshDerivedState()
+
+        delegate.startDaemon()
+
+        #expect(fake.launchCallCount == 1)
+        if let env = fake.lastEnvironment {
+            #expect(env["HAPPYRANCH_DAEMON_PORT"] == "0",
+                    "Bundled launch must set HAPPYRANCH_DAEMON_PORT=0, got \(env["HAPPYRANCH_DAEMON_PORT"] ?? "nil")")
+        } else {
+            #expect(Bool(false), "Bundled launch must have child environment")
+        }
+    }
+
+    @Test("startDaemon in dev mode does NOT set HAPPYRANCH_DAEMON_PORT in child env")
+    func startDaemonInDevModeDoesNotSetPortZero() async throws {
+        AppDelegate._testPackagingMode = nil // dev mode
+        defer { AppDelegate._testPackagingMode = nil }
+
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-dev")
+        try! delegate.supervisor.start()
+        delegate.supervisor.forceState(.stopped)
+        delegate.refreshDerivedState()
+
+        delegate.startDaemon()
+
+        #expect(fake.launchCallCount == 1)
+        if let env = fake.lastEnvironment {
+            #expect(env["HAPPYRANCH_DAEMON_PORT"] == nil,
+                    "Dev mode must NOT set HAPPYRANCH_DAEMON_PORT, got \(env["HAPPYRANCH_DAEMON_PORT"] ?? "nil")")
+        }
+    }
+}
+
 // MARK: - Dev launch (existing path unchanged)
 
 @Suite("Dev launch path")

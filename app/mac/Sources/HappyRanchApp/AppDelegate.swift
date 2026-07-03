@@ -59,11 +59,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: - Daemon home
 
-    static func daemonHome() -> String {
+    nonisolated static func daemonHome() -> String {
         if let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"] {
             return envHome
         }
         let home = NSHomeDirectory()
+        // Bundled mode: own app-support directory so the app's runtime
+        // (port file, DB, logs, config) is isolated from dev data.
+        if packagingMode() == "bundled" {
+            return "\(home)/Library/Application Support/HappyRanch"
+        }
         return "\(home)/.happyranch"
     }
 
@@ -235,6 +240,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         if let webDistPath = Self.bundledWebDistPath() {
             childEnv["HAPPYRANCH_WEB_DIST"] = webDistPath
         }
+        // Bind a random free 127.0.0.1 port so the app runs alongside a dev daemon on 8765.
+        childEnv["HAPPYRANCH_DAEMON_PORT"] = "0"
 
         do {
             let handle = try pc.launch(
