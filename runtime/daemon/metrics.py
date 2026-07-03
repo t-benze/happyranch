@@ -121,12 +121,24 @@ class MetricsRegistry:
     # ------------------------------------------------------------------
 
     def record_http_latency(self, route: str, latency_s: float) -> None:
-        """Record a single request latency for *route*."""
+        """Record a single request latency for *route* AND the aggregate bucket.
+
+        Each recording updates both the concrete per-route histogram and a
+        single stable aggregate histogram (key ``__all__``) so the /metrics
+        snapshot surfaces per-route AND aggregate count/p50/p95/max.
+        """
+        # Per-route histogram.
         hist = self._http.get(route)
         if hist is None:
             hist = _RouteHistogram()
             self._http[route] = hist
         hist.record(latency_s)
+        # Aggregate histogram (same bounded ring-buffer class, keyed by stable tag).
+        agg = self._http.get("__all__")
+        if agg is None:
+            agg = _RouteHistogram()
+            self._http["__all__"] = agg
+        agg.record(latency_s)
 
     # ------------------------------------------------------------------
     # Snapshot

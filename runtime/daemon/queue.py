@@ -76,19 +76,19 @@ class TaskQueue:
         while not self._stopping:
             slug, task_id, metadata = await self._queue.get()
             hb = asyncio.create_task(self._heartbeat(dispatcher, slug, task_id))
+            t0 = time.monotonic()
             try:
-                t0 = time.monotonic()
                 await loop.run_in_executor(
                     None, dispatcher.run_step, slug, task_id, metadata,
                 )
-                duration = time.monotonic() - t0
-                if self._metrics_registry is not None:
-                    self._metrics_registry.record_loop_tick("run_step_worker", 0, duration)
             except Exception:
                 logger.exception(
                     "run_step %s/%s raised — continuing", slug, task_id,
                 )
             finally:
+                duration = time.monotonic() - t0
+                if self._metrics_registry is not None:
+                    self._metrics_registry.record_loop_tick("run_step_worker", 0, duration)
                 hb.cancel()
                 try:
                     await hb

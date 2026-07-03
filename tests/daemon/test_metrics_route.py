@@ -76,6 +76,8 @@ def test_metrics_http_accumulates_over_requests(tmp_home, app_idle, auth_headers
     r = client.get("/api/v1/metrics", headers=auth_headers)
     body = r.json()
     assert body["http"]["GET /api/v1/metrics"]["count"] == 5
+    # Aggregate bucket should also have 5 entries
+    assert body["http"]["__all__"]["count"] == 5
 
 
 def test_metrics_http_multiple_routes_tracked(tmp_home, app_idle, auth_headers) -> None:
@@ -91,3 +93,9 @@ def test_metrics_http_multiple_routes_tracked(tmp_home, app_idle, auth_headers) 
     assert "GET /api/v1/metrics" in body["http"]
     assert body["http"]["GET /api/v1/health"]["count"] >= 1
     assert body["http"]["GET /api/v1/metrics"]["count"] >= 1
+    # Aggregate bucket spans both routes
+    assert "__all__" in body["http"]
+    assert body["http"]["__all__"]["count"] >= 2
+    assert body["http"]["__all__"]["p50"] is not None
+    assert body["http"]["__all__"]["p95"] is not None
+    assert body["http"]["__all__"]["max"] is not None

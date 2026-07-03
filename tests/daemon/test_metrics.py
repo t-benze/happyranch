@@ -202,9 +202,40 @@ def test_record_http_latency_multiple_routes() -> None:
     registry.record_http_latency("POST /b", 0.002)
     registry.record_http_latency("GET /a", 0.003)
     snap = registry.snapshot()
-    assert set(snap["http"].keys()) == {"GET /a", "POST /b"}
+    assert {"GET /a", "POST /b", "__all__"} <= set(snap["http"].keys())
     assert snap["http"]["GET /a"]["count"] == 2
     assert snap["http"]["POST /b"]["count"] == 1
+
+
+def test_record_http_latency_aggregate_bucket_spans_all_routes() -> None:
+    """Aggregate '__all__' bucket count == sum of per-route counts and
+    its p50/p95/max span samples from multiple distinct routes."""
+    registry = MetricsRegistry()
+    # Route A: 3 slow requests
+    for _ in range(3):
+        registry.record_http_latency("GET /a", 0.100)
+    # Route B: 2 fast requests
+    registry.record_http_latency("POST /b", 0.001)
+    registry.record_http_latency("POST /b", 0.002)
+    snap = registry.snapshot()
+    agg = snap["http"]["__all__"]
+    assert agg["count"] == 5  # 3 + 2
+    # Sorted samples: [0.001, 0.002, 0.100, 0.100, 0.100]
+    # median at index (4)*0.5 = 2 -> 0.100
+    assert agg["p50"] == 0.100
+    # p95 at index (4)*0.95 = 3.8 -> lo=3(0.100), hi=4(0.100) -> 0.100
+    assert agg["p95"] == 0.100
+    assert agg["max"] == 0.100
+
+
+def test_record_http_latency_aggregate_single_route_only() -> None:
+    """When all requests hit one route, aggregate == that route's histogram."""
+    registry = MetricsRegistry()
+    for _ in range(3):
+        registry.record_http_latency("GET /x", 0.050)
+    snap = registry.snapshot()
+    assert snap["http"]["__all__"]["count"] == 3
+    assert snap["http"]["__all__"] == snap["http"]["GET /x"]
 
 
 # ---------------------------------------------------------------------------
@@ -222,3 +253,87 @@ def test_snapshot_shape_pr2_populated() -> None:
     assert isinstance(snap["http"], dict)
     assert "work_hours_scheduler" in snap["loops"]
     assert "GET /" in snap["http"]
+
+
+# ---------------------------------------------------------------------------
+# Queue worker tick on failure (FINDING 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_worker_loop_records_tick_on_run_step_exception() -> None:
+    """run_step_worker tick is recorded even when run_step raises.
+
+    Finding 2: currently the tick is only recorded on success.
+    This test asserts that a failing run_step still produces a tick.
+    """
+    import asyncio
+
+    from runtime.daemon.queue import TaskQueue
+
+    registry = MetricsRegistry()
+    queue = TaskQueue()
+    queue._metrics_registry = registry
+
+    class FailDispatcher:
+        def run_step(self, slug, task_id, metadata=None):
+            raise RuntimeError("simulated worker failure")
+
+        def heartbeat(self, slug, task_id):
+            pass
+
+    queue.enqueue("alpha", "task-fail")
+    worker = asyncio.create_task(queue._worker_loop(FailDispatcher()))
+    # Give the worker time to pick up and process the item (the exception
+    # is caught internally so the loop continues and blocks on _queue.get).
+    await asyncio.sleep(0.2)
+    # Signal stop + unblock _queue.get() with a sentinel so the loop exits.
+    queue._stopping = True
+    queue.enqueue("alpha", "task-sentinel")
+    try:
+        await asyncio.wait_for(worker, timeout=3.0)
+    except asyncio.TimeoutError:
+        worker.cancel()
+        raise
+
+    assert "run_step_worker" in registry._loops
+    tick = registry._loops["run_step_worker"]
+    assert tick["interval_seconds"] == 0
+    assert isinstance(tick["last_duration"], float)
+    assert tick["last_duration"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_worker_loop_records_tick_on_success() -> None:
+    """run_step_worker tick is recorded when run_step succeeds (existing behavior)."""
+    import asyncio
+
+    from runtime.daemon.queue import TaskQueue
+
+    registry = MetricsRegistry()
+    queue = TaskQueue()
+    queue._metrics_registry = registry
+
+    class OkDispatcher:
+        def run_step(self, slug, task_id, metadata=None):
+            pass  # no-op success
+
+        def heartbeat(self, slug, task_id):
+            pass
+
+    queue.enqueue("alpha", "task-ok")
+    worker = asyncio.create_task(queue._worker_loop(OkDispatcher()))
+    await asyncio.sleep(0.2)
+    queue._stopping = True
+    queue.enqueue("alpha", "task-sentinel")
+    try:
+        await asyncio.wait_for(worker, timeout=3.0)
+    except asyncio.TimeoutError:
+        worker.cancel()
+        raise
+
+    assert "run_step_worker" in registry._loops
+    tick = registry._loops["run_step_worker"]
+    assert tick["interval_seconds"] == 0
+    assert isinstance(tick["last_duration"], float)
+    assert tick["last_duration"] >= 0
