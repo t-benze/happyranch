@@ -114,6 +114,7 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
+        _shared.require_absolute_payload_path(args.from_file, kind="thread-compose")
         with open(args.from_file) as fh:
             payload = _json.load(fh)
         payload["task_id"] = args.task_id
@@ -225,6 +226,7 @@ def cmd_threads_reply(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    _shared.require_absolute_payload_path(args.from_file, kind="thread-reply")
     try:
         body = _json.loads(Path(args.from_file).read_text())
     except (OSError, ValueError) as exc:
@@ -254,6 +256,7 @@ def cmd_threads_decline(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    _shared.require_absolute_payload_path(args.from_file, kind="thread-decline")
     try:
         body = _json.loads(Path(args.from_file).read_text())
     except (OSError, ValueError) as exc:
@@ -274,6 +277,7 @@ def cmd_threads_dispatch(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    _shared.require_absolute_payload_path(args.from_file, kind="thread-dispatch")
     try:
         body = _json.loads(Path(args.from_file).read_text())
     except (OSError, ValueError) as exc:

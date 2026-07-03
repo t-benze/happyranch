@@ -570,6 +570,7 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     Returns ``(task_id, body)`` shaped for the daemon's completion endpoint.
     """
     import json as _json
+    _shared.require_absolute_payload_path(path, kind="completion")
     with open(path) as f:
         data = _json.load(f)
     required = ["task_id", "session_id", "agent", "status", "summary"]
