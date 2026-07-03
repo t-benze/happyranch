@@ -912,7 +912,8 @@ class TestClaudeAdapterArgv:
         assert "--allowedTools" in argv
         idx2 = argv.index("--allowedTools")
         assert argv[idx2 + 1] == "Bash(happyranch *) Bash(git *)"
-        # Prompt is right after -p, not at the end.\n        assert argv.index("hello") == argv.index("-p") + 1
+        # Prompt is right after -p, not at the end.
+        assert argv.index("hello") == argv.index("-p") + 1
 
     def test_resume_id_adds_resume_flag(self, adapter) -> None:
         posture = PermissionPosture(
@@ -1159,6 +1160,129 @@ class TestClaudeAdapterParsing:
 
     def test_unknown_event_type_returns_none(self, adapter) -> None:
         assert adapter.parse_event('{"type":"unknown","x":1}') is None
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter — multi-content-block parsing (PR-3 finding 3 fix)
+# ---------------------------------------------------------------------------
+
+class TestClaudeAdapterMultiContent:
+    """Tests for ClaudeAdapter.parse_event — multi-content-block messages
+    MUST emit ALL content blocks, not just the first one.
+
+    Finding: parse_event returns after the FIRST content block, dropping a
+    tool_use that follows text in the same assistant message.
+    Fix: buffer all content blocks and emit them across successive calls.
+    """
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import ClaudeAdapter
+        return ClaudeAdapter()
+
+    def test_multi_content_emits_both_text_and_tool_use(self, adapter) -> None:
+        """A single assistant message with text + tool_use content blocks
+        yields BOTH a text_delta AND a tool_call frame across two calls."""
+        f1 = adapter.parse_event(CLAUDE_ASSISTANT_MULTI_CONTENT)
+        assert f1 is not None, "first block (text) must not be None"
+        assert f1.type == "text_delta"
+        assert f1.text == "Let me check that."
+
+        # Second call (with next event) should emit the buffered tool_use.
+        # The next event's line is parsed for side effects; the buffered
+        # frame from the previous message is returned first.
+        f2 = adapter.parse_event(CLAUDE_ASSISTANT_TEXT)
+        assert f2 is not None, "second block (tool_use) must not be dropped"
+        assert f2.type == "tool_call", (
+            f"expected tool_call, got {f2.type}"
+        )
+        assert f2.name == "Bash"
+        assert f2.input == {"command": "ls"}
+
+        # Third call should now parse the CLAUDE_ASSISTANT_TEXT event normally.
+        f3 = adapter.parse_event(CLAUDE_USER_TOOL_RESULT)
+        assert f3 is not None, "third call must parse the next event normally"
+        assert f3.type == "text_delta"
+        assert f3.text == "Hello world"
+
+    def test_single_content_message_no_buffering(self, adapter) -> None:
+        """Single-content message emits normally, no buffering side-effects."""
+        f = adapter.parse_event(CLAUDE_ASSISTANT_TEXT)
+        assert f is not None
+        assert f.type == "text_delta"
+        assert f.text == "Hello world"
+
+        # Next call should parse the next event normally (no pending frames).
+        f2 = adapter.parse_event(CLAUDE_USER_TOOL_RESULT)
+        assert f2 is not None
+        assert f2.type == "tool_result"
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter — terminal result event (PR-3 finding 2 fix)
+# ---------------------------------------------------------------------------
+
+# Fixture: result event is the ONLY event carrying session_id (no prior events).
+CLAUDE_RESULT_ONLY_SESSION_ID = (
+    '{"type":"result","subtype":"success","is_error":false,'
+    '"duration_ms":1000,"num_turns":1,"result":"done",'
+    '"stop_reason":"end_turn",'
+    '"session_id":"sess-terminal-only",'
+    '"usage":{"input_tokens":50,"output_tokens":10,'
+    '"cache_read_input_tokens":0,"cache_creation_input_tokens":0,'
+    '"service_tier":"standard"},'
+    '"modelUsage":{"claude-haiku":{"inputTokens":50,"outputTokens":10}},'
+    '"permission_denials":[],"uuid":"u99"}'
+)
+
+
+class TestClaudeAdapterTerminalResult:
+    """Tests for ClaudeAdapter.parse_event — terminal result event
+    session_id/usage preservation.
+
+    Finding: manually-parsed claude result events return None, and
+    extract_session_id runs only on non-None frames, so the TERMINAL
+    result event's session_id/usage is lost.
+    Fix: store terminal usage on the adapter and ensure extract_session_id
+    returns the session_id even when the result event is the last event.
+    """
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import ClaudeAdapter
+        return ClaudeAdapter()
+
+    def test_result_event_parsed_for_session_id(self, adapter) -> None:
+        """Session id from result event is tracked internally even when
+        parse_event returns None."""
+        assert adapter.extract_session_id(TurnFrame.text_delta(text="x")) is None
+        result = adapter.parse_event(CLAUDE_RESULT_ONLY_SESSION_ID)
+        assert result is None, "result event returns None (no dock frame)"
+        # But session_id should be tracked internally.
+        sid = adapter.extract_session_id(TurnFrame.text_delta(text="x"))
+        assert sid == "sess-terminal-only", (
+            "session_id from terminal result must be extractable"
+        )
+
+    def test_terminal_usage_preserved(self, adapter) -> None:
+        """Usage from the result event is preserved for turn_end."""
+        adapter.parse_event(CLAUDE_RESULT_ONLY_SESSION_ID)
+        usage = getattr(adapter, '_terminal_usage', None)
+        assert usage is not None, (
+            "terminal usage must be preserved from result event"
+        )
+        assert usage.get("input_tokens") == 50
+        assert usage.get("output_tokens") == 10
+
+    def test_session_id_only_in_result_still_surfaces(self, adapter) -> None:
+        """When session_id appears ONLY on the terminal result event
+        (no prior events carry it), extract_session_id still returns it."""
+        # Simulate a turn where only the result event has session_id.
+        adapter.parse_event(CLAUDE_RESULT_ONLY_SESSION_ID)
+        sid = adapter.extract_session_id(TurnFrame.turn_end())
+        assert sid == "sess-terminal-only", (
+            "session_id from result-only event must surface via extract_session_id"
+        )
 
 
 # ---------------------------------------------------------------------------

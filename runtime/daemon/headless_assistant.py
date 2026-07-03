@@ -446,6 +446,8 @@ class ClaudeAdapter:
 
     def __init__(self) -> None:
         self._last_session_id: str | None = None
+        self._pending_frames: list[TurnFrame] = []
+        self._terminal_usage: dict[str, Any] | None = None
 
     # ---- HeadlessAdapter contract ----
 
@@ -472,6 +474,31 @@ class ClaudeAdapter:
         return argv
 
     def parse_event(self, raw_line: str) -> TurnFrame | None:
+        # If we have pending frames from a previous multi-content-block
+        # message, emit one now.  Silently parse the current raw_line for
+        # side effects (session_id tracking), pushing its frames to the
+        # pending queue so they are emitted in the correct order after
+        # the buffered frames.
+        if self._pending_frames:
+            self._parse_for_side_effects(raw_line)
+            return self._pending_frames.pop(0)
+        return self._parse_event_impl(raw_line)
+
+    def _parse_for_side_effects(self, raw_line: str) -> None:
+        """Parse *raw_line* silently for side effects (session_id /
+        terminal-usage tracking).  Any resulting TurnFrame is pushed to
+        ``_pending_frames`` so it is emitted in order after buffered frames."""
+        frame = self._parse_event_impl(raw_line)
+        if frame is not None:
+            self._pending_frames.append(frame)
+
+    def _parse_event_impl(self, raw_line: str) -> TurnFrame | None:
+        """Core parsing logic: one JSONL line → at most one TurnFrame.
+
+        Multi-content-block assistant messages return the *first* block and
+        buffer the rest in ``_pending_frames`` so every content block is
+        eventually emitted across successive calls.
+        """
         line = raw_line.strip()
         if not line or not line.startswith("{"):
             return None
@@ -504,6 +531,7 @@ class ClaudeAdapter:
             content = msg.get("content")
             if not isinstance(content, list):
                 return None
+            frames: list[TurnFrame] = []
             for block in content:
                 if not isinstance(block, dict):
                     continue
@@ -511,15 +539,23 @@ class ClaudeAdapter:
                 if btype == "text":
                     text = block.get("text")
                     if isinstance(text, str) and text:
-                        return TurnFrame.text_delta(text=text)
+                        frames.append(TurnFrame.text_delta(text=text))
                 elif btype == "tool_use":
                     name = block.get("name")
                     if isinstance(name, str):
-                        return TurnFrame.tool_call(
+                        frames.append(TurnFrame.tool_call(
                             name=name,
                             input=block.get("input") if isinstance(block.get("input"), dict) else None,
-                        )
-            return None
+                        ))
+            if not frames:
+                return None
+            if len(frames) == 1:
+                return frames[0]
+            # Multi-content-block message: return the first block, buffer
+            # the rest so they are emitted across the next calls.
+            result = frames[0]
+            self._pending_frames.extend(frames[1:])
+            return result
 
         if etype == "user":
             msg = event.get("message")
@@ -542,8 +578,13 @@ class ClaudeAdapter:
 
         if etype == "result":
             # Terminal event — carries session_id and usage.
-            # session_id already tracked above.  No dock frame needed;
-            # run_headless_turn sends turn_end independently.
+            # session_id is already tracked above.  Store terminal usage
+            # so run_headless_turn can include it in the turn_end frame.
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                self._terminal_usage = usage
+            # No dock frame needed; run_headless_turn sends turn_end
+            # independently.
             return None
 
         # rate_limit_event, unknown → no dock frame.
@@ -860,6 +901,14 @@ async def run_headless_turn(
 
         await proc.wait()
 
+        # Capture session_id from adapters that track it internally from
+        # terminal events (e.g., ClaudeAdapter result event).  These events
+        # return None from parse_event, so extract_session_id is never
+        # called during the stdout loop.
+        extra_sid = adapter.extract_session_id(TurnFrame.turn_end())
+        if extra_sid is not None:
+            session_id = extra_sid
+
         # Drain stderr for diagnostics only — no frames emitted from it.
         stderr_data = await proc.stderr.read()
         if stderr_data and proc.returncode != 0:
@@ -881,10 +930,17 @@ async def run_headless_turn(
             await proc.wait()
 
     # Send turn_end frame.
-    usage: dict[str, Any] | None = None
+    usage: dict[str, Any] = {}
     if session_id:
-        usage = {"session_id": session_id}
-    end_frame = TurnFrame.turn_end(usage=usage)
+        usage["session_id"] = session_id
+    # Include terminal usage from adapters that capture it (e.g.,
+    # ClaudeAdapter._terminal_usage from the result event).
+    terminal_usage = getattr(adapter, '_terminal_usage', None)
+    if isinstance(terminal_usage, dict):
+        for k, v in terminal_usage.items():
+            if k not in usage:
+                usage[k] = v
+    end_frame = TurnFrame.turn_end(usage=usage if usage else None)
     await frame_sender(end_frame)
     await manager.buffer_inflight_frame(workspace=workspace, frame=end_frame)
 

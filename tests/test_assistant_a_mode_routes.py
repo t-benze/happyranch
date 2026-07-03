@@ -278,3 +278,61 @@ class TestAModeWebSocket:
             frame = json.loads(msg)
             assert frame["type"] == "status"
             assert frame["code"] == "session_closed"
+
+    def test_ws_turn_receives_full_permission_posture(
+        self, test_client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Finding 1 (HIGH): the A-mode WS path MUST pass run_headless_turn
+        a FULL computed PermissionPosture (mirror allow_rules_for_agent),
+        NOT a blank PermissionPosture() with claude_allowed_tools=None.
+
+        The blank posture under-grants: claude receives only
+        Bash(happyranch *) instead of the full worker allowlist.
+        """
+        from unittest.mock import AsyncMock
+
+        posture_captured: list[object] = []
+
+        async def fake_run_headless_turn(
+            *, manager, adapter, workspace, prompt,
+            conversation, permission_posture, frame_sender,
+        ):
+            posture_captured.append(permission_posture)
+            return None
+
+        monkeypatch.setattr(
+            "runtime.daemon.routes.assistant_a_mode.run_headless_turn",
+            fake_run_headless_turn,
+        )
+
+        with test_client.websocket_connect("/api/v1/assistant/a-mode") as ws:
+            # Drain ready status.
+            msg = ws.receive_text()
+            frame = json.loads(msg)
+            if frame.get("type") == "history":
+                ws.receive_text()  # drain another (ready follows history)
+
+            ws.send_text(json.dumps({"type": "start", "text": "test prompt"}))
+
+            # Wait briefly for the async handler to process.
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.1))
+
+        assert len(posture_captured) == 1, (
+            "run_headless_turn must be called exactly once"
+        )
+        posture = posture_captured[0]
+        from runtime.daemon.headless_assistant import PermissionPosture
+        assert isinstance(posture, PermissionPosture)
+        # The allowlist must NOT be None (blank posture).
+        assert posture.claude_allowed_tools is not None, (
+            "claude_allowed_tools must NOT be None — blank posture under-grants"
+        )
+        # Must contain at least the happyranch baseline.
+        assert "Bash(happyranch" in posture.claude_allowed_tools, (
+            f"allowlist must contain happyranch baseline, got: {posture.claude_allowed_tools}"
+        )
+        # The mode must be set (defaults to "auto").
+        assert posture.claude_permission_mode == "auto", (
+            f"expected permission_mode 'auto', got: {posture.claude_permission_mode}"
+        )
