@@ -17,6 +17,7 @@ from runtime.orchestrator.org_config import (
     load_org_config,
     render_current_time_line,
     resolve_dreaming_timezone_display,
+    resolve_managed_skills_index,
 )
 
 # Cap on the agent's window audit rows folded into the dream prompt. The most
@@ -41,6 +42,7 @@ def build_dream_prompt(
     task_history: str,
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
+    managed_skills_index: str = "",
 ) -> str:
     """Compose the private dream-session prompt.
 
@@ -51,12 +53,13 @@ def build_dream_prompt(
     """
     tz, label = resolve_dreaming_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
+    skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
     return f"""# Private Nightly Dream
 
 You are {dream.agent_name}. This is private reflection for HappyRanch org `{org_slug}`.
 This is not a task or thread. Do not call report-completion.
 
-current_time: {current_time}
+current_time: {current_time}{skills_block}
 Dream id: {dream.id}
 Window start: {dream.window_start.isoformat() if dream.window_start else "last 24 hours"}
 Window end: {dream.window_end.isoformat()}
@@ -122,6 +125,9 @@ async def run_dream(
         org_config = load_org_config(paths)
     except Exception:
         org_config = OrgConfig()
+    managed_skills_index = resolve_managed_skills_index(
+        paths=paths, agent_name=dream.agent_name,
+    )
     prompt = build_dream_prompt(
         org_slug=org_state.slug,
         dream=dream,
@@ -129,6 +135,7 @@ async def run_dream(
         recent_audit=recent_audit,
         task_history=_load_task_history(workspace),
         org_config=org_config,
+        managed_skills_index=managed_skills_index,
     )
 
     executor_name = _executor_name(workspace)

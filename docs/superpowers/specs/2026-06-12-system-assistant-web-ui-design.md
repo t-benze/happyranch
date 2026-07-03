@@ -206,7 +206,7 @@ Reconnect: loads the persisted STRUCTURED log, not raw scrollback replay.
 | PR-3 | claude adapter + permission posture (gated) | pending |
 | PR-4 | codex adapter + sandbox/approval (gated) | pending |
 | PR-5 | Dock frontend: MessageBubble/TypingBubble reuse | pending |
-| PR-6 | AppBar avatar entry point | pending |
+| PR-6 | AppBar avatar entry point | ✅ this PR |
 
 ### 6.8 Frozen symbols
 

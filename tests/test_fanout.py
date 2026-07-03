@@ -140,20 +140,8 @@ class TestFanoutValidation:
         assert decision.action == "fanout"
         assert validate_fanout_decision(decision) is None
 
-    def test_rejects_per_child_then_phase1(self):
-        decision = NextStep(
-            action="fanout",
-            children=[
-                FanoutChild(agent="a", prompt="1"),
-                FanoutChild(agent="b", prompt="2", then=[ChainLeg(agent="c", prompt="review")]),
-            ],
-            width_cap_ack=2,
-        )
-        err = validate_fanout_decision(decision)
-        assert err is not None
-        assert "then" in err.lower()
-
-    def test_rejects_per_child_expect_verdict_phase1(self):
+    def test_accepts_per_child_expect_verdict_phase2(self):
+        """Phase 2: expect_verdict on a fan-out child is now accepted (pipeline)."""
         decision = NextStep(
             action="fanout",
             children=[
@@ -162,9 +150,19 @@ class TestFanoutValidation:
             ],
             width_cap_ack=2,
         )
-        err = validate_fanout_decision(decision)
-        assert err is not None
-        assert "expect_verdict" in err.lower()
+        assert validate_fanout_decision(decision) is None
+
+    def test_accepts_per_child_then_phase2(self):
+        """Phase 2: per-child then with valid legs is now accepted (pipeline)."""
+        decision = NextStep(
+            action="fanout",
+            children=[
+                FanoutChild(agent="a", prompt="1"),
+                FanoutChild(agent="b", prompt="2", then=[ChainLeg(agent="c", prompt="review")]),
+            ],
+            width_cap_ack=2,
+        )
+        assert validate_fanout_decision(decision) is None
 
 
 # --- FanoutState tests ---
@@ -773,16 +771,18 @@ class TestFanoutRunStep:
         # Off-team rejection → feedback step (task goes back to pending)
         assert parent.status == TaskStatus.PENDING
 
-    def test_fanout_rejects_per_child_then(self, runtime, db, monkeypatch):
+    def test_fanout_rejects_invalid_then_leg_workspace(self, runtime, db, monkeypatch):
+        """Fan-out with a then leg targeting a non-existent workspace still fails."""
         import json
         from runtime.orchestrator.orchestrator import Orchestrator
         from runtime.orchestrator.teams import TeamsRegistry
 
         (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
         (runtime.workspaces_dir / "qa_engineer").mkdir(parents=True)
+        # 'qa' workspace does NOT exist
 
         db.insert_task(TaskRecord(
-            id="T-FANOUT-THEN", brief="with then",
+            id="T-FANOUT-THEN", brief="invalid then leg",
             assigned_agent="engineering_head",
         ))
         orch = Orchestrator(
@@ -809,7 +809,8 @@ class TestFanoutRunStep:
 
         parent = db.get_task("T-FANOUT-THEN")
         assert parent.status == TaskStatus.FAILED
-        assert "then" in (parent.note or "").lower()
+        # Should fail because then leg agent 'qa' has no workspace
+        assert "qa" in (parent.note or "").lower()
 
     def test_fanout_clears_active_fanout_on_failure(self, runtime, db, monkeypatch):
         """When a fan-out decision fails validation, active_fanout stays None."""
@@ -1315,3 +1316,1022 @@ class TestFanoutRunStep:
         assert "completed" in ctx
         assert "failed" in ctx
         assert "test failure" in ctx
+
+
+# --- Phase 2 pipeline tests (§3.6 TDD list) ---
+
+
+class TestFanoutPipeline:
+    """§3.6 TDD tests for Phase 2 pipeline (carrier child with inline chain).
+    These must FAIL pre-impl (capture the red output).
+    """
+
+    # ── §3.6 test 8: parse-accept ──
+
+    def test_parse_accepts_per_child_then_and_expect_verdict(self):
+        """then/expect_verdict on a fan-out child now passes validation
+        instead of being rejected (inverse of the Phase 1 parse-reject)."""
+        decision = NextStep(
+            action="fanout",
+            children=[
+                FanoutChild(
+                    agent="dev_agent", prompt="task 1",
+                    then=[ChainLeg(agent="senior_dev", prompt="review", expect_verdict="APPROVE")],
+                ),
+                FanoutChild(
+                    agent="qa_engineer", prompt="task 2",
+                    expect_verdict="PASS",
+                ),
+            ],
+            width_cap_ack=2,
+        )
+        assert validate_fanout_decision(decision) is None
+
+    def test_parse_rejects_then_leg_missing_agent(self):
+        """A then leg with a missing agent still fails validation."""
+        decision = NextStep(
+            action="fanout",
+            children=[
+                FanoutChild(
+                    agent="dev_agent", prompt="task 1",
+                    then=[ChainLeg(agent="", prompt="review")],
+                ),
+                FanoutChild(agent="qa_engineer", prompt="task 2"),
+            ],
+            width_cap_ack=2,
+        )
+        err = validate_fanout_decision(decision)
+        assert err is not None
+        assert "agent" in err.lower()
+
+    def test_parse_rejects_then_leg_missing_prompt(self):
+        """A then leg with a missing prompt still fails validation."""
+        decision = NextStep(
+            action="fanout",
+            children=[
+                FanoutChild(
+                    agent="dev_agent", prompt="task 1",
+                    then=[ChainLeg(agent="senior_dev", prompt="")],
+                ),
+                FanoutChild(agent="qa_engineer", prompt="task 2"),
+            ],
+            width_cap_ack=2,
+        )
+        err = validate_fanout_decision(decision)
+        assert err is not None
+        assert "prompt" in err.lower()
+
+    # ── §3.6 test 6: width + review gate unchanged ──
+
+    def test_width_cap_ack_mismatch_still_rejects(self):
+        """width_cap_ack mismatch still parse-rejects."""
+        decision = NextStep(
+            action="fanout",
+            children=[
+                FanoutChild(agent="a", prompt="1"),
+                FanoutChild(agent="b", prompt="2"),
+            ],
+            width_cap_ack=99,
+        )
+        err = validate_fanout_decision(decision)
+        assert err is not None
+        assert "width_cap_ack" in err.lower()
+
+    def test_width_over_threshold_still_needs_review(self):
+        """fanout_needs_review still returns True when width > FANOUT_REVIEW_THRESHOLD."""
+        assert fanout_needs_review(5) is True
+        assert fanout_needs_review(4) is False
+        assert fanout_needs_review(3) is False
+
+    # ── §3.6 test 5: plain-child regression ──
+
+    def test_empty_then_child_behaves_like_phase1(self, runtime, db, monkeypatch):
+        """A fan-out child with empty `then` is dispatched as a plain PENDING
+        subtask, byte-identical to Phase 1 — no active_chain, no carrier behavior."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+
+        (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+        (runtime.workspaces_dir / "qa_engineer").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-PLAIN1", brief="plain child regression",
+            assigned_agent="engineering_head",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        q = _SlugQueue()
+        orch._queue = q
+
+        def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            return _make_result(), _make_report(
+                output_summary=json.dumps({
+                    "action": "fanout",
+                    "children": [
+                        {"agent": "dev_agent", "prompt": "plain child"},
+                        {"agent": "qa_engineer", "prompt": "also plain"},
+                    ],
+                    "width_cap_ack": 2,
+                }),
+            )
+        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+        orch.run_step("T-PLAIN1")
+
+        # Parent parked with active_fanout
+        parent = db.get_task("T-PLAIN1")
+        assert parent.active_fanout is not None
+
+        children = db.get_children("T-PLAIN1")
+        assert len(children) == 2
+        for cid in children:
+            c = db.get_task(cid)
+            assert c is not None
+            # Plain children are PENDING — no active_chain set
+            assert c.status == TaskStatus.PENDING
+            assert c.active_chain is None
+            assert c.task_type == "subtask"
+            assert c.parent_task_id == "T-PLAIN1"
+
+    # ── §3.6 test 1: no-clobber ──
+
+    def test_pipeline_no_clobber_two_column_two_row(self, runtime, db, monkeypatch):
+        """Spawn a 2-wide pipeline; assert P.active_fanout on P's row,
+        Cᵢ.active_chain on each Cᵢ row, neither ever written to the other row."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+
+        (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+        (runtime.workspaces_dir / "qa_engineer").mkdir(parents=True)
+        (runtime.workspaces_dir / "senior_dev").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-NOCLOBBER", brief="pipeline no-clobber",
+            assigned_agent="engineering_head",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        q = _SlugQueue()
+        orch._queue = q
+
+        def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            return _make_result(), _make_report(
+                output_summary=json.dumps({
+                    "action": "fanout",
+                    "children": [
+                        {
+                            "agent": "dev_agent", "prompt": "pipeline child 1",
+                            "then": [{"agent": "senior_dev", "prompt": "review", "expect_verdict": "APPROVE"}],
+                        },
+                        {
+                            "agent": "qa_engineer", "prompt": "pipeline child 2",
+                            "expect_verdict": "PASS",
+                        },
+                    ],
+                    "width_cap_ack": 2,
+                }),
+            )
+        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+        orch.run_step("T-NOCLOBBER")
+
+        # P has active_fanout but NOT active_chain
+        parent = db.get_task("T-NOCLOBBER")
+        assert parent.active_fanout is not None, "P must have active_fanout"
+        assert parent.active_chain is None, "P must NOT have active_chain"
+
+        children = db.get_children("T-NOCLOBBER")
+        assert len(children) == 2
+        for cid in children:
+            c = db.get_task(cid)
+            assert c is not None
+            # Each Cᵢ has active_chain but NOT active_fanout
+            assert c.active_chain is not None, f"{cid} must have active_chain"
+            assert c.active_fanout is None, f"{cid} must NOT have active_fanout"
+
+    # ── §3.6 test 2: carrier defers terminal ──
+
+    def test_carrier_defers_terminal_until_chain_completes(self, runtime, db, monkeypatch):
+        """Cᵢ does NOT count toward P's barrier until its final leg
+        matches expect_verdict.  When the chain completes, the carrier
+        auto-completes DIRECTLY — NO orch._run_agent call, NO manager-wake."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.run_step import (
+            _spawn_fanout_children, _enqueue_parent_if_waiting,
+        )
+
+        for a in ("dev_agent", "qa_engineer", "senior_dev"):
+            (runtime.workspaces_dir / a).mkdir(parents=True)
+
+        # Insert parent task
+        db.insert_task(TaskRecord(
+            id="T-PIPE-DEFER", brief="carrier deferral",
+            assigned_agent="engineering_head",
+            task_type="task",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        q = _SlugQueue()
+        orch._queue = q
+        # Spy on _run_agent: the carrier must NEVER call _run_agent.
+        _run_agent_calls = []
+        monkeypatch.setattr(orch, "_run_agent", lambda tid, ag, pr, **kw: (
+            _run_agent_calls.append(tid), _make_result(), _make_report("done"),
+        )[-2:])
+
+        # Spawn fan-out: 1 pipeline child + 1 plain child
+        children_payload = [
+            {
+                "agent": "dev_agent", "prompt": "build",
+                "expect_verdict": "APPROVE",
+                "then": [{"agent": "senior_dev", "prompt": "review", "expect_verdict": "APPROVE"}],
+            },
+            {"agent": "qa_engineer", "prompt": "test"},
+        ]
+        _spawn_fanout_children(
+            orch, db.get_task("T-PIPE-DEFER"), "T-PIPE-DEFER", 1,
+            children=children_payload, width=2,
+            manager_agent="engineering_head", step_audit_id=1,
+        )
+        parent = db.get_task("T-PIPE-DEFER")
+        assert parent.status == TaskStatus.IN_PROGRESS
+        assert parent.block_kind == BlockKind.DELEGATED
+
+        children = db.get_children("T-PIPE-DEFER")
+        assert len(children) == 2
+
+        # Identify carrier
+        carrier_id = None
+        plain_id = None
+        for cid in children:
+            c = db.get_task(cid)
+            if c.active_chain is not None:
+                carrier_id = cid
+            else:
+                plain_id = cid
+        assert carrier_id is not None
+        assert plain_id is not None
+
+        carrier = db.get_task(carrier_id)
+        assert carrier.status == TaskStatus.IN_PROGRESS
+        assert carrier.block_kind == BlockKind.DELEGATED
+
+        # Find first leg
+        carrier_children = db.get_children(carrier_id)
+        assert len(carrier_children) == 1
+        first_leg_id = carrier_children[0]
+
+        # Complete first leg with matching verdict
+        db.update_task(first_leg_id, status=TaskStatus.COMPLETED, block_kind=None)
+        db.insert_task_result(
+            task_id=first_leg_id, agent="dev_agent", session_id="s",
+            status="completed", confidence_score=80,
+            output_summary="built", verdict="APPROVE",
+        )
+        # Trigger parent-wake on carrier (chain should advance)
+        _enqueue_parent_if_waiting(orch, first_leg_id)
+
+        # Chain advanced: second leg spawned, carrier STILL delegated
+        carrier = db.get_task(carrier_id)
+        assert carrier.status == TaskStatus.IN_PROGRESS, (
+            "carrier should DEFER terminal until chain completes"
+        )
+        carrier_children = db.get_children(carrier_id)
+        assert len(carrier_children) == 2, "second leg should have been spawned"
+
+        # Complete plain fan-out child
+        db.update_task(plain_id, status=TaskStatus.COMPLETED, block_kind=None)
+        db.insert_task_result(
+            task_id=plain_id, agent="qa_engineer", session_id="s",
+            status="completed", confidence_score=80,
+            output_summary="tested",
+        )
+        _enqueue_parent_if_waiting(orch, plain_id)
+        # Parent still parked — carrier hasn't completed its chain yet
+        parent = db.get_task("T-PIPE-DEFER")
+        assert parent.block_kind == BlockKind.DELEGATED, (
+            "P should still be parked while carrier chain is incomplete"
+        )
+
+        # Complete second leg (senior_dev) with expected verdict
+        second_leg_id = [cid for cid in carrier_children if cid != first_leg_id][0]
+        db.update_task(second_leg_id, status=TaskStatus.COMPLETED, block_kind=None)
+        db.insert_task_result(
+            task_id=second_leg_id, agent="senior_dev", session_id="s",
+            status="completed", confidence_score=80,
+            output_summary="reviewed", verdict="APPROVE",
+        )
+        # Trigger carrier wake → chain complete → carrier auto-completes.
+        # The carrier must auto-complete DIRECTLY, with NO _run_agent call.
+        _enqueue_parent_if_waiting(orch, second_leg_id)
+
+        # Carrier should now be terminal — auto-completed by the chain-complete handler.
+        carrier = db.get_task(carrier_id)
+        assert carrier.status == TaskStatus.COMPLETED, (
+            f"carrier should auto-complete after chain completes, got {carrier.status}"
+        )
+        # Verify _run_agent was NEVER called for the carrier.
+        assert carrier_id not in _run_agent_calls, (
+            f"carrier {carrier_id} must NOT call _run_agent — it has no session of its own"
+        )
+
+    # ── §3.6 test 3: barrier fires once ──
+
+    def test_barrier_fires_once_after_all_carriers_complete(self, runtime, db, monkeypatch):
+        """P wakes exactly once, only after ALL carriers' chains complete.
+        Carriers auto-complete DIRECTLY — NO _run_agent call for any carrier."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.run_step import (
+            _spawn_fanout_children, _enqueue_parent_if_waiting,
+        )
+
+        for a in ("agent0", "agent1", "agent2", "agent3"):
+            (runtime.workspaces_dir / a).mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-BARRIER1", brief="barrier once",
+            assigned_agent="engineering_head",
+            task_type="task",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+
+        # Count how many times P is enqueued
+        enqueued_parent_count = [0]
+
+        class CountQueue:
+            def __init__(self):
+                from collections import deque
+                self._items = deque()
+            def put_nowait(self, slug, task_id):
+                if task_id == "T-BARRIER1":
+                    enqueued_parent_count[0] += 1
+                self._items.append((slug, task_id))
+            def get_nowait(self):
+                return self._items.popleft()
+            def enqueue(self, slug, task_id):
+                self.put_nowait(slug, task_id)
+            def __len__(self):
+                return len(self._items)
+            def __bool__(self):
+                return bool(self._items)
+        orch._queue = CountQueue()
+        # Spy on _run_agent: carriers must NEVER call _run_agent.
+        _run_agent_calls = []
+        monkeypatch.setattr(orch, "_run_agent", lambda tid, ag, pr, **kw: (
+            _run_agent_calls.append(tid), _make_result(), _make_report("done"),
+        )[-2:])
+
+        # Spawn 2 pipeline carriers
+        children_payload = [
+            {
+                "agent": "agent0", "prompt": "c1",
+                "then": [{"agent": "agent2", "prompt": "review1", "expect_verdict": "APPROVE"}],
+            },
+            {
+                "agent": "agent1", "prompt": "c2",
+                "then": [{"agent": "agent3", "prompt": "review2", "expect_verdict": "PASS"}],
+            },
+        ]
+        _spawn_fanout_children(
+            orch, db.get_task("T-BARRIER1"), "T-BARRIER1", 1,
+            children=children_payload, width=2,
+            manager_agent="engineering_head", step_audit_id=1,
+        )
+        parent = db.get_task("T-BARRIER1")
+        assert parent.active_fanout is not None
+
+        children = db.get_children("T-BARRIER1")
+        assert len(children) == 2
+
+        # For each carrier, complete its chain fully
+        for cid in children:
+            carrier = db.get_task(cid)
+            assert carrier.active_chain is not None
+
+            # Complete first leg
+            carrier_children = db.get_children(cid)
+            assert len(carrier_children) == 1
+            first_leg_id = carrier_children[0]
+            db.update_task(first_leg_id, status=TaskStatus.COMPLETED, block_kind=None)
+            db.insert_task_result(
+                task_id=first_leg_id, agent=carrier.assigned_agent, session_id="s",
+                status="completed", confidence_score=80,
+                output_summary=f"first leg of {cid}",
+            )
+            _enqueue_parent_if_waiting(orch, first_leg_id)
+
+            # Now complete second leg (spawned by chain advance)
+            carrier_children = db.get_children(cid)
+            second_legs = [l for l in carrier_children if l != first_leg_id]
+            for sl_id in second_legs:
+                sl = db.get_task(sl_id)
+                if sl.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    db.update_task(sl_id, status=TaskStatus.COMPLETED, block_kind=None)
+                    verdict = "APPROVE" if cid == children[0] else "PASS"
+                    db.insert_task_result(
+                        task_id=sl_id, agent=sl.assigned_agent, session_id="s",
+                        status="completed", confidence_score=80,
+                        output_summary=f"review of {cid}", verdict=verdict,
+                    )
+                    _enqueue_parent_if_waiting(orch, sl_id)
+
+        # Carriers should auto-complete DIRECTLY after the last leg's
+        # _enqueue_parent_if_waiting — NO separate orch.run_step needed.
+        for cid in children:
+            carrier = db.get_task(cid)
+            assert carrier.status == TaskStatus.COMPLETED, (
+                f"carrier {cid} should auto-complete after chain completes, got {carrier.status}"
+            )
+        # Verify _run_agent was NEVER called for any carrier.
+        for cid in children:
+            assert cid not in _run_agent_calls, (
+                f"carrier {cid} must NOT call _run_agent — it has no session of its own"
+            )
+
+        # P should have been enqueued exactly once
+        assert enqueued_parent_count[0] == 1, (
+            f"P should wake exactly once, got {enqueued_parent_count[0]}"
+        )
+
+    # ── §3.6 test 4: fail-closed on leg mismatch ──
+
+    def test_fail_closed_on_leg_verdict_mismatch(self, runtime, db, monkeypatch):
+        """A leg verdict mismatch terminates the carrier failed and cascades to P."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.run_step import (
+            _spawn_fanout_children, _enqueue_parent_if_waiting,
+        )
+
+        for a in ("dev_agent", "qa_engineer"):
+            (runtime.workspaces_dir / a).mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-FAILCLSD", brief="fail-closed test",
+            assigned_agent="engineering_head",
+            task_type="task",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        q = _SlugQueue()
+        orch._queue = q
+        # Mock _run_agent for safety.
+        monkeypatch.setattr(orch, "_run_agent", lambda tid, ag, pr, **kw: (_make_result(), _make_report("done")))
+
+        # Spawn: 1 carrier (expect_verdict=APPROVE) + 1 plain child
+        children_payload = [
+            {
+                "agent": "dev_agent", "prompt": "build",
+                "expect_verdict": "APPROVE",
+            },
+            {"agent": "qa_engineer", "prompt": "test"},
+        ]
+        _spawn_fanout_children(
+            orch, db.get_task("T-FAILCLSD"), "T-FAILCLSD", 1,
+            children=children_payload, width=2,
+            manager_agent="engineering_head", step_audit_id=1,
+        )
+
+        children = db.get_children("T-FAILCLSD")
+        assert len(children) == 2
+
+        # Find the carrier
+        carrier_id = None
+        for cid in children:
+            c = db.get_task(cid)
+            if c.active_chain is not None:
+                carrier_id = cid
+                break
+        assert carrier_id is not None
+
+        # Complete first leg with WRONG verdict
+        carrier_children = db.get_children(carrier_id)
+        assert len(carrier_children) == 1
+        first_leg_id = carrier_children[0]
+        db.update_task(first_leg_id, status=TaskStatus.COMPLETED, block_kind=None)
+        db.insert_task_result(
+            task_id=first_leg_id, agent="dev_agent", session_id="s",
+            status="completed", confidence_score=80,
+            output_summary="built", verdict="REVISE",  # wrong verdict!
+        )
+        # Trigger parent-wake on carrier → verdict mismatch → carrier fails
+        _enqueue_parent_if_waiting(orch, first_leg_id)
+
+        # Carrier should be FAILED (verdict mismatch)
+        carrier = db.get_task(carrier_id)
+        assert carrier.status == TaskStatus.FAILED, (
+            f"carrier should FAIL on verdict mismatch, got {carrier.status}"
+        )
+
+    # ── §3.6 test 7: restart recovery ──
+
+    def test_all_carriers_terminal_sweep_reenqueues_parent(self, runtime, db, monkeypatch):
+        """Kill mid-flight with all carriers terminal → _sweep_on_startup
+        re-enqueues P (reuses existing DELEGATED sweep)."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.fanout import FanoutState
+
+        for a in ("agent0", "agent1", "agent2", "agent3"):
+            (runtime.workspaces_dir / a).mkdir(parents=True)
+
+        # Simulate: parent is parked BLOCKED(DELEGATED) with active_fanout.
+        # All 2 carriers are already terminal.
+        fanout = FanoutState(
+            children_ids=["T-SWEEP-C1", "T-SWEEP-C2"],
+            children_details=[
+                {"agent": "agent0", "prompt": "c1"},
+                {"agent": "agent1", "prompt": "c2"},
+            ],
+            width=2, manager_agent="engineering_head",
+            status="spawned",
+        )
+        db.insert_task(TaskRecord(
+            id="T-SWEEP-P", brief="restart recovery",
+            assigned_agent="engineering_head",
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+            active_fanout=fanout.serialize(),
+        ))
+        # All carriers terminal
+        for cid in ("T-SWEEP-C1", "T-SWEEP-C2"):
+            db.insert_task(TaskRecord(
+                id=cid, brief="carrier",
+                assigned_agent="agent0",
+                parent_task_id="T-SWEEP-P",
+                status=TaskStatus.COMPLETED, task_type="subtask",
+            ))
+
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+
+        # Simulate sweep: _sweep_on_startup detects all-terminal BLOCKED(DELEGATED)
+        from runtime.daemon.__main__ import _sweep_on_startup
+        enqueued = []
+
+        class SweepQueue:
+            def put_nowait(self, slug, tid):
+                enqueued.append((slug, tid))
+            def enqueue(self, slug, tid):
+                enqueued.append((slug, tid))
+        orch._queue = SweepQueue()
+
+        _sweep_on_startup(db, orch._queue, slug="test", orchestrator=orch)
+
+        # P should have been re-enqueued
+        assert ("test", "T-SWEEP-P") in enqueued, (
+            f"sweep should re-enqueue P, enqueued: {enqueued}"
+        )
+
+
+class TestMutatingFanout:
+    """THR-056 option 3: mutating fan-out — child fans-out to managers whose
+    delegate-chain decisions must be parsed and spawn implementation children."""
+
+    # ── Test 1: task_type assignment ──
+
+    def test_manager_child_is_task_type_task(self, runtime, db, monkeypatch):
+        """A fan-out child targeted at a team manager (engineering_head) gets
+        task_type='task' so its delegate decisions are parsed."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+
+        (runtime.workspaces_dir / "engineering_head").mkdir(parents=True)
+        (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+        (runtime.workspaces_dir / "qa_engineer").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-MUT-TYPE", brief="mutating fanout type test",
+            assigned_agent="engineering_head",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        q = _SlugQueue()
+        orch._queue = q
+
+        def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            return _make_result(), _make_report(
+                output_summary=json.dumps({
+                    "action": "fanout",
+                    "children": [
+                        {"agent": "engineering_head", "prompt": "manager child"},
+                        {"agent": "dev_agent", "prompt": "worker child"},
+                    ],
+                    "width_cap_ack": 2,
+                }),
+            )
+        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+        orch.run_step("T-MUT-TYPE")
+
+        children = db.get_children("T-MUT-TYPE")
+        assert len(children) == 2
+
+        # Manager child → task_type="task"
+        mgr_child = None
+        worker_child = None
+        for cid in children:
+            c = db.get_task(cid)
+            assert c is not None
+            if c.assigned_agent == "engineering_head":
+                mgr_child = c
+            elif c.assigned_agent == "dev_agent":
+                worker_child = c
+
+        assert mgr_child is not None, "manager child not found"
+        assert worker_child is not None, "worker child not found"
+        assert mgr_child.task_type == "task", (
+            f"manager child should be task_type='task', got {mgr_child.task_type!r}"
+        )
+        assert worker_child.task_type == "subtask", (
+            f"worker child should be task_type='subtask', got {worker_child.task_type!r}"
+        )
+
+    def test_non_manager_child_still_subtask(self, runtime, db, monkeypatch):
+        """A fan-out child targeted at a regular worker still gets
+        task_type='subtask' (read-only, Phase 1 behavior preserved)."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+
+        (runtime.workspaces_dir / "engineering_head").mkdir(parents=True)
+        (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+        (runtime.workspaces_dir / "qa_engineer").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-READONLY", brief="readonly fanout",
+            assigned_agent="engineering_head",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        q = _SlugQueue()
+        orch._queue = q
+
+        def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            return _make_result(), _make_report(
+                output_summary=json.dumps({
+                    "action": "fanout",
+                    "children": [
+                        {"agent": "dev_agent", "prompt": "worker child 1"},
+                        {"agent": "qa_engineer", "prompt": "worker child 2"},
+                    ],
+                    "width_cap_ack": 2,
+                }),
+            )
+        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+        orch.run_step("T-READONLY")
+
+        children = db.get_children("T-READONLY")
+        assert len(children) == 2
+        worker = db.get_task(children[0])
+        assert worker.task_type == "subtask", (
+            f"worker child should be task_type='subtask', got {worker.task_type!r}"
+        )
+        assert worker.assigned_agent == "dev_agent"
+
+    # ── Test 2: mutating child can spawn delegate chain ──
+
+    def test_manager_child_delegate_decision_spawns_children(self, runtime, db, monkeypatch):
+        """A mutating fan-out child (task_type='task') that returns a delegate
+        decision with an inline chain spawns implementation children."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+
+        (runtime.workspaces_dir / "engineering_head").mkdir(parents=True)
+        (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+        (runtime.workspaces_dir / "code_reviewer").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-MUT-SPAWN", brief="mutating spawn test",
+            assigned_agent="engineering_head",
+        ))
+        teams = TeamsRegistry.load(runtime.root)
+        teams.add_worker("engineering", "code_reviewer")
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=teams,
+        )
+        q = _SlugQueue()
+        orch._queue = q
+
+        call_count = 0
+
+        def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Fan-out: spawn a manager child (mutating) + a worker child
+                return _make_result(), _make_report(
+                    output_summary=json.dumps({
+                        "action": "fanout",
+                        "children": [
+                            {"agent": "engineering_head", "prompt": "mutating child"},
+                            {"agent": "dev_agent", "prompt": "worker child"},
+                        ],
+                        "width_cap_ack": 2,
+                    }),
+                )
+            elif call_count == 2:
+                # The mutating child's session: return a delegate with a chain
+                return _make_result(), _make_report(
+                    output_summary=json.dumps({
+                        "action": "delegate",
+                        "agent": "dev_agent",
+                        "prompt": "implement feature",
+                        "then": [
+                            {"agent": "code_reviewer", "prompt": "review",
+                             "expect_verdict": "APPROVE"},
+                        ],
+                    }),
+                )
+            return _make_result(), _make_report(
+                output_summary=json.dumps({"action": "done"}),
+            )
+        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+        # Step 1: parent runs fan-out
+        orch.run_step("T-MUT-SPAWN")
+        parent = db.get_task("T-MUT-SPAWN")
+        assert parent.active_fanout is not None, "parent should have active_fanout"
+        assert parent.block_kind == BlockKind.DELEGATED
+
+        children = db.get_children("T-MUT-SPAWN")
+        assert len(children) == 2
+        mutating_child_id = None
+        for cid in children:
+            c = db.get_task(cid)
+            if c.assigned_agent == "engineering_head":
+                mutating_child_id = cid
+        assert mutating_child_id is not None
+        mutating_child = db.get_task(mutating_child_id)
+        assert mutating_child.task_type == "task", (
+            f"mutating child should be task_type='task', got {mutating_child.task_type!r}"
+        )
+        assert mutating_child.status == TaskStatus.PENDING
+
+        # Step 2: run the mutating child — it returns a delegate decision
+        orch.run_step(mutating_child_id)
+        mutating_child = db.get_task(mutating_child_id)
+        assert mutating_child.status == TaskStatus.IN_PROGRESS
+        assert mutating_child.block_kind == BlockKind.DELEGATED
+        assert mutating_child.active_chain is not None, (
+            "mutating child should have active_chain after delegate+then"
+        )
+
+        # The mutating child should have spawned a subtask (first leg of chain)
+        impl_children = db.get_children(mutating_child_id)
+        assert len(impl_children) == 1, (
+            f"mutating child should have 1 implementation child, got {len(impl_children)}"
+        )
+        first_leg_id = impl_children[0]
+        impl_child = db.get_task(first_leg_id)
+        assert impl_child.assigned_agent == "dev_agent"
+
+        # Step 3: simulate dev_agent completing (with callback that writes task_result)
+        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+        db.update_task(first_leg_id, status=TaskStatus.COMPLETED, block_kind=None)
+        db.insert_task_result(
+            task_id=first_leg_id, agent="dev_agent", session_id="s1",
+            status="completed", confidence_score=80,
+            output_summary="implemented", verdict="APPROVE",
+        )
+        _enqueue_parent_if_waiting(orch, first_leg_id)
+
+        # Chain should auto-advance to code_reviewer
+        mutating_child = db.get_task(mutating_child_id)
+        assert mutating_child.status == TaskStatus.IN_PROGRESS, (
+            f"mutating child should stay IN_PROGRESS after chain advance, got {mutating_child.status}"
+        )
+        assert mutating_child.active_chain is not None, "chain should still be active after advance"
+        impl_children_after = db.get_children(mutating_child_id)
+        assert len(impl_children_after) == 2, (
+            f"should have 2 children (dev_agent + code_reviewer), got {len(impl_children_after)}"
+        )
+
+        # Step 4: simulate code_reviewer completing with matching verdict
+        second_leg_id = [cid for cid in impl_children_after if cid != first_leg_id][0]
+        db.update_task(second_leg_id, status=TaskStatus.COMPLETED, block_kind=None)
+        db.insert_task_result(
+            task_id=second_leg_id, agent="code_reviewer", session_id="s2",
+            status="completed", confidence_score=80,
+            output_summary="reviewed", verdict="APPROVE",
+        )
+        _enqueue_parent_if_waiting(orch, second_leg_id)
+
+        # Chain should complete → mutating child completes (via carrier-complete)
+        mutating_child = db.get_task(mutating_child_id)
+        assert mutating_child.status == TaskStatus.COMPLETED, (
+            f"mutating child should be COMPLETED after chain finishes, got {mutating_child.status}"
+        )
+
+    # ── Test 3: fan-out parent waits for mutating child ──
+
+    def test_fanout_parent_waits_for_mutating_child(self, runtime, db, monkeypatch):
+        """The original fan-out parent does not join until the mutating child
+        is terminal. A non-mutating worker child that completes first does NOT
+        trigger the parent join."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+
+        (runtime.workspaces_dir / "engineering_head").mkdir(parents=True)
+        (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+        (runtime.workspaces_dir / "qa_engineer").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-BARRIER", brief="barrier test",
+            assigned_agent="engineering_head",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        q = _SlugQueue()
+        orch._queue = q
+
+        call_count = 0
+
+        def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Fan-out: one mutating (manager) + one worker child
+                return _make_result(), _make_report(
+                    output_summary=json.dumps({
+                        "action": "fanout",
+                        "children": [
+                            {"agent": "engineering_head", "prompt": "mutating child"},
+                            {"agent": "dev_agent", "prompt": "worker child"},
+                        ],
+                        "width_cap_ack": 2,
+                    }),
+                )
+            elif call_count == 2:
+                # Mutating child: returns done
+                return _make_result(), _make_report(
+                    output_summary=json.dumps({"action": "done", "summary": "mutating done"}),
+                )
+            else:
+                # Worker child: returns done
+                return _make_result(), _make_report(
+                    output_summary=json.dumps({"action": "done", "summary": "worker done"}),
+                )
+        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+        # Step 1: parent fans out
+        orch.run_step("T-BARRIER")
+        parent = db.get_task("T-BARRIER")
+        assert parent.block_kind == BlockKind.DELEGATED
+
+        children = db.get_children("T-BARRIER")
+        assert len(children) == 2
+        worker_id = None
+        mutating_id = None
+        for cid in children:
+            c = db.get_task(cid)
+            if c.assigned_agent == "dev_agent":
+                worker_id = cid
+            else:
+                mutating_id = cid
+        assert worker_id is not None
+        assert mutating_id is not None
+
+        # Step 2: run and complete the worker child first
+        orch.run_step(worker_id)
+        worker = db.get_task(worker_id)
+        assert worker.status == TaskStatus.COMPLETED
+
+        # Parent should NOT have been woken — mutating child still PENDING
+        parent = db.get_task("T-BARRIER")
+        assert parent.status == TaskStatus.IN_PROGRESS, (
+            f"parent should be IN_PROGRESS until mutating child is terminal, got {parent.status}"
+        )
+        assert parent.block_kind == BlockKind.DELEGATED
+
+        # Step 3: run and complete the mutating child
+        orch.run_step(mutating_id)
+        mutating = db.get_task(mutating_id)
+        assert mutating.status == TaskStatus.COMPLETED
+
+        # Parent should be woken now (all children terminal)
+        parent = db.get_task("T-BARRIER")
+        # The parent was enqueued when the last child completed.
+        # active_fanout is still set until the CAS winner runs run_step.
+        assert parent.status == TaskStatus.IN_PROGRESS
+        assert parent.active_fanout is not None
+
+        # Step 4: run the parent's join step
+        orch.run_step("T-BARRIER")
+        parent = db.get_task("T-BARRIER")
+        # After join context injection and agent re-run, the parent should
+        # be pending (ready for next agent session)
+        assert parent.active_fanout is None, "active_fanout should be cleared after join"
+
+    # ── Test 4: pipeline carrier unaffected ──
+
+    def test_pipeline_carrier_stays_subtask(self, runtime, db, monkeypatch):
+        """A pipeline carrier (child with `then` pre-declared) stays
+        task_type='subtask' even when targeted at a team manager — it
+        never runs an agent session of its own."""
+        import json
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.teams import TeamsRegistry
+
+        (runtime.workspaces_dir / "engineering_head").mkdir(parents=True)
+        (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+        (runtime.workspaces_dir / "code_reviewer").mkdir(parents=True)
+
+        db.insert_task(TaskRecord(
+            id="T-PIPE-TYPE", brief="pipeline type test",
+            assigned_agent="engineering_head",
+        ))
+        orch = Orchestrator(
+            db=db, settings=Settings(),
+            paths=runtime, slug="test",
+            teams=TeamsRegistry.load(runtime.root),
+        )
+        q = _SlugQueue()
+        orch._queue = q
+
+        def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            return _make_result(), _make_report(
+                output_summary=json.dumps({
+                    "action": "fanout",
+                    "children": [
+                        {
+                            "agent": "engineering_head",
+                            "prompt": "pipeline to manager",
+                            "then": [{"agent": "code_reviewer", "prompt": "review",
+                                      "expect_verdict": "APPROVE"}],
+                        },
+                        {
+                            "agent": "dev_agent",
+                            "prompt": "plain worker child",
+                        },
+                    ],
+                    "width_cap_ack": 2,
+                }),
+            )
+        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+        orch.run_step("T-PIPE-TYPE")
+
+        children = db.get_children("T-PIPE-TYPE")
+        assert len(children) == 2
+        # Find the pipeline carrier (has active_chain)
+        carrier = None
+        for cid in children:
+            c = db.get_task(cid)
+            if c.active_chain is not None:
+                carrier = c
+                break
+        assert carrier is not None, "pipeline carrier not found"
+        assert carrier.assigned_agent == "engineering_head"
+        # Pipeline carrier: IN_PROGRESS+DELEGATED, task_type stays subtask
+        assert carrier.task_type == "subtask", (
+            f"pipeline carrier should stay task_type='subtask', got {carrier.task_type!r}"
+        )
+        assert carrier.status == TaskStatus.IN_PROGRESS
+        assert carrier.block_kind == BlockKind.DELEGATED
+        assert carrier.active_chain is not None
+
+        # The carrier's first leg is spawned separately as a subtask of the carrier
+        carrier_children = db.get_children(carrier.id)
+        assert len(carrier_children) == 1

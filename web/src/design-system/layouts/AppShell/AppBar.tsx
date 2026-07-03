@@ -1,4 +1,4 @@
-import { CornerDownLeft, Moon, Search, Sun } from 'lucide-react';
+import { Bot, Moon, Sun } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useTheme } from '@/hooks/theme';
 
@@ -6,10 +6,10 @@ import { useTheme } from '@/hooks/theme';
  * AppBar — persistent top app bar (THR-030 BUG-04/05/06).
  *
  * Renders to the right of the Sidebar, above the routed content: current page
- * name on the left; global "Ask or search" affordance + theme toggle on the
- * right. The search affordance opens the global Assistant Dock via the
- * app-wide `[data-assistant-open]` click handler (AssistantDockHost) — same
- * wiring the sidebar pill used before it was relocated here.
+ * name on the left; assistant avatar + theme toggle on the right. The avatar
+ * opens the global Assistant Dock via the app-wide `[data-assistant-open]`
+ * click handler (AssistantDockHost) — same wiring the search pill used before
+ * it was replaced by the avatar entry point (THR-056 PR-6).
  *
  * The page name is derived purely from the URL pathname (no data fetch), so it
  * stays correct on every surface without new client state.
@@ -48,14 +48,11 @@ export function AppBar(): JSX.Element {
         <button
           type="button"
           data-assistant-open="true"
-          aria-label="Ask or search"
-          className="border-border bg-bg-raised text-fg-muted hover:border-accent-ring hover:text-fg focus-visible:ring-accent flex w-64 items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
+          aria-label="Open assistant"
+          title="Open assistant"
+          className="bg-accent text-accent-fg hover:bg-accent-hover focus-visible:ring-accent inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none"
         >
-          <Search size={14} aria-hidden="true" />
-          <span className="flex-1 text-left">Ask or search</span>
-          <kbd className="text-fg-subtle border-border bg-bg-subtle inline-flex items-center rounded border px-1 py-0.5 font-mono text-[10px]">
-            <CornerDownLeft size={11} aria-hidden="true" />
-          </kbd>
+          <Bot size={16} aria-hidden="true" />
         </button>
         <ThemeToggle />
       </div>

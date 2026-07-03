@@ -378,7 +378,8 @@
           "completed",
           "failed",
           "cancelled",
-          "resolved_superseded"
+          "resolved_superseded",
+          "blocked"
         ]
       },
       "consumes": [
@@ -444,7 +445,7 @@
       "consumes": [
         "layout.grid.threads_page"
       ],
-      "example": "<ThreadHeader threadId='THR-042' subject='Refund policy' status='open' participants={['founder', 'compliance_head']} turnsUsed={3} turnCap={20} />"
+      "example": "<ThreadHeader threadId='THR-042' subject='Refund policy' status='open' participants={['founder', 'compliance_head']} />"
     },
     {
       "name": "ThreadsLayout",
@@ -491,6 +492,19 @@
         "components.trace_tree"
       ],
       "example": "<TraceTree root={{} as any} costs={{}} density=\"compact\" />"
+    },
+    {
+      "name": "TypingBubble",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/TypingBubble",
+      "variants": {
+        "status": [
+          "queued",
+          "working"
+        ]
+      },
+      "consumes": [],
+      "example": "<TypingBubble agentName='engineering_head' status='working' startedAt={null} />"
     }
   ]
 }

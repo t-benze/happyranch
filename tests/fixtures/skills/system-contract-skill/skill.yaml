@@ -1,0 +1,13 @@
+id: hr:system-contract-skill
+slug: system-contract-skill
+name: System Contract Skill
+version: 1.0.0
+description: A system contract skill - should NOT be loaded as toggleable.
+when_to_use: Internal system contract.
+owner: founder
+source: runtime/skills/system-contract-skill
+policy_class: system_contract
+approval_state: approved
+approved_by: founder
+approved_at: 2026-07-01T00:00:00Z
+status: enabled

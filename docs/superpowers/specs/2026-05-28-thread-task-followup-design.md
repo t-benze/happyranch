@@ -46,7 +46,7 @@ The new helper `_maybe_post_thread_followup(orch, task_id, status, auto_revisit_
 | Terminal status | `auto_revisit_spawned` | `cancelled_at` | Action |
 |---|---|---|---|
 | `COMPLETED` | n/a | n/a | **Fire** |
-| `FAILED` | `True` | — | No-op (the revisit chain will reach a later terminal that re-enters this predicate) |
+| `FAILED` | `True` | — | **Fire system-message-only** (carries `revisit_task_id` for 'revisiting as <SUCCESSOR>' rendering; dispatcher re-invocation is suppressed — the revisit successor fires its own followup at its terminal. THR-046 msg99 revision.) |
 | `FAILED` | `False` | `None` | **Fire** (true chain terminal: per-kind cap exhausted, non-eligible failure kind, or no chain) |
 | `FAILED` | `False` | set | **Fire** (founder-cancelled — surface in thread record) |
 
@@ -102,6 +102,7 @@ system_payload = {
   "final_artifact_dir": <task.final_artifact_dir or null>,
   "cancelled": <bool, cancelled_at is not None>,
   "revisit_chain_length": <len(chain)>,  # 1 if no revisits, >1 if revisited
+  "revisit_task_id": <str | null>,  # set when an auto-revisit successor was spawned (THR-046 msg99)
 }
 ```
 
@@ -116,7 +117,7 @@ The renderers in `src/infrastructure/thread_store.py` and `src/daemon/thread_for
 ```
 
 ```
-**Task TASK-NNN failed** (chain root TASK-MMM){; founder-cancelled}{; after N revisits}
+**Task TASK-NNN failed** (chain root TASK-MMM){; founder-cancelled}{; revisiting as <SUCCESSOR> when revisit_task_id is present}{; no further revisits when chain ended without spawning}
 ```
 
 ### 6.3 Turn-cap auto-extend

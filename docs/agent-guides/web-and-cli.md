@@ -61,7 +61,7 @@ The CLI is an HTTP client. Start the daemon first.
 ```bash
 scripts/daemon.sh start
 scripts/daemon.sh status
-scripts/daemon.sh stop
+scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --force)
 happyranch web [--no-open]
 ```
 
@@ -111,8 +111,9 @@ python -m runtime.daemon.pr_ci_merge \
 
 Both print structured JSON verdicts to stdout and exit with mapped codes (0 = success).
 The poll job runs with `review_required=false` through the existing jobs path; agents never
-get raw `gh pr merge` grants. Full workflow narrative (submit → blocked → resume →
-inspect → merge/revise) is deferred to PR #5.
+get raw `gh pr merge` grants. The full workflow narrative (submit → blocked → resume → inspect →
+merge/revise) is documented in `protocol/skills/jobs/SKILL.md` and
+`docs/agent-guides/features-and-invariants.md`.
 
 ### Token usage
 
@@ -167,4 +168,4 @@ These are invoked by skills inside agent sessions. Do not invoke them by hand; d
 - `happyranch dispatch`
 - `happyranch threads {reply,decline,dispatch}`
 
-Callbacks should use `--from-file <path>` where payloads have multiple fields. See `docs/agent-guides/agent-executors-and-permissions.md`.
+Callbacks should use `--from-file <path>` where payloads have multiple fields. **The path MUST be absolute** (e.g. `/tmp/completion.json`). A relative path silently resolves against the agent's cwd and can litter stray files under the runtime orgs root. The CLI rejects relative paths with a clear error in the callback family (`report-completion`, `threads reply/decline/dispatch/compose`). See `docs/agent-guides/agent-executors-and-permissions.md`.

@@ -1109,6 +1109,258 @@ describe('TaskDetailPage — workflow chain timeline', () => {
   });
 });
 
+describe('TaskDetailPage — fan-out status band (TASK-1717)', () => {
+  interface BandStubOpts {
+    taskOverrides?: Partial<TaskRecord> & Record<string, unknown>;
+    audit_log?: unknown[];
+    recallChildren?: unknown[];
+    jobs?: JobRecord[];
+  }
+
+  function reviewJob(overrides?: Partial<JobRecord>): JobRecord {
+    return {
+      ...JOB,
+      id: 'JOB-APPROVAL',
+      title: 'Approve fan-out (spawn 2 subtasks)',
+      status: 'pending',
+      review_required: true,
+      exit_code: null,
+      ...overrides,
+    };
+  }
+
+  function stubBand(opts: BandStubOpts) {
+    const detailTask = { ...TASK, ...opts.taskOverrides } as TaskRecord;
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${detailTask.task_id}`, () =>
+        HttpResponse.json({
+          task: detailTask,
+          results: [],
+          audit_log: opts.audit_log ?? [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          active_chain: null,
+          blocked_on_jobs: null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${detailTask.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: detailTask.task_id,
+          assigned_agent: null,
+          brief: detailTask.brief,
+          status: detailTask.status,
+          output_summary: null,
+          children: opts.recallChildren ?? [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: opts.jobs ?? [] }),
+      ),
+    );
+  }
+
+  function mountDetail() {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+  }
+
+  test('pending: renders band, planned child snippets, and approval job link — approval job is NOT a child row', async () => {
+    stubBand({
+      taskOverrides: {
+        status: 'in_progress',
+        block_kind: 'blocked_on_job',
+        active_fanout: JSON.stringify({
+          status: 'pending_review',
+          width: 2,
+          children_details: [
+            { agent: 'content_writer', prompt: 'Draft the intro section' },
+            { agent: 'seo_specialist', prompt: 'Audit the target keywords' },
+          ],
+        }),
+      },
+      jobs: [reviewJob()],
+      recallChildren: [],
+    });
+    mountDetail();
+
+    const band = await screen.findByRole('region', { name: 'Fan-out status' });
+    expect(
+      within(band).getByText(/Awaiting approval to spawn 2 subtasks/),
+    ).toBeInTheDocument();
+    // Planned child snippets (agent + prompt) from children_details.
+    expect(within(band).getByText('content_writer')).toBeInTheDocument();
+    expect(within(band).getByText(/Draft the intro section/)).toBeInTheDocument();
+    expect(within(band).getByText('seo_specialist')).toBeInTheDocument();
+    // Approval job link inside the band, pointing at the jobs surface.
+    const approvalLink = within(band).getByRole('link', { name: 'JOB-APPROVAL' });
+    expect(approvalLink).toHaveAttribute(
+      'href',
+      `/orgs/${SLUG}/jobs/JOB-APPROVAL`,
+    );
+
+    // The approval job must NOT appear as an execution subtask row.
+    const subtasksSection = screen
+      .getByText('Execution subtasks')
+      .closest('section') as HTMLElement;
+    expect(
+      within(subtasksSection).queryByText(/JOB-APPROVAL/),
+    ).not.toBeInTheDocument();
+    expect(within(subtasksSection).getByText(/No subtasks/i)).toBeInTheDocument();
+  });
+
+  test('running: progress counts come from recall children and child task links are preserved', async () => {
+    stubBand({
+      taskOverrides: {
+        status: 'in_progress',
+        block_kind: 'delegated',
+        active_fanout: JSON.stringify({
+          status: 'spawned',
+          width: 3,
+          children_ids: ['TASK-C1', 'TASK-C2', 'TASK-C3'],
+        }),
+      },
+      recallChildren: [
+        {
+          task_id: 'TASK-C1',
+          assigned_agent: 'content_writer',
+          brief: 'Child one brief',
+          status: 'completed',
+          output_summary: 'done one',
+          children: [],
+        },
+        {
+          task_id: 'TASK-C2',
+          assigned_agent: 'content_writer',
+          brief: 'Child two brief',
+          status: 'in_progress',
+          output_summary: null,
+          children: [],
+        },
+        {
+          task_id: 'TASK-C3',
+          assigned_agent: 'content_writer',
+          brief: 'Child three brief',
+          status: 'pending',
+          output_summary: null,
+          children: [],
+        },
+      ],
+    });
+    mountDetail();
+
+    const band = await screen.findByRole('region', { name: 'Fan-out status' });
+    // Terminal count (1 completed) of width 3, derived from recall statuses.
+    expect(within(band).getByText(/Running fan-out — 1 of 3 done/)).toBeInTheDocument();
+    expect(
+      within(band).getByText(/1 of 3 complete · 1 running · 1 queued/),
+    ).toBeInTheDocument();
+    // Backed metadata: width + constant join mode.
+    expect(within(band).getByText('all-terminal')).toBeInTheDocument();
+
+    // Child task links preserved in the execution-subtasks list.
+    const subtasks = screen
+      .getByText('Execution subtasks')
+      .closest('section') as HTMLElement;
+    const c1 = within(subtasks).getByRole('link', { name: 'TASK-C1' });
+    expect(c1).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-C1`);
+    expect(within(subtasks).getByRole('link', { name: 'TASK-C3' })).toBeInTheDocument();
+  });
+
+  test('joined: renders from the fanout_join audit row even when active_fanout is cleared', async () => {
+    stubBand({
+      taskOverrides: {
+        status: 'completed',
+        block_kind: null,
+        active_fanout: undefined, // cleared after join
+      },
+      audit_log: [
+        { action: 'fanout_spawned', payload: { width: 2 } },
+        {
+          action: 'fanout_join',
+          payload: { width: 2, children_ids: ['TASK-J1', 'TASK-J2'] },
+        },
+      ],
+      recallChildren: [
+        {
+          task_id: 'TASK-J1',
+          assigned_agent: 'content_writer',
+          brief: 'Joined child one',
+          status: 'completed',
+          output_summary: 'ok',
+          children: [],
+        },
+        {
+          task_id: 'TASK-J2',
+          assigned_agent: 'content_writer',
+          brief: 'Joined child two',
+          status: 'failed',
+          output_summary: 'boom',
+          children: [],
+        },
+      ],
+    });
+    mountDetail();
+
+    const band = await screen.findByRole('region', { name: 'Fan-out status' });
+    expect(within(band).getByText(/Fan-out joined — 1 of 2 succeeded/)).toBeInTheDocument();
+    expect(within(band).getByText(/1 subtask did not succeed/)).toBeInTheDocument();
+    expect(within(band).getByText('all-terminal')).toBeInTheDocument();
+    // Inspectable child rows preserved in the execution-subtasks list.
+    const subtasks = screen
+      .getByText('Execution subtasks')
+      .closest('section') as HTMLElement;
+    expect(within(subtasks).getByRole('link', { name: 'TASK-J1' })).toBeInTheDocument();
+  });
+
+  test('regular non-fan-out task renders NO fan-out band', async () => {
+    stubBand({
+      taskOverrides: { status: 'completed', block_kind: null },
+      audit_log: [{ action: 'task_started', payload: {} }],
+      recallChildren: [],
+    });
+    mountDetail();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Activity/i)).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole('region', { name: 'Fan-out status' }),
+    ).not.toBeInTheDocument();
+  });
+
+  test('ordinary blocked_on_job (no fan-out) renders NO fan-out band', async () => {
+    stubBand({
+      taskOverrides: {
+        status: 'in_progress',
+        block_kind: 'blocked_on_job',
+        active_fanout: undefined,
+      },
+      audit_log: [],
+      jobs: [{ ...JOB, id: 'JOB-XYZ', status: 'pending' }],
+      recallChildren: [],
+    });
+    mountDetail();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Activity/i)).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole('region', { name: 'Fan-out status' }),
+    ).not.toBeInTheDocument();
+    // No fan-out copy anywhere on the page.
+    expect(screen.queryByText(/Awaiting approval to spawn/)).not.toBeInTheDocument();
+  });
+});
+
 describe('TaskDetailPage — execution subtasks', () => {
   function stubHandlers() {
     server.use(

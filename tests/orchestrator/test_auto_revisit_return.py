@@ -27,27 +27,34 @@ def _build_orch_with_task(tmp_path: Path, predecessor_root_status: str):
     return orch, "TASK-1", "manager"
 
 
-def test_returns_true_when_spawned(tmp_path: Path):
+def test_returns_successor_id_when_spawned(tmp_path: Path):
+    """PART 1: _maybe_spawn_auto_revisit now returns str|None — the successor
+    task id on success, None on early-return/cap-hit paths."""
     from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
     orch, failed_id, agent = _build_orch_with_task(tmp_path, "failed")
-    spawned = _maybe_spawn_auto_revisit(
+    revisit_id = _maybe_spawn_auto_revisit(
         orch, failed_id, agent,
         failure_kind="agent_exception",
         error_context={"mode": "exception", "detail": "boom"},
     )
-    assert spawned is True
+    assert isinstance(revisit_id, str)
+    assert revisit_id.startswith("TASK-")
+    # The successor row exists in the DB.
+    successor = orch._db.get_task(revisit_id)
+    assert successor is not None
+    assert successor.revisit_of_task_id == failed_id
 
 
-def test_returns_false_when_no_chain(tmp_path: Path):
+def test_returns_none_when_no_chain(tmp_path: Path):
     from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
     orch = MagicMock()
-    orch._db.walk_ancestors.return_value = []  # no chain → False
-    spawned = _maybe_spawn_auto_revisit(
+    orch._db.walk_ancestors.return_value = []  # no chain → None
+    revisit_id = _maybe_spawn_auto_revisit(
         orch, "TASK-X", "agent",
         failure_kind="session_failed",
         error_context={},
     )
-    assert spawned is False
+    assert revisit_id is None
 
 
 def test_returns_false_when_task_cancelled(tmp_path: Path):
@@ -86,12 +93,12 @@ def test_returns_false_when_task_cancelled(tmp_path: Path):
     orch._queue = MagicMock()
     orch._slug = "acme"
 
-    spawned = _maybe_spawn_auto_revisit(
+    revisit_id = _maybe_spawn_auto_revisit(
         orch, "TASK-1", "manager",
         failure_kind="executor_error",
         error_context={"mode": "session_failure", "rc": -15},
     )
-    assert spawned is False
+    assert revisit_id is None
     # No new root row inserted.
     assert db.get_task("TASK-2") is None
     # No auto_revisit_of audit entry written.
@@ -132,12 +139,12 @@ def test_returns_false_when_cap_hit(tmp_path: Path, monkeypatch):
         )]
     )
 
-    spawned = _maybe_spawn_auto_revisit(
+    revisit_id = _maybe_spawn_auto_revisit(
         orch, failed_id, agent,
         failure_kind="session_timeout",
         error_context={},
     )
-    assert spawned is False
+    assert revisit_id is None
 
 
 # --- Thread linkage inheritance tests (THR-046 message 64) ---
@@ -165,16 +172,15 @@ def test_auto_revisit_inherits_thread_linkage_from_root(tmp_path: Path):
     orch._queue = MagicMock()
     orch._slug = "acme"
 
-    spawned = _maybe_spawn_auto_revisit(
+    revisit_id = _maybe_spawn_auto_revisit(
         orch, "TASK-1", "manager",
         failure_kind="session_timeout",
         error_context={},
     )
-    assert spawned is True
+    assert revisit_id is not None
 
     # The auto-revisit successor inherits the thread linkage from the root.
-    # next_task_id() returns TASK-NNN format based on MAX numeric suffix.
-    successor = db.get_task("TASK-002")
+    successor = db.get_task(revisit_id)
     assert successor is not None
     assert successor.revisit_of_task_id == "TASK-1"
     assert successor.dispatched_from_thread_id == "THR-0046"
@@ -211,14 +217,14 @@ def test_auto_revisit_walks_revisit_chain_for_thread_linkage(tmp_path: Path):
     orch._queue = MagicMock()
     orch._slug = "acme"
 
-    spawned = _maybe_spawn_auto_revisit(
+    revisit_id = _maybe_spawn_auto_revisit(
         orch, "TASK-002", "manager",
         failure_kind="session_timeout",
         error_context={},
     )
-    assert spawned is True
+    assert revisit_id is not None
 
-    successor = db.get_task("TASK-003")
+    successor = db.get_task(revisit_id)
     assert successor is not None
     assert successor.revisit_of_task_id == "TASK-002"
     # Must inherit from the original thread-dispatched root (TASK-1),
@@ -246,14 +252,14 @@ def test_auto_revisit_non_thread_task_has_no_thread_linkage(tmp_path: Path):
     orch._queue = MagicMock()
     orch._slug = "acme"
 
-    spawned = _maybe_spawn_auto_revisit(
+    revisit_id = _maybe_spawn_auto_revisit(
         orch, "TASK-1", "manager",
         failure_kind="session_timeout",
         error_context={},
     )
-    assert spawned is True
+    assert revisit_id is not None
 
-    successor = db.get_task("TASK-002")
+    successor = db.get_task(revisit_id)
     assert successor is not None
     assert successor.revisit_of_task_id == "TASK-1"
     assert successor.dispatched_from_thread_id is None
@@ -281,14 +287,14 @@ def test_auto_revisit_thread_linkage_preserves_existing_behavior(tmp_path: Path)
     orch._queue = MagicMock()
     orch._slug = "acme"
 
-    spawned = _maybe_spawn_auto_revisit(
+    revisit_id = _maybe_spawn_auto_revisit(
         orch, "TASK-1", "manager",
         failure_kind="session_timeout",
         error_context={},
     )
-    assert spawned is True
+    assert revisit_id is not None
 
-    successor = db.get_task("TASK-002")
+    successor = db.get_task(revisit_id)
     assert successor is not None
     assert successor.parent_task_id is None
     assert successor.revisit_of_task_id == "TASK-1"
@@ -297,7 +303,7 @@ def test_auto_revisit_thread_linkage_preserves_existing_behavior(tmp_path: Path)
     assert successor.brief == "x"
 
     # auto_revisit_of is written to the new root.
-    successor_rows = db.get_audit_logs("TASK-002")
+    successor_rows = db.get_audit_logs(revisit_id)
     successor_actions = [r["action"] for r in successor_rows]
     assert "auto_revisit_of" in successor_actions
     # revisit_spawned is written to the predecessor.
@@ -306,4 +312,71 @@ def test_auto_revisit_thread_linkage_preserves_existing_behavior(tmp_path: Path)
     assert "revisit_spawned" in predecessor_actions
 
     # Queue received an enqueue for the new root.
-    orch._queue.put_nowait.assert_called_once_with("acme", "TASK-002")
+    orch._queue.put_nowait.assert_called_once_with("acme", revisit_id)
+
+
+# --- PART 2: cap-at-1 policy (THR-046 msg99) ---
+
+
+def test_cap_one_blocks_second_same_kind_auto_revisit(tmp_path: Path, monkeypatch):
+    """With _AUTO_REVISIT_CAP_PER_KIND = 1, the first same-kind failure spawns
+    exactly one auto-revisit. A second same-kind failure in the chain returns None."""
+    from runtime.orchestrator.run_step import (
+        _AUTO_REVISIT_CAP_PER_KIND,
+        _maybe_spawn_auto_revisit,
+    )
+    orch, failed_id, agent = _build_orch_with_task(tmp_path, "failed")
+
+    # Simulate one prior same-kind auto-revisit in the chain.
+    fake_revisit_chain = [
+        MagicMock(id=f"TASK-AR{i}") for i in range(_AUTO_REVISIT_CAP_PER_KIND)
+    ]
+    orch._db.walk_revisit_chain = MagicMock(return_value=fake_revisit_chain)
+    orch._db.get_audit_logs = MagicMock(
+        return_value=[{
+            "action": "auto_revisit_of",
+            "payload": {"failure_kind": "session_timeout"},
+        }]
+    )
+    orch._db.walk_ancestors = MagicMock(
+        return_value=[MagicMock(
+            id="TASK-1", brief="x", team="engineering",
+            assigned_agent="manager",
+            session_timeout_seconds=None,
+            cancelled_at=None,
+        )]
+    )
+
+    revisit_id = _maybe_spawn_auto_revisit(
+        orch, failed_id, agent,
+        failure_kind="session_timeout",
+        error_context={},
+    )
+    assert revisit_id is None
+
+
+def test_first_same_kind_spawns_when_cap_is_one(tmp_path: Path, monkeypatch):
+    """With cap=1 and zero prior same-kind revisits, the first spawn succeeds."""
+    from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
+    orch, failed_id, agent = _build_orch_with_task(tmp_path, "failed")
+
+    # Zero prior same-kind (empty chain).
+    orch._db.walk_revisit_chain = MagicMock(return_value=[])
+    orch._db.get_audit_logs = MagicMock(return_value=[])
+    orch._db.walk_ancestors = MagicMock(
+        return_value=[MagicMock(
+            id="TASK-1", brief="x", team="engineering",
+            assigned_agent="manager",
+            session_timeout_seconds=None,
+            cancelled_at=None,
+            dispatched_from_thread_id=None,
+        )]
+    )
+
+    revisit_id = _maybe_spawn_auto_revisit(
+        orch, failed_id, agent,
+        failure_kind="executor_error",
+        error_context={"mode": "session_failure", "rc": 1},
+    )
+    assert isinstance(revisit_id, str)
+

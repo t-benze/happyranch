@@ -166,7 +166,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     });
   });
 
-  test('lists threads with turn budget and last speaker', async () => {
+  test('lists threads without turn budget and with last speaker', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
@@ -186,9 +186,9 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       // Thread subjects appear in InboxRow
       expect(screen.getByText(/Launch plan/)).toBeInTheDocument();
       expect(screen.getByText(/Budget review/)).toBeInTheDocument();
-      // Turn budgets should appear
-      expect(screen.getByText('3/500')).toBeInTheDocument();
-      expect(screen.getByText('487/500')).toBeInTheDocument();
+      // Turn budgets must NOT appear (THR-046 msg126 — turn cap UI removed)
+      expect(screen.queryByText('3/500')).not.toBeInTheDocument();
+      expect(screen.queryByText('487/500')).not.toBeInTheDocument();
       // Last speakers should appear
       expect(screen.getByText(/dev_agent/)).toBeInTheDocument();
       expect(screen.getByText(/founder/)).toBeInTheDocument();
@@ -295,6 +295,26 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
 /* ------------------------------------------------------------------ */
 
 describe('ThreadsPage — detail (design-overhaul reshape)', () => {
+  test('detail pane has no Extend button, no turn budget rail, no turn meter (THR-046 msg126 regression)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-001', [mkMessage(1, 'founder', 'message', 'Hello team')]);
+    mountAt(`/orgs/${SLUG}/threads/THR-001`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Test thread/i })).toBeInTheDocument();
+    });
+    // No Extend action button in the detail header actions
+    expect(screen.queryByRole('button', { name: /Extend/i })).not.toBeInTheDocument();
+    // No turn meter like "47/500" or "turns used" anywhere in the detail
+    expect(screen.queryByText(/\/500/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/turns? used/i)).not.toBeInTheDocument();
+    // Properties rail has no "Turn budget" section
+    const rail = screen.getByLabelText('Thread properties');
+    expect(within(rail).queryByText(/turn budget/i)).not.toBeInTheDocument();
+    expect(within(rail).queryByText(/turn cap/i)).not.toBeInTheDocument();
+    // No extend dialog rendered
+    expect(screen.queryByRole('dialog', { name: /extend/i })).not.toBeInTheDocument();
+  });
+
   test('renders detail pane with messages when thread selected', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
@@ -634,7 +654,7 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
     });
   });
 
-  test('renders task_failed system card with cancelled and revisit annotations', async () => {
+  test('renders task_failed system card with cancelled and no-further-revisits annotations', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     setupThreadWithMessages('THR-011', [
       mkSystemMessage(1, 'agent_a', {
@@ -644,13 +664,57 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
         final_output_summary: '',
         cancelled: true,
         revisit_chain_length: 3,
+        revisit_task_id: null,
       }),
     ]);
     mountAt(`/orgs/${SLUG}/threads/THR-011`);
     await waitFor(() => {
       expect(screen.getByText(/TASK-031/)).toBeInTheDocument();
       expect(screen.getByText(/founder-cancelled/)).toBeInTheDocument();
-      expect(screen.getByText(/2 revisits/)).toBeInTheDocument();
+      expect(screen.getByText(/no further revisits/)).toBeInTheDocument();
+    });
+  });
+
+  test('renders task_failed system card with revisiting-as successor link', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-014', [
+      mkSystemMessage(1, 'agent_a', {
+        kind_tag: 'task_failed',
+        task_id: 'TASK-032',
+        status: 'failed',
+        final_output_summary: '',
+        cancelled: false,
+        revisit_chain_length: 1,
+        revisit_task_id: 'TASK-033',
+      }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-014`);
+    await waitFor(() => {
+      expect(screen.getByText(/TASK-032/)).toBeInTheDocument();
+      expect(screen.getByText(/revisiting as/)).toBeInTheDocument();
+      expect(screen.getByText(/TASK-033/)).toBeInTheDocument();
+    });
+  });
+
+  test('renders ordinary task_failed with no revisit suffix', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-015', [
+      mkSystemMessage(1, 'agent_a', {
+        kind_tag: 'task_failed',
+        task_id: 'TASK-034',
+        status: 'failed',
+        final_output_summary: '',
+        cancelled: false,
+        revisit_chain_length: 1,
+        revisit_task_id: null,
+      }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-015`);
+    await waitFor(() => {
+      expect(screen.getByText(/TASK-034/)).toBeInTheDocument();
+      expect(screen.getByText(/failed/)).toBeInTheDocument();
+      expect(screen.queryByText(/revisiting/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/no further revisits/)).not.toBeInTheDocument();
     });
   });
 
@@ -927,27 +991,31 @@ describe('ThreadsPage — abort replies', () => {
     return mountAt(`/orgs/${SLUG}/threads/${threadId}`);
   }
 
-  test('abort button appears when thread has queued/working responders', async () => {
+  test('abort button appears in composer footer when thread has queued/working responders', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithResponders([
       { agent_name: 'dev_agent', status: 'working' },
     ]);
 
-    await screen.findByRole('button', { name: /Abort replies/i });
+    const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeEnabled();
+    // The button must be in the composer footer, not the header actions area
+    const footer = document.querySelector('footer');
+    expect(footer).not.toBeNull();
+    expect(footer!.contains(btn)).toBe(true);
   });
 
-  test('abort button is hidden when no in-flight responders', async () => {
+  test('abort button is disabled when no in-flight responders', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithResponders([]);
 
     // Wait for detail to render.
     await screen.findByText('Test thread');
-    expect(
-      screen.queryByRole('button', { name: /Abort replies/i }),
-    ).not.toBeInTheDocument();
+    const btn = screen.getByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeDisabled();
   });
 
-  test('abort button calls POST /abort-replies and invalidates queries', async () => {
+  test('disabled abort button does not call POST when clicked', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
 
     let abortHit = false;
@@ -964,18 +1032,60 @@ describe('ThreadsPage — abort replies', () => {
       ),
     );
 
+    mountThreadWithResponders([]);
+
+    await screen.findByText('Test thread');
+    const btn = screen.getByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeDisabled();
+
+    const user = userEvent.setup();
+    await user.click(btn);
+
+    // The POST must NOT have been made — disabled button blocks the action.
+    expect(abortHit).toBe(false);
+  });
+
+  test('abort button calls POST /abort-replies exactly once when enabled', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+
+    let abortCount = 0;
+    server.use(
+      http.post(
+        `/api/v1/orgs/${SLUG}/threads/${threadId}/abort-replies`,
+        () => {
+          abortCount++;
+          return HttpResponse.json({
+            thread_id: threadId,
+            aborted_count: 1,
+          });
+        },
+      ),
+    );
+
     mountThreadWithResponders([
       { agent_name: 'dev_agent', status: 'queued' },
     ]);
 
     const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeEnabled();
+
     const user = userEvent.setup();
     await user.click(btn);
 
-    // Verify the POST was made.
+    // Verify the POST was made exactly once.
     await waitFor(() => {
-      expect(abortHit).toBe(true);
+      expect(abortCount).toBe(1);
     });
+  });
+
+  test('abort button is enabled with queued responder', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountThreadWithResponders([
+      { agent_name: 'dev_agent', status: 'queued' },
+    ]);
+
+    const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    expect(btn).toBeEnabled();
   });
 });
 

@@ -2059,3 +2059,72 @@ def test_set_executor_accepts_registered_profile_name():
     # against the registry. Any string passes argparse.
     args = parser.parse_args(["set-executor", "dev_agent", "--executor", "openclaw"])
     assert args.executor == "openclaw"
+
+
+# ── require_absolute_payload_path guard ────────────────────────────────
+
+def test_require_absolute_payload_path_accepts_absolute_path():
+    """Absolute paths pass through the guard unchanged."""
+    from cli._shared import require_absolute_payload_path
+
+    result = require_absolute_payload_path("/tmp/completion.json", kind="completion")
+    assert result == "/tmp/completion.json"
+
+
+def test_require_absolute_payload_path_rejects_relative_path(capsys):
+    """Relative paths trigger a clear error and sys.exit(1)."""
+    from cli._shared import require_absolute_payload_path
+
+    with pytest.raises(SystemExit) as excinfo:
+        require_absolute_payload_path("tmp/completion.json", kind="completion")
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "absolute" in captured.err
+    assert "/tmp/completion.json" in captured.err or "/tmp/" in captured.err
+    assert "tmp/completion.json" in captured.err
+
+
+def test_require_absolute_payload_path_rejects_bare_filename(capsys):
+    """Bare filenames (no leading /) are also rejected."""
+    from cli._shared import require_absolute_payload_path
+
+    with pytest.raises(SystemExit) as excinfo:
+        require_absolute_payload_path("thread-reply.json", kind="thread-reply")
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "absolute" in captured.err
+    assert "thread-reply" in captured.err
+
+
+def test_completion_payload_from_file_rejects_relative_path(tmp_path, capsys):
+    """_completion_payload_from_file exits 1 when given a relative path."""
+    import json as _json
+    from cli.main import _completion_payload_from_file
+
+    # Even if the file exists at the relative location, the guard rejects it.
+    path = tmp_path / "c.json"
+    path.write_text(_json.dumps({
+        "task_id": "T", "session_id": "s", "agent": "a",
+        "status": "completed", "summary": "done",
+    }))
+
+    with pytest.raises(SystemExit) as excinfo:
+        _completion_payload_from_file("c.json")
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "absolute" in captured.err
+
+
+def test_completion_payload_from_file_accepts_absolute_path(tmp_path):
+    """Absolute tmp_path paths still work as before."""
+    import json as _json
+    from cli.main import _completion_payload_from_file
+
+    path = tmp_path / "c.json"
+    path.write_text(_json.dumps({
+        "task_id": "T", "session_id": "s", "agent": "a",
+        "status": "completed", "summary": "done",
+    }))
+    task_id, body = _completion_payload_from_file(str(path))
+    assert task_id == "T"
+    assert body["output_summary"] == "done"

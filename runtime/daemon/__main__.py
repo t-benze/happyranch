@@ -106,12 +106,13 @@ def _sweep_on_startup(
                 # Earlier iteration already auto-revisited this lineage.
                 spawned = True
             else:
-                spawned = _maybe_spawn_auto_revisit(
+                revisit_id = _maybe_spawn_auto_revisit(
                     orchestrator, task_id,
                     t.assigned_agent or "(unknown)",
                     failure_kind="daemon_restart",
                     error_context={"reason": "daemon restarted mid-task"},
                 )
+                spawned = revisit_id is not None
                 if spawned:
                     revisited_roots.add(root_id)
             _enqueue_parent_if_waiting(
@@ -151,6 +152,32 @@ def _sweep_on_startup(
             pass
         # The boot-time migration flips any legacy blocked(escalated) row
         # before startup; this branch is reached only via new escalated rows.
+
+    # Branch 6 — orphaned pending thread invocations: every reply subprocess
+    # was killed by the restart, so every pending invocation is orphaned.
+    # Reap them to 'failed' with decline_reason='daemon_restart' so the UI
+    # reply box (queued/working render) clears on next poll.
+    # A pending invocation is orphaned regardless of thread status (open or
+    # archived), so we reap across ALL threads.
+    #
+    # This uses db._conn directly (bypassing the Database._synchronized
+    # lock) because _sweep_on_startup runs synchronously at boot, before
+    # the event loop or worker pool starts — there is no concurrent access
+    # to the DB connection at this point. The UPDATE is guarded by
+    # WHERE status='pending' so already-terminal rows are preserved.
+    from datetime import datetime, timezone
+    _now = datetime.now(timezone.utc).isoformat()
+    cursor = db._conn.execute(
+        "UPDATE thread_invocations SET status = 'failed', "
+        "decline_reason = ?, consumed_at = ? "
+        "WHERE status = 'pending'",
+        ("daemon_restart", _now),
+    )
+    db._conn.commit()
+    logger.debug(
+        "startup sweep: reaped %d orphaned pending thread invocations",
+        cursor.rowcount,
+    )
 
 
 def _build_state(settings: Settings) -> DaemonState:

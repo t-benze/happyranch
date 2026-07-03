@@ -115,13 +115,16 @@ Failure kinds: `session_timeout`, `no_callback`, `rate_limit`, `executor_error`,
 
 Traps:
 
-- `_AUTO_REVISIT_CAP_PER_KIND = 2`; it is per kind, not global.
+- `_AUTO_REVISIT_CAP_PER_KIND = 1`; it is per kind, not global.
 - `_maybe_spawn_auto_revisit` must run before `_enqueue_parent_if_waiting`.
 - `failure_kind` is top-level on `auto_revisit_of`, not under `error_context`.
 - Bounded failure-recovery wakes the parent (not cascade-fail) on subtask failure;
   the bound (2 FAILED subtasks per delegation slot) escalates the parent on
   exhaustion (TASK-573). See [Bounded failure-recovery](#bounded-failure-recovery).
 - Startup sweep dedups with `revisited_roots: set[str]`.
+- Startup sweep also reaps ALL pending thread invocations to `failed`
+  with `decline_reason='daemon_restart'` (Branch 6) — every reply subprocess
+  is dead after a restart, so every pending invocation is orphaned.
 
 ## Bounded Failure-Recovery (TASK-573)
 
@@ -181,6 +184,9 @@ Traps:
 - Broadcast is unconditional; declines are silent.
 - Decline-by-default doctrine is prompt-injected for `REPLY`, not in `protocol/skills/thread/SKILL.md`.
 - Agent replies no longer enforce a hard `turn_cap` ceiling; turn count is still tracked and displayed but cap enforcement was removed per THR-046.
+- Orphaned pending invocations (reply subprocess killed by daemon restart)
+  are reaped to failed on startup; the wire `responder_status` flips from
+  `queued`/`working` to `failed` on the next poll, clearing the reply box.
 
 ## Thread Agent-Session Resume
 

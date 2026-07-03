@@ -6,6 +6,13 @@
  */
 import { useData } from '@/design-system/providers/DataContext';
 
+// Re-export the mint helper so compositions never import from @/lib/api directly.
+export { mintRegistrationToken } from '@/lib/api/settings';
+export type {
+  RegistrationTokenMintRequest,
+  RegistrationTokenMintResponse,
+} from '@/lib/api/settings';
+
 export const useSettings: ReturnType<
   typeof useData
 >['settings']['useSettings'] = () => useData().settings.useSettings();

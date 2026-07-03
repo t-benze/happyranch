@@ -32,6 +32,17 @@ import type {
 } from '@/lib/api/types';
 import { TaskRecallTree } from './TaskRecallTree';
 import { TaskEventsLog } from './TaskEventsLog';
+import { FanoutBand, type FanoutMode } from './FanoutBand';
+import {
+  parseActiveFanout,
+  latestFanoutJoin,
+  summarizeChildStatuses,
+  snippet,
+  type ActiveFanout,
+  type ChildStatusCounts,
+  type FanoutPlannedChild,
+  type JoinedFanout,
+} from './fanout';
 import { CancelTaskDialog } from './CancelTaskDialog';
 import { RevisitTaskDialog } from './RevisitTaskDialog';
 import { ResolveEscalationDialog } from './ResolveEscalationDialog';
@@ -125,34 +136,6 @@ interface ChainTimelineBlockInfo {
 
 type BlockedJobEntry = { job_id: string; status: string };
 
-/** Sanitized fan-out display context extracted from the active_fanout JSON
- *  payload on the task record. Exposes only status + width — deliberately
- *  omits child prompts and agent details (presentation-only contract). */
-interface FanoutDisplayContext {
-  status: 'pending_review' | 'spawned';
-  width: number;
-}
-
-/** Parse a task's active_fanout JSON string into a sanitized display context.
- *  Returns null when the field is absent, unparseable, or missing required
- *  keys — the caller falls back to ordinary block_kind display. */
-function parseActiveFanout(raw: unknown): FanoutDisplayContext | null {
-  if (typeof raw !== 'string') return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') {
-      const status = typeof parsed.status === 'string' ? parsed.status : '';
-      const width = typeof parsed.width === 'number' ? parsed.width : 0;
-      if ((status === 'pending_review' || status === 'spawned') && width > 0) {
-        return { status, width };
-      }
-    }
-  } catch {
-    /* not valid JSON — fall through to generic copy */
-  }
-  return null;
-}
-
 /** Derive a human-readable blocker name from the task block context.
  *  THR-037 Change B: escalation is a top-level status now (not a block_kind),
  *  so it no longer appears here — only the in_progress waiting reasons do.
@@ -167,7 +150,7 @@ function parseActiveFanout(raw: unknown): FanoutDisplayContext | null {
 function deriveBlockerName(
   blockKind: string | null | undefined,
   blockedOnJobs: BlockedJobEntry[] | null | undefined,
-  fanout?: FanoutDisplayContext | null,
+  fanout?: ActiveFanout | null,
 ): string | undefined {
   // Pending wide fan-out approval: the task is parked on a review_required
   // job waiting for founder sign-off. Show fan-out terms, not job IDs.
@@ -303,11 +286,14 @@ const DEPTH_PL = [
 function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
   const routes = useTasksRoutes();
   const ml = DEPTH_PL[Math.min(depth, DEPTH_PL.length - 1)];
+  // Prompt/summary excerpts — backed excerpts only; omitted when absent.
+  const brief = snippet(node.brief, 88);
+  const summary = snippet(node.output_summary, 96);
   return (
     <div className={`${ml}`}>
-      <div className="border-border-default flex items-center gap-2 border-l-2 py-1.5 pl-3 text-sm">
+      <div className="border-border-default flex items-start gap-2 border-l-2 py-1.5 pl-3 text-sm">
         <span
-          className={`inline-block h-2 w-2 shrink-0 rounded-full ${
+          className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full ${
             node.status === 'completed'
               ? 'bg-status-open'
               : node.status === 'failed'
@@ -318,11 +304,24 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
           }`}
           aria-hidden
         />
-        <IdBadge kind="task" id={node.task_id} to={routes.detail(node.task_id)} />
-        <StatusBadge status={node.status} />
-        {node.assigned_agent && (
-          <span className="text-text-muted text-xs">{node.assigned_agent}</span>
-        )}
+        <div className="min-w-0 flex-1">
+          {brief ? (
+            <p className="text-text-primary truncate">{brief}</p>
+          ) : (
+            <p className="text-text-muted italic">No brief</p>
+          )}
+          {(node.assigned_agent || summary) && (
+            <p className="text-text-muted mt-0.5 truncate text-xs">
+              {node.assigned_agent}
+              {node.assigned_agent && summary && ' · '}
+              {summary}
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <IdBadge kind="task" id={node.task_id} to={routes.detail(node.task_id)} />
+          <StatusBadge status={node.status} />
+        </div>
       </div>
       {node.children.map((c) => (
         <SubtaskRow key={c.task_id} node={c} depth={depth + 1} />
@@ -400,6 +399,10 @@ interface ChainWithBlock {
   /** DERIVE from escalation_superseded audit: successor task_id when this
    *  task was auto-resolved to RESOLVED_SUPERSEDED. Null otherwise. */
   superseded_by_task_id: string | null;
+  /** DERIVE from the latest `fanout_join` audit row: joined fan-out context.
+   *  Null when the task never joined a fan-out. `active_fanout` is cleared
+   *  after join, so this audit row is the only backing for the joined band. */
+  joinedFanout: JoinedFanout | null;
 }
 
 function useChainWithBlock(slug: string | undefined, taskId: string | undefined) {
@@ -427,6 +430,7 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
         ),
         superseded_by_task_id:
           typeof sbti === 'string' && sbti ? sbti : null,
+        joinedFanout: latestFanoutJoin(r.audit_log),
       };
     },
     enabled: !!slug && !!taskId,
@@ -597,6 +601,55 @@ export function TaskDetailPage(): JSX.Element {
     return { isBlocked: true, blockerName };
   }, [task.data, chainQuery.data, fanoutCtx]);
 
+  // ── Fan-out status band derivation ──────────────────────────────────────
+  // Three lifecycle states, all DERIVED from data already fetched. Regular
+  // (non-fan-out) tasks produce `null` and render no band. Honesty rules from
+  // the TASK-1696 Step 0 note are enforced in fanout.ts (no fabricated data).
+  const recallChildren = recall.data?.children;
+  const joinedFanout = chainQuery.data?.joinedFanout ?? null;
+  // Approval gate for a pending fan-out is the parent's review_required job
+  // (a gate, NOT an execution child). Prefer a still-pending one for the link.
+  const approvalJobId = useMemo<string | null>(() => {
+    const jobs = jobsQuery.data?.jobs ?? [];
+    const review = jobs.filter((j) => j.review_required);
+    return (review.find((j) => j.status === 'pending') ?? review[0])?.id ?? null;
+  }, [jobsQuery.data]);
+
+  interface FanoutBandData {
+    mode: FanoutMode;
+    width: number | null;
+    counts: ChildStatusCounts | null;
+    plannedChildren: FanoutPlannedChild[];
+  }
+  let fanoutBand: FanoutBandData | null = null;
+  if (fanoutCtx?.status === 'pending_review') {
+    // Pending: no children exist yet — planned snippets come from the payload.
+    fanoutBand = {
+      mode: 'pending',
+      width: fanoutCtx.width,
+      counts: null,
+      plannedChildren: fanoutCtx.plannedChildren,
+    };
+  } else if (fanoutCtx?.status === 'spawned') {
+    // Running: progress counts from recall children, restricted to this
+    // fan-out's own children_ids when the payload records them.
+    fanoutBand = {
+      mode: 'running',
+      width: fanoutCtx.width,
+      counts: summarizeChildStatuses(recallChildren, fanoutCtx.childrenIds),
+      plannedChildren: [],
+    };
+  } else if (joinedFanout) {
+    // Joined: active_fanout is cleared after join, so counts come from recall
+    // children and width from the fanout_join audit row.
+    fanoutBand = {
+      mode: 'joined',
+      width: joinedFanout.width,
+      counts: summarizeChildStatuses(recallChildren, joinedFanout.childrenIds),
+      plannedChildren: [],
+    };
+  }
+
   return (
     <>
       <div className="h-full overflow-y-auto">
@@ -719,6 +772,19 @@ export function TaskDetailPage(): JSX.Element {
               )}
             </div>
           </header>
+
+          {/* Fan-out status band — pending / running / joined. Only mounted
+              when real fan-out evidence exists; regular tasks render nothing. */}
+          {fanoutBand && (
+            <FanoutBand
+              mode={fanoutBand.mode}
+              width={fanoutBand.width}
+              counts={fanoutBand.counts}
+              plannedChildren={fanoutBand.plannedChildren}
+              approvalJobId={fanoutBand.mode === 'pending' ? approvalJobId : null}
+              slug={slug}
+            />
+          )}
 
           {/* Body */}
           <section className="py-4">

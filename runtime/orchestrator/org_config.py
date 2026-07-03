@@ -12,11 +12,15 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
 from runtime.orchestrator._paths import OrgPaths
+
+if TYPE_CHECKING:
+    from runtime.skills.models import ExposedSkill
 
 
 class OrgConfigError(ValueError):
@@ -405,6 +409,105 @@ def render_current_time_line(
     now_fn = now or (lambda: datetime.now(timezone.utc))
     local = now_fn().astimezone(tz)
     return f"{local.isoformat(timespec='minutes')} ({label})"
+
+
+def render_compact_skill_index(
+    exposed_skills: list[ExposedSkill],
+) -> str:
+    """Render a compact manifest-only skill index for session prompts.
+
+    Each line includes the spec fields: id, version, description, when_to_use,
+    source, and a short how-to-load instruction. Bodies are NOT inlined — they
+    load on demand from ``runtime/skills/<slug>/SKILL.md``.
+
+    Entries are sorted by skill id for deterministic output across identical
+    registry + config inputs. An empty list produces an empty string (no index
+    lines injected).
+
+    Format (per spec):
+        - hr:<slug>@<version> — <description>. <when_to_use> Load full
+          instructions from <source>/SKILL.md.
+    """
+    if not exposed_skills:
+        return ""
+
+    lines: list[str] = []
+    for exposed in sorted(exposed_skills, key=lambda s: s.skill.id):
+        skill = exposed.skill
+        line = (
+            f"- {skill.id}@{skill.version} — {skill.description} "
+            f"{skill.when_to_use} "
+            f"Load full instructions from {skill.source}/SKILL.md."
+        )
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+def resolve_managed_skills_index(
+    *,
+    paths: OrgPaths,
+    agent_name: str,
+) -> str:
+    """Resolve the compact managed skill index for a session.
+
+    Loads the on-disk registry + eligibility policy (same path the CLI
+    ``skills effective --agent`` uses), resolves exposed skills via the
+    two-gate exposure function, and renders the compact index string.
+
+    Gracefully returns an empty string when:
+    - The skills directory doesn't exist.
+    - The org config has no skills eligibility section.
+    - No skills pass both gates.
+    - Any load error (missing agent def, etc.).
+
+    This is the SINGLE helper reused by every session-creation path
+    (task/subtask, thread, dream, wake).
+    """
+    skills_root = paths.root / "runtime" / "skills"
+    if not skills_root.is_dir():
+        return ""
+
+    try:
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=skills_root)
+        if not registry.list_all():
+            return ""
+
+        # Load eligibility policy from org config YAML (skills section)
+        policy: dict = {}
+        config_path = paths.org_config_path
+        if config_path.is_file():
+            try:
+                raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    policy = raw.get("skills", {})
+            except (yaml.YAMLError, OSError):
+                pass
+
+        # Determine the agent's team from the agent definition
+        team = "engineering"
+        try:
+            from runtime.orchestrator.prompt_loader import load_agent
+            agent_def = load_agent(paths, agent_name)
+            if agent_def is not None:
+                team = agent_def.team
+        except Exception:
+            pass
+
+        org_slug = paths.root.name
+
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org=org_slug, team=team, agent=agent_name,
+        )
+        return render_compact_skill_index(exposed)
+
+    except Exception:
+        return ""
 
 
 def _validate_window_time(value: object, label: str, path: str) -> str:
@@ -823,6 +926,80 @@ def save_org_config(paths: OrgPaths, patch: dict) -> None:
                 raw[key] = _deep_merge(raw[key], patch[key])
             else:
                 raw[key] = patch[key]
+
+    # 3. Validate candidate via the authoritative validator
+    try:
+        _build_org_config(raw, str(config_path))
+    except OrgConfigError:
+        raise  # re-raise so the route can return 422
+
+    # 4. Atomic write
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=".org-config.", suffix=".yaml", dir=str(config_path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            yaml.safe_dump(raw, fh, sort_keys=False)
+        os.replace(tmp, config_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+# ── Executor profile config write (THR-052 PR-2) ───────────────────────
+#
+# A dedicated helper for adding/updating a single executor_profiles entry.
+# This is deliberately separate from save_org_config (the master-bearer
+# settings PATCH path) so executor_profiles is NOT writable through the
+# generic settings surface. Only the conformance-gated registration route
+# calls this.
+
+
+def write_executor_profile_entry(
+    paths: OrgPaths,
+    name: str,
+    entry: dict,
+) -> None:
+    """Atomically add or update a single executor_profiles.<name> entry
+    in org/config.yaml.
+
+    1. Read the current raw dict from disk.
+    2. Deep-merge ``entry`` into ``raw["executor_profiles"][name]``.
+       All other keys (both top-level and within executor_profiles) are
+       carried through verbatim.
+    3. Validate the candidate via ``_build_org_config``.
+       If invalid, raise ``OrgConfigError``.
+    4. Atomic write via temp file + ``os.replace``.
+
+    This function never adds executor_profiles to ``_ORG_WRITABLE_KEYS`` —
+    it is the ONLY write path for this section.
+    """
+    config_path = paths.org_config_path
+
+    # 1. Read current raw dict
+    if config_path.exists():
+        try:
+            raw = yaml.safe_load(config_path.read_text()) or {}
+        except yaml.YAMLError as exc:
+            raise OrgConfigError(f"malformed YAML in {config_path}: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise OrgConfigError(f"{config_path}: top-level must be a mapping")
+    else:
+        raw = {}
+
+    # 2. Deep-merge the single entry
+    raw = dict(raw)
+    profiles = dict(raw.get("executor_profiles", {}))
+    if name in profiles and isinstance(profiles[name], dict) and isinstance(entry, dict):
+        # Merge into existing entry (update case)
+        profiles[name] = _deep_merge(profiles[name], entry)
+    else:
+        profiles[name] = entry
+    raw["executor_profiles"] = profiles
 
     # 3. Validate candidate via the authoritative validator
     try:

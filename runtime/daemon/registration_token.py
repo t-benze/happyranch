@@ -46,6 +46,7 @@ class RegistrationTokenRecord:
     issued_at: float
     expires_at: float
     consumed: bool = False
+    reserved: bool = False  # set by reserve(), cleared by commit()/release()
 
 
 @dataclass
@@ -177,7 +178,8 @@ class RegistrationTokenStore:
     def _validate_raw(
         self, token_plaintext: str, now: float | None = None
     ) -> RegistrationTokenRecord | None:
-        """Validate a token is present, unexpired, unconsumed — org-agnostic.
+        """Validate a token is present, unexpired, unconsumed, unreserved —
+        org-agnostic.
 
         Used by ``require_registration_token()`` which gates at the dependency
         level; org/name matching is the consumer route's responsibility (PR-2).
@@ -190,6 +192,8 @@ class RegistrationTokenStore:
             return None
         if record.consumed:
             return None
+        if record.reserved:
+            return None
         if now > record.expires_at:
             return None
         return record
@@ -197,7 +201,8 @@ class RegistrationTokenStore:
     def validate(
         self, token_plaintext: str, org: str, now: float | None = None
     ) -> RegistrationTokenRecord | None:
-        """Validate a token is present, unexpired, unconsumed, and org-scoped.
+        """Validate a token is present, unexpired, unconsumed, unreserved,
+        and org-scoped.
 
         Does NOT consume the token. Returns the record if valid, ``None``
         otherwise.
@@ -209,6 +214,8 @@ class RegistrationTokenStore:
         if record is None:
             return None
         if record.consumed:
+            return None
+        if record.reserved:
             return None
         if now > record.expires_at:
             return None
@@ -231,6 +238,70 @@ class RegistrationTokenStore:
             if record is not None:
                 record.consumed = True
         return record
+
+    def reserve(
+        self, token_plaintext: str, org: str, now: float | None = None
+    ) -> RegistrationTokenRecord | None:
+        """Atomically validate AND reserve a token.
+
+        Same single-winner guarantee as ``consume()``: exactly ONE concurrent
+        caller can reserve a given token. Returns the record if successful,
+        ``None`` otherwise (expired, already-consumed, already-reserved,
+        or wrong org).
+
+        A reserved token is NOT consumed — the caller must later ``commit()``
+        or ``release()`` it.  ``validate()`` and ``consume()`` both reject
+        reserved tokens.
+        """
+        if now is None:
+            now = time.time()
+        with self._lock:
+            record = self.validate(token_plaintext, org, now)
+            if record is not None:
+                record.reserved = True
+        return record
+
+    def commit(
+        self, token_plaintext: str, org: str, now: float | None = None
+    ) -> bool:
+        """Permanently consume a reserved token.
+
+        Returns ``True`` if the token was reserved and is now consumed.
+        Returns ``False`` if the token was not found or not reserved.
+        """
+        with self._lock:
+            token_hash = self._hash(token_plaintext)
+            record = self._tokens.get(token_hash)
+            if record is None:
+                return False
+            if not record.reserved:
+                return False
+            if record.org != org:
+                return False
+            record.consumed = True
+            record.reserved = False
+        return True
+
+    def release(
+        self, token_plaintext: str, org: str, now: float | None = None
+    ) -> bool:
+        """Release a reservation so the token is valid for retry.
+
+        Returns ``True`` if the token was reserved and is now released.
+        Returns ``False`` if the token was not found, not reserved,
+        or wrong org.
+        """
+        with self._lock:
+            token_hash = self._hash(token_plaintext)
+            record = self._tokens.get(token_hash)
+            if record is None:
+                return False
+            if not record.reserved:
+                return False
+            if record.org != org:
+                return False
+            record.reserved = False
+        return True
 
     # ── Conformance state machine ────────────────────────────────────────
 

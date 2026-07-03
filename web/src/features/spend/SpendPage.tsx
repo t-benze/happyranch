@@ -878,7 +878,7 @@ export function SpendPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl p-6">
+      <div className="p-6">
         {/* Header — Pasture PageHeader pattern */}
         <header className="mb-6 flex items-start justify-between gap-3">
           <PageHeader

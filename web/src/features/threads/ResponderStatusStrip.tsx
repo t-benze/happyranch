@@ -1,11 +1,5 @@
 import type { ResponderStatus, ResponderStatusEntry } from '@/lib/api/types';
-
-export function formatElapsed(startedAt: string | null, nowMs: number): string {
-  if (!startedAt) return '';
-  const secs = Math.max(0, Math.floor((nowMs - Date.parse(startedAt)) / 1000));
-  if (secs < 60) return `${secs}s`;
-  return `${Math.floor(secs / 60)}m`;
-}
+import { formatElapsed } from '@/lib/elapsed';
 
 export function ResponderStatusStrip({
   statuses,

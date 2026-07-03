@@ -345,9 +345,9 @@ class _SlugQueue:
         return self._q.get_nowait()
 
 
-def test_per_kind_cap_blocks_third_same_kind(runtime, db):
-    """Two prior session_timeout auto-revisits → third session_timeout
-    attempt is refused (returns False)."""
+def test_per_kind_cap_blocks_second_same_kind(runtime, db):
+    """With cap=1, one prior session_timeout auto-revisit → second
+    session_timeout attempt is refused (returns None)."""
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
 
@@ -358,37 +358,29 @@ def test_per_kind_cap_blocks_third_same_kind(runtime, db):
                               assigned_agent="engineering_head",
                               status=TaskStatus.FAILED,
                               revisit_of_task_id="T-ROOT"))
-    db.insert_task(TaskRecord(id="T-R2", brief="b",
-                              assigned_agent="engineering_head",
-                              status=TaskStatus.FAILED,
-                              revisit_of_task_id="T-R1"))
     audit = AuditLogger(db)
     audit.log_auto_revisit_of(task_id="T-R1", predecessor_root="T-ROOT",
                               failed_task="T-ROOT", failed_agent="x",
                               cascade=["T-ROOT"], failure_kind="session_timeout",
                               error_context={}, attempt=1)
-    audit.log_auto_revisit_of(task_id="T-R2", predecessor_root="T-R1",
-                              failed_task="T-R1", failed_agent="x",
-                              cascade=["T-R1"], failure_kind="session_timeout",
-                              error_context={}, attempt=2)
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
     orch._queue = _SlugQueue()
 
-    spawned = _maybe_spawn_auto_revisit(
-        orch, "T-R2", "engineering_head",
+    revisit_id = _maybe_spawn_auto_revisit(
+        orch, "T-R1", "engineering_head",
         failure_kind="session_timeout",
         error_context={"mode": "session_failure",
                        "executor_error": "Session timed out after 5400 seconds"},
     )
-    assert spawned is False
+    assert revisit_id is None
     assert orch._queue.qsize() == 0
 
 
 def test_per_kind_cap_admits_different_kind_after_session_timeout(runtime, db):
-    """Two prior session_timeouts do NOT exhaust the budget for executor_error
-    — that kind has its own per-kind cap. Spec §5.1 second row."""
+    """With cap=1, one prior session_timeout exhausts that kind's budget
+    but executor_error is unaffected — that kind has its own per-kind cap."""
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
 
@@ -399,19 +391,11 @@ def test_per_kind_cap_admits_different_kind_after_session_timeout(runtime, db):
                               assigned_agent="engineering_head",
                               status=TaskStatus.FAILED,
                               revisit_of_task_id="T-ROOT"))
-    db.insert_task(TaskRecord(id="T-R2", brief="b",
-                              assigned_agent="engineering_head",
-                              status=TaskStatus.FAILED,
-                              revisit_of_task_id="T-R1"))
     audit = AuditLogger(db)
     audit.log_auto_revisit_of(task_id="T-R1", predecessor_root="T-ROOT",
                               failed_task="T-ROOT", failed_agent="x",
                               cascade=["T-ROOT"], failure_kind="session_timeout",
                               error_context={}, attempt=1)
-    audit.log_auto_revisit_of(task_id="T-R2", predecessor_root="T-R1",
-                              failed_task="T-R1", failed_agent="x",
-                              cascade=["T-R1"], failure_kind="session_timeout",
-                              error_context={}, attempt=2)
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -419,12 +403,12 @@ def test_per_kind_cap_admits_different_kind_after_session_timeout(runtime, db):
 
     # A NEW executor_error failure should still auto-revisit — it has its
     # own per-kind cap, unaffected by the exhausted session_timeout count.
-    spawned = _maybe_spawn_auto_revisit(
-        orch, "T-R2", "engineering_head",
+    revisit_id = _maybe_spawn_auto_revisit(
+        orch, "T-R1", "engineering_head",
         failure_kind="executor_error",
         error_context={"mode": "session_failure", "rc": 137},
     )
-    assert spawned is True
+    assert isinstance(revisit_id, str)
     # The new auto-revisit is enqueued AND tagged executor_error.
     slug, new_root = orch._queue.get_nowait()
     assert slug == "test"

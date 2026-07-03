@@ -1,0 +1,13 @@
+id: hr:disabled-skill
+slug: disabled-skill
+name: Disabled Skill
+version: 1.0.0
+description: A skill that is disabled.
+when_to_use: Should not appear.
+owner: engineering_manager
+source: runtime/skills/disabled-skill
+policy_class: standard_operational
+approval_state: approved
+approved_by: engineering_manager
+approved_at: 2026-07-01T00:00:00Z
+status: disabled

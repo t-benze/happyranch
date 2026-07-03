@@ -264,17 +264,19 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         note = f"agent invocation failed: {exc}"
         _fail(orch, task_id, note=note)
         failure_kind = _classify_failure_kind(None, None, mode="exception")
-        spawned = _maybe_spawn_auto_revisit(
+        revisit_id = _maybe_spawn_auto_revisit(
             orch, task_id, agent,
             failure_kind=failure_kind,
             error_context={"mode": "exception", "detail": str(exc)},
         )
+        spawned = revisit_id is not None
         _enqueue_parent_if_waiting(
             orch, task_id, root_auto_revisit_spawned=spawned,
         )
         _maybe_post_thread_followup(
             orch, task_id,
             status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
+            revisit_task_id=revisit_id,
         )
         return
 
@@ -327,17 +329,19 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         failure_kind = _classify_failure_kind(
             result, report, mode="session_failure",
         )
-        spawned = _maybe_spawn_auto_revisit(
+        revisit_id = _maybe_spawn_auto_revisit(
             orch, task_id, agent,
             failure_kind=failure_kind,
             error_context=_executor_failure_context(result, report),
         )
+        spawned = revisit_id is not None
         _enqueue_parent_if_waiting(
             orch, task_id, root_auto_revisit_spawned=spawned,
         )
         _maybe_post_thread_followup(
             orch, task_id,
             status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
+            revisit_task_id=revisit_id,
         )
         return
 
@@ -498,6 +502,21 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                     status=TaskStatus.FAILED, auto_revisit_spawned=False,
                 )
                 return
+            # Validate carrier chain legs for pipeline children (Phase 2).
+            for j, leg in enumerate(child.then):
+                leg_err = _validate_one_leg(
+                    orch, agent=leg.agent,
+                    where=f"fanout child {i + 1} then leg {j + 1}",
+                )
+                if leg_err is not None:
+                    note = f"invalid fanout: {leg_err}"
+                    _fail(orch, task_id, note=note)
+                    _enqueue_parent_if_waiting(orch, task_id)
+                    _maybe_post_thread_followup(
+                        orch, task_id,
+                        status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                    )
+                    return
 
         # Scope validation: manager own-team/self only; non-manager self-only.
         # Reuse _legs_out_of_scope with the fan-out child targets.
@@ -565,10 +584,18 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 f"({FANOUT_REVIEW_THRESHOLD}); requires founder review"
             )
             # Build the pending fan-out state so it survives the review cycle.
-            child_details = [
-                {"agent": c.agent, "prompt": c.prompt}
-                for c in decision.children
-            ]
+            child_details = []
+            for c in decision.children:
+                cd = {"agent": c.agent, "prompt": c.prompt}
+                if c.expect_verdict is not None:
+                    cd["expect_verdict"] = c.expect_verdict
+                if c.then:
+                    cd["then"] = [
+                        {"agent": l.agent, "prompt": l.prompt,
+                         "expect_verdict": l.expect_verdict}
+                        for l in c.then
+                    ]
+                child_details.append(cd)
             pending_fanout = FanoutState(
                 children_ids=[],  # allocated on spawn, not now
                 children_details=child_details,
@@ -608,12 +635,25 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             return
 
         # Spawn children via shared helper (also used by review-gate re-entry).
+        children_payload = []
+        for c in decision.children:
+            cd = {"agent": c.agent, "prompt": c.prompt}
+            if c.expect_verdict is not None:
+                cd["expect_verdict"] = c.expect_verdict
+            if c.then:
+                cd["then"] = [
+                    {"agent": l.agent, "prompt": l.prompt,
+                     "expect_verdict": l.expect_verdict}
+                    for l in c.then
+                ]
+            children_payload.append(cd)
         _spawn_fanout_children(
             orch, task, task_id, next_count,
-            children=[{"agent": c.agent, "prompt": c.prompt} for c in decision.children],
+            children=children_payload,
             width=width,
             manager_agent=agent,
             join_summary=decision.join_summary,
+            step_audit_id=_step_audit_id,
         )
         return
 
@@ -1471,6 +1511,82 @@ def _advance_chain_for_completed_child(
     return "advance"
 
 
+def _is_carrier(orch: "Orchestrator", parent: "TaskRecord") -> bool:
+    """True if ``parent`` is a pipeline carrier — its own parent has active_fanout set.
+    Carrier detection is schema-free: a carrier is any task whose id is in its
+    parent's active_fanout.children_ids and which has (or had) an active_chain.
+    We detect it by checking if the grandparent has active_fanout."""
+    if parent.parent_task_id is None:
+        return False
+    grandparent = orch._db.get_task(parent.parent_task_id)
+    return grandparent is not None and grandparent.active_fanout is not None
+
+
+def _carrier_fail_on_verdict_mismatch(
+    orch: "Orchestrator", parent: "TaskRecord",
+    child_task_id: str, chain_snapshot: str | None,
+) -> bool:
+    """After a carrier's chain leg completed but the chain did not advance
+    (outcome == "wake"), check if this was a verdict mismatch.  If so, fail
+    the carrier immediately (fail-closed at carrier).  Returns True if the
+    carrier was failed, False otherwise (including non-carriers)."""
+    if chain_snapshot is None:
+        return False
+    if not _is_carrier(orch, parent):
+        return False
+    from runtime.orchestrator.chain import ChainState
+    chain = ChainState.deserialize(chain_snapshot)
+    expected = chain.current_expect_verdict()
+    if expected is None:
+        return False  # no verdict expectation → chain_complete, not a mismatch
+    report = orch._db.get_latest_completion_report(child_task_id)
+    actual = report.verdict if report else None
+    if actual == expected:
+        return False  # chain_complete, not a mismatch
+    # Carrier verdict mismatch: fail the whole carrier.
+    _fail(orch, parent.id,
+           note=f"carrier verdict mismatch: expected {expected!r}, got {actual!r}")
+    # Feed carrier failure into the fan-out parent's barrier.
+    _enqueue_parent_if_waiting(orch, parent.id)
+    return True
+
+
+def _carrier_fail_immediate(
+    orch: "Orchestrator", parent: "TaskRecord",
+    child_task_id: str,
+) -> bool:
+    """A carrier's chain leg failed: fail the whole carrier immediately
+    (fail-closed at carrier).  Returns True if the carrier was failed,
+    False for non-carriers."""
+    if not _is_carrier(orch, parent):
+        return False
+    _fail(orch, parent.id,
+           note=f"carrier chain leg {child_task_id} failed")
+    # Feed carrier failure into the fan-out parent's barrier.
+    _enqueue_parent_if_waiting(orch, parent.id)
+    return True
+
+
+def _carrier_complete_on_chain_complete(
+    orch: "Orchestrator", parent: "TaskRecord",
+) -> bool:
+    """After a carrier's chain completed successfully (all legs done,
+    final leg verdict matched), complete the carrier DIRECTLY — NO
+    orch._run_agent session, NO manager-wake.  Then feed the carrier's
+    completion into the fan-out parent's barrier EXACTLY ONCE.
+
+    Returns True if the carrier was completed, False for non-carriers.
+    """
+    if not _is_carrier(orch, parent):
+        return False
+    # Complete the carrier directly — it has no session of its own.
+    _complete(orch, parent.id,
+              note="carrier chain complete")
+    # Feed carrier completion into the fan-out parent's barrier.
+    _enqueue_parent_if_waiting(orch, parent.id)
+    return True
+
+
 _FAILURE_ROUND_BOUND = 2  # at most 2 re-spawn rounds before escalation
 
 
@@ -1523,20 +1639,37 @@ def _enqueue_parent_if_waiting(
     # terminated subtask completed cleanly, try to auto-advance to the next
     # leg instead of waking the parent. FAILED subtasks clear the chain and
     # fall through to the bounded-wake logic below.
+    #
+    # Phase 2 carrier fail-closed: when the parent is a carrier (its own
+    # parent has active_fanout), a verdict-mismatch or a failed leg fails
+    # the whole carrier immediately — no partial-chain completion.
     child = orch._db.get_task(task_id)
     if child is not None and parent.active_chain is not None:
         if child.status == TaskStatus.COMPLETED:
+            # Snapshot the chain BEFORE advance (which may clear it).
+            chain_snapshot = parent.active_chain
             outcome = _advance_chain_for_completed_child(
                 orch=orch, parent_task_id=parent.id, child_task_id=task_id,
             )
             if outcome == "advance":
                 return  # next leg spawned; parent stays in_progress(delegated)
-            # outcome == "wake" → chain cleared; fall through to sibling-check
-            # + parent-wake path below.
+            # outcome == "wake" → chain cleared; carrier fail-closed?
+            if _carrier_fail_on_verdict_mismatch(
+                orch, parent, task_id, chain_snapshot,
+            ):
+                return  # carrier failed; outer _enqueue_parent_if_waiting skipped
+            # Chain complete + verdict matched → carrier auto-completes
+            # directly (no _run_agent session, no manager-wake).
+            if _carrier_complete_on_chain_complete(orch, parent):
+                return  # carrier completed; outer _enqueue_parent_if_waiting skipped
+            # Non-carrier: fall through to sibling-check + parent-wake path below.
         else:
             # FAILED chain leg: clear the chain so the parent's next decision
-            # step doesn't see a stale chain. Fall through to bounded-wake.
+            # step doesn't see a stale chain. Carrier: fail-closed.
             orch._db.update_task_active_chain(parent.id, None)
+            if _carrier_fail_immediate(orch, parent, task_id):
+                return  # carrier failed; outer _enqueue_parent_if_waiting skipped
+            # fall through to sibling-check + bounded-wake below.
 
     siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
@@ -1591,7 +1724,7 @@ def _enqueue_parent_if_waiting(
         queue.put_nowait(orch._slug, parent.id)
 
 
-_AUTO_REVISIT_CAP_PER_KIND = 2
+_AUTO_REVISIT_CAP_PER_KIND = 1
 
 # Triad of "agent died mid-flight, retry as-is" kinds. Routed identically by
 # the auto-revisit machinery in v1; constant exists so future per-class policy
@@ -1737,7 +1870,7 @@ def _maybe_spawn_auto_revisit(
     *,
     failure_kind: str,
     error_context: dict,
-) -> bool:
+) -> str | None:
     """Spawn an orchestrator-triggered revisit on an opaque agent failure.
 
     Triggered ONLY by the two opaque agent-error paths in run_step (an
@@ -1763,13 +1896,13 @@ def _maybe_spawn_auto_revisit(
     not count toward the cap (they're intentional human retries). See
     spec 2026-05-25-session-timeout-auto-route-design.md §5.
 
-    Returns True if a revisit row was inserted, False otherwise (no chain,
-    cap hit, or future not-eligible cases).
+    Returns the newly-inserted revisit task id on success, None otherwise
+    (no chain, cap hit, or future not-eligible cases).
     """
     db = orch._db
     chain = db.walk_ancestors(failed_task_id)
     if not chain:
-        return False
+        return None
     # Founder cancellation gate: /cancel stamps cancelled_at + flips status to
     # FAILED, then SIGTERMs the running subprocess. The dying subprocess returns
     # rc=-15, which run_step's classifier reads as executor_error and routes
@@ -1777,7 +1910,7 @@ def _maybe_spawn_auto_revisit(
     # revisit_of_task_id and re-enqueue it — exactly the "respawn on cancel"
     # bug. Mirrors the docstring's explicit exclusion of founder cancellations.
     if chain[0].cancelled_at is not None:
-        return False
+        return None
     root = chain[-1]
 
     # Walk the revisit chain from the root to find the original
@@ -1796,7 +1929,7 @@ def _maybe_spawn_auto_revisit(
 
     prior = _count_prior_auto_revisits_by_kind(orch, root.id, failure_kind)
     if prior >= _AUTO_REVISIT_CAP_PER_KIND:
-        return False
+        return None
 
     from runtime.models import TaskRecord
 
@@ -1831,7 +1964,7 @@ def _maybe_spawn_auto_revisit(
     queue = getattr(orch, "_queue", None)
     if queue is not None:
         queue.put_nowait(orch._slug, new_id)
-    return True
+    return new_id
 
 
 def _maybe_resume_blocked_task(
@@ -1900,8 +2033,9 @@ def _append_followup_system_and_reinvoke(
     original_id: str,
     source_task_id: str,
     system_payload: dict,
+    reinvoke: bool = True,
 ) -> None:
-    """Append a SYSTEM message + mint/enqueue a TASK_FOLLOWUP re-invocation.
+    """Append a SYSTEM message + optionally mint/enqueue a TASK_FOLLOWUP re-invocation.
 
     Shared tail for `_maybe_post_thread_followup` (terminal) and
     `_maybe_post_thread_escalation`. Race-aware: the atomic cap-projection +
@@ -1909,6 +2043,13 @@ def _append_followup_system_and_reinvoke(
     `mint_followup_invocation_with_cap_extend`. `original_id` is the original
     dispatched task id (for audit keying); `source_task_id` is the task that
     triggered this followup (terminal task or escalated task).
+
+    When `reinvoke=False`, only the SYSTEM message is appended; the
+    dispatcher re-invocation (cap-extend + mint + enqueue) is suppressed.
+    This is used for intermediate auto-revisit failures (THR-046 msg99):
+    the thread surface needs the 'revisiting as <SUCCESSOR>' system message,
+    but the successor fires its own followup at its terminal, so
+    double-invocation is avoided here.
     """
     db = orch._db
     audit = orch._audit
@@ -1922,6 +2063,19 @@ def _append_followup_system_and_reinvoke(
         kind=_TMK.SYSTEM,
         system_payload=system_payload,
     )
+
+    if not reinvoke:
+        # System-message-only path: the thread surface receives the
+        # task_failed notification (with revisit_task_id for 'revisiting as
+        # <SUCCESSOR>' rendering), but the dispatcher is NOT re-invoked.
+        # The revisit successor will fire its own followup (with
+        # re-invocation) at its terminal.
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+            reason="auto_revisit_spawned",
+            successor_task_id=system_payload.get("revisit_task_id"),
+        )
+        return
 
     # Atomic cap-projection + conditional bump + mint.  Closes the TOCTOU race
     # where two concurrent root completions on the same thread both read the
@@ -2080,10 +2234,11 @@ def _maybe_post_thread_followup(
     *,
     status: TaskStatus,
     auto_revisit_spawned: bool,
+    revisit_task_id: str | None = None,
 ) -> None:
     """Post a task-followup system message + mint a re-invocation for the dispatcher.
 
-    Fire predicate (spec §4):
+    Fire predicate (spec §4, §4.1 — revised THR-046 msg99):
       - status == COMPLETED                                → always fire
       - status == RESOLVED_SUPERSEDED                      → always fire (terminal,
                                                              completion-class — a
@@ -2091,9 +2246,15 @@ def _maybe_post_thread_followup(
                                                              auto-resolved by a
                                                              continuation; THR-018 §3a)
       - status == FAILED and not auto_revisit_spawned      → true terminal, fire
-      - status == FAILED and auto_revisit_spawned          → no-op (revisit chain
-                                                             will call this helper
-                                                             again at its terminal)
+      - status == FAILED and auto_revisit_spawned          → fire system-message-only
+                                                             (carries revisit_task_id
+                                                             so the thread surface can
+                                                             render 'revisiting as
+                                                             <SUCCESSOR>'; dispatcher
+                                                             re-invocation is suppressed
+                                                             — the revisit successor
+                                                             will fire its own followup
+                                                             at its terminal)
 
     Only root tasks fire. Child terminals cascade-fail through the parent,
     which re-enters this helper there. The originating thread is found by
@@ -2105,8 +2266,10 @@ def _maybe_post_thread_followup(
     # Predicate gate — first pass using caller's claim (cheap early-out).
     # CANCELLED is a terminal followup status (Path B, THR-037): a founder cancel
     # writes the stored terminal CANCELLED and replays in the task_failed class.
-    if status == TaskStatus.FAILED and auto_revisit_spawned:
-        return
+    # THR-046 msg99: FAILED+auto_revisit_spawned is no longer a no-op — the
+    # system message (with revisit_task_id) fires so the thread surface can
+    # render 'revisiting as <SUCCESSOR>', but the dispatcher re-invocation is
+    # suppressed (performed conditionally at the end).
     if status not in (
         TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
         TaskStatus.CANCELLED,
@@ -2134,8 +2297,6 @@ def _maybe_post_thread_followup(
     ):
         # Row isn't terminal yet — caller raced ahead of the DB write.
         # Bail; the eventual real terminal will re-enter this helper.
-        return
-    if actual_status == TaskStatus.FAILED and auto_revisit_spawned:
         return
 
     # Only root tasks fire. Children are handled at their parent's terminal site.
@@ -2217,6 +2378,7 @@ def _maybe_post_thread_followup(
         "final_output_dir": terminal_task.final_output_dir,
         "cancelled": terminal_task.cancelled_at is not None,
         "revisit_chain_length": len(chain) if chain else 1,
+        "revisit_task_id": revisit_task_id,
     }
 
     _append_followup_system_and_reinvoke(
@@ -2226,6 +2388,7 @@ def _maybe_post_thread_followup(
         original_id=original.id,
         source_task_id=task_id,
         system_payload=system_payload,
+        reinvoke=not auto_revisit_spawned,
     )
 
 
@@ -2280,10 +2443,17 @@ def _spawn_fanout_children(
     width: int,
     manager_agent: str,
     join_summary: str | None = None,
+    step_audit_id: int | None = None,
 ) -> None:
     """Allocate child IDs, build TaskRecords, atomically insert all N children
     and park the parent in in_progress(delegated) with active_fanout set.
     Shared by the fresh dispatch path and the review-gate re-entry path.
+
+    Phase 2 pipeline: a child with non-empty ``then`` or ``expect_verdict`` is a
+    *carrier* — its inline chain is materialized (active_chain set) and its first
+    leg is spawned as a subtask of the carrier.  The carrier itself parks as
+    delegated; it does NOT run an agent session.  Plain children (empty ``then``,
+    no ``expect_verdict``) are dispatched as bare PENDING subtasks, unchanged.
 
     On cancel-race (try_delegate_many returns False), logs and returns
     silently — the parent was cancelled between validation and spawn.
@@ -2301,15 +2471,28 @@ def _spawn_fanout_children(
     for i, child_info in enumerate(children):
         cid = f"TASK-{base_num + i:03d}"
         children_ids.append(cid)
+        has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
+        # THR-056 option 3: mutating fan-out — children targeted at a team
+        # manager are task_type='task' so their delegate-chain decisions are
+        # parsed and can spawn implementation children. Pipeline carriers
+        # (has_pipeline=True) never run agent sessions themselves, so their
+        # task_type does not affect decision parsing; keep them as subtask.
+        is_manager = (
+            not has_pipeline
+            and orch.teams is not None
+            and bool(orch.teams.is_team_manager(child_info["agent"]))
+        )
+        child_task_type = "task" if is_manager else "subtask"
         child_records.append(TaskRecord(
             id=cid,
             team=parent.team,
             brief=child_info["prompt"] or "",
             assigned_agent=child_info["agent"],
             parent_task_id=task_id,
-            status=TaskStatus.PENDING,
+            status=TaskStatus.IN_PROGRESS if has_pipeline else TaskStatus.PENDING,
+            block_kind=BlockKind.DELEGATED if has_pipeline else None,
             session_timeout_seconds=parent.session_timeout_seconds,
-            task_type="subtask",
+            task_type=child_task_type,
         ))
 
     # Build FanoutState BEFORE the atomic insert so it's ready to persist.
@@ -2350,10 +2533,55 @@ def _spawn_fanout_children(
         children_ids=children_ids,
     )
 
-    # Enqueue all children.
-    if orch._queue is not None:
-        for cid in children_ids:
-            orch._queue.put_nowait(orch._slug, cid)
+    # Post-insert: materialize carrier chains for pipeline children.
+    # MUST happen BEFORE enqueueing any first leg — a fast worker could
+    # otherwise complete and reach _enqueue_parent_if_waiting while the
+    # carrier's active_chain is still NULL (same race as inline chains).
+    for i, child_info in enumerate(children):
+        cid = children_ids[i]
+        has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
+        if not has_pipeline:
+            # Plain child: enqueue directly (Phase 1 behavior, unchanged).
+            if orch._queue is not None:
+                orch._queue.put_nowait(orch._slug, cid)
+            continue
+
+        # Pipeline carrier: materialize chain on the child.
+        # Reuses the same ChainState builder as inline delegate chains (~:718-740).
+        from runtime.orchestrator.chain import ChainState
+        from runtime.models import ChainLeg
+        then_legs = [
+            ChainLeg(
+                agent=leg["agent"], prompt=leg["prompt"],
+                expect_verdict=leg.get("expect_verdict"),
+            )
+            for leg in child_info.get("then", []) or []
+        ]
+        carrier_chain = ChainState(
+            step_index=0,
+            first_leg_expect_verdict=child_info.get("expect_verdict"),
+            legs=then_legs,
+            step_audit_id=step_audit_id or 0,
+        )
+        db.update_task_active_chain(cid, carrier_chain.serialize())
+
+        # Create and insert the first leg of the carrier's chain.
+        first_leg_id = db.next_task_id()
+        first_leg = TaskRecord(
+            id=first_leg_id,
+            team=parent.team,
+            brief=child_info["prompt"] or "",
+            assigned_agent=child_info["agent"],
+            parent_task_id=cid,
+            status=TaskStatus.PENDING,
+            session_timeout_seconds=parent.session_timeout_seconds,
+            task_type="subtask",
+        )
+        db.insert_task(first_leg)
+
+        # Enqueue the first leg (NOT the carrier itself).
+        if orch._queue is not None:
+            orch._queue.put_nowait(orch._slug, first_leg_id)
 
 
 def _inject_fanout_join_context(

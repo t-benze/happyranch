@@ -150,8 +150,6 @@ const componentMap: Record<string, ReactNode> = {
       subject="Refund policy review"
       status="open"
       participants={['founder', 'compliance_head']}
-      turnsUsed={3}
-      turnCap={20}
     />
   ),
   TopBar: <TopBar />,

@@ -61,6 +61,13 @@ In practice these are rare-but-real (`agent_exception` is the rarest), and they'
 
 ## 5. Per-kind cap policy
 
+> **THR-046 parity note (2026-07-01):** The per-kind cap was reduced from 2 to 1
+> in `runtime/orchestrator/run_step.py` (`_AUTO_REVISIT_CAP_PER_KIND = 1`).
+> This spec was written when the cap was 2 and retains its original reasoning;
+> the cap constant is now 1 everywhere. The behavioral contract (per-kind
+> counting, cap-hit → no further auto-revisit, founder notification on cap
+> exhaustion) is unchanged; only the numeric ceiling changed.
+
 Replace the module-level constant:
 
 ```python

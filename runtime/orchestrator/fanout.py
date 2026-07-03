@@ -200,10 +200,13 @@ def validate_fanout_decision(
             f"actual child count ({n})"
         )
     for i, child in enumerate(decision.children):
-        if child.then:
-            return f"fanout child {i + 1}: per-child then is not supported in Phase 1"
-        if child.expect_verdict is not None:
-            return f"fanout child {i + 1}: per-child expect_verdict is not supported in Phase 1"
+        # Per-child then/expect_verdict are now supported for pipeline carriers (Phase 2).
+        # Validate each then leg structurally (agent + prompt non-empty).
+        for j, leg in enumerate(child.then):
+            if not leg.agent:
+                return f"fanout child {i + 1}, then leg {j + 1}: missing agent"
+            if not leg.prompt:
+                return f"fanout child {i + 1}, then leg {j + 1}: missing prompt"
     return None
 
 

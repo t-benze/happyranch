@@ -6,7 +6,7 @@ from runtime.config import Settings
 from runtime.daemon.__main__ import _sweep_on_startup
 from runtime.daemon.queue import TaskQueue
 from runtime.infrastructure.database import Database
-from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.models import BlockKind, TaskRecord, TaskStatus, ThreadInvocationPurpose, ThreadRecord, ThreadStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
@@ -434,3 +434,154 @@ def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):
         "shutdown returned before the runner task persisted terminal state — "
         "row would have stayed `running` until next startup"
     )
+
+
+# ── Thread invocation sweep (THR-046 message-112) ────────────────────────
+
+def test_sweep_reconciles_pending_invocation_to_failed(tmp_path):
+    """Branch 6: orphaned pending thread invocations are reaped to failed on
+    daemon restart so the UI reply box (queued/working render) clears."""
+    from runtime.daemon.routes.threads import _responder_entry
+
+    db = _seed_org(tmp_path)
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alpha", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    )
+    assert inv.status.value == "pending"
+    # Verify wire render is 'queued' (no started_at)
+    wire_entry = _responder_entry({
+        "agent_name": "alpha", "status": "pending",
+        "consumed_at": None, "started_at": None,
+    })
+    assert wire_entry.status == "queued"
+
+    _sweep_on_startup(db, TaskQueue(), "test")
+
+    # DB row is now terminal.
+    reel = db.get_invocation_any_status(inv.invocation_token)
+    assert reel is not None
+    assert reel.status.value == "failed"
+    assert reel.decline_reason == "daemon_restart"
+    assert reel.consumed_at is not None
+
+    # Wire render is now 'failed' (box clears).
+    wire_after = _responder_entry({
+        "agent_name": "alpha", "status": reel.status.value,
+        "consumed_at": reel.consumed_at.isoformat() if reel.consumed_at else None,
+        "started_at": reel.started_at.isoformat() if reel.started_at else None,
+    })
+    assert wire_after.status == "failed", (
+        f"expected wire status 'failed' after sweep; got '{wire_after.status}'"
+    )
+
+
+def test_sweep_reconciles_working_invocation_to_failed(tmp_path):
+    """Branch 6: a started (working) pending invocation is also reaped to
+    failed. The wire render flips from 'working' to 'failed'."""
+    from datetime import datetime, timezone
+
+    from runtime.daemon.routes.threads import _responder_entry
+
+    db = _seed_org(tmp_path)
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alpha", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    )
+    # Simulate a subprocess that started before the daemon was killed.
+    started_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    db._conn.execute(
+        "UPDATE thread_invocations SET started_at = ? WHERE invocation_token = ?",
+        (started_ts, inv.invocation_token),
+    )
+    db._conn.commit()
+
+    # Wire renders 'working' because started_at is set.
+    wire_entry = _responder_entry({
+        "agent_name": "alpha", "status": "pending",
+        "consumed_at": None, "started_at": started_ts,
+    })
+    assert wire_entry.status == "working"
+
+    _sweep_on_startup(db, TaskQueue(), "test")
+
+    reel = db.get_invocation_any_status(inv.invocation_token)
+    assert reel is not None
+    assert reel.status.value == "failed"
+    assert reel.decline_reason == "daemon_restart"
+
+    wire_after = _responder_entry({
+        "agent_name": "alpha", "status": reel.status.value,
+        "consumed_at": reel.consumed_at.isoformat() if reel.consumed_at else None,
+        "started_at": reel.started_at.isoformat() if reel.started_at else None,
+    })
+    assert wire_after.status == "failed"
+
+
+def test_sweep_reconciles_all_threads_pending_invocations(tmp_path):
+    """Branch 6: reaps pending invocations across ALL threads, not just open
+    ones. A pending invocation is orphaned regardless of thread status."""
+    from runtime.daemon.routes.threads import _responder_entry
+
+    db = _seed_org(tmp_path)
+    # Thread 1 — has pending invocation
+    db.insert_thread(ThreadRecord(id="THR-001", subject="open"))
+    inv1 = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alpha", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    )
+    # Thread 2 — archived thread (past conversation), also has pending
+    db.insert_thread(ThreadRecord(id="THR-002", subject="archived"))
+    db.set_thread_status("THR-002", status=ThreadStatus.ARCHIVED)
+    inv2 = db.mint_thread_invocation(
+        thread_id="THR-002", agent_name="bravo", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    _sweep_on_startup(db, TaskQueue(), "test")
+
+    for token in (inv1.invocation_token, inv2.invocation_token):
+        reel = db.get_invocation_any_status(token)
+        assert reel is not None
+        assert reel.status.value == "failed", (
+            f"invocation {token} should be failed after sweep, got "
+            f"{reel.status.value}"
+        )
+        assert reel.decline_reason == "daemon_restart"
+
+
+def test_sweep_leaves_already_terminal_invocations_alone(tmp_path):
+    """Branch 6: terminal invocations (consumed, declined, timeout) are NOT
+    touched — only genuinely pending rows are reaped."""
+    from runtime.daemon.routes.threads import _responder_entry
+
+    db = _seed_org(tmp_path)
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+
+    # Already-consumed invocation.
+    consumed = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alpha", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.consume_invocation(consumed.invocation_token)
+
+    # Already-declined.
+    declined = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="bravo", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.mark_invocation_declined(declined.invocation_token, decline_reason="agent_declined")
+
+    _sweep_on_startup(db, TaskQueue(), "test")
+
+    # Consumed stays consumed.
+    c = db.get_invocation_any_status(consumed.invocation_token)
+    assert c is not None and c.status.value == "consumed", \
+        f"consumed invocation was altered to {c.status.value if c else 'None'}"
+
+    # Declined stays declined.
+    d = db.get_invocation_any_status(declined.invocation_token)
+    assert d is not None and d.status.value == "declined", \
+        f"declined invocation was altered to {d.status.value if d else 'None'}"

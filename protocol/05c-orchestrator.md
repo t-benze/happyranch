@@ -193,17 +193,21 @@ cascade-failed. Instead:
    next decision step (existing behavior). REVISE-verdict auto-advance is
    unchanged.
 
-#### Fan-out (parallel delegation, Phase 1)
+#### Fan-out (parallel delegation)
 
 A manager may declare a fan-out decision (`action: fanout`) to spawn N children
-in parallel (2 ≤ N ≤ 8, read-only only). The orchestrator:
+in parallel (2 ≤ N ≤ 8). The orchestrator:
 
-1. **Validates** width, width_cap_ack, workspace presence, scope, and rejects
-   per-child `then`/`expect_verdict` (read-only Phase 1 only; mutating fan-out
-   is out of scope).
+1. **Validates** width, width_cap_ack, workspace presence, and scope. A child may optionally carry `then`/`expect_verdict` — a *pipeline carrier* (Phase 2) — whose legs are validated exactly like an inline `delegate + then` chain (each leg needs `agent` + `prompt`).
 2. **Atomically mints** all N children via `try_delegate_many`, transitioning
    the parent to `in_progress(delegated)` with `active_fanout` set (an additive
-   JSON metadata column).
+   JSON metadata column). For pipeline carriers, the child's inline chain is
+   materialized on its own row (see Pipeline carriers below).
+   **Child task_type:** a child targeted at a team manager receives
+   `task_type='task'` so its delegate-chain decisions are parsed (mutating
+   fan-out, THR-056 msg39); a child targeted at a worker receives
+   `task_type='subtask'` (read-only). Pipeline carriers are always `subtask`
+   (they never run agent sessions of their own).
 3. **Parks** the parent — the existing `DELEGATED` barrier wakes it once when
    all N children are terminal (same CAS as single-child delegation).
 4. **Injects join context** into the manager's wake prompt: a structured block
@@ -212,11 +216,31 @@ in parallel (2 ≤ N ≤ 8, read-only only). The orchestrator:
 5. **Clears** `active_fanout` after successful join claim or terminal parent
    close.
 
+**Pipeline carriers (Phase 2).** A fan-out child that carries a non-empty `then` is a *carrier*: on spawn the orchestrator materializes its inline chain (`active_chain` on the child's row, via the same path as an ordinary `delegate + then`) instead of dispatching a bare read-only child. The composition is safe because `active_fanout` lives on the parent's row and `active_chain` lives on each child's row — **two independent columns on two different rows, never the same row, so there is no clobber** (the two-column-two-row invariant). Carrier detection is schema-free: a carrier is any task whose id is in its parent's `active_fanout.children_ids` and which has a non-empty `active_chain`; no new column. **Lifecycle rule: a carrier reaches a terminal state only after its own chain completes.** When a carrier's final leg matches its `expect_verdict`, the carrier has no session of its own to run — it terminates directly and feeds the parent's fan-out barrier (`_enqueue_parent_if_waiting`) without waking a manager. A carrier's internal legs never wake the parent; only the carrier's own terminal status counts toward the barrier.
+
+**Mutating children (THR-056 msg39, option 3).** A fan-out child targeted at a
+team manager that does NOT pre-declare `then`/`expect_verdict` (i.e., a plain PENDING
+child, not a pipeline carrier) receives `task_type='task'` instead of
+`task_type='subtask'`. Its agent session runs, and when it returns a
+`delegate` decision with an inline chain (`then` legs), the orchestrator
+parses the decision (since `task_type='task'`) and spawns the implementation
+subtree inside that branch using the standard chain mechanism. The child parks
+as `in_progress(delegated)` with `active_chain` set, and `_enqueue_parent_if_waiting`
+handles chain auto-advance exactly as for a top-level inline delegate chain.
+When its chain completes, it terminates and feeds the original fan-out
+parent's barrier. The fan-out parent does not join until ALL children
+(including mutating ones) are terminal. A mutating child's internal chain legs
+do not count toward the fan-out parent's barrier — only the mutating child's
+own terminal status does.
+
 Failure-join reuses bounded failure-recovery (§Failure-recovery contract):
 failed fan-out children individually consume re-spawn rounds; the parent wakes
 on each terminal child, and exhaustion escalates the parent after
-`_FAILURE_ROUND_BOUND` (2) failed children. No partial-join or cascade-fail
-semantics are introduced.
+`_FAILURE_ROUND_BOUND` (2) failed children. For a pipeline carrier this is
+**fail-closed at the carrier**: a leg verdict-mismatch or a failed leg fails
+the whole carrier (no partial-chain completion), and the failed carrier then
+feeds the parent's barrier exactly as any failed child does. No partial-join
+or cascade-fail semantics are introduced.
 
 Startup recovery (daemon restart) re-enqueues parked `in_progress(delegated)`
 fan-out parents when all children are already terminal (same as
@@ -284,3 +308,101 @@ completion report with `status=blocked` and an EMPTY `waiting_on_job_ids` is a
 MALFORMED report — the leg is treated as FAILED, and the parent wakes for a
 manager decision step (not cascade-failed). Self-blocked reviews that omit a
 verdict waste the delegation and burn a re-spawn round.
+
+---
+
+## 4. Runtime-Managed Skill Policy (CONTEXT/ADMISSION)
+
+The runtime-managed skill policy is an agent **context/admission** mechanism
+— it controls which approved skills appear in an agent session's compact skill
+index. It is **explicitly NOT a permission layer**. Capability remains
+governed ONLY by the existing permission model (§3). Skills do not grant
+tools, credentials, network access, filesystem access, sandbox policy, or
+permission-map/allow-rule/auth changes.
+
+### 4.1 Two-Gate Model
+
+A skill reaches an agent session only when **both** gates pass:
+
+1. **Catalog Gate** — the registry entry is approved for catalog use.
+   - `approval_state` must be `approved`.
+   - `status` must be `enabled`.
+   - **Founder ruling (THR-055 seq 17):** `high_impact_policy` skills require
+     founder or designated-owner approval before catalog admission AND before
+     EACH version upgrade. Approval is version-specific — approval of `1.0.0`
+     does not imply approval of `1.1.0`. Upgrading a `high_impact_policy`
+     skill returns it to `pending_review` / unavailable until the new version
+     is approved.
+   - `draft`, `pending_review`, `rejected`, `deprecated`, or missing approval
+     metadata blocks the catalog gate.
+
+2. **Eligibility Gate** — org/team/agent policy makes the skill eligible.
+   - Additive inheritance with explicit deny (`deny` wins over `allow`):
+     ```
+     effective = approved_catalog
+       ∩ (org.allow ∪ team.allow ∪ agent.allow)
+       \ (org.deny ∪ team.deny ∪ agent.deny)
+     ```
+   - An unapproved skill remains unavailable even if eligibility allows it.
+   - A disabled registry entry remains unavailable even if approved and eligible.
+   - Unknown skill ids in eligibility config produce validation warnings and
+     are excluded from the session index.
+
+### 4.2 Policy Classes
+
+| Policy class | Governance |
+| --- | --- |
+| `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids. Owner or team manager may approve. |
+| `high_impact_policy` | Pricing, legal/compliance, security, production release, escalation thresholds. Founder or designated-owner approval required for catalog admission AND each version upgrade. |
+| `system_contract` | Runtime protocol and mandatory operating-contract skills (e.g., `start-task`, `thread`, `jobs`). **Outside the toggleable catalog** — not shown, not toggleable. |
+
+### 4.3 Compact Session Skill INDEX
+
+At session creation, HappyRanch injects a compact skill **index** into the
+agent prompt — not full skill bodies. Each index line carries: `id`, `version`,
+`description`, `when_to_use`, and `source` (the on-disk path to `SKILL.md`).
+The agent loads the full skill body on demand through the executor's normal
+skill-loading mechanism.
+
+Format:
+```
+- hr:<slug>@<version> — <description>. <when_to_use> Load full instructions from <source>/SKILL.md.
+```
+
+The compact index is stable and deterministic for the same registry + config
+inputs. Skills omitted by policy do not appear. Global CLI skills are untouched.
+
+### 4.4 Admin Surface (CLI-first)
+
+V1 provides CLI commands that read the file/YAML-backed registry + resolver +
+exposure directly from disk (no daemon round-trip):
+
+- `happyranch skills catalog list` — list all registered skills.
+- `happyranch skills catalog validate` — validate registry entries and
+  eligibility policy; surfaces unknown-id warnings and malformed skill.yaml
+  entries.
+- `happyranch skills effective --agent <name>` — show effective skills for an
+  agent, with provenance (which scope+rule admitted/denied each skill).
+- `happyranch skills policy explain <skill_id> --agent <name>` — explain why
+  a skill is or isn't available, including both gate results, approval
+  records, and eligibility provenance.
+
+Registry and eligibility mutations emit audit rows under the `config:skills`
+scope prefix (matching the established `config:<section>` convention from
+THR-035).
+
+### 4.5 Fenced Non-Goals
+
+The following are **explicitly out of scope** for the runtime-managed skill
+policy:
+
+- Skills **do not** grant tools, credentials, network access, filesystem
+  access, sandbox policy, permission maps, allow-rule, or auth changes.
+- System/contract skills are **not toggleable** — they are outside the catalog.
+- **No SQLite migration** — v1 is file/YAML-backed only.
+- **No web Settings UI** or marketplace in v1.
+- **No executable/permission-bearing package surface** — v1 packages include
+  `SKILL.md`, `skill.yaml`, and optional `references/` and `assets/`
+  directories only.
+- **No auth or permission-model change** — the existing executor-native
+  sandboxing + system prompt guardrails remain the sole capability gate.

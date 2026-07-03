@@ -114,7 +114,9 @@ def _codex_fixture() -> str:
 def test_parse_codex_usage_happy_path():
     u = _parse_codex_usage(_codex_fixture())
     assert u is not None
-    assert u.input_tokens == 34887
+    # Fix B (issue #216): input_tokens is inclusive of cached_input_tokens,
+    # normalized to net-fresh = 34887 - 15003 = 19884
+    assert u.input_tokens == 19884
     assert u.output_tokens == 9003
     assert u.cache_read_tokens == 15003  # mapped from `cached_input_tokens`
     assert u.cache_creation_tokens is None  # Codex doesn't separate creation
@@ -158,6 +160,41 @@ def test_parse_codex_usage_takes_last_turn_completed():
 
 def test_parse_codex_usage_empty_stdout():
     assert _parse_codex_usage("") is None
+
+
+def test_parse_codex_usage_normalizes_cache_to_net_fresh():
+    """Fix B (issue #216): codex input_tokens includes cached_input_tokens.
+    Stored input_tokens must be net-fresh = max(input - cached, 0)."""
+    stream = (
+        '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":750,"output_tokens":200}}\n'
+    )
+    u = _parse_codex_usage(stream)
+    assert u is not None
+    assert u.input_tokens == 250  # 1000 - 750 = net-fresh
+    assert u.cache_read_tokens == 750  # cache preserved as-is
+    assert u.output_tokens == 200
+
+
+def test_parse_codex_usage_input_less_than_cache_clamps_to_zero():
+    """Edge case: cached > input → net-fresh clamps to 0, not negative."""
+    stream = (
+        '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":500,"output_tokens":50}}\n'
+    )
+    u = _parse_codex_usage(stream)
+    assert u is not None
+    assert u.input_tokens == 0  # max(100 - 500, 0)
+    assert u.cache_read_tokens == 500
+
+
+def test_parse_codex_usage_no_cache_field_preserves_input_unchanged():
+    """When cached_input_tokens is absent, input_tokens stays as-is."""
+    stream = (
+        '{"type":"turn.completed","usage":{"input_tokens":500,"output_tokens":100}}\n'
+    )
+    u = _parse_codex_usage(stream)
+    assert u is not None
+    assert u.input_tokens == 500  # no cache → no normalization
+    assert u.cache_read_tokens is None
 
 
 from runtime.orchestrator.executors import _parse_opencode_usage

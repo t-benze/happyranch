@@ -76,6 +76,25 @@ def _fetch_available_orgs(client) -> list[str]:
 
 
 
+def require_absolute_payload_path(path: str, *, kind: str) -> str:
+    """Guard: reject relative --from-file callback payload paths.
+
+    Agent callback payloads must use absolute paths (e.g. /tmp/...).  A
+    relative path silently resolves against the agent's cwd, which can land
+    the stray file under the runtime orgs root and litter the tree.
+    """
+    if not os.path.isabs(path):
+        print(
+            f"error: --from-file callback payload path must be absolute"
+            f" (e.g. /tmp/{kind}.json); got relative path"
+            f" '{path}', which resolves against the current directory and"
+            f" can litter the runtime tree.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return path
+
+
 def _fmt_ts(iso: str | None, *, date_only: bool = False) -> str:
     """Render a UTC ISO timestamp from the daemon in the machine's local tz.
 

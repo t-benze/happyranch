@@ -94,9 +94,6 @@ export type ArchiveResult = Awaited<ReturnType<typeof threadsApi.archiveThread>>
 export type ResumeArgs = void;
 export type ResumeResult = Awaited<ReturnType<typeof threadsApi.resumeThread>>;
 
-export type ExtendArgs = Parameters<typeof threadsApi.extendThreadCap>[2];
-export type ExtendResult = Awaited<ReturnType<typeof threadsApi.extendThreadCap>>;
-
 export type AbortRepliesArgs = void;
 export type AbortRepliesResult = Awaited<ReturnType<typeof threadsApi.abortReplies>>;
 
@@ -121,7 +118,6 @@ export interface ThreadsApi {
   useInviteAgent: (threadId: string) => MutationLike<InviteArgs, InviteResult>;
   useArchiveThread: (threadId: string) => MutationLike<ArchiveArgs, ArchiveResult>;
   useResumeThread: (threadId: string) => MutationLike<ResumeArgs, ResumeResult>;
-  useExtendCap: (threadId: string) => MutationLike<ExtendArgs, ExtendResult>;
   useAbortReplies: (threadId: string) => MutationLike<AbortRepliesArgs, AbortRepliesResult>;
 }
 
@@ -267,6 +263,12 @@ export interface AssistantApi {
    * real-only; the prototype mock rejects since no daemon sits behind it.
    */
   openSession: () => Promise<WebSocket>;
+  /**
+   * Opens the A-mode WebSocket — the structured `TurnFrame` stream that drives
+   * the thread-style dock. Same bearer-subprotocol auth as `openSession`; only
+   * the route differs. Imperative and real-only; the mock rejects.
+   */
+  openAModeSession: () => Promise<WebSocket>;
 }
 
 // ---------------------------------------------------------------------------

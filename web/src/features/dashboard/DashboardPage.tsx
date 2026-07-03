@@ -181,7 +181,7 @@ export function DashboardPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl p-6">
+      <div className="p-6">
         {/* Greeting heading — Direction-A serif (var(--font-display)), ds.css
             .h1 parity; copy is a data-derived status summary (THR-030 HOME-02). */}
         <h1 className="font-display text-display text-text-primary mb-1 font-medium">

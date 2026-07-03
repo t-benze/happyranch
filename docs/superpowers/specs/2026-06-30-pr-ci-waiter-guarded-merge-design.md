@@ -130,29 +130,33 @@ If any guard fails, the verdict is the specific failure (`stale_head`, `ci_faile
 > They were ABANDONED in the founder redesign (THR-047 msg 36) and were NEVER
 > merged to main.
 >
-> **Replacement model (see `runtime/daemon/pr_ci_adapters.py`):**
+> **Replacement model (see §8 and `runtime/daemon/pr_ci_waiter.py` / `runtime/daemon/pr_ci_merge.py`):**
 >
-> - **CI-POLL adapter:** a `review_required=false` job submitted through the
+> - **CI-POLL job:** a `review_required=false` job submitted through the
 >   EXISTING generic `POST /jobs/submit` route.  The job script invokes
->   `python -m runtime.daemon.pr_ci_adapters ci-poll --repo ... --pr-number ...`
->   to poll CI via `gh` and return a structured verdict.  The task owner
->   reports `status=blocked` with `waiting_on_job_ids=["JOB-NNN"]`.  On resume,
->   the task owner inspects the job verdict (exit code 0 = ci_pass).
+>   `python -m runtime.daemon.pr_ci_waiter --repo ... --pr N --head-sha <sha> --expected-check ...`
+>   to poll CI via `gh` and print a structured verdict JSON to stdout (exit
+>   code 0 = ci_pass).  The task owner reports `status=blocked` with
+>   `waiting_on_job_ids=["JOB-NNN"]`.  On resume, the task owner inspects the
+>   job verdict.  The poll job performs **NO merge** — it is strictly a
+>   CI-status poller.
 >
-> - **GUARDED-MERGE runner:** a `review_required=true` job submitted through the
->   same generic `POST /jobs/submit` route.  The job script invokes
->   `python -m runtime.daemon.pr_ci_adapters guarded-merge --repo ... --ci-verdict ci_pass ...`
->   to run the conjunctive merge guard and (only on all-green) execute
->   `gh pr merge`.  Because `review_required=true`, the merge step is
->   founder/EM-gated — baseline agents CANNOT self-merge.
+> - **GUARDED-MERGE step:** triggered by the resumed task (not a separate job)
+>   via a second CLI entrypoint
+>   `python -m runtime.daemon.pr_ci_merge --org ... --repo ... --pr N --head-sha <sha> --merge-method squash --ci-verdict ci_pass --review-task-id TASK-xxx --qa-task-id TASK-yyy`.
+>   This re-enforces all guards (review APPROVE + QA PASS + mergeable CLEAN +
+>   unchanged head SHA + open/non-draft) before performing the merge.
 >
 > **No new daemon route, no new auth surface, no permission-model change.**
-> The adapters are invoked through the existing generic jobs infrastructure;
-> the merge step's `gh pr merge` only executes inside a `review_required=true`
-> job after founder/EM approval.
+> The poll job is submitted through the existing generic jobs infrastructure;
+> the merge step runs on the daemon authority path — baseline agents never
+> get raw `gh pr merge` grants.
 >
-> `protocol/skills/jobs/SKILL.md` and `docs/agent-guides/` integration
-> remains deferred to PR #5.
+> `protocol/skills/jobs/SKILL.md` and `docs/agent-guides/features-and-invariants.md`
+> now contain the canonical integration — the poll-only job entrypoint
+> (`python -m runtime.daemon.pr_ci_waiter`) and the guarded-merge entrypoint
+> (`python -m runtime.daemon.pr_ci_merge`) with the full submit → blocked →
+> resume → inspect → merge/revise workflow.
 >
 > ---
 
@@ -221,11 +225,12 @@ Extend the waiter or add `runtime/daemon/pr_ci_merge.py`. Inputs include merge m
 
 ### PR 4: Daemon route + CLI helper
 
-> **⚠ CORRECTION (2026-07-01 — THR-047 rework):** The design below is
-> SUPERSEDED.  The actual PR #4 delivers thin `gh`-backed adapters
-> (`runtime/daemon/pr_ci_adapters.py`) invoked through the EXISTING generic
-> jobs path — no new daemon route, no new `happyranch` verb.  See the
-> correction block at §4.4 for details.
+> **⚠ CORRECTION (2026-07-01 — THR-047 rework):** The daemon-route design
+> below is SUPERSEDED.  The actual PR #4 (reworked as PR #262) delivers
+> two separate CLI entrypoints — `runtime/daemon/pr_ci_waiter.py` (poll job)
+> and `runtime/daemon/pr_ci_merge.py` (guarded merge) — each with a `__main__`
+> block wired to real `gh`.  No new daemon route, no new `happyranch` verb.
+> See the correction block at §4.4 and the final model at §8 for details.
 
 ---
 

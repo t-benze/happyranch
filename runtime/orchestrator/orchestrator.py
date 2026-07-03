@@ -36,6 +36,7 @@ from runtime.orchestrator.executors import (
 from runtime.orchestrator.org_config import (
     load_org_config,
     render_current_time_line,
+    resolve_managed_skills_index,
     resolve_org_timezone_display,
 )
 from runtime.orchestrator.teams import TeamsRegistry
@@ -312,6 +313,7 @@ class Orchestrator:
         prompt: str,
         now: Callable[[], datetime] | None = None,
         memory_digest: str | None = None,
+        managed_skills_index: str = "",
     ) -> str:
         if provider == "codex":
             intro = (
@@ -344,6 +346,8 @@ class Orchestrator:
         # in the one literal prompt string shared by every executor.
         # Precedent: BLOCKED-JOBS-RESULTS in run_step.py.
         digest_block = f"\n{memory_digest}\n" if memory_digest else ""
+        # THR-055 managed skills index — compact manifest of eligible skills
+        skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
         return (
             f"{intro}"
             f"\n"
@@ -354,6 +358,7 @@ class Orchestrator:
             f"  brief: {brief}\n"
             f"{role_guidance_block}"
             f"{digest_block}"
+            f"{skills_block}"
         )
 
     def _read_completion_from_db(
@@ -531,6 +536,10 @@ class Orchestrator:
                     scope="agent",
                 )
 
+        managed_skills_index = resolve_managed_skills_index(
+            paths=self._paths, agent_name=agent_name,
+        )
+
         full_prompt = self._build_agent_prompt(
             provider,
             agent_name,
@@ -539,6 +548,7 @@ class Orchestrator:
             brief,
             prompt,
             memory_digest=memory_digest,
+            managed_skills_index=managed_skills_index,
         )
 
         if self._sessions is not None:

@@ -1,0 +1,13 @@
+id: hr:minimal-skill
+slug: minimal-skill
+name: Minimal Skill
+version: 1.0.0
+description: A minimal skill with only required fields.
+when_to_use: Use for minimal testing.
+owner: engineering_manager
+source: runtime/skills/minimal-skill
+policy_class: standard_operational
+approval_state: approved
+approved_by: engineering_manager
+approved_at: 2026-07-01T00:00:00Z
+status: enabled

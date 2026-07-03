@@ -576,6 +576,270 @@ class TestRunHeadlessTurn:
 
 
 # ---------------------------------------------------------------------------
+# OpenCodeAdapter (PR-2)
+# ---------------------------------------------------------------------------
+
+# JSONL fixtures captured from opencode 1.14.31 `run --format json` output.
+OPC_STEP_START = (
+    '{"type":"step_start","sessionID":"ses_abc123",'
+    '"part":{"id":"prt_1","messageID":"msg_1",'
+    '"sessionID":"ses_abc123","type":"step_start"}}'
+)
+OPC_TEXT_EVENT = (
+    '{"type":"text","sessionID":"ses_abc123",'
+    '"part":{"id":"prt_2","messageID":"msg_1",'
+    '"sessionID":"ses_abc123","type":"text",'
+    '"text":"Hello from opencode"}}'
+)
+OPC_TOOL_USE_EVENT = (
+    '{"type":"tool_use","sessionID":"ses_abc123",'
+    '"part":{"type":"tool_use","tool":"bash",'
+    '"callID":"call_1","state":{"command":"ls"},'
+    '"id":"prt_3","sessionID":"ses_abc123","messageID":"msg_1"}}'
+)
+OPC_STEP_FINISH = (
+    '{"type":"step_finish","sessionID":"ses_abc123",'
+    '"part":{"id":"prt_4","reason":"stop",'
+    '"messageID":"msg_1","sessionID":"ses_abc123",'
+    '"type":"step_finish","tokens":{"input":100,"output":50,'
+    '"total":150,"reasoning":0,"cache":{"write":0,"read":0}}}}'
+)
+
+
+class TestOpenCodeAdapter:
+    """Tests for OpenCodeAdapter: event parsing, session-id extraction, argv building."""
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import OpenCodeAdapter
+        return OpenCodeAdapter()
+
+    def test_parse_text_event(self, adapter) -> None:
+        f = adapter.parse_event(OPC_TEXT_EVENT)
+        assert f is not None
+        assert f.type == "text_delta"
+        assert f.text == "Hello from opencode"
+
+    def test_parse_tool_use_event(self, adapter) -> None:
+        f = adapter.parse_event(OPC_TOOL_USE_EVENT)
+        assert f is not None
+        assert f.type == "tool_call"
+        assert f.name == "bash"
+        assert f.input == {"command": "ls"}
+
+    def test_step_start_returns_none(self, adapter) -> None:
+        """step_start events are internal; no dock frame."""
+        assert adapter.parse_event(OPC_STEP_START) is None
+
+    def test_step_finish_returns_none(self, adapter) -> None:
+        """step_finish is informative but not dock-facing."""
+        assert adapter.parse_event(OPC_STEP_FINISH) is None
+
+    def test_empty_line_returns_none(self, adapter) -> None:
+        assert adapter.parse_event("") is None
+        assert adapter.parse_event("   ") is None
+
+    def test_non_json_returns_none(self, adapter) -> None:
+        assert adapter.parse_event("not json at all") is None
+
+    def test_invalid_json_returns_none(self, adapter) -> None:
+        assert adapter.parse_event('{"type":"text", broken') is None
+
+    def test_session_id_extracted_from_event(self, adapter) -> None:
+        """Session id is tracked internally from events during parse_event."""
+        assert adapter.extract_session_id(None) is None
+        adapter.parse_event(OPC_STEP_START)  # carries sessionID=ses_abc123
+        sid = adapter.extract_session_id(None)
+        assert sid == "ses_abc123"
+
+    def test_build_turn_argv_basic(self, adapter) -> None:
+        argv = adapter.build_turn_argv(
+            prompt="hello",
+            resume_id=None,
+            permission_posture=PermissionPosture(),
+        )
+        assert argv[0] == "opencode"
+        assert "run" in argv
+        assert "--format" in argv
+        assert "json" in argv
+        assert "--dangerously-skip-permissions" in argv
+        assert argv[-1] == "hello"
+
+    def test_build_turn_argv_with_resume(self, adapter) -> None:
+        argv = adapter.build_turn_argv(
+            prompt="continue please",
+            resume_id="ses_xyz",
+            permission_posture=PermissionPosture(),
+        )
+        assert "-s" in argv
+        idx = argv.index("-s")
+        assert argv[idx + 1] == "ses_xyz"
+
+    def test_extract_session_id_returns_none_before_events(self, adapter) -> None:
+        """Before any events are parsed, extract_session_id returns None."""
+        assert adapter.extract_session_id(TurnFrame.text_delta(text="x")) is None
+
+
+# ---------------------------------------------------------------------------
+# PiAdapter (PR-2)
+# ---------------------------------------------------------------------------
+
+# JSONL fixtures captured from pi 0.80.2 `-p --mode json` output.
+PI_SESSION_EVENT = (
+    '{"type":"session","version":3,'
+    '"id":"019f2072-55ca-78cb-a6dd-00ed63a1650a",'
+    '"timestamp":"2026-07-02T01:29:51.818Z","cwd":"/tmp"}'
+)
+PI_TEXT_DELTA_EVENT = (
+    '{"type":"message_update",'
+    '"assistantMessageEvent":{"type":"text_delta",'
+    '"contentIndex":1,"delta":"hello",'
+    '"partial":{"role":"assistant","content":[{"type":"text","text":"hello"}]},'
+    '"message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}}'
+)
+PI_THINKING_DELTA_EVENT = (
+    '{"type":"message_update",'
+    '"assistantMessageEvent":{"type":"thinking_delta",'
+    '"contentIndex":0,"delta":"Let me think",'
+    '"partial":{"role":"assistant","content":[{"type":"thinking",'
+    '"thinking":"Let me think"}]},"message":{}}}'
+)
+PI_TEXT_START_EVENT = (
+    '{"type":"message_update",'
+    '"assistantMessageEvent":{"type":"text_start",'
+    '"contentIndex":1,"partial":{"role":"assistant",'
+    '"content":[{"type":"text","text":""}]},"message":{}}}'
+)
+PI_MESSAGE_END_EVENT = (
+    '{"type":"message_end",'
+    '"message":{"role":"assistant","content":[{"type":"text","text":"hello"}],'
+    '"usage":{"input":100,"output":5,"cacheRead":0,"cacheWrite":0,'
+    '"totalTokens":105}}}'
+)
+PI_TURN_END_EVENT = (
+    '{"type":"turn_end",'
+    '"message":{"role":"assistant","content":[{"type":"text","text":"hello"}],'
+    '"usage":{"input":100,"output":5,"cacheRead":0,"cacheWrite":0,'
+    '"totalTokens":105}}}'
+)
+
+
+class TestPiAdapter:
+    """Tests for PiAdapter: event parsing, session-id extraction, argv building."""
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import PiAdapter
+        return PiAdapter()
+
+    def test_parse_text_delta_event(self, adapter) -> None:
+        f = adapter.parse_event(PI_TEXT_DELTA_EVENT)
+        assert f is not None
+        assert f.type == "text_delta"
+        assert f.text == "hello"
+
+    def test_parse_thinking_delta_returns_none(self, adapter) -> None:
+        """thinking_delta events are internal reasoning; no dock frame."""
+        assert adapter.parse_event(PI_THINKING_DELTA_EVENT) is None
+
+    def test_parse_text_start_returns_none(self, adapter) -> None:
+        """text_start is just a structural event."""
+        assert adapter.parse_event(PI_TEXT_START_EVENT) is None
+
+    def test_session_event_yields_session_id(self, adapter) -> None:
+        """The initial 'session' event carries the pi session id."""
+        assert adapter.extract_session_id(None) is None
+        adapter.parse_event(PI_SESSION_EVENT)
+        sid = adapter.extract_session_id(None)
+        assert sid == "019f2072-55ca-78cb-a6dd-00ed63a1650a"
+
+    def test_empty_line_returns_none(self, adapter) -> None:
+        assert adapter.parse_event("") is None
+        assert adapter.parse_event("   ") is None
+
+    def test_non_json_returns_none(self, adapter) -> None:
+        assert adapter.parse_event("just some text") is None
+
+    def test_invalid_json_returns_none(self, adapter) -> None:
+        assert adapter.parse_event('{"type":"text_delta", broken') is None
+
+    def test_unknown_event_type_returns_none(self, adapter) -> None:
+        assert adapter.parse_event('{"type":"unknown","x":1}') is None
+
+    def test_message_end_returns_none(self, adapter) -> None:
+        """message_end carries usage but the dock doesn't need a frame from it."""
+        assert adapter.parse_event(PI_MESSAGE_END_EVENT) is None
+
+    def test_turn_end_returns_none(self, adapter) -> None:
+        """turn_end is handled by run_headless_turn infrastructure."""
+        assert adapter.parse_event(PI_TURN_END_EVENT) is None
+
+    def test_build_turn_argv_basic(self, adapter) -> None:
+        argv = adapter.build_turn_argv(
+            prompt="hello",
+            resume_id=None,
+            permission_posture=PermissionPosture(),
+        )
+        assert argv[0] == "pi"
+        assert "-p" in argv
+        assert "--mode" in argv
+        assert "json" in argv
+        assert "-c" in argv  # default: continue last session
+        assert argv[-1] == "hello"
+
+    def test_build_turn_argv_with_resume(self, adapter) -> None:
+        argv = adapter.build_turn_argv(
+            prompt="continue please",
+            resume_id="019f2072-sess-uuid",
+            permission_posture=PermissionPosture(),
+        )
+        assert "--session-id" in argv
+        idx = argv.index("--session-id")
+        assert argv[idx + 1] == "019f2072-sess-uuid"
+        assert "-c" not in argv  # session-id takes precedence over -c
+
+    def test_build_turn_argv_pi_accepted_uncontained(self, adapter) -> None:
+        """Pi is accepted uncontained per THR-056 design §3.
+
+        No sandbox, no permission flags, no approval — pi -p runs as the
+        invoking user with full access.  Documented in PR notes."""
+        argv = adapter.build_turn_argv(
+            prompt="test",
+            resume_id=None,
+            permission_posture=PermissionPosture(),
+        )
+        containment_flags = [
+            "--sandbox", "--allowedTools", "--permission-mode",
+            "--dangerously-skip-permissions", "--approval",
+        ]
+        for flag in containment_flags:
+            assert flag not in argv, f"pi adapter must not add containment flag {flag}"
+
+
+# ---------------------------------------------------------------------------
+# Adapter registry — PR-2 adapters are registered
+# ---------------------------------------------------------------------------
+
+class TestAdapterRegistryPR2:
+    def test_opencode_adapter_is_registered(self) -> None:
+        from runtime.daemon.headless_assistant import get_adapter, OpenCodeAdapter
+        adapter = get_adapter("opencode")
+        assert adapter is not None, "opencode adapter must be registered at import time"
+        assert isinstance(adapter, OpenCodeAdapter)
+
+    def test_pi_adapter_is_registered(self) -> None:
+        from runtime.daemon.headless_assistant import get_adapter, PiAdapter
+        adapter = get_adapter("pi")
+        assert adapter is not None, "pi adapter must be registered at import time"
+        assert isinstance(adapter, PiAdapter)
+
+    def test_lookup_is_case_insensitive(self) -> None:
+        from runtime.daemon.headless_assistant import get_adapter, OpenCodeAdapter, PiAdapter
+        assert isinstance(get_adapter("OPENCODE"), OpenCodeAdapter)
+        assert isinstance(get_adapter("Pi"), PiAdapter)
+
+
+# ---------------------------------------------------------------------------
 # PermissionPosture placeholder
 # ---------------------------------------------------------------------------
 

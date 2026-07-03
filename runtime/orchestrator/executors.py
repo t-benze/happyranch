@@ -200,21 +200,14 @@ def _parse_codex_usage(stdout: str) -> TokenUsage | None:
     during integration testing — if the schema changes, only this function
     needs updating.
 
-    **Codex ``input_tokens`` vs ``cached_input_tokens`` ambiguity (issue #216).**
-    The Codex CLI emits both fields on the ``turn.completed`` event. It is
-    NOT yet confirmed whether ``input_tokens`` already includes
-    ``cached_input_tokens`` (as some OpenAI API endpoints do where
-    ``prompt_tokens`` is the total including cached). If ``input_tokens``
-    includes ``cached_input_tokens``, then the current
-    ``total_tokens``/``churn_tokens`` metric (input + output + reasoning)
-    double-counts cached tokens for Codex sessions, inflating the Codex churn
-    relative to Claude (where cache is tracked in a separate column).
-    Conversely, if ``input_tokens`` is net *fresh* input (cache excluded),
-    then ``total_tokens``/``churn_tokens`` is apples-to-apples across
-    executors. Until this is confirmed against the Codex provider
-    documentation or live instrumentation, this function stores both fields
-    as-is without normalization. Historical rows are ambiguous; any
-    normalization applied later would not be retroactive.
+    **Codex ``input_tokens`` includes ``cached_input_tokens`` (issue #216
+    CONFIRMED).** Live instrumentation (code_reviewer turn: input 4,412,984
+    with cached 4,307,072) proves Codex follows the OpenAI convention where
+    ``input_tokens`` is the inclusive total. This function normalizes on
+    ingest: ``input_tokens`` = max(input - cached, 0), so the stored value is
+    net-fresh input (consistent with Claude's semantics). ``cache_read_tokens``
+    is preserved as-is. Normalization is forward-only; historical rows are NOT
+    retro-corrected.
     """
     if not stdout or not stdout.strip():
         return None
@@ -234,8 +227,17 @@ def _parse_codex_usage(stdout: str) -> TokenUsage | None:
     usage = last_complete.get("usage")
     if not isinstance(usage, dict):
         usage = {}
+    raw_input = usage.get("input_tokens")
+    cached = usage.get("cached_input_tokens")
+    # Fix B (issue #216): Codex input_tokens is inclusive of cached_input_tokens.
+    # Normalize to net-fresh so churn = input+output+reasoning is apples-to-apples
+    # across executors and cache is never double-counted.
+    if isinstance(raw_input, int) and isinstance(cached, int):
+        net_input: int | None = max(raw_input - cached, 0)
+    else:
+        net_input = raw_input
     return TokenUsage(
-        input_tokens=usage.get("input_tokens"),
+        input_tokens=net_input,
         output_tokens=usage.get("output_tokens"),
         cache_read_tokens=usage.get("cached_input_tokens"),
         cache_creation_tokens=None,
@@ -500,6 +502,13 @@ def _run_command(
             except Exception as exc:  # parser must never break the task
                 logger.warning("usage parser raised: %s", exc)
                 token_usage = None
+        # Fix A: Codex `exec --json` and some Pi runs emit no model field on
+        # usage events. Record the executor/provider name (e.g. 'codex', 'pi')
+        # so by-model rollups show a meaningful label instead of NULL/unknown.
+        # The existing MODEL_FIX_CUTOVER_TS/null_codex_sessions scaffolding in
+        # database.py handles HISTORICAL NULL rows; this is forward-only.
+        if token_usage is not None and token_usage.model is None and provider:
+            token_usage.model = provider
         agent_session_id: str | None = None
         if session_id_parser is not None:
             try:
