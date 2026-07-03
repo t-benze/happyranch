@@ -117,11 +117,13 @@ class TurnFrame(BaseModel):
 class PermissionPosture:
     """Permission configuration for headless executor invocations.
 
-    PR-1 ships this as an empty placeholder.  Real posture objects land in
-    PR-3 (claude --allowedTools / --permission-mode) and PR-4 (codex --sandbox /
-    approval policy).  The null adapter ignores it.
+    PR-1 shipped this as an empty placeholder.  Claude fields land in PR-3
+    (--allowedTools / --permission-mode); codex fields land in PR-4.
+    The caller (route handler) pre-computes the posture; the adapter reads it.
     """
-    pass
+    # Claude-specific (PR-3).
+    claude_allowed_tools: str | None = None
+    claude_permission_mode: str = "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +414,147 @@ class PiAdapter:
 # ---- init: register PR-2 adapters ----
 register_adapter("opencode", OpenCodeAdapter())
 register_adapter("pi", PiAdapter())
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter (PR-3)
+# ---------------------------------------------------------------------------
+
+class ClaudeAdapter:
+    """Headless adapter for claude (v2.1.193+, ``-p --output-format stream-json``).
+
+    claude emits JSONL events in stream-json mode:
+    - ``system`` (subtype init/hook_started/hook_response) — session setup.
+    - ``assistant`` — message with content blocks (text, tool_use).
+    - ``user`` — tool_result content blocks.
+    - ``result`` (subtype success/error_*) — terminal event with usage/session_id.
+    - ``rate_limit_event`` — daemon-level, not surfaced to dock.
+
+    Session continuity via ``--resume <session_id>``.
+
+    Permission posture (THR-056 design §3, KB assistant-headless-permission-postures)
+    -------------------------------------------------------------------------
+    Mirrors the org-agent ``allow_rules`` machinery **exactly** as
+    ClaudeExecutor does (executors.py:580-596).  The allowlist is built by
+    the caller via ``allow_rules_for_agent(paths, workspace.name, cli=True)``
+    and passed in ``PermissionPosture.claude_allowed_tools``.  The permission
+    mode comes from ``PermissionPosture.claude_permission_mode``.
+
+    This is NOT ``--dangerously-skip-permissions`` — the assistant's headless
+    posture is the same as a worker's, per the founder ruling.
+    """
+
+    def __init__(self) -> None:
+        self._last_session_id: str | None = None
+
+    # ---- HeadlessAdapter contract ----
+
+    def build_turn_argv(
+        self,
+        *,
+        prompt: str,
+        resume_id: str | None,
+        permission_posture: PermissionPosture,
+    ) -> list[str]:
+        allowed = permission_posture.claude_allowed_tools or "Bash(happyranch *)"
+        mode = permission_posture.claude_permission_mode or "auto"
+        # Mirror the order in ClaudeExecutor (executors.py:588-596):
+        # -p <prompt> immediately, then flags, then --resume at the end.
+        argv = [
+            "claude", "-p", prompt,
+            "--output-format", "stream-json",
+            "--verbose",
+            "--permission-mode", mode,
+            "--allowedTools", allowed,
+        ]
+        if resume_id:
+            argv.extend(["--resume", resume_id])
+        return argv
+
+    def parse_event(self, raw_line: str) -> TurnFrame | None:
+        line = raw_line.strip()
+        if not line or not line.startswith("{"):
+            return None
+        try:
+            event = _json.loads(line)
+        except (_json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(event, dict):
+            return None
+
+        # Track session_id from every event that carries it.
+        sid = event.get("session_id")
+        if isinstance(sid, str) and sid:
+            self._last_session_id = sid
+
+        etype = event.get("type")
+        if etype == "system":
+            subtype = event.get("subtype")
+            if subtype == "init":
+                # System init carries session_id / model — no dock frame,
+                # but we already tracked session_id above.
+                return None
+            # hook_started, hook_response, etc. → no dock frame.
+            return None
+
+        if etype == "assistant":
+            msg = event.get("message")
+            if not isinstance(msg, dict):
+                return None
+            content = msg.get("content")
+            if not isinstance(content, list):
+                return None
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    text = block.get("text")
+                    if isinstance(text, str) and text:
+                        return TurnFrame.text_delta(text=text)
+                elif btype == "tool_use":
+                    name = block.get("name")
+                    if isinstance(name, str):
+                        return TurnFrame.tool_call(
+                            name=name,
+                            input=block.get("input") if isinstance(block.get("input"), dict) else None,
+                        )
+            return None
+
+        if etype == "user":
+            msg = event.get("message")
+            if not isinstance(msg, dict):
+                return None
+            content = msg.get("content")
+            if not isinstance(content, list):
+                return None
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    # Mark as ok=True — errors are surfaced via the
+                    # assistant's next text block or the result event.
+                    return TurnFrame.tool_result(
+                        name=block.get("tool_use_id", "unknown"),
+                        ok=True,
+                    )
+            return None
+
+        if etype == "result":
+            # Terminal event — carries session_id and usage.
+            # session_id already tracked above.  No dock frame needed;
+            # run_headless_turn sends turn_end independently.
+            return None
+
+        # rate_limit_event, unknown → no dock frame.
+        return None
+
+    def extract_session_id(self, frame: TurnFrame) -> str | None:
+        return self._last_session_id
+
+
+# ---- init: register PR-3 adapter ----
+register_adapter("claude", ClaudeAdapter())
 
 
 # ---------------------------------------------------------------------------
