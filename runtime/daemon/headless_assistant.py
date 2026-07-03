@@ -49,6 +49,13 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Shared helpers from the executor layer — used by ClaudeAdapter to parse
+# terminal result events instead of manual event.get() that forks the parser.
+from runtime.orchestrator.executors import (
+    _parse_claude_usage as _executor_parse_claude_usage,
+    _parse_claude_session_id as _executor_parse_claude_session_id,
+)
+
 # ---------------------------------------------------------------------------
 # TurnFrame vocabulary
 # ---------------------------------------------------------------------------
@@ -159,6 +166,17 @@ class HeadlessAdapter(Protocol):
         """Extract the executor's own session id from a TurnFrame for resume
         continuity."""
         ...
+
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """Drain any buffered frames that haven't been emitted yet.
+
+        Called by run_headless_turn after EOF on stdout so multi-content-block
+        messages (e.g. assistant with text + 2 tool_use blocks) don't leave
+        frames stranded in the adapter's internal buffer.
+
+        Default: no-op — adapters without buffering return an empty list.
+        """
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -578,11 +596,33 @@ class ClaudeAdapter:
 
         if etype == "result":
             # Terminal event — carries session_id and usage.
-            # session_id is already tracked above.  Store terminal usage
-            # so run_headless_turn can include it in the turn_end frame.
-            usage = event.get("usage")
-            if isinstance(usage, dict):
-                self._terminal_usage = usage
+            # Reuse the shared executor helpers (_parse_claude_usage,
+            # _parse_claude_session_id) instead of manual event.get()
+            # to maintain parser parity with the orchestrator path.
+            #
+            # Session id: use _parse_claude_session_id for consistency
+            # (the generic tracking above also catches this, but the
+            # shared helper normalises the extraction).
+            sid = _executor_parse_claude_session_id(raw_line)
+            if sid:
+                self._last_session_id = sid
+            # Usage: parse via _parse_claude_usage for canonical model +
+            # normalised token fields.  Convert TokenUsage to a dict so
+            # run_headless_turn can merge it into the turn_end frame.
+            parsed = _executor_parse_claude_usage(raw_line)
+            if parsed is not None:
+                tu_dict: dict[str, Any] = {}
+                if parsed.input_tokens is not None:
+                    tu_dict["input_tokens"] = parsed.input_tokens
+                if parsed.output_tokens is not None:
+                    tu_dict["output_tokens"] = parsed.output_tokens
+                if parsed.cache_read_tokens is not None:
+                    tu_dict["cache_read_input_tokens"] = parsed.cache_read_tokens
+                if parsed.cache_creation_tokens is not None:
+                    tu_dict["cache_creation_input_tokens"] = parsed.cache_creation_tokens
+                if parsed.model is not None:
+                    tu_dict["model"] = parsed.model
+                self._terminal_usage = tu_dict
             # No dock frame needed; run_headless_turn sends turn_end
             # independently.
             return None
@@ -592,6 +632,16 @@ class ClaudeAdapter:
 
     def extract_session_id(self, frame: TurnFrame) -> str | None:
         return self._last_session_id
+
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """Drain all buffered frames from multi-content-block messages.
+
+        Called at EOF by run_headless_turn so frames buffered by
+        multi-content-block assistant messages are not lost.
+        """
+        frames = list(self._pending_frames)
+        self._pending_frames.clear()
+        return frames
 
 
 # ---- init: register PR-3 adapter ----
@@ -900,6 +950,18 @@ async def run_headless_turn(
                     session_id = extracted
 
         await proc.wait()
+
+        # Drain any buffered frames the adapter accumulated from
+        # multi-content-block messages (e.g. assistant with text + 2
+        # tool_use blocks).  parse_event emits one frame per call;
+        # remainder sits in the adapter's internal buffer and must be
+        # flushed at EOF.
+        for drained in adapter.drain_pending_frames():
+            await frame_sender(drained)
+            await manager.buffer_inflight_frame(workspace=workspace, frame=drained)
+            extracted = adapter.extract_session_id(drained)
+            if extracted is not None:
+                session_id = extracted
 
         # Capture session_id from adapters that track it internally from
         # terminal events (e.g., ClaudeAdapter result event).  These events

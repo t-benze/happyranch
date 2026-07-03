@@ -336,3 +336,127 @@ class TestAModeWebSocket:
         assert posture.claude_permission_mode == "auto", (
             f"expected permission_mode 'auto', got: {posture.claude_permission_mode}"
         )
+
+    def test_ws_turn_uses_system_assistant_identity_for_allow_rules(
+        self, test_client: TestClient, tmp_home: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Finding 1 [HIGH]: the A-mode WS path MUST use the system_assistant
+        agent identity (NOT workspace.name='workspace') when computing
+        allow_rules.
+
+        When org/agents/system_assistant.md has extra allow_rules beyond the
+        happyranch baseline, run_headless_turn MUST receive the EXACT same
+        allowlist that allow_rules_for_agent(OrgPaths(root), 'system_assistant',
+        cli=True) produces — not merely baseline-containment, exact string
+        equality.
+        """
+        # Create org/agents/system_assistant.md with extra allow_rules.
+        state: DaemonState = test_client.app.state.daemon
+        rt = state.runtime
+        assert rt is not None
+        # OrgPaths(root=runtime_root) resolves agents_dir to
+        # <runtime_root>/org/agents/ — no org slug in the path.
+        org_agents_dir = rt.root / "org" / "agents"
+        org_agents_dir.mkdir(parents=True, exist_ok=True)
+        sa_md = org_agents_dir / "system_assistant.md"
+        sa_md.write_text(
+            "---\n"
+            "name: system_assistant\n"
+            "team: engineering\n"
+            "role: worker\n"
+            "executor: claude\n"
+            "allow_rules:\n"
+            "  - git\n"
+            "  - ls\n"
+            "---\n\n"
+            "# System Assistant\n\n"
+            "System assistant for A-mode dock.\n"
+        )
+
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.workspace_adapters import allow_rules_for_agent
+        expected_allowlist = " ".join(
+            allow_rules_for_agent(OrgPaths(root=rt.root), "system_assistant", cli=True)
+        )
+        assert "Bash(happyranch" in expected_allowlist
+        assert "Bash(git" in expected_allowlist, (
+            "expected git in allowlist from system_assistant.md fixture"
+        )
+
+        posture_captured: list[object] = []
+
+        async def fake_run_headless_turn(
+            *, manager, adapter, workspace, prompt,
+            conversation, permission_posture, frame_sender,
+        ):
+            posture_captured.append(permission_posture)
+            return None
+
+        monkeypatch.setattr(
+            "runtime.daemon.routes.assistant_a_mode.run_headless_turn",
+            fake_run_headless_turn,
+        )
+
+        with test_client.websocket_connect("/api/v1/assistant/a-mode") as ws:
+            msg = ws.receive_text()
+            frame = json.loads(msg)
+            if frame.get("type") == "history":
+                ws.receive_text()
+
+            ws.send_text(json.dumps({"type": "start", "text": "test prompt"}))
+            time.sleep(0.1)
+
+        assert len(posture_captured) == 1
+        posture = posture_captured[0]
+        from runtime.daemon.headless_assistant import PermissionPosture
+        assert isinstance(posture, PermissionPosture)
+        # EXACT string equality — not merely baseline-containment.
+        assert posture.claude_allowed_tools == expected_allowlist, (
+            f"allowlist mismatch!\n"
+            f"  expected: {expected_allowlist}\n"
+            f"  got:      {posture.claude_allowed_tools}"
+        )
+
+    def test_ws_turn_permission_mode_from_settings(
+        self, test_client: TestClient, tmp_home: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Finding 1 [HIGH]: claude_permission_mode MUST come from
+        DaemonState.settings.permission_mode, NOT be hardcoded to 'auto'."""
+        # Override settings with a non-default permission mode.
+        from runtime.config import Settings
+        custom_settings = Settings(permission_mode="acceptEdits")
+        state: DaemonState = test_client.app.state.daemon
+        # Patch the daemon state's settings
+        monkeypatch.setattr(state, "settings", custom_settings)
+
+        posture_captured: list[object] = []
+
+        async def fake_run_headless_turn(
+            *, manager, adapter, workspace, prompt,
+            conversation, permission_posture, frame_sender,
+        ):
+            posture_captured.append(permission_posture)
+            return None
+
+        monkeypatch.setattr(
+            "runtime.daemon.routes.assistant_a_mode.run_headless_turn",
+            fake_run_headless_turn,
+        )
+
+        with test_client.websocket_connect("/api/v1/assistant/a-mode") as ws:
+            msg = ws.receive_text()
+            frame = json.loads(msg)
+            if frame.get("type") == "history":
+                ws.receive_text()
+
+            ws.send_text(json.dumps({"type": "start", "text": "test prompt"}))
+            time.sleep(0.1)
+
+        assert len(posture_captured) == 1
+        posture = posture_captured[0]
+        assert posture.claude_permission_mode == "acceptEdits", (
+            f"claude_permission_mode must come from settings, "
+            f"expected 'acceptEdits', got: {posture.claude_permission_mode}"
+        )

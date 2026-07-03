@@ -1286,6 +1286,151 @@ class TestClaudeAdapterTerminalResult:
 
 
 # ---------------------------------------------------------------------------
+# ClaudeAdapter — terminal result uses shared helpers (PR-3 finding 2 fix)
+# ---------------------------------------------------------------------------
+
+class TestClaudeAdapterSharedHelpers:
+    """Tests for ClaudeAdapter using _parse_claude_usage / _parse_claude_session_id
+    from executors.py instead of manual event.get() parsing.
+
+    Finding 2: the terminal result event manually parsed event.get('usage')
+    and stored _terminal_usage instead of reusing the shared executor helpers.
+    Fix: call _parse_claude_usage(raw_line) and _parse_claude_session_id(raw_line)
+    on the result event.
+    """
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import ClaudeAdapter
+        return ClaudeAdapter()
+
+    def test_result_usage_populates_model_via_shared_helper(self, adapter) -> None:
+        """After processing a result event, _terminal_usage MUST include a
+        'model' field populated from _claude_canonical_model (not just the
+        raw event.get('usage') dict which has no model key)."""
+        adapter.parse_event(CLAUDE_RESULT_SUCCESS)
+        terminal = getattr(adapter, '_terminal_usage', None)
+        assert terminal is not None, "terminal usage must be set"
+        assert isinstance(terminal, dict)
+        # The raw event.get('usage') has no 'model' key.
+        # After using _parse_claude_usage, the canonical model should be present.
+        assert terminal.get("model") is not None, (
+            f"_terminal_usage must include 'model' from _claude_canonical_model, "
+            f"got keys: {list(terminal.keys())}"
+        )
+        # Verify the model is the one from modelUsage (claude-opus-4-8).
+        assert terminal["model"] == "claude-opus-4-8", (
+            f"expected model 'claude-opus-4-8', got {terminal.get('model')}"
+        )
+
+    def test_result_session_id_uses_shared_helper(self, adapter) -> None:
+        """Session id from result event is tracked via _parse_claude_session_id."""
+        assert adapter.extract_session_id(TurnFrame.text_delta(text="x")) is None
+        adapter.parse_event(CLAUDE_RESULT_ONLY_SESSION_ID)
+        sid = adapter.extract_session_id(TurnFrame.turn_end())
+        assert sid == "sess-terminal-only", (
+            "session_id from terminal result must be extractable"
+        )
+
+    def test_result_only_usage_preserves_token_fields(self, adapter) -> None:
+        """Token fields from _parse_claude_usage are normalized and preserved."""
+        adapter.parse_event(CLAUDE_RESULT_SUCCESS)
+        terminal = getattr(adapter, '_terminal_usage', None)
+        assert terminal is not None
+        # Normalized token fields from TokenUsage.
+        assert terminal.get("input_tokens") == 100
+        assert terminal.get("output_tokens") == 5
+        assert terminal.get("cache_read_input_tokens") == 0
+        assert terminal.get("cache_creation_input_tokens") == 0
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter — multi-content drain after EOF (PR-3 finding 3 fix)
+# ---------------------------------------------------------------------------
+
+# Fixture: assistant message with text + TWO tool_use blocks.
+CLAUDE_ASSISTANT_THREE_BLOCKS = (
+    '{"type":"assistant",'
+    '"message":{"model":"claude-opus-4-8","id":"msg_03",'
+    '"type":"message","role":"assistant",'
+    '"content":['
+    '{"type":"text","text":"Let me check the file."},'
+    '{"type":"tool_use","id":"toolu_a","name":"Read","input":{"path":"/tmp/x"}},'
+    '{"type":"tool_use","id":"toolu_b","name":"Grep","input":{"pattern":"foo"}}'
+    '],"stop_reason":"tool_use",'
+    '"usage":{"input_tokens":300,"output_tokens":15}},'
+    '"session_id":"sess-abc-123","uuid":"u10"}'
+)
+
+
+class TestClaudeAdapterMultiContentDrain:
+    """Tests for ClaudeAdapter multi-content-block drain after EOF.
+
+    Finding 3: run_headless_turn calls parse_event once per stdout line
+    with NO post-loop drain.  An assistant message with text + TWO
+    tool_use blocks followed by the terminal result emits text + the
+    FIRST tool call and leaves the SECOND in _pending_frames (lost).
+    """
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import ClaudeAdapter
+        return ClaudeAdapter()
+
+    def test_three_content_blocks_all_emitted(self, adapter) -> None:
+        """A single assistant message with text + 2 tool_use blocks MUST
+        yield ALL THREE frames across successive parse_event calls."""
+        # First call: text_delta.
+        f1 = adapter.parse_event(CLAUDE_ASSISTANT_THREE_BLOCKS)
+        assert f1 is not None
+        assert f1.type == "text_delta"
+        assert f1.text == "Let me check the file."
+
+        # Second call (with next event line): buffered tool_use #1.
+        f2 = adapter.parse_event(CLAUDE_ASSISTANT_TEXT)
+        assert f2 is not None, "second content block (tool_use #1) must not be lost"
+        assert f2.type == "tool_call", (
+            f"expected tool_call for first tool_use, got {f2.type}"
+        )
+        assert f2.name == "Read"
+
+        # Third call (with another event line): buffered tool_use #2.
+        f3 = adapter.parse_event(CLAUDE_USER_TOOL_RESULT)
+        assert f3 is not None, "third content block (tool_use #2) must not be lost"
+        assert f3.type == "tool_call", (
+            f"expected tool_call for second tool_use, got {f3.type}"
+        )
+        assert f3.name == "Grep"
+
+        # Fourth call should parse the CLAUDE_USER_TOOL_RESULT normally.
+        f4 = adapter.parse_event(CLAUDE_RESULT_SUCCESS)
+        assert f4 is not None
+        assert f4.type == "text_delta"
+        assert f4.text == "Hello world"
+
+    def test_drain_pending_frames_after_eof(self, adapter) -> None:
+        """drain_pending_frames() returns all buffered frames so the runner
+        can empty the buffer at EOF."""
+        # Parse multi-content message — only first block returned.
+        f1 = adapter.parse_event(CLAUDE_ASSISTANT_THREE_BLOCKS)
+        assert f1 is not None
+        assert f1.type == "text_delta"
+
+        # No more stdout lines — drain should return the 2 pending tool_use frames.
+        drained = adapter.drain_pending_frames()
+        assert len(drained) == 2, (
+            f"drain must return 2 pending frames, got {len(drained)}"
+        )
+        assert drained[0].type == "tool_call"
+        assert drained[0].name == "Read"
+        assert drained[1].type == "tool_call"
+        assert drained[1].name == "Grep"
+
+        # Second drain is empty.
+        assert adapter.drain_pending_frames() == []
+
+
+# ---------------------------------------------------------------------------
 # ClaudeAdapter — adapter registry (PR-3)
 # ---------------------------------------------------------------------------
 
