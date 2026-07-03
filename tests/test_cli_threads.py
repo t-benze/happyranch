@@ -815,3 +815,84 @@ def test_threads_attachments_list_founder_works(
     # Founder path: agent passed, no token required.
     assert fake.list_thread_attachments.call_args.kwargs["agent"] == "founder"
     assert fake.list_thread_attachments.call_args.kwargs["invocation_token"] is None
+
+
+# ── require_absolute_payload_path guard for thread commands ──────────
+
+def test_threads_reply_rejects_relative_from_file(monkeypatch, capsys):
+    """cmd_threads_reply exits 1 when --from-file is a relative path."""
+    from cli.commands.threads import cmd_threads_reply
+    from unittest.mock import Mock
+    monkeypatch.setattr("cli.commands.threads.OpcClient.from_env", lambda: Mock())
+    monkeypatch.setattr(
+        "cli.commands.threads._shared._fetch_available_orgs",
+        lambda _client: ["alpha"],
+    )
+    args = argparse.Namespace(
+        org="alpha", thread_id="THR-001",
+        from_file="thread-reply.json", attach=None, shared=False,
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_threads_reply(args)
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "absolute" in captured.err
+    assert "thread-reply" in captured.err
+
+
+def test_threads_decline_rejects_relative_from_file(monkeypatch, capsys):
+    """cmd_threads_decline exits 1 when --from-file is a relative path."""
+    from cli.commands.threads import cmd_threads_decline
+    from unittest.mock import Mock
+    monkeypatch.setattr("cli.commands.threads.OpcClient.from_env", lambda: Mock())
+    monkeypatch.setattr(
+        "cli.commands.threads._shared._fetch_available_orgs",
+        lambda _client: ["alpha"],
+    )
+    args = argparse.Namespace(org="alpha", thread_id="THR-001", from_file="decline.json")
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_threads_decline(args)
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "absolute" in captured.err
+    assert "thread-decline" in captured.err
+
+
+def test_threads_dispatch_rejects_relative_from_file(monkeypatch, capsys):
+    """cmd_threads_dispatch exits 1 when --from-file is a relative path."""
+    from cli.commands.threads import cmd_threads_dispatch
+    from unittest.mock import Mock
+    monkeypatch.setattr("cli.commands.threads.OpcClient.from_env", lambda: Mock())
+    monkeypatch.setattr(
+        "cli.commands.threads._shared._fetch_available_orgs",
+        lambda _client: ["alpha"],
+    )
+    args = argparse.Namespace(org="alpha", thread_id="THR-001", from_file="dispatch.json")
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_threads_dispatch(args)
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "absolute" in captured.err
+    assert "thread-dispatch" in captured.err
+
+
+def test_threads_compose_agent_rejects_relative_from_file(monkeypatch, capsys):
+    """Agent-initiated cmd_threads_compose exits 1 when --from-file is relative."""
+    from cli.commands.threads import cmd_threads_compose
+    from unittest.mock import Mock
+    monkeypatch.setattr("cli.commands.threads.OpcClient.from_env", lambda: Mock())
+    monkeypatch.setattr(
+        "cli.commands.threads._shared._fetch_available_orgs",
+        lambda _client: ["alpha"],
+    )
+    args = argparse.Namespace(
+        org="alpha", task_id="TASK-001",
+        from_file="compose.json", session_id=None,
+        attach=[], shared=False,
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_threads_compose(args)
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "absolute" in captured.err
+    assert "thread-compose" in captured.err

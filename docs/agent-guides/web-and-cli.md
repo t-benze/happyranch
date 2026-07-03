@@ -168,4 +168,4 @@ These are invoked by skills inside agent sessions. Do not invoke them by hand; d
 - `happyranch dispatch`
 - `happyranch threads {reply,decline,dispatch}`
 
-Callbacks should use `--from-file <path>` where payloads have multiple fields. See `docs/agent-guides/agent-executors-and-permissions.md`.
+Callbacks should use `--from-file <path>` where payloads have multiple fields. **The path MUST be absolute** (e.g. `/tmp/completion.json`). A relative path silently resolves against the agent's cwd and can litter stray files under the runtime orgs root. The CLI rejects relative paths with a clear error in the callback family (`report-completion`, `threads reply/decline/dispatch/compose`). See `docs/agent-guides/agent-executors-and-permissions.md`.
