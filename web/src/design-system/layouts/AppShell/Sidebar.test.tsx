@@ -136,13 +136,13 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
     });
   });
 
-  test('renders the global search affordance in the app bar (BUG-04/05)', async () => {
+  test('renders the assistant avatar entry point in the app bar (BUG-04/05, THR-056 PR-6)', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      // "Ask or search" opens the Assistant Dock — now in the top app bar.
-      expect(screen.getByLabelText('Ask or search')).toBeInTheDocument();
+      // The assistant avatar opens the Assistant Dock — now in the top app bar.
+      expect(screen.getByLabelText('Open assistant')).toBeInTheDocument();
     });
   });
 
