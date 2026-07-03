@@ -202,52 +202,14 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             job_outcomes=job_outcomes,
         )
 
-    # Fan-out dispatch: active_fanout can be "pending_review" (review gate
-    # job just completed — spawn children only if the founder approved) or
-    # "spawned" (all children terminal — inject join context).
+    # Fan-out dispatch: active_fanout can only be "spawned"
+    # (all children terminal — inject join context).
+    # pending_review removed — founder ruling THR-012 msg 129/131
+    # removed the fan-out review gate entirely.
     if task.active_fanout is not None:
         from runtime.orchestrator.fanout import FanoutState as _FanoutState
         fanout_state = _FanoutState.deserialize(task.active_fanout)
-        if fanout_state.status == "pending_review":
-            # Review gate: inspect the actual blocking review job outcome.
-            # Only spawn children if the founder approved (job completed).
-            # Rejected or failed review jobs → clear pending fan-out and
-            # fall through to agent re-run so the manager sees the
-            # BLOCKED-JOBS-RESULTS header and decides next steps.
-            import json as _json
-            try:
-                job_ids = _json.loads(task.blocked_on_job_ids or "[]")
-            except _json.JSONDecodeError:
-                job_ids = []
-            can_spawn = bool(job_ids) and all(
-                db.get_job_status(jid) == "completed"
-                for jid in job_ids
-            )
-            if can_spawn:
-                # Founder approved: spawn children from the stored plan,
-                # then return without re-running the agent.
-                _spawn_fanout_children(
-                    orch, task, task_id, next_count,
-                    children=fanout_state.children_details,
-                    width=fanout_state.width,
-                    manager_agent=fanout_state.manager_agent,
-                    join_summary=fanout_state.join_summary,
-                )
-                return
-            # Review was rejected or failed: clear the pending fan-out and
-            # fall through to agent re-run so the manager sees the
-            # BLOCKED-JOBS-RESULTS header and decides next steps.
-            # Use a dedicated audit action (NOT orchestration_step) so the
-            # BLOCKED-JOBS-RESULTS header is not suppressed —
-            # _blocked_jobs_resume_header_if_applicable only masks on
-            # action="orchestration_step" entries.
-            db.update_task_active_fanout(task_id, None)
-            orch._audit.log_fanout_review_not_approved(
-                task_id,
-                reason=f"review job(s) {job_ids} not approved",
-            )
-            # Fall through to agent run (step 4).
-        elif fanout_state.status == "spawned":
+        if fanout_state.status == "spawned":
             # status == "spawned" → all children terminal; inject join context.
             _inject_fanout_join_context(orch, task_id, task.active_fanout)
             db.update_task_active_fanout(task_id, None)
@@ -471,10 +433,8 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         # Validate structural correctness (width, cap ack, no per-child then/verdict).
         from runtime.orchestrator.fanout import (
             MAX_FANOUT_WIDTH,
-            FANOUT_REVIEW_THRESHOLD,
             FanoutState,
             fanout_child_targets,
-            fanout_needs_review,
             validate_fanout_decision,
         )
         err = validate_fanout_decision(decision)
@@ -568,73 +528,8 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 orch._queue.put_nowait(orch._slug, task_id)
             return
 
-        # Review gate: width > threshold → self-block via review_required.
-        # Mutating fan-out is always review_required but is out of scope.
-        # Reuse the existing jobs review-gate pattern: create a review_required
-        # job and park the parent on BLOCKED_ON_JOB. On re-entry after founder
-        # approval, the CAS-winner detects active_fanout status="pending_review"
-        # and proceeds directly to child spawn without re-running the agent.
+        # Spawn children immediately — no review gate (founder ruling THR-012 msg 129/131).
         width = len(decision.children)
-        if fanout_needs_review(width):
-            import json as _json
-            from datetime import datetime as _dt, timezone as _tz
-            from runtime.models import JobRecord, JobStatus, JobInterpreter
-            note = (
-                f"fan-out width {width} exceeds review threshold "
-                f"({FANOUT_REVIEW_THRESHOLD}); requires founder review"
-            )
-            # Build the pending fan-out state so it survives the review cycle.
-            child_details = []
-            for c in decision.children:
-                cd = {"agent": c.agent, "prompt": c.prompt}
-                if c.expect_verdict is not None:
-                    cd["expect_verdict"] = c.expect_verdict
-                if c.then:
-                    cd["then"] = [
-                        {"agent": l.agent, "prompt": l.prompt,
-                         "expect_verdict": l.expect_verdict}
-                        for l in c.then
-                    ]
-                child_details.append(cd)
-            pending_fanout = FanoutState(
-                children_ids=[],  # allocated on spawn, not now
-                children_details=child_details,
-                width=width,
-                manager_agent=agent,
-                join_summary=decision.join_summary,
-                status="pending_review",
-            )
-            # Create a review_required job to gate founder approval.
-            job_id = db.next_job_id()
-            now = _dt.now(_tz.utc).isoformat()
-            db.insert_job(JobRecord(
-                id=job_id,
-                task_id=task_id,
-                agent_name=agent,
-                title=f"Review fan-out (width={width}) for {task_id}",
-                rationale=note,
-                script_text="",
-                interpreter=JobInterpreter.BASH,
-                status=JobStatus.PENDING,
-                review_required=True,
-                created_at=now,
-            ))
-            # Park the parent on BLOCKED_ON_JOB waiting for founder review.
-            db.update_task(
-                task_id,
-                status=TaskStatus.IN_PROGRESS,
-                block_kind=BlockKind.BLOCKED_ON_JOB,
-                blocked_on_job_ids=_json.dumps([job_id]),
-                note=note,
-            )
-            db.update_task_active_fanout(task_id, pending_fanout.serialize())
-            orch._audit.log_orchestration_step(
-                task_id, next_count,
-                {"action": "fanout_review_required", "reason": note},
-            )
-            return
-
-        # Spawn children via shared helper (also used by review-gate re-entry).
         children_payload = []
         for c in decision.children:
             cd = {"agent": c.agent, "prompt": c.prompt}

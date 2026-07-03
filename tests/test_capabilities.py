@@ -226,8 +226,12 @@ def test_manager_prompt_shows_fanout_constraints():
     assert "hard cap" in p.lower() or "rejects" in p.lower()
     # width_cap_ack must match
     assert "exactly match" in p.lower() or "exact" in p.lower()
-    # review_required for width > 4
-    assert "review_required" in p
+    # NO review_required gate (founder ruling THR-012 msg 129/131)
+    assert "review_required" not in p
+    # The text says "NO fan-out review gate" — ensure it doesn't say
+    # "enters founder review_required" or similar gates exist
+    assert "enters founder" not in p.lower()
+    assert "resource limit" in p.lower()
     # Phase 2 pipeline — per-child then/expect_verdict now supported
     assert "pipeline" in p  # pipeline mention
     assert "then" in p.lower() or "expect_verdict" in p  # should mention these fields

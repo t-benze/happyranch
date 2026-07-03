@@ -141,22 +141,15 @@ type BlockedJobEntry = { job_id: string; status: string };
  *  so it no longer appears here — only the in_progress waiting reasons do.
  *
  *  When fanout is present:
- *  - `pending_review` fan-out overrides generic job-waiting copy with
- *    founder-readable fan-out approval language ("awaiting approval to
- *    spawn N subtasks").
  *  - `spawned` fan-out replaces bare "delegation" with descriptive
  *    "waiting on N subtasks".
+ *  (pending_review removed per THR-012 msg 129/131 — no fan-out review gate.)
  *  Otherwise, ordinary block_kind/blocked_on_jobs display is preserved. */
 function deriveBlockerName(
   blockKind: string | null | undefined,
   blockedOnJobs: BlockedJobEntry[] | null | undefined,
   fanout?: ActiveFanout | null,
 ): string | undefined {
-  // Pending wide fan-out approval: the task is parked on a review_required
-  // job waiting for founder sign-off. Show fan-out terms, not job IDs.
-  if (fanout?.status === 'pending_review') {
-    return `awaiting approval to spawn ${fanout.width} subtasks`;
-  }
   // Active spawned fan-out: children are alive, parent waits for all to
   // become terminal. Show width-aware delegation copy.
   if (fanout?.status === 'spawned' && blockKind === 'delegated') {
@@ -607,14 +600,6 @@ export function TaskDetailPage(): JSX.Element {
   // the TASK-1696 Step 0 note are enforced in fanout.ts (no fabricated data).
   const recallChildren = recall.data?.children;
   const joinedFanout = chainQuery.data?.joinedFanout ?? null;
-  // Approval gate for a pending fan-out is the parent's review_required job
-  // (a gate, NOT an execution child). Prefer a still-pending one for the link.
-  const approvalJobId = useMemo<string | null>(() => {
-    const jobs = jobsQuery.data?.jobs ?? [];
-    const review = jobs.filter((j) => j.review_required);
-    return (review.find((j) => j.status === 'pending') ?? review[0])?.id ?? null;
-  }, [jobsQuery.data]);
-
   interface FanoutBandData {
     mode: FanoutMode;
     width: number | null;
@@ -622,15 +607,7 @@ export function TaskDetailPage(): JSX.Element {
     plannedChildren: FanoutPlannedChild[];
   }
   let fanoutBand: FanoutBandData | null = null;
-  if (fanoutCtx?.status === 'pending_review') {
-    // Pending: no children exist yet — planned snippets come from the payload.
-    fanoutBand = {
-      mode: 'pending',
-      width: fanoutCtx.width,
-      counts: null,
-      plannedChildren: fanoutCtx.plannedChildren,
-    };
-  } else if (fanoutCtx?.status === 'spawned') {
+  if (fanoutCtx?.status === 'spawned') {
     // Running: progress counts from recall children, restricted to this
     // fan-out's own children_ids when the payload records them.
     fanoutBand = {
@@ -780,9 +757,6 @@ export function TaskDetailPage(): JSX.Element {
               mode={fanoutBand.mode}
               width={fanoutBand.width}
               counts={fanoutBand.counts}
-              plannedChildren={fanoutBand.plannedChildren}
-              approvalJobId={fanoutBand.mode === 'pending' ? approvalJobId : null}
-              slug={slug}
             />
           )}
 

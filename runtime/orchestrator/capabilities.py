@@ -141,7 +141,19 @@ def build_capabilities_prompt(
         "- Width: 2\u20138 children (hard cap; single-child or >8 rejects at parse-time).\n",
         "- `width_cap_ack` MUST exactly match the child count.\n",
         "- `join_summary` is optional prose for the rejoin prompt.\n",
-        "- Width > 4 enters founder `review_required` before children spawn.\n",
+        "- Mutating fan-out (manager-targeted children) is supported — "
+        "decision-capable children can return delegate-chain decisions that "
+        "spawn implementation subtrees inside their branch.\n"
+        "- NO fan-out review gate of any kind (founder ruling THR-012 msg "
+        "129/131). The width cap (8) is a RESOURCE limit only; the real "
+        "control over what lands is the PER-PR MERGE GATE (each mutating "
+        "child opens its own PR needing code_reviewer APPROVE + qa PASS "
+        "+ CI + founder/EM merge).\n"
+        "- Children must own DISJOINT file sets (manager responsibility). "
+        "Shared-file convergence routes through a SERIAL follow-up delegate "
+        "after join, never a fan-out child.\n"
+        "- Integration model (a): each mutating child opens its own PR; "
+        "the parent join summarizes outcomes.\n"
         "- Each child may optionally carry `then` / `expect_verdict` (pipeline carrier).\n"
         "- Children targeted at a **team manager** are decision-capable "
         "(mutating fan-out): they can return delegate-chain decisions that "

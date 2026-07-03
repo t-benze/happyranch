@@ -1,25 +1,23 @@
 /**
  * FanoutBand — compact fan-out status band shown near the Task detail header
- * for the three fan-out lifecycle states (TASK-1717 polish, design target
+ * for the two fan-out lifecycle states (TASK-1717 polish, design target
  * TASK-1696). Presentation-only; every value is DERIVED and honesty-degraded
  * per the Step 0 reconciliation (no fabricated locales, tokens, executor
  * values, artifact links, or merge summaries).
  *
- *  - pending : awaiting founder approval to spawn N subtasks. Shows planned
- *              child agent/prompt snippets (from children_details) and the
- *              review_required approval job link. No subtasks exist yet.
  *  - running : N subtasks spawned; compact progress counts from recall.
  *  - joined  : parent resumed after all children terminal; terminal counts.
+ *
+ * (pending mode removed per THR-012 msg 129/131 — no fan-out review gate.)
  *
  * Regular (non-fan-out) tasks never render this band — the caller only mounts
  * it when real fan-out evidence exists.
  */
-import { Link } from 'react-router-dom';
-import { AgentChip } from '@/design-system/patterns/AgentChip';
-import type { ChildStatusCounts, FanoutPlannedChild } from './fanout';
-import { progressSummary, snippet } from './fanout';
 
-export type FanoutMode = 'pending' | 'running' | 'joined';
+import type { ChildStatusCounts } from './fanout';
+import { progressSummary } from './fanout';
+
+export type FanoutMode = 'running' | 'joined';
 
 interface FanoutBandProps {
   mode: FanoutMode;
@@ -27,11 +25,6 @@ interface FanoutBandProps {
   width: number | null;
   /** Child status counts (running/joined). Null for pending (no children). */
   counts: ChildStatusCounts | null;
-  /** Planned children for pending, from active_fanout.children_details. */
-  plannedChildren: FanoutPlannedChild[];
-  /** review_required approval job id for pending, when available. */
-  approvalJobId: string | null;
-  slug: string | undefined;
 }
 
 /** Fan-out glyph — a small branch icon echoing the design without new assets. */
@@ -88,8 +81,6 @@ function headline(
 ): string {
   const n = width ?? counts?.total ?? 0;
   switch (mode) {
-    case 'pending':
-      return `Awaiting approval to spawn ${n} subtask${n === 1 ? '' : 's'}`;
     case 'running':
       return `Running fan-out — ${counts?.terminal ?? 0} of ${n} done`;
     case 'joined':
@@ -99,8 +90,6 @@ function headline(
 
 function toneClasses(mode: FanoutMode): { title: string; icon: string } {
   switch (mode) {
-    case 'pending':
-      return { title: 'text-status-archiving', icon: 'text-status-archiving' };
     case 'running':
       return { title: 'text-accent-default', icon: 'text-accent-default' };
     case 'joined':
@@ -112,9 +101,6 @@ export function FanoutBand({
   mode,
   width,
   counts,
-  plannedChildren,
-  approvalJobId,
-  slug,
 }: FanoutBandProps): JSX.Element {
   const tone = toneClasses(mode);
   const n = width ?? counts?.total ?? 0;
@@ -132,28 +118,6 @@ export function FanoutBand({
           <p className={`text-sm font-semibold ${tone.title}`}>
             {headline(mode, width, counts)}
           </p>
-
-          {mode === 'pending' && (
-            <p className="text-text-muted mt-1 text-xs">
-              Founder approval required before spawning. No subtasks exist yet.
-              {approvalJobId && (
-                <>
-                  {' '}
-                  Approval gate ·{' '}
-                  {slug ? (
-                    <Link
-                      to={`/orgs/${slug}/jobs/${approvalJobId}`}
-                      className="text-accent-default font-mono hover:underline"
-                    >
-                      {approvalJobId}
-                    </Link>
-                  ) : (
-                    <span className="font-mono">{approvalJobId}</span>
-                  )}
-                </>
-              )}
-            </p>
-          )}
 
           {mode === 'running' && (
             <>
@@ -202,44 +166,6 @@ export function FanoutBand({
         </div>
       )}
 
-      {/* Pending: planned children preview (children_details), agent + prompt
-          snippet only — never fabricated locale/domain labels. */}
-      {mode === 'pending' && (
-        <div className="border-border-subtle mt-3 border-t pt-3">
-          <h4 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
-            Planned fan-out
-            <span className="text-text-muted ml-2 font-normal normal-case">
-              {n} subtask{n === 1 ? '' : 's'} created on approval
-            </span>
-          </h4>
-          {plannedChildren.length > 0 ? (
-            <ul className="mt-2 space-y-1.5">
-              {plannedChildren.map((c, i) => {
-                const prompt = snippet(c.prompt, 120);
-                return (
-                  <li
-                    key={i}
-                    className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm"
-                  >
-                    {c.agent && <AgentChip name={c.agent} role="worker" />}
-                    {prompt && (
-                      <span className="text-text-secondary min-w-0 text-xs">
-                        {prompt}
-                      </span>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            <p className="text-text-muted mt-1 text-xs">
-              Each becomes a sibling execution subtask once the fan-out is
-              approved. The approval itself is a review job — the gate, not a
-              child.
-            </p>
-          )}
-        </div>
-      )}
     </section>
   );
 }
