@@ -172,7 +172,7 @@ class TestComposeMetricsSnapshot:
         assert snap["executor_sessions_active"] == 0
         assert snap["run_step_queue_depth"] == 0
 
-    def test_compose_shape_matches_route_output(self, app_idle, auth_headers) -> None:
+    def test_compose_shape_matches_route_output(self, tmp_home, app_idle, auth_headers) -> None:
         """Composer output keys match what the /metrics route returns."""
         from fastapi.testclient import TestClient
 
