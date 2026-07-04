@@ -239,9 +239,12 @@ describe('ThreadsPage — write path', () => {
         body_markdown: 'Hello team',
       });
     });
-    // After success, the page should navigate to the new thread's URL — header renders subject.
+    // After success, the page should navigate to the new thread's URL — the
+    // header heading's accessible name is "Hi active" (subject + status pill).
+    // Anchor to the start so it doesn't also match the rail's "Tasks from this
+    // thread" section header (THR-061), which a bare /Hi/i matched via "this".
     await waitFor(() =>
-      expect(screen.getByRole('heading', { name: /Hi/i })).toBeInTheDocument(),
+      expect(screen.getByRole('heading', { name: /^Hi\b/ })).toBeInTheDocument(),
     );
   });
 

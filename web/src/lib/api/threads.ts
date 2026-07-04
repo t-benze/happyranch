@@ -6,11 +6,26 @@
  */
 import { request } from './client';
 import type {
+  TaskStatus,
   ThreadAttachmentRef,
   ThreadDetailResponse,
   ThreadMessage,
   ThreadRecord,
 } from './types';
+
+/**
+ * One task dispatched from a thread (THR-061). Mirrors the summary dict the
+ * daemon returns from GET /threads/{thread_id}/tasks — see
+ * `Database.list_tasks_by_thread`.
+ */
+export interface ThreadTaskSummary {
+  id: string;
+  status: TaskStatus;
+  brief: string;
+  assigned_agent: string | null;
+  created_at: string;
+  parent_task_id: string | null;
+}
 
 export interface ComposeThreadBody {
   subject: string;
@@ -38,6 +53,12 @@ export const getThread = (
   threadId: string,
 ): Promise<ThreadDetailResponse> =>
   request(`/orgs/${slug}/threads/${threadId}`);
+
+export const listThreadTasks = (
+  slug: string,
+  threadId: string,
+): Promise<ThreadTaskSummary[]> =>
+  request(`/orgs/${slug}/threads/${threadId}/tasks`);
 
 export const listThreadMessages = (
   slug: string,

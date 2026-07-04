@@ -24,6 +24,7 @@ import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
+import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
 import type { ThreadAttachment, ThreadAttachmentRef, ThreadMessage } from '@/lib/api/types';
@@ -38,6 +39,7 @@ import {
   useThreadMessages,
   useThreadRoutes,
   useThreadTailSSE,
+  useThreadTasks,
   useThreadsInboxSSE,
   useThreadsList,
 } from '@/hooks/threads';
@@ -570,6 +572,9 @@ function DetailColumn({
   // Real produced artifacts aggregated from the transcript (THREADDET-02).
   // Computed before the early returns so the hook order stays stable.
   const artifacts = useMemo(() => collectThreadArtifacts(messages), [messages]);
+  // Tasks dispatched from this thread (THR-061). Called before the early
+  // returns so the hook order stays stable; self-gates on threadId.
+  const threadTasks = useThreadTasks(threadId);
   // Back affordance — the list column is collapsed in this view, so the link
   // back to the single-column thread list must stay reachable in every state.
   const backNav = (
@@ -693,6 +698,45 @@ function DetailColumn({
               </ul>
             ) : (
               <p className="text-text-muted text-xs">none</p>
+            )}
+          </div>
+
+          {/* Tasks from this thread — read-only list of dispatched tasks,
+              newest-first (server-ordered; do NOT re-sort). THR-061. */}
+          <div>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Tasks from this thread</h3>
+            {threadTasks.isLoading ? (
+              <p className="text-text-muted text-xs">Loading…</p>
+            ) : threadTasks.isError ? (
+              <p className="text-feedback-danger text-xs">Couldn’t load tasks</p>
+            ) : threadTasks.data && threadTasks.data.length > 0 ? (
+              <ul className="space-y-2">
+                {threadTasks.data.map((t) => (
+                  <li key={t.id} className="flex flex-col gap-1">
+                    <div className="flex items-center gap-1.5">
+                      {slug ? (
+                        <Link
+                          to={`/orgs/${slug}/tasks/${t.id}`}
+                          className="text-accent font-mono text-xs hover:underline"
+                        >
+                          {t.id}
+                        </Link>
+                      ) : (
+                        <span className="text-text-secondary font-mono text-xs">{t.id}</span>
+                      )}
+                      <StatusBadge status={t.status} />
+                    </div>
+                    <p className="text-text-secondary truncate text-xs" title={t.brief}>
+                      {t.brief}
+                    </p>
+                    {t.assigned_agent && (
+                      <AgentChip name={t.assigned_agent} role={participantChipRole(t.assigned_agent)} />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-text-muted text-xs">No tasks dispatched from this thread yet</p>
             )}
           </div>
 

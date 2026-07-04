@@ -78,6 +78,7 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/threads/events',
   'GET /api/v1/orgs/{slug}/threads/{thread_id}',
   'GET /api/v1/orgs/{slug}/threads/{thread_id}/messages',
+  'GET /api/v1/orgs/{slug}/threads/{thread_id}/tasks',
   'GET /api/v1/orgs/{slug}/threads/{thread_id}/tail',
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/send',
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/invite',
@@ -180,8 +181,6 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/threads/compose-as-agent', 'agent callback — not exercised from the Web UI'],
   // task-session post into an existing thread (agent callback — not exercised from the Web UI)
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/post-as-agent', 'agent callback — not exercised from the Web UI'],
-  // Thread-scoped tasks listing (THR-061 PR-1) — TS api hook lands in FE follow-up PR-2
-  ['GET /api/v1/orgs/{slug}/threads/{thread_id}/tasks', 'thread-dispatched tasks listing — TS api hook in FE follow-up PR-2'],
   // Thread-scoped attachments (TASK-1616) — agent/CLI facing; no SPA wrapper yet
   ['GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments', 'thread-scoped attachments — agent/CLI facing'],
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/attachments', 'thread-scoped attachments — agent/CLI facing'],
