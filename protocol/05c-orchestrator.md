@@ -216,6 +216,14 @@ in parallel (2 ≤ N ≤ 8). The orchestrator:
 5. **Clears** `active_fanout` after successful join claim or terminal parent
    close.
 
+**No fan-out review gate (THR-012 msg 129/131).** The width cap (8) is a
+pure machine-resource limit — children are spawned immediately at any width
+2–8. The former `pending_review` status and `review_required` job gate are
+removed. The real control over what code lands is the per-PR merge gate:
+every mutating child opens its own PR requiring `code_reviewer` APPROVE +
+`qa_engineer` PASS + CI + founder/EM merge. The founder cannot add useful
+judgment to "6 vs 8 children" — it is a resource question for the runtime.
+
 **Pipeline carriers (Phase 2).** A fan-out child that carries a non-empty `then` is a *carrier*: on spawn the orchestrator materializes its inline chain (`active_chain` on the child's row, via the same path as an ordinary `delegate + then`) instead of dispatching a bare read-only child. The composition is safe because `active_fanout` lives on the parent's row and `active_chain` lives on each child's row — **two independent columns on two different rows, never the same row, so there is no clobber** (the two-column-two-row invariant). Carrier detection is schema-free: a carrier is any task whose id is in its parent's `active_fanout.children_ids` and which has a non-empty `active_chain`; no new column. **Lifecycle rule: a carrier reaches a terminal state only after its own chain completes.** When a carrier's final leg matches its `expect_verdict`, the carrier has no session of its own to run — it terminates directly and feeds the parent's fan-out barrier (`_enqueue_parent_if_waiting`) without waking a manager. A carrier's internal legs never wake the parent; only the carrier's own terminal status counts toward the barrier.
 
 **Mutating children (THR-056 msg39, option 3).** A fan-out child targeted at a
@@ -241,6 +249,31 @@ on each terminal child, and exhaustion escalates the parent after
 the whole carrier (no partial-chain completion), and the failed carrier then
 feeds the parent's barrier exactly as any failed child does. No partial-join
 or cascade-fail semantics are introduced.
+
+**Worktree isolation (mutating fan-out).** Each mutating child inherits the
+make-worktree pattern: it receives its own git worktree on a per-task branch
+(`task/<task_id>`), edits its disjoint file set, commits, and pushes. The
+child's worktree is created at spawn and torn down after completion.
+Cost (~200-500ms + disk per child) is bounded by MAX_FANOUT_WIDTH=8.
+
+**Integration model (a).** Each mutating child opens its own PR. The parent
+join surfaces each child's PR reference (number/URL) when present in the
+child's output, using the existing join-context child output (no new PR
+entity, no new schema). The parent join summarizes outcomes; the founder or
+EM merges each child PR individually through the normal per-PR gates.
+
+**Shared-file serial doctrine.** Children must own DISJOINT file sets — it
+is the manager's responsibility to partition work so no two children touch
+the same file. Shared-file convergence does NOT route through a fan-out
+child; it routes through a SERIAL follow-up delegate spawned by the manager
+after the fan-out join. This is a binding design rule, not a runtime
+enforcement (the manager brief carries the obligation).
+
+**Fail-closed at the child.** A failed mutating child discards its worktree
+and cascades per bounded failure-recovery. No partial integration — if one
+child fails, the parent's join context shows the failure and the manager
+decides next steps (retry, revise, escalate). Successful children are not
+rolled back; their PRs remain open for independent merge.
 
 Startup recovery (daemon restart) re-enqueues parked `in_progress(delegated)`
 fan-out parents when all children are already terminal (same as

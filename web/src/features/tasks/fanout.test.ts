@@ -18,25 +18,17 @@ function child(
 }
 
 describe('parseActiveFanout', () => {
-  test('parses a pending_review payload with planned children', () => {
+  test('rejects a pending_review payload (removed per THR-012 msg 129/131)', () => {
     const raw = JSON.stringify({
       status: 'pending_review',
       width: 3,
       children_details: [
         { agent: 'content_writer', prompt: 'Draft section A' },
-        { agent: 'seo_specialist', brief: 'Audit keywords' },
-        { junk: true },
       ],
     });
     const parsed = parseActiveFanout(raw);
-    expect(parsed).not.toBeNull();
-    expect(parsed?.status).toBe('pending_review');
-    expect(parsed?.width).toBe(3);
-    // Third entry carries neither agent nor prompt/brief → dropped honestly.
-    expect(parsed?.plannedChildren).toEqual([
-      { agent: 'content_writer', prompt: 'Draft section A' },
-      { agent: 'seo_specialist', prompt: 'Audit keywords' },
-    ]);
+    // pending_review is no longer accepted — returns null.
+    expect(parsed).toBeNull();
   });
 
   test('parses a spawned payload with children_ids', () => {
@@ -58,7 +50,7 @@ describe('parseActiveFanout', () => {
     ['null literal', 'null'],
     ['unknown status', JSON.stringify({ status: 'weird', width: 3 })],
     ['zero width', JSON.stringify({ status: 'spawned', width: 0 })],
-    ['missing width', JSON.stringify({ status: 'pending_review' })],
+    ['missing width', JSON.stringify({ status: 'spawned' })],
     ['array payload', JSON.stringify([1, 2, 3])],
     ['empty string', ''],
     ['undefined', undefined],
@@ -186,9 +178,6 @@ describe('event label mapping', () => {
   test('pretty-labels the three fan-out actions', () => {
     expect(prettyLabel(eventLabel(ev('fanout_spawned')))).toBe('Fan-out spawned');
     expect(prettyLabel(eventLabel(ev('fanout_join')))).toBe('Fan-out joined');
-    expect(prettyLabel(eventLabel(ev('fanout_review_not_approved')))).toBe(
-      'Fan-out not approved',
-    );
   });
 
   test('preserves ordinary event labels unchanged', () => {

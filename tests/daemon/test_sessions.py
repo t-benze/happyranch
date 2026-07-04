@@ -36,3 +36,32 @@ def test_independent_per_agent() -> None:
     t.set_active("TASK-001", "engineering_head", "sess-2")
     assert t.get_active("TASK-001", "dev_agent") == "sess-1"
     assert t.get_active("TASK-001", "engineering_head") == "sess-2"
+
+
+def test_count_active_empty() -> None:
+    t = SessionTracker()
+    assert t.count_active() == 0
+
+
+def test_count_active_after_registration() -> None:
+    t = SessionTracker()
+    t.set_active("TASK-001", "dev_agent", "sess-1")
+    assert t.count_active() == 1
+    t.set_active("TASK-002", "dev_agent", "sess-2")
+    assert t.count_active() == 2
+
+
+def test_count_active_after_overwrite() -> None:
+    t = SessionTracker()
+    t.set_active("TASK-001", "dev_agent", "sess-1")
+    t.set_active("TASK-001", "dev_agent", "sess-2")
+    assert t.count_active() == 1  # same key, not a new entry
+
+
+def test_count_active_after_clear() -> None:
+    t = SessionTracker()
+    t.set_active("TASK-001", "dev_agent", "sess-1")
+    t.set_active("TASK-002", "dev_agent", "sess-2")
+    assert t.count_active() == 2
+    t.clear("TASK-001", "dev_agent")
+    assert t.count_active() == 1

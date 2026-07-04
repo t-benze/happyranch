@@ -20,8 +20,9 @@ from dataclasses import dataclass
 
 # --- Constants (founder-ratified) ---
 
-MAX_FANOUT_WIDTH = 8   # hard cap, parse-time rejection, no silent truncation
-FANOUT_REVIEW_THRESHOLD = 4  # width > threshold → review_required gate
+MAX_FANOUT_WIDTH = 8   # hard cap, parse-time rejection, no silent truncation (resource bound)
+# FANOUT_REVIEW_THRESHOLD removed — founder ruling THR-012 msg 129/131:
+# no fan-out review gate of any kind. Width cap is a pure resource limit.
 
 
 # --- FanoutState (in-flight metadata stored on tasks.active_fanout) ---
@@ -37,19 +38,17 @@ class FanoutState:
     task records.
 
     Status transitions:
-    - ``"pending_review"`` — fan-out plan stored but children NOT yet
-      spawned; parent is parked on BLOCKED_ON_JOB awaiting founder approval
-      of the review_required gate job. The CAS-winner on resume skips
-      agent re-run and proceeds directly to child spawn.
     - ``"spawned"`` — children have been atomically inserted; parent
       is in_progress(delegated) waiting for all children to become terminal.
+      No review gate exists — the founder ruling THR-012 msg 129/131
+      removed the pending_review status entirely.
     """
     children_ids: list[str]
     children_details: list[dict]  # [{"agent": ..., "prompt": ...}, ...]
     width: int
     manager_agent: str
     join_summary: str | None = None
-    status: str = "spawned"       # "spawned" | "pending_review"
+    status: str = "spawned"       # "spawned" (pending_review removed per THR-012 msg 129/131)
 
     def serialize(self) -> str:
         return json.dumps({
@@ -210,9 +209,8 @@ def validate_fanout_decision(
     return None
 
 
-def fanout_needs_review(width: int) -> bool:
-    """Check if a fan-out width exceeds the review threshold."""
-    return width > FANOUT_REVIEW_THRESHOLD
+# fanout_needs_review removed — founder ruling THR-012 msg 129/131.
+# No fan-out review gate of any kind.
 
 
 def fanout_child_targets(decision) -> list[str]:

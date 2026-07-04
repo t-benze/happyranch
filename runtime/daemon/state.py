@@ -9,6 +9,7 @@ from pathlib import Path
 from runtime.config import Settings
 from runtime.daemon.assistant_pty import AssistantSessionManager
 from runtime.daemon.headless_assistant import HeadlessAssistantManager
+from runtime.daemon.metrics import MetricsRegistry
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.queue import TaskQueue
 from runtime.daemon.registration_token import RegistrationTokenStore
@@ -45,6 +46,7 @@ class DaemonState:
     headless_assistant: HeadlessAssistantManager = field(
         default_factory=HeadlessAssistantManager
     )
+    metrics_registry: MetricsRegistry = field(default_factory=MetricsRegistry)
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":

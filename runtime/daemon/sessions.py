@@ -52,6 +52,10 @@ class SessionTracker:
                 if tid == task_id
             ]
 
+    def count_active(self) -> int:
+        with self._lock:
+            return len(self._active)
+
     def clear(self, task_id: str, agent: str) -> None:
         with self._lock:
             self._active.pop((task_id, agent), None)

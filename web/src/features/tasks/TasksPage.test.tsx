@@ -1024,12 +1024,10 @@ describe('TaskDetailPage — workflow chain timeline', () => {
     expect(screen.getByText(/JOB-0042/)).toBeInTheDocument();
   });
 
-  test('renders fan-out approval copy for pending-review wide fan-out', async () => {
+  test('falls through to generic job copy for pending_review (gate removed)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    // Pending wide fan-out approval: in_progress + blocked_on_job with a
-    // review job AND active_fanout.status='pending_review' (width > threshold).
-    // The task detail should render fan-out-specific approval copy, not
-    // generic job IDs.
+    // pending_review is no longer accepted by parseActiveFanout (THR-012 msg 129/131).
+    // The fan-out approval copy should NOT render; generic job IDs fall through.
     stubHandlers(
       { ...ACTIVE_CHAIN, step_index: 0 },
       {
@@ -1044,12 +1042,12 @@ describe('TaskDetailPage — workflow chain timeline', () => {
     });
     expect(await screen.findByText(/Workflow chain/i)).toBeInTheDocument();
     expect(screen.getByText(/Blocked on:/)).toBeInTheDocument();
-    // Must show fan-out approval copy with width
+    // Must NOT show fan-out approval copy — pending_review is rejected
     expect(
-      screen.getByText(/awaiting approval to spawn 5 subtasks/),
-    ).toBeInTheDocument();
-    // Must NOT show generic job ID copy
-    expect(screen.queryByText(/JOB-0099/)).not.toBeInTheDocument();
+      screen.queryByText(/awaiting approval to spawn/),
+    ).not.toBeInTheDocument();
+    // Generic job ID copy shows instead
+    expect(screen.getByText(/JOB-0099/)).toBeInTheDocument();
   });
 
   test('renders generic job wait for ordinary blocked_on_job without fan-out', async () => {
@@ -1173,7 +1171,7 @@ describe('TaskDetailPage — fan-out status band (TASK-1717)', () => {
     });
   }
 
-  test('pending: renders band, planned child snippets, and approval job link — approval job is NOT a child row', async () => {
+  test('pending_review: fan-out band does NOT render (gate removed per THR-012)', async () => {
     stubBand({
       taskOverrides: {
         status: 'in_progress',
@@ -1192,29 +1190,13 @@ describe('TaskDetailPage — fan-out status band (TASK-1717)', () => {
     });
     mountDetail();
 
-    const band = await screen.findByRole('region', { name: 'Fan-out status' });
+    // pending_review is no longer accepted by parseActiveFanout —
+    // the fan-out band should NOT render.
+    // The status band region should not exist at all.
+    await screen.findByText(/Execution subtasks/i);
     expect(
-      within(band).getByText(/Awaiting approval to spawn 2 subtasks/),
-    ).toBeInTheDocument();
-    // Planned child snippets (agent + prompt) from children_details.
-    expect(within(band).getByText('content_writer')).toBeInTheDocument();
-    expect(within(band).getByText(/Draft the intro section/)).toBeInTheDocument();
-    expect(within(band).getByText('seo_specialist')).toBeInTheDocument();
-    // Approval job link inside the band, pointing at the jobs surface.
-    const approvalLink = within(band).getByRole('link', { name: 'JOB-APPROVAL' });
-    expect(approvalLink).toHaveAttribute(
-      'href',
-      `/orgs/${SLUG}/jobs/JOB-APPROVAL`,
-    );
-
-    // The approval job must NOT appear as an execution subtask row.
-    const subtasksSection = screen
-      .getByText('Execution subtasks')
-      .closest('section') as HTMLElement;
-    expect(
-      within(subtasksSection).queryByText(/JOB-APPROVAL/),
+      screen.queryByRole('region', { name: 'Fan-out status' }),
     ).not.toBeInTheDocument();
-    expect(within(subtasksSection).getByText(/No subtasks/i)).toBeInTheDocument();
   });
 
   test('running: progress counts come from recall children and child task links are preserved', async () => {

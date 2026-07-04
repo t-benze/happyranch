@@ -1,9 +1,10 @@
 """FastAPI app factory."""
 from __future__ import annotations
 
+import time as _time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from runtime.config import settings
 from runtime.daemon.dispatcher import Dispatcher
@@ -20,6 +21,7 @@ from runtime.daemon.routes import (
     health,
     jobs,
     kb,
+    metrics,
     orgs,
     runtime,
     tasks,
@@ -182,8 +184,21 @@ async def _lifespan(app: FastAPI):
 def create_app(state: DaemonState) -> FastAPI:
     app = FastAPI(title="HappyRanch Daemon", version="0.2.0", lifespan=_lifespan)
     app.state.daemon = state
+    # Wire metrics registry into the run_step worker queue for loop-tick recording.
+    state.queue._metrics_registry = state.metrics_registry
+
+    @app.middleware("http")
+    async def _metrics_timing_middleware(request: Request, call_next):
+        t0 = _time.monotonic()
+        response = await call_next(request)
+        elapsed = _time.monotonic() - t0
+        route_key = f"{request.method} {request.url.path}"
+        request.app.state.daemon.metrics_registry.record_http_latency(route_key, elapsed)
+        return response
+
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(auth.router, prefix="/api/v1")
+    app.include_router(metrics.router, prefix="/api/v1")
     app.include_router(runtime.router, prefix="/api/v1")
     app.include_router(orgs.router, prefix="/api/v1")
     app.include_router(assistant.router, prefix="/api/v1")

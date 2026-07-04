@@ -66,17 +66,15 @@ def test_sweep_writes_daemon_restart_failure_not_escalation(tmp_path: Path):
 
 def test_sweep_uses_unknown_for_missing_assigned_agent(tmp_path: Path):
     """If task.assigned_agent is None, the auto-revisit payload records
-    agent='(unknown)' rather than crashing on the None."""
+    agent='(unknown)' rather than crashing on the None.
+
+    THR-064: uses a genuine worker root (no parent, no parked ancestor) so
+    the auto-revisit IS spawned (guardrail-1 path)."""
     db, orch, queue = _real_orch(tmp_path)
-    # Root manager so cascade has a parent to walk to.
-    db.insert_task(TaskRecord(
-        id="TASK-ROOT", brief="root", team="engineering",
-        assigned_agent="engineering_head",
-        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
-    ))
+    # A worker root with no parent and no block_kind — genuine root-level death.
     db.insert_task(TaskRecord(
         id="TASK-2", brief="x", team="engineering",
-        assigned_agent=None, parent_task_id="TASK-ROOT",
+        assigned_agent=None,
         status=TaskStatus.IN_PROGRESS,
     ))
 
@@ -86,7 +84,7 @@ def test_sweep_uses_unknown_for_missing_assigned_agent(tmp_path: Path):
     revisits = [
         t for t in (db.get_task(tid)
                     for tid in db.get_nonterminal_task_ids())
-        if t is not None and t.revisit_of_task_id == "TASK-ROOT"
+        if t is not None and t.revisit_of_task_id == "TASK-2"
     ]
     assert len(revisits) == 1
     ar_rows = db.get_audit_logs(revisits[0].id)

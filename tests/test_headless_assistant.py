@@ -574,6 +574,74 @@ class TestRunHeadlessTurn:
         assert conv2.resume_session_id == "sess-99"
         assert len(conv2.turns) == 1
 
+    @pytest.mark.asyncio
+    async def test_concrete_adapter_no_error_frame(self, tmp_path: Path) -> None:
+        """REGRESSION GUARD: run_headless_turn with a concrete non-Claude adapter
+        (not MagicMock) must NOT emit error frames — the adapter must satisfy
+        the full HeadlessAdapter contract including drain_pending_frames().
+
+        This test uses a real subclass of NullAdapter (which is a concrete class,
+        not a MagicMock) and drives it through a normal text turn via echo.
+        Prior to the fix, NullAdapter/OpenCodeAdapter/PiAdapter lacked
+        drain_pending_frames(), causing an AttributeError at EOF that emitted
+        an error frame — but the MagicMock-based test hid this because MagicMock
+        auto-supplies mock methods for every Protocol member.
+        """
+        # Concrete adapter: NullAdapter subclass that provides a real argv.
+        class EchoAdapter(NullAdapter):
+            def build_turn_argv(
+                self,
+                *,
+                prompt: str,
+                resume_id: str | None,
+                permission_posture: PermissionPosture,
+            ) -> list[str]:
+                return [
+                    "echo",
+                    "TEXT_DELTA: hello from concrete adapter",
+                    "\n",
+                    "TEXT_DELTA: goodbye",
+                ]
+
+        adapter = EchoAdapter()
+        # Confirm this is a concrete class, not a MagicMock.
+        assert not hasattr(adapter, '_mock_methods'), \
+            "test must use a concrete class, not MagicMock"
+
+        manager = HeadlessAssistantManager()
+        conv = await manager.get_conversation(workspace=tmp_path)
+
+        frames: list[TurnFrame] = []
+        async def collector(frame: TurnFrame) -> None:
+            frames.append(frame)
+
+        result = await run_headless_turn(
+            manager=manager,
+            adapter=adapter,
+            workspace=tmp_path,
+            prompt="test prompt",
+            conversation=conv,
+            permission_posture=PermissionPosture(),
+            frame_sender=collector,
+        )
+
+        # Must NOT have any error frame.
+        error_frames = [f for f in frames if f.type == "error"]
+        assert len(error_frames) == 0, (
+            f"expected no error frames, got: {[(f.message) for f in error_frames]}"
+        )
+
+        # Must have turn_start, turn_end, and ready frames.
+        types = [f.type for f in frames]
+        assert "turn_start" in types, "missing turn_start frame"
+        assert "turn_end" in types, "missing turn_end frame"
+        assert types[-1] == "status", "last frame must be status"
+        assert frames[-1].code == "ready", "last frame must be status ready"
+
+        # Must have text_delta frames from echo output.
+        text_frames = [f for f in frames if f.type == "text_delta"]
+        assert len(text_frames) >= 1, "expected at least one text_delta"
+
 
 # ---------------------------------------------------------------------------
 # OpenCodeAdapter (PR-2)
@@ -859,3 +927,589 @@ class TestPermissionPosture:
                 resume_id=None,
                 permission_posture=posture,
             )
+
+    def test_claude_allowed_tools_defaults_none(self) -> None:
+        posture = PermissionPosture()
+        assert posture.claude_allowed_tools is None
+
+    def test_claude_permission_mode_defaults_auto(self) -> None:
+        posture = PermissionPosture()
+        assert posture.claude_permission_mode == "auto"
+
+    def test_claude_fields_can_be_set(self) -> None:
+        posture = PermissionPosture(
+            claude_allowed_tools="Bash(happyranch *) Bash(git *)",
+            claude_permission_mode="acceptEdits",
+        )
+        assert posture.claude_allowed_tools == "Bash(happyranch *) Bash(git *)"
+        assert posture.claude_permission_mode == "acceptEdits"
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter — argv builder (PR-3)
+# ---------------------------------------------------------------------------
+
+class TestClaudeAdapterArgv:
+    """Tests for ClaudeAdapter.build_turn_argv — permission posture mirroring
+    the org-agent allow_rules machinery exactly as ClaudeExecutor does."""
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import ClaudeAdapter
+        return ClaudeAdapter()
+
+    def test_basic_argv_contains_required_flags(self, adapter) -> None:
+        posture = PermissionPosture(
+            claude_allowed_tools="Bash(happyranch *) Bash(git *)",
+            claude_permission_mode="auto",
+        )
+        argv = adapter.build_turn_argv(
+            prompt="hello",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        assert argv[0] == "claude"
+        assert "-p" in argv
+        assert argv[argv.index("-p") + 1] == "hello"
+        assert "--output-format" in argv
+        assert "stream-json" in argv
+        assert "--verbose" in argv
+        assert "--permission-mode" in argv
+        idx = argv.index("--permission-mode")
+        assert argv[idx + 1] == "auto"
+        assert "--allowedTools" in argv
+        idx2 = argv.index("--allowedTools")
+        assert argv[idx2 + 1] == "Bash(happyranch *) Bash(git *)"
+        # Prompt is right after -p, not at the end.
+        assert argv.index("hello") == argv.index("-p") + 1
+
+    def test_resume_id_adds_resume_flag(self, adapter) -> None:
+        posture = PermissionPosture(
+            claude_allowed_tools="Bash(happyranch *)",
+        )
+        argv = adapter.build_turn_argv(
+            prompt="continue please",
+            resume_id="sess-abc-123",
+            permission_posture=posture,
+        )
+        assert "--resume" in argv
+        idx = argv.index("--resume")
+        assert argv[idx + 1] == "sess-abc-123"
+        # Prompt is right after -p, --resume is at the end.
+        assert argv[argv.index("-p") + 1] == "continue please"
+        assert argv[-1] == "sess-abc-123"
+
+    def test_no_resume_omits_resume_flag(self, adapter) -> None:
+        posture = PermissionPosture(
+            claude_allowed_tools="Bash(happyranch *)",
+        )
+        argv = adapter.build_turn_argv(
+            prompt="hello",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        assert "--resume" not in argv
+
+    def test_empty_allowed_tools_defaults_to_happyranch_baseline(self, adapter) -> None:
+        """When claude_allowed_tools is empty/None, baseline Bash(happyranch *) is used."""
+        posture = PermissionPosture()  # claude_allowed_tools defaults to None
+        argv = adapter.build_turn_argv(
+            prompt="test",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        idx = argv.index("--allowedTools")
+        assert argv[idx + 1] == "Bash(happyranch *)"
+
+    def test_empty_permission_mode_defaults_to_auto(self, adapter) -> None:
+        posture = PermissionPosture()  # claude_permission_mode defaults to "auto"
+        argv = adapter.build_turn_argv(
+            prompt="test",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        idx = argv.index("--permission-mode")
+        assert argv[idx + 1] == "auto"
+
+    def test_never_dangerously_skip_permissions(self, adapter) -> None:
+        """Claude adapter must NEVER use --dangerously-skip-permissions.
+
+        KB entry assistant-headless-permission-postures is explicit:
+        NOT --dangerously-skip-permissions.  Mirror the allow_rules machinery.
+        """
+        posture = PermissionPosture(
+            claude_allowed_tools="Bash(happyranch *)",
+        )
+        argv = adapter.build_turn_argv(
+            prompt="test",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        assert "--dangerously-skip-permissions" not in argv
+        assert "--allow-dangerously-skip-permissions" not in argv
+
+    def test_allowlist_mirrors_cli_format(self, adapter) -> None:
+        """The --allowedTools string uses Bash(<prefix> *) format (cli=True),
+        NOT Bash(<prefix>:*) format (settings.json).  This mirrors
+        workspace_adapters._format_allow_rule with cli=True."""
+        posture = PermissionPosture(
+            claude_allowed_tools="Bash(happyranch *) Bash(git *) Bash(gh *)",
+        )
+        argv = adapter.build_turn_argv(
+            prompt="test",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        idx = argv.index("--allowedTools")
+        tools = argv[idx + 1]
+        # Every rule must use the CLI separator " " (space), not ":" (settings.json).
+        assert "Bash(happyranch *)" in tools
+        assert "Bash(git *)" in tools
+        assert "Bash(gh *)" in tools
+        assert "Bash(happyranch:*)" not in tools  # wrong separator
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter — stream-json event parsing (PR-3)
+# ---------------------------------------------------------------------------
+
+# Real event fixtures captured from claude 2.1.193 -p --output-format stream-json --verbose.
+CLAUDE_SYSTEM_INIT = (
+    '{"type":"system","subtype":"init",'
+    '"session_id":"sess-abc-123","model":"claude-opus-4-8",'
+    '"tools":["Task","Bash","Read","Edit","Write"],'
+    '"uuid":"u1"}'
+)
+CLAUDE_SYSTEM_HOOK = (
+    '{"type":"system","subtype":"hook_started",'
+    '"hook_name":"SessionStart:startup",'
+    '"session_id":"sess-abc-123","uuid":"u2"}'
+)
+CLAUDE_ASSISTANT_TEXT = (
+    '{"type":"assistant",'
+    '"message":{"model":"claude-opus-4-8","id":"msg_01",'
+    '"type":"message","role":"assistant",'
+    '"content":[{"type":"text","text":"Hello world"}],'
+    '"stop_reason":null,"usage":{"input_tokens":100,"output_tokens":5}},'
+    '"session_id":"sess-abc-123","uuid":"u3"}'
+)
+CLAUDE_ASSISTANT_MULTI_CONTENT = (
+    '{"type":"assistant",'
+    '"message":{"model":"claude-opus-4-8","id":"msg_02",'
+    '"type":"message","role":"assistant",'
+    '"content":['
+    '{"type":"text","text":"Let me check that."},'
+    '{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"ls"}}'
+    '],"stop_reason":"tool_use",'
+    '"usage":{"input_tokens":200,"output_tokens":10}},'
+    '"session_id":"sess-abc-123","uuid":"u4"}'
+)
+CLAUDE_USER_TOOL_RESULT = (
+    '{"type":"user",'
+    '"message":{"role":"user","content":['
+    '{"type":"tool_result","tool_use_id":"toolu_01",'
+    '"content":[{"type":"text","text":"file1.txt\\nfile2.txt"}]}'
+    ']},"session_id":"sess-abc-123","uuid":"u5"}'
+)
+CLAUDE_RESULT_SUCCESS = (
+    '{"type":"result","subtype":"success","is_error":false,'
+    '"duration_ms":2000,"num_turns":1,"result":"Hello world",'
+    '"stop_reason":"end_turn",'
+    '"session_id":"sess-abc-123",'
+    '"total_cost_usd":0.01,'
+    '"usage":{"input_tokens":100,"output_tokens":5,'
+    '"cache_read_input_tokens":0,"cache_creation_input_tokens":0,'
+    '"service_tier":"standard"},'
+    '"modelUsage":{"claude-opus-4-8":{"inputTokens":100,"outputTokens":5}},'
+    '"permission_denials":[],"uuid":"u6"}'
+)
+CLAUDE_RESULT_ERROR = (
+    '{"type":"result","subtype":"error_during_execution","is_error":true,'
+    '"duration_ms":500,"num_turns":1,'
+    '"session_id":"sess-abc-123",'
+    '"errors":["some error"],"uuid":"u7"}'
+)
+CLAUDE_RATE_LIMIT = (
+    '{"type":"rate_limit_event",'
+    '"rate_limit_info":{"status":"allowed","resetsAt":1783056000},'
+    '"session_id":"sess-abc-123","uuid":"u8"}'
+)
+
+
+class TestClaudeAdapterParsing:
+    """Tests for ClaudeAdapter.parse_event — stream-json events → TurnFrame."""
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import ClaudeAdapter
+        return ClaudeAdapter()
+
+    # ---- system events ----
+
+    def test_parse_system_init_extracts_session_id(self, adapter) -> None:
+        """The 'system' subtype 'init' event carries the session id.
+        parse_event returns None (no dock frame), but extract_session_id
+        picks up the tracked id."""
+        assert adapter.extract_session_id(TurnFrame.text_delta(text="x")) is None
+        adapter.parse_event(CLAUDE_SYSTEM_INIT)
+        sid = adapter.extract_session_id(TurnFrame.text_delta(text="x"))
+        assert sid == "sess-abc-123"
+
+    def test_parse_system_hook_returns_none(self, adapter) -> None:
+        assert adapter.parse_event(CLAUDE_SYSTEM_HOOK) is None
+
+    # ---- assistant events ----
+
+    def test_parse_assistant_text(self, adapter) -> None:
+        f = adapter.parse_event(CLAUDE_ASSISTANT_TEXT)
+        assert f is not None
+        assert f.type == "text_delta"
+        assert f.text == "Hello world"
+
+    def test_parse_assistant_multi_content(self, adapter) -> None:
+        """Assistant message with text + tool_use content blocks
+        emits both text_delta and tool_call frames.
+
+        NOTE: parse_event returns one frame per call.  Multi-content
+        messages require the caller (run_headless_turn) to call
+        parse_event once per JSONL line.  Each line is a single
+        event, so we test the single-event case here.*"""
+        f = adapter.parse_event(CLAUDE_ASSISTANT_MULTI_CONTENT)
+        # The first text block is emitted; tool_use is available in
+        # the same message but parse_event returns the first text_delta.
+        assert f is not None
+        assert f.type == "text_delta"
+        assert f.text == "Let me check that."
+
+    def test_assistant_event_tracks_session_id(self, adapter) -> None:
+        adapter.parse_event(CLAUDE_ASSISTANT_TEXT)
+        sid = adapter.extract_session_id(TurnFrame.text_delta(text="x"))
+        assert sid == "sess-abc-123"
+
+    # ---- user events ----
+
+    def test_parse_user_tool_result(self, adapter) -> None:
+        f = adapter.parse_event(CLAUDE_USER_TOOL_RESULT)
+        assert f is not None
+        assert f.type == "tool_result"
+        # The tool_result carries the tool_use_id and result content.
+        assert f.name is not None
+        assert f.ok is True
+
+    # ---- result events ----
+
+    def test_parse_result_success_extracts_session_id(self, adapter) -> None:
+        """The 'result' event is parsed for session_id extraction
+        but returns None (no dock frame) — the adapter tracks
+        session_id internally for extract_session_id."""
+        adapter.parse_event(CLAUDE_RESULT_SUCCESS)
+        sid = adapter.extract_session_id(TurnFrame.text_delta(text="x"))
+        assert sid == "sess-abc-123"
+
+    def test_parse_result_error_tracks_session_id(self, adapter) -> None:
+        adapter.parse_event(CLAUDE_RESULT_ERROR)
+        sid = adapter.extract_session_id(TurnFrame.text_delta(text="x"))
+        assert sid == "sess-abc-123"
+
+    # ---- skippable events ----
+
+    def test_rate_limit_event_returns_none(self, adapter) -> None:
+        assert adapter.parse_event(CLAUDE_RATE_LIMIT) is None
+
+    def test_empty_line_returns_none(self, adapter) -> None:
+        assert adapter.parse_event("") is None
+        assert adapter.parse_event("   ") is None
+
+    def test_non_json_returns_none(self, adapter) -> None:
+        assert adapter.parse_event("just some text") is None
+
+    def test_invalid_json_returns_none(self, adapter) -> None:
+        assert adapter.parse_event('{"type":"assistant", broken') is None
+
+    def test_unknown_event_type_returns_none(self, adapter) -> None:
+        assert adapter.parse_event('{"type":"unknown","x":1}') is None
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter — multi-content-block parsing (PR-3 finding 3 fix)
+# ---------------------------------------------------------------------------
+
+class TestClaudeAdapterMultiContent:
+    """Tests for ClaudeAdapter.parse_event — multi-content-block messages
+    MUST emit ALL content blocks, not just the first one.
+
+    Finding: parse_event returns after the FIRST content block, dropping a
+    tool_use that follows text in the same assistant message.
+    Fix: buffer all content blocks and emit them across successive calls.
+    """
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import ClaudeAdapter
+        return ClaudeAdapter()
+
+    def test_multi_content_emits_both_text_and_tool_use(self, adapter) -> None:
+        """A single assistant message with text + tool_use content blocks
+        yields BOTH a text_delta AND a tool_call frame across two calls."""
+        f1 = adapter.parse_event(CLAUDE_ASSISTANT_MULTI_CONTENT)
+        assert f1 is not None, "first block (text) must not be None"
+        assert f1.type == "text_delta"
+        assert f1.text == "Let me check that."
+
+        # Second call (with next event) should emit the buffered tool_use.
+        # The next event's line is parsed for side effects; the buffered
+        # frame from the previous message is returned first.
+        f2 = adapter.parse_event(CLAUDE_ASSISTANT_TEXT)
+        assert f2 is not None, "second block (tool_use) must not be dropped"
+        assert f2.type == "tool_call", (
+            f"expected tool_call, got {f2.type}"
+        )
+        assert f2.name == "Bash"
+        assert f2.input == {"command": "ls"}
+
+        # Third call should now parse the CLAUDE_ASSISTANT_TEXT event normally.
+        f3 = adapter.parse_event(CLAUDE_USER_TOOL_RESULT)
+        assert f3 is not None, "third call must parse the next event normally"
+        assert f3.type == "text_delta"
+        assert f3.text == "Hello world"
+
+    def test_single_content_message_no_buffering(self, adapter) -> None:
+        """Single-content message emits normally, no buffering side-effects."""
+        f = adapter.parse_event(CLAUDE_ASSISTANT_TEXT)
+        assert f is not None
+        assert f.type == "text_delta"
+        assert f.text == "Hello world"
+
+        # Next call should parse the next event normally (no pending frames).
+        f2 = adapter.parse_event(CLAUDE_USER_TOOL_RESULT)
+        assert f2 is not None
+        assert f2.type == "tool_result"
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter — terminal result event (PR-3 finding 2 fix)
+# ---------------------------------------------------------------------------
+
+# Fixture: result event is the ONLY event carrying session_id (no prior events).
+CLAUDE_RESULT_ONLY_SESSION_ID = (
+    '{"type":"result","subtype":"success","is_error":false,'
+    '"duration_ms":1000,"num_turns":1,"result":"done",'
+    '"stop_reason":"end_turn",'
+    '"session_id":"sess-terminal-only",'
+    '"usage":{"input_tokens":50,"output_tokens":10,'
+    '"cache_read_input_tokens":0,"cache_creation_input_tokens":0,'
+    '"service_tier":"standard"},'
+    '"modelUsage":{"claude-haiku":{"inputTokens":50,"outputTokens":10}},'
+    '"permission_denials":[],"uuid":"u99"}'
+)
+
+
+class TestClaudeAdapterTerminalResult:
+    """Tests for ClaudeAdapter.parse_event — terminal result event
+    session_id/usage preservation.
+
+    Finding: manually-parsed claude result events return None, and
+    extract_session_id runs only on non-None frames, so the TERMINAL
+    result event's session_id/usage is lost.
+    Fix: store terminal usage on the adapter and ensure extract_session_id
+    returns the session_id even when the result event is the last event.
+    """
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import ClaudeAdapter
+        return ClaudeAdapter()
+
+    def test_result_event_parsed_for_session_id(self, adapter) -> None:
+        """Session id from result event is tracked internally even when
+        parse_event returns None."""
+        assert adapter.extract_session_id(TurnFrame.text_delta(text="x")) is None
+        result = adapter.parse_event(CLAUDE_RESULT_ONLY_SESSION_ID)
+        assert result is None, "result event returns None (no dock frame)"
+        # But session_id should be tracked internally.
+        sid = adapter.extract_session_id(TurnFrame.text_delta(text="x"))
+        assert sid == "sess-terminal-only", (
+            "session_id from terminal result must be extractable"
+        )
+
+    def test_terminal_usage_preserved(self, adapter) -> None:
+        """Usage from the result event is preserved for turn_end."""
+        adapter.parse_event(CLAUDE_RESULT_ONLY_SESSION_ID)
+        usage = getattr(adapter, '_terminal_usage', None)
+        assert usage is not None, (
+            "terminal usage must be preserved from result event"
+        )
+        assert usage.get("input_tokens") == 50
+        assert usage.get("output_tokens") == 10
+
+    def test_session_id_only_in_result_still_surfaces(self, adapter) -> None:
+        """When session_id appears ONLY on the terminal result event
+        (no prior events carry it), extract_session_id still returns it."""
+        # Simulate a turn where only the result event has session_id.
+        adapter.parse_event(CLAUDE_RESULT_ONLY_SESSION_ID)
+        sid = adapter.extract_session_id(TurnFrame.turn_end())
+        assert sid == "sess-terminal-only", (
+            "session_id from result-only event must surface via extract_session_id"
+        )
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter — terminal result uses shared helpers (PR-3 finding 2 fix)
+# ---------------------------------------------------------------------------
+
+class TestClaudeAdapterSharedHelpers:
+    """Tests for ClaudeAdapter using _parse_claude_usage / _parse_claude_session_id
+    from executors.py instead of manual event.get() parsing.
+
+    Finding 2: the terminal result event manually parsed event.get('usage')
+    and stored _terminal_usage instead of reusing the shared executor helpers.
+    Fix: call _parse_claude_usage(raw_line) and _parse_claude_session_id(raw_line)
+    on the result event.
+    """
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import ClaudeAdapter
+        return ClaudeAdapter()
+
+    def test_result_usage_populates_model_via_shared_helper(self, adapter) -> None:
+        """After processing a result event, _terminal_usage MUST include a
+        'model' field populated from _claude_canonical_model (not just the
+        raw event.get('usage') dict which has no model key)."""
+        adapter.parse_event(CLAUDE_RESULT_SUCCESS)
+        terminal = getattr(adapter, '_terminal_usage', None)
+        assert terminal is not None, "terminal usage must be set"
+        assert isinstance(terminal, dict)
+        # The raw event.get('usage') has no 'model' key.
+        # After using _parse_claude_usage, the canonical model should be present.
+        assert terminal.get("model") is not None, (
+            f"_terminal_usage must include 'model' from _claude_canonical_model, "
+            f"got keys: {list(terminal.keys())}"
+        )
+        # Verify the model is the one from modelUsage (claude-opus-4-8).
+        assert terminal["model"] == "claude-opus-4-8", (
+            f"expected model 'claude-opus-4-8', got {terminal.get('model')}"
+        )
+
+    def test_result_session_id_uses_shared_helper(self, adapter) -> None:
+        """Session id from result event is tracked via _parse_claude_session_id."""
+        assert adapter.extract_session_id(TurnFrame.text_delta(text="x")) is None
+        adapter.parse_event(CLAUDE_RESULT_ONLY_SESSION_ID)
+        sid = adapter.extract_session_id(TurnFrame.turn_end())
+        assert sid == "sess-terminal-only", (
+            "session_id from terminal result must be extractable"
+        )
+
+    def test_result_only_usage_preserves_token_fields(self, adapter) -> None:
+        """Token fields from _parse_claude_usage are normalized and preserved."""
+        adapter.parse_event(CLAUDE_RESULT_SUCCESS)
+        terminal = getattr(adapter, '_terminal_usage', None)
+        assert terminal is not None
+        # Normalized token fields from TokenUsage.
+        assert terminal.get("input_tokens") == 100
+        assert terminal.get("output_tokens") == 5
+        assert terminal.get("cache_read_input_tokens") == 0
+        assert terminal.get("cache_creation_input_tokens") == 0
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter — multi-content drain after EOF (PR-3 finding 3 fix)
+# ---------------------------------------------------------------------------
+
+# Fixture: assistant message with text + TWO tool_use blocks.
+CLAUDE_ASSISTANT_THREE_BLOCKS = (
+    '{"type":"assistant",'
+    '"message":{"model":"claude-opus-4-8","id":"msg_03",'
+    '"type":"message","role":"assistant",'
+    '"content":['
+    '{"type":"text","text":"Let me check the file."},'
+    '{"type":"tool_use","id":"toolu_a","name":"Read","input":{"path":"/tmp/x"}},'
+    '{"type":"tool_use","id":"toolu_b","name":"Grep","input":{"pattern":"foo"}}'
+    '],"stop_reason":"tool_use",'
+    '"usage":{"input_tokens":300,"output_tokens":15}},'
+    '"session_id":"sess-abc-123","uuid":"u10"}'
+)
+
+
+class TestClaudeAdapterMultiContentDrain:
+    """Tests for ClaudeAdapter multi-content-block drain after EOF.
+
+    Finding 3: run_headless_turn calls parse_event once per stdout line
+    with NO post-loop drain.  An assistant message with text + TWO
+    tool_use blocks followed by the terminal result emits text + the
+    FIRST tool call and leaves the SECOND in _pending_frames (lost).
+    """
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import ClaudeAdapter
+        return ClaudeAdapter()
+
+    def test_three_content_blocks_all_emitted(self, adapter) -> None:
+        """A single assistant message with text + 2 tool_use blocks MUST
+        yield ALL THREE frames across successive parse_event calls."""
+        # First call: text_delta.
+        f1 = adapter.parse_event(CLAUDE_ASSISTANT_THREE_BLOCKS)
+        assert f1 is not None
+        assert f1.type == "text_delta"
+        assert f1.text == "Let me check the file."
+
+        # Second call (with next event line): buffered tool_use #1.
+        f2 = adapter.parse_event(CLAUDE_ASSISTANT_TEXT)
+        assert f2 is not None, "second content block (tool_use #1) must not be lost"
+        assert f2.type == "tool_call", (
+            f"expected tool_call for first tool_use, got {f2.type}"
+        )
+        assert f2.name == "Read"
+
+        # Third call (with another event line): buffered tool_use #2.
+        f3 = adapter.parse_event(CLAUDE_USER_TOOL_RESULT)
+        assert f3 is not None, "third content block (tool_use #2) must not be lost"
+        assert f3.type == "tool_call", (
+            f"expected tool_call for second tool_use, got {f3.type}"
+        )
+        assert f3.name == "Grep"
+
+        # Fourth call should parse the CLAUDE_USER_TOOL_RESULT normally.
+        f4 = adapter.parse_event(CLAUDE_RESULT_SUCCESS)
+        assert f4 is not None
+        assert f4.type == "text_delta"
+        assert f4.text == "Hello world"
+
+    def test_drain_pending_frames_after_eof(self, adapter) -> None:
+        """drain_pending_frames() returns all buffered frames so the runner
+        can empty the buffer at EOF."""
+        # Parse multi-content message — only first block returned.
+        f1 = adapter.parse_event(CLAUDE_ASSISTANT_THREE_BLOCKS)
+        assert f1 is not None
+        assert f1.type == "text_delta"
+
+        # No more stdout lines — drain should return the 2 pending tool_use frames.
+        drained = adapter.drain_pending_frames()
+        assert len(drained) == 2, (
+            f"drain must return 2 pending frames, got {len(drained)}"
+        )
+        assert drained[0].type == "tool_call"
+        assert drained[0].name == "Read"
+        assert drained[1].type == "tool_call"
+        assert drained[1].name == "Grep"
+
+        # Second drain is empty.
+        assert adapter.drain_pending_frames() == []
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter — adapter registry (PR-3)
+# ---------------------------------------------------------------------------
+
+class TestClaudeAdapterRegistry:
+    def test_claude_adapter_is_registered(self) -> None:
+        from runtime.daemon.headless_assistant import get_adapter, ClaudeAdapter
+        adapter = get_adapter("claude")
+        assert adapter is not None, "claude adapter must be registered at import time"
+        assert isinstance(adapter, ClaudeAdapter)
+
+    def test_lookup_is_case_insensitive(self) -> None:
+        from runtime.daemon.headless_assistant import get_adapter, ClaudeAdapter
+        assert isinstance(get_adapter("CLAUDE"), ClaudeAdapter)
+        assert isinstance(get_adapter("Claude"), ClaudeAdapter)

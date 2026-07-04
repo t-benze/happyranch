@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from runtime.daemon.metrics import MetricsRegistry
     from runtime.daemon.state import DaemonState
 
 logger = logging.getLogger("happyranch.daemon.queue")
@@ -37,6 +39,7 @@ class TaskQueue:
         self._queue: asyncio.Queue[tuple[str, str, dict | None]] = asyncio.Queue()
         self._worker_tasks: list[asyncio.Task] = []
         self._stopping = False
+        self._metrics_registry: MetricsRegistry | None = None  # set by daemon wiring
 
     def enqueue(self, slug: str, task_id: str, *, metadata: dict | None = None) -> None:
         self._queue.put_nowait((slug, task_id, metadata))
@@ -73,6 +76,7 @@ class TaskQueue:
         while not self._stopping:
             slug, task_id, metadata = await self._queue.get()
             hb = asyncio.create_task(self._heartbeat(dispatcher, slug, task_id))
+            t0 = time.monotonic()
             try:
                 await loop.run_in_executor(
                     None, dispatcher.run_step, slug, task_id, metadata,
@@ -82,6 +86,9 @@ class TaskQueue:
                     "run_step %s/%s raised — continuing", slug, task_id,
                 )
             finally:
+                duration = time.monotonic() - t0
+                if self._metrics_registry is not None:
+                    self._metrics_registry.record_loop_tick("run_step_worker", 0, duration)
                 hb.cancel()
                 try:
                     await hb

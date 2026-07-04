@@ -27,11 +27,12 @@ export interface FanoutPlannedChild {
   prompt: string | null;
 }
 
-/** Sanitized `active_fanout` display context. Only `pending_review` and
- *  `spawned` are accepted — any other/absent/malformed value returns null so
- *  the caller falls back to ordinary block_kind display. */
+/** Sanitized `active_fanout` display context. Only `spawned` is accepted
+ *  (pending_review removed per THR-012 msg 129/131). Any other/absent/
+ *  malformed value returns null so the caller falls back to ordinary
+ *  block_kind display. */
 export interface ActiveFanout {
-  status: 'pending_review' | 'spawned';
+  status: 'spawned';
   width: number;
   /** Planned children for a pending fan-out (children_details). Empty when
    *  the payload does not carry structured planned-child metadata. */
@@ -78,7 +79,7 @@ export function parseActiveFanout(raw: unknown): ActiveFanout | null {
   const rec = parsed as Record<string, unknown>;
   const status = typeof rec.status === 'string' ? rec.status : '';
   const width = typeof rec.width === 'number' ? rec.width : 0;
-  if ((status !== 'pending_review' && status !== 'spawned') || width <= 0) {
+  if (status !== 'spawned' || width <= 0) {
     return null;
   }
   return {
