@@ -365,7 +365,9 @@ def test_claude_executor_allowedtools_uses_child_workspace_name_only(
     workspace = tmp_path / "wrk"
     workspace.mkdir()
 
-    with patch("runtime.orchestrator.executors.subprocess") as mock_subprocess:
+    with patch("runtime.orchestrator.executors.subprocess") as mock_subprocess, \
+         patch("runtime.orchestrator.executors.shutil.which",
+               side_effect=lambda name: f"/fake/bin/{name}"):
         mock_subprocess.Popen.return_value = MagicMock()
         mock_subprocess.Popen.return_value.returncode = 0
         mock_subprocess.Popen.return_value.pid = 9999
@@ -406,7 +408,9 @@ def test_claude_executor_allowedtools_uses_child_workspace_name_only(
     mgr_workspace = tmp_path / "mgr"
     mgr_workspace.mkdir()
 
-    with patch("runtime.orchestrator.executors.subprocess") as mgr_mock:
+    with patch("runtime.orchestrator.executors.subprocess") as mgr_mock, \
+         patch("runtime.orchestrator.executors.shutil.which",
+               side_effect=lambda name: f"/fake/bin/{name}"):
         mgr_mock.Popen.return_value = MagicMock()
         mgr_mock.Popen.return_value.returncode = 0
         mgr_mock.Popen.return_value.pid = 9999
