@@ -471,3 +471,169 @@ def test_build_settings_json_byte_identical_to_child_baseline(
     mgr_rules = mgr_settings["permissions"]["allow"]
     assert "Bash(gh pr merge --squash:*)" in mgr_rules
     assert "Bash(docker:*)" in mgr_rules
+
+
+# ============================================================================
+# Layer 3: FAN-OUT CHILD LAUNCH PATH LOCK (reviewer round-2 HIGH)
+#
+# Proves that the fan-out child LAUNCH PATH (run_step -> _run_agent ->
+# executor.run) passes the CHILD's own workspace, not the parent/manager's.
+# The untested link from round 1: assigned_agent -> workspace.name passed
+# to executor.
+#
+# Seam: run_step.py:218 agent=task.assigned_agent ->
+#       run_step.py:224 orch._run_agent(task_id, agent, prompt) ->
+#       orchestrator.py:493 workspace = self._paths.workspaces_dir / agent_name ->
+#       executors.py:589 allow_rules_for_agent(self._paths, workspace.name, cli=True)
+# ============================================================================
+
+
+def test_run_agent_launches_child_with_own_workspace_not_parent(
+    tmp_path: Path,
+) -> None:
+    """The fan-out child LAUNCH PATH runs the child under its OWN workspace.
+
+    Monkeypatches orch._build_executor to return a spy that records the
+    ``workspace`` kwarg handed to ``executor.run()``, then drives the
+    spawned fan-out child through ``orch._run_agent(child_id, child_agent, prompt)``.
+
+    The assertion goes RED if run_step:218/224 or orchestrator:493 ever
+    selects a non-child workspace (e.g. widening to the parent/manager's
+    workspace), even if _spawn_fanout_children still assigns the correct
+    ``assigned_agent``.
+    """
+    from unittest.mock import patch
+    from runtime.config import Settings
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _spawn_fanout_children
+    from runtime.orchestrator.teams import TeamsRegistry
+
+    # ---- setup: tmp org with mgr (broad rules) + wrk (narrow rule) ----
+    paths = _make_paths(tmp_path)
+    _write_agent(paths, "mgr", ["gh pr merge --squash", "docker"])
+    _write_agent(paths, "wrk", ["pytest"])
+
+    # Team config
+    paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: mgr\n"
+        "    workers: [wrk]\n"
+    )
+
+    # Workspace dirs WITH readiness markers for _run_agent.
+    # Claude's readiness marker is .claude/skills/start-task/SKILL.md
+    for agent_name in ("mgr", "wrk"):
+        ws = paths.workspaces_dir / agent_name
+        ws.mkdir(parents=True, exist_ok=True)
+        skill = ws / ".claude" / "skills" / "start-task"
+        skill.mkdir(parents=True, exist_ok=True)
+        (skill / "SKILL.md").write_text(f"# start-task: {agent_name}\n")
+
+    # ---- spawn fan-out children ----
+    db = Database(paths.db_path)
+    db.insert_task(TaskRecord(
+        id="T-LAUNCH-PATH-PROBE", brief="launch-path permission probe",
+        assigned_agent="mgr",
+    ))
+    orch = Orchestrator(
+        db=db, settings=Settings(),
+        paths=paths, slug="test",
+        teams=TeamsRegistry.load(paths.root),
+    )
+
+    # Wire a minimal queue so _spawn_fanout_children can enqueue the child
+    from collections import deque
+    class _SlugQueue:
+        def __init__(self) -> None:
+            self._items: deque = deque()
+        def put_nowait(self, slug: str, task_id: str) -> None:
+            self._items.append((slug, task_id))
+        def get_nowait(self) -> tuple[str, str]:
+            return self._items.popleft()
+    orch._queue = _SlugQueue()  # type: ignore[attr-defined]
+
+    children_payload: list[dict] = [
+        {"agent": "wrk", "prompt": "run tests"},
+    ]
+    _spawn_fanout_children(
+        orch, db.get_task("T-LAUNCH-PATH-PROBE"), "T-LAUNCH-PATH-PROBE", 1,
+        children=children_payload, width=1,
+        manager_agent="mgr", step_audit_id=1,
+    )
+
+    # Get the spawned child
+    child_ids = db.get_children("T-LAUNCH-PATH-PROBE")
+    assert len(child_ids) == 1, "expected exactly one fan-out child"
+    child = db.get_task(child_ids[0])
+    assert child is not None
+    assert child.assigned_agent == "wrk", (
+        f"assigned_agent must be 'wrk', got {child.assigned_agent!r}"
+    )
+
+    # ---- spy: record the workspace handed to executor.run() ----
+    captured_workspace: list[Path] = []
+
+    class SpyExecutor:
+        def run(self, **kwargs: object) -> ExecutorResult:
+            ws: Path = kwargs["workspace"]  # type: ignore[assignment]
+            captured_workspace.append(ws)
+            return ExecutorResult(
+                success=True,
+                duration_seconds=1,
+                session_id="sess-spy",
+            )
+
+    spy = SpyExecutor()
+
+    # Fix session_id for determinism
+    orch._build_session_id = lambda: "sess-spy"  # type: ignore[method-assign]
+
+    with patch.object(orch, "_build_executor", return_value=spy):
+        orch._run_agent(child.id, child.assigned_agent, "test prompt")
+
+    # ---- assertions ----
+    assert len(captured_workspace) == 1, (
+        "executor.run should have been called exactly once"
+    )
+    captured = captured_workspace[0]
+
+    # ASSERTION 1: workspace.name == 'wrk' (the child's own name).
+    # RED-FIRST PROOF performed: temporarily asserted == 'mgr' and confirmed
+    # the test went RED, proving it genuinely catches a widening regression.
+    assert captured.name == "wrk", (
+        f"executor.run workspace.name must be 'wrk' (child's own name), "
+        f"got {captured.name!r}. A regression that runs the child under "
+        f"the parent/manager workspace would go RED here."
+    )
+
+    # ASSERTION 2: allow_rules from the captured workspace are byte-identical
+    # to the single-delegation 'wrk' baseline
+    rules_cli = allow_rules_for_agent(paths, captured.name, cli=True)
+    expected_cli = ["Bash(happyranch *)", "Bash(pytest *)"]
+    assert rules_cli == expected_cli, (
+        f"--allowedTools must be byte-identical to single-delegation baseline\n"
+        f"  expected: {expected_cli!r}\n"
+        f"  got:      {rules_cli!r}"
+    )
+
+    # ASSERTION 3: does NOT contain mgr's broad rules
+    assert not any("gh pr merge" in r for r in rules_cli), (
+        "child --allowedTools must not inherit manager's 'gh pr merge' rule"
+    )
+    assert not any("docker" in r for r in rules_cli), (
+        "child --allowedTools must not inherit manager's 'docker' rule"
+    )
+
+    # Sanity: mgr workspace would produce different rules (broad)
+    mgr_rules_cli = allow_rules_for_agent(paths, "mgr", cli=True)
+    assert "Bash(gh pr merge --squash *)" in mgr_rules_cli, (
+        "sanity: manager should have gh pr merge rule"
+    )
+    assert "Bash(docker *)" in mgr_rules_cli, (
+        "sanity: manager should have docker rule"
+    )
