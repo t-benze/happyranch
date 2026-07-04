@@ -1,5 +1,83 @@
 {
   "paths": {
+    "/api/v1/assistant/a-mode/conversations": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/assistant/a-mode/conversations/{conv_id}": {
+      "DELETE": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "conv_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
+      "PATCH": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "conv_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/assistant/a-mode/conversations/{conv_id}/activate": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "conv_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/assistant/a-mode/status": {
       "GET": {
         "params": [

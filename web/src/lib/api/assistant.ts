@@ -53,6 +53,44 @@ export const assistantAModeWsUrl = (): string => {
   return `${wsProtocol}//${host}${API_PREFIX}/assistant/a-mode`;
 };
 
+// ---- Multi-conversation routes (THR-056 STEP-A) ----
+
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  created_at: string | null;
+  active: boolean;
+};
+
+export const listConversations = (): Promise<ConversationSummary[]> =>
+  request('/assistant/a-mode/conversations');
+
+export const createConversation = (): Promise<ConversationSummary> =>
+  request('/assistant/a-mode/conversations', { method: 'POST' });
+
+export const activateConversation = (
+  convId: string,
+): Promise<{ success: boolean }> =>
+  request(`/assistant/a-mode/conversations/${convId}/activate`, {
+    method: 'POST',
+  });
+
+export const renameConversation = (
+  convId: string,
+  title: string,
+): Promise<{ success: boolean }> =>
+  request(`/assistant/a-mode/conversations/${convId}`, {
+    method: 'PATCH',
+    body: { title },
+  });
+
+export const deleteConversation = (
+  convId: string,
+): Promise<{ success: boolean }> =>
+  request(`/assistant/a-mode/conversations/${convId}`, {
+    method: 'DELETE',
+  });
+
 /**
  * Open the assistant PTY WebSocket, authenticating via the bearer subprotocol
  * (THR-006 Option A). Resolves once the socket is constructed (still

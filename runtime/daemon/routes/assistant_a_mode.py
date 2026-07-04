@@ -23,6 +23,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
     Depends,
+    HTTPException,
 )
 from pydantic import BaseModel, ConfigDict
 
@@ -33,6 +34,8 @@ from runtime.daemon.headless_assistant import (
     HeadlessAssistantManager,
     get_adapter,
     run_headless_turn,
+    AssistantConversation,
+    AssistantConversationStore,
 )
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.workspace_adapters import allow_rules_for_agent
@@ -106,6 +109,173 @@ async def get_a_mode_status(request: Request) -> dict[str, Any]:
     ).model_dump()
 
 
+# ---------------------------------------------------------------------------
+# Multi-conversation models (THR-056 STEP-A)
+# ---------------------------------------------------------------------------
+
+class ConversationSummary(BaseModel):
+    """Summary of a conversation returned by the list endpoint."""
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    title: str
+    created_at: str | None = None
+    active: bool = False
+
+
+class CreateConversationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    title: str
+    created_at: str | None = None
+    active: bool = False
+
+
+class ActivateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+
+
+class RenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+
+
+class RenameResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+
+
+class DeleteResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+
+
+# ---------------------------------------------------------------------------
+# (a) GET /assistant/a-mode/conversations — list conversations
+# ---------------------------------------------------------------------------
+
+@router.get("/assistant/a-mode/conversations", dependencies=[require_token()])
+async def list_conversations(request: Request) -> list[dict[str, Any]]:
+    """List all conversations for the system assistant, newest-first."""
+    state: DaemonState = request.app.state.daemon
+    if state.runtime is None:
+        raise HTTPException(status_code=503, detail="no active runtime")
+    root = state.runtime.root
+    workspace = system_assistant_paths(root).workspace
+    headless_manager: HeadlessAssistantManager = state.headless_assistant
+    convs = await headless_manager.list_conversations(workspace=workspace)
+    result: list[dict[str, Any]] = []
+    for c in convs:
+        result.append({
+            "id": c.id,
+            "title": c.title,
+            "created_at": c.created_at,
+            "active": c.active,
+        })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# (b) POST /assistant/a-mode/conversations — create new
+# ---------------------------------------------------------------------------
+
+@router.post("/assistant/a-mode/conversations", dependencies=[require_token()])
+async def create_conversation(request: Request) -> dict[str, Any]:
+    """Create a new conversation and make it active."""
+    state: DaemonState = request.app.state.daemon
+    if state.runtime is None:
+        raise HTTPException(status_code=503, detail="no active runtime")
+    root = state.runtime.root
+    workspace = system_assistant_paths(root).workspace
+    headless_manager: HeadlessAssistantManager = state.headless_assistant
+    conv = await headless_manager.create_conversation(workspace=workspace)
+    return {
+        "id": conv.id,
+        "title": conv.title,
+        "created_at": conv.created_at,
+        "active": conv.active,
+    }
+
+
+# ---------------------------------------------------------------------------
+# (c) POST /assistant/a-mode/conversations/{conv_id}/activate — switch
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/assistant/a-mode/conversations/{conv_id}/activate",
+    dependencies=[require_token()],
+)
+async def activate_conversation(request: Request, conv_id: str) -> dict[str, Any]:
+    """Switch the active conversation."""
+    state: DaemonState = request.app.state.daemon
+    if state.runtime is None:
+        raise HTTPException(status_code=503, detail="no active runtime")
+    root = state.runtime.root
+    workspace = system_assistant_paths(root).workspace
+    headless_manager: HeadlessAssistantManager = state.headless_assistant
+    ok = await headless_manager.switch_conversation(
+        workspace=workspace, conversation_id=conv_id
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# (d) PATCH /assistant/a-mode/conversations/{conv_id} — rename
+# ---------------------------------------------------------------------------
+
+@router.patch(
+    "/assistant/a-mode/conversations/{conv_id}",
+    dependencies=[require_token()],
+)
+async def rename_conversation(
+    request: Request, conv_id: str, body: RenameRequest
+) -> dict[str, Any]:
+    """Rename a conversation."""
+    state: DaemonState = request.app.state.daemon
+    if state.runtime is None:
+        raise HTTPException(status_code=503, detail="no active runtime")
+    root = state.runtime.root
+    workspace = system_assistant_paths(root).workspace
+    headless_manager: HeadlessAssistantManager = state.headless_assistant
+    ok = await headless_manager.rename_conversation(
+        workspace=workspace, conversation_id=conv_id, new_title=body.title
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# (e) DELETE /assistant/a-mode/conversations/{conv_id} — delete
+# ---------------------------------------------------------------------------
+
+@router.delete(
+    "/assistant/a-mode/conversations/{conv_id}",
+    dependencies=[require_token()],
+)
+async def delete_conversation(request: Request, conv_id: str) -> dict[str, Any]:
+    """Delete a conversation.  Deleting the active one activates the
+    most-recent remaining.  Deleting the last one auto-creates an empty one."""
+    state: DaemonState = request.app.state.daemon
+    if state.runtime is None:
+        raise HTTPException(status_code=503, detail="no active runtime")
+    root = state.runtime.root
+    workspace = system_assistant_paths(root).workspace
+    headless_manager: HeadlessAssistantManager = state.headless_assistant
+    await headless_manager.delete_conversation(
+        workspace=workspace, conversation_id=conv_id
+    )
+    return {"success": True}
+
+
 @router.websocket("/assistant/a-mode")
 async def attach_assistant_a_mode(websocket: WebSocket) -> None:
     """A-mode (headless, structured-output) assistant session.
@@ -113,10 +283,13 @@ async def attach_assistant_a_mode(websocket: WebSocket) -> None:
     Protocol:
         * Client connects with the same auth as the PTY session (bearer token
           or subprotocol).
-        * Frame 0 from client is a JSON startup message:
+        * Server sends ``history`` frame (if conversation has prior turns),
+          then ``status{code:"ready"}``.
+        * Client sends a JSON startup message:
           ``{"type":"start","text":"<user prompt>"}``
-        * Server responds with ``status{code:"ready"}``, then streams
-          ``TurnFrame`` objects for the assistant turn.
+          Optionally: ``{"type":"start","text":"...","conversation_id":"<id>"}``
+          to target a specific conversation (default = active).
+        * Server streams ``TurnFrame`` objects for the assistant turn.
         * Subsequent client messages are new prompts for new turns.
         * ``{"type":"close"}`` from client ends the session gracefully.
     """
@@ -170,7 +343,9 @@ async def attach_assistant_a_mode(websocket: WebSocket) -> None:
 
     workspace = system_assistant_paths(root).workspace
     headless_manager: HeadlessAssistantManager = state_obj.headless_assistant
+    # Default to the active conversation.
     conversation = await headless_manager.get_conversation(workspace=workspace)
+    current_conv_id = conversation.id
 
     # Replay the persisted structured conversation log (design §4).
     if conversation.turns:
@@ -223,6 +398,32 @@ async def attach_assistant_a_mode(websocket: WebSocket) -> None:
                         TurnFrame.error(message="prompt must be non-empty").model_dump_json(),
                     )
                     continue
+
+                # Optional: target a specific conversation.
+                target_conv_id = msg.get("conversation_id")
+                if target_conv_id and target_conv_id != current_conv_id:
+                    try:
+                        conversation = await headless_manager.get_conversation(
+                            workspace=workspace, conversation_id=target_conv_id
+                        )
+                        current_conv_id = target_conv_id
+                    except (KeyError, RuntimeError):
+                        await _safe_websocket_send_text(
+                            websocket,
+                            TurnFrame.error(
+                                message=f"conversation not found: {target_conv_id}"
+                            ).model_dump_json(),
+                        )
+                        continue
+
+                # Auto-title: if this is the first turn on a new conversation,
+                # use the first user message as the title.
+                if not conversation.turns and conversation.title == "New conversation":
+                    await headless_manager.set_conversation_title_from_first_message(
+                        workspace=workspace,
+                        conversation_id=current_conv_id,
+                        message=prompt,
+                    )
 
                 # Build the permission posture from the org-agent allow_rules
                 # machinery — exactly as ClaudeExecutor does (executors.py:580-596).
