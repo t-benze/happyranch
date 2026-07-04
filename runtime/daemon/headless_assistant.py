@@ -49,11 +49,13 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# Shared helpers from the executor layer — used by ClaudeAdapter to parse
-# terminal result events instead of manual event.get() that forks the parser.
+# Shared helpers from the executor layer — used by ClaudeAdapter and
+# CodexAdapter to parse terminal result events instead of manual
+# event.get() that forks the parser.
 from runtime.orchestrator.executors import (
     _parse_claude_usage as _executor_parse_claude_usage,
     _parse_claude_session_id as _executor_parse_claude_session_id,
+    _parse_codex_usage as _executor_parse_codex_usage,
 )
 
 # ---------------------------------------------------------------------------
@@ -131,6 +133,12 @@ class PermissionPosture:
     # Claude-specific (PR-3).
     claude_allowed_tools: str | None = None
     claude_permission_mode: str = "auto"
+
+    # Codex-specific (PR-4).  Defaults are the founder-ruled posture
+    # per KB assistant-headless-permission-postures:
+    #   sandbox = workspace-write, approval = never.
+    codex_sandbox: str = "workspace-write"
+    codex_ask_for_approval: str = "never"
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +666,158 @@ class ClaudeAdapter:
 
 # ---- init: register PR-3 adapter ----
 register_adapter("claude", ClaudeAdapter())
+
+
+# ---------------------------------------------------------------------------
+# CodexAdapter (PR-4)
+# ---------------------------------------------------------------------------
+
+class CodexAdapter:
+    """Headless adapter for codex (0.139.0+, ``exec --json``).
+
+    codex emits JSONL events in ``exec --json`` mode:
+    - ``thread.started`` — carries ``thread_id`` (session id).
+    - ``turn.started`` — turn initiation, no dock frame.
+    - ``item.started`` — item start (``command_execution`` → tool_call).
+    - ``item.completed`` — item completion (``agent_message`` → text_delta,
+      ``command_execution`` → tool_result).
+    - ``turn.completed`` — terminal event with ``usage``.
+
+    Session continuity via ``codex exec resume <session_id>``.
+
+    Permission posture (THR-056 design §3, KB assistant-headless-permission-postures)
+    -------------------------------------------------------------------------
+    Sandbox = workspace-write, approval = never.  Parity with the interactive
+    assistant (``assistant_pty.py:131`` injects
+    ``sandbox_workspace_write.network_access=true``) — minus the now-impossible
+    interactive approval prompt.  The adapter mirrors the network-access config
+    override for parity.
+
+    NOT ``--dangerously-bypass-approvals-and-sandbox``.
+    """
+
+    def __init__(self) -> None:
+        self._last_session_id: str | None = None
+        self._terminal_usage: dict[str, Any] | None = None
+
+    # ---- HeadlessAdapter contract ----
+
+    def build_turn_argv(
+        self,
+        *,
+        prompt: str,
+        resume_id: str | None,
+        permission_posture: PermissionPosture,
+    ) -> list[str]:
+        sandbox = permission_posture.codex_sandbox or "workspace-write"
+        approval = permission_posture.codex_ask_for_approval or "never"
+
+        # -a <approval> is a TOP-LEVEL flag on codex-cli 0.139.0 (appears
+        # only in `codex --help`, not `codex exec --help`).  It must come
+        # BEFORE the exec subcommand — clap parses global flags before the
+        # subcommand name.  Confirmed empirically: `codex -a never exec -s
+        # workspace-write --json <prompt>` parses and starts execution.
+        #
+        # -s <sandbox> is an exec-level flag (appears in `codex exec --help`).
+        # -c sandbox_workspace_write.network_access=true mirrors the
+        #   interactive assistant (assistant_pty.py:131) — without it, codex
+        #   in workspace-write sandbox blocks all outbound sockets including
+        #   localhost, so happyranch CLI calls fail.
+        argv = [
+            "codex",
+            "-a", approval,
+            "exec",
+            "-s", sandbox,
+            "-c", "sandbox_workspace_write.network_access=true",
+            "--json",
+        ]
+        if resume_id:
+            argv.extend(["resume", resume_id])
+        argv.append(prompt)
+        return argv
+
+    def parse_event(self, raw_line: str) -> TurnFrame | None:
+        line = raw_line.strip()
+        if not line or not line.startswith("{"):
+            return None
+        try:
+            event = _json.loads(line)
+        except (_json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(event, dict):
+            return None
+
+        etype = event.get("type")
+
+        if etype == "thread.started":
+            tid = event.get("thread_id")
+            if isinstance(tid, str) and tid:
+                self._last_session_id = tid
+            return None
+
+        if etype == "turn.started":
+            return None
+
+        if etype == "item.started":
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("type") == "command_execution":
+                cmd = item.get("command")
+                if isinstance(cmd, str):
+                    return TurnFrame.tool_call(
+                        name="bash",
+                        input={"command": cmd},
+                    )
+            return None
+
+        if etype == "item.completed":
+            item = event.get("item")
+            if not isinstance(item, dict):
+                return None
+            itype = item.get("type")
+            if itype == "agent_message":
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    return TurnFrame.text_delta(text=text)
+            elif itype == "command_execution":
+                cmd = item.get("command") or "unknown"
+                exit_code = item.get("exit_code")
+                ok = exit_code == 0
+                return TurnFrame.tool_result(name=cmd, ok=ok)
+            return None
+
+        if etype == "turn.completed":
+            # Reuse the shared executor helper (_parse_codex_usage) for
+            # canonical usage parsing including the issue #216 normalization
+            # (input_tokens = max(input - cached, 0)).
+            parsed = _executor_parse_codex_usage(raw_line)
+            if parsed is not None:
+                tu_dict: dict[str, Any] = {}
+                if parsed.input_tokens is not None:
+                    tu_dict["input_tokens"] = parsed.input_tokens
+                if parsed.output_tokens is not None:
+                    tu_dict["output_tokens"] = parsed.output_tokens
+                if parsed.cache_read_tokens is not None:
+                    tu_dict["cache_read_input_tokens"] = parsed.cache_read_tokens
+                if parsed.reasoning_tokens is not None:
+                    tu_dict["reasoning_output_tokens"] = parsed.reasoning_tokens
+                if parsed.model is not None:
+                    tu_dict["model"] = parsed.model
+                self._terminal_usage = tu_dict
+            return None
+
+        return None
+
+    def extract_session_id(self, frame: TurnFrame) -> str | None:
+        return self._last_session_id
+
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """No-op — CodexAdapter has no buffering.  codex emits one event
+        per item; no multi-content-block messages."""
+        return []
+
+
+# ---- init: register PR-4 adapter ----
+register_adapter("codex", CodexAdapter())
 
 
 # ---------------------------------------------------------------------------

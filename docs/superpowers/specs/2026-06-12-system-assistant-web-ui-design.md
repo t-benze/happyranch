@@ -205,7 +205,7 @@ Reconnect: loads the persisted STRUCTURED log, not raw scrollback replay.
 | PR-1 | Adapter interface + TurnFrame vocabulary + Conversation persistence + A-mode route | ✅ merged |
 | PR-2 | opencode + pi adapters | ✅ merged (#276) |
 | PR-3 | claude adapter + permission posture (gated) | ✅ this PR |
-| PR-4 | codex adapter + sandbox/approval (gated) | pending |
+| PR-4 | codex adapter + sandbox/approval (gated) | ✅ merged (#___) |
 | PR-5 | Dock frontend: MessageBubble/TypingBubble reuse | pending |
 | PR-6 | AppBar avatar entry point | ✅ this PR |
 
@@ -218,6 +218,18 @@ the `HeadlessAdapter` Protocol for claude v2.1.193+ headless mode.
 - **Event parsing:** Handles `system` (init / hook), `assistant` (text / tool_use content blocks), `user` (tool_result), and `result` (terminal, carries session_id + usage) stream-json events. Maps text → `text_delta`, tool_use → `tool_call`, tool_result → `tool_result` TurnFrames.
 - **Session continuity:** Tracks `session_id` from `system.subtype:init` and `result` events for `--resume`.
 - **Permission posture (founder-ruled, KB `assistant-headless-permission-postures`):** Mirrors the org-agent `allow_rules` machinery via `allow_rules_for_agent(…, cli=True)` from `runtime.orchestrator.workspace_adapters`, rendered on the CLI as `--allowedTools "Bash(happyranch *) …"`. Uses `--permission-mode` from `DaemonState.settings.permission_mode` (configurable; default `auto`). NOT `--dangerously-skip-permissions`. The caller (route handler) pre-computes the posture and passes it via `PermissionPosture.claude_allowed_tools` and `PermissionPosture.claude_permission_mode`; defaults when unset are `Bash(happyranch *)` baseline and `auto` mode respectively.
+
+### 6.10 Codex adapter (PR-4)
+
+The `CodexAdapter` (registered at `runtime/daemon/headless_assistant.py`) implements
+the `HeadlessAdapter` Protocol for codex-cli 0.139.0+ headless mode.
+
+- **Invocation:** `codex -a <approval> exec -s <sandbox> -c sandbox_workspace_write.network_access=true --json <prompt>`
+- **Resume:** `codex -a <approval> exec -s <sandbox> -c sandbox_workspace_write.network_access=true resume <session_id> --json <prompt>`
+- **Approval-flag placement:** `-a` (`--ask-for-approval`) is a TOP-LEVEL codex flag (appears only in `codex --help`, not `codex exec --help`). Placed BEFORE the `exec` subcommand — confirmed working on codex-cli 0.139.0. `-s` (`--sandbox`) is exec-level, placed after `exec`.
+- **Event parsing:** Handles `thread.started` (session id), `item.started` (command_execution → tool_call), `item.completed` (agent_message → text_delta, command_execution → tool_result), and `turn.completed` (usage, parsed via shared `_parse_codex_usage` from `executors.py`).
+- **Session continuity:** Tracks `thread_id` from `thread.started` event. Resume via `codex exec resume <thread_id>`.
+- **Permission posture (founder-ruled, KB `assistant-headless-permission-postures`):** Sandbox = `workspace-write`, approval = `never`. Parity with the interactive assistant (`assistant_pty.py:131` adds `-c sandbox_workspace_write.network_access=true`). NOT `--dangerously-bypass-approvals-and-sandbox`. The posture defaults are `PermissionPosture.codex_sandbox="workspace-write"` and `PermissionPosture.codex_ask_for_approval="never"` — additive to the dataclass, claude fields untouched. The route handler's `PermissionPosture` construction needs no codex-specific branching because the defaults carry the correct founder-ruled posture.
 
 ### 6.8 Frozen symbols
 
