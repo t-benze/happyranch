@@ -28,6 +28,18 @@ def _swap(state: DaemonState, runtime: RuntimeDir) -> None:
     new_state.orgs_lock = state.orgs_lock
     state.runtime = new_state.runtime
     state.orgs = new_state.orgs
+    # Close the old metrics store and adopt the new runtime's store so
+    # persisted snapshots always target the ACTIVE runtime's metrics.db.
+    if state.metrics_store is not None:
+        try:
+            state.metrics_store.close()
+        except Exception:
+            pass  # best-effort close (TestClient cross-thread access can
+                  # raise sqlite3.ProgrammingError; connection is discarded)
+    state.metrics_store = new_state.metrics_store
+    # Reset the snapshot throttle so the freshly-active runtime snapshots
+    # promptly on the next scheduler tick.
+    state._last_metrics_snapshot_at = 0.0
 
 
 @router.get("/runtime")

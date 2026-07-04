@@ -237,6 +237,117 @@ class TestDaemonStateMetricsStore:
 
 
 # ---------------------------------------------------------------------------
+# DaemonState swap metrics_store tests (THR-066 PR-1 revise)
+# ---------------------------------------------------------------------------
+
+class TestDaemonStateSwapMetricsStore:
+    """Verify metrics_store is correctly transferred during _swap().
+
+    _swap() mutates the live DaemonState object; a runtime switch must adopt
+    the new runtime's metrics_store and close the old one so persistence stays
+    durable and targeted at the active runtime.
+    """
+
+    def test_idle_to_runtime_swap_adopts_metrics_store(self, tmp_path: Path) -> None:
+        """After idle -> runtime swap, metrics_store points at the active
+        runtime's metrics.db (not the idle in-memory store)."""
+        from runtime.daemon.routes.runtime import _swap
+        from runtime.runtime import RuntimeDir
+
+        rt = RuntimeDir.init(tmp_path / "runtime")
+        state = DaemonState.idle(Settings())
+        old_store = state.metrics_store
+
+        _swap(state, rt)
+
+        # Store was replaced (not the same object)
+        assert state.metrics_store is not None
+        assert state.metrics_store is not old_store
+        # Store path now points at the active runtime's metrics.db
+        assert state.metrics_store._db_path == str(rt.root / "metrics.db")
+
+    def test_idle_to_runtime_swap_writes_to_active_runtime_db(
+        self, tmp_path: Path
+    ) -> None:
+        """A snapshot write after idle -> runtime swap lands in the active
+        runtime's metrics.db file, not in the idle in-memory store."""
+        from runtime.daemon.routes.runtime import _swap
+        from runtime.runtime import RuntimeDir
+
+        rt = RuntimeDir.init(tmp_path / "runtime")
+        state = DaemonState.idle(Settings())
+        _swap(state, rt)
+
+        # Write a snapshot through the live store
+        now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        state.metrics_store.append_snapshot(now.isoformat(), {"test": "swap_idle_to_runtime"})
+
+        # It landed in the on-disk file, not the discarded in-memory store
+        conn = sqlite3.connect(str(rt.root / "metrics.db"))
+        rows = conn.execute("SELECT * FROM metrics_snapshots").fetchall()
+        conn.close()
+        assert len(rows) == 1
+        assert json.loads(rows[0][2]) == {"test": "swap_idle_to_runtime"}
+
+    def test_runtime_a_to_runtime_b_swap_adopts_metrics_store(
+        self, tmp_path: Path
+    ) -> None:
+        """After runtime-A -> runtime-B swap, writes land in B's metrics.db,
+        not A's."""
+        from runtime.daemon.routes.runtime import _swap
+        from runtime.runtime import RuntimeDir
+
+        rt_a = RuntimeDir.init(tmp_path / "runtime_a")
+        rt_b = RuntimeDir.init(tmp_path / "runtime_b")
+        state = DaemonState.from_runtime(rt_a, Settings())
+
+        assert state.metrics_store._db_path == str(rt_a.root / "metrics.db")
+
+        # Write a pre-swap snapshot to A
+        t1 = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        state.metrics_store.append_snapshot(t1.isoformat(), {"runtime": "A"})
+
+        _swap(state, rt_b)
+
+        # After swap, store points at B's db
+        assert state.metrics_store._db_path == str(rt_b.root / "metrics.db")
+
+        # Write a post-swap snapshot — must land in B
+        t2 = datetime(2026, 7, 4, 12, 1, 0, tzinfo=timezone.utc)
+        state.metrics_store.append_snapshot(t2.isoformat(), {"runtime": "B"})
+
+        # A still has only its original row
+        conn_a = sqlite3.connect(str(rt_a.root / "metrics.db"))
+        rows_a = conn_a.execute("SELECT * FROM metrics_snapshots").fetchall()
+        conn_a.close()
+        assert len(rows_a) == 1
+        assert json.loads(rows_a[0][2]) == {"runtime": "A"}
+
+        # B has the post-swap row
+        conn_b = sqlite3.connect(str(rt_b.root / "metrics.db"))
+        rows_b = conn_b.execute("SELECT * FROM metrics_snapshots").fetchall()
+        conn_b.close()
+        assert len(rows_b) == 1
+        assert json.loads(rows_b[0][2]) == {"runtime": "B"}
+
+    def test_swap_resets_snapshot_throttle(self, tmp_path: Path) -> None:
+        """After a swap, _last_metrics_snapshot_at is reset so the next
+        scheduler tick snapshots promptly instead of being suppressed."""
+        from runtime.daemon.routes.runtime import _swap
+        from runtime.runtime import RuntimeDir
+
+        rt_a = RuntimeDir.init(tmp_path / "runtime_a")
+        rt_b = RuntimeDir.init(tmp_path / "runtime_b")
+        state = DaemonState.from_runtime(rt_a, Settings())
+        state._last_metrics_snapshot_at = time.monotonic()
+
+        _swap(state, rt_b)
+
+        # Throttle must be reset so the fresh runtime writes promptly
+        assert state._last_metrics_snapshot_at == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Periodic writer integration tests
 # ---------------------------------------------------------------------------
 
