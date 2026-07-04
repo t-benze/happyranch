@@ -56,6 +56,16 @@ const h = vi.hoisted(() => {
       isError: boolean;
       error: unknown;
     };
+    conversations: Array<{
+      id: string;
+      title: string;
+      created_at: string | null;
+      active: boolean;
+    }>;
+    createConv: ReturnType<typeof vi.fn>;
+    activateConv: ReturnType<typeof vi.fn>;
+    renameConv: ReturnType<typeof vi.fn>;
+    deleteConv: ReturnType<typeof vi.fn>;
   } = {
     socket: null,
     openSession: vi.fn<() => Promise<MockSocket>>(),
@@ -65,6 +75,11 @@ const h = vi.hoisted(() => {
       isError: false,
       error: null,
     },
+    conversations: [],
+    createConv: vi.fn(),
+    activateConv: vi.fn(),
+    renameConv: vi.fn(),
+    deleteConv: vi.fn(),
   };
   return result;
 });
@@ -80,6 +95,16 @@ vi.mock('@/hooks/assistant', () => ({
   useRepairAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useAssistantSessionOpener: () => h.openSession,
   useAssistantAModeSessionOpener: () => h.openSession,
+  useListConversations: () => ({
+    data: h.conversations,
+    isLoading: false,
+    isError: false,
+    error: null,
+  }),
+  useCreateConversation: () => ({ mutateAsync: h.createConv, isPending: false }),
+  useActivateConversation: () => ({ mutateAsync: h.activateConv, isPending: false }),
+  useRenameConversation: () => ({ mutateAsync: h.renameConv, isPending: false }),
+  useDeleteConversation: () => ({ mutateAsync: h.deleteConv, isPending: false }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -142,6 +167,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.socket = null;
   h.status = configuredStatus();
+  h.conversations = [];
+  h.createConv = vi.fn().mockResolvedValue({
+    id: 'conv-new',
+    title: 'New conversation',
+    created_at: '2026-07-04T12:00:00Z',
+    active: true,
+  });
+  h.activateConv = vi.fn().mockResolvedValue({ success: true });
+  h.renameConv = vi.fn().mockResolvedValue({ success: true });
+  h.deleteConv = vi.fn().mockResolvedValue({ success: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -312,5 +347,91 @@ describe('AssistantDockHost — DOCK-02 header (THR-030)', () => {
     // No hardcoded executor name is fabricated when the field is null.
     expect(screen.queryByText('claude')).toBeNull();
     expect(screen.queryByText('codex')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — conversation switcher wiring (THR-056 STEP-B)
+// ---------------------------------------------------------------------------
+
+describe('AssistantDockHost — conversation switcher', () => {
+  async function openSwitcher() {
+    await renderOpen();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Conversations' }));
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: 'Conversations' })).toBeInTheDocument();
+    });
+  }
+
+  test('header toggle opens the switcher and lists conversations', async () => {
+    h.conversations = [
+      { id: 'c1', title: 'Ranch status', created_at: '2026-07-04T10:00:00Z', active: true },
+      { id: 'c2', title: 'Spend review', created_at: '2026-07-03T10:00:00Z', active: false },
+    ];
+    await openSwitcher();
+    expect(screen.getByRole('button', { name: 'Ranch status' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Spend review' })).toBeInTheDocument();
+  });
+
+  test('"New conversation" creates one and reconnects the WS', async () => {
+    await openSwitcher();
+    expect(h.openSession).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+    await waitFor(() => expect(h.createConv).toHaveBeenCalledTimes(1));
+    // The reconnect bumps attachEpoch → the A-mode WS re-opens.
+    await waitFor(() => expect(h.openSession).toHaveBeenCalledTimes(2));
+  });
+
+  test('selecting a non-active conversation activates it and reconnects', async () => {
+    h.conversations = [
+      { id: 'c1', title: 'Ranch status', created_at: '2026-07-04T10:00:00Z', active: true },
+      { id: 'c2', title: 'Spend review', created_at: '2026-07-03T10:00:00Z', active: false },
+    ];
+    await openSwitcher();
+    fireEvent.click(screen.getByRole('button', { name: 'Spend review' }));
+    await waitFor(() => expect(h.activateConv).toHaveBeenCalledWith('c2'));
+    await waitFor(() => expect(h.openSession).toHaveBeenCalledTimes(2));
+  });
+
+  test('selecting the ACTIVE conversation just closes the switcher (no activate, no reconnect)', async () => {
+    h.conversations = [
+      { id: 'c1', title: 'Ranch status', created_at: '2026-07-04T10:00:00Z', active: true },
+    ];
+    await openSwitcher();
+    fireEvent.click(screen.getByRole('button', { name: 'Ranch status' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('region', { name: 'Conversations' })).toBeNull();
+    });
+    expect(h.activateConv).not.toHaveBeenCalled();
+    expect(h.openSession).toHaveBeenCalledTimes(1);
+  });
+
+  test('rename commits the new title via renameConversation', async () => {
+    h.conversations = [
+      { id: 'c1', title: 'Ranch status', created_at: '2026-07-04T10:00:00Z', active: true },
+    ];
+    await openSwitcher();
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Ranch status' }));
+    const input = screen.getByLabelText('Conversation title');
+    fireEvent.change(input, { target: { value: 'Renamed thread' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() =>
+      expect(h.renameConv).toHaveBeenCalledWith({ id: 'c1', title: 'Renamed thread' }),
+    );
+  });
+
+  test('delete requires inline confirm, then calls deleteConversation and reconnects', async () => {
+    h.conversations = [
+      { id: 'c1', title: 'Ranch status', created_at: '2026-07-04T10:00:00Z', active: true },
+      { id: 'c2', title: 'Spend review', created_at: '2026-07-03T10:00:00Z', active: false },
+    ];
+    await openSwitcher();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Spend review' }));
+    // A bare trash click must NOT delete — it asks to confirm first.
+    expect(h.deleteConv).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(h.deleteConv).toHaveBeenCalledWith('c2'));
+    await waitFor(() => expect(h.openSession).toHaveBeenCalledTimes(2));
   });
 });

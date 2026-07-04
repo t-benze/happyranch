@@ -7,10 +7,12 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { assistant as assistantApi } from '@/lib/api';
+import type { ConversationSummary } from '@/lib/api/assistant';
 import type { AssistantRegisterBody, AssistantStatus } from '@/lib/api/types';
 import type { AssistantApi, MutationLike, QueryLike } from './DataContext';
 
 const STATUS_KEY = ['assistant', 'status'];
+const CONVERSATIONS_KEY = ['assistant', 'conversations'];
 
 function useAssistantStatus(): QueryLike<AssistantStatus> {
   return useQuery({
@@ -44,6 +46,60 @@ function useRepairAssistant(): MutationLike<void, AssistantStatus> {
   });
 }
 
+// ---- Multi-conversation switcher (THR-056 STEP-B) ----
+
+function useListConversations(enabled: boolean): QueryLike<ConversationSummary[]> {
+  return useQuery({
+    queryKey: CONVERSATIONS_KEY,
+    queryFn: () => assistantApi.listConversations(),
+    enabled,
+  });
+}
+
+function useCreateConversation(): MutationLike<void, ConversationSummary> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => assistantApi.createConversation(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
+    },
+  });
+}
+
+function useActivateConversation(): MutationLike<string, { success: boolean }> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => assistantApi.activateConversation(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
+    },
+  });
+}
+
+function useRenameConversation(): MutationLike<
+  { id: string; title: string },
+  { success: boolean }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) =>
+      assistantApi.renameConversation(id, title),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
+    },
+  });
+}
+
+function useDeleteConversation(): MutationLike<string, { success: boolean }> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => assistantApi.deleteConversation(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
+    },
+  });
+}
+
 export const realAssistantApi: AssistantApi = {
   useAssistantStatus,
   useInitAssistant,
@@ -51,4 +107,9 @@ export const realAssistantApi: AssistantApi = {
   useRepairAssistant,
   openSession: assistantApi.openAssistantSession,
   openAModeSession: assistantApi.openAssistantAModeSession,
+  useListConversations,
+  useCreateConversation,
+  useActivateConversation,
+  useRenameConversation,
+  useDeleteConversation,
 };
