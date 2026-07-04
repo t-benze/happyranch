@@ -70,6 +70,76 @@ struct AppDelegateDaemonFailureTests {
                 "Exit code 2 must be recorded in diagnostics")
     }
 
+    // MARK: - Stdout captured from handle and recorded in diagnostics (FINDING 1)
+
+    @Test("captured daemon stdout from handle is recorded in diagnostics on exit")
+    func capturedStdoutRecordedInDiagnostics() async throws {
+        let (delegate, fake) = makeDelegate()
+
+        delegate.startDaemon()
+        #expect(fake.launchCallCount == 1)
+
+        guard let handle = fake.activeHandle else {
+            Issue.record("Expected active handle after launch")
+            return
+        }
+
+        // Set captured stdout and stderr on the handle before firing termination
+        handle.simulateCrash(exitCode: 1,
+                             stderr: "Error: port bind failed\n",
+                             stdout: "INFO: daemon starting on port 8765\nready\n")
+
+        // Fire termination — simulates the real process exiting
+        fake.fireTermination(for: handle)
+        await Task.yield()
+
+        let bundle = delegate.diagnostics.collect()
+
+        // Stdout must be in diagnostics
+        let stdout = bundle["daemon_stdout"] as? String ?? ""
+        #expect(stdout.contains("daemon starting on port 8765"),
+                "Captured stdout must be in diagnostics, got: \(stdout)")
+        #expect(stdout.contains("ready"))
+
+        // Stderr must also still be in diagnostics
+        let stderr = bundle["daemon_stderr"] as? String ?? ""
+        #expect(stderr.contains("port bind failed"),
+                "Captured stderr must also be in diagnostics")
+
+        // Exit code must be recorded
+        #expect(bundle["last_exit_code"] as? Int32 == 1,
+                "Exit code must be recorded in diagnostics")
+    }
+
+    @Test("daemon stdout is redacted when it contains tokens")
+    func daemonStdoutIsRedacted() async throws {
+        let (delegate, fake) = makeDelegate()
+
+        delegate.startDaemon()
+        guard let handle = fake.activeHandle else {
+            Issue.record("Expected active handle after launch")
+            return
+        }
+
+        // Stdout containing a token that must be redacted
+        handle.simulateCrash(exitCode: 1,
+                             stderr: nil,
+                             stdout: "TOKEN_REFRESH: Bearer hr_token_leaked_via_stdout\ndaemon crashed\n")
+
+        fake.fireTermination(for: handle)
+        await Task.yield()
+
+        let bundle = delegate.diagnostics.collect()
+        let stdout = bundle["daemon_stdout"] as? String ?? ""
+
+        #expect(!stdout.contains("hr_token_leaked_via_stdout"),
+                "Token must NOT appear in diagnostics stdout")
+        #expect(stdout.contains("[REDACTED]"),
+                "Redaction marker must be in diagnostics stdout")
+        #expect(stdout.contains("daemon crashed"),
+                "Non-sensitive stdout content must survive")
+    }
+
     // MARK: - Launcher log recorded on launch-failure catch branches
 
     @Test("launch failure catch branch records launcher log")

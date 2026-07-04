@@ -12,6 +12,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     public private(set) var launchLogContent: String?
     public private(set) var daemonLogTailContent: String?
     public private(set) var daemonStderrContent: String?
+    public private(set) var daemonStdoutContent: String?
     public private(set) var lastHealthProbeSuccess: Bool?
     public private(set) var lastHealthProbeLatencyMs: Int?
     public private(set) var lastHealthProbeError: String?
@@ -65,6 +66,10 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         daemonStderrContent = DiagnosticsRedactor.redact(stderr)
     }
 
+    public func recordDaemonStdout(_ stdout: String) {
+        daemonStdoutContent = DiagnosticsRedactor.redact(stdout)
+    }
+
     public func recordToken(_ token: String) {
         tokenValue = DiagnosticsRedactor.redact(token)
     }
@@ -113,6 +118,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         if let log = launchLogContent { bundle["launcher_log"] = DiagnosticsRedactor.redact(log) }
         if let log = daemonLogTailContent { bundle["daemon_log_tail"] = DiagnosticsRedactor.redact(log) }
         if let stderr = daemonStderrContent { bundle["daemon_stderr"] = DiagnosticsRedactor.redact(stderr) }
+        if let stdout = daemonStdoutContent { bundle["daemon_stdout"] = DiagnosticsRedactor.redact(stdout) }
 
         if let success = lastHealthProbeSuccess {
             bundle["last_health_probe_success"] = success
@@ -162,7 +168,8 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     // MARK: - Persist + export
 
     /// Persist the collected diagnostics to the diagnostics directory.
-    /// Writes: diagnostics.json, launcher_log.txt, daemon_stderr.txt
+    /// Writes: diagnostics.json, launcher_log.txt, daemon_stderr.txt,
+    /// daemon_stdout.txt, daemon_log_tail.txt
     /// Returns the output directory URL.
     public func persist() throws -> URL {
         let dir = diagnosticsDirectory
@@ -176,6 +183,9 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         }
         if let stderr = daemonStderrContent {
             try stderr.write(to: dir.appendingPathComponent("daemon_stderr.txt"), atomically: true, encoding: .utf8)
+        }
+        if let stdout = daemonStdoutContent {
+            try stdout.write(to: dir.appendingPathComponent("daemon_stdout.txt"), atomically: true, encoding: .utf8)
         }
         if let logTail = daemonLogTailContent {
             try logTail.write(to: dir.appendingPathComponent("daemon_log_tail.txt"), atomically: true, encoding: .utf8)

@@ -176,7 +176,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Test seam: override in tests to simulate bundled mode without setting
     /// the real process environment.  Production code never sets this.
-    nonisolated(unsafe) static var _testPackagingMode: String?
+    /// Lock-protected to prevent parallel-test races (FINDING 2 fix).
+    nonisolated(unsafe) private static var __testPackagingMode: String?
+    nonisolated private static let _testPackagingModeLock = NSLock()
+
+    nonisolated static var _testPackagingMode: String? {
+        get { _testPackagingModeLock.withLock { __testPackagingMode } }
+        set { _testPackagingModeLock.withLock { __testPackagingMode = newValue } }
+    }
 
     /// Returns the packaging mode: "bundled" when running inside a .app bundle
     /// with PACKAGING_MODE=bundled, "dev" otherwise.
@@ -253,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     let exitCode = exitedHandle.terminationStatus
                     let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
                     let stderr = exitedHandle.capturedStandardError
+                    let stdout = exitedHandle.capturedStandardOutput
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         if let ch = self.currentHandle,
@@ -261,6 +269,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         }
                         if let stderr = stderr {
                             self.diagnostics.recordDaemonStderr(stderr)
+                        }
+                        if let stdout = stdout {
+                            self.diagnostics.recordDaemonStdout(stdout)
                         }
                         self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
                         self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
@@ -303,6 +314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 terminationHandler: { @Sendable [weak self] exitedHandle in
                     let exitCode = exitedHandle.terminationStatus
                     let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
+                    let stderr = exitedHandle.capturedStandardError
+                    let stdout = exitedHandle.capturedStandardOutput
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         // PID guard: reject only if currentHandle is set AND
@@ -313,8 +326,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                            ch.processIdentifier != exitedHandle.processIdentifier {
                             return
                         }
-                        if let stderr = exitedHandle.capturedStandardError {
+                        if let stderr = stderr {
                             self.diagnostics.recordDaemonStderr(stderr)
+                        }
+                        if let stdout = stdout {
+                            self.diagnostics.recordDaemonStdout(stdout)
                         }
                         self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
                         self.diagnostics.recordExit(exitCode: exitCode, signal: signal)

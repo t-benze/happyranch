@@ -348,4 +348,129 @@ struct DiagnosticsCollectorTests {
         #expect(dir.path.hasSuffix("/diagnostics"))
         #expect(dir.path.contains("/tmp/test-hr"))
     }
+
+    // MARK: - Daemon stdout recording (FINDING 1 fix)
+
+    @Test("recordDaemonStdout stores captured stdout")
+    func recordDaemonStdout() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        collector.recordDaemonStdout("daemon v1.0 starting on port 8765\nListening for connections...")
+
+        let bundle = collector.collect()
+        let stdout = bundle["daemon_stdout"] as? String ?? ""
+        #expect(stdout.contains("daemon v1.0 starting"))
+        #expect(stdout.contains("Listening for connections"))
+    }
+
+    @Test("daemon stdout redacts bearer tokens")
+    func daemonStdoutRedactsTokens() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        collector.recordDaemonStdout("INFO: token refresh hr_token_exposed_in_stdout\n")
+
+        let bundle = collector.collect()
+        let stdout = bundle["daemon_stdout"] as? String ?? ""
+
+        #expect(!stdout.contains("hr_token_exposed_in_stdout"),
+                "Bearer token in daemon stdout must be redacted")
+        #expect(stdout.contains("[REDACTED]"),
+                "Redaction marker must be present in daemon stdout")
+    }
+
+    @Test("persist writes daemon_stdout.txt when stdout is captured")
+    func persistWritesDaemonStdoutFile() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-stdout-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let collector = DiagnosticsCollector(homeDir: tmpDir.path)
+        collector.recordDaemonStdout("daemon started successfully\n")
+        collector.recordExit(exitCode: 0, signal: nil)
+
+        let outputDir = try collector.persist()
+        defer { try? FileManager.default.removeItem(at: outputDir) }
+
+        let stdoutPath = outputDir.appendingPathComponent("daemon_stdout.txt")
+        #expect(FileManager.default.fileExists(atPath: stdoutPath.path),
+                "daemon_stdout.txt must be created when stdout is captured")
+
+        let content = try String(contentsOf: stdoutPath, encoding: .utf8)
+        #expect(content.contains("daemon started successfully"))
+    }
+
+    @Test("exportZip includes redacted daemon stdout")
+    func exportZipIncludesRedactedStdout() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-zip-stdout-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let homeDir = tmpDir.appendingPathComponent("daemon-home")
+        try FileManager.default.createDirectory(at: homeDir, withIntermediateDirectories: true)
+
+        let collector = DiagnosticsCollector(homeDir: homeDir.path)
+        collector.recordDaemonStdout("INFO: Bearer hr_token_zip_leak\ndaemon ready")
+        collector.recordDaemonStderr("error: hr_token_stderr_leak")
+        collector.recordExit(exitCode: 1, signal: nil)
+
+        let zipURL = tmpDir.appendingPathComponent("diagnostics.zip")
+        try collector.exportZip(to: zipURL)
+
+        #expect(FileManager.default.fileExists(atPath: zipURL.path))
+
+        // Unzip and verify contents
+        let extractDir = tmpDir.appendingPathComponent("extracted")
+        try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
+
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        unzip.arguments = ["-x", "-k", zipURL.path, extractDir.path]
+        try unzip.run()
+        unzip.waitUntilExit()
+
+        let stdoutPath = extractDir.appendingPathComponent("daemon_stdout.txt")
+        #expect(FileManager.default.fileExists(atPath: stdoutPath.path),
+                "ZIP must contain daemon_stdout.txt")
+
+        let stdoutContent = try String(contentsOf: stdoutPath, encoding: .utf8)
+        #expect(!stdoutContent.contains("hr_token_zip_leak"),
+                "Stdout in ZIP must not contain raw token")
+        #expect(stdoutContent.contains("[REDACTED]"),
+                "Stdout in ZIP must contain redaction marker")
+        #expect(stdoutContent.contains("daemon ready"),
+                "Non-sensitive stdout content must survive in ZIP")
+    }
+
+    @Test("ZIP daemon stderr is also redacted")
+    func zipDaemonStderrRedacted() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-zip-stderr-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let homeDir = tmpDir.appendingPathComponent("daemon-home")
+        try FileManager.default.createDirectory(at: homeDir, withIntermediateDirectories: true)
+
+        let collector = DiagnosticsCollector(homeDir: homeDir.path)
+        collector.recordDaemonStderr("FATAL: hr_token_crash_secret\nport bind failed")
+        collector.recordExit(exitCode: 1, signal: nil)
+
+        let zipURL = tmpDir.appendingPathComponent("diagnostics.zip")
+        try collector.exportZip(to: zipURL)
+
+        let extractDir = tmpDir.appendingPathComponent("extracted")
+        try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
+
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        unzip.arguments = ["-x", "-k", zipURL.path, extractDir.path]
+        try unzip.run()
+        unzip.waitUntilExit()
+
+        let stderrPath = extractDir.appendingPathComponent("daemon_stderr.txt")
+        let stderrContent = try String(contentsOf: stderrPath, encoding: .utf8)
+        #expect(!stderrContent.contains("hr_token_crash_secret"),
+                "Stderr in ZIP must not contain raw token")
+        #expect(stderrContent.contains("[REDACTED]"))
+        #expect(stderrContent.contains("port bind failed"))
+    }
 }

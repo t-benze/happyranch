@@ -38,11 +38,17 @@ final class RealProcessController: ProcessControlling, @unchecked Sendable {
         // Wire terminationHandler BEFORE run() so no exit can be dropped.
         // Each Process gets its own closure capturing the per-launch handle.
         newProcess.terminationHandler = { _ in
-            handle.drainPipes()
+            handle.stopAsyncDrain()
+            handle.drainRemainingPipes()
             terminationHandler?(handle)
         }
 
         try newProcess.run()
+
+        // Start async pipe draining immediately after launch so the child
+        // never blocks on a full pipe buffer (FINDING 3 fix).
+        handle.startAsyncDrain()
+
         return handle
     }
 }
@@ -89,18 +95,73 @@ final class RealProcessHandle: ProcessHandle, @unchecked Sendable {
         process.terminate()
     }
 
-    /// Drain the pipes into the captured strings. Called from terminationHandler.
-    func drainPipes() {
-        captureLock.lock()
-        defer { captureLock.unlock() }
-        _capturedStandardOutput = Self.drainPipe(stdoutPipe)
-        _capturedStandardError = Self.drainPipe(stderrPipe)
+    // MARK: - Async pipe drain (FINDING 3 fix)
+
+    /// Start asynchronous draining of stdout and stderr pipes.
+    /// Uses readabilityHandler to read data as it arrives so the child
+    /// never blocks on a full pipe buffer. Data is appended into a
+    /// bounded 64KB buffer under lock.
+    func startAsyncDrain() {
+        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] fh in
+            let data = fh.availableData
+            guard !data.isEmpty else { return }
+            self?.appendStdout(data)
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] fh in
+            let data = fh.availableData
+            guard !data.isEmpty else { return }
+            self?.appendStderr(data)
+        }
     }
 
-    private static func drainPipe(_ pipe: Pipe) -> String? {
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard !data.isEmpty else { return nil }
-        let maxData = data.prefix(maxCaptureBytes)
-        return String(data: maxData, encoding: .utf8)
+    /// Stop async draining by removing readability handlers.
+    /// Called from terminationHandler before draining remaining data.
+    func stopAsyncDrain() {
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+    }
+
+    /// Drain any remaining data from the pipes after the process exits.
+    /// Complements the async drain for data that arrived after the last
+    /// readabilityHandler invocation but before the handler was removed.
+    func drainRemainingPipes() {
+        let remainingStdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        if !remainingStdout.isEmpty {
+            appendStdout(remainingStdout)
+        }
+        let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        if !remainingStderr.isEmpty {
+            appendStderr(remainingStderr)
+        }
+    }
+
+    private func appendStdout(_ data: Data) {
+        captureLock.lock()
+        defer { captureLock.unlock() }
+        let remaining = Self.maxCaptureBytes - (_capturedStandardOutput?.utf8.count ?? 0)
+        guard remaining > 0 else { return }
+        let chunk = data.prefix(remaining)
+        if let str = String(data: chunk, encoding: .utf8) {
+            if _capturedStandardOutput == nil {
+                _capturedStandardOutput = str
+            } else {
+                _capturedStandardOutput! += str
+            }
+        }
+    }
+
+    private func appendStderr(_ data: Data) {
+        captureLock.lock()
+        defer { captureLock.unlock() }
+        let remaining = Self.maxCaptureBytes - (_capturedStandardError?.utf8.count ?? 0)
+        guard remaining > 0 else { return }
+        let chunk = data.prefix(remaining)
+        if let str = String(data: chunk, encoding: .utf8) {
+            if _capturedStandardError == nil {
+                _capturedStandardError = str
+            } else {
+                _capturedStandardError! += str
+            }
+        }
     }
 }

@@ -71,6 +71,19 @@ struct DiagnosticsView: View {
                         }
                     }
 
+                    // Daemon stdout (captured)
+                    if let stdout = bundle["daemon_stdout"] as? String, !stdout.isEmpty {
+                        GroupBox("Daemon Stdout (captured)") {
+                            ScrollView {
+                                Text(stdout)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 200)
+                        }
+                    }
+
                     // Daemon stderr (Req 3)
                     if let stderr = bundle["daemon_stderr"] as? String, !stderr.isEmpty {
                         GroupBox("Daemon Stderr (captured)") {
