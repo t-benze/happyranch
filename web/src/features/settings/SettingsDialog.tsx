@@ -1,9 +1,12 @@
 /**
  * Settings dialog — System (read-only) + Org (editable in Phase 2)
- * + System Assistant (status + init/repair).
+ * + System Assistant (read-only status glance).
  *
  * Opened from a button in the TopBar. Renders three sections:
- * - System Assistant: assistant status badge, init/repair actions, link to terminal
+ * - System Assistant: read-only status glance + a link to the one place that
+ *   configures the assistant (Settings → Assistant). All setup/register/repair
+ *   logic lives in features/settings/sections/AssistantSection.tsx — the dialog
+ *   never duplicates it.
  * - System: daemon-wide settings with restart-required badges (read-only)
  * - Org: org-level settings with editable forms (Phase 2)
  *
@@ -13,11 +16,7 @@ import { Settings } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useSettings, useUpdateOrgSettings } from '@/hooks/settings';
-import {
-  useAssistantStatus,
-  useInitAssistant,
-  useRepairAssistant,
-} from '@/hooks/assistant';
+import { useAssistantStatus } from '@/hooks/assistant';
 import {
   Dialog,
   DialogContent,
@@ -346,10 +345,12 @@ const STATE_BADGE: Record<AssistantState, string> = {
 
 function AssistantSection(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
-  const assistantHref = slug ? `/orgs/${slug}/assistant` : '#';
+  // Configuration has exactly one home: Settings → Assistant. The dialog only
+  // shows a read-only glance and links out — it never mounts a second copy of
+  // the init/register/repair flow, and it never points at /orgs/:slug/assistant
+  // (terminal-only) as a registration destination.
+  const settingsHref = slug ? `/orgs/${slug}/settings/assistant` : '#';
   const statusQuery = useAssistantStatus();
-  const initMutation = useInitAssistant();
-  const repairMutation = useRepairAssistant();
   const status = statusQuery.data;
 
   return (
@@ -361,7 +362,7 @@ function AssistantSection(): JSX.Element {
         <p className="text-tier-red text-sm">Could not load assistant status.</p>
       ) : (
         <div className="border-border bg-bg-subtle space-y-3 rounded-md border p-4">
-          {/* Status badge + executor/workspace */}
+          {/* Read-only status glance */}
           <div className="flex items-center gap-2">
             <span className="text-fg-muted text-sm">State</span>
             <span
@@ -390,45 +391,15 @@ function AssistantSection(): JSX.Element {
             <p className="text-feedback-danger text-sm">{status.detail}</p>
           )}
 
-          {/* Actions */}
-          <div className="flex flex-wrap items-center gap-3">
-            {status.state === 'uninitialized' && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => initMutation.mutateAsync({ reconfigure: false })}
-                  disabled={initMutation.isPending}
-                  className="bg-accent text-accent-fg hover:bg-accent-hover rounded px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
-                >
-                  {initMutation.isPending ? 'Initializing…' : 'Initialize workspace'}
-                </button>
-                <Link
-                  to={assistantHref}
-                  className="text-accent text-sm hover:underline"
-                >
-                  Register executor →
-                </Link>
-              </>
-            )}
-            {status.state === 'stale_or_broken' && (
-              <button
-                type="button"
-                onClick={() => repairMutation.mutateAsync()}
-                disabled={repairMutation.isPending}
-                className="bg-accent text-accent-fg hover:bg-accent-hover rounded px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
-              >
-                {repairMutation.isPending ? 'Repairing…' : 'Repair'}
-              </button>
-            )}
-            {status.state === 'configured' && (
-              <Link
-                to={assistantHref}
-                className="text-accent text-sm hover:underline"
-                aria-label="Open terminal"
-              >
-                Open terminal →
-              </Link>
-            )}
+          {/* Single canonical entry point — set up / register / repair all live
+              in Settings → Assistant. */}
+          <div>
+            <Link
+              to={settingsHref}
+              className="text-accent text-sm hover:underline"
+            >
+              Manage in Settings → Assistant →
+            </Link>
           </div>
         </div>
       )}

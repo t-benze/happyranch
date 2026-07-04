@@ -425,20 +425,41 @@ describe('SettingsDialog', () => {
     ).toBeInTheDocument();
   });
 
-  test('shows uninitialized state with Initialize button and absolute register link', async () => {
+  test('configured: links to the canonical Settings → Assistant config page', async () => {
+    renderDialog();
+
+    const link = screen.getByRole('link', { name: /manage in settings/i });
+    expect(link).toBeInTheDocument();
+    // The one config home is the Settings page (org-scoped absolute path), NOT
+    // the terminal-only /orgs/:slug/assistant route.
+    expect(link.getAttribute('href')).toBe('/orgs/alpha/settings/assistant');
+    // No dead-end registration link pointing at the terminal-only route.
+    expect(
+      screen.queryByRole('link', { name: /register executor/i }),
+    ).toBeNull();
+    for (const anchor of screen.getAllByRole('link')) {
+      expect(anchor.getAttribute('href')).not.toBe('/orgs/alpha/assistant');
+    }
+  });
+
+  test('uninitialized: read-only glance + canonical settings link, no inline setup actions', async () => {
     renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
       status: { state: 'uninitialized', selected_executor: null, workspace_path: null },
     });
 
     expect(screen.getByText('Uninitialized')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Initialize workspace/i })).toBeInTheDocument();
-    // Register executor link must use the org-scoped absolute path
-    const registerLink = screen.getByRole('link', { name: /register executor/i });
-    expect(registerLink).toBeInTheDocument();
-    expect(registerLink.getAttribute('href')).toBe('/orgs/alpha/assistant');
+    // Setup logic lives only in Settings → Assistant now — no inline actions.
+    expect(
+      screen.queryByRole('button', { name: /Initialize workspace/i }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('link', { name: /register executor/i }),
+    ).toBeNull();
+    const link = screen.getByRole('link', { name: /manage in settings/i });
+    expect(link.getAttribute('href')).toBe('/orgs/alpha/settings/assistant');
   });
 
-  test('shows stale_or_broken state with detail and Repair button', async () => {
+  test('stale_or_broken: shows detail, no inline Repair button, canonical settings link', async () => {
     renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
       status: {
         state: 'stale_or_broken',
@@ -450,62 +471,8 @@ describe('SettingsDialog', () => {
 
     expect(screen.getByText('Stale or broken')).toBeInTheDocument();
     expect(screen.getByText('workspace missing AGENTS.md')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Repair$/i })).toBeInTheDocument();
-  });
-
-  test('Initialize button calls init mutation', async () => {
-    const initMutateAsync = vi.fn().mockResolvedValue({
-      state: 'uninitialized' as const,
-      selected_executor: null,
-      workspace_path: '/rt/system/assistant/workspace',
-      detail: null,
-    });
-    renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
-      status: { state: 'uninitialized', selected_executor: null, workspace_path: null },
-      initMutateAsync,
-    });
-
-    const initBtn = screen.getByRole('button', { name: /Initialize workspace/i });
-    fireEvent.click(initBtn);
-
-    await vi.waitFor(() => {
-      expect(initMutateAsync).toHaveBeenCalledTimes(1);
-    });
-    expect(initMutateAsync).toHaveBeenCalledWith({ reconfigure: false });
-  });
-
-  test('Repair button calls repair mutation', async () => {
-    const repairMutateAsync = vi.fn().mockResolvedValue({
-      state: 'configured' as const,
-      selected_executor: 'codex',
-      workspace_path: '/rt/system/assistant/workspace',
-      detail: null,
-    });
-    renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
-      status: {
-        state: 'stale_or_broken',
-        selected_executor: 'codex',
-        workspace_path: '/rt/system/assistant/workspace',
-        detail: 'workspace missing AGENTS.md',
-      },
-      repairMutateAsync,
-    });
-
-    const repairBtn = screen.getByRole('button', { name: /^Repair$/i });
-    fireEvent.click(repairBtn);
-
-    await vi.waitFor(() => {
-      expect(repairMutateAsync).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  test('configured state shows absolute link to assistant terminal page', async () => {
-    renderDialog();
-
-    const link = screen.getByRole('link', { name: /open terminal/i });
-    expect(link).toBeInTheDocument();
-    // Must resolve to the org-scoped absolute path, NOT the relative
-    // /assistant that a pathless-shell parent route would produce.
-    expect(link.getAttribute('href')).toBe('/orgs/alpha/assistant');
+    expect(screen.queryByRole('button', { name: /^Repair$/i })).toBeNull();
+    const link = screen.getByRole('link', { name: /manage in settings/i });
+    expect(link.getAttribute('href')).toBe('/orgs/alpha/settings/assistant');
   });
 });
