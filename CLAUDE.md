@@ -21,6 +21,7 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 
 - Packaged Python source is `runtime` and `cli`; `pyproject.toml` currently builds those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files and packaging/imports are updated.
 - The daemon is FastAPI in `runtime/daemon/`; the CLI is a thin HTTP client in `cli/`; the SPA is in `web/` and builds to `web/dist/`.
+- **Metrics persistence** (THR-066): daemon-global `metrics.db` at `<runtime_root>/metrics.db` (NOT per-org). Append-only snapshots every ~60s, 30-day retention. The store is `runtime/daemon/metrics_store.py`; the periodic writer piggybacks `work_hours_scheduler_loop`.
 - Runtime containers are schema v2 multi-org trees: `<runtime>/orgs/<slug>/...`. Per-org routes are under `/api/v1/orgs/<slug>/...`; container-level routes are under `/api/v1/runtime` and `/api/v1/orgs`.
 - Settings come from `HAPPYRANCH_` env vars, then `~/.happyranch/config.yaml`, then code defaults. There is no `.env` support.
 - Agent names are plain strings discovered from `<runtime>/orgs/<slug>/org/agents/*.md`; do not introduce static agent enums.

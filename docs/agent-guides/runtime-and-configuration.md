@@ -48,6 +48,38 @@ Rate-limit detection is normalized: `_run_command` sets `ExecutorResult.rate_lim
 
 The list/dict-shaped keys (`executor_ceiling_overrides`, `executor_rate_limit_backoff_seconds`) are set via `config.yaml`; the scalar keys also accept `HAPPYRANCH_`-prefixed env vars.
 
+## Metrics Persistence (THR-066)
+
+The daemon persists runtime metrics as a time-series of full snapshots in a
+**daemon-global** SQLite store at `<runtime_root>/metrics.db` — a sibling of
+`orgs/`. This is NOT a per-org store; the metrics aggregate spans all orgs
+(uptime, loop ticks, HTTP latency histograms, task/job/session/queue counts).
+
+| Property | Value |
+| --- | --- |
+| Store file | `<runtime_root>/metrics.db` |
+| Table | `metrics_snapshots (id INTEGER PK, captured_at TEXT NOT NULL, snapshot_json TEXT NOT NULL)` |
+| Index | `idx_metrics_snapshots_captured ON metrics_snapshots(captured_at)` |
+| Cadence | ~60s (piggybacks `work_hours_scheduler_loop`; throttled to one write per ~55s) |
+| Retention | 30 days (pruned on each write; module constant `_RETENTION_DAYS`) |
+| Pattern | Append-only — same durable pattern as `audit_log`, but a separate store (no `audit_log` overload) |
+
+The snapshot payload is the same dict returned by `GET /api/v1/metrics`:
+`MetricsRegistry.snapshot()` plus live pull-gauges (`tasks`, `jobs_in_flight`,
+`executor_sessions_active`, `run_step_queue_depth`). Both the route and the
+periodic writer call the shared `compose_metrics_snapshot(state)` helper in
+`runtime/daemon/metrics_store.py` so the persisted payload stays byte-identical
+to the live route response.
+
+The store is constructed at daemon startup on `DaemonState` (from
+`DaemonState.from_runtime` or `DaemonState.idle`). Schema creation is
+idempotent (`CREATE TABLE IF NOT EXISTS`); re-initializing the store after a
+restart is a no-op.
+
+**Compatibility:** v0 (DB-backed enrollments) and v1 (flat single-org) runtimes
+both get the store on startup — the store is created on demand regardless of
+runtime shape and touches no existing DB.
+
 ## System Assistant
 
 The system assistant is runtime-global and lives under `<runtime>/system/assistant/`.

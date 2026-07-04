@@ -10,6 +10,7 @@ from runtime.config import Settings
 from runtime.daemon.assistant_pty import AssistantSessionManager
 from runtime.daemon.headless_assistant import HeadlessAssistantManager
 from runtime.daemon.metrics import MetricsRegistry
+from runtime.daemon.metrics_store import MetricsStore
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.queue import TaskQueue
 from runtime.daemon.registration_token import RegistrationTokenStore
@@ -47,14 +48,31 @@ class DaemonState:
         default_factory=HeadlessAssistantManager
     )
     metrics_registry: MetricsRegistry = field(default_factory=MetricsRegistry)
+    metrics_store: MetricsStore | None = None
+    # Throttle for periodic snapshot writes — monotonic timestamp of last write.
+    _last_metrics_snapshot_at: float = 0.0
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
-        return cls(runtime=None, settings=settings)
+        state = cls(runtime=None, settings=settings)
+        state.metrics_store = MetricsStore(None)  # in-memory for idle state
+        return state
+
+    def __post_init__(self) -> None:
+        """Construct metrics_store for runtime-backed state.
+
+        Called by from_runtime after the dataclass constructor.
+        For idle state, this is a no-op (metrics_store is set in idle()).
+        """
+        if self.runtime is not None and self.metrics_store is None:
+            self.metrics_store = MetricsStore(
+                str(self.runtime.root / "metrics.db")
+            )
 
     @classmethod
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings) -> "DaemonState":
         state = cls(runtime=runtime, settings=settings)
+        # __post_init__ constructs metrics_store at runtime.root/metrics.db
         for slug, root in runtime.iter_org_roots():
             try:
                 org = OrgState.load(slug=slug, root=root, settings=settings)
