@@ -173,6 +173,7 @@ class HeadlessAdapter(Protocol):
                         permission_posture: PermissionPosture) -> list[str]: ...
     def parse_event(self, raw_line: str) -> TurnFrame | None: ...
     def extract_session_id(self, frame: TurnFrame) -> str | None: ...
+    def drain_pending_frames(self) -> list[TurnFrame]: ...
 ```
 
 Registry keyed by `config.selected_executor`. Unknown executor → `None` →
@@ -201,12 +202,22 @@ Reconnect: loads the persisted STRUCTURED log, not raw scrollback replay.
 
 | PR | Scope | Status |
 |---|---|---|
-| PR-1 | Adapter interface + TurnFrame vocabulary + Conversation persistence + A-mode route | ✅ this PR |
-| PR-2 | opencode + pi adapters | pending |
-| PR-3 | claude adapter + permission posture (gated) | pending |
+| PR-1 | Adapter interface + TurnFrame vocabulary + Conversation persistence + A-mode route | ✅ merged |
+| PR-2 | opencode + pi adapters | ✅ merged (#276) |
+| PR-3 | claude adapter + permission posture (gated) | ✅ this PR |
 | PR-4 | codex adapter + sandbox/approval (gated) | pending |
 | PR-5 | Dock frontend: MessageBubble/TypingBubble reuse | pending |
 | PR-6 | AppBar avatar entry point | ✅ this PR |
+
+### 6.9 Claude adapter (PR-3)
+
+The `ClaudeAdapter` (registered at `runtime/daemon/headless_assistant.py`) implements
+the `HeadlessAdapter` Protocol for claude v2.1.193+ headless mode.
+
+- **Invocation:** `claude -p <prompt> --output-format stream-json --verbose --permission-mode <mode> --allowedTools <tools> [--resume <id>]`
+- **Event parsing:** Handles `system` (init / hook), `assistant` (text / tool_use content blocks), `user` (tool_result), and `result` (terminal, carries session_id + usage) stream-json events. Maps text → `text_delta`, tool_use → `tool_call`, tool_result → `tool_result` TurnFrames.
+- **Session continuity:** Tracks `session_id` from `system.subtype:init` and `result` events for `--resume`.
+- **Permission posture (founder-ruled, KB `assistant-headless-permission-postures`):** Mirrors the org-agent `allow_rules` machinery via `allow_rules_for_agent(…, cli=True)` from `runtime.orchestrator.workspace_adapters`, rendered on the CLI as `--allowedTools "Bash(happyranch *) …"`. Uses `--permission-mode` from `DaemonState.settings.permission_mode` (configurable; default `auto`). NOT `--dangerously-skip-permissions`. The caller (route handler) pre-computes the posture and passes it via `PermissionPosture.claude_allowed_tools` and `PermissionPosture.claude_permission_mode`; defaults when unset are `Bash(happyranch *)` baseline and `auto` mode respectively.
 
 ### 6.8 Frozen symbols
 

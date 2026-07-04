@@ -49,6 +49,13 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Shared helpers from the executor layer — used by ClaudeAdapter to parse
+# terminal result events instead of manual event.get() that forks the parser.
+from runtime.orchestrator.executors import (
+    _parse_claude_usage as _executor_parse_claude_usage,
+    _parse_claude_session_id as _executor_parse_claude_session_id,
+)
+
 # ---------------------------------------------------------------------------
 # TurnFrame vocabulary
 # ---------------------------------------------------------------------------
@@ -117,11 +124,13 @@ class TurnFrame(BaseModel):
 class PermissionPosture:
     """Permission configuration for headless executor invocations.
 
-    PR-1 ships this as an empty placeholder.  Real posture objects land in
-    PR-3 (claude --allowedTools / --permission-mode) and PR-4 (codex --sandbox /
-    approval policy).  The null adapter ignores it.
+    PR-1 shipped this as an empty placeholder.  Claude fields land in PR-3
+    (--allowedTools / --permission-mode); codex fields land in PR-4.
+    The caller (route handler) pre-computes the posture; the adapter reads it.
     """
-    pass
+    # Claude-specific (PR-3).
+    claude_allowed_tools: str | None = None
+    claude_permission_mode: str = "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +166,17 @@ class HeadlessAdapter(Protocol):
         """Extract the executor's own session id from a TurnFrame for resume
         continuity."""
         ...
+
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """Drain any buffered frames that haven't been emitted yet.
+
+        Called by run_headless_turn after EOF on stdout so multi-content-block
+        messages (e.g. assistant with text + 2 tool_use blocks) don't leave
+        frames stranded in the adapter's internal buffer.
+
+        Default: no-op — adapters without buffering return an empty list.
+        """
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +242,10 @@ class NullAdapter:
             if isinstance(sid, str) and sid:
                 return sid
         return None
+
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """No-op — NullAdapter has no buffering."""
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +361,10 @@ class OpenCodeAdapter:
     def extract_session_id(self, frame: TurnFrame) -> str | None:
         return self._last_session_id
 
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """No-op — OpenCodeAdapter has no buffering."""
+        return []
+
 
 # ---------------------------------------------------------------------------
 # PiAdapter (PR-2)
@@ -408,10 +436,228 @@ class PiAdapter:
     def extract_session_id(self, frame: TurnFrame) -> str | None:
         return self._last_session_id
 
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """No-op — PiAdapter has no buffering."""
+        return []
+
 
 # ---- init: register PR-2 adapters ----
 register_adapter("opencode", OpenCodeAdapter())
 register_adapter("pi", PiAdapter())
+
+
+# ---------------------------------------------------------------------------
+# ClaudeAdapter (PR-3)
+# ---------------------------------------------------------------------------
+
+class ClaudeAdapter:
+    """Headless adapter for claude (v2.1.193+, ``-p --output-format stream-json``).
+
+    claude emits JSONL events in stream-json mode:
+    - ``system`` (subtype init/hook_started/hook_response) — session setup.
+    - ``assistant`` — message with content blocks (text, tool_use).
+    - ``user`` — tool_result content blocks.
+    - ``result`` (subtype success/error_*) — terminal event with usage/session_id.
+    - ``rate_limit_event`` — daemon-level, not surfaced to dock.
+
+    Session continuity via ``--resume <session_id>``.
+
+    Permission posture (THR-056 design §3, KB assistant-headless-permission-postures)
+    -------------------------------------------------------------------------
+    Mirrors the org-agent ``allow_rules`` machinery **exactly** as
+    ClaudeExecutor does (executors.py:580-596).  The allowlist is built by
+    the caller via ``allow_rules_for_agent(paths, workspace.name, cli=True)``
+    and passed in ``PermissionPosture.claude_allowed_tools``.  The permission
+    mode comes from ``PermissionPosture.claude_permission_mode``.
+
+    This is NOT ``--dangerously-skip-permissions`` — the assistant's headless
+    posture is the same as a worker's, per the founder ruling.
+    """
+
+    def __init__(self) -> None:
+        self._last_session_id: str | None = None
+        self._pending_frames: list[TurnFrame] = []
+        self._terminal_usage: dict[str, Any] | None = None
+
+    # ---- HeadlessAdapter contract ----
+
+    def build_turn_argv(
+        self,
+        *,
+        prompt: str,
+        resume_id: str | None,
+        permission_posture: PermissionPosture,
+    ) -> list[str]:
+        allowed = permission_posture.claude_allowed_tools or "Bash(happyranch *)"
+        mode = permission_posture.claude_permission_mode or "auto"
+        # Mirror the order in ClaudeExecutor (executors.py:588-596):
+        # -p <prompt> immediately, then flags, then --resume at the end.
+        argv = [
+            "claude", "-p", prompt,
+            "--output-format", "stream-json",
+            "--verbose",
+            "--permission-mode", mode,
+            "--allowedTools", allowed,
+        ]
+        if resume_id:
+            argv.extend(["--resume", resume_id])
+        return argv
+
+    def parse_event(self, raw_line: str) -> TurnFrame | None:
+        # If we have pending frames from a previous multi-content-block
+        # message, emit one now.  Silently parse the current raw_line for
+        # side effects (session_id tracking), pushing its frames to the
+        # pending queue so they are emitted in the correct order after
+        # the buffered frames.
+        if self._pending_frames:
+            self._parse_for_side_effects(raw_line)
+            return self._pending_frames.pop(0)
+        return self._parse_event_impl(raw_line)
+
+    def _parse_for_side_effects(self, raw_line: str) -> None:
+        """Parse *raw_line* silently for side effects (session_id /
+        terminal-usage tracking).  Any resulting TurnFrame is pushed to
+        ``_pending_frames`` so it is emitted in order after buffered frames."""
+        frame = self._parse_event_impl(raw_line)
+        if frame is not None:
+            self._pending_frames.append(frame)
+
+    def _parse_event_impl(self, raw_line: str) -> TurnFrame | None:
+        """Core parsing logic: one JSONL line → at most one TurnFrame.
+
+        Multi-content-block assistant messages return the *first* block and
+        buffer the rest in ``_pending_frames`` so every content block is
+        eventually emitted across successive calls.
+        """
+        line = raw_line.strip()
+        if not line or not line.startswith("{"):
+            return None
+        try:
+            event = _json.loads(line)
+        except (_json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(event, dict):
+            return None
+
+        # Track session_id from every event that carries it.
+        sid = event.get("session_id")
+        if isinstance(sid, str) and sid:
+            self._last_session_id = sid
+
+        etype = event.get("type")
+        if etype == "system":
+            subtype = event.get("subtype")
+            if subtype == "init":
+                # System init carries session_id / model — no dock frame,
+                # but we already tracked session_id above.
+                return None
+            # hook_started, hook_response, etc. → no dock frame.
+            return None
+
+        if etype == "assistant":
+            msg = event.get("message")
+            if not isinstance(msg, dict):
+                return None
+            content = msg.get("content")
+            if not isinstance(content, list):
+                return None
+            frames: list[TurnFrame] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    text = block.get("text")
+                    if isinstance(text, str) and text:
+                        frames.append(TurnFrame.text_delta(text=text))
+                elif btype == "tool_use":
+                    name = block.get("name")
+                    if isinstance(name, str):
+                        frames.append(TurnFrame.tool_call(
+                            name=name,
+                            input=block.get("input") if isinstance(block.get("input"), dict) else None,
+                        ))
+            if not frames:
+                return None
+            if len(frames) == 1:
+                return frames[0]
+            # Multi-content-block message: return the first block, buffer
+            # the rest so they are emitted across the next calls.
+            result = frames[0]
+            self._pending_frames.extend(frames[1:])
+            return result
+
+        if etype == "user":
+            msg = event.get("message")
+            if not isinstance(msg, dict):
+                return None
+            content = msg.get("content")
+            if not isinstance(content, list):
+                return None
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    # Mark as ok=True — errors are surfaced via the
+                    # assistant's next text block or the result event.
+                    return TurnFrame.tool_result(
+                        name=block.get("tool_use_id", "unknown"),
+                        ok=True,
+                    )
+            return None
+
+        if etype == "result":
+            # Terminal event — carries session_id and usage.
+            # Reuse the shared executor helpers (_parse_claude_usage,
+            # _parse_claude_session_id) instead of manual event.get()
+            # to maintain parser parity with the orchestrator path.
+            #
+            # Session id: use _parse_claude_session_id for consistency
+            # (the generic tracking above also catches this, but the
+            # shared helper normalises the extraction).
+            sid = _executor_parse_claude_session_id(raw_line)
+            if sid:
+                self._last_session_id = sid
+            # Usage: parse via _parse_claude_usage for canonical model +
+            # normalised token fields.  Convert TokenUsage to a dict so
+            # run_headless_turn can merge it into the turn_end frame.
+            parsed = _executor_parse_claude_usage(raw_line)
+            if parsed is not None:
+                tu_dict: dict[str, Any] = {}
+                if parsed.input_tokens is not None:
+                    tu_dict["input_tokens"] = parsed.input_tokens
+                if parsed.output_tokens is not None:
+                    tu_dict["output_tokens"] = parsed.output_tokens
+                if parsed.cache_read_tokens is not None:
+                    tu_dict["cache_read_input_tokens"] = parsed.cache_read_tokens
+                if parsed.cache_creation_tokens is not None:
+                    tu_dict["cache_creation_input_tokens"] = parsed.cache_creation_tokens
+                if parsed.model is not None:
+                    tu_dict["model"] = parsed.model
+                self._terminal_usage = tu_dict
+            # No dock frame needed; run_headless_turn sends turn_end
+            # independently.
+            return None
+
+        # rate_limit_event, unknown → no dock frame.
+        return None
+
+    def extract_session_id(self, frame: TurnFrame) -> str | None:
+        return self._last_session_id
+
+    def drain_pending_frames(self) -> list[TurnFrame]:
+        """Drain all buffered frames from multi-content-block messages.
+
+        Called at EOF by run_headless_turn so frames buffered by
+        multi-content-block assistant messages are not lost.
+        """
+        frames = list(self._pending_frames)
+        self._pending_frames.clear()
+        return frames
+
+
+# ---- init: register PR-3 adapter ----
+register_adapter("claude", ClaudeAdapter())
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +963,26 @@ async def run_headless_turn(
 
         await proc.wait()
 
+        # Drain any buffered frames the adapter accumulated from
+        # multi-content-block messages (e.g. assistant with text + 2
+        # tool_use blocks).  parse_event emits one frame per call;
+        # remainder sits in the adapter's internal buffer and must be
+        # flushed at EOF.
+        for drained in adapter.drain_pending_frames():
+            await frame_sender(drained)
+            await manager.buffer_inflight_frame(workspace=workspace, frame=drained)
+            extracted = adapter.extract_session_id(drained)
+            if extracted is not None:
+                session_id = extracted
+
+        # Capture session_id from adapters that track it internally from
+        # terminal events (e.g., ClaudeAdapter result event).  These events
+        # return None from parse_event, so extract_session_id is never
+        # called during the stdout loop.
+        extra_sid = adapter.extract_session_id(TurnFrame.turn_end())
+        if extra_sid is not None:
+            session_id = extra_sid
+
         # Drain stderr for diagnostics only — no frames emitted from it.
         stderr_data = await proc.stderr.read()
         if stderr_data and proc.returncode != 0:
@@ -738,10 +1004,17 @@ async def run_headless_turn(
             await proc.wait()
 
     # Send turn_end frame.
-    usage: dict[str, Any] | None = None
+    usage: dict[str, Any] = {}
     if session_id:
-        usage = {"session_id": session_id}
-    end_frame = TurnFrame.turn_end(usage=usage)
+        usage["session_id"] = session_id
+    # Include terminal usage from adapters that capture it (e.g.,
+    # ClaudeAdapter._terminal_usage from the result event).
+    terminal_usage = getattr(adapter, '_terminal_usage', None)
+    if isinstance(terminal_usage, dict):
+        for k, v in terminal_usage.items():
+            if k not in usage:
+                usage[k] = v
+    end_frame = TurnFrame.turn_end(usage=usage if usage else None)
     await frame_sender(end_frame)
     await manager.buffer_inflight_frame(workspace=workspace, frame=end_frame)
 

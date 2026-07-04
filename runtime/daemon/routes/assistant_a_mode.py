@@ -34,6 +34,8 @@ from runtime.daemon.headless_assistant import (
     get_adapter,
     run_headless_turn,
 )
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.workspace_adapters import allow_rules_for_agent
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes.assistant import (
     _websocket_token_is_valid,
@@ -222,13 +224,43 @@ async def attach_assistant_a_mode(websocket: WebSocket) -> None:
                     )
                     continue
 
+                # Build the permission posture from the org-agent allow_rules
+                # machinery — exactly as ClaudeExecutor does (executors.py:580-596).
+                # This mirrors the founder-ruled KB posture for claude.
+                #
+                # Agent identity: read from the assistant workspace's agent.yaml,
+                # which the bootstrap writes as `name: system_assistant`
+                # (runtime/system_assistant.py:640).  This is the single source
+                # of truth — we must NOT pass workspace.name ('workspace') which
+                # would resolve a non-existent org/agents/workspace.md.
+                import yaml as _yaml
+                agent_yaml_path = workspace / "agent.yaml"
+                agent_name = "system_assistant"  # fallback
+                if agent_yaml_path.exists():
+                    try:
+                        agent_cfg = _yaml.safe_load(agent_yaml_path.read_text())
+                        if isinstance(agent_cfg, dict):
+                            an = agent_cfg.get("name")
+                            if isinstance(an, str) and an.strip():
+                                agent_name = an.strip()
+                    except Exception:
+                        pass  # fall back to default
+                paths = OrgPaths(root=root)
+                allowed_tools = " ".join(
+                    allow_rules_for_agent(paths, agent_name, cli=True)
+                )
+                posture = PermissionPosture(
+                    claude_allowed_tools=allowed_tools,
+                    claude_permission_mode=state_obj.settings.permission_mode,
+                )
+
                 await run_headless_turn(
                     manager=headless_manager,
                     adapter=adapter,
                     workspace=workspace,
                     prompt=prompt,
                     conversation=conversation,
-                    permission_posture=PermissionPosture(),
+                    permission_posture=posture,
                     frame_sender=_send_frame,
                 )
                 continue
