@@ -1,8 +1,8 @@
 import SwiftUI
 import HappyRanchSupervisor
 
-/// Diagnostics panel showing app version, daemon state, logs, and health probe results.
-/// All sensitive data is redacted before display.
+/// Diagnostics panel showing app version, daemon state, logs, health probe results,
+/// and crash/failure details. All sensitive data is redacted before display.
 struct DiagnosticsView: View {
     let diagnostics: DiagnosticsCollector
     let supervisor: DaemonSupervisor
@@ -11,7 +11,6 @@ struct DiagnosticsView: View {
 
     var body: some View {
         let bundle = diagnostics.collect()
-        // Force refresh when the sheet appears
         let _ = refreshID
 
         VStack(alignment: .leading, spacing: 0) {
@@ -32,9 +31,20 @@ struct DiagnosticsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+
+                    // Crash / failure indicator (Req 3)
+                    if supervisor.state == .crashed || supervisor.state == .failed {
+                        crashIndicator
+                    }
+
                     GroupBox("App") {
                         infoRow("Version", bundle["app_version"] as? String ?? "—")
                         infoRow("Build", bundle["app_build"] as? String ?? "—")
+                        infoRow("macOS", bundle["macos_version"] as? String ?? "—")
+                        infoRow("Architecture", bundle["architecture"] as? String ?? "—")
+                        if let sha = bundle["build_sha"] as? String {
+                            infoRow("Build SHA", sha)
+                        }
                         infoRow("Runtime Home", bundle["runtime_home"] as? String ?? "—")
                         if let path = bundle["active_runtime_path"] as? String {
                             infoRow("Runtime Path", path)
@@ -58,6 +68,19 @@ struct DiagnosticsView: View {
                         }
                         if let sig = bundle["last_exit_signal"] {
                             infoRow("Last Signal", "\(sig)")
+                        }
+                    }
+
+                    // Daemon stderr (Req 3)
+                    if let stderr = bundle["daemon_stderr"] as? String, !stderr.isEmpty {
+                        GroupBox("Daemon Stderr (captured)") {
+                            ScrollView {
+                                Text(stderr)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 200)
                         }
                     }
 
@@ -102,6 +125,33 @@ struct DiagnosticsView: View {
                             .frame(maxHeight: 150)
                         }
                     }
+
+                    // On-disk diagnostics path (Req 3)
+                    GroupBox("Diagnostics Location") {
+                        HStack(alignment: .top) {
+                            Text("Path:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 60, alignment: .leading)
+                            Text(diagnostics.diagnosticsDirectory.path)
+                                .font(.caption)
+                                .textSelection(.enabled)
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    // Env/PATH summary
+                    if let envSummary = bundle["env_path_summary"] as? String, !envSummary.isEmpty {
+                        GroupBox("Environment Summary (redacted)") {
+                            ScrollView {
+                                Text(envSummary)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 100)
+                        }
+                    }
                 }
                 .padding()
             }
@@ -115,18 +165,46 @@ struct DiagnosticsView: View {
                     .padding(.bottom, 8)
             }
         }
-        .frame(width: 560, height: 520)
+        .frame(width: 600, height: 600)
         .onAppear {
             refreshID = UUID()
         }
     }
+
+    // MARK: - Crash indicator
+
+    private var crashIndicator: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.red)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(supervisor.state == .crashed
+                     ? "Daemon Crashed"
+                     : "Daemon Failed")
+                    .font(.headline)
+                    .foregroundColor(.red)
+                Text("Review the captured stderr and diagnostics below to identify the cause.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.red.opacity(0.1))
+        )
+    }
+
+    // MARK: - Helpers
 
     private func infoRow(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top) {
             Text(label + ":")
                 .font(.caption)
                 .foregroundColor(.secondary)
-                .frame(width: 100, alignment: .leading)
+                .frame(width: 120, alignment: .leading)
             Text(value)
                 .font(.caption)
                 .textSelection(.enabled)
@@ -134,17 +212,17 @@ struct DiagnosticsView: View {
     }
 
     private func exportDiagnostics() {
-        let json = diagnostics.exportJSON()
-
         let savePanel = NSSavePanel()
         savePanel.title = "Export Diagnostics"
-        savePanel.nameFieldStringValue = "happyranch-diagnostics-\(ISO8601DateFormatter().string(from: Date())).json"
-        savePanel.allowedContentTypes = [.json]
+        let dateStr = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        savePanel.nameFieldStringValue = "happyranch-diagnostics-\(dateStr).zip"
+        savePanel.allowedContentTypes = []
 
         savePanel.begin { response in
             if response == .OK, let url = savePanel.url {
                 do {
-                    try json.write(to: url, atomically: true, encoding: .utf8)
+                    try diagnostics.exportZip(to: url)
                     exportMessage = "Exported to \(url.lastPathComponent)"
                 } catch {
                     exportMessage = "Export failed: \(error.localizedDescription)"

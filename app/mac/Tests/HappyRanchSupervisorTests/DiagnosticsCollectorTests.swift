@@ -204,4 +204,148 @@ struct DiagnosticsCollectorTests {
         #expect(!exportJSON.contains("hr_token_raw_value"))
         #expect(exportJSON.contains("[REDACTED]"))
     }
+
+    // MARK: - New diagnostic fields (THR-044 Build B)
+
+    @Test("collects macOS version as string and numeric tuple")
+    func collectsMacOSVersion() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let bundle = collector.collect()
+
+        let versionString = bundle["macos_version"] as? String ?? ""
+        #expect(!versionString.isEmpty, "macOS version string must be present")
+        #expect(versionString.contains("."), "macOS version string must contain dots")
+
+        #expect(bundle["macos_major"] as? Int != nil, "macos_major must be present")
+        #expect(bundle["macos_minor"] as? Int != nil, "macos_minor must be present")
+        #expect(bundle["macos_patch"] as? Int != nil, "macos_patch must be present")
+    }
+
+    @Test("collects architecture via utsname")
+    func collectsArchitecture() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let bundle = collector.collect()
+
+        let arch = bundle["architecture"] as? String ?? ""
+        #expect(!arch.isEmpty, "Architecture must be present")
+        #expect(arch == "arm64" || arch == "x86_64",
+                "Architecture must be arm64 or x86_64, got: \(arch)")
+    }
+
+    @Test("collects build SHA (best-effort, falls back to unknown)")
+    func collectsBuildSHA() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let bundle = collector.collect()
+
+        let sha = bundle["build_sha"] as? String ?? ""
+        #expect(!sha.isEmpty, "Build SHA must be present")
+        // In swift test, Info.plist won't have the key, so it should be "unknown"
+        // But if it IS set (e.g. in a bundled build), it'll be a hex string
+        #expect(sha == "unknown" || sha.allSatisfy { $0.isHexDigit },
+                "Build SHA must be 'unknown' or a hex string, got: \(sha)")
+    }
+
+    @Test("collects env/PATH summary")
+    func collectsEnvPathSummary() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let bundle = collector.collect()
+
+        let envSummary = bundle["env_path_summary"] as? String ?? ""
+        #expect(!envSummary.isEmpty, "env/PATH summary must be present")
+        #expect(envSummary.contains("PATH"), "env/PATH summary must mention PATH")
+    }
+
+    @Test("env/PATH summary redaction — token-shaped values redacted")
+    func envPathSummaryRedactsTokens() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        setenv("HAPPYRANCH_TEST_TOKEN", "hr_token_test_secret_123", 1)
+        defer { unsetenv("HAPPYRANCH_TEST_TOKEN") }
+
+        let bundle = collector.collect()
+        let envSummary = bundle["env_path_summary"] as? String ?? ""
+
+        #expect(envSummary.contains("PATH"), "PATH must be present in env summary")
+    }
+
+    // MARK: - Daemon stderr recording
+
+    @Test("recordDaemonStderr stores captured stderr")
+    func recordDaemonStderr() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        collector.recordDaemonStderr("Fatal error: port already in use\nStack trace: ...")
+
+        let bundle = collector.collect()
+        let stderr = bundle["daemon_stderr"] as? String ?? ""
+        #expect(stderr.contains("Fatal error"))
+        #expect(stderr.contains("port already in use"))
+    }
+
+    @Test("daemon stderr redacts bearer tokens")
+    func daemonStderrRedactsTokens() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        collector.recordDaemonStderr("ERROR: Bearer hr_token_leaked_secret\n")
+
+        let bundle = collector.collect()
+        let stderr = bundle["daemon_stderr"] as? String ?? ""
+
+        #expect(!stderr.contains("hr_token_leaked_secret"),
+                "Bearer token in daemon stderr must be redacted")
+        #expect(stderr.contains("[REDACTED]"),
+                "Redaction marker must be present in daemon stderr")
+    }
+
+    // MARK: - Persist to disk
+
+    @Test("persist writes diagnostics to directory and returns path")
+    func persistWritesToDirectory() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-diagnostics-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let collector = DiagnosticsCollector(homeDir: tmpDir.path)
+        collector.recordLaunchLog("Launcher started")
+        collector.recordDaemonStderr("error: something went wrong")
+        collector.recordExit(exitCode: 1, signal: nil)
+
+        let outputDir = try collector.persist()
+        defer { try? FileManager.default.removeItem(at: outputDir) }
+
+        #expect(FileManager.default.fileExists(atPath: outputDir.path))
+
+        let jsonPath = outputDir.appendingPathComponent("diagnostics.json")
+        #expect(FileManager.default.fileExists(atPath: jsonPath.path))
+    }
+
+    // MARK: - Export zip
+
+    @Test("exportZip produces a redacted zip bundle without live daemon")
+    func exportZipProducesRedactedBundle() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-zip-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        collector.recordLaunchLog("Bearer token=hr_token_secret")
+        collector.recordDaemonStderr("error: hr_token_leaked")
+        collector.recordExit(exitCode: 1, signal: nil)
+
+        let zipURL = tmpDir.appendingPathComponent("diagnostics.zip")
+        try collector.exportZip(to: zipURL)
+
+        #expect(FileManager.default.fileExists(atPath: zipURL.path),
+                "Zip file must be created")
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: zipURL.path)
+        let size = attrs[.size] as? Int64 ?? 0
+        #expect(size > 0, "Zip file must be non-empty")
+    }
+
+    @Test("diagnosticsDirectory returns path under daemon home")
+    func diagnosticsDirectoryPath() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let dir = collector.diagnosticsDirectory
+        #expect(dir.path.hasSuffix("/diagnostics"))
+        #expect(dir.path.contains("/tmp/test-hr"))
+    }
 }

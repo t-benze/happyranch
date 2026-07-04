@@ -22,6 +22,12 @@ public protocol ProcessHandle: AnyObject, Sendable {
     /// Why the process terminated.
     var terminationReason: Process.TerminationReason { get }
 
+    /// Captured standard error output from the child process (nil until process exits).
+    var capturedStandardError: String? { get }
+
+    /// Captured standard output from the child process (nil until process exits).
+    var capturedStandardOutput: String? { get }
+
     /// Send SIGTERM to the process.
     func terminate()
 }

@@ -78,6 +78,12 @@ echo "  Web dist copied."
 # Generate Info.plist from template with LSEnvironment for bundled mode
 cp "$PROJECT_DIR/scripts/Info.plist" "${BUNDLE_NAME}.app/Contents/Info.plist"
 
+# Inject GitCommitSHA (best-effort)
+GIT_SHA=$(cd "$REPO_ROOT" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+/usr/libexec/PlistBuddy \
+    -c "Set :GitCommitSHA $GIT_SHA" \
+    "${BUNDLE_NAME}.app/Contents/Info.plist" 2>/dev/null || true
+
 # Inject LSEnvironment to set PACKAGING_MODE=bundled when launched as .app
 /usr/libexec/PlistBuddy \
     -c "Add :LSEnvironment dict" \

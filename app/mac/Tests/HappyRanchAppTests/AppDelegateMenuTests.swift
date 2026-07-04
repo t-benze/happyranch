@@ -287,4 +287,26 @@ struct ShowDiagnosticsToggleTests {
         #expect(delegate.supervisor.state == beforeState,
                 "Toggling showDiagnostics must not change supervisor state")
     }
+
+    // MARK: - Diagnostics with no daemon (Req 4)
+
+    @Test("diagnostics collect + view path works with no daemon and no webViewURL")
+    func diagnosticsWorksWithNoDaemon() async {
+        let delegate = AppDelegate()
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-nodaemon")
+        delegate.refreshDerivedState()
+
+        // webViewURL is nil (no daemon to connect to)
+        #expect(delegate.webViewURL == nil)
+        #expect(delegate.supervisor.state == .stopped)
+
+        // Diagnostics must still work
+        let bundle = delegate.diagnostics.collect()
+        #expect(bundle["app_version"] != nil, "App version must be present")
+        #expect(bundle["runtime_home"] != nil, "Runtime home must be present")
+
+        // diagnosticsDirectory must be valid
+        let dir = delegate.diagnostics.diagnosticsDirectory
+        #expect(dir.path.hasSuffix("/diagnostics"))
+    }
 }

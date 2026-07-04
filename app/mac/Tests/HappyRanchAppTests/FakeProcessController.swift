@@ -46,6 +46,12 @@ final class FakeProcessHandle: ProcessHandle, @unchecked Sendable {
     var terminationStatus: Int32 { _terminationStatus }
     var terminationReason: Process.TerminationReason { _terminationReason }
 
+    /// Captured stderr from the child process (set via simulateCrash).
+    private(set) var capturedStandardError: String?
+
+    /// Captured stdout from the child process (set via simulateCrash).
+    private(set) var capturedStandardOutput: String?
+
     func terminate() {
         _isRunning = false
         _hasExited = true
@@ -60,6 +66,13 @@ final class FakeProcessHandle: ProcessHandle, @unchecked Sendable {
         _hasExited = true
         _terminationReason = .uncaughtSignal
         _terminationStatus = exitCode
+    }
+
+    /// Mark this handle as exited with a crash status and captured streams.
+    func simulateCrash(exitCode: Int32, stderr: String? = nil, stdout: String? = nil) {
+        capturedStandardError = stderr
+        capturedStandardOutput = stdout
+        simulateCrash(exitCode: exitCode)
     }
 
     var hasExited: Bool { _hasExited }

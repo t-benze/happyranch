@@ -11,6 +11,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     public private(set) var daemonStateValue: String?
     public private(set) var launchLogContent: String?
     public private(set) var daemonLogTailContent: String?
+    public private(set) var daemonStderrContent: String?
     public private(set) var lastHealthProbeSuccess: Bool?
     public private(set) var lastHealthProbeLatencyMs: Int?
     public private(set) var lastHealthProbeError: String?
@@ -60,8 +61,17 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         activeRuntimePath = path
     }
 
+    public func recordDaemonStderr(_ stderr: String) {
+        daemonStderrContent = DiagnosticsRedactor.redact(stderr)
+    }
+
     public func recordToken(_ token: String) {
         tokenValue = DiagnosticsRedactor.redact(token)
+    }
+
+    /// The diagnostics persistence directory under the daemon home.
+    public var diagnosticsDirectory: URL {
+        URL(fileURLWithPath: homeDir).appendingPathComponent("diagnostics")
     }
 
     // MARK: - Collect
@@ -78,6 +88,23 @@ public final class DiagnosticsCollector: @unchecked Sendable {
             Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")
         bundle["runtime_home"] = DiagnosticsRedactor.redact(homeDir)
 
+        // macOS version
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersion
+        bundle["macos_version"] = "\(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)"
+        bundle["macos_major"] = osVersion.majorVersion
+        bundle["macos_minor"] = osVersion.minorVersion
+        bundle["macos_patch"] = osVersion.patchVersion
+
+        // Architecture via utsname
+        bundle["architecture"] = Self.machineArchitecture()
+
+        // Build SHA (best-effort, Info.plist key GitCommitSHA)
+        let sha = Bundle.main.infoDictionary?["GitCommitSHA"] as? String ?? "unknown"
+        bundle["build_sha"] = DiagnosticsRedactor.redact(sha)
+
+        // Env/PATH summary (redacted)
+        bundle["env_path_summary"] = Self.buildEnvPathSummary()
+
         if let pid = daemonPid { bundle["daemon_pid"] = pid }
         if let port = daemonPort { bundle["daemon_port"] = port }
         if let host = daemonBindHost { bundle["daemon_bind_host"] = DiagnosticsRedactor.redact(host) }
@@ -85,6 +112,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
 
         if let log = launchLogContent { bundle["launcher_log"] = DiagnosticsRedactor.redact(log) }
         if let log = daemonLogTailContent { bundle["daemon_log_tail"] = DiagnosticsRedactor.redact(log) }
+        if let stderr = daemonStderrContent { bundle["daemon_stderr"] = DiagnosticsRedactor.redact(stderr) }
 
         if let success = lastHealthProbeSuccess {
             bundle["last_health_probe_success"] = success
@@ -130,4 +158,95 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         }
         return jsonString
     }
+
+    // MARK: - Persist + export
+
+    /// Persist the collected diagnostics to the diagnostics directory.
+    /// Writes: diagnostics.json, launcher_log.txt, daemon_stderr.txt
+    /// Returns the output directory URL.
+    public func persist() throws -> URL {
+        let dir = diagnosticsDirectory
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let json = exportJSON()
+        try json.write(to: dir.appendingPathComponent("diagnostics.json"), atomically: true, encoding: .utf8)
+
+        if let log = launchLogContent {
+            try log.write(to: dir.appendingPathComponent("launcher_log.txt"), atomically: true, encoding: .utf8)
+        }
+        if let stderr = daemonStderrContent {
+            try stderr.write(to: dir.appendingPathComponent("daemon_stderr.txt"), atomically: true, encoding: .utf8)
+        }
+        if let logTail = daemonLogTailContent {
+            try logTail.write(to: dir.appendingPathComponent("daemon_log_tail.txt"), atomically: true, encoding: .utf8)
+        }
+
+        return dir
+    }
+
+    /// Export diagnostics as a redacted ZIP bundle.
+    /// Contains: diagnostics.json (summary), launcher_log.txt, daemon_stderr.txt,
+    /// daemon_log_tail.txt (if any). No live daemon required.
+    public func exportZip(to outputURL: URL) throws {
+        let dir = try persist()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Use `ditto -c -k` to create a zip archive (available on all macOS systems).
+        // This is more reliable than NSFileCoordinator for programmatic zip creation.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-c", "-k", dir.path, outputURL.path]
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw DiagnosticsExportError.zipCreationFailed
+        }
+    }
+
+    // MARK: - Private helpers
+
+    /// Returns the machine architecture as "arm64" or "x86_64".
+    private static func machineArchitecture() -> String {
+        var sysInfo = utsname()
+        uname(&sysInfo)
+        let mirror = Mirror(reflecting: sysInfo.machine)
+        let identifier = mirror.children.reduce("") { identifier, element in
+            guard let value = element.value as? Int8, value != 0 else { return identifier }
+            return identifier + String(UnicodeScalar(UInt8(value)))
+        }
+        return identifier
+    }
+
+    /// Build a redacted env/PATH summary.
+    /// Captures PATH + a small whitelist of operational vars, redacting everything.
+    private static func buildEnvPathSummary() -> String {
+        let env = ProcessInfo.processInfo.environment
+        var lines: [String] = []
+
+        // PATH is the critical diagnostic field
+        if let path = env["PATH"] {
+            lines.append("PATH=\(DiagnosticsRedactor.redact(path))")
+        }
+        // HOME for context
+        if let home = env["HOME"] {
+            lines.append("HOME=\(DiagnosticsRedactor.redact(home))")
+        }
+        // Whitelist operational HappyRanch vars
+        for key in ["HAPPYRANCH_DAEMON_HOME", "HAPPYRANCH_WEB_DIST", "PACKAGING_MODE"] {
+            if let value = env[key] {
+                lines.append("\(key)=\(DiagnosticsRedactor.redact(value))")
+            }
+        }
+
+        if lines.isEmpty {
+            return "(no environment available)"
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// Errors during diagnostics export.
+public enum DiagnosticsExportError: Error {
+    case zipCreationFailed
 }

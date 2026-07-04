@@ -252,11 +252,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 terminationHandler: { @Sendable [weak self] exitedHandle in
                     let exitCode = exitedHandle.terminationStatus
                     let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
+                    let stderr = exitedHandle.capturedStandardError
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         if let ch = self.currentHandle,
                            ch.processIdentifier != exitedHandle.processIdentifier {
                             return
+                        }
+                        if let stderr = stderr {
+                            self.diagnostics.recordDaemonStderr(stderr)
                         }
                         self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
                         self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
@@ -278,6 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         } catch {
             currentHandle = nil
+            diagnostics.recordLaunchLog("Launch failed (bundled): \(error.localizedDescription)")
             stateText = "Launch failed: \(error.localizedDescription)"
             supervisor.onProcessExited(exitCode: -1, signal: nil)
             refreshDerivedState()
@@ -308,6 +313,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                            ch.processIdentifier != exitedHandle.processIdentifier {
                             return
                         }
+                        if let stderr = exitedHandle.capturedStandardError {
+                            self.diagnostics.recordDaemonStderr(stderr)
+                        }
                         self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
                         self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
                         self.refreshDerivedState()
@@ -333,6 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         } catch {
             currentHandle = nil
+            diagnostics.recordLaunchLog("Launch failed (dev): \(error.localizedDescription)")
             stateText = "Launch failed: \(error.localizedDescription)"
             supervisor.onProcessExited(exitCode: -1, signal: nil)
             refreshDerivedState()
