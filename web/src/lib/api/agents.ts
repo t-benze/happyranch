@@ -128,6 +128,21 @@ export const setAgentExecutor = (
     body,
   });
 
+/** Set or clear the per-agent model (THR-067). Mirrors setAgentExecutor shape. */
+export const setAgentModel = (
+  slug: string,
+  agentName: string,
+  body: { model: string | null },
+): Promise<{
+  agent: string;
+  before: string | null;
+  after: string | null;
+}> =>
+  request(`/orgs/${slug}/agents/${agentName}/model`, {
+    method: 'PUT',
+    body,
+  });
+
 /** Add, remove, or update an agent's repo binding. */
 export interface ManageAgentRepoBody {
   action: 'add' | 'remove' | 'update';

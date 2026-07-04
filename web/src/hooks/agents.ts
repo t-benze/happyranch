@@ -32,6 +32,9 @@ export const useCreateAgent: ReturnType<typeof useData>['agents']['useCreateAgen
 export const useSetAgentExecutor: ReturnType<typeof useData>['agents']['useSetAgentExecutor'] = () =>
   useData().agents.useSetAgentExecutor();
 
+export const useSetAgentModel: ReturnType<typeof useData>['agents']['useSetAgentModel'] = () =>
+  useData().agents.useSetAgentModel();
+
 export const useManageAgentRepo: ReturnType<typeof useData>['agents']['useManageAgentRepo'] = () =>
   useData().agents.useManageAgentRepo();
 

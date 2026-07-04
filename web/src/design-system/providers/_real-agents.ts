@@ -135,6 +135,24 @@ export const realAgentsApi: AgentsApi = {
     });
   },
 
+  useSetAgentModel: () => {
+    const slug = useRealOrgSlug();
+    const qc = useQueryClient();
+    return useMutation({
+      mutationFn: ({
+        agentName,
+        body,
+      }: {
+        agentName: string;
+        body: import('./DataContext').SetAgentModelArgs;
+      }): Promise<import('./DataContext').SetAgentModelResult> =>
+        agentsApi.setAgentModel(slug, agentName, body),
+      onSuccess: () => {
+        qc.invalidateQueries({ queryKey: ['agents', slug] });
+      },
+    });
+  },
+
   useManageAgentRepo: () => {
     const slug = useRealOrgSlug();
     const qc = useQueryClient();

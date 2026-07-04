@@ -119,6 +119,8 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/',
   'GET /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id_or_slug}',
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/search',
+  // agent model — set via the AgentDetailPane Model input (THR-067 PR-2)
+  'PUT /api/v1/orgs/{slug}/agents/{agent_name}/model',
   // teams — founder-facing
   'GET /api/v1/orgs/{slug}/teams',
   // system assistant — founder-facing setup surfaced in the SPA
@@ -155,8 +157,6 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/repos', 'agent manage-repo callback'],
   // founder set-executor — CLI-only (happyranch set-executor); not wired into the SPA
   ['PUT /api/v1/orgs/{slug}/agents/{agent_name}/executor', 'founder CLI set-executor only; not in SPA'],
-  // founder set-model — CLI-only (happyranch set-model); not wired into the SPA (THR-067 PR-1)
-  ['PUT /api/v1/orgs/{slug}/agents/{agent_name}/model', 'founder CLI set-model only; not in SPA (THR-067 PR-1)'],
   // memory writes (legacy + structured)
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/memory', 'legacy agent memory append'],
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/', 'agent-only write'],

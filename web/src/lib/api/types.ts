@@ -291,6 +291,7 @@ export interface AgentSummary {
   team: string | null;
   role: 'manager' | 'worker' | null;
   executor: 'claude' | 'codex' | 'opencode' | 'pi' | null;
+  model?: string | null;
   description: string | null;
   // Phase 2: additive read-only fields (D6)
   repos: Record<string, string>;

@@ -22,6 +22,7 @@ import {
   useAgentTasks,
   useManageAgentRepo,
   useSetAgentExecutor,
+  useSetAgentModel,
 } from '@/hooks/agents';
 import { useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
@@ -44,6 +45,8 @@ interface AgentDetailPaneProps {
 /** Sparse dirty-state tracker: only keys that differ from the last-saved snapshot. */
 interface DirtyState {
   executor?: string;
+  /** Per-agent model string; empty string = unset/default (matches CLI clear semantics). */
+  model?: string;
   /** Repos as a whole-dict replace: the current (possibly edited) map. */
   repos?: Record<string, string>;
   /** Names of repos removed since last save. */
@@ -72,6 +75,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const { done, total, tasksQuery } = useAccountabilityMetrics(agentName);
 
   const setExecutor = useSetAgentExecutor();
+  const setModel = useSetAgentModel();
   const manageRepo = useManageAgentRepo();
 
   const agent = agentsQuery.data?.agents.find((a) => a.name === agentName);
@@ -96,9 +100,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
     setRepoAddUrl('');
   }, [agentName]);
 
-  const isDirty = dirty.executor !== undefined || dirty.repos !== undefined;
+  const isDirty = dirty.executor !== undefined || dirty.model !== undefined || dirty.repos !== undefined;
 
   const displayExecutor = dirty.executor ?? agent?.executor ?? '—';
+  const displayModel = dirty.model !== undefined ? dirty.model : (agent?.model ?? '');
   const displayRepos = dirty.repos ?? repos;
 
   const onExecutorChange = useCallback((val: string) => {
@@ -113,6 +118,21 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
     }
     setSaveError(null);
   }, [agent?.executor]);
+
+  const onModelChange = useCallback((val: string) => {
+    const trimmed = val.trim();
+    const currentAgentModel = agent?.model ?? '';
+    if (trimmed === (currentAgentModel || '')) {
+      setDirty((prev) => {
+        const next = { ...prev };
+        delete next.model;
+        return next;
+      });
+    } else {
+      setDirty((prev) => ({ ...prev, model: trimmed }));
+    }
+    setSaveError(null);
+  }, [agent?.model]);
 
   const onRepoRemove = useCallback((key: string) => {
     setDirty((prev) => {
@@ -156,6 +176,23 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
       } catch (err: unknown) {
         const e = err as { message?: string };
         errors.push(`Executor: ${e.message ?? 'save failed'}`);
+      }
+    }
+
+    // Save model if dirty
+    if (dirty.model !== undefined) {
+      const targetModel = dirty.model || null;
+      const currentModel = agent?.model ?? null;
+      if (targetModel !== currentModel) {
+        try {
+          await setModel.mutateAsync({
+            agentName,
+            body: { model: targetModel },
+          });
+        } catch (err: unknown) {
+          const e = err as { message?: string };
+          errors.push(`Model: ${e.message ?? 'save failed'}`);
+        }
       }
     }
 
@@ -271,6 +308,14 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
                 </span>
               </>
             )}
+            {agent?.model && (
+              <>
+                <span aria-hidden="true" className="text-text-muted">·</span>
+                <span className="bg-surface-sunken border-border-default rounded-full border px-2 py-px text-xs font-medium">
+                  {agent.model}
+                </span>
+              </>
+            )}
           </div>
           {agent?.description && (
             <p className="text-text-secondary mt-2 text-sm leading-relaxed">{agent.description}</p>
@@ -316,6 +361,24 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
           </div>
           <p className="text-text-muted mt-2 text-xs">
             Takes effect on this agent's next task.
+          </p>
+        </section>
+
+        {/* Model — freeform text input (executor-dependent, not a fixed enum) */}
+        <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+          <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
+            Model
+          </h3>
+          <input
+            type="text"
+            value={displayModel}
+            onChange={(e) => onModelChange(e.target.value)}
+            placeholder={agent?.executor ? `Default for ${agent.executor}` : 'Unset'}
+            className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft"
+            aria-label="Model"
+          />
+          <p className="text-text-muted mt-2 text-xs">
+            Empty = use default model. Takes effect on this agent's next task.
           </p>
         </section>
 
