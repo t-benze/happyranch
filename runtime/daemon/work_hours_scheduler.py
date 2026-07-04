@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from runtime.daemon.metrics_store import maybe_persist_metrics_snapshot
 from runtime.daemon.wake_queue import WakeJob
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import WorkHourRecord, WorkHourStatus
@@ -346,4 +347,11 @@ async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> Non
         startup = False
         duration = time.monotonic() - t0
         state.metrics_registry.record_loop_tick("work_hours_scheduler", interval_seconds, duration)
+
+        # Periodic metrics persistence (THR-066 PR-1): append one snapshot
+        # per ~60s to the daemon-global metrics store, then prune old rows.
+        # Throttled so we don't write on every hot-loop tick; errors are
+        # logged but never crash the scheduler loop.
+        maybe_persist_metrics_snapshot(state, now)
+
         await asyncio.sleep(interval_seconds)

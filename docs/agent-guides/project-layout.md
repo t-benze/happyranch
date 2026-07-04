@@ -84,6 +84,7 @@ Runtime container shape:
 ```text
 <runtime-dir>/                         # created by `happyranch init <path>`
 |-- happyranch.yaml                    # schema_version: 2, type: multi-org-runtime
+|-- metrics.db                         # daemon-global metrics snapshots (THR-066; append-only, ~60s cadence, 30-day retention)
 `-- orgs/<slug>/                       # created by `happyranch orgs init <slug> [--from <example>]`
     |-- happyranch.db                  # per-org SQLite
     |-- org/                           # editable org content
