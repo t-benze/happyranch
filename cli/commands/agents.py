@@ -252,6 +252,37 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
 
 
 
+def cmd_set_model(args: argparse.Namespace) -> None:
+    """Founder action: set or clear an existing agent's model.
+
+    Reconciles the org .md frontmatter and the workspace agent.yaml in one
+    call, then prints before/after state. Omit --model to clear (revert to
+    CLI default).
+    """
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    model = args.model if args.model else None
+    r = client.request(
+        "PUT",
+        f"/api/v1/orgs/{slug}/agents/{args.agent}/model",
+        json={"model": model},
+    )
+    if not _ok(r):
+        return
+    result = r.json()
+    before = result["before"]
+    after = result["after"]
+    print(f"Model change for {result['agent']}:")
+    print(f"  before: {before}")
+    print(f"  after:  {after}")
+
+
 def cmd_set_executor(args: argparse.Namespace) -> None:
     """Founder action: switch an existing agent's executor end-to-end.
 
@@ -362,4 +393,17 @@ def register(sub) -> None:
         help="Delete stale Claude-only files (CLAUDE.md, .claude/) when switching away from Claude",
     )
     p_setexec.set_defaults(func=cmd_set_executor)
+
+    p_setmodel = sub.add_parser(
+        "set-model",
+        help="Set or clear an existing agent's model (agent.yaml + org frontmatter)",
+    )
+    p_setmodel.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
+    p_setmodel.add_argument("agent", help="Agent name")
+    p_setmodel.add_argument(
+        "--model", required=False, default=None, metavar="MODEL",
+        help="Model id (omit to clear — revert to CLI default)",
+    )
+    p_setmodel.set_defaults(func=cmd_set_model)
+
 

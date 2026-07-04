@@ -723,3 +723,164 @@ def test_absolute_cli_path_preserved_in_cmd_zero(mock_subprocess, tmp_path, runt
 
     cmd = mock_subprocess.Popen.call_args[0][0]
     assert cmd[0] == "/opt/homebrew/bin/claude"
+
+
+# ---------------------------------------------------------------------------
+# Per-agent model selection — model_arg injection
+# ---------------------------------------------------------------------------
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_model_injected_when_model_set(mock_subprocess, tmp_path, runtime):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = ClaudeExecutor(
+        claude_cli_path="/opt/homebrew/bin/claude",
+        permission_mode="auto",
+        settings=Settings(),
+        paths=runtime,
+        model_arg=["--model", "{model}"],
+    )
+    executor.run(workspace=workspace, prompt="hello", model="claude-sonnet-5")
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    # Model args should appear after binary, before -p
+    assert cmd[1] == "--model"
+    assert cmd[2] == "claude-sonnet-5"
+    assert cmd[3] == "-p"  # prompt flag still there
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_model_omitted_when_model_none(mock_subprocess, tmp_path, runtime):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = ClaudeExecutor(
+        claude_cli_path="/opt/homebrew/bin/claude",
+        permission_mode="auto",
+        settings=Settings(),
+        paths=runtime,
+        model_arg=["--model", "{model}"],
+    )
+    executor.run(workspace=workspace, prompt="hello", model=None)
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    # No model args — cmd[1] should be -p
+    assert cmd[1] == "-p"
+    assert "--model" not in cmd
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_model_omitted_when_model_arg_is_none(mock_subprocess, tmp_path, runtime):
+    """When profile has no model_arg, model= is a no-op (CLI default)."""
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = ClaudeExecutor(
+        claude_cli_path="/opt/homebrew/bin/claude",
+        permission_mode="auto",
+        settings=Settings(),
+        paths=runtime,
+        model_arg=None,  # frozen profile default
+    )
+    executor.run(workspace=workspace, prompt="hello", model="gpt-5")
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    assert cmd[1] == "-p"  # no model args injected
+    assert "--model" not in cmd
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_codex_model_injected_with_m_flag(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = CodexExecutor(
+        codex_cli_path="/usr/local/bin/codex",
+        sandbox_mode="workspace-write",
+        model_arg=["-m", "{model}"],
+    )
+    executor.run(workspace=workspace, prompt="hello", model="o3")
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    # Model args after binary+subcommand (exec), before sandbox
+    assert cmd[2] == "-m"
+    assert cmd[3] == "o3"
+    assert cmd[4] == "--sandbox"  # sandbox flag still there
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_codex_model_omitted_when_unset(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = CodexExecutor(
+        codex_cli_path="/usr/local/bin/codex",
+        sandbox_mode="workspace-write",
+        model_arg=["-m", "{model}"],
+    )
+    executor.run(workspace=workspace, prompt="hello", model=None)
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    # argv identical to today — model args absent
+    assert "-m" not in [e for e in cmd if e == "-m"]
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_opencode_model_injected_with_m_flag(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = OpencodeExecutor(
+        opencode_cli_path="/usr/local/bin/opencode",
+        model_arg=["-m", "{model}"],
+    )
+    executor.run(workspace=workspace, prompt="hello", model="openai/gpt-5")
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    assert cmd[2] == "-m"
+    assert cmd[3] == "openai/gpt-5"
+    assert cmd[4] == "--dir"  # workspace flag still there
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_pi_model_injected_with_model_flag(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = PiExecutor(
+        pi_cli_path="/usr/local/bin/pi",
+        model_arg=["--model", "{model}"],
+    )
+    executor.run(workspace=workspace, prompt="hello", model="gemini-pro")
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    assert cmd[1] == "--model"
+    assert cmd[2] == "gemini-pro"
+    assert cmd[3] == "-p"  # prompt flag still there
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_pi_model_omitted_when_unset(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
+
+    executor = PiExecutor(
+        pi_cli_path="/usr/local/bin/pi",
+        model_arg=["--model", "{model}"],
+    )
+    executor.run(workspace=workspace, prompt="hello", model=None)
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    # argv identical to today
+    assert cmd[1] == "-p"  # no model args before -p
+    assert "--model" not in cmd

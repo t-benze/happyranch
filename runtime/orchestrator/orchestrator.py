@@ -256,6 +256,17 @@ class Orchestrator:
         cfg = load_agent_config(workspace)
         return cfg.get("executor") or "claude"
 
+    def _resolve_model_name(self, agent_name: str) -> str | None:
+        """Resolve the per-agent model from agent.yaml.
+
+        Returns the model string if set, or None when the key is absent/empty
+        (CLI default model). Mirrors _resolve_executor_name.
+        """
+        workspace = self._paths.workspaces_dir / agent_name
+        cfg = load_agent_config(workspace)
+        model = cfg.get("model")
+        return model if model else None
+
     def _resolve_session_timeout(self, agent_name: str, task_id: str | None = None) -> int:
         """Resolve the per-session timeout, walking task -> org -> settings.
 
@@ -492,6 +503,7 @@ class Orchestrator:
         agent_name = agent
         workspace = self._paths.workspaces_dir / agent_name
         provider = self._resolve_executor_name(agent_name)
+        model_name = self._resolve_model_name(agent_name)
         executor = self._build_executor(provider)
 
         # The orchestrator relies on the start-task skill to bridge prompt →
@@ -581,6 +593,7 @@ class Orchestrator:
             timeout_seconds=self._resolve_session_timeout(agent_name, task_id=task_id),
             on_started=_on_started,
             on_throttle_event=_on_throttle_event,
+            model=model_name,
         )
         self._audit.log_session_end(
             task_id=task_id,

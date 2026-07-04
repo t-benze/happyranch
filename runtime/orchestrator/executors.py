@@ -558,11 +558,12 @@ _SESSION_LIFETIME_PREAMBLE = (
 
 
 class ClaudeExecutor:
-    def __init__(self, claude_cli_path: str, permission_mode: str, settings: Settings, paths: OrgPaths | None = None) -> None:
+    def __init__(self, claude_cli_path: str, permission_mode: str, settings: Settings, paths: OrgPaths | None = None, model_arg: list[str] | None = None) -> None:
         self._cli_path = claude_cli_path
         self._permission_mode = permission_mode
         self._settings = settings
         self._paths = paths
+        self._model_arg = model_arg
 
     def run(
         self,
@@ -573,6 +574,7 @@ class ClaudeExecutor:
         on_started: Callable[[int], None] | None = None,
         resume_session_id: str | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
+        model: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # The workspace's .claude/settings.json `permissions.allow` list is not
@@ -589,6 +591,12 @@ class ClaudeExecutor:
         allowed = " ".join(allow_rules_for_agent(self._paths, workspace.name, cli=True))
         cmd = [
             _resolve_binary(self._cli_path),
+        ]
+        # Model select: inject after binary, before permission flags.
+        if model and self._model_arg:
+            for elem in self._model_arg:
+                cmd.append(elem.replace("{model}", model))
+        cmd += [
             "-p",
             prompt,
             "--permission-mode",
@@ -617,9 +625,10 @@ class ClaudeExecutor:
 
 
 class CodexExecutor:
-    def __init__(self, codex_cli_path: str, sandbox_mode: str) -> None:
+    def __init__(self, codex_cli_path: str, sandbox_mode: str, model_arg: list[str] | None = None) -> None:
         self._cli_path = codex_cli_path
         self._sandbox_mode = sandbox_mode
+        self._model_arg = model_arg
 
     def run(
         self,
@@ -629,11 +638,18 @@ class CodexExecutor:
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
+        model: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = [
             _resolve_binary(self._cli_path),
             "exec",
+        ]
+        # Model select: inject after binary+subcommand, before sandbox flags.
+        if model and self._model_arg:
+            for elem in self._model_arg:
+                cmd.append(elem.replace("{model}", model))
+        cmd += [
             "--sandbox",
             self._sandbox_mode,
             # Codex's `workspace-write` sandbox blocks all outbound sockets by
@@ -678,8 +694,9 @@ class OpencodeExecutor:
     erase the per-prefix discipline that CLAUDE.md mandates.
     """
 
-    def __init__(self, opencode_cli_path: str) -> None:
+    def __init__(self, opencode_cli_path: str, model_arg: list[str] | None = None) -> None:
         self._cli_path = opencode_cli_path
+        self._model_arg = model_arg
 
     def run(
         self,
@@ -689,12 +706,19 @@ class OpencodeExecutor:
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
+        model: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # opencode >= 1.14.0 rejects --prompt; use positional prompt (issue #216).
         cmd = [
             _resolve_binary(self._cli_path),
             "run",
+        ]
+        # Model select: inject after binary+subcommand, before --dir/prompt.
+        if model and self._model_arg:
+            for elem in self._model_arg:
+                cmd.append(elem.replace("{model}", model))
+        cmd += [
             "--dir",
             str(workspace),
             "--format",
@@ -722,8 +746,9 @@ class PiExecutor:
     must be supplied outside this executor if required.
     """
 
-    def __init__(self, pi_cli_path: str) -> None:
+    def __init__(self, pi_cli_path: str, model_arg: list[str] | None = None) -> None:
         self._cli_path = pi_cli_path
+        self._model_arg = model_arg
 
     def run(
         self,
@@ -733,10 +758,17 @@ class PiExecutor:
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
+        model: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = [
             _resolve_binary(self._cli_path),
+        ]
+        # Model select: inject after binary, before -p/prompt.
+        if model and self._model_arg:
+            for elem in self._model_arg:
+                cmd.append(elem.replace("{model}", model))
+        cmd += [
             "-p",
             prompt,
             "--mode",
@@ -793,7 +825,10 @@ class GenericCliExecutor:
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
+        model: str | None = None,
     ) -> ExecutorResult:
+        # model is accepted for signature parity but not used — custom
+        # profile model_arg is out of scope per founder gate (THR-067).
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd: list[str] = []
         for i, elem in enumerate(self._argv_template):

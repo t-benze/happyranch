@@ -14,6 +14,21 @@ can be registered in org config.
 | `opencode` | `AGENTS.md` | `.agents/skills/` | `opencode.json` `permission.bash` map |
 | `pi` | `AGENTS.md` | `.agents/skills/` | no HappyRanch-managed sandbox |
 
+**Per-agent model selection (THR-067):** Each built-in profile carries a verified `model_arg` — the CLI flag the executor uses when the agent has a model set:
+
+| Executor | CLI flag | Verified syntax |
+| --- | --- | --- |
+| `claude` | `--model` | `--model <id>` (claude --help, 2026-07-04) |
+| `codex` | `-m` | `-m <MODEL>` (codex --help, 2026-07-04) |
+| `opencode` | `-m` | `-m <provider/model>` (opencode --help, 2026-07-04) |
+| `pi` | `--model` | `--model <pattern>` (pi --help, 2026-07-04) |
+
+When `model` is **unset** (the default for all existing agents), the executor launches with no model flag — each CLI uses its own default model. When `model` is **set** (via `happyranch set-model` or the agents route), the profile's `model_arg` template is substituted and injected as additive cmd elements after the binary, before permission flags. The model args never modify or reorder existing permission-bearing argv lines.
+
+Model lives in two surfaces: the org agent `.md` frontmatter (`model:` field) and the workspace `agent.yaml` (`model:` key). The orchestrator resolves the model from `agent.yaml` at dispatch time. The `happyranch set-model` command reconciles both surfaces end-to-end.
+
+Custom/self-registered profiles do not currently support `model_arg` (separate founder-gated track).
+
 Missing values default to `claude`. All executors share `protocol/skills/`.
 
 **Custom CLI profiles** (example — OpenClaw):

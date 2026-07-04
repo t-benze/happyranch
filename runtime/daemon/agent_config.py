@@ -46,6 +46,20 @@ def set_executor(workspace: Path, executor: str | None) -> None:
     (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
 
 
+def set_model(workspace: Path, model: str | None) -> None:
+    """Set or clear the per-agent model in agent.yaml.
+
+    None clears the key (CLI default model). An empty string is treated as None.
+    """
+    config = load_agent_config(workspace)
+    effective = model if model else None
+    if effective:
+        config["model"] = effective
+    else:
+        config.pop("model", None)
+    (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+
 def add_repo(workspace: Path, name: str, url: str) -> None:
     """Add a repo entry to agent.yaml. Raises ValueError if name exists."""
     config = load_agent_config(workspace)
