@@ -1513,3 +1513,426 @@ class TestClaudeAdapterRegistry:
         from runtime.daemon.headless_assistant import get_adapter, ClaudeAdapter
         assert isinstance(get_adapter("CLAUDE"), ClaudeAdapter)
         assert isinstance(get_adapter("Claude"), ClaudeAdapter)
+
+
+# ---------------------------------------------------------------------------
+# PermissionPosture — codex fields (PR-4)
+# ---------------------------------------------------------------------------
+
+class TestPermissionPostureCodex:
+    """Tests for PermissionPosture codex fields — defaults are the
+    founder-ruled posture per KB assistant-headless-permission-postures:
+    sandbox=workspace-write, approval=never."""
+
+    def test_codex_sandbox_defaults_workspace_write(self) -> None:
+        posture = PermissionPosture()
+        assert posture.codex_sandbox == "workspace-write", (
+            "codex sandbox must default to workspace-write per founder ruling"
+        )
+
+    def test_codex_ask_for_approval_defaults_never(self) -> None:
+        posture = PermissionPosture()
+        assert posture.codex_ask_for_approval == "never", (
+            "codex approval must default to never per founder ruling"
+        )
+
+    def test_codex_fields_can_be_set(self) -> None:
+        posture = PermissionPosture(
+            codex_sandbox="read-only",
+            codex_ask_for_approval="on-request",
+        )
+        assert posture.codex_sandbox == "read-only"
+        assert posture.codex_ask_for_approval == "on-request"
+
+    def test_claude_fields_untouched(self) -> None:
+        """Codex fields are additive — claude fields are NOT modified."""
+        posture = PermissionPosture(
+            claude_allowed_tools="Bash(happyranch *)",
+            claude_permission_mode="acceptEdits",
+        )
+        assert posture.claude_allowed_tools == "Bash(happyranch *)"
+        assert posture.claude_permission_mode == "acceptEdits"
+        # Codex defaults are correct even when claude fields are set.
+        assert posture.codex_sandbox == "workspace-write"
+        assert posture.codex_ask_for_approval == "never"
+
+
+# ---------------------------------------------------------------------------
+# CodexAdapter — event fixtures (PR-4)
+# ---------------------------------------------------------------------------
+
+# JSONL fixtures captured from codex-cli 0.139.0 `exec --json` output.
+CODEX_THREAD_STARTED = (
+    '{"type":"thread.started",'
+    '"thread_id":"019f2b10-bdc6-7702-8fb1-8d9b650893f6"}'
+)
+CODEX_TURN_STARTED = '{"type":"turn.started"}'
+CODEX_ITEM_STARTED_COMMAND = (
+    '{"type":"item.started",'
+    '"item":{"id":"item_0","type":"command_execution",'
+    '"command":"/bin/zsh -lc ls",'
+    '"aggregated_output":"","exit_code":null,"status":"in_progress"}}'
+)
+CODEX_ITEM_COMPLETED_MESSAGE = (
+    '{"type":"item.completed",'
+    '"item":{"id":"item_1","type":"agent_message",'
+    '"text":"Hello from codex"}}'
+)
+CODEX_ITEM_COMPLETED_COMMAND = (
+    '{"type":"item.completed",'
+    '"item":{"id":"item_0","type":"command_execution",'
+    '"command":"/bin/zsh -lc ls",'
+    '"aggregated_output":"file1.txt\\nfile2.txt",'
+    '"exit_code":0,"status":"completed"}}'
+)
+CODEX_ITEM_COMPLETED_COMMAND_FAIL = (
+    '{"type":"item.completed",'
+    '"item":{"id":"item_2","type":"command_execution",'
+    '"command":"/bin/zsh -lc badcmd",'
+    '"aggregated_output":"command not found",'
+    '"exit_code":127,"status":"completed"}}'
+)
+CODEX_TURN_COMPLETED = (
+    '{"type":"turn.completed",'
+    '"usage":{"input_tokens":30121,"cached_input_tokens":16640,'
+    '"output_tokens":124,"reasoning_output_tokens":40}}'
+)
+CODEX_ITEM_STARTED_NON_COMMAND = (
+    '{"type":"item.started",'
+    '"item":{"id":"item_3","type":"file_change",'
+    '"status":"in_progress"}}'
+)
+CODEX_ITEM_COMPLETED_NON_MESSAGE = (
+    '{"type":"item.completed",'
+    '"item":{"id":"item_3","type":"file_change",'
+    '"status":"completed"}}'
+)
+
+
+# ---------------------------------------------------------------------------
+# CodexAdapter — argv builder (PR-4)
+# ---------------------------------------------------------------------------
+
+class TestCodexAdapterArgv:
+    """Tests for CodexAdapter.build_turn_argv — sandbox + approval posture
+    per founder ruling KB assistant-headless-permission-postures."""
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import CodexAdapter
+        return CodexAdapter()
+
+    def test_basic_argv_contains_required_flags(self, adapter) -> None:
+        posture = PermissionPosture()  # defaults: workspace-write, never
+        argv = adapter.build_turn_argv(
+            prompt="hello",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        assert argv[0] == "codex"
+        # -a <approval> is a TOP-LEVEL flag, must come before 'exec' subcommand.
+        assert "-a" in argv
+        a_idx = argv.index("-a")
+        assert argv[a_idx + 1] == "never"
+        # -a must appear before 'exec'.
+        assert a_idx < argv.index("exec"), (
+            "-a (--ask-for-approval) is a top-level flag; must precede 'exec'"
+        )
+        # exec subcommand.
+        assert "exec" in argv
+        # -s <sandbox> is an exec-level flag.
+        assert "-s" in argv
+        s_idx = argv.index("-s")
+        assert argv[s_idx + 1] == "workspace-write"
+        assert s_idx > argv.index("exec"), (
+            "-s (--sandbox) is an exec-level flag; must follow 'exec'"
+        )
+        # Network access config override for parity with interactive assistant.
+        assert "-c" in argv
+        c_idx = argv.index("-c")
+        assert argv[c_idx + 1] == "sandbox_workspace_write.network_access=true"
+        # --json for structured output.
+        assert "--json" in argv
+        # Prompt is the last argument (for non-resume).
+        assert argv[-1] == "hello"
+
+    def test_resume_id_adds_resume_subcommand(self, adapter) -> None:
+        posture = PermissionPosture()
+        argv = adapter.build_turn_argv(
+            prompt="continue please",
+            resume_id="019f2b10-sess-uuid",
+            permission_posture=posture,
+        )
+        assert "resume" in argv
+        resume_idx = argv.index("resume")
+        assert argv[resume_idx + 1] == "019f2b10-sess-uuid"
+        # Prompt comes after session_id.
+        assert argv[resume_idx + 2] == "continue please"
+
+    def test_no_resume_omits_resume_subcommand(self, adapter) -> None:
+        posture = PermissionPosture()
+        argv = adapter.build_turn_argv(
+            prompt="hello",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        assert "resume" not in argv
+
+    def test_custom_sandbox_respected(self, adapter) -> None:
+        posture = PermissionPosture(codex_sandbox="read-only")
+        argv = adapter.build_turn_argv(
+            prompt="test",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        s_idx = argv.index("-s")
+        assert argv[s_idx + 1] == "read-only"
+
+    def test_custom_approval_respected(self, adapter) -> None:
+        posture = PermissionPosture(codex_ask_for_approval="on-request")
+        argv = adapter.build_turn_argv(
+            prompt="test",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        a_idx = argv.index("-a")
+        assert argv[a_idx + 1] == "on-request"
+
+    def test_never_dangerously_bypass(self, adapter) -> None:
+        """Codex adapter must NEVER use --dangerously-bypass-approvals-and-sandbox.
+
+        KB entry assistant-headless-permission-postures is explicit:
+        NOT full bypass.  Sandbox = workspace-write, approval = never.
+        """
+        posture = PermissionPosture()
+        argv = adapter.build_turn_argv(
+            prompt="test",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+        assert "danger-full-access" not in argv
+
+    def test_approval_flag_form_is_top_level_before_exec(self, adapter) -> None:
+        """Verification: -a (--ask-for-approval) is a GLOBAL flag on codex-cli
+        0.139.0, appearing only in `codex --help`, NOT in `codex exec --help`.
+        The adapter places it BEFORE the 'exec' subcommand because clap parses
+        global flags before the subcommand name.
+
+        Confusion Protocol resolution: tested empirically against codex-cli
+        0.139.0 — `codex -a never exec -s workspace-write --json <prompt>`
+        parses correctly and starts model execution."""
+        posture = PermissionPosture()
+        argv = adapter.build_turn_argv(
+            prompt="test",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        # -a MUST appear before 'exec' in the argv.
+        a_pos = argv.index("-a")
+        exec_pos = argv.index("exec")
+        assert a_pos < exec_pos, (
+            f"-a at position {a_pos} must precede 'exec' at position {exec_pos}"
+        )
+
+    def test_empty_posture_falls_back_to_defaults(self, adapter) -> None:
+        """When PermissionPosture codex fields are empty string, fall back
+        to the founder-ruled defaults."""
+        posture = PermissionPosture(
+            codex_sandbox="",
+            codex_ask_for_approval="",
+        )
+        argv = adapter.build_turn_argv(
+            prompt="test",
+            resume_id=None,
+            permission_posture=posture,
+        )
+        s_idx = argv.index("-s")
+        assert argv[s_idx + 1] == "workspace-write"
+        a_idx = argv.index("-a")
+        assert argv[a_idx + 1] == "never"
+
+
+# ---------------------------------------------------------------------------
+# CodexAdapter — JSONL event parsing (PR-4)
+# ---------------------------------------------------------------------------
+
+class TestCodexAdapterParsing:
+    """Tests for CodexAdapter.parse_event — codex exec --json events → TurnFrame."""
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import CodexAdapter
+        return CodexAdapter()
+
+    # ---- thread.started ----
+
+    def test_thread_started_extracts_session_id(self, adapter) -> None:
+        """The 'thread.started' event carries thread_id (session id).
+        parse_event returns None (no dock frame), but extract_session_id
+        picks up the tracked id."""
+        assert adapter.extract_session_id(TurnFrame.text_delta(text="x")) is None
+        result = adapter.parse_event(CODEX_THREAD_STARTED)
+        assert result is None, "thread.started returns no dock frame"
+        sid = adapter.extract_session_id(TurnFrame.text_delta(text="x"))
+        assert sid == "019f2b10-bdc6-7702-8fb1-8d9b650893f6"
+
+    # ---- turn.started ----
+
+    def test_turn_started_returns_none(self, adapter) -> None:
+        assert adapter.parse_event(CODEX_TURN_STARTED) is None
+
+    # ---- item.started (command_execution → tool_call) ----
+
+    def test_item_started_command_emits_tool_call(self, adapter) -> None:
+        f = adapter.parse_event(CODEX_ITEM_STARTED_COMMAND)
+        assert f is not None
+        assert f.type == "tool_call"
+        assert f.name == "bash"
+        assert f.input == {"command": "/bin/zsh -lc ls"}
+
+    def test_item_started_non_command_returns_none(self, adapter) -> None:
+        """Non-command_execution items (e.g., file_change) are not tool calls."""
+        assert adapter.parse_event(CODEX_ITEM_STARTED_NON_COMMAND) is None
+
+    # ---- item.completed (agent_message → text_delta) ----
+
+    def test_item_completed_message_emits_text_delta(self, adapter) -> None:
+        f = adapter.parse_event(CODEX_ITEM_COMPLETED_MESSAGE)
+        assert f is not None
+        assert f.type == "text_delta"
+        assert f.text == "Hello from codex"
+
+    def test_item_completed_empty_message_returns_none(self, adapter) -> None:
+        """agent_message with empty text is skipped."""
+        event = (
+            '{"type":"item.completed",'
+            '"item":{"id":"item_x","type":"agent_message",'
+            '"text":""}}'
+        )
+        assert adapter.parse_event(event) is None
+
+    # ---- item.completed (command_execution → tool_result) ----
+
+    def test_item_completed_command_emits_tool_result(self, adapter) -> None:
+        f = adapter.parse_event(CODEX_ITEM_COMPLETED_COMMAND)
+        assert f is not None
+        assert f.type == "tool_result"
+        assert f.name == "/bin/zsh -lc ls"
+        assert f.ok is True
+
+    def test_item_completed_command_fail_emits_tool_result_not_ok(self, adapter) -> None:
+        f = adapter.parse_event(CODEX_ITEM_COMPLETED_COMMAND_FAIL)
+        assert f is not None
+        assert f.type == "tool_result"
+        assert f.ok is False
+
+    def test_item_completed_non_message_returns_none(self, adapter) -> None:
+        """Non-agent_message, non-command_execution items are skipped."""
+        assert adapter.parse_event(CODEX_ITEM_COMPLETED_NON_MESSAGE) is None
+
+    # ---- turn.completed (usage) ----
+
+    def test_turn_completed_preserves_usage(self, adapter) -> None:
+        """turn.completed event is parsed for usage via _parse_codex_usage
+        shared helper; returns None (no dock frame) but populates
+        _terminal_usage."""
+        result = adapter.parse_event(CODEX_TURN_COMPLETED)
+        assert result is None, "turn.completed returns no dock frame"
+        terminal = getattr(adapter, '_terminal_usage', None)
+        assert terminal is not None, (
+            "terminal usage must be set from turn.completed event"
+        )
+        # Codex input_tokens is inclusive of cached_input_tokens;
+        # _parse_codex_usage normalizes to net-fresh (issue #216).
+        assert terminal.get("input_tokens") == 30121 - 16640, (
+            f"expected net-fresh input {30121 - 16640}, got {terminal.get('input_tokens')}"
+        )
+        assert terminal.get("output_tokens") == 124
+        assert terminal.get("cache_read_input_tokens") == 16640
+        assert terminal.get("reasoning_output_tokens") == 40
+
+    # ---- edge cases ----
+
+    def test_empty_line_returns_none(self, adapter) -> None:
+        assert adapter.parse_event("") is None
+        assert adapter.parse_event("   ") is None
+
+    def test_non_json_returns_none(self, adapter) -> None:
+        assert adapter.parse_event("not json at all") is None
+
+    def test_invalid_json_returns_none(self, adapter) -> None:
+        assert adapter.parse_event('{"type":"item.completed", broken') is None
+
+    def test_unknown_event_type_returns_none(self, adapter) -> None:
+        assert adapter.parse_event('{"type":"unknown","x":1}') is None
+
+    def test_event_without_type_returns_none(self, adapter) -> None:
+        assert adapter.parse_event('{"foo":"bar"}') is None
+
+
+# ---------------------------------------------------------------------------
+# CodexAdapter — session-id extraction (PR-4)
+# ---------------------------------------------------------------------------
+
+class TestCodexAdapterSessionId:
+    """Tests for CodexAdapter.extract_session_id — thread_id from
+    thread.started event."""
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import CodexAdapter
+        return CodexAdapter()
+
+    def test_session_id_none_before_events(self, adapter) -> None:
+        assert adapter.extract_session_id(TurnFrame.text_delta(text="x")) is None
+
+    def test_session_id_from_thread_started(self, adapter) -> None:
+        adapter.parse_event(CODEX_THREAD_STARTED)
+        sid = adapter.extract_session_id(TurnFrame.text_delta(text="x"))
+        assert sid == "019f2b10-bdc6-7702-8fb1-8d9b650893f6"
+
+    def test_session_id_stable_across_events(self, adapter) -> None:
+        """Session id from thread.started persists through subsequent events."""
+        adapter.parse_event(CODEX_THREAD_STARTED)
+        adapter.parse_event(CODEX_ITEM_COMPLETED_MESSAGE)
+        sid = adapter.extract_session_id(TurnFrame.turn_end())
+        assert sid == "019f2b10-bdc6-7702-8fb1-8d9b650893f6"
+
+
+# ---------------------------------------------------------------------------
+# CodexAdapter — drain_pending_frames (PR-4)
+# ---------------------------------------------------------------------------
+
+class TestCodexAdapterDrain:
+    """CodexAdapter has no buffering — drain_pending_frames returns empty list."""
+
+    @pytest.fixture
+    def adapter(self):
+        from runtime.daemon.headless_assistant import CodexAdapter
+        return CodexAdapter()
+
+    def test_drain_pending_frames_empty(self, adapter) -> None:
+        assert adapter.drain_pending_frames() == []
+
+    def test_drain_after_parsing_events_still_empty(self, adapter) -> None:
+        adapter.parse_event(CODEX_THREAD_STARTED)
+        adapter.parse_event(CODEX_ITEM_COMPLETED_MESSAGE)
+        assert adapter.drain_pending_frames() == []
+
+
+# ---------------------------------------------------------------------------
+# CodexAdapter — adapter registry (PR-4)
+# ---------------------------------------------------------------------------
+
+class TestCodexAdapterRegistry:
+    def test_codex_adapter_is_registered(self) -> None:
+        from runtime.daemon.headless_assistant import get_adapter, CodexAdapter
+        adapter = get_adapter("codex")
+        assert adapter is not None, "codex adapter must be registered at import time"
+        assert isinstance(adapter, CodexAdapter)
+
+    def test_lookup_is_case_insensitive(self) -> None:
+        from runtime.daemon.headless_assistant import get_adapter, CodexAdapter
+        assert isinstance(get_adapter("CODEX"), CodexAdapter)
+        assert isinstance(get_adapter("Codex"), CodexAdapter)
