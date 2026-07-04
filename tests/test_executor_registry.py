@@ -61,6 +61,15 @@ def test_validate_argv_template_accepts_all_valid_placeholders() -> None:
     assert errors == []
 
 
+def test_validate_argv_template_rejects_model_placeholder() -> None:
+    """Custom-profile argv templates must not use {model} — model_arg
+    substitution is reserved for built-in executor profiles only."""
+    errors = validate_argv_template(["cli", "--model", "{model}"])
+    assert len(errors) >= 1
+    assert any("unsupported placeholder" in e.lower() for e in errors)
+    assert any("{model}" in e for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # ExecutorRegistry
 # ---------------------------------------------------------------------------

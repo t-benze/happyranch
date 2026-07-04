@@ -1583,3 +1583,216 @@ def test_init_no_drift_event_when_aligned(
         events = _stream_init_events(app, auth_headers, "dev_agent")
 
     assert [e for e in events if e.get("phase") == "executor_drift"] == []
+
+
+# ---------------------------------------------------------------------------
+# THR-067: per-agent model selection — set-executor preserves model
+# ---------------------------------------------------------------------------
+
+
+def test_set_executor_preserves_model_on_both_surfaces(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """After set-model, switching executor must preserve the model on both
+    org frontmatter and workspace agent.yaml."""
+    from runtime.orchestrator import prompt_loader
+    from runtime.daemon.agent_config import load_agent_config
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+
+    # Step 1: set model
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/model",
+        json={"model": "claude-sonnet-4-20250514"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["after"] == "claude-sonnet-4-20250514"
+
+    # Step 2: switch executor
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "pi"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+
+    # Verify model preserved on org frontmatter
+    reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert reloaded is not None
+    assert reloaded.model == "claude-sonnet-4-20250514"
+
+    # Verify model preserved in workspace agent.yaml
+    ws_cfg = load_agent_config(workspace)
+    assert ws_cfg.get("model") == "claude-sonnet-4-20250514"
+
+
+# ---------------------------------------------------------------------------
+# THR-067: per-agent model selection — manage-agent update model persistence
+# ---------------------------------------------------------------------------
+
+
+def test_manage_agent_update_set_model(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Update with explicit non-null model sets it on both surfaces."""
+    from runtime.orchestrator import prompt_loader
+    from runtime.daemon.agent_config import load_agent_config
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "update",
+                "name": "dev_agent",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+                "model": "claude-sonnet-4-20250514",
+            },
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+
+    # org frontmatter has model
+    reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert reloaded is not None
+    assert reloaded.model == "claude-sonnet-4-20250514"
+
+    # workspace agent.yaml has model
+    ws_cfg = load_agent_config(workspace)
+    assert ws_cfg.get("model") == "claude-sonnet-4-20250514"
+
+
+def test_manage_agent_update_clear_model_explicit_null(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Update with explicit null model clears it on both surfaces."""
+    from runtime.orchestrator import prompt_loader
+    from runtime.daemon.agent_config import load_agent_config
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text(
+        "repos: {}\nexecutor: claude\nmodel: claude-sonnet-4-20250514\n"
+    )
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "update",
+                "name": "dev_agent",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+                "model": None,
+            },
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+
+    # org frontmatter cleared
+    reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert reloaded is not None
+    assert reloaded.model is None
+
+    # workspace agent.yaml cleared
+    ws_cfg = load_agent_config(workspace)
+    assert "model" not in ws_cfg, f"model key should be absent, got {ws_cfg}"
+
+
+def test_manage_agent_update_omit_model_preserves(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Update without model field preserves existing model on both surfaces."""
+    from runtime.orchestrator import prompt_loader
+    from runtime.daemon.agent_config import load_agent_config
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+
+    # Set model on both surfaces first via the set-model endpoint
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/model",
+        json={"model": "claude-sonnet-4-20250514"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "update",
+                "name": "dev_agent",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+                # model omitted entirely
+                "executor": "codex",
+            },
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+
+    # org frontmatter preserves model
+    reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert reloaded is not None
+    assert reloaded.model == "claude-sonnet-4-20250514"
+
+    # workspace agent.yaml preserves model (set_executor doesn't clobber model)
+    ws_cfg = load_agent_config(workspace)
+    assert ws_cfg.get("model") == "claude-sonnet-4-20250514"
+
+
+def test_manage_agent_enroll_with_model_persists(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Enroll with a model persists it in the pending agent file."""
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    paths = _paths(org_state)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "new_worker",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "description": "A test worker",
+            "system_prompt": "prompt",
+            "executor": "claude",
+            "model": "claude-sonnet-4-20250514",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+
+    # Pending file contains the model
+    pending = prompt_loader.load_pending_agent(paths, "new_worker")
+    assert pending is not None
+    assert pending.model == "claude-sonnet-4-20250514"
+    assert pending.executor == "claude"
+
+    # Cleanup: delete pending file
+    (paths.agents_dir / "new_worker.pending.md").unlink(missing_ok=True)

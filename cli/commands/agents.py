@@ -405,5 +405,3 @@ def register(sub) -> None:
         help="Model id (omit to clear — revert to CLI default)",
     )
     p_setmodel.set_defaults(func=cmd_set_model)
-
-

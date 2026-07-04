@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 # string templating, no concatenation with literal text.
 # ---------------------------------------------------------------------------
 VALID_PLACEHOLDERS: frozenset[str] = frozenset(
-    {"{prompt}", "{timeout_seconds}", "{workspace}", "{model}"}
+    {"{prompt}", "{timeout_seconds}", "{workspace}"}
 )
 
 

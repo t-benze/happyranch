@@ -425,6 +425,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                 enrolled_at=datetime.now(timezone.utc),
                 system_prompt=body.system_prompt,
                 description=body.description,
+                model=body.model if body.model else None,
             )
             prompt_loader.write_pending_agent(paths, agent)
             org.teams.add_worker(manager_team, body.name)
@@ -457,9 +458,13 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         if body.executor is not None:
             _validate_executor(body.executor)
         # Build the updated AgentDef, preserving fields not being updated.
-        # model: if body.model is explicitly set (including None), use it;
-        # otherwise carry forward the existing value.
-        resolved_model = body.model if body.model is not None else existing.model
+        # model: use Pydantic field-set detection to distinguish omitted
+        # (preserve existing) vs explicit null (clear).
+        model_is_set = "model" in body.model_fields_set
+        if model_is_set:
+            resolved_model = body.model if body.model else None
+        else:
+            resolved_model = existing.model
         updated = AgentDef(
             name=existing.name,
             team=existing.team,
@@ -508,9 +513,9 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         if body.executor is not None and workspace.exists():
             # Also update agent.yaml so the workspace file stays in sync.
             await asyncio.to_thread(set_executor, workspace, body.executor)
-        if body.model is not None and workspace.exists():
-            # Persist per-agent model to agent.yaml.
-            await asyncio.to_thread(set_model, workspace, body.model or None)
+        if model_is_set and workspace.exists():
+            # Persist per-agent model to agent.yaml (set or clear).
+            await asyncio.to_thread(set_model, workspace, resolved_model)
         audit.log_agent_managed(
             scope_id=scope_id,
             action="update",
@@ -800,6 +805,7 @@ async def set_agent_executor(
         enrolled_at=existing.enrolled_at,
         system_prompt=existing.system_prompt,
         description=existing.description,
+        model=existing.model,
     )
     from runtime.orchestrator.agent_def import render_agent_text
     active_path = paths.agents_dir / f"{agent_name}.md"
