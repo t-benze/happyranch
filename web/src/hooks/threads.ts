@@ -11,6 +11,10 @@
  */
 import { useData } from '@/design-system/providers/DataContext';
 
+// Re-export the API row type so compositions in features/ can annotate against
+// it without deep-importing @/lib/api/* (blocked by no-restricted-imports).
+export type { ThreadTaskSummary } from '@/lib/api/threads';
+
 /**
  * Provider-aware route builder for the threads feature. Compositions
  * use this instead of hardcoding `/orgs/${slug}/threads/...` paths,
@@ -33,6 +37,10 @@ export const useThread: ReturnType<typeof useData>['threads']['useThread'] = (
 export const useThreadMessages: ReturnType<typeof useData>['threads']['useThreadMessages'] = (
   threadId,
 ) => useData().threads.useThreadMessages(threadId);
+
+export const useThreadTasks: ReturnType<typeof useData>['threads']['useThreadTasks'] = (
+  threadId,
+) => useData().threads.useThreadTasks(threadId);
 
 // ---------------------------------------------------------------------------
 // SSE

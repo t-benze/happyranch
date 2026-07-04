@@ -35,6 +35,7 @@ import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
 import type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
 import type { ConversationSummary } from '@/lib/api/assistant';
+import type { ThreadTaskSummary } from '@/lib/api/threads';
 import type { workHours as workHoursApi } from '@/lib/api';
 import type {
   AssistantRegisterBody,
@@ -107,6 +108,10 @@ export interface ThreadsApi {
   useThreadMessages: (
     threadId: string | undefined,
   ) => QueryLike<{ messages: ThreadMessage[] }>;
+  /** Tasks dispatched from this thread, newest-first (THR-061). Read-only. */
+  useThreadTasks: (
+    threadId: string | undefined,
+  ) => QueryLike<ThreadTaskSummary[]>;
 
   // SSE (no-op under mocks)
   useThreadsInboxSSE: () => void;

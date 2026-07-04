@@ -78,6 +78,15 @@ function useThreadMessages(threadId: string | undefined) {
   });
 }
 
+function useThreadTasks(threadId: string | undefined) {
+  const slug = useRealOrgSlug();
+  return useQuery({
+    queryKey: ['thread-tasks', slug, threadId],
+    queryFn: () => threadsApi.listThreadTasks(slug, threadId as string),
+    enabled: !!slug && !!threadId,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // SSE
 // ---------------------------------------------------------------------------
@@ -275,6 +284,7 @@ export const realThreadsApi: ThreadsApi = {
   useThreadsList,
   useThread,
   useThreadMessages,
+  useThreadTasks,
   useThreadsInboxSSE,
   useThreadTailSSE,
   useComposeThread,

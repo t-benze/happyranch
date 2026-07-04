@@ -13,6 +13,7 @@
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import type { ThreadDetailResponse, ThreadMessage, ThreadRecord } from '@/lib/api/types';
+import type { ThreadTaskSummary } from '@/lib/api/threads';
 import { MOCK_MESSAGES, MOCK_PARTICIPANTS, MOCK_THREADS } from '@/mocks';
 import type {
   ArchiveArgs,
@@ -147,6 +148,49 @@ function useThreadMessages(
       await sleep(0);
       const id = threadId as string;
       return { messages: store.messages[id] ?? [] };
+    },
+  });
+  return {
+    data: flashing ? undefined : q.data,
+    isLoading: flashing || q.isLoading,
+    isError: q.isError,
+    error: q.error,
+  };
+}
+
+// Canned thread-dispatched tasks (THR-061). Newest-first, mirroring the
+// server's ORDER BY created_at DESC so the composition never re-sorts.
+function mockThreadTasks(threadId: string): ThreadTaskSummary[] {
+  return [
+    {
+      id: `${threadId}-T2`,
+      status: 'in_progress',
+      brief: 'Build the tasks-from-thread section in the thread detail rail.',
+      assigned_agent: 'frontend_engineer',
+      created_at: '2026-05-15T12:30:00Z',
+      parent_task_id: null,
+    },
+    {
+      id: `${threadId}-T1`,
+      status: 'completed',
+      brief: 'Add GET /threads/{thread_id}/tasks and the DB query behind it.',
+      assigned_agent: 'backend_engineer',
+      created_at: '2026-05-15T12:00:00Z',
+      parent_task_id: null,
+    },
+  ];
+}
+
+function useThreadTasks(
+  threadId: string | undefined,
+): QueryLike<ThreadTaskSummary[]> {
+  const flashing = useLoadingFlash(`thread-tasks:${threadId ?? ''}`);
+  const q = useQuery({
+    queryKey: ['mock-thread-tasks', threadId],
+    enabled: !!threadId,
+    queryFn: async () => {
+      await sleep(0);
+      return mockThreadTasks(threadId as string);
     },
   });
   return {
@@ -389,6 +433,7 @@ export const mockThreadsApi: ThreadsApi = {
   useThreadsList,
   useThread,
   useThreadMessages,
+  useThreadTasks,
   useThreadsInboxSSE,
   useThreadTailSSE,
   useComposeThread,
