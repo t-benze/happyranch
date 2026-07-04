@@ -106,7 +106,8 @@ function collectThreadArtifacts(messages: ThreadMessage[]): ThreadAttachment[] {
   const seen = new Map<string, ThreadAttachment>();
   for (const m of messages) {
     for (const a of m.attachments ?? []) {
-      if (!seen.has(a.artifact_name)) seen.set(a.artifact_name, a);
+      const key = a.thread_attachment_id ?? a.artifact_name;
+      if (!seen.has(key)) seen.set(key, a);
     }
   }
   return [...seen.values()];
@@ -665,6 +666,7 @@ function DetailColumn({
               messages={messages}
               loading={messagesLoading}
               slug={slug}
+              threadId={threadId}
               nowMs={nowMs}
             />
           </div>
@@ -721,7 +723,7 @@ function DetailColumn({
               <ul className="space-y-1">
                 {artifacts.map((a) => (
                   <li
-                    key={a.artifact_name}
+                    key={a.thread_attachment_id ?? a.artifact_name}
                     className="text-text-secondary block truncate text-xs"
                     title={a.display_name}
                   >
@@ -770,10 +772,11 @@ interface TranscriptProps {
   messages: ThreadMessage[];
   loading: boolean;
   slug?: string;
+  threadId?: string;
   nowMs?: number;
 }
 
-function ThreadDetailTranscript({ messages, loading, slug, nowMs }: TranscriptProps): JSX.Element {
+function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: TranscriptProps): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
 
   // Agents mid-reply (working) or waiting to reply (queued)
@@ -827,7 +830,13 @@ function ThreadDetailTranscript({ messages, loading, slug, nowMs }: TranscriptPr
                 body={m.body_markdown}
                 declineReason={m.decline_reason}
                 attachments={m.attachments}
-                onAttachmentDownload={slug ? (artifactName) => artifactsApi.downloadArtifact(slug, artifactName) : undefined}
+                onAttachmentDownload={slug && threadId ? (attachment) => {
+                  if (attachment.thread_attachment_id) {
+                    artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id);
+                  } else {
+                    artifactsApi.downloadArtifact(slug, attachment.artifact_name);
+                  }
+                } : undefined}
               />
             )}
             {m.kind === 'message' && (

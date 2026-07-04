@@ -196,6 +196,10 @@ export interface ThreadAttachment {
   size_bytes: number | null;
   content_type: string | null;
   uploaded_by: string;
+  /** Non-null for thread-scoped attachments (uploaded via the composer).
+   *  When present, artifact_name is empty and the download targets the
+   *  thread-scoped route. */
+  thread_attachment_id?: string | null;
 }
 
 export interface ThreadAttachmentRef {
