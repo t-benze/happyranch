@@ -229,7 +229,10 @@ class TestAssistantConversation:
         assert conv.turns == []
 
     def test_save_and_reload(self, tmp_path: Path) -> None:
-        conv = AssistantConversation(tmp_path)
+        from runtime.daemon.headless_assistant import AssistantConversationStore
+        store = AssistantConversationStore(tmp_path)
+        store.load()
+        conv = store.get_active()
         conv.executor = "claude"
         conv.resume_session_id = "sess-001"
 
@@ -241,8 +244,10 @@ class TestAssistantConversation:
         conv.save()
 
         # Reload — survives "daemon restart".
-        conv2 = AssistantConversation(tmp_path)
-        assert conv2.load() is True
+        store2 = AssistantConversationStore(tmp_path)
+        store2.load()
+        conv2 = store2.get_conversation(conv.id)
+        assert conv2 is not None
         assert conv2.executor == "claude"
         assert conv2.resume_session_id == "sess-002"
         assert len(conv2.turns) == 1
@@ -259,7 +264,10 @@ class TestAssistantConversation:
         assert loaded_turn.frames[2].type == "turn_end"
 
     def test_multiple_turns(self, tmp_path: Path) -> None:
-        conv = AssistantConversation(tmp_path)
+        from runtime.daemon.headless_assistant import AssistantConversationStore
+        store = AssistantConversationStore(tmp_path)
+        store.load()
+        conv = store.get_active()
         conv.executor = "pi"
 
         for i in range(3):
@@ -268,19 +276,22 @@ class TestAssistantConversation:
             conv.finish_turn(turn)
         conv.save()
 
-        conv2 = AssistantConversation(tmp_path)
-        conv2.load()
+        store2 = AssistantConversationStore(tmp_path)
+        store2.load()
+        conv2 = store2.get_conversation(conv.id)
+        assert conv2 is not None
         assert len(conv2.turns) == 3
         for i, t in enumerate(conv2.turns):
             assert t.id == f"turn-{i}"
             assert t.prompt == f"msg {i}"
-            # Each turn: text_delta (start + end frames added by run_headless_turn,
-            # but here we only added text_delta).
             assert len(t.frames) == 1
             assert t.frames[0].text == f"reply {i}"
 
     def test_tool_call_in_conversation(self, tmp_path: Path) -> None:
-        conv = AssistantConversation(tmp_path)
+        from runtime.daemon.headless_assistant import AssistantConversationStore
+        store = AssistantConversationStore(tmp_path)
+        store.load()
+        conv = store.get_active()
         turn = conv.begin_turn(turn_id="t1", prompt="read /tmp/foo")
         conv.append_frame(turn, TurnFrame.turn_start())
         conv.append_frame(turn, TurnFrame.tool_call(name="read", input={"path": "/tmp/foo"}))
@@ -289,8 +300,10 @@ class TestAssistantConversation:
         conv.finish_turn(turn)
         conv.save()
 
-        conv2 = AssistantConversation(tmp_path)
-        conv2.load()
+        store2 = AssistantConversationStore(tmp_path)
+        store2.load()
+        conv2 = store2.get_conversation(conv.id)
+        assert conv2 is not None
         frames = conv2.turns[0].frames
         assert frames[1].type == "tool_call"
         assert frames[1].name == "read"
@@ -299,25 +312,34 @@ class TestAssistantConversation:
         assert frames[2].ok is True
 
     def test_empty_conversation_saves_and_loads(self, tmp_path: Path) -> None:
-        conv = AssistantConversation(tmp_path)
+        from runtime.daemon.headless_assistant import AssistantConversationStore
+        store = AssistantConversationStore(tmp_path)
+        store.load()
+        conv = store.get_active()
         conv.executor = "opencode"
         conv.save()
 
-        conv2 = AssistantConversation(tmp_path)
-        conv2.load()
+        store2 = AssistantConversationStore(tmp_path)
+        store2.load()
+        conv2 = store2.get_conversation(conv.id)
+        assert conv2 is not None
         assert conv2.executor == "opencode"
         assert conv2.turns == []
 
     def test_atomic_save_does_not_corrupt(self, tmp_path: Path) -> None:
         """write-then-rename should prevent partial writes from corrupting reads."""
-        conv = AssistantConversation(tmp_path)
+        from runtime.daemon.headless_assistant import AssistantConversationStore
+        store = AssistantConversationStore(tmp_path)
+        store.load()
+        conv = store.get_active()
         turn = conv.begin_turn(turn_id="t1", prompt="hello")
         conv.append_frame(turn, TurnFrame.text_delta(text="world"))
         conv.finish_turn(turn)
         conv.save()
 
         # Verify the file is valid JSON and reads correctly.
-        raw = (tmp_path / "conversation.json").read_text()
+        conv_path = tmp_path / "conversations" / f"{conv.id}.json"
+        raw = conv_path.read_text()
         data = json.loads(raw)
         assert data["executor"] is None
         assert len(data["turns"]) == 1
@@ -376,18 +398,20 @@ class TestHeadlessAssistantManager:
     async def test_finish_inflight_persists_turn(self, tmp_path: Path) -> None:
         manager = HeadlessAssistantManager()
         conv = await manager.get_conversation(workspace=tmp_path)
+        conv_id = conv.id
 
         turn_record = conv.begin_turn(turn_id="turn-1", prompt="hi")
         await manager.start_inflight(
-            workspace=tmp_path, turn_id="turn-1", prompt="hi",
+            workspace=tmp_path, conversation_id=conv_id,
+            turn_id="turn-1", prompt="hi",
             turn_record=turn_record,
         )
         f = TurnFrame.text_delta(text="hello")
         conv.append_frame(turn_record, f)
-        await manager.buffer_inflight_frame(workspace=tmp_path, frame=f)
-        await manager.finish_inflight(workspace=tmp_path, session_id="sess-42")
+        await manager.buffer_inflight_frame(workspace=tmp_path, conversation_id=conv_id, frame=f)
+        await manager.finish_inflight(workspace=tmp_path, conversation_id=conv_id, session_id="sess-42")
 
-        conv2 = await manager.get_conversation(workspace=tmp_path)
+        conv2 = await manager.get_conversation(workspace=tmp_path, conversation_id=conv_id)
         assert len(conv2.turns) == 1
         assert conv2.turns[0].session_id == "sess-42"
         assert conv2.resume_session_id == "sess-42"
@@ -397,25 +421,27 @@ class TestHeadlessAssistantManager:
         """close_workspace on an in-flight turn buffers frames to the log."""
         manager = HeadlessAssistantManager()
         conv = await manager.get_conversation(workspace=tmp_path)
+        conv_id = conv.id
 
         turn_record = conv.begin_turn(turn_id="t1", prompt="hi")
         await manager.start_inflight(
-            workspace=tmp_path, turn_id="t1", prompt="hi",
+            workspace=tmp_path, conversation_id=conv_id,
+            turn_id="t1", prompt="hi",
             turn_record=turn_record,
         )
 
         # Buffer two frames but don't call finish_inflight.
         f1 = TurnFrame.text_delta(text="part 1")
         f2 = TurnFrame.tool_call(name="bash", input={"cmd": "ls"})
-        await manager.buffer_inflight_frame(workspace=tmp_path, frame=f1)
-        await manager.buffer_inflight_frame(workspace=tmp_path, frame=f2)
+        await manager.buffer_inflight_frame(workspace=tmp_path, conversation_id=conv_id, frame=f1)
+        await manager.buffer_inflight_frame(workspace=tmp_path, conversation_id=conv_id, frame=f2)
 
         # Close workspace — should buffer frames.
         await manager.close_workspace(tmp_path)
 
         # Reload from a fresh manager.
         manager2 = HeadlessAssistantManager()
-        conv2 = await manager2.get_conversation(workspace=tmp_path)
+        conv2 = await manager2.get_conversation(workspace=tmp_path, conversation_id=conv_id)
         assert len(conv2.turns) == 1
         assert len(conv2.turns[0].frames) == 2
         assert conv2.turns[0].frames[0].text == "part 1"
@@ -432,10 +458,12 @@ class TestHeadlessAssistantManager:
         fails on the unfixed code."""
         manager = HeadlessAssistantManager()
         conv = await manager.get_conversation(workspace=tmp_path)
+        conv_id = conv.id
 
         turn_record = conv.begin_turn(turn_id="turn-flush", prompt="test")
         await manager.start_inflight(
             workspace=tmp_path,
+            conversation_id=conv_id,
             turn_id="turn-flush",
             prompt="test",
             turn_record=turn_record,
@@ -445,22 +473,25 @@ class TestHeadlessAssistantManager:
         # run_headless_turn.  No conv.append_frame() call.
         f1 = TurnFrame.text_delta(text="streamed chunk 1")
         f2 = TurnFrame.tool_call(name="bash", input={"cmd": "ls"})
-        await manager.buffer_inflight_frame(workspace=tmp_path, frame=f1)
-        await manager.buffer_inflight_frame(workspace=tmp_path, frame=f2)
+        await manager.buffer_inflight_frame(workspace=tmp_path, conversation_id=conv_id, frame=f1)
+        await manager.buffer_inflight_frame(workspace=tmp_path, conversation_id=conv_id, frame=f2)
 
-        await manager.finish_inflight(workspace=tmp_path, session_id="sess-post")
+        await manager.finish_inflight(workspace=tmp_path, conversation_id=conv_id, session_id="sess-post")
 
         # Reload from disk — finishing should have flushed all frames.
-        conv2 = AssistantConversation(tmp_path)
-        assert conv2.load()
-        assert len(conv2.turns) == 1
-        assert conv2.turns[0].id == "turn-flush"
-        assert len(conv2.turns[0].frames) == 2, (
+        from runtime.daemon.headless_assistant import AssistantConversationStore
+        store = AssistantConversationStore(tmp_path)
+        store.load()
+        conv3 = store.get_conversation(conv_id)
+        assert conv3 is not None
+        assert len(conv3.turns) == 1
+        assert conv3.turns[0].id == "turn-flush"
+        assert len(conv3.turns[0].frames) == 2, (
             "finish_inflight must flush buffered_frames into turn_record.frames"
         )
-        assert conv2.turns[0].frames[0].text == "streamed chunk 1"
-        assert conv2.turns[0].frames[1].name == "bash"
-        assert conv2.turns[0].finished_at is not None, (
+        assert conv3.turns[0].frames[0].text == "streamed chunk 1"
+        assert conv3.turns[0].frames[1].name == "bash"
+        assert conv3.turns[0].finished_at is not None, (
             "finish_inflight must stamp finished_at"
         )
 
@@ -470,20 +501,23 @@ class TestHeadlessAssistantManager:
         ws = tmp_path / "sub"
         ws.mkdir()
         conv = await manager.get_conversation(workspace=ws)
+        conv_id = conv.id
 
         turn_record = conv.begin_turn(turn_id="t1", prompt="q")
         await manager.start_inflight(
-            workspace=ws, turn_id="t1", prompt="q",
+            workspace=ws, conversation_id=conv_id,
+            turn_id="t1", prompt="q",
             turn_record=turn_record,
         )
         await manager.buffer_inflight_frame(
-            workspace=ws, frame=TurnFrame.text_delta(text="a"),
+            workspace=ws, conversation_id=conv_id,
+            frame=TurnFrame.text_delta(text="a"),
         )
 
         await manager.close_all()
 
         manager2 = HeadlessAssistantManager()
-        conv2 = await manager2.get_conversation(workspace=ws)
+        conv2 = await manager2.get_conversation(workspace=ws, conversation_id=conv_id)
         assert len(conv2.turns) == 1
         assert len(conv2.turns[0].frames) == 1
         assert conv2.turns[0].frames[0].text == "a"
@@ -543,6 +577,7 @@ class TestRunHeadlessTurn:
         """After a successful turn, the conversation should have the turn persisted."""
         manager = HeadlessAssistantManager()
         conv = await manager.get_conversation(workspace=tmp_path)
+        conv_id = conv.id
 
         adapter = NullAdapter()
 
@@ -554,14 +589,15 @@ class TestRunHeadlessTurn:
         # for build_turn_argv), so we test the manager flows directly.
         turn_record = conv.begin_turn(turn_id="test-turn", prompt="hello")
         await manager.start_inflight(
-            workspace=tmp_path, turn_id="test-turn", prompt="hello",
+            workspace=tmp_path, conversation_id=conv_id,
+            turn_id="test-turn", prompt="hello",
             turn_record=turn_record,
         )
 
         f1 = TurnFrame.text_delta(text="response")
         conv.append_frame(turn_record, f1)
-        await manager.buffer_inflight_frame(workspace=tmp_path, frame=f1)
-        await manager.finish_inflight(workspace=tmp_path, session_id="sess-99")
+        await manager.buffer_inflight_frame(workspace=tmp_path, conversation_id=conv_id, frame=f1)
+        await manager.finish_inflight(workspace=tmp_path, conversation_id=conv_id, session_id="sess-99")
 
         assert conv.resume_session_id == "sess-99"
         assert len(conv.turns) == 1
@@ -569,8 +605,11 @@ class TestRunHeadlessTurn:
         assert conv.turns[0].prompt == "hello"
 
         # Reload survives.
-        conv2 = AssistantConversation(tmp_path)
-        assert conv2.load()
+        from runtime.daemon.headless_assistant import AssistantConversationStore
+        store = AssistantConversationStore(tmp_path)
+        store.load()
+        conv2 = store.get_conversation(conv_id)
+        assert conv2 is not None
         assert conv2.resume_session_id == "sess-99"
         assert len(conv2.turns) == 1
 

@@ -231,6 +231,46 @@ the `HeadlessAdapter` Protocol for codex-cli 0.139.0+ headless mode.
 - **Session continuity:** Tracks `thread_id` from `thread.started` event. Resume via `codex exec resume <thread_id>`.
 - **Permission posture (founder-ruled, KB `assistant-headless-permission-postures`):** Sandbox = `workspace-write`, approval = `never`. Parity with the interactive assistant (`assistant_pty.py:131` adds `-c sandbox_workspace_write.network_access=true`). NOT `--dangerously-bypass-approvals-and-sandbox`. The posture defaults are `PermissionPosture.codex_sandbox="workspace-write"` and `PermissionPosture.codex_ask_for_approval="never"` — additive to the dataclass, claude fields untouched. The route handler's `PermissionPosture` construction needs no codex-specific branching because the defaults carry the correct founder-ruled posture.
 
+### 6.11 Multi-Conversation Model (THR-056 STEP-A / TASK-1957)
+
+> **Added 2026-07-04, TASK-1957 (THR-056 STEP-A).** The single-conversation
+> model was replaced with a multi-conversation store under the same assistant
+> workspace.
+
+**Data model.** File-based (no SQLite). Each conversation lives at
+`<assistant-workspace>/conversations/<id>.json` with fields `id`, `title`,
+`created_at`, `executor`, `resume_session_id`, `turns[]`. An index file
+`conversations/index.json` tracks `active_id` and `order[]` (newest-first).
+
+**Migration.** On first load, if the legacy `conversation.json` exists and no
+`conversations/` store exists yet, it is adopted as the first conversation
+(title "Conversation 1", becomes active). Turns are preserved intact.
+
+**HeadlessAssistantManager.** Re-keyed: `_conversations` and `_in_flight` now
+key by `(workspace, conversation_id)` instead of `workspace` alone.
+Finish-in-background + close_workspace/close_all flush semantics are preserved
+per active conversation.
+
+**New HTTP routes** (all on the A-mode surface, each behind `require_token()`):
+- `GET /assistant/a-mode/conversations` — list conversations (id, title,
+  created_at, active flag; newest-first).
+- `POST /assistant/a-mode/conversations` — create new (returns id; becomes
+  active; empty turns).
+- `POST /assistant/a-mode/conversations/{id}/activate` — switch the active
+  conversation.
+- `PATCH /assistant/a-mode/conversations/{id}` — rename (body: `{"title":"..."}`).
+- `DELETE /assistant/a-mode/conversations/{id}` — delete; deleting the active
+  one activates the most-recent remaining; if the last one is deleted, an
+  empty one is auto-created and made active.
+
+**WS attach.** The A-mode WS attaches to the **active** conversation by default.
+An optional `conversation_id` in the start message (e.g.
+`{"type":"start","text":"...","conversation_id":"<id>"}`) targets a specific
+conversation. History replay works per active/targeted conversation.
+
+**Auto-title.** A new conversation is auto-titled from its first user message
+(first 80 chars). Fallback: "New conversation".
+
 ### 6.8 Frozen symbols
 
 - `AssistantPtySession` — byte-identical preserved

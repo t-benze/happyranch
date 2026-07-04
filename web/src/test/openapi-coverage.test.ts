@@ -128,6 +128,11 @@ const INCLUDED_PATHS = new Set<string>([
   // WebSocket PTY at /assistant/session is not in OpenAPI (FastAPI omits WS).
   'GET /api/v1/assistant/status',
   'GET /api/v1/assistant/a-mode/status',
+  'GET /api/v1/assistant/a-mode/conversations',
+  'POST /api/v1/assistant/a-mode/conversations',
+  'POST /api/v1/assistant/a-mode/conversations/{conv_id}/activate',
+  'PATCH /api/v1/assistant/a-mode/conversations/{conv_id}',
+  'DELETE /api/v1/assistant/a-mode/conversations/{conv_id}',
   'POST /api/v1/assistant/init',
   'POST /api/v1/assistant/register',
   'POST /api/v1/assistant/repair',

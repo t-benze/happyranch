@@ -41,6 +41,7 @@ import asyncio
 import contextlib
 import json as _json
 import time
+import uuid as _uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -836,30 +837,49 @@ class _TurnRecord:
 
 
 class AssistantConversation:
-    """Per-workspace structured conversation log stored as a JSON file.
+    """A single conversation within the system assistant workspace.
+
+    THR-056 STEP-A: multi-conversation model — each conversation lives at
+    ``<assistant-workspace>/conversations/<id>.json``, replacing the legacy
+    single ``conversation.json`` file.
 
     NOT a SQLite table — this survives dock close/open AND daemon restart
-    without a schema migration.  The file lives at
-    ``<assistant-workspace>/conversation.json``.
+    without a schema migration.
     """
 
-    _FILENAME = "conversation.json"
-
-    def __init__(self, workspace: Path) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        id: str | None = None,
+        title: str = "New conversation",
+        created_at: str | None = None,
+    ) -> None:
         self.workspace = workspace
-        self._path = workspace / self._FILENAME
+        self.id: str = id or str(_uuid.uuid4())
+        self.title: str = title
+        self.created_at: str = created_at or (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
         self.executor: str | None = None
         self.resume_session_id: str | None = None
         self.turns: list[_TurnRecord] = []
+        self.active: bool = False
+        self._store_dir = workspace / "conversations"
+        self._path = self._store_dir / f"{self.id}.json"
 
     # ---- I/O ----
 
-    def load(self) -> bool:
-        """Load from disk.  Returns False when the file doesn't exist (fresh start)."""
-        if not self._path.exists():
+    def load_from_path(self, filepath: Path) -> bool:
+        """Load from a specific file path.  Returns False when the file
+        doesn't exist (fresh start)."""
+        if not filepath.exists():
             return False
-        raw = self._path.read_text()
+        raw = filepath.read_text()
         data = _json.loads(raw)
+        self.id = data.get("id", self.id)
+        self.title = data.get("title", self.title)
+        self.created_at = data.get("created_at", self.created_at)
         self.executor = data.get("executor")
         self.resume_session_id = data.get("resume_session_id")
         self.turns = []
@@ -875,9 +895,17 @@ class AssistantConversation:
             ))
         return True
 
+    def load(self) -> bool:
+        """Load from the default conversations/<id>.json path."""
+        return self.load_from_path(self._path)
+
     def save(self) -> None:
         """Persist to disk atomically (write-then-rename)."""
+        self._store_dir.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {
+            "id": self.id,
+            "title": self.title,
+            "created_at": self.created_at,
             "executor": self.executor,
             "resume_session_id": self.resume_session_id,
             "workspace": str(self.workspace),
@@ -926,6 +954,229 @@ class AssistantConversation:
 
 
 # ---------------------------------------------------------------------------
+# AssistantConversationStore — file-based multi-conversation persistence
+# ---------------------------------------------------------------------------
+
+class AssistantConversationStore:
+    """File-based multi-conversation store under the assistant workspace.
+
+    THR-056 STEP-A: replaces the single ``conversation.json`` with a
+    ``conversations/`` directory:
+    - ``conversations/<id>.json`` — per-conversation file (id, title,
+      created_at, executor, resume_session_id, turns[]).
+    - ``conversations/index.json`` — active conversation id + ordered ids
+      (newest-first).
+
+    Migration: on first load, if the legacy ``<workspace>/conversation.json``
+    exists and ``conversations/`` does not, adopt it as the first conversation
+    (title 'Conversation 1').
+    """
+
+    _INDEX_FILENAME = "index.json"
+    _STORE_DIRNAME = "conversations"
+    _LEGACY_FILENAME = "conversation.json"
+
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        self._store_dir = workspace / self._STORE_DIRNAME
+        self._index_path = self._store_dir / self._INDEX_FILENAME
+        self.active_id: str | None = None
+        self._order: list[str] = []  # newest-first
+        self._conversations: dict[str, AssistantConversation] = {}
+
+    # ---- I/O ----
+
+    def load(self) -> None:
+        """Load or create the store.  On first load, migrates legacy
+        conversation.json if it exists."""
+        self._store_dir.mkdir(parents=True, exist_ok=True)
+
+        if not self._index_path.exists():
+            # Fresh store — check for legacy migration.
+            legacy_path = self.workspace / self._LEGACY_FILENAME
+            if legacy_path.exists():
+                self._migrate_legacy(legacy_path)
+            else:
+                # Truly fresh: create one empty conversation.
+                conv = AssistantConversation(self.workspace)
+                conv.title = "New conversation"
+                conv.save()
+                self._conversations[conv.id] = conv
+                self._order = [conv.id]
+                self.active_id = conv.id
+                conv.active = True
+                self._save_index()
+            return
+
+        # Load existing index.
+        index_data = _json.loads(self._index_path.read_text())
+        self.active_id = index_data.get("active_id")
+        self._order = index_data.get("order", [])
+
+        # Load each conversation from its file.
+        for conv_id in list(self._order):
+            conv_path = self._store_dir / f"{conv_id}.json"
+            if conv_path.exists():
+                conv = AssistantConversation(self.workspace, id=conv_id)
+                conv.load_from_path(conv_path)
+                conv.active = (conv_id == self.active_id)
+                self._conversations[conv_id] = conv
+            else:
+                # Stale entry in index — remove.
+                self._order.remove(conv_id)
+
+        # If index had no valid conversations, create one.
+        if not self._conversations:
+            conv = AssistantConversation(self.workspace)
+            conv.title = "New conversation"
+            conv.save()
+            self._conversations[conv.id] = conv
+            self._order = [conv.id]
+            self.active_id = conv.id
+            conv.active = True
+            self._save_index()
+        elif self.active_id not in self._conversations:
+            # Active id points to a missing conversation — pick newest.
+            self.active_id = self._order[0]
+            self._conversations[self.active_id].active = True
+            self._save_index()
+
+    def _migrate_legacy(self, legacy_path: Path) -> None:
+        """Adopt legacy conversation.json as the first conversation."""
+        raw = legacy_path.read_text()
+        data = _json.loads(raw)
+
+        conv = AssistantConversation(self.workspace)
+        conv.title = "Conversation 1"
+        conv.executor = data.get("executor")
+        conv.resume_session_id = data.get("resume_session_id")
+        # Load turns from legacy data.
+        for t in data.get("turns", []):
+            frames = [TurnFrame.model_validate(f) for f in t.get("frames", [])]
+            conv.turns.append(_TurnRecord(
+                id=t.get("id", ""),
+                prompt=t.get("prompt", ""),
+                frames=frames,
+                started_at=t.get("started_at"),
+                finished_at=t.get("finished_at"),
+                session_id=t.get("session_id"),
+            ))
+        conv.save()
+        conv.active = True
+        self._conversations[conv.id] = conv
+        self._order = [conv.id]
+        self.active_id = conv.id
+        self._save_index()
+
+    def _save_index(self) -> None:
+        """Persist the index file."""
+        self._store_dir.mkdir(parents=True, exist_ok=True)
+        data: dict[str, Any] = {
+            "active_id": self.active_id,
+            "order": self._order,
+        }
+        tmp = self._index_path.with_suffix(".tmp")
+        tmp.write_text(_json.dumps(data, indent=2) + "\n")
+        tmp.replace(self._index_path)
+
+    # ---- CRUD ----
+
+    def create_conversation(self, title: str = "New conversation") -> AssistantConversation:
+        """Create a new conversation and make it active."""
+        conv = AssistantConversation(self.workspace)
+        conv.title = title
+        conv.active = True
+        # Deactivate previous active.
+        if self.active_id and self.active_id in self._conversations:
+            self._conversations[self.active_id].active = False
+        self._conversations[conv.id] = conv
+        self._order.insert(0, conv.id)  # newest first
+        self.active_id = conv.id
+        self._save_index()
+        return conv
+
+    def save_conversation(self, conv: AssistantConversation) -> None:
+        """Persist a conversation to its file."""
+        conv.save()
+
+    def get_conversation(self, conversation_id: str) -> AssistantConversation | None:
+        """Get a conversation by id, or None."""
+        return self._conversations.get(conversation_id)
+
+    def get_active(self) -> AssistantConversation | None:
+        """Get the active conversation."""
+        if self.active_id:
+            return self._conversations.get(self.active_id)
+        return None
+
+    def list_conversations(self) -> list[AssistantConversation]:
+        """List all conversations, newest-first.  Each includes active flag."""
+        result: list[AssistantConversation] = []
+        for conv_id in self._order:
+            conv = self._conversations.get(conv_id)
+            if conv is not None:
+                conv.active = (conv_id == self.active_id)
+                result.append(conv)
+        return result
+
+    def set_active(self, conversation_id: str) -> bool:
+        """Switch the active conversation.  Returns True on success."""
+        if conversation_id not in self._conversations:
+            return False
+        if self.active_id and self.active_id in self._conversations:
+            self._conversations[self.active_id].active = False
+        self.active_id = conversation_id
+        self._conversations[conversation_id].active = True
+        self._save_index()
+        return True
+
+    def rename_conversation(self, conversation_id: str, new_title: str) -> bool:
+        """Rename a conversation.  Returns True on success."""
+        conv = self._conversations.get(conversation_id)
+        if conv is None:
+            return False
+        conv.title = new_title
+        conv.save()
+        return True
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        """Delete a conversation.  If it's the active one, activates the
+        most-recent remaining.  If it's the LAST one, auto-creates an empty
+        one and makes it active (NEVER leave zero conversations)."""
+        conv = self._conversations.pop(conversation_id, None)
+        if conv is None:
+            return
+        # Remove from order.
+        if conversation_id in self._order:
+            self._order.remove(conversation_id)
+        # Remove the file.
+        conv_path = self._store_dir / f"{conversation_id}.json"
+        with contextlib.suppress(FileNotFoundError):
+            conv_path.unlink()
+
+        was_active = (self.active_id == conversation_id)
+
+        if not self._conversations:
+            # Last one deleted — auto-create an empty one.
+            new_conv = AssistantConversation(self.workspace)
+            new_conv.title = "New conversation"
+            new_conv.save()
+            new_conv.active = True
+            self._conversations[new_conv.id] = new_conv
+            self._order = [new_conv.id]
+            self.active_id = new_conv.id
+            self._save_index()
+            return
+
+        if was_active:
+            # Activate the most-recent remaining (first in order).
+            self.active_id = self._order[0]
+            self._conversations[self.active_id].active = True
+
+        self._save_index()
+
+
+# ---------------------------------------------------------------------------
 # HeadlessAssistantManager — per-turn headless session lifecycle
 # ---------------------------------------------------------------------------
 
@@ -941,40 +1192,146 @@ class _InFlightTurn:
     buffered_frames: list[TurnFrame] = field(default_factory=list)
 
 
+def _make_store_key(workspace: Path) -> str:
+    return str(workspace.resolve())
+
+
+def _make_inflight_key(workspace: Path, conversation_id: str) -> str:
+    return f"{_make_store_key(workspace)}::{conversation_id}"
+
+
 class HeadlessAssistantManager:
     """Manages per-workspace headless assistant conversations.
+
+    THR-056 STEP-A: re-keyed to support multiple conversations per workspace.
+    Each conversation is stored in the file-based AssistantConversationStore.
+    In-flight turns are keyed by (workspace, conversation_id) so the active
+    conversation's finish-in-background buffering keeps working.
 
     Parallel to ``AssistantSessionManager`` (frozen PTY path) — new field on
     ``DaemonState``.
     """
 
     def __init__(self) -> None:
-        self._conversations: dict[str, AssistantConversation] = {}
-        self._in_flight: dict[str, _InFlightTurn] = {}  # keyed by workspace str
+        self._stores: dict[str, AssistantConversationStore] = {}  # keyed by workspace str
+        self._in_flight: dict[str, _InFlightTurn] = {}  # keyed by (workspace, conversation_id)
         self._lock = asyncio.Lock()
+
+    # ---- store access ----
+
+    async def _get_store(self, workspace: Path) -> AssistantConversationStore:
+        key = _make_store_key(workspace)
+        async with self._lock:
+            if key not in self._stores:
+                store = AssistantConversationStore(workspace)
+                store.load()
+                self._stores[key] = store
+            return self._stores[key]
 
     # ---- conversation access ----
 
-    async def get_conversation(self, *, workspace: Path) -> AssistantConversation:
-        key = str(workspace.resolve())
-        async with self._lock:
-            if key in self._conversations:
-                conv = self._conversations[key]
-            else:
-                conv = AssistantConversation(workspace)
-                conv.load()
-                self._conversations[key] = conv
+    async def get_conversation(
+        self, *, workspace: Path, conversation_id: str | None = None
+    ) -> AssistantConversation:
+        """Get a conversation.  If conversation_id is given, returns that
+        specific one.  Otherwise returns the active conversation."""
+        store = await self._get_store(workspace)
+        if conversation_id is not None:
+            conv = store.get_conversation(conversation_id)
+            if conv is None:
+                raise KeyError(f"conversation not found: {conversation_id}")
             return conv
+        conv = store.get_active()
+        if conv is None:
+            raise RuntimeError("no active conversation")
+        return conv
+
+    async def create_conversation(
+        self, *, workspace: Path, title: str = "New conversation"
+    ) -> AssistantConversation:
+        """Create a new conversation and make it the active one."""
+        store = await self._get_store(workspace)
+        conv = store.create_conversation(title=title)
+        store.save_conversation(conv)
+        return conv
+
+    async def switch_conversation(
+        self, *, workspace: Path, conversation_id: str
+    ) -> bool:
+        """Switch the active conversation."""
+        store = await self._get_store(workspace)
+        return store.set_active(conversation_id)
+
+    async def set_conversation_title_from_first_message(
+        self, *, workspace: Path, conversation_id: str, message: str
+    ) -> None:
+        """Auto-title a new conversation from its first user message.
+        Fallback: 'New conversation'."""
+        store = await self._get_store(workspace)
+        conv = store.get_conversation(conversation_id)
+        if conv is None:
+            return
+        stripped = message.strip()
+        if not stripped:
+            return
+        # Use first 80 chars, truncate at word boundary.
+        if len(stripped) > 80:
+            truncated = stripped[:80].rsplit(" ", 1)[0]
+            stripped = truncated
+        store.rename_conversation(conversation_id, stripped)
+
+    async def list_conversations(
+        self, *, workspace: Path
+    ) -> list[AssistantConversation]:
+        """List all conversations for a workspace, newest-first."""
+        store = await self._get_store(workspace)
+        return store.list_conversations()
+
+    async def rename_conversation(
+        self, *, workspace: Path, conversation_id: str, new_title: str
+    ) -> bool:
+        """Rename a conversation."""
+        store = await self._get_store(workspace)
+        return store.rename_conversation(conversation_id, new_title)
+
+    async def delete_conversation(
+        self, *, workspace: Path, conversation_id: str
+    ) -> None:
+        """Delete a conversation.  Raises RuntimeError if the conversation
+        has an in-flight turn — the caller should return HTTP 409."""
+        # Guard: reject deletion while an in-flight turn exists for this
+        # conversation.  Deleting during a turn would silently orphan the
+        # turn and drop buffered frames (finish_inflight calls
+        # store.get_conversation which returns None after deletion).
+        key = _make_inflight_key(workspace, conversation_id)
+        async with self._lock:
+            if key in self._in_flight:
+                raise RuntimeError(
+                    f"conversation has an in-flight turn: {conversation_id}"
+                )
+        store = await self._get_store(workspace)
+        store.delete_conversation(conversation_id)
+
+    # ---- lifecycle ----
 
     async def close_workspace(self, workspace: Path) -> None:
-        """Buffer any in-flight turn then persist."""
-        key = str(workspace.resolve())
+        """Buffer any in-flight turns then persist all conversations in the store."""
+        store_key = _make_store_key(workspace)
         async with self._lock:
-            inflight = self._in_flight.pop(key, None)
-            if inflight is not None and not inflight.finished:
-                self._flush_buffered(inflight)
-            conv = self._conversations.pop(key, None)
-            if conv is not None:
+            store = self._stores.pop(store_key, None)
+            if store is None:
+                return
+            # Buffer all in-flight turns for this workspace.
+            prefix = f"{store_key}::"
+            for key, inflight in list(self._in_flight.items()):
+                if key.startswith(prefix) and not inflight.finished:
+                    self._flush_buffered(inflight)
+            # Remove in-flight entries for this workspace.
+            keys_to_remove = [k for k in self._in_flight if k.startswith(prefix)]
+            for k in keys_to_remove:
+                del self._in_flight[k]
+            # Persist all conversations.
+            for conv in store._conversations.values():
                 conv.save()
 
     async def close_all(self) -> None:
@@ -984,9 +1341,10 @@ class HeadlessAssistantManager:
                 if not inflight.finished:
                     self._flush_buffered(inflight)
             self._in_flight.clear()
-            for conv in self._conversations.values():
-                conv.save()
-            self._conversations.clear()
+            for store in self._stores.values():
+                for conv in store._conversations.values():
+                    conv.save()
+            self._stores.clear()
 
     # ---- in-flight turn tracking ----
 
@@ -994,11 +1352,12 @@ class HeadlessAssistantManager:
         self,
         *,
         workspace: Path,
+        conversation_id: str,
         turn_id: str,
         prompt: str,
         turn_record: _TurnRecord,
     ) -> None:
-        key = str(workspace.resolve())
+        key = _make_inflight_key(workspace, conversation_id)
         async with self._lock:
             self._in_flight[key] = _InFlightTurn(
                 turn_id=turn_id,
@@ -1010,29 +1369,40 @@ class HeadlessAssistantManager:
         self,
         *,
         workspace: Path,
+        conversation_id: str,
         session_id: str | None = None,
     ) -> None:
-        key = str(workspace.resolve())
+        key = _make_inflight_key(workspace, conversation_id)
         async with self._lock:
             inflight = self._in_flight.pop(key, None)
             if inflight is not None:
                 inflight.finished = True
                 # Flush buffered frames into the turn record before persisting.
                 self._flush_buffered(inflight)
-                conv = self._conversations.get(key)
-                if conv is not None:
-                    conv.finish_turn(inflight.turn_record, session_id=session_id)
-                    conv.save()
+                store = self._stores.get(_make_store_key(workspace))
+                if store is not None:
+                    conv = store.get_conversation(conversation_id)
+                    if conv is not None:
+                        conv.finish_turn(inflight.turn_record, session_id=session_id)
+                        conv.save()
 
     async def buffer_inflight_frame(
-        self, *, workspace: Path, frame: TurnFrame
+        self, *, workspace: Path, conversation_id: str, frame: TurnFrame
     ) -> None:
-        key = str(workspace.resolve())
+        key = _make_inflight_key(workspace, conversation_id)
         async with self._lock:
             inflight = self._in_flight.get(key)
             if inflight is not None:
                 inflight.buffered_frames.append(frame)
                 inflight.frames_sent += 1
+
+    async def _get_inflight(
+        self, *, workspace: Path, conversation_id: str
+    ) -> _InFlightTurn | None:
+        """Exposed for testing."""
+        key = _make_inflight_key(workspace, conversation_id)
+        async with self._lock:
+            return self._in_flight.get(key)
 
     def _flush_buffered(self, inflight: _InFlightTurn) -> None:
         """Append buffered frames to the turn record (non-async, lock held).
@@ -1062,10 +1432,12 @@ async def run_headless_turn(
 
     Returns the executor's session-id (for resume continuity) or None.
     """
+    conv_id = conversation.id
     turn_id = f"turn-{int(time.time() * 1000)}"
     turn_record = conversation.begin_turn(turn_id=turn_id, prompt=prompt)
     await manager.start_inflight(
         workspace=workspace,
+        conversation_id=conv_id,
         turn_id=turn_id,
         prompt=prompt,
         turn_record=turn_record,
@@ -1080,14 +1452,14 @@ async def run_headless_turn(
     except Exception as exc:
         error_frame = TurnFrame.error(message=f"Failed to build argv: {exc}")
         await frame_sender(error_frame)
-        await manager.buffer_inflight_frame(workspace=workspace, frame=error_frame)
-        await manager.finish_inflight(workspace=workspace)
+        await manager.buffer_inflight_frame(workspace=workspace, conversation_id=conv_id, frame=error_frame)
+        await manager.finish_inflight(workspace=workspace, conversation_id=conv_id)
         return None
 
     # Send turn_start frame.
     start_frame = TurnFrame.turn_start()
     await frame_sender(start_frame)
-    await manager.buffer_inflight_frame(workspace=workspace, frame=start_frame)
+    await manager.buffer_inflight_frame(workspace=workspace, conversation_id=conv_id, frame=start_frame)
 
     # Send working status.
     working_frame = TurnFrame.status(code="working")
@@ -1106,8 +1478,8 @@ async def run_headless_turn(
     except OSError as exc:
         error_frame = TurnFrame.error(message=f"Failed to spawn executor: {exc}")
         await frame_sender(error_frame)
-        await manager.buffer_inflight_frame(workspace=workspace, frame=error_frame)
-        await manager.finish_inflight(workspace=workspace)
+        await manager.buffer_inflight_frame(workspace=workspace, conversation_id=conv_id, frame=error_frame)
+        await manager.finish_inflight(workspace=workspace, conversation_id=conv_id)
         return None
 
     try:
@@ -1116,7 +1488,7 @@ async def run_headless_turn(
             frame = adapter.parse_event(line_str)
             if frame is not None:
                 await frame_sender(frame)
-                await manager.buffer_inflight_frame(workspace=workspace, frame=frame)
+                await manager.buffer_inflight_frame(workspace=workspace, conversation_id=conv_id, frame=frame)
                 extracted = adapter.extract_session_id(frame)
                 if extracted is not None:
                     session_id = extracted
@@ -1130,7 +1502,7 @@ async def run_headless_turn(
         # flushed at EOF.
         for drained in adapter.drain_pending_frames():
             await frame_sender(drained)
-            await manager.buffer_inflight_frame(workspace=workspace, frame=drained)
+            await manager.buffer_inflight_frame(workspace=workspace, conversation_id=conv_id, frame=drained)
             extracted = adapter.extract_session_id(drained)
             if extracted is not None:
                 session_id = extracted
@@ -1151,12 +1523,12 @@ async def run_headless_turn(
                 message=f"Executor exited with code {proc.returncode}: {stderr_str}"
             )
             await frame_sender(error_frame)
-            await manager.buffer_inflight_frame(workspace=workspace, frame=error_frame)
+            await manager.buffer_inflight_frame(workspace=workspace, conversation_id=conv_id, frame=error_frame)
 
     except Exception as exc:
         error_frame = TurnFrame.error(message=f"Turn execution failed: {exc}")
         await frame_sender(error_frame)
-        await manager.buffer_inflight_frame(workspace=workspace, frame=error_frame)
+        await manager.buffer_inflight_frame(workspace=workspace, conversation_id=conv_id, frame=error_frame)
     finally:
         if proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
@@ -1176,11 +1548,11 @@ async def run_headless_turn(
                 usage[k] = v
     end_frame = TurnFrame.turn_end(usage=usage if usage else None)
     await frame_sender(end_frame)
-    await manager.buffer_inflight_frame(workspace=workspace, frame=end_frame)
+    await manager.buffer_inflight_frame(workspace=workspace, conversation_id=conv_id, frame=end_frame)
 
     # Send ready status.
     ready_frame = TurnFrame.status(code="ready")
     await frame_sender(ready_frame)
 
-    await manager.finish_inflight(workspace=workspace, session_id=session_id)
+    await manager.finish_inflight(workspace=workspace, conversation_id=conv_id, session_id=session_id)
     return session_id
