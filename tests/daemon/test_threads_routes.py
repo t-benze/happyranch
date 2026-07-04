@@ -2625,3 +2625,101 @@ def test_compose_as_agent_multipart_with_files(
     for a in atts:
         assert a["thread_attachment_id"].startswith("att-")
         assert a["artifact_name"] == ""
+
+
+# ── THR-061 PR-1: GET /threads/{thread_id}/tasks ──────────────────────────
+
+
+def test_list_thread_tasks_db_newest_first(tmp_home, app, org_state, auth_headers):
+    """Database query returns rows newest-first filtered by dispatched_from_thread_id."""
+    tid, _token = _start_thread(TestClient(app), org_state, auth_headers)
+    db = org_state.db
+
+    # Insert tasks with different timestamps via dispatched_from_thread_id.
+    db.insert_task(TaskRecord(
+        id="TASK-10", brief="first", team="engineering",
+        assigned_agent="dev_agent",
+        dispatched_from_thread_id=tid,
+        created_at=datetime(2026, 7, 1, 10, 0, 0, tzinfo=timezone.utc),
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-11", brief="second", team="engineering",
+        assigned_agent="dev_agent",
+        dispatched_from_thread_id=tid,
+        created_at=datetime(2026, 7, 2, 10, 0, 0, tzinfo=timezone.utc),
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-12", brief="third", team="engineering",
+        assigned_agent="dev_agent",
+        dispatched_from_thread_id=tid,
+        created_at=datetime(2026, 7, 3, 10, 0, 0, tzinfo=timezone.utc),
+    ))
+    # Also insert a task NOT dispatched from this thread.
+    db.insert_task(TaskRecord(
+        id="TASK-99", brief="other", team="engineering",
+        assigned_agent="qa_engineer",
+    ))
+
+    rows = db.list_tasks_by_thread(tid)
+    assert len(rows) == 3
+    # Newest first: TASK-12 (Jul 3) > TASK-11 (Jul 2) > TASK-10 (Jul 1)
+    assert rows[0]["id"] == "TASK-12"
+    assert rows[1]["id"] == "TASK-11"
+    assert rows[2]["id"] == "TASK-10"
+    # Check fields.
+    assert rows[0]["brief"] == "third"
+    assert rows[0]["status"] == "pending"
+    assert rows[0]["assigned_agent"] == "dev_agent"
+    assert rows[0]["parent_task_id"] is None
+
+
+def test_list_thread_tasks_route_returns_summaries(tmp_home, app, org_state, auth_headers):
+    """Route returns task summaries for a thread with dispatched tasks."""
+    client = TestClient(app)
+    tid, _token = _start_thread(client, org_state, auth_headers)
+    db = org_state.db
+
+    # Insert two tasks dispatched from this thread.
+    db.insert_task(TaskRecord(
+        id="TASK-20", brief="alpha task", team="engineering",
+        assigned_agent="dev_agent",
+        dispatched_from_thread_id=tid,
+        created_at=datetime(2026, 7, 4, 10, 0, 0, tzinfo=timezone.utc),
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-21", brief="beta task", team="engineering",
+        assigned_agent="dev_agent",
+        dispatched_from_thread_id=tid,
+        created_at=datetime(2026, 7, 4, 11, 0, 0, tzinfo=timezone.utc),
+    ))
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/tasks",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert isinstance(data, list)
+    assert len(data) == 2
+    # Newest first.
+    assert data[0]["id"] == "TASK-21"
+    assert data[0]["brief"] == "beta task"
+    assert data[0]["status"] == "pending"
+    assert data[0]["assigned_agent"] == "dev_agent"
+    assert data[0]["parent_task_id"] is None
+    assert data[1]["id"] == "TASK-20"
+    assert data[1]["brief"] == "alpha task"
+
+
+def test_list_thread_tasks_route_empty_thread(tmp_home, app, org_state, auth_headers):
+    """Route returns empty list for a thread with no dispatched tasks."""
+    client = TestClient(app)
+    tid, _token = _start_thread(client, org_state, auth_headers)
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/tasks",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data == []
