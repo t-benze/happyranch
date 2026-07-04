@@ -34,6 +34,7 @@ import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
 import type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
+import type { ConversationSummary } from '@/lib/api/assistant';
 import type { workHours as workHoursApi } from '@/lib/api';
 import type {
   AssistantRegisterBody,
@@ -269,6 +270,23 @@ export interface AssistantApi {
    * the route differs. Imperative and real-only; the mock rejects.
    */
   openAModeSession: () => Promise<WebSocket>;
+  /**
+   * Multi-conversation switcher (THR-056 STEP-B). N conversations live UNDER
+   * the one runtime-global assistant. The list is newest-first; exactly one is
+   * `active` at a time and the A-mode WS attaches to it on (re)connect.
+   *
+   * `enabled` gates the poll so the list is only fetched while the dock is
+   * open and the assistant is configured. Every mutation invalidates the list
+   * cache so the `active` flag reflects the server after new/switch/delete.
+   */
+  useListConversations: (enabled: boolean) => QueryLike<ConversationSummary[]>;
+  useCreateConversation: () => MutationLike<void, ConversationSummary>;
+  useActivateConversation: () => MutationLike<string, { success: boolean }>;
+  useRenameConversation: () => MutationLike<
+    { id: string; title: string },
+    { success: boolean }
+  >;
+  useDeleteConversation: () => MutationLike<string, { success: boolean }>;
 }
 
 // ---------------------------------------------------------------------------

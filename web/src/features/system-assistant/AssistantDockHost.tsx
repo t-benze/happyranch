@@ -19,11 +19,20 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
-import { X, Terminal } from 'lucide-react';
-import { useAssistantStatus, useAssistantAModeSessionOpener } from '@/hooks/assistant';
+import { X, Terminal, MessagesSquare } from 'lucide-react';
+import {
+  useAssistantStatus,
+  useAssistantAModeSessionOpener,
+  useListConversations,
+  useCreateConversation,
+  useActivateConversation,
+  useRenameConversation,
+  useDeleteConversation,
+} from '@/hooks/assistant';
 import type { AssistantStatus } from '@/lib/api/types';
 import { MessageBubble } from '@/design-system/patterns/MessageBubble';
 import { TypingBubble } from '@/design-system/patterns/TypingBubble';
+import { ConversationSwitcher } from './ConversationSwitcher';
 
 // ---------------------------------------------------------------------------
 // hotkey
@@ -308,6 +317,7 @@ function useAssistantAModeChat(
   open: boolean,
   status: AssistantStatus | undefined,
   statusLoading: boolean,
+  attachEpoch: number,
 ): UseAssistantAModeChat {
   const [turns, setTurns] = useState<DockTurn[]>([]);
   const [connecting, setConnecting] = useState(false);
@@ -344,6 +354,12 @@ function useAssistantAModeChat(
     setInFlight(false);
     setTurnStartedAt(null);
     setError(null);
+    // Clear the transcript on every (re)connect. A reconnect (attachEpoch bump
+    // after new/switch/delete) attaches to the now-active conversation; the
+    // server replays its `history` frame when it has turns. Switching to an
+    // EMPTY conversation sends NO history frame, so without this the previous
+    // conversation's turns would linger.
+    setTurns([]);
     currentAssistantIdRef.current = null;
 
     const applyFrame = (frame: TurnFrame): void => {
@@ -498,7 +514,7 @@ function useAssistantAModeChat(
         wsRef.current = null;
       }
     };
-  }, [open, openSession, status, statusLoading, nextId]);
+  }, [open, openSession, status, statusLoading, nextId, attachEpoch]);
 
   const sendMessage = useCallback(
     (text: string) => {
@@ -546,6 +562,11 @@ function useAssistantAModeChat(
 export function AssistantDockHost(): JSX.Element {
   const [open, setOpen] = useState(false);
   const [composerDraft, setComposerDraft] = useState('');
+  // Bumping this reconnects the A-mode WS so it attaches to (and replays) the
+  // conversation the server now marks active — after new / switch / delete.
+  const [attachEpoch, setAttachEpoch] = useState(0);
+  const reconnect = useCallback(() => setAttachEpoch((e) => e + 1), []);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -567,9 +588,64 @@ export function AssistantDockHost(): JSX.Element {
     inFlight,
     turnStartedAt,
     error: wsError,
-  } = useAssistantAModeChat(open, status, statusQuery.isLoading);
+  } = useAssistantAModeChat(open, status, statusQuery.isLoading, attachEpoch);
 
   const nowMs = useNowMs(open && inFlight);
+
+  // Conversation switcher (THR-056 STEP-B) — N conversations under the one
+  // runtime-global assistant. Only poll the list while the dock is open and
+  // the assistant is configured.
+  const assistantConfigured = status?.state === 'configured';
+  const conversationsQuery = useListConversations(open && assistantConfigured);
+  const conversations = conversationsQuery.data ?? [];
+  const createConv = useCreateConversation();
+  const activateConv = useActivateConversation();
+  const renameConv = useRenameConversation();
+  const deleteConv = useDeleteConversation();
+  const convBusy =
+    createConv.isPending ||
+    activateConv.isPending ||
+    renameConv.isPending ||
+    deleteConv.isPending;
+  const activeConversation = conversations.find((c) => c.active) ?? null;
+
+  const handleNewConversation = useCallback(async () => {
+    await createConv.mutateAsync();
+    setSwitcherOpen(false);
+    reconnect();
+  }, [createConv, reconnect]);
+
+  const handleSwitchConversation = useCallback(
+    async (id: string) => {
+      if (activeConversation?.id === id) {
+        setSwitcherOpen(false);
+        return;
+      }
+      await activateConv.mutateAsync(id);
+      setSwitcherOpen(false);
+      reconnect();
+    },
+    [activateConv, activeConversation, reconnect],
+  );
+
+  const handleRenameConversation = useCallback(
+    async (id: string, title: string) => {
+      await renameConv.mutateAsync({ id, title });
+    },
+    [renameConv],
+  );
+
+  const handleDeleteConversation = useCallback(
+    async (id: string) => {
+      // Backend keeps exactly one active conversation (never zero): deleting
+      // the active one activates the most-recent remaining; deleting the last
+      // one auto-creates an empty active one. Reconnect to attach to whatever
+      // is now active and reflect it in the transcript.
+      await deleteConv.mutateAsync(id);
+      reconnect();
+    },
+    [deleteConv, reconnect],
+  );
 
   const toggle = useCallback(() => setOpen((o) => !o), []);
   useAssistantDockHotkey(toggle, open);
@@ -586,6 +662,12 @@ export function AssistantDockHost(): JSX.Element {
       }, 100);
       return () => clearTimeout(timer);
     }
+  }, [open]);
+
+  // Collapse the conversation switcher whenever the dock closes so it reopens
+  // on the transcript, not the list.
+  useEffect(() => {
+    if (!open) setSwitcherOpen(false);
   }, [open]);
 
   // Keep the transcript pinned to the newest turn as it streams (thread idiom).
@@ -623,7 +705,6 @@ export function AssistantDockHost(): JSX.Element {
     }
   };
 
-  const assistantConfigured = status?.state === 'configured';
   const assistantPath = activeSlug ? `/orgs/${activeSlug}/assistant` : '/assistant';
 
   // Assistant speaker label — data-backed executor name when available.
@@ -700,6 +781,24 @@ export function AssistantDockHost(): JSX.Element {
             </div>
           </div>
 
+          {/* Conversation switcher toggle — shows the active conversation
+              title; opens the in-dock conversation list (THR-056 STEP-B). */}
+          {assistantConfigured && (
+            <button
+              type="button"
+              onClick={() => setSwitcherOpen((s) => !s)}
+              aria-label="Conversations"
+              aria-expanded={switcherOpen}
+              title="Conversations"
+              className="text-text-secondary hover:text-text-primary hover:bg-surface-hover inline-flex max-w-40 items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors"
+            >
+              <MessagesSquare size={14} aria-hidden="true" />
+              <span className="truncate">
+                {activeConversation?.title ?? 'Conversations'}
+              </span>
+            </button>
+          )}
+
           {/* "Open full session" escape hatch — retained xterm page */}
           <a
             href={assistantPath}
@@ -724,6 +823,26 @@ export function AssistantDockHost(): JSX.Element {
             <X size={16} aria-hidden="true" />
           </button>
         </div>
+
+        {/* Conversation switcher — overlays the transcript+composer within the
+            dock panel (THR-056 STEP-B). */}
+        {switcherOpen && assistantConfigured && (
+          <ConversationSwitcher
+            conversations={conversations}
+            loading={conversationsQuery.isLoading}
+            error={
+              conversationsQuery.isError
+                ? 'Could not load conversations.'
+                : null
+            }
+            busy={convBusy}
+            onNew={handleNewConversation}
+            onSwitch={handleSwitchConversation}
+            onRename={handleRenameConversation}
+            onDelete={handleDeleteConversation}
+            onClose={() => setSwitcherOpen(false)}
+          />
+        )}
 
         {/* Messages area — thread-style transcript */}
         <div className="flex-1 overflow-y-auto px-4 py-3">
