@@ -31,6 +31,9 @@ struct PackagingModeTests {
 
     @Test("packagingMode returns dev by default")
     func packagingModeReturnsDevByDefault() {
+        // Explicitly reset the test seam to nil so a parallel test that set
+        // _testPackagingMode to "bundled" does not cause this assertion to fail.
+        AppDelegate._testPackagingMode = nil
         #expect(AppDelegate.packagingMode() == "dev")
     }
 
