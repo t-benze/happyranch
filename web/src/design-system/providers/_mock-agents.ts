@@ -85,6 +85,20 @@ export const mockAgentsApi: AgentsApi = {
       }),
     }),
 
+  useSetAgentModel: () =>
+    useMutation({
+      mutationFn: async ({
+        body,
+      }: {
+        agentName: string;
+        body: import('./DataContext').SetAgentModelArgs;
+      }) => ({
+        agent: '',
+        before: null,
+        after: body.model,
+      }),
+    }),
+
   useManageAgentRepo: () =>
     useMutation({
       mutationFn: async () => ({ ok: true as const }),

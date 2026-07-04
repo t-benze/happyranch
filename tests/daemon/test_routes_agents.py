@@ -72,10 +72,69 @@ def test_list_agents_returns_full_shape(
     assert eh["role"] == "manager"
     assert eh["executor"] == "claude"
     assert eh["description"] == "Owns the engineering team."
+    # model is returned by GET /agents (resolved from agent.yaml or None)
+    assert "model" in eh
+    assert eh["model"] is None  # no agent.yaml → null
     # No tier / scorecard / avg_confidence fields — tier feature removed.
     assert "tier" not in eh
     assert "scorecard" not in eh
     assert "avg_confidence" not in eh
+
+
+def test_list_agents_returns_model(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GET /agents returns model — both set and null — resolved from agent.yaml."""
+    from datetime import datetime, timezone
+    from runtime.orchestrator.agent_def import AgentDef
+    from runtime.daemon.agent_config import set_model
+
+    ws = org_state.root / "workspaces" / "engineering_head"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+
+    paths = _paths(org_state)
+    agent = AgentDef(
+        name="engineering_head",
+        team="engineering",
+        role="manager",
+        executor="claude",
+        allow_rules=tuple(),
+        repos={},
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="manage the engineering team",
+        description="Owns the engineering team.",
+    )
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / "engineering_head.md").write_text(
+        __import__("runtime.orchestrator.agent_def", fromlist=["render_agent_text"])
+            .render_agent_text(agent),
+    )
+
+    # No model set → null
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert r.status_code == 200
+    rows = {a["name"]: a for a in r.json()["agents"]}
+    eh = rows["engineering_head"]
+    assert eh["model"] is None
+
+    # Set a model → returned
+    set_model(ws, "claude-sonnet-4-20250514")
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert r.status_code == 200
+    rows = {a["name"]: a for a in r.json()["agents"]}
+    eh = rows["engineering_head"]
+    assert eh["model"] == "claude-sonnet-4-20250514"
+
+    # Clear the model → null
+    set_model(ws, None)
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert r.status_code == 200
+    rows = {a["name"]: a for a in r.json()["agents"]}
+    eh = rows["engineering_head"]
+    assert eh["model"] is None
 
 
 def test_list_enrollments_returns_team_and_role(

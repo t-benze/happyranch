@@ -10,6 +10,7 @@ export const MOCK_AGENTS: AgentSummary[] = [
     team: 'engineering',
     role: 'manager',
     executor: 'claude',
+    model: 'claude-sonnet-4-20250514',
     description: 'Owns the engineering team.',
     repos: { happyranch: 'https://github.com/org/happyranch' },
     system_prompt: 'You are the engineering head.',

@@ -16,6 +16,7 @@ const AGENTS_PAYLOAD = {
       team: 'engineering',
       role: 'manager',
       executor: 'claude',
+      model: 'claude-sonnet-4-20250514',
       description: 'Owns engineering.',
       repos: {},
       system_prompt: 'You are the engineering head.',
@@ -25,6 +26,7 @@ const AGENTS_PAYLOAD = {
       team: 'cx',
       role: 'worker',
       executor: 'codex',
+      model: null,
       description: 'Handles support.',
       repos: { happyranch: 'https://github.com/t-benze/happyranch' },
       system_prompt: 'You are support.',
@@ -709,6 +711,120 @@ describe('AgentDetailPane — save flow (repo management)', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Save error/)).toBeInTheDocument();
+    });
+  });
+});
+
+describe('AgentDetailPane — save flow (model editing)', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+  });
+
+  test('renders current model in text input and allows edit + save', async () => {
+    let modelPutCalled = false;
+    let modelPutBody: unknown = null;
+    stubBaseHandlers();
+    stubDetailHandlers();
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/agents/engineering_head/model`, async ({ request }) => {
+        modelPutCalled = true;
+        modelPutBody = await request.json();
+        return HttpResponse.json({
+          agent: 'engineering_head',
+          before: 'claude-sonnet-4-20250514',
+          after: 'gpt-5',
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => {
+      expect(screen.getByText('manager')).toBeInTheDocument();
+    });
+
+    // Find the Model text input
+    const modelInput = screen.getByRole('textbox', { name: 'Model' }) as HTMLInputElement;
+    expect(modelInput.value).toBe('claude-sonnet-4-20250514');
+
+    // Edit the model
+    await user.clear(modelInput);
+    await user.type(modelInput, 'gpt-5');
+
+    // Save bar should appear
+    await waitFor(() => {
+      expect(screen.getByText(/unsaved changes/)).toBeInTheDocument();
+    });
+
+    // Click Save
+    await user.click(screen.getByText('Save agent'));
+
+    await waitFor(() => {
+      expect(modelPutCalled).toBe(true);
+    });
+    expect(modelPutBody).toEqual({ model: 'gpt-5' });
+  });
+
+  test('empty input clears model (sends null)', async () => {
+    let modelPutBody: unknown = null;
+    stubBaseHandlers();
+    stubDetailHandlers();
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/agents/engineering_head/model`, async ({ request }) => {
+        modelPutBody = await request.json();
+        return HttpResponse.json({
+          agent: 'engineering_head',
+          before: 'claude-sonnet-4-20250514',
+          after: null,
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => {
+      expect(screen.getByText('manager')).toBeInTheDocument();
+    });
+
+    const modelInput = screen.getByRole('textbox', { name: 'Model' }) as HTMLInputElement;
+    await user.clear(modelInput);
+
+    await waitFor(() => {
+      expect(screen.getByText('Save agent')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText('Save agent'));
+
+    await waitFor(() => {
+      expect(modelPutBody).toEqual({ model: null });
+    });
+  });
+
+  test('restoring original value clears dirty state', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => {
+      expect(screen.getByText('manager')).toBeInTheDocument();
+    });
+
+    const modelInput = screen.getByRole('textbox', { name: 'Model' }) as HTMLInputElement;
+    // change to something else
+    await user.clear(modelInput);
+    await user.type(modelInput, 'gpt-5');
+
+    await waitFor(() => {
+      expect(screen.getByText('Reset')).toBeInTheDocument();
+    });
+
+    // restore original value
+    await user.clear(modelInput);
+    await user.type(modelInput, 'claude-sonnet-4-20250514');
+
+    await waitFor(() => {
+      expect(screen.queryByText('Reset')).not.toBeInTheDocument();
     });
   });
 });
