@@ -1297,7 +1297,18 @@ class HeadlessAssistantManager:
     async def delete_conversation(
         self, *, workspace: Path, conversation_id: str
     ) -> None:
-        """Delete a conversation."""
+        """Delete a conversation.  Raises RuntimeError if the conversation
+        has an in-flight turn — the caller should return HTTP 409."""
+        # Guard: reject deletion while an in-flight turn exists for this
+        # conversation.  Deleting during a turn would silently orphan the
+        # turn and drop buffered frames (finish_inflight calls
+        # store.get_conversation which returns None after deletion).
+        key = _make_inflight_key(workspace, conversation_id)
+        async with self._lock:
+            if key in self._in_flight:
+                raise RuntimeError(
+                    f"conversation has an in-flight turn: {conversation_id}"
+                )
         store = await self._get_store(workspace)
         store.delete_conversation(conversation_id)
 

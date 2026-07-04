@@ -263,16 +263,21 @@ async def rename_conversation(
 )
 async def delete_conversation(request: Request, conv_id: str) -> dict[str, Any]:
     """Delete a conversation.  Deleting the active one activates the
-    most-recent remaining.  Deleting the last one auto-creates an empty one."""
+    most-recent remaining.  Deleting the last one auto-creates an empty one.
+
+    Returns 409 Conflict when the conversation has an in-flight turn."""
     state: DaemonState = request.app.state.daemon
     if state.runtime is None:
         raise HTTPException(status_code=503, detail="no active runtime")
     root = state.runtime.root
     workspace = system_assistant_paths(root).workspace
     headless_manager: HeadlessAssistantManager = state.headless_assistant
-    await headless_manager.delete_conversation(
-        workspace=workspace, conversation_id=conv_id
-    )
+    try:
+        await headless_manager.delete_conversation(
+            workspace=workspace, conversation_id=conv_id
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return {"success": True}
 
 
@@ -407,6 +412,17 @@ async def attach_assistant_a_mode(websocket: WebSocket) -> None:
                             workspace=workspace, conversation_id=target_conv_id
                         )
                         current_conv_id = target_conv_id
+                        # Replay the targeted conversation's history so the
+                        # dock renders the correct prior turns BEFORE the new
+                        # turn runs.  Without this, a non-active conversation
+                        # opened via conversation_id shows the active
+                        # conversation's history (or none).
+                        if conversation.turns:
+                            serialised = _serialise_turns(conversation.turns)
+                            await _safe_websocket_send_text(
+                                websocket,
+                                TurnFrame.history(turns=serialised).model_dump_json(),
+                            )
                     except (KeyError, RuntimeError):
                         await _safe_websocket_send_text(
                             websocket,

@@ -541,3 +541,76 @@ class TestHeadlessAssistantManagerMultiConversation:
         )
         conv2 = await manager.get_conversation(workspace=tmp_path, conversation_id=conv.id)
         assert conv2.title == "New conversation"
+
+
+# ---------------------------------------------------------------------------
+# Delete-while-in-flight — must reject with 409, not silently drop turn
+# ---------------------------------------------------------------------------
+
+class TestDeleteWhileInFlight:
+    """FINDING 2 [HIGH]: deleting a conversation that has an in-flight turn
+    must NOT silently orphan the turn.  Either reject with 409 or explicitly
+    cancel/flush.  This test asserts the 409 path."""
+
+    @pytest.mark.asyncio
+    async def test_delete_inflight_rejects_at_manager_level(
+        self, tmp_path: Path
+    ) -> None:
+        """delete_conversation raises an error when an in-flight turn exists
+        for the target conversation."""
+        manager = HeadlessAssistantManager()
+        conv = await manager.get_conversation(workspace=tmp_path)
+
+        # Start an in-flight turn.
+        turn_record = conv.begin_turn(turn_id="turn-active", prompt="in flight")
+        await manager.start_inflight(
+            workspace=tmp_path,
+            conversation_id=conv.id,
+            turn_id="turn-active",
+            prompt="in flight",
+            turn_record=turn_record,
+        )
+
+        # Attempting to delete should raise.
+        with pytest.raises(RuntimeError, match="in-flight"):
+            await manager.delete_conversation(
+                workspace=tmp_path, conversation_id=conv.id
+            )
+
+        # In-flight turn should still exist (not silently dropped).
+        inflight = await manager._get_inflight(
+            workspace=tmp_path, conversation_id=conv.id
+        )
+        assert inflight is not None, (
+            "in-flight turn must still exist after rejected delete"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_after_finish_inflight_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        """After finish_inflight, delete_conversation succeeds normally."""
+        manager = HeadlessAssistantManager()
+        conv = await manager.get_conversation(workspace=tmp_path)
+
+        # Start and finish an in-flight turn.
+        turn_record = conv.begin_turn(turn_id="turn-done", prompt="done")
+        await manager.start_inflight(
+            workspace=tmp_path,
+            conversation_id=conv.id,
+            turn_id="turn-done",
+            prompt="done",
+            turn_record=turn_record,
+        )
+        await manager.finish_inflight(
+            workspace=tmp_path, conversation_id=conv.id
+        )
+
+        # Now delete should succeed without error.
+        await manager.delete_conversation(
+            workspace=tmp_path, conversation_id=conv.id
+        )
+
+        # The conversation file should be removed.
+        store = await manager._get_store(tmp_path)
+        assert store.get_conversation(conv.id) is None

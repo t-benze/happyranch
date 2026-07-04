@@ -335,6 +335,57 @@ class TestDeleteConversation:
 
 
 # ---------------------------------------------------------------------------
+# Delete-while-in-flight route-level test
+# ---------------------------------------------------------------------------
+
+class TestDeleteWhileInFlight:
+    """FINDING 2 [HIGH] route-level: DELETE must return 409 when the
+    conversation has an in-flight turn."""
+
+    def test_delete_inflight_returns_409(self, test_client: TestClient) -> None:
+        """DELETE /conversations/{id} returns 409 when in-flight turn exists."""
+        import asyncio
+
+        # Create a conversation and start an in-flight turn on it.
+        create_resp = test_client.post("/api/v1/assistant/a-mode/conversations")
+        conv = create_resp.json()
+
+        state: DaemonState = test_client.app.state.daemon
+        manager = state.headless_assistant
+        rt = state.runtime
+        assert rt is not None
+        from runtime.system_assistant import system_assistant_paths
+        workspace = system_assistant_paths(rt.root).workspace
+
+        async def start_inflight():
+            conv_obj = await manager.get_conversation(
+                workspace=workspace, conversation_id=conv["id"]
+            )
+            turn = conv_obj.begin_turn(turn_id="turn-inflight", prompt="test")
+            await manager.start_inflight(
+                workspace=workspace,
+                conversation_id=conv["id"],
+                turn_id="turn-inflight",
+                prompt="test",
+                turn_record=turn,
+            )
+
+        asyncio.run(start_inflight())
+
+        # Now try to delete — expect 409.
+        resp = test_client.delete(
+            f"/api/v1/assistant/a-mode/conversations/{conv['id']}"
+        )
+        assert resp.status_code == 409, (
+            f"expected 409 for delete-while-in-flight, got {resp.status_code}"
+        )
+        detail = resp.json().get("detail", "")
+        assert "in-flight" in detail.lower() or "in flight" in detail.lower(), (
+            f"409 detail must mention in-flight, got: {detail}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # WS: conversation_id in start message
 # ---------------------------------------------------------------------------
 
@@ -365,3 +416,112 @@ class TestWSConversationId:
             msg = ws.receive_text()
             frame = json.loads(msg)
             assert frame["type"] in ("turn_start", "error")  # null adapter raises
+
+    def test_ws_targeted_conversation_replays_correct_history(
+        self, test_client: TestClient
+    ) -> None:
+        """FINDING 1 [HIGH]: when a start message targets a non-active
+        conversation via conversation_id, the WS handler must replay the
+        TARGETED conversation's history BEFORE running the new turn.
+
+        Seeds two conversations with distinct prior turns, keeps one active,
+        starts a WS turn targeting the OTHER id, and asserts the history frame
+        corresponds to the TARGETED id."""
+        import asyncio
+
+        state: DaemonState = test_client.app.state.daemon
+        rt = state.runtime
+        assert rt is not None
+        from runtime.system_assistant import system_assistant_paths
+        workspace = system_assistant_paths(rt.root).workspace
+        from runtime.daemon.headless_assistant import (
+            HeadlessAssistantManager,
+            TurnFrame,
+        )
+
+        async def seed_conversations():
+            manager = HeadlessAssistantManager()
+            # Conv A (active) — will have a distinct turn.
+            conv_a = await manager.get_conversation(workspace=workspace)
+            conv_a_id = conv_a.id
+            turn_a = conv_a.begin_turn(turn_id="turn-a", prompt="prompt from A")
+            conv_a.append_frame(turn_a, TurnFrame.text_delta(text="response from A"))
+            conv_a.finish_turn(turn_a)
+            store = await manager._get_store(workspace)
+            store.save_conversation(conv_a)
+
+            # Conv B (non-active) — distinct turn.
+            conv_b = await manager.create_conversation(workspace=workspace)
+            conv_b_id = conv_b.id
+            turn_b = conv_b.begin_turn(turn_id="turn-b", prompt="prompt from B")
+            conv_b.append_frame(turn_b, TurnFrame.text_delta(text="response from B"))
+            conv_b.finish_turn(turn_b)
+            store.save_conversation(conv_b)
+
+            # Switch active back to A (so B is NOT active).
+            await manager.switch_conversation(
+                workspace=workspace, conversation_id=conv_a_id
+            )
+            return conv_a_id, conv_b_id
+
+        conv_a_id, conv_b_id = asyncio.run(seed_conversations())
+        assert conv_b_id != conv_a_id
+
+        # Connect WS — it will replay the ACTIVE conversation (A) history.
+        with test_client.websocket_connect("/api/v1/assistant/a-mode") as ws:
+            # Drain initial frames — active conversation (A) has history.
+            for _ in range(10):
+                msg = ws.receive_text()
+                frame = json.loads(msg)
+                if frame.get("type") == "status" and frame.get("code") == "ready":
+                    break
+
+            # Now send a start message targeting conversation B (non-active).
+            ws.send_text(json.dumps({
+                "type": "start",
+                "text": "new prompt for B",
+                "conversation_id": conv_b_id,
+            }))
+
+            # Collect frames after the start — a history frame for B
+            # should appear BEFORE the turn_start / error / turn_end for
+            # the new turn.  The null adapter raises on build_turn_argv
+            # so we get an error frame, then the handler waits for the
+            # next client message.
+            post_start_frames: list[dict] = []
+            for _ in range(20):
+                try:
+                    msg = ws.receive_text()
+                except Exception:
+                    break
+                frame = json.loads(msg)
+                post_start_frames.append(frame)
+                # Stop when we see an error (null adapter raises) or
+                # turn_end.
+                if frame.get("type") in ("error", "turn_end"):
+                    break
+
+            # Close the session to avoid deadlock (the null adapter
+            # errors out and the handler waits for the next message).
+            try:
+                ws.send_text(json.dumps({"type": "close"}))
+                ws.receive_text()  # drain session_closed
+            except Exception:
+                pass
+
+            # FIND the history frame among post-start frames.
+            # It must exist and contain B's turns.
+            history_frames = [
+                f for f in post_start_frames if f.get("type") == "history"
+            ]
+            assert len(history_frames) >= 1, (
+                f"Expected a 'history' frame for targeted conversation B, "
+                f"got post-start frames: {[f['type'] for f in post_start_frames]}"
+            )
+            history = history_frames[0]
+            turns = history.get("turns", [])
+            assert len(turns) >= 1, "history frame must contain at least one turn"
+            # The turn must be from conversation B (prompt is distinct).
+            assert turns[0]["prompt"] == "prompt from B", (
+                f"history must replay B's turns, got prompt='{turns[0].get('prompt')}'"
+            )
