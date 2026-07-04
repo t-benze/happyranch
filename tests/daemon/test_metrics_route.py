@@ -25,6 +25,10 @@ def test_metrics_returns_200_with_auth(tmp_home, app_idle, auth_headers) -> None
     assert "jobs_in_flight" in body
     assert "executor_sessions_active" in body
     assert "run_step_queue_depth" in body
+    # http{} may be empty on the very first request because the timing
+    # middleware records after call_next() returns — the /metrics route
+    # handler reads the snapshot before this request's latency is stored.
+    assert isinstance(body["http"], dict)
 
 
 def test_metrics_idle_state_zero_values(tmp_home, app_idle, auth_headers) -> None:
@@ -38,9 +42,8 @@ def test_metrics_idle_state_zero_values(tmp_home, app_idle, auth_headers) -> Non
     assert body["jobs_in_flight"] == 0
     assert body["executor_sessions_active"] == 0
     assert body["run_step_queue_depth"] == 0
-    # Scaffolds empty
     assert body["loops"] == {}
-    assert body["http"] == {}
+    assert isinstance(body["http"], dict)
 
 
 def test_metrics_with_org_populated(tmp_home, app, auth_headers) -> None:
@@ -60,3 +63,39 @@ def test_metrics_with_org_populated(tmp_home, app, auth_headers) -> None:
     assert isinstance(body["run_step_queue_depth"], int)
     assert isinstance(body["loops"], dict)
     assert isinstance(body["http"], dict)
+
+
+def test_metrics_http_accumulates_over_requests(tmp_home, app_idle, auth_headers) -> None:
+    """After multiple requests, the http histogram for the metrics route accumulates."""
+    client = TestClient(app_idle)
+    for _ in range(5):
+        r = client.get("/api/v1/metrics", headers=auth_headers)
+        assert r.status_code == 200
+    # After 5 requests, the metrics route should have count >= 5
+    # (the 6th request reads the snapshot, which sees the 5 prior requests)
+    r = client.get("/api/v1/metrics", headers=auth_headers)
+    body = r.json()
+    assert body["http"]["GET /api/v1/metrics"]["count"] == 5
+    # Aggregate bucket should also have 5 entries
+    assert body["http"]["__all__"]["count"] == 5
+
+
+def test_metrics_http_multiple_routes_tracked(tmp_home, app_idle, auth_headers) -> None:
+    """Different routes are tracked independently in the http histogram."""
+    client = TestClient(app_idle)
+    # Hit /health (unauthed) and /metrics (authed)
+    client.get("/api/v1/health")
+    client.get("/api/v1/metrics", headers=auth_headers)
+    # The third request reads the snapshot, which now includes the prior two.
+    r = client.get("/api/v1/metrics", headers=auth_headers)
+    body = r.json()
+    assert "GET /api/v1/health" in body["http"]
+    assert "GET /api/v1/metrics" in body["http"]
+    assert body["http"]["GET /api/v1/health"]["count"] >= 1
+    assert body["http"]["GET /api/v1/metrics"]["count"] >= 1
+    # Aggregate bucket spans both routes
+    assert "__all__" in body["http"]
+    assert body["http"]["__all__"]["count"] >= 2
+    assert body["http"]["__all__"]["p50"] is not None
+    assert body["http"]["__all__"]["p95"] is not None
+    assert body["http"]["__all__"]["max"] is not None

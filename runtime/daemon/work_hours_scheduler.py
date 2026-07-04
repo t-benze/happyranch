@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -332,6 +333,7 @@ async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> Non
     # Every later iteration is steady-state on-time scheduling.
     startup = True
     while True:
+        t0 = time.monotonic()
         now = datetime.now(timezone.utc)
         for org in list(state.orgs.values()):
             try:
@@ -342,4 +344,6 @@ async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> Non
                     org.slug,
                 )
         startup = False
+        duration = time.monotonic() - t0
+        state.metrics_registry.record_loop_tick("work_hours_scheduler", interval_seconds, duration)
         await asyncio.sleep(interval_seconds)

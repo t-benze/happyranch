@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 
@@ -192,6 +193,7 @@ async def dream_scheduler_loop(state, *, interval_seconds: int = 60) -> None:
     # subsequent iteration is steady-state on-time scheduling.
     startup = True
     while True:
+        t0 = time.monotonic()
         now = datetime.now(timezone.utc)
         for org in list(state.orgs.values()):
             try:
@@ -201,4 +203,6 @@ async def dream_scheduler_loop(state, *, interval_seconds: int = 60) -> None:
                 # not halt scheduling for every other org. Surface loudly.
                 logger.exception("dream scheduling skipped for org %s: invalid dreaming config", org.slug)
         startup = False
+        duration = time.monotonic() - t0
+        state.metrics_registry.record_loop_tick("dream_scheduler", interval_seconds, duration)
         await asyncio.sleep(interval_seconds)
