@@ -41,6 +41,13 @@ interface MockSocket {
   onerror: (() => void) | null;
 }
 
+interface MockConversation {
+  id: string;
+  title: string;
+  created_at: string | null;
+  active: boolean;
+}
+
 const h = vi.hoisted(() => {
   const result: {
     socket: MockSocket | null;
@@ -56,6 +63,13 @@ const h = vi.hoisted(() => {
       isError: boolean;
       error: unknown;
     };
+    // Multi-conversation switcher (THR-056 STEP-B) mock surface.
+    conversations: MockConversation[];
+    createFn: ReturnType<typeof vi.fn>;
+    activateFn: ReturnType<typeof vi.fn>;
+    renameFn: ReturnType<typeof vi.fn>;
+    deleteFn: ReturnType<typeof vi.fn>;
+    refetchFn: ReturnType<typeof vi.fn>;
   } = {
     socket: null,
     openSession: vi.fn<() => Promise<MockSocket>>(),
@@ -65,6 +79,12 @@ const h = vi.hoisted(() => {
       isError: false,
       error: null,
     },
+    conversations: [],
+    createFn: vi.fn(),
+    activateFn: vi.fn(),
+    renameFn: vi.fn(),
+    deleteFn: vi.fn(),
+    refetchFn: vi.fn(),
   };
   return result;
 });
@@ -80,6 +100,17 @@ vi.mock('@/hooks/assistant', () => ({
   useRepairAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useAssistantSessionOpener: () => h.openSession,
   useAssistantAModeSessionOpener: () => h.openSession,
+  useConversations: () => ({
+    data: h.conversations,
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: h.refetchFn,
+  }),
+  useCreateConversation: () => ({ mutateAsync: h.createFn, isPending: false }),
+  useActivateConversation: () => ({ mutateAsync: h.activateFn, isPending: false }),
+  useRenameConversation: () => ({ mutateAsync: h.renameFn, isPending: false }),
+  useDeleteConversation: () => ({ mutateAsync: h.deleteFn, isPending: false }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -142,6 +173,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.socket = null;
   h.status = configuredStatus();
+  // Two conversations, newest-first, with the first active.
+  h.conversations = [
+    { id: 'conv-a', title: 'Ranch status', created_at: null, active: true },
+    { id: 'conv-b', title: 'Deploy plan', created_at: null, active: false },
+  ];
+  h.createFn = vi
+    .fn()
+    .mockResolvedValue({ id: 'conv-new', title: 'New conversation', created_at: null, active: true });
+  h.activateFn = vi.fn().mockResolvedValue({ success: true });
+  h.renameFn = vi.fn().mockResolvedValue({ success: true });
+  h.deleteFn = vi.fn().mockResolvedValue({ success: true });
+  h.refetchFn = vi.fn();
 });
 
 // ---------------------------------------------------------------------------
@@ -242,9 +285,10 @@ describe('AssistantDockHost — A-mode TurnFrame protocol', () => {
       expect(screen.getByText('deploy the web')).toBeInTheDocument();
     });
 
-    // A start frame is sent to the server (NOT a legacy chat frame).
+    // A start frame is sent to the server (NOT a legacy chat frame), targeting
+    // the active conversation so the turn lands on the right conversation.
     expect(h.socket!.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: 'start', text: 'deploy the web' }),
+      JSON.stringify({ type: 'start', text: 'deploy the web', conversation_id: 'conv-a' }),
     );
 
     // Only ONE copy of the message exists — the server does not echo the user
@@ -312,5 +356,173 @@ describe('AssistantDockHost — DOCK-02 header (THR-030)', () => {
     // No hardcoded executor name is fabricated when the field is null.
     expect(screen.queryByText('claude')).toBeNull();
     expect(screen.queryByText('codex')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THR-056 STEP-B — multi-conversation switcher: list, new, switch, rename,
+// delete, and the switch->WS-reattach wiring.
+// ---------------------------------------------------------------------------
+
+async function expandSwitcher() {
+  fireEvent.click(screen.getByRole('button', { name: 'Switch conversation' }));
+  await waitFor(() => {
+    expect(screen.getByLabelText('Conversations')).toBeInTheDocument();
+  });
+}
+
+describe('AssistantDockHost — conversation switcher (THR-056 STEP-B)', () => {
+  test('shows the active conversation title and a New conversation action', async () => {
+    await renderOpen();
+    await ready();
+    // Active conversation title anchors the collapsed switcher strip.
+    expect(
+      screen.getByRole('button', { name: 'Switch conversation' }),
+    ).toHaveTextContent('Ranch status');
+    expect(
+      screen.getByRole('button', { name: 'New conversation' }),
+    ).toBeInTheDocument();
+  });
+
+  test('expanding lists every conversation (newest-first, active marked)', async () => {
+    await renderOpen();
+    await ready();
+    await expandSwitcher();
+
+    const list = screen.getByLabelText('Conversations');
+    const rows = list.querySelectorAll('li');
+    expect(rows).toHaveLength(2);
+    // Order mirrors the backend list (newest-first): conv-a then conv-b.
+    expect(rows[0]).toHaveTextContent('Ranch status');
+    expect(rows[1]).toHaveTextContent('Deploy plan');
+    // The active conversation's switch button carries aria-current.
+    expect(screen.getByRole('button', { name: 'Ranch status' })).toHaveAttribute(
+      'aria-current',
+      'true',
+    );
+  });
+
+  test('+ New conversation calls createConversation and re-attaches the WS', async () => {
+    await renderOpen();
+    await ready();
+    expect(h.openSession).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+
+    await waitFor(() => expect(h.createFn).toHaveBeenCalledTimes(1));
+    // Re-attaches so the (empty) new conversation is loaded.
+    await waitFor(() => expect(h.openSession).toHaveBeenCalledTimes(2));
+  });
+
+  test('switching a conversation activates it and re-attaches to replay history', async () => {
+    await renderOpen();
+    await ready();
+    await expandSwitcher();
+    expect(h.openSession).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Deploy plan' }));
+
+    await waitFor(() => expect(h.activateFn).toHaveBeenCalledWith('conv-b'));
+    await waitFor(() => expect(h.openSession).toHaveBeenCalledTimes(2));
+
+    // After re-attach, the server replays conv-b's history on the new socket.
+    await waitFor(() => expect(h.socket?.onmessage).not.toBeNull());
+    fireFrame({
+      type: 'history',
+      turns: [
+        {
+          id: 'tb',
+          prompt: 'prompt from B',
+          started_at: '2026-07-04T10:00:00Z',
+          frames: [
+            { type: 'turn_start', role: 'assistant' },
+            { type: 'text_delta', text: 'response from B' },
+            { type: 'turn_end', role: 'assistant' },
+          ],
+        },
+      ],
+    });
+    await waitFor(() => {
+      expect(screen.getByText('prompt from B')).toBeInTheDocument();
+    });
+    expect(screen.getByText('response from B')).toBeInTheDocument();
+  });
+
+  test('switching to the already-active conversation does not re-attach', async () => {
+    await renderOpen();
+    await ready();
+    await expandSwitcher();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ranch status' }));
+    // No activate + no reconnect for the current conversation.
+    expect(h.activateFn).not.toHaveBeenCalled();
+    expect(h.openSession).toHaveBeenCalledTimes(1);
+  });
+
+  test('inline rename commits via renameConversation on Enter', async () => {
+    await renderOpen();
+    await ready();
+    await expandSwitcher();
+
+    fireEvent.click(screen.getAllByLabelText('Rename conversation')[0]);
+    const input = screen.getByLabelText('Conversation title');
+    expect(input).toHaveValue('Ranch status');
+    fireEvent.change(input, { target: { value: 'Ranch health' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(h.renameFn).toHaveBeenCalledWith({ id: 'conv-a', title: 'Ranch health' }),
+    );
+  });
+
+  test('delete calls deleteConversation for the targeted conversation', async () => {
+    await renderOpen();
+    await ready();
+    await expandSwitcher();
+
+    // Delete the non-active conversation (conv-b, second row).
+    fireEvent.click(screen.getAllByLabelText('Delete conversation')[1]);
+    await waitFor(() => expect(h.deleteFn).toHaveBeenCalledWith('conv-b'));
+    // Deleting a non-active conversation leaves the active pointer untouched,
+    // so no re-attach is triggered.
+    expect(h.openSession).toHaveBeenCalledTimes(1);
+  });
+
+  test('deleting the active conversation re-attaches to the new active', async () => {
+    await renderOpen();
+    await ready();
+    await expandSwitcher();
+
+    fireEvent.click(screen.getAllByLabelText('Delete conversation')[0]);
+    await waitFor(() => expect(h.deleteFn).toHaveBeenCalledWith('conv-a'));
+    await waitFor(() => expect(h.openSession).toHaveBeenCalledTimes(2));
+  });
+
+  test('a 409 (in-flight) delete surfaces a non-destructive message', async () => {
+    h.deleteFn = vi.fn().mockRejectedValue(new Error('409 conflict'));
+    await renderOpen();
+    await ready();
+    await expandSwitcher();
+
+    fireEvent.click(screen.getAllByLabelText('Delete conversation')[1]);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        "Can't delete a conversation while a turn is running.",
+      );
+    });
+    // The failed delete must NOT re-attach or drop the conversation view.
+    expect(h.openSession).toHaveBeenCalledTimes(1);
+  });
+
+  test('a completed turn refetches conversations (backend auto-title)', async () => {
+    await renderOpen();
+    await ready();
+
+    fireFrame({ type: 'turn_start', role: 'assistant' });
+    fireFrame({ type: 'text_delta', text: 'ok' });
+    fireFrame({ type: 'turn_end', role: 'assistant' });
+
+    await waitFor(() => expect(h.refetchFn).toHaveBeenCalled());
   });
 });

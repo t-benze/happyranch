@@ -27,6 +27,7 @@ import type {
   ThreadMessage,
   ThreadRecord,
 } from '@/lib/api/types';
+import type { ConversationSummary } from '@/lib/api/assistant';
 import type { threads as threadsApi } from '@/lib/api';
 import type { tasks as tasksApi } from '@/lib/api';
 import type { kb as kbApi } from '@/lib/api';
@@ -56,6 +57,9 @@ export interface QueryLike<T> {
   isLoading: boolean;
   isError: boolean;
   error: Error | null;
+  /** Imperative refetch (TanStack's UseQueryResult.refetch). Optional so mock
+   *  providers that return plain literals need not supply it. */
+  refetch?: () => void;
 }
 
 /** Minimal subset of TanStack's UseInfiniteQueryResult that consumers need.
@@ -269,6 +273,30 @@ export interface AssistantApi {
    * the route differs. Imperative and real-only; the mock rejects.
    */
   openAModeSession: () => Promise<WebSocket>;
+
+  // ---- Multi-conversation switcher (THR-056 STEP-B) ----
+  /**
+   * List the assistant's conversations (newest-first; each carries an `active`
+   * flag). `enabled` gates the fetch so the query is idle while the dock is
+   * closed. Exposes `refetch` so the dock can pull the backend's auto-title
+   * once a turn completes.
+   */
+  useConversations: (enabled: boolean) => QueryLike<ConversationSummary[]>;
+  /** Create a new conversation; the backend makes it active and empty. */
+  useCreateConversation: () => MutationLike<void, ConversationSummary>;
+  /** Switch the active conversation (backend re-keys the active pointer). */
+  useActivateConversation: () => MutationLike<string, { success: boolean }>;
+  /** Rename a conversation. */
+  useRenameConversation: () => MutationLike<
+    { id: string; title: string },
+    { success: boolean }
+  >;
+  /**
+   * Delete a conversation. Deleting the active one makes the backend activate
+   * the most-recent remaining (or auto-create one), so the store is never
+   * empty. Rejects with HTTP 409 when the conversation has an in-flight turn.
+   */
+  useDeleteConversation: () => MutationLike<string, { success: boolean }>;
 }
 
 // ---------------------------------------------------------------------------

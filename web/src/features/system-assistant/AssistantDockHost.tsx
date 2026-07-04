@@ -19,8 +19,17 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
-import { X, Terminal } from 'lucide-react';
-import { useAssistantStatus, useAssistantAModeSessionOpener } from '@/hooks/assistant';
+import { X, Terminal, Plus, Pencil, Trash2, Check, ChevronDown } from 'lucide-react';
+import {
+  useAssistantStatus,
+  useAssistantAModeSessionOpener,
+  useConversations,
+  useCreateConversation,
+  useActivateConversation,
+  useRenameConversation,
+  useDeleteConversation,
+} from '@/hooks/assistant';
+import type { ConversationSummary } from '@/hooks/assistant';
 import type { AssistantStatus } from '@/lib/api/types';
 import { MessageBubble } from '@/design-system/patterns/MessageBubble';
 import { TypingBubble } from '@/design-system/patterns/TypingBubble';
@@ -308,6 +317,9 @@ function useAssistantAModeChat(
   open: boolean,
   status: AssistantStatus | undefined,
   statusLoading: boolean,
+  activeConvId: string | null,
+  reconnectKey: number,
+  onTurnEnd?: () => void,
 ): UseAssistantAModeChat {
   const [turns, setTurns] = useState<DockTurn[]>([]);
   const [connecting, setConnecting] = useState(false);
@@ -317,6 +329,14 @@ function useAssistantAModeChat(
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const openSession = useAssistantAModeSessionOpener();
+
+  // Latest active conversation id + turn-end callback, held in refs so the WS
+  // effect need not re-run (and tear down the socket) when they change. The
+  // socket only re-attaches on an explicit `reconnectKey` bump.
+  const activeConvIdRef = useRef<string | null>(activeConvId);
+  activeConvIdRef.current = activeConvId;
+  const onTurnEndRef = useRef<(() => void) | undefined>(onTurnEnd);
+  onTurnEndRef.current = onTurnEnd;
 
   // Monotonic id source — avoids key collisions across turns/tools.
   const idCounterRef = useRef(0);
@@ -344,6 +364,11 @@ function useAssistantAModeChat(
     setInFlight(false);
     setTurnStartedAt(null);
     setError(null);
+    // Clear the transcript on every (re)attach. On switch, the server replays
+    // the newly-active conversation's `history` frame; a conversation with no
+    // prior turns sends no history, so it must render empty rather than leak
+    // the previously-shown conversation's bubbles.
+    setTurns([]);
     currentAssistantIdRef.current = null;
 
     const applyFrame = (frame: TurnFrame): void => {
@@ -434,6 +459,10 @@ function useAssistantAModeChat(
           currentAssistantIdRef.current = null;
           setInFlight(false);
           setTurnStartedAt(null);
+          // A completed turn may have auto-titled a fresh conversation on the
+          // backend (first user message → title). Let the host refetch the
+          // conversation list so the switcher reflects the new title.
+          onTurnEndRef.current?.();
           break;
         }
         case 'error':
@@ -498,7 +527,9 @@ function useAssistantAModeChat(
         wsRef.current = null;
       }
     };
-  }, [open, openSession, status, statusLoading, nextId]);
+    // `reconnectKey` bumps on an explicit conversation switch/new/delete-active
+    // to force the socket to re-attach and replay the now-active conversation.
+  }, [open, openSession, status, statusLoading, nextId, reconnectKey]);
 
   const sendMessage = useCallback(
     (text: string) => {
@@ -520,7 +551,17 @@ function useAssistantAModeChat(
       ]);
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'start', text: trimmed }));
+        // Target the active conversation explicitly so the turn is recorded on
+        // (and replayed from) the right conversation even if the active pointer
+        // shifted since attach (STEP-A honours `conversation_id` on `start`).
+        const convId = activeConvIdRef.current;
+        wsRef.current.send(
+          JSON.stringify(
+            convId
+              ? { type: 'start', text: trimmed, conversation_id: convId }
+              : { type: 'start', text: trimmed },
+          ),
+        );
       } else {
         setError('Not connected. Reopen the dock to reconnect.');
       }
@@ -558,6 +599,31 @@ export function AssistantDockHost(): JSX.Element {
 
   const statusQuery = useAssistantStatus();
   const status = statusQuery.data;
+  const assistantConfigured = status?.state === 'configured';
+
+  // Conversation switcher (THR-056 STEP-B). The list is the source of truth for
+  // the active conversation; the WS attaches to whichever the backend has
+  // active. Only fetched while the dock is open and the assistant is ready.
+  const conversationsQuery = useConversations(open && assistantConfigured);
+  const conversations = conversationsQuery.data ?? [];
+  const activeConvId = conversations.find((c) => c.active)?.id ?? null;
+
+  const createConv = useCreateConversation();
+  const activateConv = useActivateConversation();
+  const renameConv = useRenameConversation();
+  const deleteConv = useDeleteConversation();
+
+  // Bumped to force the A-mode WS to re-attach after an explicit switch/new/
+  // delete-active, so the server replays the now-active conversation.
+  const [reconnectKey, setReconnectKey] = useState(0);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [convError, setConvError] = useState<string | null>(null);
+
+  const refetchConversations = useCallback(() => {
+    conversationsQuery.refetch?.();
+  }, [conversationsQuery]);
 
   const {
     turns,
@@ -567,7 +633,77 @@ export function AssistantDockHost(): JSX.Element {
     inFlight,
     turnStartedAt,
     error: wsError,
-  } = useAssistantAModeChat(open, status, statusQuery.isLoading);
+  } = useAssistantAModeChat(
+    open,
+    status,
+    statusQuery.isLoading,
+    activeConvId,
+    reconnectKey,
+    refetchConversations,
+  );
+
+  const handleNewConversation = useCallback(async () => {
+    setConvError(null);
+    try {
+      await createConv.mutateAsync();
+      // Backend created + activated an empty conversation — re-attach to it.
+      setReconnectKey((k) => k + 1);
+      setSwitcherOpen(false);
+    } catch {
+      setConvError('Could not create a new conversation.');
+    }
+  }, [createConv]);
+
+  const handleSwitchConversation = useCallback(
+    async (id: string) => {
+      if (id === activeConvId) {
+        setSwitcherOpen(false);
+        return;
+      }
+      setConvError(null);
+      try {
+        await activateConv.mutateAsync(id);
+        // Backend active pointer now targets `id`; re-attach to replay it.
+        setReconnectKey((k) => k + 1);
+        setSwitcherOpen(false);
+      } catch {
+        setConvError('Could not switch conversation.');
+      }
+    },
+    [activeConvId, activateConv],
+  );
+
+  const handleCommitRename = useCallback(
+    async (id: string) => {
+      const title = renameDraft.trim();
+      setRenamingId(null);
+      if (!title) return;
+      setConvError(null);
+      try {
+        await renameConv.mutateAsync({ id, title });
+      } catch {
+        setConvError('Could not rename conversation.');
+      }
+    },
+    [renameDraft, renameConv],
+  );
+
+  const handleDeleteConversation = useCallback(
+    async (id: string) => {
+      setConvError(null);
+      try {
+        await deleteConv.mutateAsync(id);
+      } catch {
+        // STEP-A returns HTTP 409 when the conversation has an in-flight turn.
+        setConvError("Can't delete a conversation while a turn is running.");
+        return;
+      }
+      // Deleting the active one makes the backend activate another (or create a
+      // fresh empty one); re-attach so the dock reflects that new active state.
+      if (id === activeConvId) setReconnectKey((k) => k + 1);
+    },
+    [activeConvId, deleteConv],
+  );
 
   const nowMs = useNowMs(open && inFlight);
 
@@ -623,7 +759,6 @@ export function AssistantDockHost(): JSX.Element {
     }
   };
 
-  const assistantConfigured = status?.state === 'configured';
   const assistantPath = activeSlug ? `/orgs/${activeSlug}/assistant` : '/assistant';
 
   // Assistant speaker label — data-backed executor name when available.
@@ -725,6 +860,34 @@ export function AssistantDockHost(): JSX.Element {
           </button>
         </div>
 
+        {/* Conversation switcher (THR-056 STEP-B) — thread-list idiom */}
+        {assistantConfigured && (
+          <ConversationSwitcher
+            conversations={conversations}
+            activeConvId={activeConvId}
+            open={switcherOpen}
+            onToggle={() => setSwitcherOpen((o) => !o)}
+            onNew={handleNewConversation}
+            onSwitch={handleSwitchConversation}
+            renamingId={renamingId}
+            renameDraft={renameDraft}
+            onRenameDraftChange={setRenameDraft}
+            onStartRename={(c) => {
+              setRenamingId(c.id);
+              setRenameDraft(c.title);
+            }}
+            onCommitRename={handleCommitRename}
+            onCancelRename={() => setRenamingId(null)}
+            onDelete={handleDeleteConversation}
+            busy={
+              createConv.isPending ||
+              activateConv.isPending ||
+              deleteConv.isPending
+            }
+            error={convError}
+          />
+        )}
+
         {/* Messages area — thread-style transcript */}
         <div className="flex-1 overflow-y-auto px-4 py-3">
           {statusQuery.isLoading ? (
@@ -815,6 +978,171 @@ export function AssistantDockHost(): JSX.Element {
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
+
+/**
+ * Conversation switcher (THR-056 STEP-B). A collapsed strip shows the active
+ * conversation's title with a `+ New conversation` action; expanding it reveals
+ * the newest-first list where each row can be switched to, renamed inline, or
+ * deleted. Modeled on the Threads list idiom, composed from Pasture surface /
+ * text / border tokens (no raw hex).
+ */
+function ConversationSwitcher({
+  conversations,
+  activeConvId,
+  open,
+  onToggle,
+  onNew,
+  onSwitch,
+  renamingId,
+  renameDraft,
+  onRenameDraftChange,
+  onStartRename,
+  onCommitRename,
+  onCancelRename,
+  onDelete,
+  busy,
+  error,
+}: {
+  conversations: ConversationSummary[];
+  activeConvId: string | null;
+  open: boolean;
+  onToggle: () => void;
+  onNew: () => void;
+  onSwitch: (id: string) => void;
+  renamingId: string | null;
+  renameDraft: string;
+  onRenameDraftChange: (v: string) => void;
+  onStartRename: (c: ConversationSummary) => void;
+  onCommitRename: (id: string) => void;
+  onCancelRename: () => void;
+  onDelete: (id: string) => void;
+  busy: boolean;
+  error: string | null;
+}): JSX.Element {
+  const active = conversations.find((c) => c.id === activeConvId) ?? null;
+  const activeTitle = active?.title ?? 'New conversation';
+
+  return (
+    <div className="border-border-default shrink-0 border-b">
+      <div className="flex items-center gap-2 px-4 py-2">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          aria-label="Switch conversation"
+          className="text-text-secondary hover:text-text-primary hover:bg-surface-hover inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-sm transition-colors"
+        >
+          <ChevronDown
+            size={14}
+            className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+            aria-hidden="true"
+          />
+          <span className="truncate">{activeTitle}</span>
+          {conversations.length > 1 && (
+            <span className="text-text-muted shrink-0 text-xs">
+              {conversations.length}
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={onNew}
+          disabled={busy}
+          aria-label="New conversation"
+          className="text-accent-default hover:bg-surface-hover inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Plus size={14} aria-hidden="true" />
+          <span>New conversation</span>
+        </button>
+      </div>
+
+      {open && (
+        <ul
+          className="border-border-default max-h-52 overflow-y-auto border-t px-2 py-1"
+          aria-label="Conversations"
+        >
+          {conversations.map((c) => {
+            const isActive = c.id === activeConvId;
+            const isRenaming = renamingId === c.id;
+            return (
+              <li key={c.id} className="group flex items-center gap-1">
+                {isRenaming ? (
+                  <>
+                    <input
+                      value={renameDraft}
+                      onChange={(e) => onRenameDraftChange(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          onCommitRename(c.id);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          onCancelRename();
+                        }
+                      }}
+                      autoFocus
+                      aria-label="Conversation title"
+                      className="border-border-default bg-surface-sunken text-text-primary focus:border-accent-ring min-w-0 flex-1 rounded-md border px-2 py-1 text-sm focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onCommitRename(c.id)}
+                      aria-label="Save conversation name"
+                      className="text-feedback-success hover:bg-surface-hover inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors"
+                    >
+                      <Check size={14} aria-hidden="true" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onSwitch(c.id)}
+                      aria-current={isActive ? 'true' : undefined}
+                      className={`min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
+                        isActive
+                          ? 'bg-surface-sunken text-text-primary font-medium'
+                          : 'text-text-secondary hover:text-text-primary hover:bg-surface-hover'
+                      }`}
+                    >
+                      {c.title}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onStartRename(c)}
+                      aria-label="Rename conversation"
+                      className="text-text-muted hover:text-text-primary hover:bg-surface-hover inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors"
+                    >
+                      <Pencil size={13} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDelete(c.id)}
+                      disabled={busy}
+                      aria-label="Delete conversation"
+                      className="text-text-muted hover:text-feedback-danger hover:bg-surface-hover inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Trash2 size={13} aria-hidden="true" />
+                    </button>
+                  </>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {error && (
+        <p
+          role="alert"
+          className="text-feedback-danger px-4 pt-0 pb-2 text-xs"
+        >
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
 
 /**
  * One conversation turn, rendered with the thread components: the user turn as

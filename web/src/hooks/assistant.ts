@@ -30,3 +30,34 @@ export const useAssistantSessionOpener = (): (() => Promise<WebSocket>) =>
 /** Imperative opener for the A-mode structured-TurnFrame WebSocket. */
 export const useAssistantAModeSessionOpener = (): (() => Promise<WebSocket>) =>
   useData().assistant.openAModeSession;
+
+// ---- Multi-conversation switcher (THR-056 STEP-B) ----
+
+// Re-exported so compositions get the conversation shape without a restricted
+// deep import into `@/lib/api/assistant` (features may only pull `@/lib/api/types`).
+export type { ConversationSummary } from '@/lib/api/assistant';
+
+export const useConversations: ReturnType<
+  typeof useData
+>['assistant']['useConversations'] = (enabled) =>
+  useData().assistant.useConversations(enabled);
+
+export const useCreateConversation: ReturnType<
+  typeof useData
+>['assistant']['useCreateConversation'] = () =>
+  useData().assistant.useCreateConversation();
+
+export const useActivateConversation: ReturnType<
+  typeof useData
+>['assistant']['useActivateConversation'] = () =>
+  useData().assistant.useActivateConversation();
+
+export const useRenameConversation: ReturnType<
+  typeof useData
+>['assistant']['useRenameConversation'] = () =>
+  useData().assistant.useRenameConversation();
+
+export const useDeleteConversation: ReturnType<
+  typeof useData
+>['assistant']['useDeleteConversation'] = () =>
+  useData().assistant.useDeleteConversation();

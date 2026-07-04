@@ -271,6 +271,29 @@ conversation. History replay works per active/targeted conversation.
 **Auto-title.** A new conversation is auto-titled from its first user message
 (first 80 chars). Fallback: "New conversation".
 
+**Dock switcher UI (THR-056 STEP-B / TASK-1986).** The dock renders a
+conversation switcher between the header and the transcript, modeled on the
+Threads-list idiom (Pasture surface/text/border tokens, no raw hex):
+- A collapsed strip shows the active conversation title with a `+ New
+  conversation` action; expanding reveals the newest-first list.
+- **New** → `POST /conversations` (becomes active) → the dock re-attaches the
+  A-mode WS so the empty conversation loads.
+- **Switch** → `POST /conversations/{id}/activate` → re-attach; the server
+  replays that conversation's `history` frame. The dock also sends
+  `conversation_id` on each `start` so a turn lands on the intended
+  conversation.
+- **Rename** → inline edit → `PATCH /conversations/{id}`. Auto-title is
+  backend-driven; after a turn completes the dock refetches the list to pick up
+  the new title.
+- **Delete** → `DELETE /conversations/{id}`. Deleting the active one re-attaches
+  to the backend's newly-activated conversation (never zero). An HTTP 409
+  (in-flight turn) surfaces a non-destructive "can't delete while a turn is
+  running" message rather than a hard error.
+- The conversation list is fetched only while the dock is open. The switcher is
+  provider-aware: `AssistantApi` gains `useConversations` /
+  `use{Create,Activate,Rename,Delete}Conversation`, wired in `_real-assistant`
+  (daemon) and `_mock-assistant` (prototype).
+
 ### 6.8 Frozen symbols
 
 - `AssistantPtySession` — byte-identical preserved
