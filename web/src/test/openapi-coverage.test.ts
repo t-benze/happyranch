@@ -138,6 +138,8 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/assistant/repair',
   // artifacts — founder artifacts UI delete (mirror: deleteArtifact in lib/api/artifacts.ts)
   'DELETE /api/v1/orgs/{slug}/artifacts/{name}',
+  // thread-scoped attachment download — wired via downloadThreadAttachment (THR-057)
+  'GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments/{attachment_id}',
   // kb view stats — now wired into the SPA for the "viewed Nx (CLI)" label (PRD §4.5 K1)
   'GET /api/v1/orgs/{slug}/kb/stats',
   // settings — founder-facing read-only System + Org settings (Phase 1)
@@ -181,7 +183,6 @@ const EXCLUDED_PATHS = new Map<string, string>([
   // Thread-scoped attachments (TASK-1616) — agent/CLI facing; no SPA wrapper yet
   ['GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments', 'thread-scoped attachments — agent/CLI facing'],
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/attachments', 'thread-scoped attachments — agent/CLI facing'],
-  ['GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments/{attachment_id}', 'thread-scoped attachments — agent/CLI facing'],
   // jobs agent callback
   ['POST /api/v1/orgs/{slug}/jobs/submit', 'agent callback (matches /report-completion pattern)'],
   // Artifacts — agent-facing v1, also surfaced read+create in the founder

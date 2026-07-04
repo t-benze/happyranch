@@ -832,7 +832,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: Tr
                 attachments={m.attachments}
                 onAttachmentDownload={slug && threadId ? (attachment) => {
                   if (attachment.thread_attachment_id) {
-                    artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id);
+                    artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id, attachment.display_name);
                   } else {
                     artifactsApi.downloadArtifact(slug, attachment.artifact_name);
                   }

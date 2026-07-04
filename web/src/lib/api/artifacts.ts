@@ -190,9 +190,11 @@ export async function downloadThreadAttachment(
   slug: string,
   threadId: string,
   attachmentId: string,
+  displayName: string,
 ): Promise<void> {
   let token = await getToken();
-  const path = `${API_PREFIX}/orgs/${slug}/threads/${threadId}/attachments/${attachmentId}`;
+  const params = new URLSearchParams({ agent: ARTIFACT_WRITE_AGENT });
+  const path = `${API_PREFIX}/orgs/${slug}/threads/${threadId}/attachments/${attachmentId}?${params.toString()}`;
   let res = await downloadWithToken(path, token);
   if (res.status === 401) {
     clearToken();
@@ -218,7 +220,7 @@ export async function downloadThreadAttachment(
   try {
     const a = document.createElement('a');
     a.href = objectUrl;
-    a.download = attachmentId;
+    a.download = displayName;
     a.click();
   } finally {
     URL.revokeObjectURL(objectUrl);

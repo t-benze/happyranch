@@ -341,11 +341,12 @@ describe('downloadThreadAttachment — thread-scoped artifact download', () => {
       return originalCreateElement(tag) as HTMLElement;
     }) as unknown as typeof document.createElement;
 
-    await downloadThreadAttachment(SLUG, 'THR-060', 'att-001');
+    await downloadThreadAttachment(SLUG, 'THR-060', 'att-001', 'happyranch-landing.html');
 
-    // Assert the fetch targets the THREAD-scoped URL, not the shared-artifact route.
+    // Assert the fetch targets the THREAD-scoped URL with agent=founder, not the shared-artifact route.
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(`/api/v1/orgs/${SLUG}/threads/THR-060/attachments/att-001`);
+    expect(url).toContain(`/api/v1/orgs/${SLUG}/threads/THR-060/attachments/att-001`);
+    expect(url).toContain('agent=founder');
     expect(init.headers).toMatchObject({
       Authorization: 'Bearer tok',
     });
@@ -388,7 +389,7 @@ describe('downloadThreadAttachment — thread-scoped artifact download', () => {
         }),
       );
 
-    await downloadThreadAttachment(SLUG, 'THR-060', 'att-001');
+    await downloadThreadAttachment(SLUG, 'THR-060', 'att-001', 'retry-file.html');
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/auth/bootstrap');
@@ -403,7 +404,7 @@ describe('downloadThreadAttachment — thread-scoped artifact download', () => {
       ),
     );
 
-    const err = await downloadThreadAttachment(SLUG, 'THR-060', 'att-999').catch((e: unknown) => e);
+    const err = await downloadThreadAttachment(SLUG, 'THR-060', 'att-999', 'missing-file.html').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({ status: 404 });
   });
