@@ -34,7 +34,6 @@ export function eventLabel(ev: TaskEvent): string {
 const FANOUT_LABELS: Readonly<Record<string, string>> = {
   fanout_spawned: 'Fan-out spawned',
   fanout_join: 'Fan-out joined',
-  fanout_review_not_approved: 'Fan-out not approved',
 };
 
 export function prettyLabel(rawLabel: string): string {

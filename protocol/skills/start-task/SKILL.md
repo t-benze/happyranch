@@ -161,13 +161,19 @@ Parameters:
      adding `"then": [...]` to a delegate decision. The orchestrator
      auto-advances routine legs without consuming orchestration steps.
    - `fanout` (the `parallel` alias is also accepted) — spawn N child tasks in parallel (2 ≤ N ≤ 8,
-     read-only Phase 1). Requires `children` (array of `{agent, prompt}` objects)
+     Phase 2). Requires `children` (array of `{agent, prompt}` objects)
      and `width_cap_ack` (must exactly equal the child count). Optional `join_summary`
      (prose directive for the join prompt). Per-child `then`/`expect_verdict`
-     are rejected in Phase 1. Width > 4 requires founder `review_required`.
-     The parent parks in `in_progress(delegated)` with `active_fanout` metadata
-     and wakes once when all children are terminal. Children follow the normal
-     child/session path. Team-manager gated.
+     are accepted as a *pipeline carrier* — the child runs its own inline delegation chain.
+     Children targeted at a **team manager** are decision-capable (mutating fan-out);
+     children targeted at regular **workers** are read-only (structured decisions ignored,
+     complete with a summary). NO fan-out review gate at any width — the width cap (8)
+     is a machine-resource limit only; control over what lands is the per-PR merge gate
+     (each mutating child opens its own PR needing code_reviewer APPROVE + qa PASS +
+     CI + founder/EM merge). Children own DISJOINT file sets; shared-file convergence
+     routes through a serial follow-up delegate after join, never a fan-out child.
+     Team-manager gated. The parent parks in `in_progress(delegated)` with `active_fanout`
+     metadata and wakes once when all children are terminal.
    - `done` — the task is complete; requires `summary` of the outcome.
    - `escalate` — the task needs founder intervention; requires `reason`.
 
