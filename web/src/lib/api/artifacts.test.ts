@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ApiError } from './client';
-import { deleteArtifact, downloadArtifact, listArtifacts, uploadArtifact } from './artifacts';
+import { deleteArtifact, downloadArtifact, downloadThreadAttachment, listArtifacts, uploadArtifact } from './artifacts';
 
 const SLUG = 'alpha';
 
@@ -303,5 +303,139 @@ describe('artifacts api mirror', () => {
     const err = await downloadArtifact(SLUG, 'gone.pdf').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({ status: 404, code: 'artifact_not_found' });
+  });
+});
+
+describe('downloadThreadAttachment — thread-scoped artifact download', () => {
+  test('downloadThreadAttachment fetches the thread-scoped URL and triggers a download', async () => {
+    seedToken();
+    const blobContent = new Blob(['thread file contents'], { type: 'text/html' });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(blobContent, {
+        status: 200,
+        headers: { 'Content-Type': 'text/html' },
+      }),
+    );
+
+    const objectUrl = 'blob:http://localhost/fake-thread-url';
+    const createObjectUrlSpy = vi.fn().mockReturnValue(objectUrl);
+    const revokeObjectUrlSpy = vi.fn();
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: createObjectUrlSpy,
+      revokeObjectURL: revokeObjectUrlSpy,
+    });
+
+    const clickSpy = vi.fn();
+    const originalCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      if (tag === 'a') {
+        const el = originalCreateElement('a');
+        el.click = clickSpy;
+        const originalSetAttr = el.setAttribute.bind(el);
+        el.setAttribute = vi.fn((name: string, value: string) => {
+          originalSetAttr(name, value);
+        }) as typeof el.setAttribute;
+        return el;
+      }
+      return originalCreateElement(tag) as HTMLElement;
+    }) as unknown as typeof document.createElement;
+
+    await downloadThreadAttachment(SLUG, 'THR-060', 'att-001', 'happyranch-landing.html');
+
+    // Assert the fetch targets the THREAD-scoped URL with agent=founder, not the shared-artifact route.
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(`/api/v1/orgs/${SLUG}/threads/THR-060/attachments/att-001`);
+    expect(url).toContain('agent=founder');
+    expect(init.headers).toMatchObject({
+      Authorization: 'Bearer tok',
+    });
+
+    // Assert the download plumbing fired.
+    const blobArg = createObjectUrlSpy.mock.calls[0]?.[0] as Blob;
+    expect(blobArg.type).toBe('text/html');
+    expect(clickSpy).toHaveBeenCalled();
+    expect(revokeObjectUrlSpy).toHaveBeenCalledWith(objectUrl);
+  });
+
+  test('downloadThreadAttachment drops a stale token and retries once on 401', async () => {
+    seedToken();
+    const blobContent = new Blob(['thread file contents']);
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn().mockReturnValue('blob:fake'),
+      revokeObjectURL: vi.fn(),
+    });
+    const origCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = origCreateElement(tag);
+      if (tag === 'a') el.click = vi.fn();
+      return el;
+    }) as unknown as typeof document.createElement;
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('', { status: 401 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: 'tok2' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(blobContent, {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' },
+        }),
+      );
+
+    await downloadThreadAttachment(SLUG, 'THR-060', 'att-001', 'retry-file.html');
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/auth/bootstrap');
+  });
+
+  test('downloadThreadAttachment throws ApiError on non-ok non-401 response', async () => {
+    seedToken();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: { code: 'attachment_not_found', attachment_id: 'att-999' } }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const err = await downloadThreadAttachment(SLUG, 'THR-060', 'att-999', 'missing-file.html').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 404 });
+  });
+
+  test('downloadArtifact still routes to the shared-artifact URL unchanged', async () => {
+    seedToken();
+    const blobContent = new Blob(['shared artifact'], { type: 'application/pdf' });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(blobContent, {
+        status: 200,
+        headers: { 'Content-Type': 'application/pdf' },
+      }),
+    );
+
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn().mockReturnValue('blob:fake'),
+      revokeObjectURL: vi.fn(),
+    });
+    const origCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = origCreateElement(tag);
+      if (tag === 'a') el.click = vi.fn();
+      return el;
+    }) as unknown as typeof document.createElement;
+
+    await downloadArtifact(SLUG, 'report.pdf');
+
+    // Shared-artifact download still hits the artifact route, NEVER the thread route.
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe(`/api/v1/orgs/${SLUG}/artifacts/report.pdf`);
+    expect(url).not.toContain('/threads/');
   });
 });

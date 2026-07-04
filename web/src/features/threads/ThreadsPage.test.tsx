@@ -611,6 +611,51 @@ describe('ThreadsPage — structured detail rail (THREADDET-02)', () => {
     expect(within(rail).queryByText(/token cost/i)).not.toBeInTheDocument();
     expect(within(rail).queryByText(/pull request/i)).not.toBeInTheDocument();
   });
+
+  // Thread-scoped attachments carry thread_attachment_id (non-null) and an
+  // EMPTY artifact_name. Before the TASK-2011 fix the dedup key was
+  // artifact_name alone, causing all thread-scoped attachments to collide
+  // into a single entry. The dedup key is now a.thread_attachment_id ??
+  // a.artifact_name, so unique thread-scoped attachments each get their own
+  // entry in the rail.
+  test('Artifacts rail dedupes thread-scoped attachments by thread_attachment_id, not empty artifact_name', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const threadAtt1: Attachment & { thread_attachment_id?: string | null } = {
+      artifact_name: '',
+      display_name: 'happyranch-landing.html',
+      size_bytes: 4096,
+      content_type: 'text/html',
+      uploaded_by: 'consultant_head',
+      thread_attachment_id: 'att-001',
+    };
+    const threadAtt2: Attachment & { thread_attachment_id?: string | null } = {
+      artifact_name: '',
+      display_name: 'notes.txt',
+      size_bytes: 128,
+      content_type: 'text/plain',
+      uploaded_by: 'dev_agent',
+      thread_attachment_id: 'att-002',
+    };
+    setupDetail('THR-204', ['consultant_head', 'dev_agent'], [
+      mkMessageWithAttachments(1, 'consultant_head', 'uploaded files', [
+        threadAtt1,
+        threadAtt2,
+      ] as Attachment[]),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-204`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Rail thread/i })).toBeInTheDocument();
+    });
+    const rail = screen.getByLabelText('Thread properties');
+    expect(within(rail).getByText('Artifacts')).toBeInTheDocument();
+    // Both thread-scoped attachments must appear — no collision on the empty
+    // artifact_name.
+    expect(within(rail).getByText('happyranch-landing.html')).toBeInTheDocument();
+    expect(within(rail).getByText('notes.txt')).toBeInTheDocument();
+    // Neither should appear doubled.
+    expect(within(rail).getAllByText('happyranch-landing.html')).toHaveLength(1);
+    expect(within(rail).getAllByText('notes.txt')).toHaveLength(1);
+  });
 });
 
 /* ------------------------------------------------------------------ */

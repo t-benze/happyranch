@@ -129,21 +129,14 @@ export function artifactDownloadPath(slug: string, artifactName: string): string
   return `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(artifactName)}`;
 }
 
-async function downloadWithToken(
-  slug: string,
-  name: string,
-  token: string,
-): Promise<Response> {
-  return fetch(
-    `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(name)}`,
-    {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      credentials: 'same-origin',
+async function downloadWithToken(path: string, token: string): Promise<Response> {
+  return fetch(path, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
     },
-  );
+    credentials: 'same-origin',
+  });
 }
 
 /**
@@ -155,11 +148,12 @@ async function downloadWithToken(
  */
 export async function downloadArtifact(slug: string, name: string): Promise<void> {
   let token = await getToken();
-  let res = await downloadWithToken(slug, name, token);
+  const path = `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(name)}`;
+  let res = await downloadWithToken(path, token);
   if (res.status === 401) {
     clearToken();
     token = await getToken();
-    res = await downloadWithToken(slug, name, token);
+    res = await downloadWithToken(path, token);
   }
 
   if (!res.ok) {
@@ -181,6 +175,52 @@ export async function downloadArtifact(slug: string, name: string): Promise<void
     const a = document.createElement('a');
     a.href = objectUrl;
     a.download = name;
+    a.click();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+/**
+ * Download a thread-scoped attachment via the participation-gated route
+ * GET /api/v1/orgs/{slug}/threads/{threadId}/attachments/{attachmentId}.
+ * Uses the identical bearer-token + retry-on-401 flow as downloadArtifact.
+ */
+export async function downloadThreadAttachment(
+  slug: string,
+  threadId: string,
+  attachmentId: string,
+  displayName: string,
+): Promise<void> {
+  let token = await getToken();
+  const params = new URLSearchParams({ agent: ARTIFACT_WRITE_AGENT });
+  const path = `${API_PREFIX}/orgs/${slug}/threads/${threadId}/attachments/${attachmentId}?${params.toString()}`;
+  let res = await downloadWithToken(path, token);
+  if (res.status === 401) {
+    clearToken();
+    token = await getToken();
+    res = await downloadWithToken(path, token);
+  }
+
+  if (!res.ok) {
+    let body: unknown = null;
+    const text = await res.text();
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    throw parseArtifactError(res.status, body);
+  }
+
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = displayName;
     a.click();
   } finally {
     URL.revokeObjectURL(objectUrl);

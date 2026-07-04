@@ -34,8 +34,10 @@ interface MessageBubbleProps {
   systemDescription?: React.ReactNode;
   attachments?: ThreadAttachment[];
   /** Called when the user clicks an attachment chip. The owner wires this to
-   *  an authed download action (e.g. artifactsApi.downloadArtifact). */
-  onAttachmentDownload?: (artifactName: string) => void;
+   *  an authed download action (e.g. artifactsApi.downloadArtifact or
+   *  artifactsApi.downloadThreadAttachment). The full attachment object is
+   *  passed so the handler can branch on thread_attachment_id vs artifact_name. */
+  onAttachmentDownload?: (attachment: ThreadAttachment) => void;
 }
 
 function fmtTs(iso: string): string {
@@ -108,8 +110,8 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
             return (
               <button
                 type="button"
-                key={attachment.artifact_name}
-                onClick={() => onAttachmentDownload?.(attachment.artifact_name)}
+                key={attachment.thread_attachment_id ?? attachment.artifact_name}
+                onClick={() => onAttachmentDownload?.(attachment)}
                 className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1 cursor-pointer"
               >
                 <span className="max-w-64 truncate">{attachment.display_name}</span>
