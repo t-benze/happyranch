@@ -41,6 +41,7 @@ class AgentDef:
     enrolled_at: datetime | None
     system_prompt: str
     description: str | None = None
+    model: str | None = None
 
 
 def _parse_iso(ts: object) -> datetime | None:
@@ -142,6 +143,11 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
     if description is not None and not isinstance(description, str):
         raise AgentParseError("description must be a string or null")
 
+    model = fm.get("model")
+    if model is not None:
+        if not isinstance(model, str) or not model.strip():
+            raise AgentParseError("model must be a non-empty string or null")
+
     return AgentDef(
         name=name,
         team=team,
@@ -154,6 +160,7 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
         enrolled_at=enrolled_at,
         system_prompt=body if body.endswith("\n") else body + "\n",
         description=description,
+        model=model,
     )
 
 
@@ -174,6 +181,7 @@ def render_agent_text(agent: AgentDef) -> str:
             if agent.enrolled_at is not None
             else None
         ),
+        "model": agent.model,
     }
     fm_text = yaml.safe_dump(fm, sort_keys=False).strip()
     body = agent.system_prompt if agent.system_prompt.endswith("\n") else agent.system_prompt + "\n"

@@ -21,6 +21,7 @@ from runtime.daemon.agent_config import (
     load_agent_config,
     remove_repo,
     set_executor,
+    set_model,
     update_repo_url,
     write_default_agent_config,
 )
@@ -111,6 +112,7 @@ class ManageAgentBody(BaseModel):
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
     executor: str | None = None
+    model: str | None = None
     allow_rules: list[str] | None = None
     target_team: str | None = None
 
@@ -136,6 +138,7 @@ class FounderCreateAgentBody(BaseModel):
     team: str | None = None
     new_team: str | None = None
     executor: str = "claude"
+    model: str | None = None
     description: str
     system_prompt: str
     allow_rules: list[str] | None = None
@@ -193,6 +196,19 @@ def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) 
     learnings_path.write_text(existing + f"- {text}\n")
 
 
+def _resolve_agent_model(paths: OrgPaths, agent_name: str) -> str | None:
+    """Resolve the per-agent model from agent.yaml.
+
+    Returns the model string if set, None if absent/empty (CLI default).
+    """
+    workspace = paths.workspaces_dir / agent_name
+    if not workspace.exists():
+        return None
+    cfg = load_agent_config(workspace)
+    model = cfg.get("model")
+    return model if model else None
+
+
 @router.get("/agents")
 def list_agents(slug: str, org: OrgDep) -> dict:
     paths = OrgPaths(root=org.root)
@@ -220,6 +236,7 @@ def list_agents(slug: str, org: OrgDep) -> dict:
             "team": agent_def.team if agent_def else None,
             "role": agent_def.role if agent_def else None,
             "executor": agent_def.executor if agent_def else None,
+            "model": _resolve_agent_model(paths, name),
             "description": agent_def.description if agent_def else None,
             # Phase 2: additive read-only fields (D6 spec)
             "repos": repos,
@@ -408,6 +425,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                 enrolled_at=datetime.now(timezone.utc),
                 system_prompt=body.system_prompt,
                 description=body.description,
+                model=body.model if body.model else None,
             )
             prompt_loader.write_pending_agent(paths, agent)
             org.teams.add_worker(manager_team, body.name)
@@ -440,6 +458,13 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         if body.executor is not None:
             _validate_executor(body.executor)
         # Build the updated AgentDef, preserving fields not being updated.
+        # model: use Pydantic field-set detection to distinguish omitted
+        # (preserve existing) vs explicit null (clear).
+        model_is_set = "model" in body.model_fields_set
+        if model_is_set:
+            resolved_model = body.model if body.model else None
+        else:
+            resolved_model = existing.model
         updated = AgentDef(
             name=existing.name,
             team=existing.team,
@@ -452,6 +477,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             enrolled_at=existing.enrolled_at,
             system_prompt=body.system_prompt if body.system_prompt is not None else existing.system_prompt,
             description=body.description if body.description is not None else existing.description,
+            model=resolved_model,
         )
         # Atomic overwrite of the active file via tempfile + os.replace.
         active_path = paths.agents_dir / f"{body.name}.md"
@@ -487,6 +513,9 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         if body.executor is not None and workspace.exists():
             # Also update agent.yaml so the workspace file stays in sync.
             await asyncio.to_thread(set_executor, workspace, body.executor)
+        if model_is_set and workspace.exists():
+            # Persist per-agent model to agent.yaml (set or clear).
+            await asyncio.to_thread(set_model, workspace, resolved_model)
         audit.log_agent_managed(
             scope_id=scope_id,
             action="update",
@@ -620,6 +649,7 @@ async def founder_create_agent(
             enrolled_at=datetime.now(timezone.utc),
             system_prompt=body.system_prompt,
             description=body.description,
+            model=body.model if body.model else None,
         )
 
         # Atomic write directly into active agents/ (skip _pending/).
@@ -655,6 +685,8 @@ async def founder_create_agent(
     workspace.mkdir(parents=True, exist_ok=True)
     write_default_agent_config(workspace)
     set_executor(workspace, agent_def.executor)
+    if agent_def.model:
+        set_model(workspace, agent_def.model)
     repos = agent_def.repos or {}
     for repo_name, url in repos.items():
         add_repo(workspace, repo_name, url)
@@ -773,6 +805,7 @@ async def set_agent_executor(
         enrolled_at=existing.enrolled_at,
         system_prompt=existing.system_prompt,
         description=existing.description,
+        model=existing.model,
     )
     from runtime.orchestrator.agent_def import render_agent_text
     active_path = paths.agents_dir / f"{agent_name}.md"
@@ -843,6 +876,91 @@ async def set_agent_executor(
         "stale_files": stale_files,
         "cleaned": cleaned,
         "removed": removed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Founder surface: set an existing agent's model end-to-end.
+# ---------------------------------------------------------------------------
+
+
+class SetModelBody(BaseModel):
+    model: str | None = None
+
+
+@router.put("/agents/{agent_name}/model")
+async def set_agent_model(
+    slug: str, agent_name: str, body: SetModelBody, org: OrgDep,
+) -> dict:
+    """Founder action: set or clear an existing agent's model.
+
+    Reconciles the org agent .md frontmatter and the workspace agent.yaml.
+    When model is set, the executor will inject the profile's model_arg
+    flags into the CLI argv at launch time. When unset/cleared (None),
+    the CLI's default model is used.
+    """
+    paths = OrgPaths(root=org.root)
+
+    existing = prompt_loader.load_agent(paths, agent_name)
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "agent_not_found", "agent": agent_name},
+        )
+
+    workspace = paths.workspaces_dir / agent_name
+    has_workspace = workspace.exists()
+
+    before_model = _resolve_agent_model(paths, agent_name)
+
+    # 1. org .md frontmatter — atomic overwrite via tempfile + os.replace.
+    updated = AgentDef(
+        name=existing.name,
+        team=existing.team,
+        role=existing.role,
+        executor=existing.executor,  # type: ignore[arg-type]
+        allow_rules=existing.allow_rules,
+        repos=existing.repos,
+        enrolled_by=existing.enrolled_by,
+        enrolled_at_task=existing.enrolled_at_task,
+        enrolled_at=existing.enrolled_at,
+        system_prompt=existing.system_prompt,
+        description=existing.description,
+        model=body.model if body.model else None,
+    )
+    from runtime.orchestrator.agent_def import render_agent_text
+    active_path = paths.agents_dir / f"{agent_name}.md"
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(render_agent_text(updated))
+        os.replace(tmp, active_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+    after_model = before_model
+    if has_workspace:
+        set_model(workspace, body.model if body.model else None)
+        after_model = _resolve_agent_model(paths, agent_name)
+
+    AuditLogger(org.db).log_agent_managed(
+        scope_id="founder",
+        action="update",
+        name=agent_name,
+        source="founder",
+        actor="founder",
+    )
+
+    return {
+        "agent": agent_name,
+        "before": before_model,
+        "after": after_model,
     }
 
 

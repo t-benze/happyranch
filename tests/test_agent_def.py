@@ -182,3 +182,69 @@ def test_render_omits_null_optional_fields() -> None:
     text = render_agent_text(agent)
     assert "enrolled_by:" in text
     assert "null" in text  # YAML emits null explicitly
+
+
+# ---- model field ----
+
+def test_parse_model_when_present() -> None:
+    text = (
+        "---\n"
+        "name: x\n"
+        "team: t\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "model: gpt-5\n"
+        "---\n"
+        "body\n"
+    )
+    agent = parse_agent_text(text, expected_name="x")
+    assert agent.model == "gpt-5"
+
+
+def test_parse_model_defaults_to_none_when_absent() -> None:
+    text = "---\nname: x\nteam: t\nrole: worker\nexecutor: claude\n---\nbody\n"
+    agent = parse_agent_text(text, expected_name="x")
+    assert agent.model is None
+
+
+def test_parse_rejects_empty_model_string() -> None:
+    text = (
+        "---\n"
+        "name: x\n"
+        "team: t\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "model: ''\n"
+        "---\n"
+        "body\n"
+    )
+    with pytest.raises(AgentParseError, match="model"):
+        parse_agent_text(text, expected_name="x")
+
+
+def test_render_round_trip_with_model() -> None:
+    text = (
+        "---\n"
+        "name: x\n"
+        "team: t\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "model: claude-sonnet-5\n"
+        "---\n"
+        "body\n"
+    )
+    agent = parse_agent_text(text, expected_name="x")
+    rendered = render_agent_text(agent)
+    agent2 = parse_agent_text(rendered, expected_name="x")
+    assert agent2.model == "claude-sonnet-5"
+    assert agent == agent2
+
+
+def test_absent_model_round_trips_as_none() -> None:
+    """An agent file without model should parse as model=None and render without it."""
+    text = "---\nname: x\nteam: t\nrole: worker\nexecutor: claude\n---\nbody\n"
+    agent = parse_agent_text(text, expected_name="x")
+    assert agent.model is None
+    rendered = render_agent_text(agent)
+    agent2 = parse_agent_text(rendered, expected_name="x")
+    assert agent2.model is None

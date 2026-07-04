@@ -544,6 +544,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/model": {
+      "PUT": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/reject": {
       "POST": {
         "params": [

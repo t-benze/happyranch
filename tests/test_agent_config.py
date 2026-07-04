@@ -10,6 +10,7 @@ from runtime.daemon.agent_config import (
     load_agent_config,
     remove_repo,
     set_executor,
+    set_model,
     update_repo_url,
     write_default_agent_config,
 )
@@ -78,3 +79,35 @@ def test_set_executor_updates_agent_yaml(tmp_path: Path) -> None:
     set_executor(tmp_path, "codex")
     cfg = load_agent_config(tmp_path)
     assert cfg["executor"] == "codex"
+
+
+# ---- model ----
+
+def test_set_model_writes_to_agent_yaml(tmp_path: Path) -> None:
+    write_default_agent_config(tmp_path)
+    set_model(tmp_path, "gpt-5")
+    cfg = load_agent_config(tmp_path)
+    assert cfg["model"] == "gpt-5"
+
+
+def test_set_model_none_clears_key(tmp_path: Path) -> None:
+    write_default_agent_config(tmp_path)
+    set_model(tmp_path, "gpt-5")
+    set_model(tmp_path, None)
+    cfg = load_agent_config(tmp_path)
+    assert "model" not in cfg
+
+
+def test_set_model_empty_string_clears_key(tmp_path: Path) -> None:
+    write_default_agent_config(tmp_path)
+    set_model(tmp_path, "gpt-5")
+    set_model(tmp_path, "")
+    cfg = load_agent_config(tmp_path)
+    assert "model" not in cfg
+
+
+def test_load_agent_config_no_model_key_when_absent(tmp_path: Path) -> None:
+    write_default_agent_config(tmp_path)
+    cfg = load_agent_config(tmp_path)
+    assert "model" not in cfg
+    assert "executor" in cfg  # still injects default executor

@@ -39,10 +39,11 @@ The Agents page (`web/src/features/agents/`) shows the active agent roster plus 
 
 - **Repositories** — `repos` map from agent.yaml, shown as badge chips in the detail header.
 - **System prompt** — read-only, collapsible. Sourced from the `system_prompt` field on the existing `GET /agents` response (additive Phase 2 field).
+- **Model** — per-agent model string (`model` field in `GET /agents`, additive THR-067 field). Web UI field is PR-2 (separate follow-up).
 
 Teams membership editing (add/remove workers only — manager reassignment is founder-gated) is available via `PUT /settings/teams`, wrapping `TeamsRegistry` mutators with `validate_team_membership` consistency checks and 409 rollback on drift.
 
-**Backend:** The `GET /agents` response now includes `repos` and `system_prompt` fields (additive, `allow_rules` remains excluded).
+**Backend:** The `GET /agents` response now includes `repos`, `system_prompt`, and `model` fields (additive, `allow_rules` remains excluded). The `PUT /agents/{agent}/model` route sets or clears the per-agent model (see below).
 
 Build and dev commands:
 
@@ -114,6 +115,27 @@ The poll job runs with `review_required=false` through the existing jobs path; a
 get raw `gh pr merge` grants. The full workflow narrative (submit → blocked → resume → inspect →
 merge/revise) is documented in `protocol/skills/jobs/SKILL.md` and
 `docs/agent-guides/features-and-invariants.md`.
+
+### Per-agent model selection
+
+Set or clear the model an agent uses via the `set-model` CLI command (mirrors `set-executor`):
+
+```bash
+# Set a model
+happyranch set-model --org <org> dev_agent --model claude-sonnet-5
+
+# Clear — revert to CLI default:
+happyranch set-model --org <org> dev_agent
+```
+
+The backend route is `PUT /api/v1/orgs/{slug}/agents/{agent_name}/model` with payload
+`{"model": "<id>" | null}`. It reconciles the org `.md` frontmatter (`model:` field) and
+the workspace `agent.yaml` (`model:` key) in one call.
+
+When a model is set AND the executor profile has a `model_arg` template (all four built-in
+profiles do — verified per CLI), the executor injects the substituted model flags into the
+CLI argv at launch time. When unset, each CLI uses its own default model (today's behavior
+for every existing agent).
 
 ### Token usage
 

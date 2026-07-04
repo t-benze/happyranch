@@ -61,6 +61,15 @@ def test_validate_argv_template_accepts_all_valid_placeholders() -> None:
     assert errors == []
 
 
+def test_validate_argv_template_rejects_model_placeholder() -> None:
+    """Custom-profile argv templates must not use {model} — model_arg
+    substitution is reserved for built-in executor profiles only."""
+    errors = validate_argv_template(["cli", "--model", "{model}"])
+    assert len(errors) >= 1
+    assert any("unsupported placeholder" in e.lower() for e in errors)
+    assert any("{model}" in e for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # ExecutorRegistry
 # ---------------------------------------------------------------------------
@@ -94,6 +103,22 @@ class TestExecutorRegistry:
         assert registry.get_profile("codex").readiness_marker_fragment == "AGENTS.md"
         assert registry.get_profile("opencode").readiness_marker_fragment == "AGENTS.md"
         assert registry.get_profile("pi").readiness_marker_fragment == "AGENTS.md"
+
+    def test_builtins_have_verified_model_arg(self) -> None:
+        registry = ExecutorRegistry()
+        # claude: --model <id> (verified from claude --help 2026-07-04)
+        assert registry.get_profile("claude").model_arg == ["--model", "{model}"]
+        # codex: -m <model> (verified from codex --help 2026-07-04)
+        assert registry.get_profile("codex").model_arg == ["-m", "{model}"]
+        # opencode: -m <provider/model> (verified from opencode --help 2026-07-04)
+        assert registry.get_profile("opencode").model_arg == ["-m", "{model}"]
+        # pi: --model <pattern> (verified from pi --help 2026-07-04)
+        assert registry.get_profile("pi").model_arg == ["--model", "{model}"]
+
+    def test_model_arg_defaults_to_none_for_frozen_default(self) -> None:
+        """ExecutorProfile() with no model_arg should have model_arg=None."""
+        p = ExecutorProfile(name="test")
+        assert p.model_arg is None
 
     def test_is_registered_returns_false_for_unknown(self) -> None:
         registry = ExecutorRegistry()

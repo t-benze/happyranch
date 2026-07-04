@@ -97,6 +97,11 @@ class ExecutorProfile:
     ``command`` (custom profiles only) is the executable name checked via
     ``shutil.which`` at profile load time. Built-in profiles resolve their
     CLI paths from Settings.
+
+    ``model_arg`` (optional) is an argv-TEMPLATE list containing a single
+    ``{model}`` placeholder that each executor splices into its CLI argv
+    when the agent has a model set. Unset (None) → CLI default model.
+    Pre-seeded on the four built-in profiles with each CLI's verified flag.
     """
 
     name: str
@@ -105,6 +110,7 @@ class ExecutorProfile:
     readiness_marker_fragment: str = ".claude/skills/start-task/SKILL.md"
     argv_template: list[str] | None = None
     command: str | None = None
+    model_arg: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -143,24 +149,28 @@ class ExecutorRegistry:
                 kind="builtin",
                 adapter_id="claude",
                 readiness_marker_fragment=".claude/skills/start-task/SKILL.md",
+                model_arg=["--model", "{model}"],
             ),
             ExecutorProfile(
                 name="codex",
                 kind="builtin",
                 adapter_id="codex",
                 readiness_marker_fragment="AGENTS.md",
+                model_arg=["-m", "{model}"],
             ),
             ExecutorProfile(
                 name="opencode",
                 kind="builtin",
                 adapter_id="opencode",
                 readiness_marker_fragment="AGENTS.md",
+                model_arg=["-m", "{model}"],
             ),
             ExecutorProfile(
                 name="pi",
                 kind="builtin",
                 adapter_id="pi",
                 readiness_marker_fragment="AGENTS.md",
+                model_arg=["--model", "{model}"],
             ),
         ]
         for p in builtins:
@@ -354,19 +364,23 @@ def build_executor(
             permission_mode=settings.permission_mode,
             settings=settings,
             paths=paths,
+            model_arg=profile.model_arg,
         )
     if profile.name == "codex":
         return CodexExecutor(
             codex_cli_path=settings.codex_cli_path,
             sandbox_mode=settings.codex_sandbox_mode,
+            model_arg=profile.model_arg,
         )
     if profile.name == "opencode":
         return OpencodeExecutor(
             opencode_cli_path=settings.opencode_cli_path,
+            model_arg=profile.model_arg,
         )
     if profile.name == "pi":
         return PiExecutor(
             pi_cli_path=settings.pi_cli_path,
+            model_arg=profile.model_arg,
         )
 
     # Custom profile — GenericCliExecutor
