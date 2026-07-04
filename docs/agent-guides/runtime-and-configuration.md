@@ -80,6 +80,41 @@ restart is a no-op.
 both get the store on startup — the store is created on demand regardless of
 runtime shape and touches no existing DB.
 
+### GET /api/v1/metrics/history — persisted snapshot history
+
+Returns persisted metrics snapshot rows from the `metrics_snapshots` table,
+newest-first. Requires bearer auth (inherited from the `metrics` router).
+
+**Request:**
+
+```
+GET /api/v1/metrics/history?since=<ISO>&until=<ISO>&limit=<int>
+```
+
+| Param | Type | Default | Description |
+| --- | --- | --- | --- |
+| `since` | ISO-8601 string | none | Lower bound on `captured_at` (inclusive) |
+| `until` | ISO-8601 string | none | Upper bound on `captured_at` (inclusive) |
+| `limit` | int | 500 | Max rows to return (capped at 5000, min 1) |
+
+**Response** `200 OK`:
+
+```json
+{
+  "snapshots": [
+    {
+      "id": 42,
+      "captured_at": "2026-07-04T12:10:00+00:00",
+      "snapshot_json": "{...}"
+    }
+  ]
+}
+```
+
+When `since` and `until` are both omitted, returns the `limit` most recent rows.
+When the daemon state is idle (`metrics_store` is `None`), returns
+`{"snapshots": []}` gracefully (never 500).
+
 ## System Assistant
 
 The system assistant is runtime-global and lives under `<runtime>/system/assistant/`.
