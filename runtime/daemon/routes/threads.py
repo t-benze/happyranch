@@ -1240,6 +1240,24 @@ async def list_thread_messages_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# THR-061 PR-1 — GET /threads/{thread_id}/tasks
+# ---------------------------------------------------------------------------
+
+
+@router.get("/threads/{thread_id}/tasks")
+async def list_thread_tasks_endpoint(
+    slug: str,
+    thread_id: str,
+    org: OrgDep,
+) -> list[dict]:
+    """Return the tasks dispatched from a thread, newest-first."""
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    return org.db.list_tasks_by_thread(thread_id)
+
+
+# ---------------------------------------------------------------------------
 # Task 21 — POST /threads/{id}/reply
 # ---------------------------------------------------------------------------
 

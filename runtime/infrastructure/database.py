@@ -1460,6 +1460,34 @@ class Database:
         return results
 
     @_synchronized
+    def list_tasks_by_thread(
+        self, thread_id: str,
+    ) -> list[dict]:
+        """Return tasks dispatched from a thread, newest-first.
+
+        Uses the existing idx_tasks_dispatched_from_thread_id partial index.
+        Returns lightweight summary dicts with the fields the frontend needs:
+        id, status, brief, assigned_agent, created_at, parent_task_id.
+        """
+        cursor = self._conn.execute(
+            "SELECT id, status, brief, assigned_agent, created_at, parent_task_id "
+            "FROM tasks WHERE dispatched_from_thread_id = ? "
+            "ORDER BY created_at DESC",
+            (thread_id,),
+        )
+        return [
+            {
+                "id": row["id"],
+                "status": row["status"],
+                "brief": row["brief"],
+                "assigned_agent": row["assigned_agent"],
+                "created_at": row["created_at"],
+                "parent_task_id": row["parent_task_id"],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    @_synchronized
     def get_direct_revisits(self, task_id: str) -> list[str]:
         """Return IDs of tasks whose revisit_of_task_id points at this task,
         ordered by creation. Uses idx_tasks_revisit_of.
