@@ -149,29 +149,49 @@ struct FakeProcessHandleCaptureTests {
                 "Immediate-exit stderr must be captured, got: \(stderr)")
     }
 
-    @Test("crash state + captured stderr/exit still surface after high-volume then crash")
+    @Test("high-volume output + non-zero exit: >100KB stdout + stderr captured, async drain prevents deadlock, crash exit code surfaces")
     func crashAfterHighVolumeOutput() throws {
         let controller = RealProcessController()
-        // Simulates: daemon writes lots of stdout, lots of stderr, then crashes
+        // Generate >100KB of stdout (well above the 64KB OS pipe buffer),
+        // substantial stderr, then exit NON-ZERO.  Without async drain this
+        // deadlocks: the child fills the pipe and blocks on write, the
+        // termination handler never fires.
         let handle = try controller.launch(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
-            arguments: ["-c", "for i in $(seq 1 500); do echo \"log line $i\"; done; echo 'FATAL: port bind failed' >&2; exit 1"],
+            arguments: ["-c", """
+perl -e 'print "x" x 120000, "\\nFINAL_STDOUT_LINE\\n"';
+echo 'FATAL: port bind failed: address already in use (errno 48)' >&2;
+echo 'CRASH_STDERR_MARKER' >&2;
+exit 3
+"""],
             currentDirectoryURL: nil,
             environment: nil,
             terminationHandler: nil
         )
         let proc = handle as! RealProcessHandle
 
+        // Wait up to 10 seconds — deadlock would prevent exit
         let deadline = Date().addingTimeInterval(10.0)
         while proc.isRunning && Date() < deadline {
             Thread.sleep(forTimeInterval: 0.1)
         }
 
-        #expect(!proc.isRunning, "Process must exit after crash")
-        #expect(proc.terminationStatus == 1, "Exit code must be 1")
+        #expect(!proc.isRunning, "Process must exit after crash (no deadlock)")
+        #expect(proc.terminationStatus == 3, "Exit code must be 3 (non-zero crash)")
 
+        let stdout = proc.capturedStandardOutput ?? ""
         let stderr = proc.capturedStandardError ?? ""
+
+        // High-volume stdout was captured (at least the bounded 64KB head).
+        // The 64KB bound means the final marker line may not be in the
+        // captured window — what matters is the async drain consumed enough
+        // to keep the child from deadlocking AND captured output exists.
+        #expect(stdout.utf8.count > 0,
+                "High-volume stdout must capture output; length=\(stdout.utf8.count)")
+        // Stderr with crash diagnostic must surface
         #expect(stderr.contains("port bind failed"),
-                "Crash stderr must surface, got: \(stderr)")
+                "Crash stderr 'port bind failed' must surface, got: \(stderr)")
+        #expect(stderr.contains("CRASH_STDERR_MARKER"),
+                "Crash stderr marker must surface")
     }
 }
