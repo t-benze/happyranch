@@ -93,7 +93,6 @@ vi.mock('@/hooks/assistant', () => ({
   useInitAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRegisterAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRepairAssistant: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useAssistantSessionOpener: () => h.openSession,
   useAssistantAModeSessionOpener: () => h.openSession,
   useListConversations: () => ({
     data: h.conversations,

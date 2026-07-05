@@ -43,10 +43,6 @@ export const mockAssistantApi: AssistantApi = {
   useInitAssistant: () => noopMutation(),
   useRegisterAssistant: () => noopMutation(),
   useRepairAssistant: () => noopMutation(),
-  openSession: () =>
-    Promise.reject(
-      new Error('assistant terminal is unavailable in the prototype sandbox'),
-    ),
   openAModeSession: () =>
     Promise.reject(
       new Error('assistant is unavailable in the prototype sandbox'),

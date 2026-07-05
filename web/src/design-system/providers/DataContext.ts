@@ -265,14 +265,8 @@ export interface AssistantApi {
   useRegisterAssistant: () => MutationLike<AssistantRegisterBody, AssistantStatus>;
   useRepairAssistant: () => MutationLike<void, AssistantStatus>;
   /**
-   * Opens the PTY WebSocket (bearer-subprotocol auth). Imperative and
-   * real-only; the prototype mock rejects since no daemon sits behind it.
-   */
-  openSession: () => Promise<WebSocket>;
-  /**
    * Opens the A-mode WebSocket — the structured `TurnFrame` stream that drives
-   * the thread-style dock. Same bearer-subprotocol auth as `openSession`; only
-   * the route differs. Imperative and real-only; the mock rejects.
+   * the thread-style dock. Imperative and real-only; the mock rejects.
    */
   openAModeSession: () => Promise<WebSocket>;
   /**

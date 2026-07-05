@@ -105,7 +105,6 @@ export const realAssistantApi: AssistantApi = {
   useInitAssistant,
   useRegisterAssistant,
   useRepairAssistant,
-  openSession: assistantApi.openAssistantSession,
   openAModeSession: assistantApi.openAssistantAModeSession,
   useListConversations,
   useCreateConversation,

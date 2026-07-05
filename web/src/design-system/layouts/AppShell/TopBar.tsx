@@ -127,7 +127,6 @@ export function TopBar(): JSX.Element {
         </NavTab>
         <NavTab {...placeholderTab('jobs')}>Jobs</NavTab>
         <NavTab {...placeholderTab('artifacts')}>Artifacts</NavTab>
-        <NavTab {...placeholderTab('assistant')}>Assistant</NavTab>
       </nav>
       <div className="ml-auto flex items-center gap-2">
         <Select

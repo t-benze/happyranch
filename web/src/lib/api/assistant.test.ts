@@ -1,7 +1,6 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as assistant from './assistant';
 import * as clientModule from './client';
-import * as authModule from '../auth';
 
 describe('assistant api', () => {
   beforeEach(() => {
@@ -54,28 +53,4 @@ describe('assistant api', () => {
     expect(assistant.assistantBearerSubprotocol('tok-123')).toBe(
       'happyranch.bearer.tok-123',
     );
-  });
-
-  it('assistantSessionWsUrl targets the PTY route with a ws(s) scheme', () => {
-    expect(assistant.assistantSessionWsUrl()).toMatch(
-      /^wss?:\/\/.+\/api\/v1\/assistant\/session$/,
-    );
-  });
-
-  describe('openAssistantSession', () => {
-    afterEach(() => vi.unstubAllGlobals());
-
-    it('connects with the bearer subprotocol (THR-006 Option A)', async () => {
-      vi.spyOn(authModule, 'getToken').mockResolvedValue('tok-123');
-      const ctor = vi.fn();
-      vi.stubGlobal('WebSocket', ctor as unknown as typeof WebSocket);
-
-      await assistant.openAssistantSession();
-
-      expect(ctor).toHaveBeenCalledTimes(1);
-      const [url, protocols] = ctor.mock.calls[0];
-      expect(url).toMatch(/\/api\/v1\/assistant\/session$/);
-      expect(protocols).toEqual(['happyranch.bearer.tok-123']);
-    });
-  });
-});
+  });});
