@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json as _json
 import mimetypes
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
@@ -1086,6 +1087,51 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
     }
 
 
+def _has_infra_signature(reason: str) -> bool:
+    """Return True when *reason* carries an infrastructure-failure marker
+    even if it is wrapped in a no_callback/no_callback_after_reprompt prefix."""
+    # Parse rc=N from the reason (case-insensitive).
+    m = re.search(r'rc=(\d+)', reason, re.IGNORECASE)
+    if m and int(m.group(1)) != 0:
+        return True
+    lower = reason.lower()
+    if "529" in lower or "overloaded" in lower:
+        return True
+    if "quota" in lower or "usage limit" in lower:
+        return True
+    if "unknown_session" in lower:
+        return True
+    return False
+
+
+def _responder_category(db_status: str, decline_reason: str | None) -> str | None:
+    """Derive a failure/decline category from the invocation's terminal state.
+
+    Four buckets per THR-071:
+    - ``declined`` — agent chose to decline (explicit decline route)
+    - ``no_callback`` — agent forgot the terminal callback (clean exit, rc==0,
+      no infra markers)
+    - ``no_callback_after_reprompt`` — agent forgot even after the nudge
+      (clean exit, rc==0, no infra markers)
+    - ``infra_fail`` — infrastructure failure (timeout, 529, runner_crash,
+      rc!=0, quota, unknown_session, etc.)
+
+    Returns None when no terminal failure category applies (queued/working/replied).
+    """
+    if db_status == "declined":
+        return "declined"
+    if db_status in ("failed", "timeout"):
+        reason = (decline_reason or "").lower()
+        # Check for infra signatures FIRST — a no_callback: rc=1 is still infra.
+        if reason.startswith("no_callback_after_reprompt:"):
+            return "infra_fail" if _has_infra_signature(reason) else "no_callback_after_reprompt"
+        if reason.startswith("no_callback:"):
+            return "infra_fail" if _has_infra_signature(reason) else "no_callback"
+        # All other failures: timeout, runner_crash, 529, rc=N, etc.
+        return "infra_fail"
+    return None
+
+
 def _responder_entry(e: dict) -> ResponderStatusEntry:
     """Build one responder-status wire entry from a grouped invocation dict.
 
@@ -1103,6 +1149,11 @@ def _responder_entry(e: dict) -> ResponderStatusEntry:
         status=wire,
         responded_at=e["consumed_at"],
         started_at=e.get("started_at"),
+        decline_reason=e.get("decline_reason"),
+        category=_responder_category(
+            db_status,
+            e.get("decline_reason"),
+        ),
     )
 
 

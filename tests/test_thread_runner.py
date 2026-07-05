@@ -956,3 +956,402 @@ async def test_externally_aborted_invocation_skips_session_update(tmp_path, monk
     assert watermark == 0, (
         "aborted invocation must not advance last_resumed_seq"
     )
+
+
+# -----------------------------------------------------------------
+# THR-071 slice (3) — bounded terminal-callback enforcement
+# -----------------------------------------------------------------
+
+
+def _clean_exit_result(agent_session_id="claude-sess-x"):
+    r = FakeExecutorResult(success=True)
+    r.agent_session_id = agent_session_id
+    return r
+
+
+class _ScriptedExec:
+    """Fake executor that returns scripted results in order."""
+    def __init__(self, scripted):
+        self._scripted = list(scripted)
+        self.calls = []
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._scripted.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_clean_exit_no_callback_reinvokes_once_and_recovers(tmp_path, monkeypatch):
+    """rc==0 clean exit + unconsumed → exactly ONE re-invoke with nudge →
+    second pass consumes (CONSUMED) → session persisted, no auto-decline."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    # First invocation: clean exit, no callback → still pending.
+    # Second invocation (re-invoke with nudge): agent calls reply mid-session.
+    fake = _ScriptedExec([
+        _clean_exit_result("claude-first"),
+        _clean_exit_result("claude-nudged"),
+    ])
+
+    # On the second call (the nudge re-invoke), simulate the agent calling
+    # `happyranch threads reply` by consuming the invocation mid-exec.
+    original_run = fake.run
+    def _run_with_reply(**kwargs):
+        if len(fake.calls) == 1:  # second call (first is already consumed)
+            db.consume_invocation(inv.invocation_token)
+        return original_run(**kwargs)
+    fake.run = _run_with_reply
+
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: fake,
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    # Exactly TWO invocations happened (first + one re-invoke).
+    assert len(fake.calls) == 2, f"expected 2 invocations, got {len(fake.calls)}"
+
+    # Second prompt must be a nudge.
+    nudge_prompt = fake.calls[1]["prompt"]
+    assert "ended without" in nudge_prompt.lower() or "forgot" in nudge_prompt.lower(), \
+        f"nudge prompt missing corrective directive: {nudge_prompt[:200]}"
+
+    # First call: no resume.
+    assert "resume_session_id" not in fake.calls[0]
+    # Second call: resumes the first call's agent_session_id.
+    assert fake.calls[1].get("resume_session_id") == "claude-first"
+
+    # Invocation was consumed (by the nudge's simulated reply).
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status == ThreadInvocationStatus.CONSUMED, \
+        f"expected consumed, got {after.status}"
+
+    # Session persisted.
+    sid, watermark = db.get_thread_session("THR-001", "alice")
+    assert sid == "claude-nudged"
+    assert watermark == 1
+
+
+@pytest.mark.asyncio
+async def test_clean_exit_no_callback_reinvoke_still_pending_auto_decline(tmp_path, monkeypatch):
+    """rc==0 clean exit + unconsumed → ONE re-invoke → STILL pending →
+    auto-decline with reason tagged no_callback_after_reprompt."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    # Both invocations: clean exit, no callback → never consumed.
+    fake = _ScriptedExec([
+        _clean_exit_result("claude-first"),
+        _clean_exit_result("claude-second"),
+    ])
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: fake,
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    # Exactly TWO invocations happened (first + one re-invoke).
+    assert len(fake.calls) == 2, f"expected 2 invocations, got {len(fake.calls)}"
+
+    # Invocation is FAILED with no_callback_after_reprompt reason.
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status == ThreadInvocationStatus.FAILED
+    assert after.decline_reason is not None
+    assert after.decline_reason.startswith("no_callback_after_reprompt: rc=0"), \
+        f"unexpected reason: {after.decline_reason}"
+
+    # No transcript row (silent decline).
+    msgs = db.list_thread_messages("THR-001")
+    assert not any(m.kind.value == "decline" for m in msgs)
+
+    # Session was persisted from the first invocation; nudge re-invoke
+    # also updates the session for consistency.
+    sid, watermark = db.get_thread_session("THR-001", "alice")
+    assert sid == "claude-second"
+    assert watermark == 1
+
+
+@pytest.mark.asyncio
+async def test_nonzero_rc_no_callback_not_reinvoked(tmp_path, monkeypatch):
+    """rc!=0 → NOT re-invoked. Existing no_callback path unchanged."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    fail_result = FakeExecutorResult(success=False)
+    fail_result.returncode = 1
+    fake = _ScriptedExec([fail_result])
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: fake,
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    # Exactly ONE invocation — no re-invoke for rc!=0.
+    assert len(fake.calls) == 1, (
+        f"rc!=0 must NOT trigger re-invoke, got {len(fake.calls)} calls"
+    )
+
+    # Existing no_callback path: FAILED with no_callback: rc=1.
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status == ThreadInvocationStatus.FAILED
+    assert after.decline_reason is not None
+    assert after.decline_reason.startswith("no_callback: rc=1"), \
+        f"unexpected reason: {after.decline_reason}"
+
+
+@pytest.mark.asyncio
+async def test_timeout_no_callback_not_reinvoked(tmp_path, monkeypatch):
+    """timeout → NOT re-invoked. Existing timeout path unchanged."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    timeout_result = FakeExecutorResult(success=False, error="timeout")
+    timeout_result.returncode = 143
+    fake = _ScriptedExec([timeout_result])
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: fake,
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    # Exactly ONE invocation — no re-invoke for timeout.
+    assert len(fake.calls) == 1, (
+        f"timeout must NOT trigger re-invoke, got {len(fake.calls)} calls"
+    )
+
+    # Existing timeout path: TIMEOUT with invocation_timeout.
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status == ThreadInvocationStatus.TIMEOUT
+    assert after.decline_reason == "invocation_timeout"
+
+
+# --- THR-071 HIGH-2 REVISE: nudge failure must mirror first-pass classification ---
+
+
+class _ScriptedExecWithCrash:
+    """Fake executor: first call clean-exits, second call raises."""
+    def __init__(self, *, agent_session_id="claude-sess-x"):
+        self._first = True
+        self._sid = agent_session_id
+        self.calls = []
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._first:
+            self._first = False
+            r = FakeExecutorResult(success=True)
+            r.agent_session_id = self._sid
+            return r
+        raise RuntimeError("nudge crash simulation")
+
+
+@pytest.mark.asyncio
+async def test_nudge_reinvoke_exception_persists_runner_crash(tmp_path, monkeypatch):
+    """Nudge re-invoke raises exception → persisted reason is runner_crash,
+    NOT no_callback_after_reprompt."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    fake = _ScriptedExecWithCrash()
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: fake,
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    # Exactly TWO invocations happened (first + attempted re-invoke).
+    assert len(fake.calls) == 2, f"expected 2 calls, got {len(fake.calls)}"
+
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status == ThreadInvocationStatus.FAILED
+    assert after.decline_reason is not None
+    assert after.decline_reason.startswith("runner_crash:"), \
+        f"expected runner_crash, got: {after.decline_reason}"
+    assert "no_callback_after_reprompt" not in (after.decline_reason or ""), \
+        "must NOT tag nudge crash as no_callback_after_reprompt"
+
+
+@pytest.mark.asyncio
+async def test_nudge_reinvoke_timeout_preserves_timeout_classification(tmp_path, monkeypatch):
+    """Nudge re-invoke exits with timeout → invocation_timeout, not no_callback_after_reprompt."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    clean = _clean_exit_result("claude-first")
+    timeout = FakeExecutorResult(success=False, error="timeout")
+    timeout.returncode = 143
+    fake = _ScriptedExec([clean, timeout])
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: fake,
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    assert len(fake.calls) == 2, f"expected 2 calls, got {len(fake.calls)}"
+
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status == ThreadInvocationStatus.TIMEOUT
+    assert after.decline_reason == "invocation_timeout", \
+        f"expected invocation_timeout, got: {after.decline_reason}"
+
+
+@pytest.mark.asyncio
+async def test_nudge_reinvoke_nonzero_rc_preserves_no_callback_classification(tmp_path, monkeypatch):
+    """Nudge re-invoke exits with rc!=0 → no_callback: rc=N, not no_callback_after_reprompt."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    clean = _clean_exit_result("claude-first")
+    fail = FakeExecutorResult(success=False)
+    fail.returncode = 1
+    fail.error = "Command exited with code 1: API Error: 529 Overloaded"
+    fake = _ScriptedExec([clean, fail])
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: fake,
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    assert len(fake.calls) == 2, f"expected 2 calls, got {len(fake.calls)}"
+
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status == ThreadInvocationStatus.FAILED
+    assert after.decline_reason is not None
+    assert after.decline_reason.startswith("no_callback: rc=1"), \
+        f"expected no_callback: rc=1, got: {after.decline_reason}"
+    assert "no_callback_after_reprompt" not in (after.decline_reason or ""), \
+        "must NOT tag nudge nonzero rc as no_callback_after_reprompt"

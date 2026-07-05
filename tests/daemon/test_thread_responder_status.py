@@ -254,6 +254,166 @@ def test_escalation_followup_system_row_surfaces_working_responder(
     assert statuses["alpha"]["status"] == "working"
 
 
+# ---------------------------------------------------------------------------
+# THR-071 slice (1) — decline_reason + category exposure on responder_status
+# ---------------------------------------------------------------------------
+
+
+def test_decline_reason_and_category_on_failed_invocation(
+    client, org_slug, three_agent_thread, db,
+):
+    """A failed invocation (no_callback) surfaces decline_reason and
+    category='no_callback' on the responder_status entry."""
+    thread_id = three_agent_thread
+    # Directly fail alpha's pending invocation with no_callback reason.
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='failed', "
+        "consumed_at=datetime('now'), "
+        "decline_reason='no_callback: rc=0' "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    assert r.status_code == 200, r.text
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["status"] == "failed"
+    assert alpha_entry["decline_reason"] == "no_callback: rc=0"
+    assert alpha_entry["category"] == "no_callback"
+
+
+def test_decline_reason_and_category_on_declined_invocation(
+    client, org_slug, three_agent_thread, db,
+):
+    """An explicitly declined invocation surfaces decline_reason and
+    category='declined' on the responder_status entry."""
+    thread_id = three_agent_thread
+    alpha_inv = db._conn.execute(
+        "SELECT invocation_token FROM thread_invocations "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    ).fetchone()
+    client.post(
+        f"/api/v1/orgs/{org_slug}/threads/{thread_id}/decline",
+        json={
+            "thread_id": thread_id,
+            "invocation_token": alpha_inv["invocation_token"],
+            "speaker": "alpha",
+            "reason": "no material to add",
+            "in_response_to_seq": 1,
+        },
+    )
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["status"] == "declined"
+    assert alpha_entry["decline_reason"] == "no material to add"
+    assert alpha_entry["category"] == "declined"
+
+
+def test_decline_reason_and_category_on_no_callback_after_reprompt(
+    client, org_slug, three_agent_thread, db,
+):
+    """A failed invocation after a nudge (no_callback_after_reprompt)
+    surfaces category='no_callback_after_reprompt'."""
+    thread_id = three_agent_thread
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='failed', "
+        "consumed_at=datetime('now'), "
+        "decline_reason='no_callback_after_reprompt: rc=0' "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["status"] == "failed"
+    assert alpha_entry["category"] == "no_callback_after_reprompt"
+
+
+def test_decline_reason_and_category_on_infra_failure(
+    client, org_slug, three_agent_thread, db,
+):
+    """An infrastructure failure (runner_crash / timeout / 529)
+    surfaces category='infra_fail'."""
+    thread_id = three_agent_thread
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='failed', "
+        "consumed_at=datetime('now'), "
+        "decline_reason='runner_crash: something broke' "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["status"] == "failed"
+    assert alpha_entry["category"] == "infra_fail"
+
+
+def test_queued_invocation_has_null_category(
+    client, org_slug, three_agent_thread,
+):
+    """A queued/pending invocation has decline_reason=None and
+    category=None — nothing terminal yet."""
+    thread_id = three_agent_thread
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["status"] == "queued"
+    assert alpha_entry["decline_reason"] is None
+    assert alpha_entry["category"] is None
+
+
+def test_replied_invocation_has_null_decline_category(
+    client, org_slug, three_agent_thread, db,
+):
+    """A successfully replied invocation has no decline_reason or
+    failure category — regression guard."""
+    thread_id = three_agent_thread
+    alpha_inv = db._conn.execute(
+        "SELECT invocation_token FROM thread_invocations "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    ).fetchone()
+    client.post(
+        f"/api/v1/orgs/{org_slug}/threads/{thread_id}/reply",
+        json={
+            "thread_id": thread_id,
+            "invocation_token": alpha_inv["invocation_token"],
+            "speaker": "alpha",
+            "body_markdown": "alpha responding",
+            "in_response_to_seq": 1,
+        },
+    )
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["status"] == "replied"
+    assert alpha_entry["decline_reason"] is None
+    assert alpha_entry["category"] is None
+
+
 def test_settled_followup_serializes_terminal_not_inflight(
     client, org_slug, three_agent_thread, db,
 ):
@@ -280,3 +440,164 @@ def test_settled_followup_serializes_terminal_not_inflight(
         in_flight = [s for s in sys_msg["responder_status"]
                      if s["status"] in ("working", "queued")]
         assert in_flight == []
+
+
+# ---------------------------------------------------------------------------
+# THR-071 HIGH-1 REVISE: no_callback with infra signatures → infra_fail
+# ---------------------------------------------------------------------------
+
+
+def test_no_callback_with_nonzero_rc_is_infra_fail(
+    client, org_slug, three_agent_thread, db,
+):
+    """no_callback: rc=1 → infra_fail, not no_callback."""
+    thread_id = three_agent_thread
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='failed', "
+        "consumed_at=datetime('now'), "
+        "decline_reason='no_callback: rc=1 — API Error: 529 Overloaded' "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["category"] == "infra_fail", (
+        f"expected infra_fail, got {alpha_entry['category']}"
+    )
+
+
+def test_no_callback_with_529_overloaded_is_infra_fail(
+    client, org_slug, three_agent_thread, db,
+):
+    """no_callback with 529/Overloaded → infra_fail."""
+    thread_id = three_agent_thread
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='failed', "
+        "consumed_at=datetime('now'), "
+        "decline_reason='no_callback: rc=1 — API Error: 529 Overloaded' "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["category"] == "infra_fail"
+
+
+def test_no_callback_with_rc143_is_infra_fail(
+    client, org_slug, three_agent_thread, db,
+):
+    """no_callback: rc=143 → infra_fail."""
+    thread_id = three_agent_thread
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='failed', "
+        "consumed_at=datetime('now'), "
+        "decline_reason='no_callback: rc=143' "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["category"] == "infra_fail"
+
+
+def test_no_callback_with_quota_is_infra_fail(
+    client, org_slug, three_agent_thread, db,
+):
+    """no_callback with quota/usage-limit → infra_fail."""
+    thread_id = three_agent_thread
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='failed', "
+        "consumed_at=datetime('now'), "
+        "decline_reason='no_callback: rc=1 — usage limit exceeded' "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["category"] == "infra_fail"
+
+
+def test_no_callback_with_unknown_session_is_infra_fail(
+    client, org_slug, three_agent_thread, db,
+):
+    """no_callback with unknown_session → infra_fail."""
+    thread_id = three_agent_thread
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='failed', "
+        "consumed_at=datetime('now'), "
+        "decline_reason='no_callback: rc=0 — unknown_session: session not found' "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["category"] == "infra_fail"
+
+
+def test_no_callback_clean_forget_stays_no_callback(
+    client, org_slug, three_agent_thread, db,
+):
+    """no_callback: rc=0 with no infra markers stays no_callback."""
+    thread_id = three_agent_thread
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='failed', "
+        "consumed_at=datetime('now'), "
+        "decline_reason='no_callback: rc=0' "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["category"] == "no_callback"
+
+
+def test_no_callback_after_reprompt_with_infra_is_infra_fail(
+    client, org_slug, three_agent_thread, db,
+):
+    """no_callback_after_reprompt with rc=143 → infra_fail."""
+    thread_id = three_agent_thread
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='failed', "
+        "consumed_at=datetime('now'), "
+        "decline_reason='no_callback_after_reprompt: rc=143' "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(
+        s for s in kickoff["responder_status"] if s["agent_name"] == "alpha"
+    )
+    assert alpha_entry["category"] == "infra_fail"
