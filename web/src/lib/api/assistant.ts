@@ -86,9 +86,9 @@ export const deleteConversation = (
 
 /**
  * Open the A-mode WebSocket — the structured `TurnFrame` stream that drives the
- * thread-style dock. Same bearer-subprotocol auth as the PTY session (THR-006
- * Option A); only the route differs (`/assistant/a-mode`). Resolves once the
- * socket is constructed; the caller wires `onopen` / `onmessage`.
+ * thread-style dock. Bearer-subprotocol auth (THR-006 Option A); only the
+ * route differs (`/assistant/a-mode`). Resolves once the socket is constructed;
+ * the caller wires `onopen` / `onmessage`.
  */
 export const openAssistantAModeSession = async (): Promise<WebSocket> => {
   const token = await getToken();

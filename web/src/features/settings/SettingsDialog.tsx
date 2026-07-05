@@ -347,8 +347,7 @@ function AssistantSection(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   // Configuration has exactly one home: Settings → Assistant. The dialog only
   // shows a read-only glance and links out — it never mounts a second copy of
-  // the init/register/repair flow, and it never points at /orgs/:slug/assistant
-  // (terminal-only) as a registration destination.
+  // the init/register/repair flow, and it never points at a removed assistant surface as a registration destination.
   const settingsHref = slug ? `/orgs/${slug}/settings/assistant` : '#';
   const statusQuery = useAssistantStatus();
   const status = statusQuery.data;

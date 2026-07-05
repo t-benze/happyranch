@@ -2,7 +2,7 @@
  * Mock implementation of `AssistantApi` for the prototype sandbox.
  *
  * Reports a configured assistant; mutations no-op back to the same fixture and
- * the PTY opener rejects (there is no daemon behind the sandbox).
+ * openAModeSession rejects (there is no daemon behind the sandbox).
  */
 import type { AssistantApi, MutationLike, QueryLike } from './DataContext';
 import type { ConversationSummary } from '@/lib/api/assistant';

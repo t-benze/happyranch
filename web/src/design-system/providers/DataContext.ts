@@ -256,7 +256,7 @@ export interface HealthApi {
 
 // ---------------------------------------------------------------------------
 // AssistantApi — the global (non-org-scoped) System Assistant surface:
-// status poll + init/register/repair mutations + the imperative PTY opener.
+// status poll + init/register/repair mutations + the A-mode WebSocket session.
 // ---------------------------------------------------------------------------
 
 export interface AssistantApi {

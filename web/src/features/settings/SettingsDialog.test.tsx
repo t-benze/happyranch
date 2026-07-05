@@ -140,7 +140,7 @@ function renderDialog(
         <Routes>
           {/* Pathless shell route — mirrors AppShell where TopBar + SettingsDialog
               actually live. A relative <Link to="assistant"> resolves to /assistant
-              here, NOT /orgs/:slug/assistant, which is the bug this test guards. */}
+              here, NOT the removed assistant page route, which is the bug this test guards. */}
           <Route
             element={
               <DataContext.Provider value={ctxValue}>
@@ -431,7 +431,7 @@ describe('SettingsDialog', () => {
     const link = screen.getByRole('link', { name: /manage in settings/i });
     expect(link).toBeInTheDocument();
     // The one config home is the Settings page (org-scoped absolute path), NOT
-    // the terminal-only /orgs/:slug/assistant route.
+    // the removed assistant page route.
     expect(link.getAttribute('href')).toBe('/orgs/alpha/settings/assistant');
     // No dead-end registration link pointing at the terminal-only route.
     expect(
