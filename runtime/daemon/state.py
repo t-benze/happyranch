@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from runtime.config import Settings
-from runtime.daemon.assistant_pty import AssistantSessionManager
 from runtime.daemon.headless_assistant import HeadlessAssistantManager
 from runtime.daemon.metrics import MetricsRegistry
 from runtime.daemon.metrics_store import MetricsStore
@@ -41,9 +40,6 @@ class DaemonState:
     )
     orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     assistant_lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    assistant_sessions: AssistantSessionManager = field(
-        default_factory=AssistantSessionManager
-    )
     headless_assistant: HeadlessAssistantManager = field(
         default_factory=HeadlessAssistantManager
     )
@@ -142,7 +138,6 @@ class DaemonState:
                 org.close()
 
     async def close_all(self) -> None:
-        await self.assistant_sessions.close_all()
         await self.headless_assistant.close_all()
         async with self.orgs_lock:
             for org in self.orgs.values():
