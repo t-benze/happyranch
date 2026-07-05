@@ -388,6 +388,8 @@ class ResponderStatusEntry(BaseModel):
     status: Literal["queued", "working", "replied", "declined", "failed"]
     responded_at: str | None
     started_at: str | None = None
+    decline_reason: str | None = None
+    category: Literal["declined", "no_callback", "no_callback_after_reprompt", "infra_fail"] | None = None
 
 
 class ThreadInvocation(BaseModel):

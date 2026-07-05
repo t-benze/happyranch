@@ -1086,6 +1086,30 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
     }
 
 
+def _responder_category(db_status: str, decline_reason: str | None) -> str | None:
+    """Derive a failure/decline category from the invocation's terminal state.
+
+    Four buckets per THR-071:
+    - ``declined`` — agent chose to decline (explicit decline route)
+    - ``no_callback`` — agent forgot the terminal callback
+    - ``no_callback_after_reprompt`` — agent forgot even after the nudge
+    - ``infra_fail`` — infrastructure failure (timeout, 529, runner_crash, etc.)
+
+    Returns None when no terminal failure category applies (queued/working/replied).
+    """
+    if db_status == "declined":
+        return "declined"
+    if db_status in ("failed", "timeout"):
+        reason = (decline_reason or "").lower()
+        if reason.startswith("no_callback_after_reprompt:"):
+            return "no_callback_after_reprompt"
+        if reason.startswith("no_callback:"):
+            return "no_callback"
+        # All other failures: timeout, runner_crash, 529, rc=N, etc.
+        return "infra_fail"
+    return None
+
+
 def _responder_entry(e: dict) -> ResponderStatusEntry:
     """Build one responder-status wire entry from a grouped invocation dict.
 
@@ -1103,6 +1127,11 @@ def _responder_entry(e: dict) -> ResponderStatusEntry:
         status=wire,
         responded_at=e["consumed_at"],
         started_at=e.get("started_at"),
+        decline_reason=e.get("decline_reason"),
+        category=_responder_category(
+            db_status,
+            e.get("decline_reason"),
+        ),
     )
 
 

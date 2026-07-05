@@ -595,6 +595,7 @@ async def run_invocation(
             return executor.run(**run_kwargs)
 
         # Spawn subprocess in a thread pool (executors are synchronous).
+        fallback_executed = False  # tracks session-not-found eviction fallback
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, lambda: _invoke(prompt, resume_sid))
@@ -624,6 +625,7 @@ async def run_invocation(
                     full_prompt += "\n" + escalation_note2
                 shown_seqs = [m.seq for m in messages]
                 resume_sid = None
+                fallback_executed = True
                 result = await loop.run_in_executor(None, lambda: _invoke(full_prompt, None))
         except Exception as exc:
             org_state.db.fail_invocation(
@@ -722,7 +724,145 @@ async def run_invocation(
                     triggering_seq=inv.triggering_seq,
                 )
 
-        # Subprocess exited without consuming → auto-decline.
+        # --- THR-071 slice (3): bounded terminal-callback enforcement ---
+        # The model finished its run but forgot the terminal callback (clean
+        # exit, rc==0, invocation still pending). Re-invoke EXACTLY ONCE with
+        # a corrective NUDGE prompt. Fire ONLY on result.success/rc==0;
+        # rc!=0 / infra paths (timeout / runner_crash / 529) are untouched.
+        # Do NOT fire after the session-not-found eviction fallback — that
+        # is already a second chance, so a third would be excessive.
+        if result.success and not fallback_executed:
+            nudge_prompt = (
+                "## URGENT — you ended without posting a reply or declining\n\n"
+                "You completed your analysis but exited the conversation "
+                "without posting a terminal callback. You MUST now call exactly "
+                "one of these commands with the SAME invocation_token:\n\n"
+                "- `happyranch threads reply --from-file <payload>` if you "
+                "have a substantive reply to post.\n"
+                "- `happyranch threads decline --from-file <payload>` if you "
+                "have nothing to add.\n\n"
+                f"Your invocation_token (still valid): {invocation_token}\n"
+                "This is your LAST chance — this single-use token will be "
+                "auto-declined if you exit again without calling one of these."
+            )
+
+            if is_claude and getattr(result, "agent_session_id", None):
+                # Resume the same agent session and append the nudge.
+                retry_prompt = nudge_prompt
+                retry_resume_sid: str | None = result.agent_session_id
+            else:
+                # Non-resumable executor: rebuild full prompt + corrective note.
+                retry_prompt = (
+                    build_thread_prompt(
+                        thread=thread, participants=participants, messages=messages,
+                        invocation_token=invocation_token, invoked_agent=inv.agent_name,
+                        purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
+                        org_config=org_config,
+                        managed_skills_index=managed_skills_index,
+                    )
+                    + "\n"
+                    + (escalation_note + "\n" if escalation_note else "")
+                    + nudge_prompt
+                )
+                retry_resume_sid = None
+                # Update shown_seqs for non-resumable (full prompt rebuild).
+                shown_seqs = [m.seq for m in messages]
+
+            logger.info(
+                "run_invocation: token %s clean exit without callback — "
+                "re-invoking once with nudge (resume=%s)",
+                invocation_token[:8], retry_resume_sid,
+            )
+
+            try:
+                retry_result = await loop.run_in_executor(
+                    None, lambda: _invoke(retry_prompt, retry_resume_sid),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "run_invocation: token %s nudge re-invoke crashed: %s",
+                    invocation_token[:8], exc,
+                )
+                retry_result = None
+
+            if retry_result is not None:
+                _persist_thread_token_usage(
+                    org_state,
+                    inv=inv,
+                    result=retry_result,
+                    executor_name=executor_name,
+                    invocation_token=invocation_token,
+                )
+
+            # Re-inspect after the re-invoke.
+            after = org_state.db.get_invocation_any_status(invocation_token)
+            if after is None:
+                return
+
+            if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
+                # The nudge worked — terminal callback happened during the
+                # re-invoke. Persist the retry session for future resume.
+                if (is_claude and retry_result is not None and retry_result.success
+                        and getattr(retry_result, "agent_session_id", None)):
+                    new_watermark = max(shown_seqs) if shown_seqs else last_seq
+                    new_watermark = max(new_watermark, last_seq)
+                    org_state.db.update_thread_session(
+                        inv.thread_id, inv.agent_name,
+                        agent_session_id=retry_result.agent_session_id,
+                        last_resumed_seq=new_watermark,
+                    )
+                    if retry_resume_sid:
+                        audit.log_agent_session_reused(
+                            inv.thread_id, agent_name=inv.agent_name,
+                            executor="claude",
+                            agent_session_id=retry_result.agent_session_id,
+                            triggering_seq=inv.triggering_seq,
+                        )
+                if after.status is ThreadInvocationStatus.DECLINED:
+                    await _publish_invocation_event(
+                        org_state, thread_id=inv.thread_id,
+                        agent_name=inv.agent_name,
+                        seq=inv.triggering_seq, kind="invocation_settled",
+                        status="declined",
+                    )
+                return
+
+            # Still pending after the nudge → persist the nudge's session id
+            # (same as the first pass), then auto-decline with distinct tag.
+            if (is_claude and retry_result is not None and retry_result.success
+                    and getattr(retry_result, "agent_session_id", None)):
+                new_watermark = max(shown_seqs) if shown_seqs else last_seq
+                new_watermark = max(new_watermark, last_seq)
+                org_state.db.update_thread_session(
+                    inv.thread_id, inv.agent_name,
+                    agent_session_id=retry_result.agent_session_id,
+                    last_resumed_seq=new_watermark,
+                )
+            retry_rc = getattr(retry_result, "returncode", "?") if retry_result is not None else "?"
+            reason = f"no_callback_after_reprompt: rc={retry_rc}"
+            detail = _executor_error_detail(retry_result, retry_rc) if retry_result is not None else ""
+            if detail:
+                reason = f"{reason} — {detail}"
+            org_state.db.fail_invocation(
+                invocation_token,
+                status=ThreadInvocationStatus.FAILED,
+                decline_reason=reason,
+            )
+            AuditLogger(org_state.db).log_thread_invocation_failed(
+                inv.thread_id,
+                agent=inv.agent_name,
+                token=invocation_token,
+                purpose=inv.purpose.value,
+                reason=reason,
+                kind="thread_invocation_failed",
+            )
+            await _publish_invocation_event(
+                org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
+                seq=inv.triggering_seq, kind="invocation_settled", status="failed",
+            )
+            return
+
+        # Subprocess exited without consuming (rc!=0 / timeout) → auto-decline.
         err_text = str(getattr(result, "error", "") or "").lower()
         rc = getattr(result, "returncode", "?")
         if "timeout" in err_text:

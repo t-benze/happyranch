@@ -3683,7 +3683,8 @@ class Database:
         this single timestamp regardless of which path consumed the invocation.
         """
         rows = self._conn.execute(
-            "SELECT triggering_seq, agent_name, status, consumed_at, started_at "
+            "SELECT triggering_seq, agent_name, status, consumed_at, started_at, "
+            "decline_reason "
             "FROM thread_invocations "
             "WHERE thread_id = ? AND purpose IN ('reply', 'task_followup') "
             "ORDER BY triggering_seq, agent_name",
@@ -3696,6 +3697,7 @@ class Database:
                 "status": r["status"],
                 "consumed_at": r["consumed_at"],
                 "started_at": r["started_at"],
+                "decline_reason": r["decline_reason"],
             }
             grouped.setdefault(r["triggering_seq"], []).append(entry)
         return grouped
