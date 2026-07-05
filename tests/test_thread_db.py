@@ -94,6 +94,29 @@ def test_list_threads_orders_by_started_desc(tmp_path):
     assert [r.id for r in rows] == ["THR-002", "THR-001"]
 
 
+def test_list_archived_threads_orders_by_archived_at_desc(tmp_path):
+    """Archived threads must be ordered by archived_at DESC (most-recently-archived first),
+    not by started_at (creation order). The founder wants newest-archived-first."""
+    db = Database(tmp_path / "happyranch.db")
+    # Create threads in one order (THR-A first, THR-C last).
+    a = ThreadRecord(id="THR-A", subject="alpha", started_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    b = ThreadRecord(id="THR-B", subject="beta", started_at=datetime(2026, 1, 2, tzinfo=timezone.utc))
+    c = ThreadRecord(id="THR-C", subject="gamma", started_at=datetime(2026, 1, 3, tzinfo=timezone.utc))
+    db.insert_thread(a)
+    db.insert_thread(b)
+    db.insert_thread(c)
+    # Archive in a DIFFERENT order: C first, then A, then B.
+    import time
+    db.set_thread_status("THR-C", status=ThreadStatus.ARCHIVED, summary="c done")
+    time.sleep(0.01)
+    db.set_thread_status("THR-A", status=ThreadStatus.ARCHIVED, summary="a done")
+    time.sleep(0.01)
+    db.set_thread_status("THR-B", status=ThreadStatus.ARCHIVED, summary="b done")
+    # Most-recently-archived first: B, A, C.
+    rows = db.list_threads(status="archived", limit=10)
+    assert [r.id for r in rows] == ["THR-B", "THR-A", "THR-C"]
+
+
 def test_add_and_list_participants(tmp_path):
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
