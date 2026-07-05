@@ -31,13 +31,13 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             if let urlString = appDelegate.webViewURL, let url = URL(string: urlString) {
-                WebView(url: url)
-                    .overlay(alignment: .top) {
-                        if appDelegate.supervisor.state == .unhealthy ||
-                           appDelegate.supervisor.state == .failed {
-                            unhealthyBanner
-                        }
+                ZStack(alignment: .top) {
+                    WebView(url: url)
+                    if appDelegate.supervisor.state == .unhealthy ||
+                       appDelegate.supervisor.state == .failed {
+                        unhealthyBanner
                     }
+                }
             } else {
                 placeholderView
             }

@@ -432,11 +432,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
                 await MainActor.run {
                     if success {
+                        let wasRecovering = (supervisor.state != .running)
                         supervisor.onHealthCheckPassed(pid: pid, port: port)
                         diagnostics.recordHealthProbe(success: true, latencyMs: latencyMs, errorMessage: nil)
                         diagnostics.recordDaemonState(pid: pid, port: port, bindHost: "127.0.0.1", state: "running")
                         refreshDerivedState()
                         webViewURL = baseURL
+                        if wasRecovering {
+                            dismissDiagnosticsOnRecovery()
+                        }
                     } else {
                         supervisor.onHealthCheckFailed()
                         diagnostics.recordHealthProbe(success: false, latencyMs: latencyMs, errorMessage: errorMessage)
@@ -481,6 +485,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         canStart = (s == .stopped || s == .crashed || s == .stalePid || s == .failed)
         canStop = s.canStop
         canRestart = canStop && supervisor.isManagedBySelf
+    }
+
+    /// Dismiss the diagnostics sheet when the daemon recovers to a healthy state.
+    /// Called from healthProbeLoop after a successful health check pass during
+    /// recovery (non-.running → .running). Internal for test coverage.
+    func dismissDiagnosticsOnRecovery() {
+        if supervisor.state == .running {
+            showDiagnostics = false
+        }
     }
 
     private func processIsAlive(pid: Int32) -> Bool {
