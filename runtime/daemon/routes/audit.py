@@ -6,10 +6,11 @@ this route is the one read path we want to keep stable.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
+from runtime.infrastructure.database import _decode_cursor
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -64,24 +65,38 @@ def list_audit(
     action: str | None = None,
     since: str | None = None,
     limit: int | None = None,
+    cursor: str | None = None,
     include_thread_origin: bool = Query(False),
 ) -> dict:
-    """Return filtered audit entries.
+    """Return filtered audit entries with optional keyset cursor pagination.
 
     All filters AND-compose. ``since`` is an ISO-8601 timestamp. ``limit``
     caps to the most recent N entries (chronological order preserved).
+
+    ``cursor`` is an opaque string from a prior response's ``next_cursor``.
+    Pass it to fetch the next older page (keyset pagination — stable under
+    concurrent inserts). ``next_cursor`` is ``null`` when the result set is
+    exhausted.
 
     When ``include_thread_origin`` is true, Thread-scoped entries (task_id
     starting with ``THR-``) are enriched with ``_thread_dream_id`` from the
     threads table. This is a DERIVE read enrichment — no schema change.
     """
-    entries = org.db.query_audit_logs(
+    # Validate cursor at the HTTP layer so malformed cursors get 422, not 500.
+    if cursor is not None:
+        try:
+            _decode_cursor(cursor)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid cursor")
+
+    entries, next_cursor = org.db.query_audit_logs(
         task_id=task_id,
         agent=agent,
         action=action,
         since=since,
         limit=limit,
+        cursor=cursor,
     )
     if include_thread_origin:
         entries = _enrich_thread_dream_origin(entries, org.db)
-    return {"entries": entries}
+    return {"entries": entries, "next_cursor": next_cursor}

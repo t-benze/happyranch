@@ -75,11 +75,9 @@ server-side. The UI carries no workspace input and says so in copy.
 
 ### 2.4 In-browser terminal — **SUPERSEDED by Approach A (headless, structured-output)**
 
-> **Note (2026-07-01, PR-1 of TASK-1399):** This section's raw-PTY-tunnel-as-chat model
-> is superseded by the **Approach A headless A-mode design** (see **§6 — Approach A
-> (Headless) Design** below). The xterm "Full session" hatch is **RETAINED and frozen**
-> — the PTY path (`AssistantPtySession`, `AssistantSessionManager`,
-> `attach_assistant_session`) is preserved byte-identical as a legacy fallback.
+> **REMOVED (2026-07-05, THR-056 PR-B / TASK-2059):** The xterm/PTY caller surface
+> (frontend terminal + CLI attach) has been removed. The A-mode structured dock is now
+> the sole assistant surface. §6.8 Frozen symbols are no longer applicable.
 > New development targets the headless A-mode WS route at `/assistant/a-mode`.
 
 xterm.js + fit addon attached to the `/assistant/session` WS. Protocol (mirrors the CLI
@@ -104,8 +102,8 @@ The existing `Authorization: Bearer` header path is unchanged; `require_token()`
 HTTP auth flows are untouched; the fail-closed reject-before-accept (`WS_1008_POLICY_VIOLATION`)
 is preserved. This is the **only** daemon edit in the build.
 
-### G2 — New top-level npm dependency  **(APPROVED)**
-`@xterm/xterm` + `@xterm/addon-fit` (current scoped packages). Required only for §2.4.
+### G2 — New top-level npm dependency  **(REMOVED — THR-056 PR-B)**
+~~`@xterm/xterm` + `@xterm/addon-fit` (current scoped packages). Required only for §2.4.~~ Removed per THR-056 PR-B (TASK-2059).
 
 ### G3 — Web Contract change  **(within engineering_manager authority)**
 Moving the 4 HTTP routes `EXCLUDED_PATHS → INCLUDED_PATHS` + adding TS mirrors. No new
@@ -191,7 +189,7 @@ spawns a short-lived headless run; continuity via executor's own session-id.
 
 `/api/v1/assistant/a-mode` — new WebSocket route, structured from frame zero.
 Status endpoint at `GET /api/v1/assistant/a-mode/status`.
-The existing PTY path (`/api/v1/assistant/session`) is **frozen — no edits**.
+The PTY path (`/api/v1/assistant/session`) has been removed (THR-056 PR-A + PR-B).
 
 ### 6.6 Lifecycle (founder-RATIFIED finish-in-background)
 
@@ -271,12 +269,15 @@ conversation. History replay works per active/targeted conversation.
 **Auto-title.** A new conversation is auto-titled from its first user message
 (first 80 chars). Fallback: "New conversation".
 
-### 6.8 Frozen symbols
+### 6.8 Frozen symbols — **REMOVED (THR-056 PR-A + PR-B)**
 
-- `AssistantPtySession` — byte-identical preserved
-- `AssistantSessionManager` — byte-identical preserved
-- `attach_assistant_session` — legacy PTY-tunnel branch, frozen
-- Resize control string `__HAPPYRANCH_ASSISTANT_RESIZE__` — unchanged
-- Bearer-subprotocol auth (THR-006 Option A) — unchanged
+All PTY-related symbols have been deleted:
+- `AssistantPtySession` — removed (PR-A, TASK-2052)
+- `AssistantSessionManager` — removed (PR-A, TASK-2052)
+- `attach_assistant_session` — removed (PR-A, TASK-2052)
+- Resize control string `__HAPPYRANCH_ASSISTANT_RESIZE__` — removed (PR-A + PR-B)
+- The xterm "Full session" hatch — removed (PR-B, TASK-2059)
+- CLI attach subcommand — removed (PR-B, TASK-2059)
 
-The xterm "Full session" hatch is retained as a fallback.
+The bearer-subprotocol auth (THR-006 Option A) **remains** — it is now used
+solely by the A-mode WS route at `/assistant/a-mode`.

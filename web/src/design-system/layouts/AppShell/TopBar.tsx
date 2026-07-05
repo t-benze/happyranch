@@ -127,7 +127,6 @@ export function TopBar(): JSX.Element {
         </NavTab>
         <NavTab {...placeholderTab('jobs')}>Jobs</NavTab>
         <NavTab {...placeholderTab('artifacts')}>Artifacts</NavTab>
-        <NavTab {...placeholderTab('assistant')}>Assistant</NavTab>
       </nav>
       <div className="ml-auto flex items-center gap-2">
         <Select
@@ -187,7 +186,7 @@ function ThemeToggle(): JSX.Element {
       aria-label={label}
       title={label}
       onClick={() => setTheme(isDark ? 'light' : 'dark')}
-      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
+      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-border inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-1 focus-visible:outline-none"
     >
       {isDark ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
     </button>

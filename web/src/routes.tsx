@@ -25,7 +25,6 @@ import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { SpendPage } from '@/features/spend/SpendPage';
-import { SystemAssistantPage } from '@/features/system-assistant/SystemAssistantPage';
 import { DreamsPage } from '@/features/dreams/DreamsPage';
 import { OverviewPage as WorkHoursOverviewPage } from '@/features/work-hours-config/OverviewPage';
 import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/WakesView';
@@ -114,7 +113,6 @@ export function AppRoutes(): JSX.Element {
           <Route path="work-hours" element={<WorkHoursSurface />} />
           <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
           <Route path="artifacts" element={<ArtifactsPage />} />
-          <Route path="assistant" element={<SystemAssistantPage />} />
           <Route path="settings/*" element={<SettingsPage />} />
         </Route>
         <Route path="*" element={<NotFound />} />

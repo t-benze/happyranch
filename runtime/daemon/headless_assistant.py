@@ -1,8 +1,8 @@
 """Headless assistant A-mode: TurnFrame vocabulary, adapter interface, per-workspace
 conversation persistence, and a headless session manager.
 
-PR-1 of the THR-056 approach-A dock rebuild.  The PTY path (AssistantPtySession,
-AssistantSessionManager) is FROZEN — this module is a *parallel* implementation.
+PR-1 of the THR-056 approach-A dock rebuild.  The PTY path was removed
+in a later PR — this module is now the sole assistant surface.
 
 Architecture
 ------------
@@ -30,9 +30,10 @@ Persistence (design §4)
     Per-workspace JSON file, NOT a SQLite table.  Survives dock close/open AND
     daemon restart.  Stores the conversation log as structured turns.
 
-Frozen symbols (design §8)
-    AssistantPtySession, AssistantSessionManager, attach_assistant_session,
-    the resize control string, and bearer-subprotocol auth are NOT edited.
+Surviving symbols (design §8)
+    The A-mode structured-WebSocket surface (``assistant_a_mode.py``) and
+    bearer-subprotocol auth are the sole assistant path — the PTY subsystem
+    was removed in a later PR.
 """
 
 from __future__ import annotations
@@ -688,11 +689,10 @@ class CodexAdapter:
 
     Permission posture (THR-056 design §3, KB assistant-headless-permission-postures)
     -------------------------------------------------------------------------
-    Sandbox = workspace-write, approval = never.  Parity with the interactive
-    assistant (``assistant_pty.py:131`` injects
-    ``sandbox_workspace_write.network_access=true``) — minus the now-impossible
-    interactive approval prompt.  The adapter mirrors the network-access config
-    override for parity.
+    Sandbox = workspace-write, approval = never.  This mirrors the network-access
+    config override (``sandbox_workspace_write.network_access=true``) that the
+    system assistant has always required for localhost callbacks — minus the
+    now-impossible interactive approval prompt.
 
     NOT ``--dangerously-bypass-approvals-and-sandbox``.
     """
@@ -720,8 +720,7 @@ class CodexAdapter:
         # workspace-write --json <prompt>` parses and starts execution.
         #
         # -s <sandbox> is an exec-level flag (appears in `codex exec --help`).
-        # -c sandbox_workspace_write.network_access=true mirrors the
-        #   interactive assistant (assistant_pty.py:131) — without it, codex
+        # -c sandbox_workspace_write.network_access=true — without it, codex
         #   in workspace-write sandbox blocks all outbound sockets including
         #   localhost, so happyranch CLI calls fail.
         argv = [
@@ -1208,8 +1207,8 @@ class HeadlessAssistantManager:
     In-flight turns are keyed by (workspace, conversation_id) so the active
     conversation's finish-in-background buffering keeps working.
 
-    Parallel to ``AssistantSessionManager`` (frozen PTY path) — new field on
-    ``DaemonState``.
+    Was originally parallel to the now-removed PTY session manager — this is
+    the sole session manager on ``DaemonState``.
     """
 
     def __init__(self) -> None:
@@ -1483,17 +1482,21 @@ async def run_headless_turn(
         return None
 
     try:
-        async for line in proc.stdout:  # type: ignore
-            line_str = line.decode(errors="replace")
-            frame = adapter.parse_event(line_str)
+        # Read stdout + stderr to completion (no per-line limit).
+        # This converges with the thread/orchestrator path (executors.py
+        # ~line 461) which also uses communicate() rather than streaming
+        # readline — the latter hits asyncio's default 64 KB per-line cap
+        # and raises LimitOverrunError on large JSON events.
+        stdout_data, stderr_data = await proc.communicate()
+
+        for line in stdout_data.decode(errors="replace").splitlines():
+            frame = adapter.parse_event(line)
             if frame is not None:
                 await frame_sender(frame)
                 await manager.buffer_inflight_frame(workspace=workspace, conversation_id=conv_id, frame=frame)
                 extracted = adapter.extract_session_id(frame)
                 if extracted is not None:
                     session_id = extracted
-
-        await proc.wait()
 
         # Drain any buffered frames the adapter accumulated from
         # multi-content-block messages (e.g. assistant with text + 2
@@ -1515,8 +1518,7 @@ async def run_headless_turn(
         if extra_sid is not None:
             session_id = extra_sid
 
-        # Drain stderr for diagnostics only — no frames emitted from it.
-        stderr_data = await proc.stderr.read()
+        # stderr for diagnostics only — no frames emitted from it.
         if stderr_data and proc.returncode != 0:
             stderr_str = stderr_data.decode(errors="replace")[-2000:]
             error_frame = TurnFrame.error(

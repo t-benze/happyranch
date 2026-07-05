@@ -3,11 +3,11 @@
  *
  * Owns the full setup/config flow lifted out of SystemAssistantPage: status
  * badge, init / repair / reconfigure, and the register-executor form (executor
- * picker incl. "other" free-text, command + argv). The assistant page itself is
- * now just the full-viewport terminal; when configured this section links to it.
+ * picker incl. "other" free-text, command + argv). The Full Session terminal
+ * surface has been removed; the A-mode dock (AssistantDockHost) is a global
+ * toggle — no route-based link is available.
  */
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
 import { ApiError } from '@/lib/api';
 import {
   useAssistantStatus,
@@ -82,26 +82,9 @@ export function AssistantSection(): JSX.Element {
           <StatusCard status={status} />
           <SetupActions status={status} />
           <RegisterExecutorSection currentExecutor={status.selected_executor} />
-          {status.state === 'configured' && <OpenTerminalLink />}
         </div>
       )}
     </section>
-  );
-}
-
-function OpenTerminalLink(): JSX.Element {
-  const { slug } = useParams<{ slug: string }>();
-  const assistantHref = slug ? `/orgs/${slug}/assistant` : '#';
-  return (
-    <div>
-      <Link
-        to={assistantHref}
-        className="text-accent text-sm hover:underline"
-        aria-label="Open terminal"
-      >
-        Open terminal →
-      </Link>
-    </div>
   );
 }
 

@@ -1892,7 +1892,6 @@ async def invite_thread_endpoint(
     # turns_used is still incremented at message-send time for display,
     # but cap enforcement was removed per THR-046 msg86.
 
-    token_to_enqueue: str | None = None
     async with org.db_lock:
         inserted = org.db.add_thread_participant(thread_id, body.agent_name, added_by="founder")
         if not inserted:
@@ -1909,13 +1908,6 @@ async def invite_thread_endpoint(
         AuditLogger(org.db).log_thread_participant_added(
             thread_id, agent_name=body.agent_name, added_by="founder",
         )
-        inv = org.db.mint_thread_invocation(
-            thread_id=thread_id, agent_name=body.agent_name,
-            triggering_seq=sys_seq, purpose=ThreadInvocationPurpose.BOOTSTRAP,
-        )
-        token_to_enqueue = inv.invocation_token
-
-    await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token_to_enqueue))
 
     await _publish_thread_event(
         org, slug,

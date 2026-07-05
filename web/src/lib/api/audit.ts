@@ -1,4 +1,4 @@
-/** Mirror of src/daemon/routes/audit.py */
+/** Mirror of runtime/daemon/routes/audit.py */
 import { request } from './client';
 import type { AuditEntry } from './types';
 

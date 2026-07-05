@@ -23,10 +23,6 @@ export const useRepairAssistant: ReturnType<
   typeof useData
 >['assistant']['useRepairAssistant'] = () => useData().assistant.useRepairAssistant();
 
-/** Imperative opener for the PTY WebSocket (bearer-subprotocol auth). */
-export const useAssistantSessionOpener = (): (() => Promise<WebSocket>) =>
-  useData().assistant.openSession;
-
 /** Imperative opener for the A-mode structured-TurnFrame WebSocket. */
 export const useAssistantAModeSessionOpener = (): (() => Promise<WebSocket>) =>
   useData().assistant.openAModeSession;

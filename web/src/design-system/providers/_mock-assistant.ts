@@ -2,7 +2,7 @@
  * Mock implementation of `AssistantApi` for the prototype sandbox.
  *
  * Reports a configured assistant; mutations no-op back to the same fixture and
- * the PTY opener rejects (there is no daemon behind the sandbox).
+ * openAModeSession rejects (there is no daemon behind the sandbox).
  */
 import type { AssistantApi, MutationLike, QueryLike } from './DataContext';
 import type { ConversationSummary } from '@/lib/api/assistant';
@@ -43,10 +43,6 @@ export const mockAssistantApi: AssistantApi = {
   useInitAssistant: () => noopMutation(),
   useRegisterAssistant: () => noopMutation(),
   useRepairAssistant: () => noopMutation(),
-  openSession: () =>
-    Promise.reject(
-      new Error('assistant terminal is unavailable in the prototype sandbox'),
-    ),
   openAModeSession: () =>
     Promise.reject(
       new Error('assistant is unavailable in the prototype sandbox'),

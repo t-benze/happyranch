@@ -87,6 +87,31 @@ def _rebuild_indexes_for(
         statements.append((sql, []))
 
 
+# ── Keyset cursor helpers for audit-log pagination ────────────────────────
+
+import base64 as _base64
+
+
+def _encode_cursor(timestamp: str, row_id: int) -> str:
+    """Encode (timestamp, id) into an opaque base64 cursor string."""
+    raw = f"{timestamp}|{row_id}"
+    return _base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> tuple[str, int]:
+    """Decode an opaque cursor string back to (timestamp, id).
+
+    Raises ``ValueError`` on malformed cursors so callers can reject them
+    cleanly (422 at the HTTP layer).
+    """
+    try:
+        raw = _base64.urlsafe_b64decode(cursor.encode()).decode()
+        ts, id_str = raw.rsplit("|", 1)
+        return ts, int(id_str)
+    except Exception:
+        raise ValueError(f"Invalid cursor: {cursor!r}")
+
+
 class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -2139,15 +2164,32 @@ class Database:
         action: str | None = None,
         since: str | None = None,
         limit: int | None = None,
-    ) -> list[dict]:
+        cursor: str | None = None,
+    ) -> tuple[list[dict], str | None]:
         """Filtered audit-log query used by the /audit route.
 
         All filters are optional and AND-composed. ``limit`` returns the most
-        recent N rows (ORDER BY id DESC) but the result is re-sorted ascending
-        so callers still see chronological order.
+        recent N rows (ORDER BY timestamp DESC, id DESC) but the result is
+        re-sorted ascending so callers still see chronological order.
+
+        Supports KEYSET cursor pagination: pass the ``cursor`` returned by a
+        prior call to get the next older page.  The cursor is an opaque string
+        encoding the (timestamp, id) of the last row in the prior page.
+        ``next_cursor`` is ``None`` exactly when the result set is exhausted.
         """
+        import base64
+
         clauses: list[str] = []
         params: list[object] = []
+
+        # Decode cursor into a keyset filter (rows BEFORE the cursor anchor)
+        if cursor is not None:
+            cursor_ts, cursor_id = _decode_cursor(cursor)
+            clauses.append(
+                "(timestamp < ? OR (timestamp = ? AND id < ?))"
+            )
+            params.extend([cursor_ts, cursor_ts, cursor_id])
+
         if task_id is not None:
             clauses.append("task_id = ?")
             params.append(task_id)
@@ -2160,25 +2202,50 @@ class Database:
         if since is not None:
             clauses.append("timestamp >= ?")
             params.append(since)
+
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        # Defensive guard: non-positive limit short-circuits to empty result.
+        # Without this, limit=0 returns next_cursor anchored to a row that was
+        # never returned, and limit<0 produces an IndexError on result[limit-1].
+        if limit is not None and limit <= 0:
+            return [], None
+
         if limit is not None:
-            sql = f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ?"
-            params.append(limit)
+            # Fetch limit+1 to detect whether another page exists
+            sql = (
+                f"SELECT * FROM audit_log {where} "
+                f"ORDER BY timestamp DESC, id DESC LIMIT ?"
+            )
+            params.append(limit + 1)
         else:
-            sql = f"SELECT * FROM audit_log {where} ORDER BY id ASC"
-        cursor = self._conn.execute(sql, tuple(params))
-        rows = cursor.fetchall()
-        result = []
+            sql = f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC, id DESC"
+
+        db_cursor = self._conn.execute(sql, tuple(params))
+        rows = db_cursor.fetchall()
+
+        result: list[dict] = []
         for row in rows:
             d = dict(row)
             if d.get("payload"):
                 d["payload"] = json.loads(d["payload"])
             result.append(d)
-        # When `limit` forces DESC, re-sort ascending so the CLI renders the
-        # oldest-first timeline readers expect.
-        if limit is not None:
-            result.sort(key=lambda d: d["id"])
-        return result
+
+        next_cursor: str | None = None
+        if limit is not None and len(result) > limit:
+            # The extra row tells us there is a next page.
+            # Encode the (timestamp, id) of the last actual-page row as next_cursor.
+            last_of_page = result[limit - 1]
+            next_cursor = _encode_cursor(
+                last_of_page["timestamp"], last_of_page["id"]
+            )
+            # Trim to exactly the requested page size
+            result = result[:limit]
+
+        # Re-sort ascending so callers see chronological (oldest-first) order.
+        result.sort(key=lambda d: d["id"])
+
+        return result, next_cursor
 
     def get_audit_logs_for_agent_since(
         self, agent: str, since: str, *, limit: int = 200,
@@ -2191,7 +2258,8 @@ class Database:
         ``get_audit_logs(task_id)``, which is keyed on the scope-id column.
         Delegates to ``query_audit_logs`` to avoid duplicating the filter SQL.
         """
-        return self.query_audit_logs(agent=agent, since=since, limit=limit)
+        entries, _ = self.query_audit_logs(agent=agent, since=since, limit=limit)
+        return entries
 
     # --- Task Results ---
 
@@ -3110,7 +3178,10 @@ class Database:
         )
         params: tuple
         if status:
-            query += "WHERE t.status = ? ORDER BY t.started_at DESC LIMIT ?"
+            if status == "archived":
+                query += "WHERE t.status = ? ORDER BY COALESCE(t.archived_at, t.started_at) DESC LIMIT ?"
+            else:
+                query += "WHERE t.status = ? ORDER BY t.started_at DESC LIMIT ?"
             params = (status, limit)
         else:
             query += "ORDER BY t.started_at DESC LIMIT ?"

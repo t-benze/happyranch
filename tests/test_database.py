@@ -194,43 +194,200 @@ def _seed_audit(db) -> None:
 
 def test_query_audit_logs_no_filters_returns_all_ascending(db) -> None:
     _seed_audit(db)
-    rows = db.query_audit_logs()
+    rows, _ = db.query_audit_logs()
     assert [r["id"] for r in rows] == [1, 2, 3, 4]
 
 
 def test_query_audit_logs_filters_by_task_id(db) -> None:
     _seed_audit(db)
-    rows = db.query_audit_logs(task_id="TASK-001")
+    rows, _ = db.query_audit_logs(task_id="TASK-001")
     assert {r["task_id"] for r in rows} == {"TASK-001"}
     assert len(rows) == 2
 
 
 def test_query_audit_logs_filters_by_agent_and_action(db) -> None:
     _seed_audit(db)
-    rows = db.query_audit_logs(agent="engineering_head", action="escalation")
+    rows, _ = db.query_audit_logs(agent="engineering_head", action="escalation")
     assert len(rows) == 1
     assert rows[0]["payload"] == {"reason": "budget"}
 
 
 def test_query_audit_logs_limit_returns_most_recent_chronological(db) -> None:
     _seed_audit(db)
-    rows = db.query_audit_logs(limit=2)
+    rows, next_cursor = db.query_audit_logs(limit=2)
     # limit caps to most recent N but preserves chronological (ascending) order
     assert [r["id"] for r in rows] == [3, 4]
+    assert next_cursor is not None  # there are more older entries
+
+
+def test_query_audit_logs_limit_zero_returns_empty_no_cursor(db) -> None:
+    """limit=0 short-circuits to entries=[] with next_cursor=None."""
+    _seed_audit(db)
+    rows, next_cursor = db.query_audit_logs(limit=0)
+    assert rows == []
+    assert next_cursor is None
+
+
+def test_query_audit_logs_limit_negative_returns_empty_no_cursor(db) -> None:
+    """limit=-1 short-circuits to entries=[] with next_cursor=None (no IndexError)."""
+    _seed_audit(db)
+    rows, next_cursor = db.query_audit_logs(limit=-1)
+    assert rows == []
+    assert next_cursor is None
 
 
 def test_query_audit_logs_since_filters_by_timestamp(db) -> None:
     _seed_audit(db)
-    all_rows = db.query_audit_logs()
-    cutoff = all_rows[2]["timestamp"]  # keep rows #3 and #4
-    rows = db.query_audit_logs(since=cutoff)
+    all_rows, _ = db.query_audit_logs()
+    # Find the timestamp of entry with id=3 (the 3rd inserted)
+    cutoff = next(r["timestamp"] for r in all_rows if r["id"] == 3)
+    rows, _ = db.query_audit_logs(since=cutoff)
     assert {r["id"] for r in rows} == {3, 4}
 
 
 def test_query_audit_logs_parses_payload_json(db) -> None:
     _seed_audit(db)
-    rows = db.query_audit_logs(task_id="TASK-001", action="session_end")
+    rows, _ = db.query_audit_logs(task_id="TASK-001", action="session_end")
     assert rows[0]["payload"] == {"duration_seconds": 30}
+
+
+# ── Keyset cursor pagination tests ───────────────────────────────────────────
+
+def _seed_audit_many(db, n: int = 10) -> list[dict]:
+    """Seed *n* audit entries with deterministic task_id for testing."""
+    entries: list[dict] = []
+    for i in range(n):
+        row_id = db.insert_audit_log(
+            "TASK-{:03d}".format(i), "dev_agent", "cursor_test", {"idx": i}
+        )
+        # Re-fetch to get the timestamp
+        cur = db._conn.execute("SELECT * FROM audit_log WHERE id = ?", (row_id,))
+        entries.append(dict(cur.fetchone()))
+    return entries
+
+
+def test_query_audit_logs_cursor_first_page(db) -> None:
+    """First page returns page-size rows + non-null next_cursor."""
+    _seed_audit_many(db, n=6)
+    entries, next_cursor = db.query_audit_logs(limit=3)
+    assert len(entries) == 3
+    assert next_cursor is not None
+    # Entries are in chronological (ascending) order
+    ids = [e["id"] for e in entries]
+    assert ids == sorted(ids)
+
+
+def test_query_audit_logs_cursor_next_page_no_gap_no_overlap(db) -> None:
+    """Next page via cursor returns immediately-older rows with no gap/overlap."""
+    all_entries = _seed_audit_many(db, n=6)
+    all_ids = sorted(e["id"] for e in all_entries)
+
+    page1, cursor1 = db.query_audit_logs(limit=2)
+    page1_ids = [e["id"] for e in page1]
+    assert cursor1 is not None
+
+    page2, cursor2 = db.query_audit_logs(limit=2, cursor=cursor1)
+    page2_ids = [e["id"] for e in page2]
+    assert cursor2 is not None
+
+    # page1 is the 2 most-recent (last 2 in all_ids)
+    assert page1_ids == all_ids[-2:]
+    # page2 is the next 2 older
+    assert page2_ids == all_ids[-4:-2]
+    # No overlap
+    assert set(page1_ids) & set(page2_ids) == set()
+
+
+def test_query_audit_logs_cursor_exhaustion(db) -> None:
+    """Final partial page returns next_cursor == null."""
+    all_entries = _seed_audit_many(db, n=5)
+    all_ids = sorted(e["id"] for e in all_entries)
+
+    page1, cursor1 = db.query_audit_logs(limit=3)
+    assert cursor1 is not None
+
+    page2, cursor2 = db.query_audit_logs(limit=3, cursor=cursor1)
+    # Should only get 2 remaining entries, with next_cursor=None
+    assert len(page2) == 2
+    assert cursor2 is None
+
+    # All 5 ids covered across both pages
+    seen = [e["id"] for e in page1] + [e["id"] for e in page2]
+    assert sorted(seen) == all_ids
+
+
+def test_query_audit_logs_cursor_with_task_id_filter(db) -> None:
+    """Cursor AND-composes with task_id filter."""
+    db.insert_audit_log("TASK-A", "dev_agent", "test", None)
+    db.insert_audit_log("TASK-B", "dev_agent", "test", None)
+    db.insert_audit_log("TASK-A", "dev_agent", "test", None)
+    db.insert_audit_log("TASK-B", "dev_agent", "test", None)
+    db.insert_audit_log("TASK-A", "dev_agent", "test", None)
+    db.insert_audit_log("TASK-B", "dev_agent", "test", None)
+
+    # Filter to TASK-A only, page size 2
+    page1, cursor1 = db.query_audit_logs(task_id="TASK-A", limit=2)
+    assert len(page1) == 2
+    assert all(e["task_id"] == "TASK-A" for e in page1)
+    assert cursor1 is not None
+
+    page2, cursor2 = db.query_audit_logs(task_id="TASK-A", limit=2, cursor=cursor1)
+    assert all(e["task_id"] == "TASK-A" for e in page2)
+    # Should have the last 1 TASK-A entry
+    assert len(page2) == 1
+    # No overlap
+    p1_ids = {e["id"] for e in page1}
+    p2_ids = {e["id"] for e in page2}
+    assert p1_ids & p2_ids == set()
+
+
+def test_query_audit_logs_cursor_with_since_filter(db) -> None:
+    """Cursor pagination stays within the since window."""
+    entries = _seed_audit_many(db, n=5)
+    # Use timestamp of entry 3 (0-indexed) as cutoff
+    cutoff = sorted(entries, key=lambda e: e["id"])[2]["timestamp"]
+
+    all_in_window, _ = db.query_audit_logs(since=cutoff)
+    assert len(all_in_window) >= 2
+
+    page1, cursor1 = db.query_audit_logs(since=cutoff, limit=2)
+    assert all(e["timestamp"] >= cutoff for e in page1)
+    if cursor1 is not None:
+        page2, _ = db.query_audit_logs(since=cutoff, limit=2, cursor=cursor1)
+        assert all(e["timestamp"] >= cutoff for e in page2)
+        p1_ids = {e["id"] for e in page1}
+        p2_ids = {e["id"] for e in page2}
+        assert p1_ids & p2_ids == set()
+
+
+def test_query_audit_logs_cursor_stability_under_insert(db) -> None:
+    """Insert a NEWER row mid-pagination; cursor walk still returns same older rows."""
+    _seed_audit_many(db, n=5)
+
+    # Get first page
+    page1, cursor1 = db.query_audit_logs(limit=3)
+    page1_ids = [e["id"] for e in page1]
+    assert cursor1 is not None
+
+    # Insert a NEW entry (would be newer than all existing)
+    db.insert_audit_log("TASK-NEW", "dev_agent", "new_event", None)
+
+    # Continue pagination with same cursor
+    page2, cursor2 = db.query_audit_logs(limit=3, cursor=cursor1)
+    page2_ids = [e["id"] for e in page2]
+
+    # No overlap with page1
+    assert set(page1_ids) & set(page2_ids) == set()
+    # page2 should not include the new entry (inserted AFTER cursor was derived)
+    # The new entry would be newer, and cursor walks backward; it won't appear
+
+
+def test_query_audit_logs_cursor_bad_cursor_rejected(db) -> None:
+    """Malformed cursor raises a clean error."""
+    _seed_audit(db)
+    import pytest
+    with pytest.raises(ValueError, match="Invalid cursor"):
+        db.query_audit_logs(limit=2, cursor="not-a-valid-cursor!!!")
 
 
 def test_insert_task_with_parent_round_trips(db):

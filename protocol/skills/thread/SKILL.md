@@ -34,8 +34,9 @@ The "You have been invoked because" line tells you which case applies:
 - "A new message was posted on this thread" — a `REPLY` turn. Every participant
   except the speaker receives this invocation. Read the prompt's
   "Decline-by-Default" section to decide whether to reply or decline.
-- "The founder has added you to this thread" — bootstrap. You may post a brief
-  intro or decline. No further obligation.
+- "The founder has added you to this thread" — you are now a participant but
+  receive NO separate bootstrap turn. You will be invoked with a REPLY turn
+  only when the next message is posted.
 
 ## Reply, decline, or dispatch
 
@@ -160,7 +161,7 @@ daemon will auto-decline on your behalf with reason="no_callback".
 
 ## Dispatch from a thread is self-only
 
-When you are participating in a thread (REPLY / BOOTSTRAP turn), `happyranch
+When you are participating in a thread (REPLY turn), `happyranch
 threads dispatch` may only target **yourself**. The runtime rejects any other
 target with `thread_dispatch_must_be_self`.
 
@@ -178,11 +179,13 @@ loop handles delegation natively.
 
 - **Loop in another agent in your team:** use `happyranch threads compose
   --to <agent>` or `happyranch threads invite`. They receive a thread
-  invocation (BOOTSTRAP or REPLY) and decide what to do with it.
+  invocation. `compose --to <agent>` gives them a REPLY turn; `invite` adds
+  them silently (they are invoked on the next message). They decide what to do
+  with it.
 
 - **Cross-team handoff:** use `happyranch threads compose --to
   <other-team-manager>` — possibly opening a new thread for the cross-team
-  subject. Their manager receives a BOOTSTRAP turn and self-dispatches if
+  subject. Their manager receives a REPLY turn and self-dispatches if
   they take the work on.
 
 If you see `thread_dispatch_must_be_self` (or `thread_dispatch_must_be_self`)
