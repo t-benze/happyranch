@@ -4,9 +4,9 @@ PR-1 of the THR-056 approach-A dock rebuild.  This route is the new,
 ADDITIVE A-mode entry point — ``/assistant/a-mode`` — that streams
 normalized ``TurnFrame`` objects over WebSocket in place of raw PTY output.
 
-The existing PTY path at ``/assistant/session`` (``attach_assistant_session``)
-is FROZEN — no edits.  A-mode is structured from frame zero with no
-dual raw/handshake negotiation.
+The PTY path (``/assistant/session``) was removed in a later PR.
+A-mode is the sole assistant surface, structured from frame zero with
+no raw/handshake negotiation.
 """
 from __future__ import annotations
 

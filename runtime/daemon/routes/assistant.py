@@ -251,6 +251,3 @@ async def repair_assistant(request: Request) -> dict[str, Any]:
     except ValueError as exc:
         raise _assistant_error("assistant_workspace_invalid", exc) from exc
     return classify_assistant_state(root).model_dump()
-
-
-
