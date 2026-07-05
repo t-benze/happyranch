@@ -188,6 +188,13 @@ export interface ResponderStatusEntry {
   status: ResponderStatus;
   responded_at: string | null;
   started_at: string | null;
+  decline_reason: string | null;
+  category:
+    | 'declined'
+    | 'no_callback'
+    | 'no_callback_after_reprompt'
+    | 'infra_fail'
+    | null;
 }
 
 export interface ThreadAttachment {

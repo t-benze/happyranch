@@ -38,9 +38,33 @@ function statusLabel(s: ResponderStatusEntry, nowMs: number): string {
     case 'replied':
       return 'replied';
     case 'declined':
-      return 'declined';
     case 'failed':
-      return 'failed';
+      // Category-distinguished so the founder can tell the four terminal
+      // causes apart. Falls back to today's generic label when category is
+      // null (older/replied data or a row PR-A didn't classify).
+      return terminalLabel(s) ?? s.status;
+  }
+}
+
+// Maps the persisted failure/decline category to a founder-readable label.
+// Returns null when there is no category to distinguish (caller falls back
+// to the generic 'declined'/'failed' label).
+function terminalLabel(s: ResponderStatusEntry): string | null {
+  switch (s.category) {
+    case 'declined':
+      return 'declined';
+    case 'no_callback':
+      return 'reply failed (no callback)';
+    case 'no_callback_after_reprompt':
+      return 'reply failed (no callback after re-prompt)';
+    case 'infra_fail': {
+      // Surface the return code when the backend embedded one (rc=N), matching
+      // the daemon's own infra-signature parse; otherwise a bare infra label.
+      const rc = s.decline_reason?.match(/rc=(\d+)/i)?.[1];
+      return rc ? `reply failed (infra: rc=${rc})` : 'reply failed (infra)';
+    }
+    default:
+      return null;
   }
 }
 

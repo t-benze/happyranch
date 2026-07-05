@@ -20,7 +20,14 @@ const entry = (
   agent_name: string,
   status: ResponderStatusEntry['status'],
   started_at: string | null = null,
-): ResponderStatusEntry => ({ agent_name, status, responded_at: null, started_at });
+): ResponderStatusEntry => ({
+  agent_name,
+  status,
+  responded_at: null,
+  started_at,
+  decline_reason: null,
+  category: null,
+});
 
 describe('selectInFlightResponders', () => {
   it('returns only queued/working entries, deduped by agent', () => {
