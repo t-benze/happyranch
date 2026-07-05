@@ -22,7 +22,7 @@ export function ActivityTab(): JSX.Element {
   if (auditQuery.isLoading) {
     return <p className="text-text-muted p-4">Loading…</p>;
   }
-  const entries = auditQuery.data?.entries ?? [];
+  const entries = auditQuery.data?.pages.flatMap((p) => p.entries) ?? [];
   if (entries.length === 0) {
     return (
       <EmptyState

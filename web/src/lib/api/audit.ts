@@ -12,7 +12,8 @@ export const listAudit = (
     action?: string;
     since?: string;
     limit?: number;
-    /** Keyset cursor for next page (from a prior response's next_cursor). */
+    /** Opaque keyset cursor from a prior response's `next_cursor`. Omit for
+     *  the first page; the daemon AND-composes it with all other filters. */
     cursor?: string;
     /** Enrich Thread-scope entries with _thread_dream_id (A4 marker). */
     include_thread_origin?: boolean;

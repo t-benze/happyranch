@@ -1,6 +1,6 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
@@ -791,5 +791,141 @@ describe('AuditPage — day-grouped timeline', () => {
     // The 'All clear' calm state must NOT render.
     expect(screen.queryByTestId('all-clear')).not.toBeInTheDocument();
     expect(screen.queryByText('All clear')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Keyset infinite scroll (THR-069 msg12): the timeline pages older entries in
+// via `cursor`/`next_cursor`, appending them under their own day header —
+// grouping preserved ACROSS pages. jsdom has no IntersectionObserver, so we
+// stub a controllable one and fire the sentinel manually to simulate scroll.
+// ---------------------------------------------------------------------------
+describe('AuditPage — keyset infinite scroll', () => {
+  let observerCallbacks: Array<(entries: { isIntersecting: boolean }[]) => void> =
+    [];
+
+  class MockIntersectionObserver {
+    private cb: (entries: { isIntersecting: boolean }[]) => void;
+    constructor(cb: (entries: { isIntersecting: boolean }[]) => void) {
+      this.cb = cb;
+    }
+    observe() {
+      observerCallbacks.push(this.cb);
+    }
+    unobserve() {}
+    disconnect() {
+      observerCallbacks = observerCallbacks.filter((c) => c !== this.cb);
+    }
+    takeRecords() {
+      return [];
+    }
+  }
+
+  /** Simulate every live sentinel scrolling into view. */
+  function fireIntersect() {
+    [...observerCallbacks].forEach((cb) => cb([{ isIntersecting: true }]));
+  }
+
+  beforeEach(() => {
+    observerCallbacks = [];
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test('loads additional OLDER rows on sentinel intersection, grouping across pages', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const seenCursors: (string | null)[] = [];
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor');
+        seenCursors.push(cursor);
+        if (!cursor) {
+          // Page 1 — newest day, plus an opaque cursor for the next page.
+          return HttpResponse.json({
+            entries: [
+              { id: 10, task_id: 'TASK-NEW-A', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-20T10:00:00Z' },
+              { id: 9, task_id: 'TASK-NEW-B', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-20T09:00:00Z' },
+            ],
+            next_cursor: 'cursor-page-2',
+          });
+        }
+        // Page 2 — older day; next_cursor null → set exhausted.
+        return HttpResponse.json({
+          entries: [
+            { id: 2, task_id: 'TASK-OLD-A', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-19T10:00:00Z' },
+            { id: 1, task_id: 'TASK-OLD-B', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-19T09:00:00Z' },
+          ],
+          next_cursor: null,
+        });
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    // Page 1 rows render; the older page-2 rows are NOT loaded yet.
+    await waitFor(() => {
+      expect(screen.getByText('TASK-NEW-A')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('TASK-OLD-A')).not.toBeInTheDocument();
+
+    // The sentinel is being observed once a next page exists.
+    await waitFor(() => expect(observerCallbacks.length).toBeGreaterThan(0));
+
+    // Scroll the sentinel into view → fetch the next (older) page.
+    await act(async () => {
+      fireIntersect();
+    });
+
+    // Older rows append under their OWN day header — grouping spans pages and
+    // does not reset per page; the newest rows remain (pages accumulate).
+    await waitFor(() => {
+      expect(screen.getByText('TASK-OLD-A')).toBeInTheDocument();
+      expect(screen.getByText('TASK-OLD-B')).toBeInTheDocument();
+    });
+    expect(screen.getByText('2026-06-20')).toBeInTheDocument();
+    expect(screen.getByText('2026-06-19')).toBeInTheDocument();
+    expect(screen.getByText('TASK-NEW-A')).toBeInTheDocument();
+
+    // Page 2 was fetched with the opaque cursor returned by page 1.
+    expect(seenCursors).toContain('cursor-page-2');
+
+    // End-of-list affordance appears once next_cursor is null.
+    await waitFor(() => {
+      expect(screen.getByText('End of audit trail')).toBeInTheDocument();
+    });
+  });
+
+  test('stops paging when next_cursor is null (single-page result)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let requestCount = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, () => {
+        requestCount += 1;
+        return HttpResponse.json({
+          entries: [
+            { id: 1, task_id: 'TASK-ONLY', agent: 'dev_agent', action: 'escalation', payload: {}, timestamp: '2026-06-20T10:00:00Z' },
+          ],
+          next_cursor: null,
+        });
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    await waitFor(() => {
+      expect(screen.getByText('TASK-ONLY')).toBeInTheDocument();
+    });
+
+    // next_cursor is null → no sentinel is observed, firing does nothing.
+    expect(observerCallbacks.length).toBe(0);
+    await act(async () => {
+      fireIntersect();
+    });
+    // Still exactly one page fetched — no runaway pagination. The absence of an
+    // observed sentinel (length 0) is the proof paging halts at next_cursor=null.
+    expect(requestCount).toBe(1);
+    expect(screen.getByText('End of audit trail')).toBeInTheDocument();
   });
 });

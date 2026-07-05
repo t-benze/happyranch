@@ -34,7 +34,7 @@ export function EscalationsTab(): JSX.Element {
   });
 
   if (auditQuery.isLoading) return <p className="text-text-muted p-4">Loading…</p>;
-  const entries = auditQuery.data?.entries ?? [];
+  const entries = auditQuery.data?.pages.flatMap((p) => p.entries) ?? [];
   let folded = foldEscalations(entries);
   if (filters.agent) {
     folded = folded.filter((row) => row.agent === filters.agent);

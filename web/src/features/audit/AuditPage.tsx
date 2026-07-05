@@ -59,9 +59,14 @@ export function AuditPage(): JSX.Element {
     task_id: filters.task_id,
     limit: 500,
   });
-  // Memoize so the array identity is stable across renders — keeps the
-  // downstream useMemo deps (legend / color map / filtered export) honest.
-  const allEntries = useMemo(() => fullQuery.data?.entries ?? [], [fullQuery.data]);
+  // Flatten every loaded page, then derive the legend/export from the whole
+  // set — grouping and counts span pages, never resetting per page. Memoized
+  // so the array identity is stable across renders, keeping the downstream
+  // useMemo deps (legend / color map / filtered export) honest.
+  const allEntries = useMemo(
+    () => fullQuery.data?.pages.flatMap((p) => p.entries) ?? [],
+    [fullQuery.data],
+  );
 
   const legend = useMemo(() => buildClassLegend(allEntries), [allEntries]);
 
