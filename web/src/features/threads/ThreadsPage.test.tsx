@@ -1242,3 +1242,66 @@ describe('ThreadsPage — retry invalidates correct query keys', () => {
     );
   });
 });
+
+/* ------------------------------------------------------------------ */
+/*  'Tasks from this thread' rail panel (THR-061 msg51)                */
+/*  Founder feedback: the 3-line-per-entry render was too dense —      */
+/*  each row is now a single line: just the task id, linked to its     */
+/*  task-detail page. Brief/title and agent-name lines were removed.   */
+/* ------------------------------------------------------------------ */
+describe('ThreadsPage — Tasks from this thread panel (THR-061 msg51)', () => {
+  test('renders each task as an id-only link and omits brief + agent', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-070', [mkMessage(1, 'founder', 'message', 'Hi')]);
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-070/tasks`, () =>
+        HttpResponse.json([
+          {
+            id: 'TASK-901',
+            status: 'in_progress',
+            brief: 'Some brief text that should no longer render',
+            assigned_agent: 'frontend_engineer',
+            created_at: '2026-05-15T12:30:00Z',
+            parent_task_id: null,
+          },
+          {
+            id: 'TASK-900',
+            status: 'completed',
+            brief: 'Another brief that should be hidden',
+            assigned_agent: 'backend_engineer',
+            created_at: '2026-05-15T12:00:00Z',
+            parent_task_id: null,
+          },
+        ]),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads/THR-070`);
+
+    // Both ids render as links pointing at the task-detail route.
+    const link901 = await screen.findByRole('link', { name: 'TASK-901' });
+    expect(link901).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-901`);
+    const link900 = await screen.findByRole('link', { name: 'TASK-900' });
+    expect(link900).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-900`);
+
+    // The removed brief/title and agent-name lines must NOT appear.
+    expect(
+      screen.queryByText(/Some brief text that should no longer render/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/should be hidden/)).not.toBeInTheDocument();
+  });
+
+  test('keeps the empty state when no tasks were dispatched', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-071', [mkMessage(1, 'founder', 'message', 'Hi')]);
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-071/tasks`, () =>
+        HttpResponse.json([]),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads/THR-071`);
+
+    expect(
+      await screen.findByText('No tasks dispatched from this thread yet'),
+    ).toBeInTheDocument();
+  });
+});
