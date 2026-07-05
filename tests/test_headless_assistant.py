@@ -681,6 +681,120 @@ class TestRunHeadlessTurn:
         text_frames = [f for f in frames if f.type == "text_delta"]
         assert len(text_frames) >= 1, "expected at least one text_delta"
 
+    @pytest.mark.asyncio
+    async def test_large_single_line_stdout_parses_cleanly(self, tmp_path: Path) -> None:
+        """A turn whose executor emits a single stdout line > 64KB parses cleanly.
+
+        Reproduces the LimitOverrunError that occurs when asyncio's default
+        64KB StreamReader limit is exceeded.  With the fix (proc.communicate()
+        instead of streaming readline), the turn completes normally.
+        """
+        from unittest.mock import MagicMock
+
+        manager = HeadlessAssistantManager()
+        conv = await manager.get_conversation(workspace=tmp_path)
+
+        # Emit a >64KB line (70KB of 'X') followed by a recognizable event.
+        large_line = "X" * 70000
+        script = (
+            f"import sys; "
+            f"sys.stdout.write('{large_line}' + chr(10) + 'TEXT_DELTA: hello' + chr(10)); "
+            f"sys.stdout.flush()"
+        )
+
+        adapter = MagicMock(spec=HeadlessAdapter)
+        adapter.build_turn_argv.return_value = ["python3", "-c", script]
+        adapter.parse_event = NullAdapter().parse_event
+        adapter.extract_session_id = NullAdapter().extract_session_id
+        adapter.drain_pending_frames.return_value = []
+
+        frames: list[TurnFrame] = []
+        async def collector(frame: TurnFrame) -> None:
+            frames.append(frame)
+
+        result = await run_headless_turn(
+            manager=manager,
+            adapter=adapter,
+            workspace=tmp_path,
+            prompt="test prompt",
+            conversation=conv,
+            permission_posture=PermissionPosture(),
+            frame_sender=collector,
+        )
+
+        # Must NOT have any error frame (the old streaming reader would hit
+        # LimitOverrunError on the >64KB line and emit an error frame).
+        error_frames = [f for f in frames if f.type == "error"]
+        assert len(error_frames) == 0, (
+            f"expected no error frames, got: {[(f.message) for f in error_frames]}"
+        )
+
+        # Must have turn_start, turn_end, and ready frames.
+        types = [f.type for f in frames]
+        assert "turn_start" in types, "missing turn_start frame"
+        assert "turn_end" in types, "missing turn_end frame"
+        assert frames[-1].type == "status" and frames[-1].code == "ready", \
+            "last frame must be ready status"
+
+        # The text_delta from the recognizable event should be present.
+        text_frames = [f for f in frames if f.type == "text_delta"]
+        assert any(f.text == "hello" for f in text_frames), \
+            f"expected text_delta 'hello', got: {[(f.text) for f in text_frames]}"
+
+    @pytest.mark.asyncio
+    async def test_normal_multiline_turn_extracts_session_id_and_usage(
+        self, tmp_path: Path
+    ) -> None:
+        """Normal multi-line turn yields TurnFrames; session-id and usage
+        still extracted from the terminal result event after the communicate() fix."""
+        from unittest.mock import MagicMock
+
+        manager = HeadlessAssistantManager()
+        conv = await manager.get_conversation(workspace=tmp_path)
+
+        # Emit text deltas then a SESSION_ID line via python3 for precise control.
+        adapter = MagicMock(spec=HeadlessAdapter)
+        adapter.build_turn_argv.return_value = [
+            "python3", "-c",
+            "import sys; sys.stdout.write('TEXT_DELTA: first\\nTEXT_DELTA: second\\nSESSION_ID: sess-test-123\\n')",
+        ]
+        adapter.parse_event = NullAdapter().parse_event
+        adapter.extract_session_id = NullAdapter().extract_session_id
+        adapter.drain_pending_frames.return_value = []
+
+        frames: list[TurnFrame] = []
+        async def collector(frame: TurnFrame) -> None:
+            frames.append(frame)
+
+        result = await run_headless_turn(
+            manager=manager,
+            adapter=adapter,
+            workspace=tmp_path,
+            prompt="test prompt",
+            conversation=conv,
+            permission_posture=PermissionPosture(),
+            frame_sender=collector,
+        )
+
+        # session_id extracted from the SESSION_ID line.
+        assert result == "sess-test-123", (
+            f"expected session_id 'sess-test-123', got {result!r}"
+        )
+
+        # No error frames.
+        error_frames = [f for f in frames if f.type == "error"]
+        assert len(error_frames) == 0, (
+            f"expected no error frames, got: {[(f.message) for f in error_frames]}"
+        )
+
+        # Full frame sequence: turn_start, text_deltas, turn_end, ready.
+        types = [f.type for f in frames]
+        assert types[0] == "turn_start", f"first frame is {types[0]}"
+        assert types.count("text_delta") >= 2, f"expected >=2 text_delta, got {types}"
+        assert "turn_end" in types, "missing turn_end frame"
+        assert frames[-1].type == "status" and frames[-1].code == "ready", \
+            "last frame must be ready status"
+
 
 # ---------------------------------------------------------------------------
 # OpenCodeAdapter (PR-2)
