@@ -681,6 +681,132 @@ class TestRunHeadlessTurn:
         text_frames = [f for f in frames if f.type == "text_delta"]
         assert len(text_frames) >= 1, "expected at least one text_delta"
 
+    @pytest.mark.asyncio
+    async def test_oversized_stdout_line_no_limit_overrun(
+        self, tmp_path: Path
+    ) -> None:
+        """TASK-2102: a single stdout line > 64KB must NOT trigger
+        LimitOverrunError.  Without the raised stream limit, the default
+        64KB asyncio StreamReader limit causes 'Separator is not found,
+        and chunk exceed the limit'."""
+        import sys
+
+        # Script: write a single ~70KB line (over the default 64KB limit).
+        large_line = "X" * 70000
+        script = tmp_path / "large_output.py"
+        script.write_text(
+            f"import sys; sys.stdout.write({large_line!r} + '\\n')"
+        )
+
+        manager = HeadlessAssistantManager()
+        conv = await manager.get_conversation(workspace=tmp_path)
+
+        adapter = NullAdapter()
+        # Override argv to run the script that emits a large line.
+        adapter.build_turn_argv = lambda **kw: [  # type: ignore[method-assign]
+            sys.executable, str(script)
+        ]
+
+        frames: list[TurnFrame] = []
+
+        async def collector(frame: TurnFrame) -> None:
+            frames.append(frame)
+
+        await run_headless_turn(
+            manager=manager,
+            adapter=adapter,
+            workspace=tmp_path,
+            prompt="test large line",
+            conversation=conv,
+            permission_posture=PermissionPosture(),
+            frame_sender=collector,
+        )
+
+        # Must NOT have an error frame caused by stream limit overrun.
+        # In Python 3.13, StreamReader.readline() catches LimitOverrunError
+        # internally and re-raises it as ValueError with "Separator is"
+        # in the message.
+        limit_overrun_errors = [
+            f for f in frames
+            if f.type == "error"
+            and f.message
+            and "Turn execution failed" in f.message
+            and "Separator is" in f.message
+        ]
+        assert len(limit_overrun_errors) == 0, (
+            f"stream limit overrun detected — limit too low for 70KB line: "
+            f"{[f.message for f in limit_overrun_errors]}"
+        )
+
+        # Must complete the turn lifecycle: turn_start, turn_end, ready.
+        types = [f.type for f in frames]
+        assert "turn_start" in types, "missing turn_start frame"
+        assert "turn_end" in types, "missing turn_end frame"
+        assert types[-1] == "status", "last frame must be status"
+        assert frames[-1].code == "ready", "last frame must be status ready"
+
+    @pytest.mark.asyncio
+    async def test_pathological_stream_yields_graceful_error(
+        self, tmp_path: Path
+    ) -> None:
+        """TASK-2102 defense-in-depth: a stream whose line exceeds even the
+        raised limit must yield a clean error frame AND complete the turn
+        life-cycle (turn_end + ready) so the socket stays usable."""
+        import sys
+        from unittest.mock import patch
+
+        # A line that's larger than our patched-under-test limit.
+        line_size = 4096
+        large_line = "Y" * line_size
+        script = tmp_path / "pathological_output.py"
+        script.write_text(
+            f"import sys; sys.stdout.write({large_line!r} + '\\n')"
+        )
+
+        manager = HeadlessAssistantManager()
+        conv = await manager.get_conversation(workspace=tmp_path)
+
+        adapter = NullAdapter()
+        adapter.build_turn_argv = lambda **kw: [  # type: ignore[method-assign]
+            sys.executable, str(script)
+        ]
+
+        frames: list[TurnFrame] = []
+
+        async def collector(frame: TurnFrame) -> None:
+            frames.append(frame)
+
+        # Patch the stream limit down to 1KB so the 4KB line overflows it.
+        with patch(
+            "runtime.daemon.headless_assistant._STDOUT_LINE_LIMIT", 1024
+        ):
+            await run_headless_turn(
+                manager=manager,
+                adapter=adapter,
+                workspace=tmp_path,
+                prompt="test pathological stream",
+                conversation=conv,
+                permission_posture=PermissionPosture(),
+                frame_sender=collector,
+            )
+
+        # Must have an error frame (turn failed gracefully).
+        error_frames = [f for f in frames if f.type == "error"]
+        assert len(error_frames) >= 1, (
+            "expected at least one error frame for pathological stream, "
+            f"got {[(f.type, getattr(f, 'message', None)) for f in frames]}"
+        )
+
+        # Must complete the turn lifecycle: turn_end + ready.
+        types = [f.type for f in frames]
+        assert "turn_end" in types, (
+            "missing turn_end — turn lifecycle must complete even on error"
+        )
+        assert types[-1] == "status", "last frame must be status"
+        assert frames[-1].code == "ready", (
+            "last frame must be status ready — socket must stay usable"
+        )
+
 
 # ---------------------------------------------------------------------------
 # OpenCodeAdapter (PR-2)

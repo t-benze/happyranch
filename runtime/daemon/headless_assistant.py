@@ -60,6 +60,17 @@ from runtime.orchestrator.executors import (
 )
 
 # ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Maximum bytes per line for the subprocess stdout/stderr StreamReader.
+# Default asyncio limit is 64 KB, which is too small for the single-line
+# JSON events some executors emit (pi, codex with long tool results, etc.).
+# 64 MB is large enough for any real assistant JSON event while still
+# bounded to prevent a pathological stream from OOMing the daemon.
+_STDOUT_LINE_LIMIT = 64 * 1024 * 1024  # 64 MB
+
+# ---------------------------------------------------------------------------
 # TurnFrame vocabulary
 # ---------------------------------------------------------------------------
 
@@ -1473,6 +1484,7 @@ async def run_headless_turn(
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=_STDOUT_LINE_LIMIT,
             cwd=str(workspace),
         )
     except OSError as exc:
