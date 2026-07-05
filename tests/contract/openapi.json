@@ -822,6 +822,10 @@
             "header"
           ],
           [
+            "cursor",
+            "query"
+          ],
+          [
             "include_thread_origin",
             "query"
           ],
