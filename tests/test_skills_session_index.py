@@ -1118,12 +1118,18 @@ class TestCallPathManagedSkillsIndex:
             token_usage = None
             rate_limited = False
 
-        # Scripted executor that records the prompt from run()
+        # Scripted executor that records the prompt from run().
+        # Consume the invocation token to simulate a real executor that
+        # always calls reply/decline — this prevents the slice-(3)
+        # re-invoke from firing ("model finished but forgot the
+        # terminal callback") and keeps the assertion on a single
+        # delta-prompt call.
         class _DeltaCapturingExec:
             def __init__(self, resume_session_id=None, **kwargs):
                 self.calls = []
             def run(self, **kwargs):
                 self.calls.append(kwargs)
+                db.consume_invocation(inv.invocation_token)
                 r = _FakeResult()
                 r.agent_session_id = "claude-prior"
                 return r
