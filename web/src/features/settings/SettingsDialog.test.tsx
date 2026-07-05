@@ -433,7 +433,7 @@ describe('SettingsDialog', () => {
     // The one config home is the Settings page (org-scoped absolute path), NOT
     // the removed assistant page route.
     expect(link.getAttribute('href')).toBe('/orgs/alpha/settings/assistant');
-    // No dead-end registration link pointing at the terminal-only route.
+    // No dead-end registration link; the assistant config home is the Settings page.
     expect(
       screen.queryByRole('link', { name: /register executor/i }),
     ).toBeNull();
