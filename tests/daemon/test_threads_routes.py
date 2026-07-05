@@ -1173,7 +1173,10 @@ def test_thread_messages_response_includes_attachments(client, auth_headers, org
 # ---------------------------------------------------------------------------
 
 
-def test_invite_adds_participant_and_bootstrap_invocation(tmp_home, app, org_state, auth_headers):
+def test_invite_adds_participant_without_bootstrap_invocation(tmp_home, app, org_state, auth_headers):
+    """Invite adds the participant + transparency records, but does NOT auto-mint
+    a BOOTSTRAP thread-invocation. The invited agent receives a REPLY invocation
+    naturally via broadcast when the next message is posted."""
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")
     _seed_agent(org_state, "qa_engineer")
@@ -1196,10 +1199,61 @@ def test_invite_adds_participant_and_bootstrap_invocation(tmp_home, app, org_sta
     sys_msgs = [m for m in msgs if m.kind.value == "system"]
     assert sys_msgs[-1].system_payload["kind_tag"] == "participant_added"
     pending = org_state.db.list_thread_invocations(tid)
-    assert any(
+    # After invite, there should be NO pending bootstrap invocation for the
+    # newly-added participant — the BOOTSTRAP auto-mint has been removed.
+    assert not any(
         inv.agent_name == "qa_engineer" and inv.purpose.value == "bootstrap"
         for inv in pending
     )
+
+
+def test_invite_then_reply_delivers_reply_invocation_to_new_participant(tmp_home, app, org_state, auth_headers):
+    """After invite adds a participant, the NEXT message posted to the thread
+    triggers broadcast REPLY minting — the newly-added participant receives a
+    pending REPLY invocation."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    # Invite qa_engineer (no bootstrap).
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/invite",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+
+    # dev_agent replies — broadcast mints REPLY for every participant except the speaker.
+    dev_inv = next(
+        inv for inv in org_state.db.list_thread_invocations(tid)
+        if inv.agent_name == "dev_agent"
+    )
+    reply_resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": dev_inv.invocation_token,
+            "speaker": "dev_agent",
+            "body_markdown": "welcome!",
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert reply_resp.status_code == 200, reply_resp.text
+
+    # qa_engineer should now have a pending REPLY invocation.
+    pending = org_state.db.list_thread_invocations(tid)
+    assert any(
+        inv.agent_name == "qa_engineer" and inv.purpose.value == "reply"
+        for inv in pending
+    ), f"Expected REPLY invocation for qa_engineer, got {[(i.agent_name, i.purpose.value) for i in pending]}"
 
 
 def test_invite_already_participant_409(tmp_home, app, org_state, auth_headers):
