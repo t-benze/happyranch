@@ -1,3 +1,6 @@
+# PyInstaller generated hooks
+packaging/_pyi_hooks/
+
 # Python
 __pycache__/
 *.py[cod]
