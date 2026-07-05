@@ -37,11 +37,11 @@ export function TracesTab(): JSX.Element {
   });
 
   const pickerEntries = useMemo(
-    () => pickerQuery.data?.entries ?? [],
+    () => pickerQuery.data?.pages.flatMap((p) => p.entries) ?? [],
     [pickerQuery.data],
   );
   const costEntries = useMemo(
-    () => costQuery.data?.entries ?? [],
+    () => costQuery.data?.pages.flatMap((p) => p.entries) ?? [],
     [costQuery.data],
   );
   const tasks = useMemo(() => recentTaskIds(pickerEntries), [pickerEntries]);

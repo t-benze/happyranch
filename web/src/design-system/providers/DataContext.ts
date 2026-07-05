@@ -408,14 +408,19 @@ export interface JobsRoutes {
 // AuditApi — read-only audit-log surface for the Audit feature page.
 // ---------------------------------------------------------------------------
 
+/** One page of the audit list — mirrors the daemon's paginated response. */
+export type AuditListPage = Awaited<ReturnType<typeof auditApi.listAudit>>;
+
 export interface AuditApi {
+  /** Keyset-paginated audit list (most-recent-first). `data.pages` carries
+   *  each fetched page; callers flatten across pages before day-grouping. */
   useAuditList: (params?: {
     task_id?: string | null;
     agent?: string | null;
     action?: string | null;
     since?: string | null;
     limit?: number;
-  }) => QueryLike<Awaited<ReturnType<typeof auditApi.listAudit>>>;
+  }) => InfiniteQueryLike<AuditListPage>;
 }
 
 // ---------------------------------------------------------------------------

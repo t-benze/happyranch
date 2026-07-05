@@ -10,7 +10,7 @@
  * States: loading skeleton, empty ("No audit entries"), all-clear ("All clear
  * — no failures or escalations"), error with retry.
  */
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -225,14 +225,22 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
   });
   const queryClient = useQueryClient();
 
+  // Flatten every loaded page BEFORE any client-side narrowing, so day-
+  // grouping and filtering span the full loaded set and never reset per page.
+  const allEntries = useMemo(
+    () => auditQuery.data?.pages.flatMap((p) => p.entries) ?? [],
+    [auditQuery.data],
+  );
+
   // Narrow to the active event-class CLIENT-SIDE (AUDIT-02): the right-rail
   // legend filter selects one of the five human classes, which spans several
   // raw event-types, so it can't be a single-`action` API param. Filtering the
   // already-fetched rows keeps the legend counts stable and avoids a refetch.
-  const allEntries = auditQuery.data?.entries ?? [];
   const entries = filters.eventClass
     ? allEntries.filter((e) => classOf(e.action) === filters.eventClass)
     : allEntries;
+
+  const { fetchNextPage, hasNextPage, isFetchingNextPage } = auditQuery;
 
   // Loading
   if (auditQuery.isLoading) return <TimelineSkeleton />;
@@ -277,12 +285,28 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
     return (
       <div data-testid="all-clear">
         <AllClearBanner />
-        <TimelineBody entries={entries} legendMap={legendMap} slug={slug} />
+        <TimelineBody
+          entries={entries}
+          legendMap={legendMap}
+          slug={slug}
+          fetchNextPage={fetchNextPage}
+          hasNextPage={hasNextPage}
+          isFetchingNextPage={isFetchingNextPage}
+        />
       </div>
     );
   }
 
-  return <TimelineBody entries={entries} legendMap={legendMap} slug={slug} />;
+  return (
+    <TimelineBody
+      entries={entries}
+      legendMap={legendMap}
+      slug={slug}
+      fetchNextPage={fetchNextPage}
+      hasNextPage={hasNextPage}
+      isFetchingNextPage={isFetchingNextPage}
+    />
+  );
 }
 
 function AllClearBanner(): JSX.Element {
@@ -306,15 +330,42 @@ function TimelineBody({
   entries,
   legendMap,
   slug,
+  fetchNextPage,
+  hasNextPage,
+  isFetchingNextPage,
 }: {
   entries: AuditEntry[];
   legendMap: Map<string, string>;
   slug: string;
+  fetchNextPage: () => void;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
 }): JSX.Element {
   const days = useMemo(() => groupByDay(entries), [entries]);
 
+  // Infinite scroll: observe a bottom sentinel against THIS scroll container
+  // (the timeline scrolls inside its own overflow-y-auto box, not the
+  // viewport) and load the next older page as it nears view. Re-subscribes
+  // when pagination state changes so the moved sentinel is re-observed.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || !hasNextPage) return;
+    const obs = new IntersectionObserver(
+      (obsEntries) => {
+        if (obsEntries[0]?.isIntersecting && !isFetchingNextPage) {
+          fetchNextPage();
+        }
+      },
+      { root: scrollRef.current, rootMargin: '200px' },
+    );
+    obs.observe(node);
+    return () => obs.disconnect();
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
+
   return (
-    <div className="flex-1 overflow-y-auto" aria-label="Audit timeline">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto" aria-label="Audit timeline">
       {days.map(({ date, entries: dayEntries }) => (
         <div key={date}>
           <h3 className="text-text-secondary bg-surface-sunken border-border-subtle font-display sticky top-0 z-10 border-b px-4 py-2 text-sm font-medium">
@@ -330,6 +381,18 @@ function TimelineBody({
           ))}
         </div>
       ))}
+      {/* Infinite-scroll sentinel + progress / end-of-list affordances */}
+      <div ref={sentinelRef} aria-hidden className="h-1" />
+      {isFetchingNextPage && (
+        <p className="text-text-muted py-3 text-center text-sm" role="status">
+          Loading more…
+        </p>
+      )}
+      {!hasNextPage && entries.length > 0 && (
+        <p className="text-text-muted py-4 text-center text-xs">
+          End of audit trail
+        </p>
+      )}
     </div>
   );
 }
