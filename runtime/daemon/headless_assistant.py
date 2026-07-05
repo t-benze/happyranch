@@ -1482,17 +1482,21 @@ async def run_headless_turn(
         return None
 
     try:
-        async for line in proc.stdout:  # type: ignore
-            line_str = line.decode(errors="replace")
-            frame = adapter.parse_event(line_str)
+        # Read stdout + stderr to completion (no per-line limit).
+        # This converges with the thread/orchestrator path (executors.py
+        # ~line 461) which also uses communicate() rather than streaming
+        # readline — the latter hits asyncio's default 64 KB per-line cap
+        # and raises LimitOverrunError on large JSON events.
+        stdout_data, stderr_data = await proc.communicate()
+
+        for line in stdout_data.decode(errors="replace").splitlines():
+            frame = adapter.parse_event(line)
             if frame is not None:
                 await frame_sender(frame)
                 await manager.buffer_inflight_frame(workspace=workspace, conversation_id=conv_id, frame=frame)
                 extracted = adapter.extract_session_id(frame)
                 if extracted is not None:
                     session_id = extracted
-
-        await proc.wait()
 
         # Drain any buffered frames the adapter accumulated from
         # multi-content-block messages (e.g. assistant with text + 2
@@ -1514,8 +1518,7 @@ async def run_headless_turn(
         if extra_sid is not None:
             session_id = extra_sid
 
-        # Drain stderr for diagnostics only — no frames emitted from it.
-        stderr_data = await proc.stderr.read()
+        # stderr for diagnostics only — no frames emitted from it.
         if stderr_data and proc.returncode != 0:
             stderr_str = stderr_data.decode(errors="replace")[-2000:]
             error_frame = TurnFrame.error(
