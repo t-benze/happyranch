@@ -394,6 +394,106 @@ struct DevLaunchTests {
     }
 }
 
+// MARK: - First-launch directory creation
+
+@Suite("First-launch directory creation")
+@MainActor
+struct FirstLaunchDirectoryCreationTests {
+
+    @Test("bundled mode creates daemonHome before launch when directory does not exist")
+    func bundledModeCreatesDaemonHomeBeforeLaunch() async throws {
+        AppDelegate._testPackagingMode = "bundled"
+
+        // Create a unique temp path that does NOT exist
+        let tempBase = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-first-launch-\(UUID().uuidString)")
+        let tempHome = tempBase.appendingPathComponent("HappyRanch").path
+
+        // Ensure clean state: path does not exist
+        try? FileManager.default.removeItem(atPath: tempHome)
+        #expect(!FileManager.default.fileExists(atPath: tempHome),
+                "Pre-condition: temp home must not exist before test")
+
+        let oldHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        setenv("HAPPYRANCH_DAEMON_HOME", tempHome, 1)
+        defer {
+            AppDelegate._testPackagingMode = nil
+            if let old = oldHome {
+                setenv("HAPPYRANCH_DAEMON_HOME", old, 1)
+            } else {
+                unsetenv("HAPPYRANCH_DAEMON_HOME")
+            }
+            try? FileManager.default.removeItem(atPath: tempBase.path)
+        }
+
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: tempHome)
+        try delegate.supervisor.start()
+        delegate.supervisor.forceState(.stopped)
+        delegate.refreshDerivedState()
+
+        delegate.startDaemon()
+
+        // Assert: the directory was created on disk
+        #expect(FileManager.default.fileExists(atPath: tempHome),
+                "daemonHome directory must exist after bundled launch, even on first run")
+
+        // Assert: the Process was given a cwd that exists
+        if let cwd = fake.lastCurrentDirectoryURL {
+            #expect(FileManager.default.fileExists(atPath: cwd.path),
+                    "currentDirectoryURL given to Process must exist, got \(cwd.path)")
+            #expect(cwd.path == tempHome,
+                    "currentDirectoryURL should be daemonHome, got \(cwd.path)")
+        } else {
+            #expect(Bool(false), "Bundled launch must set currentDirectoryURL")
+        }
+    }
+
+    @Test("dev mode creates daemonHome before launch when directory does not exist")
+    func devModeCreatesDaemonHomeBeforeLaunch() async throws {
+        AppDelegate._testPackagingMode = nil  // dev mode
+
+        let tempBase = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-first-launch-dev-\(UUID().uuidString)")
+        let tempHome = tempBase.appendingPathComponent(".happyranch").path
+
+        try? FileManager.default.removeItem(atPath: tempHome)
+        #expect(!FileManager.default.fileExists(atPath: tempHome))
+
+        let oldHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        setenv("HAPPYRANCH_DAEMON_HOME", tempHome, 1)
+        defer {
+            AppDelegate._testPackagingMode = nil
+            if let old = oldHome {
+                setenv("HAPPYRANCH_DAEMON_HOME", old, 1)
+            } else {
+                unsetenv("HAPPYRANCH_DAEMON_HOME")
+            }
+            try? FileManager.default.removeItem(atPath: tempBase.path)
+        }
+
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: tempHome)
+        try delegate.supervisor.start()
+        delegate.supervisor.forceState(.stopped)
+        delegate.refreshDerivedState()
+
+        delegate.startDaemon()
+
+        // Assert: the directory was created on disk
+        #expect(FileManager.default.fileExists(atPath: tempHome),
+                "daemonHome directory must exist after dev launch, even on first run")
+
+        // Dev mode uses repoRoot() as cwd — daemonHome is ensured as env for daemon use
+        #expect(fake.lastCurrentDirectoryURL != nil,
+                "Dev launch must set currentDirectoryURL")
+    }
+}
+
 // MARK: - Unhealthy/failed banner trigger logic
 
 @Suite("Unhealthy/failed banner trigger logic")

@@ -250,6 +250,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Bind a random free 127.0.0.1 port so the app runs alongside a dev daemon on 8765.
         childEnv["HAPPYRANCH_DAEMON_PORT"] = "0"
 
+        // Ensure the daemon home directory exists before launching.
+        // On a first-ever/clean install, ~/Library/Application Support/HappyRanch
+        // may not exist, causing Process to throw NSFileNoSuchFileError
+        // ("The file 'HappyRanch' doesn't exist") when currentDirectoryURL
+        // points to a nonexistent path.
+        _ = try? FileManager.default.createDirectory(atPath: daemonHome(), withIntermediateDirectories: true, attributes: nil)
+
         do {
             let handle = try pc.launch(
                 executableURL: URL(fileURLWithPath: daemonPath),
@@ -302,6 +309,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Launch the daemon via `uv run` from the repo root (dev mode).
     private func launchDevDaemon(pc: ProcessControlling) {
+        // Ensure the daemon home directory exists before launching.
+        // Even though dev mode uses repoRoot() as cwd, the daemon still
+        // receives HAPPYRANCH_DAEMON_HOME and needs that directory to exist
+        // for its own internal initialization.
+        _ = try? FileManager.default.createDirectory(atPath: daemonHome(), withIntermediateDirectories: true, attributes: nil)
+
         do {
             let handle = try pc.launch(
                 executableURL: URL(fileURLWithPath: "/usr/bin/env"),
