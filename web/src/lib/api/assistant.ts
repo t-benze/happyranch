@@ -1,12 +1,12 @@
 /**
  * Mirror of runtime/daemon/routes/assistant.py — the System Assistant
- * status / init / register / repair HTTP routes, plus the helpers a browser
- * needs to attach to the WebSocket PTY at /assistant/session.
+ * status / init / register / repair HTTP routes, plus the A-mode structured
+ * WS helpers.
  *
  * The browser cannot set the Authorization header on `new WebSocket()`, so the
  * bearer token is offered via the `Sec-WebSocket-Protocol` subprotocol
  * `happyranch.bearer.<token>` (THR-006 Option A). The daemon validates and
- * echoes it back — see `_websocket_token_is_valid` in routes/assistant.py.
+ * echoes it back.
  */
 import { getToken } from '../auth';
 import { API_PREFIX, request } from './client';
@@ -38,13 +38,6 @@ export const ASSISTANT_BEARER_SUBPROTOCOL_PREFIX = 'happyranch.bearer.';
 
 export const assistantBearerSubprotocol = (token: string): string =>
   `${ASSISTANT_BEARER_SUBPROTOCOL_PREFIX}${token}`;
-
-/** Absolute `ws(s)://` URL for the assistant PTY WebSocket. */
-export const assistantSessionWsUrl = (): string => {
-  const { protocol, host } = window.location;
-  const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${wsProtocol}//${host}${API_PREFIX}/assistant/session`;
-};
 
 /** Absolute `ws(s)://` URL for the A-mode (structured TurnFrame) WebSocket. */
 export const assistantAModeWsUrl = (): string => {
@@ -92,20 +85,10 @@ export const deleteConversation = (
   });
 
 /**
- * Open the assistant PTY WebSocket, authenticating via the bearer subprotocol
- * (THR-006 Option A). Resolves once the socket is constructed (still
- * connecting); the caller wires `onopen` / `onmessage`.
- */
-export const openAssistantSession = async (): Promise<WebSocket> => {
-  const token = await getToken();
-  return new WebSocket(assistantSessionWsUrl(), [assistantBearerSubprotocol(token)]);
-};
-
-/**
  * Open the A-mode WebSocket — the structured `TurnFrame` stream that drives the
- * thread-style dock. Same bearer-subprotocol auth as the PTY session (THR-006
- * Option A); only the route differs (`/assistant/a-mode`). Resolves once the
- * socket is constructed; the caller wires `onopen` / `onmessage`.
+ * thread-style dock. Bearer-subprotocol auth (THR-006 Option A); only the
+ * route differs (`/assistant/a-mode`). Resolves once the socket is constructed;
+ * the caller wires `onopen` / `onmessage`.
  */
 export const openAssistantAModeSession = async (): Promise<WebSocket> => {
   const token = await getToken();

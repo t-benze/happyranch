@@ -51,10 +51,10 @@ scripts/daemon.sh start
 happyranch init ~/happyranch-runtime
 
 # 3. Optional but recommended: initialize the runtime-global system assistant.
-#    This also verifies that at least one supported agentic CLI works in an
-#    interactive PTY session.
+#    This verifies that at least one supported agentic CLI works and is
+#    reachable via the Cmd-K web dock.
 happyranch assistant init
-happyranch assistant
+happyranch assistant status
 
 # 4. Materialize an org from a sample tree.
 happyranch orgs init hk-macau-tourism --from examples/orgs/hk-macau-tourism
@@ -138,10 +138,7 @@ happyranch assistant register --from-file <payload.json>
 #    Flag form instead of a file:
 happyranch assistant register --executor claude --command claude --argv '["claude"]'
 
-# 3. Attach over the WebSocket PTY (attach is the default subcommand, so
-#    bare `happyranch assistant` does the same thing).
-happyranch assistant            # == happyranch assistant attach
-happyranch assistant attach
+# 3. Verify the configuration is in place.
 happyranch assistant status     # show configuration state and selected executor
 ```
 

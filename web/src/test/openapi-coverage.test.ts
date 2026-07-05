@@ -126,7 +126,7 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/teams',
   // system assistant — founder-facing setup surfaced in the SPA
   // (web/src/features/system-assistant) via lib/api/assistant.ts. The
-  // WebSocket PTY at /assistant/session is not in OpenAPI (FastAPI omits WS).
+  // WebSocket at /assistant/a-mode is not in OpenAPI (FastAPI omits WS).
   'GET /api/v1/assistant/status',
   'GET /api/v1/assistant/a-mode/status',
   'GET /api/v1/assistant/a-mode/conversations',

@@ -14,12 +14,9 @@
  * (no server input-echo). On (re)connect the server first replays a `history`
  * frame carrying the persisted conversation, which hydrates the log.
  *
- * The xterm "Open full session" escape hatch (frozen PTY path) stays in the
- * dock header.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams, useLocation } from 'react-router-dom';
-import { X, Terminal, MessagesSquare } from 'lucide-react';
+import { X, MessagesSquare } from 'lucide-react';
 import {
   useAssistantStatus,
   useAssistantAModeSessionOpener,
@@ -570,12 +567,6 @@ export function AssistantDockHost(): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
-  const navigate = useNavigate();
-  const { slug: urlSlug } = useParams<{ slug: string }>();
-  const location = useLocation();
-  const contextSlug =
-    (location.pathname.match(/^\/orgs\/([^/]+)/)?.[1]) ?? null;
-  const activeSlug = urlSlug ?? contextSlug;
 
   const statusQuery = useAssistantStatus();
   const status = statusQuery.data;
@@ -705,8 +696,6 @@ export function AssistantDockHost(): JSX.Element {
     }
   };
 
-  const assistantPath = activeSlug ? `/orgs/${activeSlug}/assistant` : '/assistant';
-
   // Assistant speaker label — data-backed executor name when available.
   const assistantSpeaker = status?.selected_executor ?? 'assistant';
 
@@ -798,21 +787,6 @@ export function AssistantDockHost(): JSX.Element {
               </span>
             </button>
           )}
-
-          {/* "Open full session" escape hatch — retained xterm page */}
-          <a
-            href={assistantPath}
-            onClick={(e) => {
-              e.preventDefault();
-              setOpen(false);
-              navigate(assistantPath);
-            }}
-            className="text-text-secondary hover:text-text-primary hover:bg-surface-hover inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors"
-            title="Open full terminal session"
-          >
-            <Terminal size={14} aria-hidden="true" />
-            <span>Full session</span>
-          </a>
 
           <button
             type="button"
