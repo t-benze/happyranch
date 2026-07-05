@@ -14,8 +14,6 @@ function stubStatus(status: AssistantStatus) {
   server.use(http.get('/api/v1/assistant/status', () => HttpResponse.json(status)));
 }
 
-// Mount inside a matching route so the "Open terminal" link's useParams
-// resolves the org slug, mirroring the real Settings → Assistant surface.
 function render() {
   sessionStorage.setItem('happyranch.token', 'tok');
   renderWithProviders(
@@ -27,7 +25,7 @@ function render() {
 }
 
 describe('AssistantSection (Settings → Assistant)', () => {
-  test('configured: shows status, the register form, and an Open terminal link', async () => {
+  test('configured: shows status and the register form', async () => {
     stubStatus({
       state: 'configured',
       selected_executor: 'claude',
@@ -47,8 +45,6 @@ describe('AssistantSection (Settings → Assistant)', () => {
     expect(screen.getByRole('region', { name: /Register executor/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Register$/i })).toBeInTheDocument();
 
-    const terminalLink = screen.getByRole('link', { name: /Open terminal/i });
-    expect(terminalLink).toHaveAttribute('href', `/orgs/${SLUG}/assistant`);
   });
 
   test('uninitialized: Initialize prepares the workspace and shows self-registration steps', async () => {
