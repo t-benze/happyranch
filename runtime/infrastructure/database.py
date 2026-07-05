@@ -3178,7 +3178,10 @@ class Database:
         )
         params: tuple
         if status:
-            query += "WHERE t.status = ? ORDER BY t.started_at DESC LIMIT ?"
+            if status == "archived":
+                query += "WHERE t.status = ? ORDER BY COALESCE(t.archived_at, t.started_at) DESC LIMIT ?"
+            else:
+                query += "WHERE t.status = ? ORDER BY t.started_at DESC LIMIT ?"
             params = (status, limit)
         else:
             query += "ORDER BY t.started_at DESC LIMIT ?"
