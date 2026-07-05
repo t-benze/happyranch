@@ -220,6 +220,22 @@ def test_query_audit_logs_limit_returns_most_recent_chronological(db) -> None:
     assert next_cursor is not None  # there are more older entries
 
 
+def test_query_audit_logs_limit_zero_returns_empty_no_cursor(db) -> None:
+    """limit=0 short-circuits to entries=[] with next_cursor=None."""
+    _seed_audit(db)
+    rows, next_cursor = db.query_audit_logs(limit=0)
+    assert rows == []
+    assert next_cursor is None
+
+
+def test_query_audit_logs_limit_negative_returns_empty_no_cursor(db) -> None:
+    """limit=-1 short-circuits to entries=[] with next_cursor=None (no IndexError)."""
+    _seed_audit(db)
+    rows, next_cursor = db.query_audit_logs(limit=-1)
+    assert rows == []
+    assert next_cursor is None
+
+
 def test_query_audit_logs_since_filters_by_timestamp(db) -> None:
     _seed_audit(db)
     all_rows, _ = db.query_audit_logs()

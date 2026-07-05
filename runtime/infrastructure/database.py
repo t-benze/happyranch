@@ -2205,6 +2205,12 @@ class Database:
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
+        # Defensive guard: non-positive limit short-circuits to empty result.
+        # Without this, limit=0 returns next_cursor anchored to a row that was
+        # never returned, and limit<0 produces an IndexError on result[limit-1].
+        if limit is not None and limit <= 0:
+            return [], None
+
         if limit is not None:
             # Fetch limit+1 to detect whether another page exists
             sql = (
