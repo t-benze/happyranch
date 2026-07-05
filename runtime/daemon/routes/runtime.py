@@ -83,7 +83,6 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
                 org.close()
             daemon.orgs.clear()
             async with daemon.assistant_lifecycle_lock:
-                await daemon.assistant_sessions.close_all()
                 _swap(daemon, runtime)
         else:
             _swap(daemon, runtime)
@@ -116,7 +115,6 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
             org.close()
         daemon.orgs.clear()
         async with daemon.assistant_lifecycle_lock:
-            await daemon.assistant_sessions.close_all()
             _swap(daemon, runtime)
     ensure_workers_started(daemon)
     return {"runtime": str(path)}
