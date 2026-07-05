@@ -58,5 +58,75 @@ def test_audit_limit_caps_to_most_recent(tmp_home, app, org_state, auth_headers)
     r = TestClient(app).get(
         "/api/v1/orgs/alpha/audit", params={"limit": 2}, headers=auth_headers,
     )
-    entries = r.json()["entries"]
+    body = r.json()
+    entries = body["entries"]
     assert [e["id"] for e in entries] == [2, 3]
+    assert "next_cursor" in body
+
+
+def test_audit_cursor_pagination_shape(tmp_home, app, org_state, auth_headers) -> None:
+    """Response shape includes entries + next_cursor (non-null when more pages)."""
+    for i in range(5):
+        org_state.db.insert_audit_log(
+            "TASK-{:03d}".format(i), "dev_agent", "cursor_test", None
+        )
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/audit", params={"limit": 3}, headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "entries" in body
+    assert "next_cursor" in body
+    assert len(body["entries"]) == 3
+    assert body["next_cursor"] is not None
+
+
+def test_audit_cursor_exhaustion_returns_null(tmp_home, app, org_state, auth_headers) -> None:
+    """When the result set is exhausted, next_cursor is null."""
+    for i in range(3):
+        org_state.db.insert_audit_log(
+            "TASK-{:03d}".format(i), "dev_agent", "cursor_test", None
+        )
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/audit", params={"limit": 10}, headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["next_cursor"] is None
+
+
+def test_audit_cursor_param_passes_through(tmp_home, app, org_state, auth_headers) -> None:
+    """Providing a cursor to the route returns the next page."""
+    for i in range(5):
+        org_state.db.insert_audit_log(
+            "TASK-{:03d}".format(i), "dev_agent", "cursor_test", None
+        )
+    # Get first page
+    r1 = TestClient(app).get(
+        "/api/v1/orgs/alpha/audit", params={"limit": 2}, headers=auth_headers,
+    )
+    cursor = r1.json()["next_cursor"]
+    assert cursor is not None
+    page1_ids = {e["id"] for e in r1.json()["entries"]}
+
+    # Get second page via cursor
+    r2 = TestClient(app).get(
+        "/api/v1/orgs/alpha/audit",
+        params={"limit": 2, "cursor": cursor},
+        headers=auth_headers,
+    )
+    assert r2.status_code == 200
+    page2_ids = {e["id"] for e in r2.json()["entries"]}
+    # No overlap between pages
+    assert page1_ids & page2_ids == set()
+
+
+def test_audit_bad_cursor_returns_422(tmp_home, app, org_state, auth_headers) -> None:
+    """Malformed cursor returns 422."""
+    _seed(org_state)
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/audit",
+        params={"limit": 2, "cursor": "garbage"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 422

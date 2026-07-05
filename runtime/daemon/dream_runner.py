@@ -117,7 +117,7 @@ async def run_dream(
             dream.agent_name, dream.window_start.isoformat(), limit=_AUDIT_WINDOW_CAP,
         )
     else:
-        recent_audit = org_state.db.query_audit_logs(
+        recent_audit, _ = org_state.db.query_audit_logs(
             agent=dream.agent_name, limit=_AUDIT_WINDOW_CAP,
         )
     paths = OrgPaths(root=org_state.root)
