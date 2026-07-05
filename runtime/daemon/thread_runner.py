@@ -774,6 +774,7 @@ async def run_invocation(
                 invocation_token[:8], retry_resume_sid,
             )
 
+            retry_exc: Exception | None = None
             try:
                 retry_result = await loop.run_in_executor(
                     None, lambda: _invoke(retry_prompt, retry_resume_sid),
@@ -784,6 +785,7 @@ async def run_invocation(
                     invocation_token[:8], exc,
                 )
                 retry_result = None
+                retry_exc = exc
 
             if retry_result is not None:
                 _persist_thread_token_usage(
@@ -827,25 +829,47 @@ async def run_invocation(
                     )
                 return
 
-            # Still pending after the nudge → persist the nudge's session id
-            # (same as the first pass), then auto-decline with distinct tag.
-            if (is_claude and retry_result is not None and retry_result.success
-                    and getattr(retry_result, "agent_session_id", None)):
-                new_watermark = max(shown_seqs) if shown_seqs else last_seq
-                new_watermark = max(new_watermark, last_seq)
-                org_state.db.update_thread_session(
-                    inv.thread_id, inv.agent_name,
-                    agent_session_id=retry_result.agent_session_id,
-                    last_resumed_seq=new_watermark,
-                )
-            retry_rc = getattr(retry_result, "returncode", "?") if retry_result is not None else "?"
-            reason = f"no_callback_after_reprompt: rc={retry_rc}"
-            detail = _executor_error_detail(retry_result, retry_rc) if retry_result is not None else ""
-            if detail:
-                reason = f"{reason} — {detail}"
+            # Still pending after the nudge → mirror first-pass classification
+            # (HIGH-2 REVISE): only tag no_callback_after_reprompt for a CLEAN retry
+            # exit (rc==0); exception → runner_crash, timeout → invocation_timeout,
+            # rc!=0 → no_callback: rc=N.
+            if retry_result is not None and retry_result.success:
+                # Session may still be persistable (clean exit from the nudge).
+                if (is_claude and getattr(retry_result, "agent_session_id", None)):
+                    new_watermark = max(shown_seqs) if shown_seqs else last_seq
+                    new_watermark = max(new_watermark, last_seq)
+                    org_state.db.update_thread_session(
+                        inv.thread_id, inv.agent_name,
+                        agent_session_id=retry_result.agent_session_id,
+                        last_resumed_seq=new_watermark,
+                    )
+
+            if retry_result is None:
+                # Exception during nudge re-invoke.
+                reason = f"runner_crash: {retry_exc}"
+                status = ThreadInvocationStatus.FAILED
+            else:
+                err_text = str(getattr(retry_result, "error", "") or "").lower()
+                retry_rc = getattr(retry_result, "returncode", "?")
+                if "timeout" in err_text:
+                    reason = "invocation_timeout"
+                    status = ThreadInvocationStatus.TIMEOUT
+                elif retry_rc != 0:
+                    reason = f"no_callback: rc={retry_rc}"
+                    detail = _executor_error_detail(retry_result, retry_rc)
+                    if detail:
+                        reason = f"{reason} — {detail}"
+                    status = ThreadInvocationStatus.FAILED
+                else:
+                    reason = f"no_callback_after_reprompt: rc={retry_rc}"
+                    detail = _executor_error_detail(retry_result, retry_rc)
+                    if detail:
+                        reason = f"{reason} — {detail}"
+                    status = ThreadInvocationStatus.FAILED
+
             org_state.db.fail_invocation(
                 invocation_token,
-                status=ThreadInvocationStatus.FAILED,
+                status=status,
                 decline_reason=reason,
             )
             AuditLogger(org_state.db).log_thread_invocation_failed(
