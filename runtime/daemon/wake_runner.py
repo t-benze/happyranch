@@ -30,7 +30,9 @@ from runtime.orchestrator.org_config import (
     render_current_time_line,
     resolve_managed_skills_index,
     resolve_org_timezone_display,
+    resolve_protocol_doc_manifest,
 )
+from runtime.orchestrator.workspace_adapters import refresh_session_skills
 from runtime.orchestrator.prompt_loader import load_agent
 from runtime.orchestrator.routine_parser import parse_routines
 
@@ -51,6 +53,7 @@ def build_wake_prompt(
     dropped: int = 0,
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
+    protocol_doc_manifest: str = "",
 ) -> str:
     """Compose the wake-session prompt.
 
@@ -68,6 +71,7 @@ def build_wake_prompt(
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
+    docs_block = f"\n{protocol_doc_manifest}\n" if protocol_doc_manifest else ""
     routine_block = "\n".join(routines) if routines else "(none)"
     preamble_block = f"{preamble}\n\n" if preamble else ""
     # No silent truncation: if routines were dropped past the cap, tell the
@@ -85,7 +89,7 @@ routines. It is NOT the work itself, and it is NOT a reflection. The real work
 happens in the root tasks you spawn — do not perform the routines here.
 
 Cadence: local_date {local_date}, slot {slot}, mode {mode}.
-current_time: {current_time}{skills_block}
+current_time: {current_time}{skills_block}{docs_block}
 Turn EACH routine below into ONE concrete root-task brief (phrased for the work
 due since the last wake at this cadence), then submit them ALL in a SINGLE
 callback:
@@ -150,6 +154,11 @@ async def run_wake(
         paths=paths, agent_name=record.agent_name,
     )
 
+    # Refresh on-disk skill bodies on EVERY session (THR-070).
+    refresh_session_skills(workspace, settings, slug=org_state.slug)
+
+    protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
+
     prompt = build_wake_prompt(
         org_slug=org_state.slug,
         work_hour_id=work_hour_id,
@@ -164,6 +173,7 @@ async def run_wake(
         org_config=org_config,
         dropped=parsed.dropped,
         managed_skills_index=managed_skills_index,
+        protocol_doc_manifest=protocol_doc_manifest,
     )
 
     executor_name = _executor_name(workspace)

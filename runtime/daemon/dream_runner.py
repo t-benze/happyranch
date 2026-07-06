@@ -18,7 +18,9 @@ from runtime.orchestrator.org_config import (
     render_current_time_line,
     resolve_dreaming_timezone_display,
     resolve_managed_skills_index,
+    resolve_protocol_doc_manifest,
 )
+from runtime.orchestrator.workspace_adapters import refresh_session_skills
 
 # Cap on the agent's window audit rows folded into the dream prompt. The most
 # recent N (chronological); keeps the prompt bounded on busy agents.
@@ -43,6 +45,7 @@ def build_dream_prompt(
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
+    protocol_doc_manifest: str = "",
 ) -> str:
     """Compose the private dream-session prompt.
 
@@ -54,12 +57,13 @@ def build_dream_prompt(
     tz, label = resolve_dreaming_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
+    docs_block = f"\n{protocol_doc_manifest}\n" if protocol_doc_manifest else ""
     return f"""# Private Nightly Dream
 
 You are {dream.agent_name}. This is private reflection for HappyRanch org `{org_slug}`.
 This is not a task or thread. Do not call report-completion.
 
-current_time: {current_time}{skills_block}
+current_time: {current_time}{skills_block}{docs_block}
 Dream id: {dream.id}
 Window start: {dream.window_start.isoformat() if dream.window_start else "last 24 hours"}
 Window end: {dream.window_end.isoformat()}
@@ -128,6 +132,15 @@ async def run_dream(
     managed_skills_index = resolve_managed_skills_index(
         paths=paths, agent_name=dream.agent_name,
     )
+
+    # Refresh on-disk skill bodies on EVERY session (THR-070).
+    try:
+        refresh_session_skills(workspace, settings, slug=org_state.slug)
+    except Exception:
+        pass
+
+    protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
+
     prompt = build_dream_prompt(
         org_slug=org_state.slug,
         dream=dream,
@@ -136,6 +149,7 @@ async def run_dream(
         task_history=_load_task_history(workspace),
         org_config=org_config,
         managed_skills_index=managed_skills_index,
+        protocol_doc_manifest=protocol_doc_manifest,
     )
 
     executor_name = _executor_name(workspace)
