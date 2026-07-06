@@ -1309,6 +1309,172 @@ def test_send_with_no_binding_stamps_founder(
     assert set(data["pending_replies"]) == {"dev_agent", "qa_engineer"}
 
 
+def test_send_partial_binding_task_id_only_rejected(
+    tmp_home, app, org_state, auth_headers
+):
+    """FINDING 1: /send with --task-id but NO --session-id => 422 binding_required (NOT speaker='founder')."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-1000", sid="sess-1000")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={
+            "body_markdown": "partial",
+            "task_id": "TASK-1000",
+            # session_id intentionally absent — partial binding.
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "binding_required"
+    # Must NOT have posted any message (not even speaker='founder').
+    msgs = org_state.db.list_thread_messages(tid)
+    assert len(msgs) == 0
+
+
+def test_send_partial_binding_session_id_only_rejected(
+    tmp_home, app, org_state, auth_headers
+):
+    """FINDING 1: /send with --session-id but NO --task-id => 422 binding_required."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={
+            "body_markdown": "partial",
+            "session_id": "sess-1001",
+            # task_id + composer absent.
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "binding_required"
+
+
+def test_send_partial_binding_composer_only_rejected(
+    tmp_home, app, org_state, auth_headers
+):
+    """FINDING 1: /send with composer but NO task_id/session_id => 422 binding_required."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={
+            "body_markdown": "partial",
+            "composer": "dev_agent",
+            # task_id + session_id absent.
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "binding_required"
+
+
+def test_send_no_binding_no_composer_in_response(
+    tmp_home, app, org_state, auth_headers
+):
+    """FINDING 1: /send with NO binding fields at all => founder path (composer not in body)."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={"body_markdown": "founder msg"},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert "pending_replies" in data
+    # No binding rejection; founder path works with NO fields at all.
+
+
+def test_send_agent_and_post_as_agent_share_attribution(
+    tmp_home, app, org_state, auth_headers
+):
+    """FINDING 2: /send (agent path) and /post-as-agent produce IDENTICAL attribution + REPLY routing + sent_from_task_id."""
+    client = TestClient(app)
+
+    # --- /send agent path ---
+    tid_send = _seed_open_thread(
+        org_state, participants=["dev_agent", "qa_engineer", "code_reviewer"]
+    )
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-S1", sid="sess-S1")
+
+    resp_send = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid_send}/send",
+        json={
+            "body_markdown": "same message",
+            "composer": "dev_agent",
+            "task_id": "TASK-S1",
+            "session_id": "sess-S1",
+        },
+        headers=auth_headers,
+    )
+    assert resp_send.status_code == 200, resp_send.text
+    data_send = resp_send.json()
+
+    # --- /post-as-agent path ---
+    tid_paa = _seed_open_thread(
+        org_state, participants=["dev_agent", "qa_engineer", "code_reviewer"]
+    )
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-P1", sid="sess-P1")
+
+    resp_paa = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid_paa}/post-as-agent",
+        json={
+            "body_markdown": "same message",
+            "composer": "dev_agent",
+            "task_id": "TASK-P1",
+            "session_id": "sess-P1",
+        },
+        headers=auth_headers,
+    )
+    assert resp_paa.status_code == 200, resp_paa.text
+    data_paa = resp_paa.json()
+
+    # Both routes produce the same response shape (except IDs vary).
+    assert "pending_replies" in data_send
+    assert "pending_replies" in data_paa
+    assert "seq" in data_send
+    assert "seq" in data_paa
+
+    # REPLY routing: both exclude the speaker from pending_replies.
+    assert "dev_agent" not in data_send["pending_replies"]
+    assert "dev_agent" not in data_paa["pending_replies"]
+    assert set(data_send["pending_replies"]) == {"qa_engineer", "code_reviewer"}
+    assert set(data_paa["pending_replies"]) == {"qa_engineer", "code_reviewer"}
+
+    # Speaker attribution: both attribute to the agent (not 'founder').
+    msgs_send = org_state.db.list_thread_messages(tid_send)
+    msgs_paa = org_state.db.list_thread_messages(tid_paa)
+    assert msgs_send[-1].speaker == "dev_agent"
+    assert msgs_paa[-1].speaker == "dev_agent"
+
+    # sent_from_task_id stored identically in both paths.
+    for tid, task, seq_val in [(tid_send, "TASK-S1", data_send["seq"]), (tid_paa, "TASK-P1", data_paa["seq"])]:
+        row = org_state.db._conn.execute(
+            "SELECT sent_from_task_id FROM thread_messages WHERE thread_id = ? AND seq = ?",
+            (tid, seq_val),
+        ).fetchone()
+        assert row["sent_from_task_id"] == task
+
+    # REPLY invocations: both mint to other participants only, triggered by correct seq.
+    for tid, seq_val in [(tid_send, data_send["seq"]), (tid_paa, data_paa["seq"])]:
+        minted = [
+            inv for inv in org_state.db.list_thread_invocations(tid)
+            if inv.triggering_seq == seq_val
+        ]
+        assert {inv.agent_name for inv in minted} == {"qa_engineer", "code_reviewer"}
+        assert all(inv.purpose.value == "reply" for inv in minted)
+
+
 def test_thread_messages_response_includes_attachments(client, auth_headers, org_state) -> None:
     _artifact_store(org_state).put("THR-001-report.pdf", b"pdf")
     thread_id = _seed_open_thread(org_state, participants=["dev_agent"])

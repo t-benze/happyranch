@@ -291,6 +291,76 @@ def test_threads_send_without_task_id_omits_binding(
     assert sent["body_markdown"] == "founder follow-up"
 
 
+def test_threads_send_task_id_without_session_id_exits_early(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """FINDING 1: `threads send --task-id T` without --session-id => fail fast, never POST."""
+    import sys
+    from cli.main import cmd_threads_send
+
+    payload_path = tmp_path / "msg.json"
+    payload_path.write_text(
+        json.dumps({
+            "composer": "dev_agent",
+            "body_markdown": "agent message",
+        }),
+        encoding="utf-8",
+    )
+    fake = Mock()
+    fake.post.return_value = _json_response({"thread_id": "THR-001", "seq": 2})
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha",
+        thread_id="THR-001",
+        from_file=str(payload_path),
+        task_id="TASK-200",
+        session_id=None,  # missing!
+        attach=[],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_threads_send(args)
+
+    assert exc_info.value.code == 2
+    fake.post.assert_not_called()
+
+
+def test_threads_send_session_id_without_task_id_exits_early(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """FINDING 1: `threads send --session-id S` without --task-id => fail fast."""
+    import sys
+    from cli.main import cmd_threads_send
+
+    payload_path = tmp_path / "msg.json"
+    payload_path.write_text(
+        json.dumps({
+            "composer": "dev_agent",
+            "body_markdown": "agent message",
+        }),
+        encoding="utf-8",
+    )
+    fake = Mock()
+    fake.post.return_value = _json_response({"thread_id": "THR-001", "seq": 2})
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha",
+        thread_id="THR-001",
+        from_file=str(payload_path),
+        task_id=None,  # missing!
+        session_id="sess-200",
+        attach=[],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_threads_send(args)
+
+    assert exc_info.value.code == 2
+    fake.post.assert_not_called()
+
+
 def test_threads_reply_attach_uses_speaker_for_upload_attribution(
     tmp_path: Path,
     monkeypatch,

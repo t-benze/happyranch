@@ -356,9 +356,23 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
         sys.exit(1)
     # Agent-initiated send (THR-069): when --task-id is provided, attach
     # the binding fields so the daemon attributes to the agent.
+    # FINDING 1 (REVISE): --session-id is REQUIRED when --task-id is supplied
+    # (and vice versa), matching post-as-agent's required binding semantics.
     task_id: str | None = getattr(args, "task_id", None)
     session_id: str | None = getattr(args, "session_id", None)
-    if task_id:
+    if task_id is not None or session_id is not None:
+        if task_id is None:
+            print(
+                "error: --task-id is required when --session-id is provided for agent-attributed send",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if session_id is None:
+            print(
+                "error: --session-id is required when --task-id is provided for agent-attributed send",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         if not args.from_file:
             print(
                 "error: --from-file is required for agent-initiated send",
@@ -367,8 +381,7 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
             sys.exit(2)
         _shared.require_absolute_payload_path(args.from_file, kind="thread-send")
         payload["task_id"] = task_id
-        if session_id:
-            payload["session_id"] = session_id
+        payload["session_id"] = session_id
         # When task_id is present, the payload must carry a composer field.
         composer = payload.get("composer", "")
         if not composer:
