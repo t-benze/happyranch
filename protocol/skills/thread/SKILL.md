@@ -301,7 +301,9 @@ fields (`composer`/`task_id`/`session_id`). When an agent calls `/send`
 with its live task+session binding, the message is attributed to the
 **agent** (not `'founder'`). A partial or ambiguous binding is rejected
 with 422 `binding_required` — all three fields must be present or all three
-must be absent. Only a true founder invocation (no agent binding) records
+must be absent. The bound agent must also already be a thread
+participant, otherwise the send is rejected with 403
+`not_a_participant`. Only a true founder invocation (no agent binding) records
 the speaker as `'founder'`, unchanged from prior behavior. This agent
 attribution is a **safety net** that prevents the old mis-stamp-as-founder
 bug, not a new preferred path. The intended task-session way for an agent
