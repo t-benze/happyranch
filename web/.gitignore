@@ -3,3 +3,7 @@ dist/
 .eslintcache
 *.log
 *.tsbuildinfo
+
+# FE screenshot harness (scripts/screenshot-harness) scratch output
+scripts/screenshot-harness/out/
+.screenshot-harness-tmp/
