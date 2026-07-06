@@ -217,6 +217,80 @@ def test_threads_send_attach_disambiguates_duplicate_generated_names(
     ]
 
 
+def test_threads_send_with_task_id_passes_binding_to_send_route(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`threads send --task-id T --session-id S` => POSTs composer/task_id/session_id in the send body."""
+    from cli.main import cmd_threads_send
+
+    payload_path = tmp_path / "msg.json"
+    payload_path.write_text(
+        json.dumps({
+            "composer": "dev_agent",
+            "body_markdown": "agent message",
+        }),
+        encoding="utf-8",
+    )
+    fake = Mock()
+    fake.post.return_value = _json_response({"thread_id": "THR-001", "seq": 2})
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha",
+        thread_id="THR-001",
+        from_file=str(payload_path),
+        task_id="TASK-200",
+        session_id="sess-200",
+        attach=[],
+    )
+
+    cmd_threads_send(args)
+
+    fake.post.assert_called_once()
+    sent = fake.post.call_args.kwargs["json"]
+    # Binding fields are present in the POST body.
+    assert sent["composer"] == "dev_agent"
+    assert sent["task_id"] == "TASK-200"
+    assert sent["session_id"] == "sess-200"
+    assert sent["body_markdown"] == "agent message"
+    # Route is the same /send endpoint (binding is in-body).
+    assert "/send" in fake.post.call_args.args[0]
+
+
+def test_threads_send_without_task_id_omits_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Plain `threads send` (no --task-id) => no composer/task_id/session_id in the POST body."""
+    from cli.main import cmd_threads_send
+
+    payload_path = tmp_path / "msg.json"
+    payload_path.write_text(
+        json.dumps({"body_markdown": "founder follow-up"}),
+        encoding="utf-8",
+    )
+    fake = Mock()
+    fake.post.return_value = _json_response({"thread_id": "THR-001", "seq": 2})
+    _stub_client(monkeypatch, fake)
+
+    args = argparse.Namespace(
+        org="alpha",
+        thread_id="THR-001",
+        from_file=str(payload_path),
+        task_id=None,
+        session_id=None,
+        attach=[],
+    )
+
+    cmd_threads_send(args)
+
+    fake.post.assert_called_once()
+    sent = fake.post.call_args.kwargs["json"]
+    # No binding fields in the founder path.
+    assert "composer" not in sent
+    # body_markdown still present.
+    assert sent["body_markdown"] == "founder follow-up"
+
+
 def test_threads_reply_attach_uses_speaker_for_upload_attribution(
     tmp_path: Path,
     monkeypatch,

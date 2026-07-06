@@ -1132,6 +1132,183 @@ def test_thread_send_rejects_too_many_attachments(client, auth_headers, org_stat
     assert r.json()["detail"]["code"] == "too_many_attachments"
 
 
+# ---------------------------------------------------------------------------
+# POST /threads/{id}/send with agent binding (THR-069)
+# ---------------------------------------------------------------------------
+
+
+def test_send_with_agent_binding_attributes_to_agent(
+    tmp_home, app, org_state, auth_headers
+):
+    """POST /send with a valid task+session binding => speaker is the agent (not 'founder')."""
+    client = TestClient(app)
+    tid = _seed_open_thread(
+        org_state, participants=["dev_agent", "qa_engineer", "code_reviewer"]
+    )
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-990", sid="sess-990")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={
+            "body_markdown": "agent message",
+            "composer": "dev_agent",
+            "task_id": "TASK-990",
+            "session_id": "sess-990",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    msgs = org_state.db.list_thread_messages(tid)
+    assert msgs[-1].speaker == "dev_agent"
+    assert msgs[-1].speaker != "founder"
+
+
+def test_send_with_agent_binding_mints_to_other_participants(
+    tmp_home, app, org_state, auth_headers
+):
+    """POST /send with agent binding => REPLY minted to OTHER participants only (composer excluded)."""
+    client = TestClient(app)
+    tid = _seed_open_thread(
+        org_state, participants=["dev_agent", "qa_engineer", "code_reviewer"]
+    )
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-991", sid="sess-991")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={
+            "body_markdown": "status",
+            "composer": "dev_agent",
+            "task_id": "TASK-991",
+            "session_id": "sess-991",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert set(data["pending_replies"]) == {"qa_engineer", "code_reviewer"}
+    assert "dev_agent" not in data["pending_replies"]
+
+
+def test_send_with_agent_binding_stores_sent_from_task_id(
+    tmp_home, app, org_state, auth_headers
+):
+    """POST /send with agent binding => sent_from_task_id is stored in the DB row."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-992", sid="sess-992")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={
+            "body_markdown": "task msg",
+            "composer": "dev_agent",
+            "task_id": "TASK-992",
+            "session_id": "sess-992",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    row = org_state.db._conn.execute(
+        "SELECT sent_from_task_id FROM thread_messages "
+        "WHERE thread_id = ? AND seq = ?",
+        (tid, resp.json()["seq"]),
+    ).fetchone()
+    assert row["sent_from_task_id"] == "TASK-992"
+
+
+def test_send_with_agent_binding_rejects_non_participant(
+    tmp_home, app, org_state, auth_headers
+):
+    """POST /send with agent binding => 403 if composer is not a participant."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["qa_engineer"])
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-993", sid="sess-993")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={
+            "body_markdown": "intruder",
+            "composer": "dev_agent",
+            "task_id": "TASK-993",
+            "session_id": "sess-993",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "not_a_participant"
+
+
+def test_send_with_agent_binding_rejects_non_owner(
+    tmp_home, app, org_state, auth_headers
+):
+    """POST /send with agent binding => 403 if task is not owned by composer."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+    _bind_task_session(org_state, agent="qa_engineer", task_id="TASK-994", sid="sess-994")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={
+            "body_markdown": "not mine",
+            "composer": "dev_agent",
+            "task_id": "TASK-994",
+            "session_id": "sess-994",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "composer_not_task_owner"
+
+
+def test_send_with_agent_binding_rejects_session_mismatch(
+    tmp_home, app, org_state, auth_headers
+):
+    """POST /send with agent binding => 409 if active session doesn't match."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-995", sid="sess-real")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={
+            "body_markdown": "wrong session",
+            "composer": "dev_agent",
+            "task_id": "TASK-995",
+            "session_id": "sess-stale",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "session_mismatch"
+
+
+def test_send_with_no_binding_stamps_founder(
+    tmp_home, app, org_state, auth_headers
+):
+    """POST /send with NO binding => speaker='founder' and broadcast to all participants (unchanged)."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent", "qa_engineer"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={"body_markdown": "founder follow-up"},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    msgs = org_state.db.list_thread_messages(tid)
+    assert msgs[-1].speaker == "founder"
+    data = resp.json()
+    # Founder broadcast goes to ALL participants.
+    assert set(data["pending_replies"]) == {"dev_agent", "qa_engineer"}
+
+
 def test_thread_messages_response_includes_attachments(client, auth_headers, org_state) -> None:
     _artifact_store(org_state).put("THR-001-report.pdf", b"pdf")
     thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
