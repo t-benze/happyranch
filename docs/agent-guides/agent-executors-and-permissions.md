@@ -25,7 +25,7 @@ can be registered in org config.
 
 When `model` is **unset** (the default for all existing agents), the executor launches with no model flag — each CLI uses its own default model. When `model` is **set** (via `happyranch set-model` or the agents route), the profile's `model_arg` template is substituted and injected as additive cmd elements after the binary, before permission flags. The model args never modify or reorder existing permission-bearing argv lines.
 
-Model lives in two surfaces: the org agent `.md` frontmatter (`model:` field) and the workspace `agent.yaml` (`model:` key). The orchestrator resolves the model from `agent.yaml` at dispatch time. The `happyranch set-model` command reconciles both surfaces end-to-end.
+Model lives in two surfaces: the org agent `.md` frontmatter (`model:` field) and the workspace `agent.yaml` (`model:` key). At dispatch time the orchestrator reads the `agent.yaml` key first (runtime override), falling back to the durable frontmatter when `agent.yaml` lacks a model (survives workspace re-bootstrap). The `happyranch set-model` command reconciles both surfaces end-to-end.
 
 Custom/self-registered profiles do not currently support `model_arg` (separate founder-gated track).
 

@@ -197,16 +197,24 @@ def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) 
 
 
 def _resolve_agent_model(paths: OrgPaths, agent_name: str) -> str | None:
-    """Resolve the per-agent model from agent.yaml.
+    """Resolve the per-agent model.
 
-    Returns the model string if set, None if absent/empty (CLI default).
+    agent.yaml is a regenerable workspace-local cache.  The durable source
+    of truth is the AgentDef.model field in org/agents/<name>.md frontmatter.
+
+    Resolution order:
+    1. agent.yaml `model` key when present and non-empty (runtime override).
+    2. Fallback to AgentDef.model from the durable frontmatter.
     """
     workspace = paths.workspaces_dir / agent_name
-    if not workspace.exists():
-        return None
-    cfg = load_agent_config(workspace)
-    model = cfg.get("model")
-    return model if model else None
+    if workspace.exists():
+        cfg = load_agent_config(workspace)
+        model = cfg.get("model")
+        if model:
+            return model
+    # Fallback to the durable frontmatter — survives agent.yaml regeneration.
+    agent_def = prompt_loader.load_agent(paths, agent_name)
+    return agent_def.model if agent_def else None
 
 
 @router.get("/agents")
