@@ -295,6 +295,21 @@ you). It fails if you are not a participant or the thread is not open.
 Turn count is tracked and displayed but no longer gates posting; there is
 no per-thread turn cap enforcement.
 
+**Founder `/send` and agent attribution.** The founder `/send`
+path (`POST /threads/{thread_id}/send`) now accepts optional agent binding
+fields (`composer`/`task_id`/`session_id`). When an agent calls `/send`
+with its live task+session binding, the message is attributed to the
+**agent** (not `'founder'`). A partial or ambiguous binding is rejected
+with 422 `binding_required` — all three fields must be present or all three
+must be absent. The bound agent must also already be a thread
+participant, otherwise the send is rejected with 403
+`not_a_participant`. Only a true founder invocation (no agent binding) records
+the speaker as `'founder'`, unchanged from prior behavior. This agent
+attribution is a **safety net** that prevents the old mis-stamp-as-founder
+bug, not a new preferred path. The intended task-session way for an agent
+to append to a thread remains **post-as-agent** (attributed to you) or
+**reply** (invocation token).
+
 ## What NOT to do
 
 - Do NOT spawn arbitrary side-effects (run repos, hit APIs) inside a thread
