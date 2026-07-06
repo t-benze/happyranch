@@ -79,6 +79,25 @@ def _copy_skill_file(src: Path, dst: Path, *, slug: str) -> None:
         shutil.copy2(src, dst)
 
 
+def refresh_session_skills(
+    workspace: Path, settings: Settings, *, slug: str,
+) -> None:
+    """Re-copy the bundled ``protocol/skills/`` tree into the workspace so
+    live agents' on-disk skill bodies reflect the current bundle.
+
+    This is idempotent — it replaces existing copies — and covers both Claude
+    (``.claude/skills/``) and AGENTS.md-backed providers (``.agents/skills/``).
+    Called on EVERY session creation so skill edits in the bundled
+    ``project_root/protocol/skills/`` reach agents without a lifecycle event.
+
+    Reuses ``_copy_skills_tree`` (the same logic that ``ensure_workspace_ready``
+    calls). The source is always the bundled ``_resolve_skills_src(settings)``.
+    """
+    src = _resolve_skills_src(settings)
+    _copy_skills_tree(src, workspace / ".claude" / "skills", slug=slug)
+    _copy_skills_tree(src, workspace / ".agents" / "skills", slug=slug)
+
+
 def _memory_bootstrap_section(workspace: Path) -> list[str]:
     """Returns the 'Persistent Files' + 'Your Memory' block.
 
@@ -559,7 +578,9 @@ class ClaudeWorkspaceAdapter:
             *_memory_bootstrap_section(workspace),
             "## Knowledge Base (shared across agents)\n",
             "Path: `<runtime>/kb/`. Read: everyone. Write: any agent (via `--from-file`).",
-            "Delete: any team manager (audited); founder via `--as-founder`. Full rules: `protocol/06-knowledge-base.md`.",
+            "Delete: any team manager (audited); founder via `--as-founder`.",
+            "Protocol docs are available in your session prompt `Protocol Docs`",
+            "block — use `Read` to load any doc from its absolute bundled path.",
         ]
         if include_start_task:
             sections.extend([

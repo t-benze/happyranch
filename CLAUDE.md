@@ -15,7 +15,7 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 | Web app, OpenAPI pinning, CLI behavior, agent callbacks | `docs/agent-guides/web-and-cli.md` |
 | KB, learnings, artifacts, revisit, threads, jobs | `docs/agent-guides/features-and-invariants.md` |
 
-`README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. `AGENTS.md` is a compatibility symlink to this file; keep repo-wide agent instructions here only. For current behavior, prefer `docs/agent-guides/`, `protocol/`, tests, OpenAPI snapshots, and implementation. `docs/superpowers/specs/` is append-only design history unless a spec is explicitly marked current in `docs/superpowers/specs/README.md`.
+`README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. `AGENTS.md` is a compatibility symlink to this file; keep repo-wide agent instructions here only. For current behavior, prefer `docs/agent-guides/`, tests, OpenAPI snapshots, and implementation. Protocol docs are bundled with the runtime — your session prompt injects a one-line-per-doc manifest with absolute paths for on-demand `Read`. `docs/superpowers/specs/` is append-only design history unless a spec is explicitly marked current in `docs/superpowers/specs/README.md`.
 
 ## Essentials
 

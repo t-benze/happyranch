@@ -439,3 +439,42 @@ policy:
   directories only.
 - **No auth or permission-model change** — the existing executor-native
   sandboxing + system prompt guardrails remain the sole capability gate.
+
+### 4.6 Session-Time Skill Freshness & Protocol Doc Injection (THR-070)
+
+**Skill body freshness.** System/contract skill bodies are copied from the
+bundled ``project_root/protocol/skills/`` into the agent workspace at
+`ensure_workspace_ready` time (lifecycle events like init-agent,
+set-executor). Before THR-070, live agents' on-disk skill bodies froze until
+the next lifecycle event — an edit to a skill in the bundle would not reach a
+running agent.
+
+Now, the skill tree is **refreshed on EVERY session creation** (task/subtask,
+thread reply, wake, dream) by a shared idempotent helper that re-copies from
+the bundled source into both ``.claude/skills/`` and ``.agents/skills/``. The
+source is always ``_resolve_skills_src(settings)`` = ``project_root/protocol/skills/``
+(the bundled runtime), never a workspace clone or stale frozen copy.
+
+**Protocol doc manifest.** Protocol ``.md`` docs (the files in
+``project_root/protocol/*.md``) are NEVER copied to agent workspaces. Instead,
+a minimal one-line-per-doc **manifest** is injected into every session prompt
+alongside the compact skill index. Each line carries the doc title, a one-line
+purpose, and the absolute bundled path. Agents read full doc bodies on-demand
+from the bundled path — no new tool, no new daemon route, no injection of full
+bodies.
+
+This replaces the legacy model where agents read protocol docs from the
+``repos/happyranch/protocol/`` clone (which was fresh only at
+once-per-session git-pull).
+
+**Session-path coverage.** The four session-creation paths that inject the
+manifest and refresh skills are:
+1. ``Orchestrator._run_agent`` (task/subtask)
+2. ``wake_runner.run_wake`` (working-hours wake)
+3. ``thread_runner.run_invocation`` (thread reply/bootstrap)
+4. ``dream_runner.run_dream`` (private dream)
+
+**Hard constraints.** Skill refresh and manifest injection are additive only —
+they do not modify ``resolve_managed_skills_index``, ``render_compact_skill_index``,
+the permission model, executor skill-load paths, or the SQLite schema. No new
+daemon routes are added.

@@ -38,7 +38,9 @@ from runtime.orchestrator.org_config import (
     render_current_time_line,
     resolve_managed_skills_index,
     resolve_org_timezone_display,
+    resolve_protocol_doc_manifest,
 )
+from runtime.orchestrator.workspace_adapters import refresh_session_skills
 from runtime.orchestrator.teams import TeamsRegistry
 
 logger = logging.getLogger(__name__)
@@ -325,6 +327,7 @@ class Orchestrator:
         now: Callable[[], datetime] | None = None,
         memory_digest: str | None = None,
         managed_skills_index: str = "",
+        protocol_doc_manifest: str = "",
     ) -> str:
         if provider == "codex":
             intro = (
@@ -359,6 +362,8 @@ class Orchestrator:
         digest_block = f"\n{memory_digest}\n" if memory_digest else ""
         # THR-055 managed skills index — compact manifest of eligible skills
         skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
+        # THR-070 protocol doc manifest — bundled-path one-liner per doc
+        docs_block = f"\n{protocol_doc_manifest}\n" if protocol_doc_manifest else ""
         return (
             f"{intro}"
             f"\n"
@@ -370,6 +375,7 @@ class Orchestrator:
             f"{role_guidance_block}"
             f"{digest_block}"
             f"{skills_block}"
+            f"{docs_block}"
         )
 
     def _read_completion_from_db(
@@ -552,6 +558,14 @@ class Orchestrator:
             paths=self._paths, agent_name=agent_name,
         )
 
+        # Refresh on-disk skill bodies from the bundled protocol/skills/ on EVERY
+        # session so edits to system/contract skills reach agents without a
+        # lifecycle event (THR-070).
+        refresh_session_skills(workspace, self._settings, slug=self._slug)
+
+        # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
+        protocol_doc_manifest = resolve_protocol_doc_manifest(settings=self._settings)
+
         full_prompt = self._build_agent_prompt(
             provider,
             agent_name,
@@ -561,6 +575,7 @@ class Orchestrator:
             prompt,
             memory_digest=memory_digest,
             managed_skills_index=managed_skills_index,
+            protocol_doc_manifest=protocol_doc_manifest,
         )
 
         if self._sessions is not None:
