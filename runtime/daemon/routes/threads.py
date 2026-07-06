@@ -1716,6 +1716,10 @@ async def dispatch_from_thread_endpoint(
 class SendBody(BaseModel):
     body_markdown: str = ""
     attachments: list[AttachmentRefBody] = Field(default_factory=list)
+    # Optional agent binding fields for agent-attributed send (THR-069).
+    composer: str | None = None
+    task_id: str | None = None
+    session_id: str | None = None
 
 
 class _SendThreadError(Exception):
@@ -1728,6 +1732,32 @@ class _SendThreadError(Exception):
         self.details = details
 
 
+def _validate_task_session_binding(
+    org: object,
+    composer: str,
+    task_id: str,
+    session_id: str,
+) -> None:
+    """Validate a task+session binding for agent-initiated thread actions.
+
+    Shared by /send (with agent binding) and /post-as-agent.
+    Raises _SendThreadError on validation failures.
+    """
+    task = org.db.get_task(task_id)
+    if task is None:
+        raise _SendThreadError(404, "unknown_task", task_id=task_id)
+    if task.assigned_agent != composer:
+        raise _SendThreadError(
+            403, "composer_not_task_owner",
+            composer=composer, assigned_agent=task.assigned_agent,
+        )
+    active_sid = org.sessions.get_active(task_id, composer)
+    if active_sid is None or active_sid != session_id:
+        raise _SendThreadError(
+            409, "session_mismatch", active=active_sid, got=session_id,
+        )
+
+
 async def _send_thread_message_inprocess(
     org: object,
     slug: str,
@@ -1735,8 +1765,17 @@ async def _send_thread_message_inprocess(
     *,
     body_markdown: str,
     attachments: list[AttachmentRefBody] | None = None,
+    # Agent binding for agent-attributed send (THR-069).
+    composer: str | None = None,
+    task_id: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
-    """Append a founder message to an open thread + mint reply invocations.
+    """Append a message to an open thread + mint reply invocations.
+
+    When agent binding (composer/task_id/session_id) is present, the message is
+    attributed to the agent and REPLY invocations are minted to OTHER participants
+    only (mirrors /post-as-agent). When absent, the message is attributed to
+    'founder' and REPLY is minted to ALL participants (current behavior).
 
     Returns the same response shape as POST /threads/{id}/send.
     Raises _SendThreadError on validation failures (route translates to HTTP).
@@ -1746,28 +1785,63 @@ async def _send_thread_message_inprocess(
         raise _SendThreadError(404, "not_found")
     if t.status is not ThreadStatus.OPEN:
         raise _SendThreadError(400, "thread_not_open")
+
+    # Derive speaker and addressed list from binding presence (THR-069).
+    # FINDING 1 (REVISE): any binding field signals agent intent; if agent
+    # intent is signalled, ALL binding fields are required. A partial binding
+    # is rejected with binding_required/422 rather than silently falling through
+    # to speaker='founder'.
+    any_binding = composer is not None or task_id is not None or session_id is not None
+    if any_binding:
+        if composer is None or task_id is None or session_id is None:
+            raise _SendThreadError(422, "binding_required")
+        _validate_task_session_binding(org, composer, task_id, session_id)
+        # Participate-and-audit guard: the speaker must be a participant.
+        participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
+        if composer not in participants:
+            raise _SendThreadError(
+                403, "not_a_participant", composer=composer,
+            )
+        speaker = composer
+        uploaded_by = composer
+        addressed = [name for name in participants if name != composer]
+        sent_from_task_id = task_id
+    else:
+        speaker = "founder"
+        uploaded_by = "founder"
+        participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
+        # Broadcast model: founder /send mints REPLY for every participant.
+        addressed = list(participants)
+        sent_from_task_id = None
+
     normalized_attachments = _normalize_all_attachments(
-        org, attachments, uploaded_by="founder", thread_id=thread_id,
+        org, attachments, uploaded_by=uploaded_by, thread_id=thread_id,
     )
     body_text = _normalize_message_body(body_markdown, normalized_attachments)
 
-    participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
-
-    # Broadcast model: founder /send mints REPLY for every participant.
-    # The founder is not a participant, so she is never a mint target.
-    addressed = list(participants)
+    # Agent path delegates to the shared helper; founder path does not.
+    if any_binding:
+        return await _post_agent_message(
+            org, slug, thread_id,
+            speaker=speaker,
+            body_text=body_text,
+            attachments=normalized_attachments,
+            task_id=sent_from_task_id,
+            addressed=addressed,
+        )
 
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
         seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker="founder",
+            thread_id=thread_id, speaker=speaker,
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
             attachments=normalized_attachments,
+            sent_from_task_id=sent_from_task_id,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker="founder", kind="message",
+            thread_id, seq=seq, speaker=speaker, kind="message",
             attachment_names=[a.artifact_name for a in normalized_attachments],
         )
         for name in addressed:
@@ -1782,9 +1856,62 @@ async def _send_thread_message_inprocess(
 
     await _publish_thread_event(
         org, slug,
-        thread_id=thread_id, seq=seq, speaker="founder",
+        thread_id=thread_id, seq=seq, speaker=speaker,
         kind="message",
         preview=body_text or _attachments_preview(normalized_attachments),
+        status="open",
+    )
+
+    return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
+
+
+async def _post_agent_message(
+    org: object,
+    slug: str,
+    thread_id: str,
+    *,
+    speaker: str,
+    body_text: str | None,
+    attachments: list[ThreadAttachment],
+    task_id: str,
+    addressed: list[str],
+) -> dict:
+    """Shared agent-message append/audit/reply/enqueue/SSE/response logic.
+
+    USED BY both /send (agent path) and /post-as-agent to prevent drift.
+    Does NOT validate — callers must already have verified the thread is open,
+    the task/session binding is valid, the speaker is a participant, and
+    `addressed` (participants to mint REPLY for) excludes the speaker.
+    """
+    tokens_to_enqueue: list[str] = []
+    async with org.db_lock:
+        seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker=speaker,
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown=body_text,
+            attachments=attachments,
+            sent_from_task_id=task_id,
+        )
+        org.db.increment_thread_turns_used(thread_id, by=1)
+        AuditLogger(org.db).log_thread_message_sent(
+            thread_id, seq=seq, speaker=speaker, kind="message",
+            attachment_names=[a.artifact_name for a in attachments],
+        )
+        for name in addressed:
+            inv = org.db.mint_thread_invocation(
+                thread_id=thread_id, agent_name=name,
+                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+            )
+            tokens_to_enqueue.append(inv.invocation_token)
+
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=seq, speaker=speaker,
+        kind="message",
+        preview=body_text or _attachments_preview(attachments),
         status="open",
     )
 
@@ -1800,6 +1927,9 @@ async def send_thread_endpoint(
             org, slug, thread_id,
             body_markdown=body.body_markdown,
             attachments=body.attachments,
+            composer=body.composer,
+            task_id=body.task_id,
+            session_id=body.session_id,
         )
     except _SendThreadError as exc:
         raise HTTPException(
@@ -1835,23 +1965,15 @@ async def post_thread_as_agent(
     # required, task exists, composer owns it, active session matches.
     if not body.task_id or not body.session_id:
         raise HTTPException(status_code=422, detail={"code": "binding_required"})
-    task = org.db.get_task(body.task_id)
-    if task is None:
-        raise HTTPException(
-            status_code=404, detail={"code": "unknown_task", "task_id": body.task_id}
+    try:
+        _validate_task_session_binding(
+            org, body.composer, body.task_id, body.session_id,
         )
-    if task.assigned_agent != body.composer:
+    except _SendThreadError as exc:
         raise HTTPException(
-            status_code=403,
-            detail={"code": "composer_not_task_owner",
-                    "composer": body.composer, "assigned_agent": task.assigned_agent},
-        )
-    active_sid = org.sessions.get_active(body.task_id, body.composer)
-    if active_sid is None or active_sid != body.session_id:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
-        )
+            status_code=exc.status_code,
+            detail={"code": exc.code, **exc.details},
+        ) from exc
 
     # Thread must exist before participation can be evaluated.
     t = org.db.get_thread(thread_id)
@@ -1879,39 +2001,14 @@ async def post_thread_as_agent(
     # composer — they are the speaker).
     addressed = [name for name in participants if name != body.composer]
 
-    tokens_to_enqueue: list[str] = []
-    async with org.db_lock:
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker=body.composer,
-            kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text,
-            attachments=attachments,
-            sent_from_task_id=body.task_id,
-        )
-        org.db.increment_thread_turns_used(thread_id, by=1)
-        AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker=body.composer, kind="message",
-            attachment_names=[a.artifact_name for a in attachments],
-        )
-        for name in addressed:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
-
-    for token in tokens_to_enqueue:
-        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
-
-    await _publish_thread_event(
-        org, slug,
-        thread_id=thread_id, seq=seq, speaker=body.composer,
-        kind="message",
-        preview=body_text or _attachments_preview(attachments),
-        status="open",
+    return await _post_agent_message(
+        org, slug, thread_id,
+        speaker=body.composer,
+        body_text=body_text,
+        attachments=attachments,
+        task_id=body.task_id,
+        addressed=addressed,
     )
-
-    return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
 
 
 # ---------------------------------------------------------------------------

@@ -354,12 +354,51 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
     except (OSError, ValueError) as exc:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
+    # Agent-initiated send (THR-069): when --task-id is provided, attach
+    # the binding fields so the daemon attributes to the agent.
+    # FINDING 1 (REVISE): --session-id is REQUIRED when --task-id is supplied
+    # (and vice versa), matching post-as-agent's required binding semantics.
+    task_id: str | None = getattr(args, "task_id", None)
+    session_id: str | None = getattr(args, "session_id", None)
+    if task_id is not None or session_id is not None:
+        if task_id is None:
+            print(
+                "error: --task-id is required when --session-id is provided for agent-attributed send",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if session_id is None:
+            print(
+                "error: --session-id is required when --task-id is provided for agent-attributed send",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if not args.from_file:
+            print(
+                "error: --from-file is required for agent-initiated send",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        _shared.require_absolute_payload_path(args.from_file, kind="thread-send")
+        payload["task_id"] = task_id
+        payload["session_id"] = session_id
+        # When task_id is present, the payload must carry a composer field.
+        composer = payload.get("composer", "")
+        if not composer:
+            print(
+                "error: --from-file payload must include 'composer' for agent-initiated send",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        agent = composer
+    else:
+        agent = "founder"
     payload = _merge_uploaded_attachments(
         client=client,
         slug=slug,
         payload=payload,
         attach_paths=getattr(args, "attach", None),
-        agent="founder",
+        agent=agent,
         thread_id=args.thread_id,
         use_shared_artifacts=getattr(args, "shared", False),
     )
@@ -691,10 +730,21 @@ def register(sub) -> None:
     p_threads_show.add_argument("--json", action="store_true")
     p_threads_show.set_defaults(func=cmd_threads_show)
 
-    p_threads_send = threads_sub.add_parser("send", help="Founder: send a follow-up message to a thread")
+    p_threads_send = threads_sub.add_parser(
+        "send",
+        help="Send a follow-up message to a thread (founder or agent-in-task)",
+    )
     p_threads_send.add_argument("--org", default=None, help="Org slug")
     p_threads_send.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_send.add_argument("--from-file", dest="from_file", required=True)
+    p_threads_send.add_argument(
+        "--task-id", default=None, dest="task_id",
+        help="Active task binding for agent-initiated send",
+    )
+    p_threads_send.add_argument(
+        "--session-id", default=None, dest="session_id",
+        help="Active session id (required with --task-id)",
+    )
     p_threads_send.add_argument("--attach", action="append", type=Path, default=None)
     p_threads_send.add_argument(
         "--shared", action="store_true", default=False,
