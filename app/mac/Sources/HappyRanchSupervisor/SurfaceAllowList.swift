@@ -30,10 +30,22 @@ public struct SurfaceAllowList: Sendable {
 
     /// Denied path patterns for routes with template placeholders.
     /// Each tuple is `(method, segment, suffix)` meaning:
-    /// "deny if path contains `segment` AND ends with `suffix`".
+    /// "deny if path contains `segment` AND contains `suffix`".
     /// This handles routes like `/agents/{agent_name}/memory` where the
     /// method matters but the agent name varies.
+    ///
+    /// For the memory-write routes where `contains` would over-match
+    /// the browser-facing `POST .../memory/entries/search`, use
+    /// ``deniedSegmentEndsWithSuffixes`` instead.
     private let deniedSegmentPatterns: [(method: String, segment: String, suffix: String)]
+
+    /// Denied path patterns where the suffix must appear at the **end** of
+    /// the path (``hasSuffix``), not just anywhere in it.
+    ///
+    /// Used for memory-write patterns like `POST /agents/*/memory` which
+    /// would otherwise over-match the browser-facing
+    /// `POST /agents/*/memory/entries/search` via plain `contains`.
+    private let deniedSegmentEndsWithSuffixes: [(method: String, segment: String, suffix: String)]
 
     // MARK: - Default policy
 
@@ -62,12 +74,8 @@ public struct SurfaceAllowList: Sendable {
         let exactDenies: [(String, String)] = [
             // Agent self-service
             ("POST", "/agents/manage"),
-            // Thread agent callbacks
+            // Thread agent callback
             ("POST", "/threads/compose-as-agent"),
-            ("POST", "/threads/{thread_id}/post-as-agent"),
-            // Thread-scoped attachments
-            ("GET", "/threads/{thread_id}/attachments"),
-            ("POST", "/threads/{thread_id}/attachments"),
             // Jobs agent callback
             ("POST", "/jobs/submit"),
             // Dreams agent callback
@@ -99,24 +107,38 @@ public struct SurfaceAllowList: Sendable {
             // Agent self-service & management
             ("POST", "/agents/", "/repos"),
             ("PUT", "/agents/", "/executor"),
-            // Memory writes
-            ("POST", "/agents/", "/memory"),
+            // Memory writes — non-POST methods are safe for `contains`
+            // because the browser-facing search route is POST-only.
             ("PUT", "/agents/", "/memory"),
             ("PATCH", "/agents/", "/memory"),
-            ("POST", "/agents/", "/promote"),
-            ("POST", "/agents/", "/reindex"),
-            ("POST", "/agents/", "/compact"),
-            ("PATCH", "/agents/", "/lifecycle"),
-            // Thread agent callbacks
+            // Thread agent callbacks (reply, decline, dispatch,
+            // post-as-agent, attachments)
             ("POST", "/threads/", "/reply"),
             ("POST", "/threads/", "/decline"),
             ("POST", "/threads/", "/dispatch"),
+            ("POST", "/threads/", "/post-as-agent"),
+            // Attachments: POST uses contains (no single-attachment upload route),
+            // GET uses ends-with to avoid over-matching /attachments/{id} download.
+            ("POST", "/threads/", "/attachments"),
             // Dreams agent callback
             ("POST", "/dreams/", "/complete"),
             // Work-hours wake spawn
             ("POST", "/work-hours/", "/spawn"),
             // Artifacts — agent-facing download (GET /artifacts/{name})
             ("GET", "/artifacts/", ""),
+        ]
+        let memoryEndsWithDenies: [(String, String, String)] = [
+            // Memory writes where suffix must be path-end to avoid
+            // over-matching the browser-facing POST .../memory/entries/search.
+            ("POST", "/agents/", "/memory"),
+            ("POST", "/agents/", "/memory/entries/"),
+            ("POST", "/agents/", "/promote"),
+            ("POST", "/agents/", "/reindex"),
+            ("POST", "/agents/", "/compact"),
+            ("PATCH", "/agents/", "/lifecycle"),
+            // GET /threads/{id}/attachments (list) uses ends-with to avoid
+            // over-matching the browser-facing GET .../attachments/{id} (download).
+            ("GET", "/threads/", "/attachments"),
         ]
         segmentPatterns = segmentDenies
 
@@ -140,16 +162,17 @@ public struct SurfaceAllowList: Sendable {
         let deniedPrefixes: [String] = [
             "/as-founder",
             "/api/v1/as-founder",
-            // Defense-in-depth prefix denies
+            // Defense-in-depth prefix denies (no "/threads/" — browser-facing
+            // thread routes must stay ALLOWED; per-method+path denies below).
             "/memory/",
             "/learning/",
-            "/threads/",
         ]
 
         return SurfaceAllowList(
             deniedMethods: Set(denied),
             deniedPrefixes: deniedPrefixes,
-            deniedSegmentPatterns: segmentPatterns
+            deniedSegmentPatterns: segmentPatterns,
+            deniedSegmentEndsWithSuffixes: memoryEndsWithDenies
         )
     }()
 
@@ -158,11 +181,13 @@ public struct SurfaceAllowList: Sendable {
     public init(
         deniedMethods: Set<String> = [],
         deniedPrefixes: [String] = [],
-        deniedSegmentPatterns: [(method: String, segment: String, suffix: String)] = []
+        deniedSegmentPatterns: [(method: String, segment: String, suffix: String)] = [],
+        deniedSegmentEndsWithSuffixes: [(method: String, segment: String, suffix: String)] = []
     ) {
         self.deniedMethods = deniedMethods
         self.deniedPrefixes = deniedPrefixes
         self.deniedSegmentPatterns = deniedSegmentPatterns
+        self.deniedSegmentEndsWithSuffixes = deniedSegmentEndsWithSuffixes
     }
 
     // MARK: - Gate
@@ -192,6 +217,17 @@ public struct SurfaceAllowList: Sendable {
                 let segmentMatch = checkPath.contains(pattern.segment)
                 let suffixMatch = pattern.suffix.isEmpty || checkPath.contains(pattern.suffix)
                 if segmentMatch && suffixMatch {
+                    return false
+                }
+            }
+
+            // 2b. Segment-pattern deny where suffix must end the path
+            // (hasSuffix, not contains — prevents over-matching sub-paths).
+            for pattern in deniedSegmentEndsWithSuffixes {
+                guard method == pattern.method else { continue }
+                let segmentMatch = checkPath.contains(pattern.segment)
+                let endsWithSuffix = pattern.suffix.isEmpty || checkPath.hasSuffix(pattern.suffix)
+                if segmentMatch && endsWithSuffix {
                     return false
                 }
             }

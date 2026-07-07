@@ -596,9 +596,9 @@ struct HomeConnectorTests {
         try assertDenied(path: "/reply")
     }
 
-    @Test("denies /threads/{id}/dispatch with 403")
+    @Test("denies POST /threads/{id}/dispatch with 403")
     func deniesThreadDispatch() throws {
-        try assertDenied(path: "/threads/some-thread-id/dispatch")
+        try assertDenied(path: "/threads/some-thread-id/dispatch", method: "POST")
     }
 
     @Test("denies /as-founder/surface with 403")
@@ -608,7 +608,7 @@ struct HomeConnectorTests {
 
     // --- Helper for deny-gate tests ---
 
-    private func assertDenied(path: String) throws {
+    private func assertDenied(path: String, method: String = "GET") throws {
         let ports = allocatePortPair(); let daemonPort = ports.daemon
         let bindPort = ports.bind
 
@@ -634,7 +634,7 @@ struct HomeConnectorTests {
         defer { connector.stop() }
 
         let response = try sendHTTPRequest(
-            host: "127.0.0.1", port: bindPort, path: path, timeout: 5
+            host: "127.0.0.1", port: bindPort, path: path, method: method, timeout: 5
         )
         #expect(response.status == 403, "Expected 403 for \(path), got \(response.status)")
         #expect(response.body.contains("Forbidden"))

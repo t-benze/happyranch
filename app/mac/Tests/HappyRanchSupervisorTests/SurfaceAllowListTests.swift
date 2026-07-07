@@ -214,10 +214,126 @@ struct SurfaceAllowListTests {
         #expect(policy.isAllowed(path: "/tasks/123"))
     }
 
-    @Test("denies /threads/{id} (detail) — thread detail contains reply/decline/close-out")
-    func deniesThreadDetail() {
+    @Test("allows /threads/{id} (detail) — browser-facing thread detail view")
+    func allowsThreadDetail() {
         let policy = SurfaceAllowList.default
-        #expect(!policy.isAllowed(path: "/threads/some-thread"))
+        #expect(policy.isAllowed(path: "/threads/some-thread"))
+    }
+
+    // MARK: - FIX A: browser-facing thread routes ALLOWED
+
+    @Test("allows GET /threads/{id}/messages — browser-facing")
+    func allowsThreadMessages() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "GET", path: "/threads/thr-abc/messages", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/messages"))
+        #expect(policy.isAllowed(method: "GET", path: "/threads/thr-abc/messages", rawPath: "/threads/thr-abc/messages"))
+    }
+
+    @Test("allows GET /threads/{id}/tail — browser-facing")
+    func allowsThreadTail() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "GET", path: "/threads/thr-abc/tail", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/tail"))
+        #expect(policy.isAllowed(method: "GET", path: "/threads/thr-abc/tail", rawPath: "/threads/thr-abc/tail"))
+    }
+
+    @Test("allows GET /threads/{id}/tasks — browser-facing")
+    func allowsThreadTasks() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "GET", path: "/threads/thr-abc/tasks", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/tasks"))
+        #expect(policy.isAllowed(method: "GET", path: "/threads/thr-abc/tasks", rawPath: "/threads/thr-abc/tasks"))
+    }
+
+    @Test("allows POST /threads/{id}/send — browser-facing")
+    func allowsThreadSend() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/send", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/send"))
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/send", rawPath: "/threads/thr-abc/send"))
+    }
+
+    @Test("allows POST /threads/{id}/invite — browser-facing")
+    func allowsThreadInvite() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/invite", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/invite"))
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/invite", rawPath: "/threads/thr-abc/invite"))
+    }
+
+    @Test("allows POST /threads/{id}/extend — browser-facing")
+    func allowsThreadExtend() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/extend", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/extend"))
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/extend", rawPath: "/threads/thr-abc/extend"))
+    }
+
+    @Test("allows POST /threads/{id}/archive — browser-facing")
+    func allowsThreadArchive() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/archive", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/archive"))
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/archive", rawPath: "/threads/thr-abc/archive"))
+    }
+
+    @Test("allows POST /threads/{id}/abort-replies — browser-facing")
+    func allowsThreadAbortReplies() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/abort-replies", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/abort-replies"))
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/abort-replies", rawPath: "/threads/thr-abc/abort-replies"))
+    }
+
+    @Test("allows POST /threads/{id}/resume — browser-facing")
+    func allowsThreadResume() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/resume", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/resume"))
+        #expect(policy.isAllowed(method: "POST", path: "/threads/thr-abc/resume", rawPath: "/threads/thr-abc/resume"))
+    }
+
+    // MARK: - FIX A: agent-callback thread routes DENIED
+
+    @Test("denies POST /threads/{id}/reply — agent callback (prefixed + unprefixed)")
+    func deniesThreadReplyAgentCallback() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/thr-abc/reply", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/reply"))
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/thr-abc/reply", rawPath: "/threads/thr-abc/reply"))
+    }
+
+    @Test("denies POST /threads/{id}/decline — agent callback")
+    func deniesThreadDeclineAgentCallback() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/thr-abc/decline", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/decline"))
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/thr-abc/decline", rawPath: "/threads/thr-abc/decline"))
+    }
+
+    @Test("denies POST /threads/{id}/dispatch — agent callback")
+    func deniesThreadDispatchAgentCallback() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/thr-abc/dispatch", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/dispatch"))
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/thr-abc/dispatch", rawPath: "/threads/thr-abc/dispatch"))
+    }
+
+    @Test("denies POST /threads/compose-as-agent — agent callback")
+    func deniesThreadComposeAsAgent() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/compose-as-agent", rawPath: "/api/v1/orgs/happyranch/threads/compose-as-agent"))
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/compose-as-agent", rawPath: "/threads/compose-as-agent"))
+    }
+
+    @Test("denies POST /threads/{id}/post-as-agent — agent callback")
+    func deniesThreadPostAsAgent() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/thr-abc/post-as-agent", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/post-as-agent"))
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/thr-abc/post-as-agent", rawPath: "/threads/thr-abc/post-as-agent"))
+    }
+
+    @Test("denies GET /threads/{id}/attachments — agent callback")
+    func deniesThreadAttachmentsGet() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "GET", path: "/threads/thr-abc/attachments", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/attachments"))
+        #expect(!policy.isAllowed(method: "GET", path: "/threads/thr-abc/attachments", rawPath: "/threads/thr-abc/attachments"))
+    }
+
+    @Test("denies POST /threads/{id}/attachments — agent callback")
+    func deniesThreadAttachmentsPost() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/thr-abc/attachments", rawPath: "/api/v1/orgs/happyranch/threads/thr-abc/attachments"))
+        #expect(!policy.isAllowed(method: "POST", path: "/threads/thr-abc/attachments", rawPath: "/threads/thr-abc/attachments"))
     }
 
     // MARK: - Custom policy
@@ -404,5 +520,77 @@ struct SurfaceAllowListTests {
     func allowsArtifactsDelete() {
         let policy = SurfaceAllowList.default
         #expect(policy.isAllowed(method: "DELETE", path: "/artifacts/report.pdf", rawPath: "/api/v1/orgs/happyranch/artifacts/report.pdf"))
+    }
+
+    // MARK: - FIX B: memory search ALLOWED, memory writes DENIED
+
+    @Test("allows POST /agents/{agent_name}/memory/entries/search — browser-facing")
+    func allowsMemorySearch() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory/entries/search", rawPath: "/api/v1/orgs/happyranch/agents/dev_agent/memory/entries/search"))
+        #expect(policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory/entries/search", rawPath: "/agents/dev_agent/memory/entries/search"))
+    }
+
+    @Test("denies POST /agents/{agent_name}/memory — legacy memory append")
+    func deniesMemoryLegacyAppend() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory", rawPath: "/api/v1/orgs/happyranch/agents/dev_agent/memory"))
+        #expect(!policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory", rawPath: "/agents/dev_agent/memory"))
+    }
+
+    @Test("denies POST /agents/{agent_name}/memory/entries/ — create entry")
+    func deniesMemoryCreateEntry() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory/entries/", rawPath: "/api/v1/orgs/happyranch/agents/dev_agent/memory/entries/"))
+        #expect(!policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory/entries/", rawPath: "/agents/dev_agent/memory/entries/"))
+    }
+
+    @Test("denies PUT /agents/{agent_name}/memory/entries/{id} — update entry")
+    func deniesMemoryUpdateEntry() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "PUT", path: "/agents/dev_agent/memory/entries/entry-1", rawPath: "/api/v1/orgs/happyranch/agents/dev_agent/memory/entries/entry-1"))
+        #expect(!policy.isAllowed(method: "PUT", path: "/agents/dev_agent/memory/entries/entry-1", rawPath: "/agents/dev_agent/memory/entries/entry-1"))
+    }
+
+    @Test("denies PATCH /agents/{agent_name}/memory/entries/{id}/lifecycle — lifecycle")
+    func deniesMemoryLifecycle() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "PATCH", path: "/agents/dev_agent/memory/entries/entry-1/lifecycle", rawPath: "/api/v1/orgs/happyranch/agents/dev_agent/memory/entries/entry-1/lifecycle"))
+        #expect(!policy.isAllowed(method: "PATCH", path: "/agents/dev_agent/memory/entries/entry-1/lifecycle", rawPath: "/agents/dev_agent/memory/entries/entry-1/lifecycle"))
+    }
+
+    @Test("denies POST /agents/{agent_name}/memory/entries/{id}/promote — promote")
+    func deniesMemoryPromoteEntry() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory/entries/entry-1/promote", rawPath: "/api/v1/orgs/happyranch/agents/dev_agent/memory/entries/entry-1/promote"))
+        #expect(!policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory/entries/entry-1/promote", rawPath: "/agents/dev_agent/memory/entries/entry-1/promote"))
+    }
+
+    @Test("denies POST /agents/{agent_name}/memory/entries/reindex — reindex")
+    func deniesMemoryReindex() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory/entries/reindex", rawPath: "/api/v1/orgs/happyranch/agents/dev_agent/memory/entries/reindex"))
+        #expect(!policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory/entries/reindex", rawPath: "/agents/dev_agent/memory/entries/reindex"))
+    }
+
+    @Test("denies POST /agents/{agent_name}/memory/entries/compact — compact")
+    func deniesMemoryCompact() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory/entries/compact", rawPath: "/api/v1/orgs/happyranch/agents/dev_agent/memory/entries/compact"))
+        #expect(!policy.isAllowed(method: "POST", path: "/agents/dev_agent/memory/entries/compact", rawPath: "/agents/dev_agent/memory/entries/compact"))
+    }
+
+    @Test("allows GET /agents/{agent_name}/memory/entries/ — browser-facing read")
+    func allowsMemoryGetEntries() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "GET", path: "/agents/dev_agent/memory/entries/", rawPath: "/api/v1/orgs/happyranch/agents/dev_agent/memory/entries/"))
+        #expect(policy.isAllowed(method: "GET", path: "/agents/dev_agent/memory/entries/", rawPath: "/agents/dev_agent/memory/entries/"))
+    }
+
+    @Test("allows GET /agents/{agent_name}/memory/entries/{id_or_slug} — browser-facing read")
+    func allowsMemoryGetEntryById() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "GET", path: "/agents/dev_agent/memory/entries/my-entry", rawPath: "/api/v1/orgs/happyranch/agents/dev_agent/memory/entries/my-entry"))
+        #expect(policy.isAllowed(method: "GET", path: "/agents/dev_agent/memory/entries/my-entry", rawPath: "/agents/dev_agent/memory/entries/my-entry"))
     }
 }
