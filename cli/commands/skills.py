@@ -239,7 +239,12 @@ def cmd_skills_catalog_validate(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_skills_effective(args: argparse.Namespace) -> None:
-    """Show effective skills for an agent after both gates."""
+    """Show effective skills for an agent after both gates.
+
+    Includes a distinct "System Contracts (runtime-injected)" section separate
+    from the managed catalog skills. When ``--context`` is provided, only
+    system contracts matching that session context are shown.
+    """
     if not args.agent:
         print("error: --agent <name> is required", file=sys.stderr)
         sys.exit(1)
@@ -253,6 +258,10 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
     org = args.org or "happyranch"
     team = args.team or "engineering"
     agent = args.agent
+
+    # ── System Contracts (runtime-injected) ──────────────────────────
+    # Always shown, clearly separated from managed catalog skills.
+    _print_system_contracts_section(args, org, agent)
 
     exposed = resolve_exposed_skills(registry, resolver, org=org, team=team, agent=agent)
 
@@ -294,10 +303,30 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
                 "catalog_ok": catalog_ok.get(skill_id, False),
             })
 
+        # ── System contracts (for JSON output) ─────────────────────
+        from runtime.skills.system_contracts import (
+            SessionContext,
+            list_system_contracts,
+            resolve_system_contracts_for_session,
+        )
+        all_sc = list_system_contracts()
+        system_contracts_json = []
+        for sc in all_sc:
+            system_contracts_json.append({
+                "id": sc.id,
+                "name": sc.name,
+                "description": sc.description,
+                "when_to_use": sc.when_to_use,
+                "source_path": sc.source_path,
+                "contexts": [c.value for c in sc.contexts],
+                "requires_repo": sc.requires_repo,
+            })
+
         output = {
             "agent": agent,
             "org": org,
             "team": team,
+            "system_contracts": system_contracts_json,
             "effective_skills": effective_list,
             "blocked_skills": blocked_list,
         }
@@ -509,6 +538,69 @@ def cmd_skills_policy_explain(args: argparse.Namespace) -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+def _print_system_contracts_section(
+    args: argparse.Namespace, org: str, agent: str,
+) -> None:
+    """Print the system-contracts section for ``skills effective``.
+
+    Always shows all 5 system contracts with their context predicates and
+    repo requirement. When ``--context`` is provided, marks which contracts
+    would be injected for that session context (respecting the repo check
+    if ``--workspace`` is also given).
+    """
+    from runtime.skills.system_contracts import (
+        SessionContext,
+        list_system_contracts,
+        resolve_system_contracts_for_session,
+    )
+
+    all_contracts = list_system_contracts()
+
+    if args.json:
+        contracts_json = []
+        for sc in all_contracts:
+            contracts_json.append({
+                "id": sc.id,
+                "name": sc.name,
+                "description": sc.description,
+                "when_to_use": sc.when_to_use,
+                "source_path": sc.source_path,
+                "contexts": [c.value for c in sc.contexts],
+                "requires_repo": sc.requires_repo,
+            })
+        return  # JSON handled inline in cmd_skills_effective
+
+    print("System Contracts (runtime-injected):")
+    print(f"  Total: {len(all_contracts)} contract(s)")
+    print()
+
+    # If context is specified, resolve which contracts would be injected
+    injected_ids: set[str] = set()
+    if getattr(args, "context", None):
+        ctx = SessionContext(args.context)
+        workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path("/nonexistent")
+        resolved = resolve_system_contracts_for_session(ctx, workspace=workspace)
+        injected_ids = {sc.id for sc in resolved}
+        print(f"  Context filter: {args.context}")
+        if getattr(args, "workspace", None):
+            print(f"  Workspace: {args.workspace}")
+        print()
+
+    for sc in all_contracts:
+        marker = ""
+        if injected_ids:
+            marker = "  ← INJECTED" if sc.id in injected_ids else "  (not in context)"
+        contexts_str = ", ".join(c.value for c in sc.contexts)
+        repo_note = " [requires repos]" if sc.requires_repo else ""
+        print(f"  {sc.id}  ({sc.name}){marker}")
+        print(f"    description: {sc.description}")
+        print(f"    when_to_use: {sc.when_to_use}")
+        print(f"    contexts: {contexts_str}{repo_note}")
+        print(f"    source: {sc.source_path}")
+        print()
+
+
 def _fmt_pc(pc) -> str:
     """Format policy class for display."""
     return pc.value if isinstance(pc, PolicyClass) else str(pc)
@@ -546,6 +638,12 @@ def register(sub) -> None:
     p_eff.add_argument("--skills-root", help="Path to skills directory")
     p_eff.add_argument("--policy", dest="policy_path", help="Path to eligibility policy YAML")
     p_eff.add_argument("--json", action="store_true", help="Output as JSON")
+    p_eff.add_argument(
+        "--context",
+        choices=["task", "thread", "wake", "dream"],
+        help="Session context for system-contract filtering",
+    )
+    p_eff.add_argument("--workspace", help="Agent workspace path (for repo-capable check)")
     p_eff.set_defaults(func=cmd_skills_effective)
 
     # --- skills policy explain <skill_id> --agent <name> ---

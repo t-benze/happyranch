@@ -32,7 +32,10 @@ from runtime.orchestrator.org_config import (
     resolve_org_timezone_display,
     resolve_protocol_doc_manifest,
 )
-from runtime.orchestrator.workspace_adapters import refresh_session_skills
+from runtime.orchestrator.workspace_adapters import (
+    inject_system_contracts,
+    refresh_session_skills,
+)
 from runtime.orchestrator.prompt_loader import load_agent
 from runtime.orchestrator.routine_parser import parse_routines
 
@@ -156,6 +159,11 @@ async def run_wake(
 
     # Refresh on-disk skill bodies on EVERY session (THR-070).
     refresh_session_skills(workspace, settings, slug=org_state.slug)
+
+    # Explicit context-aware system-contract injection (THR-055 Phase 1).
+    inject_system_contracts(
+        workspace, settings, slug=org_state.slug, context="wake",
+    )
 
     protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
 

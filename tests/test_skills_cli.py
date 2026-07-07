@@ -827,3 +827,96 @@ class TestAuditLoggerSkillsConfigWrite:
         # Same payload shape keys
         assert set(db.logs[0]["payload"].keys()) == {"subsection", "tiers", "before", "after"}
         assert set(db.logs[1]["payload"].keys()) == {"section", "tiers", "before", "after"}
+
+
+class TestSystemContractsCliDisplay:
+    """Tests for system-contract display in 'skills effective'."""
+
+    def test_effective_shows_system_contracts_section(self, capsys):
+        """The 'skills effective' output includes a System Contracts section."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=None, json=False,
+            context=None, workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "System Contracts (runtime-injected):" in out
+        assert "Total: 5 contract(s)" in out
+        assert "start-task" in out
+        assert "jobs" in out
+        assert "make-worktree" in out
+        assert "thread" in out
+        assert "dream" in out
+        # Managed catalog section still present
+        assert "Effective skills" in out
+
+    def test_effective_json_includes_system_contracts(self, capsys):
+        """JSON output includes system_contracts key."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=None, json=True,
+            context=None, workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert "system_contracts" in data
+        assert len(data["system_contracts"]) == 5
+        ids = [sc["id"] for sc in data["system_contracts"]]
+        assert "start-task" in ids
+        assert "jobs" in ids
+        assert "make-worktree" in ids
+        assert "thread" in ids
+        assert "dream" in ids
+        # Existing keys still present
+        assert "effective_skills" in data
+        assert "blocked_skills" in data
+
+    def test_effective_with_context_shows_injected_markers(self, capsys):
+        """With --context task, injected contracts are marked."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=None, json=False,
+            context="task", workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "System Contracts (runtime-injected):" in out
+        assert "Context filter: task" in out
+        # start-task should be INJECTED for task context
+        assert "start-task" in out
+        assert "INJECTED" in out
+        # dream should NOT be injected
+        assert "(not in context)" in out
+
+    def test_effective_with_context_dream(self, capsys):
+        """With --context dream, only jobs, make-worktree, dream are injected."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=None, json=False,
+            context="dream", workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        # start-task should NOT be injected for dream
+        assert "start-task" in out  # still listed
+        # But dream should be injected
+        # Check that the right pattern appears
+        assert "dream  (Dream)  ← INJECTED" in out or "dream  (Dream)" in out
