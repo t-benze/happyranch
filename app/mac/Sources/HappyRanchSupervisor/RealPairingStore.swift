@@ -1,5 +1,27 @@
 import Foundation
 
+// MARK: - PairedDevice
+
+/// A paired-device entry exposed for UI rendering (GAP #2).
+///
+/// This struct carries the device's pairing credential (the revocation key)
+/// and its human-readable name so the UI can display a paired-device list
+/// with per-row REVOKE actions wired to ``RealPairingStore/revokePairing(credential:)``
+/// or ``HomeConnector/revokeDevice(credential:)``.
+public struct PairedDevice: Sendable, Equatable {
+    /// The device's pairing credential (e.g. `hrpair_<hex>`).
+    /// This is the key used for revocation.
+    public let credential: String
+
+    /// The human-readable device name supplied at pairing time.
+    public let name: String
+
+    public init(credential: String, name: String) {
+        self.credential = credential
+        self.name = name
+    }
+}
+
 // MARK: - RealPairingStore
 
 /// The REAL per-device pairing-credential store (A2.3).
@@ -35,8 +57,8 @@ public final class RealPairingStore: PairedDeviceStore, @unchecked Sendable {
     private var activePairingCode: String?
     private var activePairingCodeExpiry: Date = .distantPast
 
-    /// Paired device credentials → device name.
-    private var pairedDevices: [String: String] = [:]
+    /// Paired device credentials → device name (backing store).
+    private var deviceMap: [String: String] = [:]
 
     /// Revoked credentials (kept so they can't re-pair with the same credential).
     private var revokedCredentials: Set<String> = []
@@ -69,7 +91,7 @@ public final class RealPairingStore: PairedDeviceStore, @unchecked Sendable {
         // Check revoked first — revoked credentials stay rejected
         if revokedCredentials.contains(deviceID) { return false }
 
-        return pairedDevices[deviceID] != nil
+        return deviceMap[deviceID] != nil
     }
 
     public func generatePairingCode() -> String {
@@ -102,7 +124,7 @@ public final class RealPairingStore: PairedDeviceStore, @unchecked Sendable {
         let credential = Self.generateCredential()
 
         // 4. Store the credential
-        pairedDevices[credential] = deviceName
+        deviceMap[credential] = deviceName
 
         lock.unlock()
 
@@ -113,11 +135,11 @@ public final class RealPairingStore: PairedDeviceStore, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        guard pairedDevices[credential] != nil else {
+        guard deviceMap[credential] != nil else {
             return false
         }
 
-        pairedDevices.removeValue(forKey: credential)
+        deviceMap.removeValue(forKey: credential)
         revokedCredentials.insert(credential)
         return true
     }
@@ -128,14 +150,14 @@ public final class RealPairingStore: PairedDeviceStore, @unchecked Sendable {
     public var pairedDeviceCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        return pairedDevices.count
+        return deviceMap.count
     }
 
     /// The names of currently-paired devices.
     public var pairedDeviceNames: [String] {
         lock.lock()
         defer { lock.unlock() }
-        return Array(pairedDevices.values)
+        return Array(deviceMap.values)
     }
 
     /// Whether a pairing code is currently active (not expired).
@@ -144,6 +166,21 @@ public final class RealPairingStore: PairedDeviceStore, @unchecked Sendable {
         defer { lock.unlock() }
         guard activePairingCode != nil else { return false }
         return Date() < activePairingCodeExpiry
+    }
+
+    /// The list of paired devices as `(credential, name)` pairs.
+    ///
+    /// GAP #2: Exposes both the credential (for revocation wiring)
+    /// and the device name (for UI display) in a single accessor.
+    ///
+    /// - Returns: Array of ``PairedDevice`` structs, one per paired device.
+    ///   Empty when no devices are paired.
+    public func pairedDevices() -> [PairedDevice] {
+        lock.lock()
+        defer { lock.unlock() }
+        return deviceMap.map { (credential, name) in
+            PairedDevice(credential: credential, name: name)
+        }
     }
 
     // MARK: - Private helpers

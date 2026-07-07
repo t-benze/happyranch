@@ -1,6 +1,21 @@
 import Foundation
 import Network
 
+// MARK: - RedeemPairingError
+
+/// Errors surfaced by the client-side pairing-redeem handshake.
+public enum RedeemPairingError: Error, Equatable {
+    /// The home connector returned 403 — the pairing code is invalid or expired.
+    case refused
+
+    /// Could not connect to the home connector (network error, unreachable).
+    case connectionFailed(String)
+
+    /// The home connector returned an unexpected response
+    /// (e.g. 200 without a credential field, or malformed JSON).
+    case invalidResponse
+}
+
 // MARK: - ClientBridge
 
 /// The CLIENT LOOPBACK BRIDGE — runs on the **client** (away) machine.
@@ -158,6 +173,157 @@ public final class ClientBridge: @unchecked Sendable {
             listener = nil
             state = .stopped
         }
+    }
+
+    // MARK: - Pairing redeem (GAP #1)
+
+    /// Redeem a one-time pairing code with the home connector.
+    ///
+    /// Opens a direct TCP connection to the home connector on the tailnet,
+    /// sends `POST /pair` with the one-time code as the body, and parses
+    /// the response.
+    ///
+    /// On a 200 response containing `{"credential":"hrpair_..."}`,
+    /// sets ``deviceCredential`` and returns normally.  The caller should
+    /// then set `webViewURL` to `http://127.0.0.1:<bridgePort>/` so the
+    /// unmodified SPA loads through the bridge loopback.
+    ///
+    /// - Parameters:
+    ///   - code: The one-time pairing code from the home-side UI.
+    ///   - homeHost: The home connector's tailnet address (e.g. "100.64.0.1").
+    ///   - homePort: The home connector's listening port.
+    ///   - timeout: Maximum time to wait for the response (default: 30s).
+    /// - Throws: ``RedeemPairingError/refused`` if the home connector returns
+    ///   403 (invalid/expired code), ``RedeemPairingError/connectionFailed``
+    ///   if the home connector is unreachable, or
+    ///   ``RedeemPairingError/invalidResponse`` if the response is unparseable.
+    public func redeemPairing(
+        code: String,
+        homeHost: String,
+        homePort: UInt16,
+        timeout: TimeInterval = 30
+    ) async throws {
+        let completer = RedeemCompleter()
+        let credential: String = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<String, Error>) in
+            let redeemQueue = DispatchQueue(label: "com.happyranch.redeem-\(UUID().uuidString)")
+
+            let endpoint = NWEndpoint.hostPort(
+                host: NWEndpoint.Host(homeHost),
+                port: NWEndpoint.Port(integerLiteral: homePort)
+            )
+            let connection = NWConnection(to: endpoint, using: .tcp)
+
+            completer.configure(continuation: continuation, connection: connection)
+
+            // Timeout guard (30s to avoid CI flakiness — MEM-118)
+            redeemQueue.asyncAfter(deadline: .now() + timeout) {
+                completer.finish(with: .failure(
+                    RedeemPairingError.connectionFailed("Request timed out")
+                ))
+            }
+
+            connection.stateUpdateHandler = { [completer] state in
+                switch state {
+                case .ready:
+                    let requestBody = code
+                    let request = """
+                        POST /pair HTTP/1.1\r
+                        Host: \(homeHost):\(homePort)\r
+                        Content-Type: text/plain\r
+                        Content-Length: \(requestBody.utf8.count)\r
+                        Connection: close\r
+                        \r
+                        \(requestBody)
+                        """
+                    connection.send(
+                        content: request.data(using: .utf8),
+                        completion: .contentProcessed { _ in
+                            connection.receive(
+                                minimumIncompleteLength: 1,
+                                maximumLength: 65536
+                            ) { data, _, _, error in
+                                if let error = error {
+                                    completer.finish(with: .failure(
+                                        RedeemPairingError.connectionFailed(error.localizedDescription)
+                                    ))
+                                    return
+                                }
+                                guard let data = data,
+                                      let response = String(data: data, encoding: .utf8) else {
+                                    completer.finish(with: .failure(RedeemPairingError.invalidResponse))
+                                    return
+                                }
+
+                                Self.parseRedeemResponse(response, completer: completer)
+                            }
+                        }
+                    )
+                case .failed(let error):
+                    completer.finish(with: .failure(
+                        RedeemPairingError.connectionFailed(error.localizedDescription)
+                    ))
+                case .cancelled:
+                    completer.finish(with: .failure(
+                        RedeemPairingError.connectionFailed("Connection cancelled")
+                    ))
+                default:
+                    break
+                }
+            }
+            connection.start(queue: redeemQueue)
+        }
+
+        self.deviceCredential = credential
+    }
+
+    /// Parse the POST /pair response and resolve the completer.
+    private static func parseRedeemResponse(
+        _ response: String,
+        completer: RedeemCompleter
+    ) {
+        let lines = response.components(separatedBy: "\r\n")
+        guard let statusLine = lines.first else {
+            completer.finish(with: .failure(RedeemPairingError.invalidResponse))
+            return
+        }
+        let statusParts = statusLine.components(separatedBy: " ")
+        guard statusParts.count >= 2,
+              let statusCode = Int(statusParts[1]) else {
+            completer.finish(with: .failure(RedeemPairingError.invalidResponse))
+            return
+        }
+
+        if statusCode == 403 {
+            completer.finish(with: .failure(RedeemPairingError.refused))
+            return
+        }
+
+        guard statusCode == 200 else {
+            completer.finish(with: .failure(
+                RedeemPairingError.connectionFailed("Unexpected status \(statusCode)")
+            ))
+            return
+        }
+
+        // Parse body for credential
+        guard let bodyRange = response.range(of: "\r\n\r\n") else {
+            completer.finish(with: .failure(RedeemPairingError.invalidResponse))
+            return
+        }
+        let bodyText = String(response[bodyRange.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let bodyData = bodyText.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+              let credential = json["credential"] as? String,
+              !credential.isEmpty else {
+            completer.finish(with: .failure(RedeemPairingError.invalidResponse))
+            return
+        }
+
+        // Success — pass the credential back
+        completer.finish(with: .success(credential))
     }
 
     // MARK: - Listener state
@@ -488,4 +654,51 @@ public final class ClientBridge: @unchecked Sendable {
 public enum ClientBridgeError: Error, Equatable {
     case alreadyRunning
     case listenerCreationFailed(underlying: String)
+}
+
+// MARK: - RedeemPairingCompleter (GAP #1)
+
+/// Thread-safe, single-fire completion wrapper for the redeem-POST-handshake.
+///
+/// The redeem flow opens ONE NWConnection, sends POST /pair, reads ONE
+/// response, and resolves exactly once.  This class prevents double-resume
+/// races (timeout vs response vs .cancelled) without mutable captures in
+/// Swift 6 Sendable closures.
+private final class RedeemCompleter: @unchecked Sendable {
+
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<String, Error>?
+    private var connection: NWConnection?
+    private var completed = false
+
+    func configure(
+        continuation: CheckedContinuation<String, Error>,
+        connection: NWConnection
+    ) {
+        lock.lock()
+        self.continuation = continuation
+        self.connection = connection
+        lock.unlock()
+    }
+
+    func finish(with result: Result<String, Error>) {
+        lock.lock()
+        guard !completed else { lock.unlock(); return }
+        completed = true
+        let cont = continuation
+        let conn = connection
+        continuation = nil
+        connection = nil
+        lock.unlock()
+
+        conn?.cancel()
+
+        guard let cont = cont else { return }
+        switch result {
+        case .success(let credential):
+            cont.resume(returning: credential)
+        case .failure(let error):
+            cont.resume(throwing: error)
+        }
+    }
 }

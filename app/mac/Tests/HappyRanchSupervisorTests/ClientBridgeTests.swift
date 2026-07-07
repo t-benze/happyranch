@@ -947,4 +947,273 @@ struct ClientBridgeTests {
             )
         }
     }
+
+    // MARK: - GAP #1: Redeem pairing handshake
+
+    @Test("redeemPairing happy path — POST /pair returns 200, sets deviceCredential")
+    func redeemPairingHappyPath() async throws {
+        let ports = allocatePortPair()
+        let pairPort = ports.homeConnector
+
+        let expectedCredential = "hrpair_a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+        let fakeServer = FakePairingServer(
+            port: pairPort,
+            responseStatus: 200,
+            responseCredential: expectedCredential
+        )
+        try fakeServer.start()
+        defer { fakeServer.stop() }
+
+        let bridge = ClientBridge(
+            homeConnectorHost: "127.0.0.1",
+            homeConnectorPort: 8443
+        )
+        #expect(bridge.deviceCredential == nil)
+
+        try await bridge.redeemPairing(
+            code: "ABC12345",
+            homeHost: "127.0.0.1",
+            homePort: pairPort,
+            timeout: 30
+        )
+
+        #expect(bridge.deviceCredential == expectedCredential)
+    }
+
+    @Test("redeemPairing 403 — throws refused error, deviceCredential stays nil")
+    func redeemPairing403Refused() async throws {
+        let ports = allocatePortPair()
+        let pairPort = ports.homeConnector
+
+        let fakeServer = FakePairingServer(
+            port: pairPort,
+            responseStatus: 403,
+            responseCredential: nil
+        )
+        try fakeServer.start()
+        defer { fakeServer.stop() }
+
+        let bridge = ClientBridge(
+            homeConnectorHost: "127.0.0.1",
+            homeConnectorPort: 8443
+        )
+        #expect(bridge.deviceCredential == nil)
+
+        do {
+            try await bridge.redeemPairing(
+                code: "EXPIRED1",
+                homeHost: "127.0.0.1",
+                homePort: pairPort,
+                timeout: 30
+            )
+            #expect(Bool(false), "Expected redeemPairing to throw refused error")
+        } catch let error as RedeemPairingError {
+            #expect(error == .refused, "Expected .refused, got \(error)")
+        }
+
+        // deviceCredential must NOT be set on failure
+        #expect(bridge.deviceCredential == nil)
+    }
+
+    @Test("redeemPairing connection refused — throws connectionFailed")
+    func redeemPairingConnectionRefused() async throws {
+        let ports = allocatePortPair()
+        // Use a port where nothing is listening
+        let closedPort = ports.homeConnector
+
+        let bridge = ClientBridge(
+            homeConnectorHost: "127.0.0.1",
+            homeConnectorPort: 8443
+        )
+
+        do {
+            try await bridge.redeemPairing(
+                code: "TESTCODE",
+                homeHost: "127.0.0.1",
+                homePort: closedPort,
+                timeout: 30
+            )
+            #expect(Bool(false), "Expected redeemPairing to throw connectionFailed")
+        } catch let error as RedeemPairingError {
+            guard case .connectionFailed = error else {
+                #expect(Bool(false), "Expected .connectionFailed, got \(error)")
+                return
+            }
+        }
+
+        #expect(bridge.deviceCredential == nil)
+    }
+
+    @Test("redeemPairing sends the pairing code in the POST body")
+    func redeemPairingSendsCodeInBody() async throws {
+        let ports = allocatePortPair()
+        let pairPort = ports.homeConnector
+
+        let expectedCredential = "hrpair_abcdef1234567890abcdef1234567890"
+        let fakeServer = FakePairingServer(
+            port: pairPort,
+            responseStatus: 200,
+            responseCredential: expectedCredential
+        )
+        try fakeServer.start()
+        defer { fakeServer.stop() }
+
+        let bridge = ClientBridge(
+            homeConnectorHost: "127.0.0.1",
+            homeConnectorPort: 8443
+        )
+
+        try await bridge.redeemPairing(
+            code: "MY-CODE",
+            homeHost: "127.0.0.1",
+            homePort: pairPort,
+            timeout: 30
+        )
+
+        let requests = fakeServer.receivedRequests
+        #expect(!requests.isEmpty, "Expected at least one request")
+        #expect(requests[0].contains("POST /pair HTTP/1.1"))
+        #expect(requests[0].contains("MY-CODE"))
+    }
+
+    @Test("redeemPairing invalid response (200 without credential) throws invalidResponse")
+    func redeemPairingInvalidResponseNoCredential() async throws {
+        let ports = allocatePortPair()
+        let pairPort = ports.homeConnector
+
+        let fakeServer = FakePairingServer(
+            port: pairPort,
+            responseStatus: 200,
+            responseBody: "{\"status\":\"ok\"}"
+        )
+        try fakeServer.start()
+        defer { fakeServer.stop() }
+
+        let bridge = ClientBridge(
+            homeConnectorHost: "127.0.0.1",
+            homeConnectorPort: 8443
+        )
+
+        do {
+            try await bridge.redeemPairing(
+                code: "CODE",
+                homeHost: "127.0.0.1",
+                homePort: pairPort,
+                timeout: 30
+            )
+            #expect(Bool(false), "Expected redeemPairing to throw invalidResponse")
+        } catch let error as RedeemPairingError {
+            #expect(error == .invalidResponse, "Expected .invalidResponse, got \(error)")
+        }
+
+        #expect(bridge.deviceCredential == nil)
+    }
+}
+
+// MARK: - FakePairingServer
+
+/// Simulates a HomeConnector's POST /pair endpoint for redeem tests.
+private final class FakePairingServer: @unchecked Sendable {
+
+    private let port: UInt16
+    private let queue: DispatchQueue
+    private var listener: NWListener?
+    private let lock = NSLock()
+    private var _receivedRequests: [String] = []
+
+    var receivedRequests: [String] {
+        lock.withLock { _receivedRequests }
+    }
+
+    /// The HTTP status to return for POST /pair.
+    private let responseStatus: Int
+
+    /// The credential to return in the JSON body (for 200).
+    private let responseCredential: String?
+
+    /// The raw response body to return (overrides responseCredential).
+    private let responseBody: String?
+
+    init(
+        port: UInt16,
+        responseStatus: Int,
+        responseCredential: String? = nil,
+        responseBody: String? = nil
+    ) {
+        self.port = port
+        self.queue = DispatchQueue(label: "com.happyranch.fake-pairing-\(UUID().uuidString)")
+        self.responseStatus = responseStatus
+        self.responseCredential = responseCredential
+        self.responseBody = responseBody
+    }
+
+    func start() throws {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
+            host: "127.0.0.1",
+            port: NWEndpoint.Port(integerLiteral: port)
+        )
+        let listener = try NWListener(using: parameters)
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { return }
+            self.queue.async { self.handleConnection(connection) }
+        }
+        listener.start(queue: queue)
+        self.listener = listener
+    }
+
+    func stop() {
+        listener?.cancel()
+        listener = nil
+    }
+
+    private func handleConnection(_ connection: NWConnection) {
+        connection.stateUpdateHandler = { [weak connection] state in
+            guard let connection else { return }
+            switch state {
+            case .ready:
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) {
+                    data, _, _, error in
+                    guard error == nil, let data = data,
+                          let request = String(data: data, encoding: .utf8) else {
+                        connection.cancel()
+                        return
+                    }
+                    self.lock.withLock { self._receivedRequests.append(request) }
+
+                    let body: String
+                    if let override = self.responseBody {
+                        body = override
+                    } else if let credential = self.responseCredential {
+                        body = "{\"credential\":\"\(credential)\"}"
+                    } else {
+                        body = "{\"error\":\"invalid code\"}"
+                    }
+
+                    let statusText = self.responseStatus == 200 ? "OK" : "Forbidden"
+                    let response = """
+                        HTTP/1.1 \(self.responseStatus) \(statusText)\r
+                        Content-Type: application/json\r
+                        Content-Length: \(body.utf8.count)\r
+                        Connection: close\r
+                        \r
+                        \(body)
+                        """
+                    connection.send(
+                        content: response.data(using: .utf8),
+                        contentContext: .finalMessage,
+                        isComplete: true,
+                        completion: .contentProcessed { _ in
+                            connection.cancel()
+                        }
+                    )
+                }
+            case .failed, .cancelled:
+                break
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+    }
 }

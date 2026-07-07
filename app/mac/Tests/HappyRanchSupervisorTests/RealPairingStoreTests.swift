@@ -313,4 +313,95 @@ struct RealPairingStoreTests {
         #expect(store1.pairedDeviceCount == 1)
         #expect(store2.pairedDeviceCount == 0)
     }
+
+    // MARK: - pairedDevices accessor (GAP #2)
+
+    @Test("pairedDevices returns empty array initially")
+    func pairedDevicesEmptyOnInit() {
+        let store = RealPairingStore()
+        #expect(store.pairedDevices().isEmpty)
+    }
+
+    @Test("pairedDevices returns (credential, name) pairs after pairing")
+    func pairedDevicesReturnsPairs() {
+        let store = RealPairingStore()
+        let code = store.generatePairingCode()
+        guard let credential = store.pair(usingCode: code, deviceName: "test-mac") else {
+            #expect(Bool(false), "Pairing should succeed")
+            return
+        }
+
+        let devices = store.pairedDevices()
+        #expect(devices.count == 1)
+        #expect(devices[0].credential == credential)
+        #expect(devices[0].name == "test-mac")
+    }
+
+    @Test("pairedDevices removes row after revoke")
+    func pairedDevicesRemovesRowAfterRevoke() {
+        let store = RealPairingStore()
+        let code = store.generatePairingCode()
+        guard let credential = store.pair(usingCode: code, deviceName: "temp") else {
+            #expect(Bool(false), "Pairing should succeed")
+            return
+        }
+
+        #expect(store.pairedDevices().count == 1)
+        _ = store.revokePairing(credential: credential)
+        #expect(store.pairedDevices().isEmpty)
+    }
+
+    @Test("pairedDevices returns multiple devices with correct names")
+    func pairedDevicesMultipleDevices() {
+        let store = RealPairingStore()
+
+        let code1 = store.generatePairingCode()
+        guard let cred1 = store.pair(usingCode: code1, deviceName: "laptop") else {
+            #expect(Bool(false), "First pairing should succeed")
+            return
+        }
+
+        let code2 = store.generatePairingCode()
+        guard let cred2 = store.pair(usingCode: code2, deviceName: "phone") else {
+            #expect(Bool(false), "Second pairing should succeed")
+            return
+        }
+
+        let devices = store.pairedDevices()
+        #expect(devices.count == 2)
+
+        let names = Set(devices.map { $0.name })
+        #expect(names.contains("laptop"))
+        #expect(names.contains("phone"))
+
+        let credentials = Set(devices.map { $0.credential })
+        #expect(credentials.contains(cred1))
+        #expect(credentials.contains(cred2))
+    }
+
+    @Test("pairedDevices sortens result after revoke + re-pair")
+    func pairedDevicesAfterRevokeAndRePair() {
+        let store = RealPairingStore()
+
+        let code1 = store.generatePairingCode()
+        _ = store.pair(usingCode: code1, deviceName: "first")
+        #expect(store.pairedDevices().count == 1)
+
+        // Revoke first
+        let devicesAfterPair1 = store.pairedDevices()
+        #expect(devicesAfterPair1.count == 1)
+        _ = store.revokePairing(credential: devicesAfterPair1[0].credential)
+        #expect(store.pairedDevices().isEmpty)
+
+        // Re-pair a new device
+        let code2 = store.generatePairingCode()
+        guard let cred2 = store.pair(usingCode: code2, deviceName: "second") else {
+            #expect(Bool(false), "Re-pair should succeed")
+            return
+        }
+        let devices = store.pairedDevices()
+        #expect(devices.count == 1)
+        #expect(devices[0].credential == cred2)
+        #expect(devices[0].name == "second")
+    }
 }

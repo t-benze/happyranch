@@ -67,34 +67,49 @@ struct ContentView: View {
             Text(appDelegate.stateText)
                 .foregroundColor(.secondary)
 
-            if appDelegate.supervisor.state == .notConfigured ||
-               appDelegate.supervisor.state == .stopped ||
-               appDelegate.supervisor.state == .crashed ||
-               appDelegate.supervisor.state == .stalePid ||
-               appDelegate.supervisor.state == .failed {
-                Button("Start Daemon") {
-                    appDelegate.startDaemon()
-                }
-                .buttonStyle(.borderedProminent)
-                .padding(.top, 8)
+            if appDelegate.connectionRole == .home {
+                // LOCAL daemon controls
+                daemonControls
             }
 
-            if appDelegate.supervisor.state == .externalRunning {
-                Text("External daemon detected — attach to view it")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
+            Divider()
+                .padding(.horizontal, 40)
 
-                Button("Probe & Connect") {
-                    if let port = appDelegate.supervisor.observedPort {
-                        Task { @MainActor in
-                            await appDelegate.probeAndLoad(port: port)
-                        }
-                    }
-                }
-                .buttonStyle(.bordered)
-            }
+            // A2 Remote connection surface (shown in both roles)
+            RemoteConnectionView()
+                .environmentObject(appDelegate)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var daemonControls: some View {
+        if appDelegate.supervisor.state == .notConfigured ||
+           appDelegate.supervisor.state == .stopped ||
+           appDelegate.supervisor.state == .crashed ||
+           appDelegate.supervisor.state == .stalePid ||
+           appDelegate.supervisor.state == .failed {
+            Button("Start Daemon") {
+                appDelegate.startDaemon()
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.top, 8)
+        }
+
+        if appDelegate.supervisor.state == .externalRunning {
+            Text("External daemon detected — attach to view it")
+                .font(.callout)
+                .foregroundColor(.secondary)
+
+            Button("Probe & Connect") {
+                if let port = appDelegate.supervisor.observedPort {
+                    Task { @MainActor in
+                        await appDelegate.probeAndLoad(port: port)
+                    }
+                }
+            }
+            .buttonStyle(.bordered)
+        }
     }
 
     // MARK: - Unhealthy / failed banner
