@@ -22,7 +22,7 @@ const SECTION_TITLES: Record<string, string> = {
   agents: 'Agents',
   kb: 'Knowledge',
   artifacts: 'Artifacts',
-  spend: 'Spend',
+  usage: 'Usage',
   dreams: 'Dreams',
   'work-hours': 'Work Hours',
   audit: 'Audit',

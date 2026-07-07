@@ -56,7 +56,7 @@ export function useTopThreadTokens(params?: {
  *
  * Sums `total_tokens` across the by-agent rollup of the existing
  * `GET /tokens?group_by=agent` route — the same server-side aggregate the
- * Spend hero totals ride (see ./spend.ts). A rollup (bounded, one row per
+ * Usage hero totals ride (see ./usage.ts). A rollup (bounded, one row per
  * agent) is used rather than the raw per-session listing because the latter
  * is capped by `limit` and would silently UNDERCOUNT; the rollup gives the
  * honest, untruncated total with no DashboardSummaryResponse change.

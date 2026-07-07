@@ -1,8 +1,8 @@
 /**
- * Read hooks for the Spend surface (§4.7).
+ * Read hooks for the Usage surface (§4.7).
  *
  * Each hook fetches a single group_by rollup for a given window (`since`).
- * The SpendPage aggregates the hero totals from the agent rollup (or thread
+ * The UsagePage aggregates the hero totals from the agent rollup (or thread
  * rollup) and renders the breakdowns via segmented control.
  *
  * Churn invariant: `total_tokens = input + output + reasoning`.
@@ -23,7 +23,7 @@ function useSlug(): string {
   return routeSlug ?? ctxSlug ?? '';
 }
 
-export function useSpendByAgent(params: {
+export function useUsageByAgent(params: {
   since?: string;
 }): QueryLike<TokenUsageRollup[]> {
   const slug = useSlug();
@@ -42,13 +42,13 @@ export function useSpendByAgent(params: {
   }) as QueryLike<TokenUsageRollup[]>;
 }
 
-export function useSpendByThread(params: {
+export function useUsageByThread(params: {
   since?: string;
 }): QueryLike<TokenUsageRollup[]> {
   const slug = useSlug();
   const since = params?.since;
   return useQuery({
-    queryKey: ['tokens', slug, 'thread', since ?? null, 'spend'],
+    queryKey: ['tokens', slug, 'thread', since ?? null, 'usage'],
     queryFn: async () => {
       const res = await tokensApi.listTokens(slug, {
         group_by: 'thread',
@@ -61,7 +61,7 @@ export function useSpendByThread(params: {
   }) as QueryLike<TokenUsageRollup[]>;
 }
 
-export function useSpendByModel(params: {
+export function useUsageByModel(params: {
   since?: string;
 }): QueryLike<TokenUsageRollup[]> {
   const slug = useSlug();

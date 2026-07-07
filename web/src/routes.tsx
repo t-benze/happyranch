@@ -24,7 +24,7 @@ import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
-import { SpendPage } from '@/features/spend/SpendPage';
+import { UsagePage } from '@/features/usage/UsagePage';
 import { DreamsPage } from '@/features/dreams/DreamsPage';
 import { OverviewPage as WorkHoursOverviewPage } from '@/features/work-hours-config/OverviewPage';
 import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/WakesView';
@@ -104,7 +104,10 @@ export function AppRoutes(): JSX.Element {
           <Route path="agents/:agent_name" element={<AgentsPage />} />
           <Route path="jobs" element={<JobsPage />} />
           <Route path="jobs/:job_id" element={<JobDetailPage />} />
-          <Route path="spend" element={<SpendPage />} />
+          <Route path="usage" element={<UsagePage />} />
+          {/* THR-061 seq79: Spend renamed to Usage. Keep the old /spend
+              bookmark (and the dashboard deep-link) working via redirect. */}
+          <Route path="spend" element={<SpendRedirect />} />
           <Route path="dreams" element={<DreamsPage />} />
           {/* THR-035: the standalone Schedule surface folded into Work Hours.
               Old bookmarks redirect to the Wakes view; the wake list now lives
@@ -146,6 +149,13 @@ function WorkHoursSurface(): JSX.Element {
 function ScheduleRedirect(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   return <Navigate to={`/orgs/${slug}/work-hours?view=wakes`} replace />;
+}
+
+/** THR-061 seq79: /spend was renamed to /usage. Redirect the old path so
+ *  existing bookmarks and the dashboard "This week's burn" deep-link resolve. */
+function SpendRedirect(): JSX.Element {
+  const { slug } = useParams<{ slug: string }>();
+  return <Navigate to={`/orgs/${slug}/usage`} replace />;
 }
 
 function NotFound(): JSX.Element {
