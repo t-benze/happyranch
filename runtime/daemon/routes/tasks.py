@@ -537,7 +537,7 @@ async def resolve_escalation_in_process(
     """Same DB transition / audit / queue re-enqueue as the HTTP handler at
     POST /tasks/{task_id}/resolve-escalation.
 
-    Returns the new task status value (e.g. "pending" or "failed").
+    Returns the new task status value (e.g. "pending" or "cancelled").
     Raises HTTPException for the same validation failures the route raises so
     the HTTP wrapper can re-raise as-is.
     """
@@ -593,7 +593,7 @@ async def resolve_escalation_in_process(
         if state.queue is not None:
             state.queue.put_nowait(org.slug, task_id)
     else:
-        # Cancel is terminal — notify parent (parity with old reject path)
+        # Cancel is terminal — notify parent (parity with old cancel path)
         # and kill persistent jobs this task owns.
         _enqueue_parent_if_waiting(org.orchestrator, task_id)
         _kill_jobs_for_terminating_task(org.orchestrator, task_id)
@@ -965,7 +965,7 @@ async def revisit_from_notification(
         # cleared, audit citing the new continuation root (the maker-checker
         # evidence). It is NOT re-enqueued (that would spawn a wasted manager
         # session); parent-wake is preserved below. Distinct from the founder's
-        # manual `resolve-escalation approve`, which intentionally re-runs work.
+        # manual `resolve-escalation continue`, which intentionally re-runs work.
         if prior_status in ("blocked-escalated", "blocked-delegated"):
             prior_block_kind = (
                 "escalated" if prior_status == "blocked-escalated" else "delegated"
@@ -1009,7 +1009,7 @@ async def revisit_from_notification(
 
     # Preserve parent-wake: the superseded predecessor just reached a terminal,
     # so a delegated parent (if any) must learn its branch is done. Mirrors the
-    # reject path in resolve_escalation_in_process; runs outside the db_lock.
+    # cancel path in resolve_escalation_in_process; runs outside the db_lock.
     # The superseded task itself is NEVER re-enqueued (no queue.put_nowait).
     if prior_status in ("blocked-escalated", "blocked-delegated"):
         from runtime.orchestrator.run_step import (
