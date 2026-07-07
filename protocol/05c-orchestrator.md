@@ -385,7 +385,7 @@ A skill reaches an agent session only when **both** gates pass:
 
 | Policy class | Governance |
 | --- | --- |
-| `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids. Owner or team manager may approve. |
+| `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids (e.g., `review`). Owner or team manager may approve. Passes the catalog gate without per-version founder approval. |
 | `high_impact_policy` | Pricing, legal/compliance, security, production release, escalation thresholds. Founder or designated-owner approval required for catalog admission AND each version upgrade. |
 | `system_contract` | Runtime protocol and mandatory operating-contract skills (e.g., `start-task`, `thread`, `jobs`). **Outside the toggleable catalog** — not shown, not toggleable. |
 
@@ -525,3 +525,54 @@ context; ``--workspace`` enables the repo check.
 - Require a SQLite migration (file/YAML-backed only)
 - Add new daemon routes
 - Change the existing permission model
+
+### 4.8 Managed-Catalog Standard-Operational Entry — ``review`` (THR-055 Phase 2)
+
+The ``review`` skill is the first HappyRanch skill migrated into the managed
+catalog as a ``standard_operational`` entry. It was previously delivered via
+the wholesale ``protocol/skills/`` dump alongside the system contracts.
+
+**Package location.** ``runtime/skills/review/{skill.yaml,SKILL.md}``.
+
+**Registration metadata.**
+- ``id``: ``hr:review``
+- ``policy_class``: ``standard_operational``
+- ``owner``: ``engineering_manager``
+- ``approval_state``: ``approved``
+- ``approved_by``: ``engineering_manager``
+- ``version``: ``1.0.0``
+
+**Eligibility scoping.** ``review`` visibility is scoped to **team managers and
+review-loop participants** — NOT org-wide. The default eligibility policy in
+``org/config.yaml`` grants access to:
+- The ``engineering`` team (dev_agent, code_reviewer, qa_engineer,
+  engineering_manager).
+- ``product_lead`` via agent-scoped allow (team manager outside the
+  engineering team who participates in founder review loops).
+
+A non-participant agent (e.g., ``support_agent`` on the ``cx`` team, or any
+agent outside these allow lists) does NOT resolve ``review`` as exposed.
+The eligibility formula is the standard additive-inheritance model (see §4.1):
+team-scoped allow, with agent-scoped allow for team managers outside the
+engineering team.
+
+**Provenance.** ``skills effective --agent dev_agent`` shows ``review`` with
+``team(engineering) ALLOW`` eligibility provenance and ``standard_operational``
+policy class. ``skills policy explain hr:review --agent dev_agent`` shows the
+catalog gate (PASS, approval metadata) and eligibility gate (team-scoped allow).
+
+**Phase-2 additive constraint.** The ``review`` SKILL.md body also remains
+in ``protocol/skills/review/`` so that the existing wholesale-dump path
+(``refresh_session_skills``) continues to deliver ``review`` to all agents
+as a safety net. Physical removal from the always-injected set is a Phase-4
+change gated on a completeness test proving catalog resolution delivers the
+full required set. Phase 2 is ADDITIVE only — the managed-catalog entry is
+registered and eligibility is scoped; the wholesale dump is untouched.
+
+**Fences.** Phase 2 does not:
+- Grant tools, credentials, or capabilities (review command access remains
+  in allow_rules / daemon auth per the existing permission model)
+- Physically delete ``review`` from ``protocol/skills/`` (Phase 4)
+- Require a SQLite migration (file/YAML-backed only)
+- Add new daemon routes
+- Change the existing permission model or auth

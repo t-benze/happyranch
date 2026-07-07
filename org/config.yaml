@@ -1,0 +1,18 @@
+# ── Skill eligibility policy ────────────────────────────────────────
+# Additive inheritance: effective = (org ∪ team ∪ agent) minus denies.
+# Deny wins over allow. Unknown skill ids produce validation warnings.
+
+skills:
+  org:
+    allow: []
+    deny: []
+  teams:
+    engineering:
+      allow:
+        - hr:review
+      deny: []
+  agents:
+    product_lead:
+      allow:
+        - hr:review
+      deny: []
