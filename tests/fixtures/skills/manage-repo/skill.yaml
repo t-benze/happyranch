@@ -1,0 +1,11 @@
+id: hr:manage-repo
+slug: manage-repo
+name: Manage Repo
+version: 1.0.0
+description: Agent workspace repository configuration — add, remove, or update repositories in agent.yaml and refresh executor workspace metadata.
+when_to_use: Use when managing agent workspace repositories — adding a new repo, removing an existing repo, or updating a repo URL.
+owner: engineering_manager
+source: runtime/skills/manage-repo
+policy_class: high_impact_policy
+approval_state: pending_review
+status: enabled

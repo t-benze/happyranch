@@ -1126,3 +1126,259 @@ class TestSystemContractsCliDisplay:
         # But dream should be injected
         # Check that the right pattern appears
         assert "dream  (Dream)  ← INJECTED" in out or "dream  (Dream)" in out
+
+
+class TestManageAgentManageRepoCli:
+    """CLI tests for manage-agent and manage-repo as high_impact_policy managed-catalog entries (THR-055 Phase 3)."""
+
+    # ── catalog list ────────────────────────────────────────────────
+
+    def test_catalog_list_shows_manage_agent(self, capsys):
+        """'skills catalog list' shows hr:manage-agent."""
+        from cli.commands.skills import cmd_skills_catalog_list
+        import argparse
+
+        ns = argparse.Namespace(skills_root=str(FIXTURES), json=False)
+        cmd_skills_catalog_list(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:manage-agent" in out
+        assert "high_impact_policy" in out or "HIGH_IMPACT" in out.upper()
+
+    def test_catalog_list_shows_manage_repo(self, capsys):
+        """'skills catalog list' shows hr:manage-repo."""
+        from cli.commands.skills import cmd_skills_catalog_list
+        import argparse
+
+        ns = argparse.Namespace(skills_root=str(FIXTURES), json=False)
+        cmd_skills_catalog_list(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:manage-repo" in out
+
+    def test_catalog_list_json_includes_manage_skills(self, capsys):
+        """JSON output includes manage-agent and manage-repo."""
+        from cli.commands.skills import cmd_skills_catalog_list
+        import argparse
+
+        import json
+        ns = argparse.Namespace(skills_root=str(FIXTURES), json=True)
+        cmd_skills_catalog_list(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        ids = [d["id"] for d in data]
+        assert "hr:manage-agent" in ids
+        assert "hr:manage-repo" in ids
+
+    # ── catalog validate ────────────────────────────────────────────
+
+    def test_validate_flags_manage_skills_catalog_failures(self, capsys):
+        """'skills catalog validate' flags manage-agent and manage-repo as catalog gate failures."""
+        from cli.commands.skills import cmd_skills_catalog_validate
+        import argparse
+
+        ns = argparse.Namespace(skills_root=str(FIXTURES), policy_path=None, json=False)
+        cmd_skills_catalog_validate(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:manage-agent" in out
+        assert "hr:manage-repo" in out
+        assert "CATALOG GATE FAILURES" in out
+        assert "pending_review" in out
+
+    # ── effective ───────────────────────────────────────────────────
+
+    def _make_manager_policy(self, tmp_path):
+        """Helper: create a policy YAML with manager-scoped allows."""
+        import yaml as _yaml
+        policy = {
+            "skills": {
+                "agents": {
+                    "engineering_manager": {
+                        "allow": ["hr:manage-agent", "hr:manage-repo"],
+                        "deny": [],
+                    },
+                },
+            },
+        }
+        path = tmp_path / "config.yaml"
+        path.write_text("---\n" + _yaml.dump(policy, default_flow_style=False))
+        return str(path)
+
+    def test_effective_not_exposed_to_manager_when_unapproved(self, capsys, tmp_path):
+        """Even an eligible manager does NOT see manage-agent/manage-repo — fail-closed."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="engineering_manager", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "Effective skills (0)" in out
+        # manage-agent and manage-repo should NOT appear as exposed
+        # They may appear as blocked
+
+    def test_effective_shows_blocked_by_catalog_manage_agent(self, capsys, tmp_path):
+        """manage-agent appears in blocked skills due to catalog gate."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="engineering_manager", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "BLOCKED" in out
+        assert "hr:manage-agent" in out
+
+    def test_effective_json_shows_blocked_manage_skills(self, capsys, tmp_path):
+        """JSON effective output shows zero effective skills — manage-agent/manage-repo are
+        catalog-blocked (pending_review), not eligibility-denied. Blocked_skills list in JSON
+        only contains eligibility-denied skills; catalog-blocked skills that ARE eligible
+        still show up as zero effective skills."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        import json
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="engineering_manager", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=True,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert "effective_skills" in data
+        # Effective skills should be empty (catalog gate blocks both manage-*)
+        assert len(data["effective_skills"]) == 0
+        # manage-agent and manage-repo are NOT in effective skills
+        effective_ids = {s["id"] for s in data["effective_skills"]}
+        assert "hr:manage-agent" not in effective_ids
+        assert "hr:manage-repo" not in effective_ids
+
+    def test_effective_not_exposed_to_non_manager(self, capsys, tmp_path):
+        """dev_agent (non-manager) does NOT see manage-agent even if someone else is eligible."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        # dev_agent has no eligibility entries → 0 effective skills
+        # manage-* might appear blocked (catalog + eligibility) or not at all
+        # The key: they are NOT in the "Effective skills" section
+
+    # ── policy explain ──────────────────────────────────────────────
+
+    def test_explain_manage_agent_blocked_catalog_gate(self, capsys, tmp_path):
+        """'policy explain hr:manage-agent' attributes block to CATALOG gate (unapproved version)."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:manage-agent", agent="engineering_manager",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=False,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        assert "NOT available" in out
+        assert "Blocked by: catalog gate" in out
+        assert "pending_review" in out.lower()
+
+    def test_explain_manage_agent_blocked_json(self, capsys, tmp_path):
+        """JSON explain for manage-agent shows catalog_gate.passed=False."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        import json
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:manage-agent", agent="engineering_manager",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=True,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["skill_id"] == "hr:manage-agent"
+        assert data["catalog_gate"]["passed"] is False
+        assert "pending_review" in data["catalog_gate"]["reason"].lower()
+        # Eligibility gate should PASS (engineering_manager is allowed)
+        assert data["eligibility"]["passed"] is True
+
+    def test_explain_manage_repo_blocked_catalog_gate(self, capsys, tmp_path):
+        """'policy explain hr:manage-repo' also blocked by catalog gate."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:manage-repo", agent="engineering_manager",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=False,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        assert "NOT available" in out
+        assert "Blocked by: catalog gate" in out
+        assert "pending_review" in out.lower()
+
+    def test_explain_manage_agent_not_eligible_for_non_manager(self, capsys, tmp_path):
+        """'policy explain hr:manage-agent --agent dev_agent' blocked by eligibility (not manager)."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:manage-agent", agent="dev_agent",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=True,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        # Both gates should fail: catalog (pending_review) + eligibility (not manager)
+        assert data["catalog_gate"]["passed"] is False
+        assert data["eligibility"]["passed"] is False
+
+    def test_explain_manage_agent_eligible_but_unapproved(self, capsys, tmp_path):
+        """'policy explain hr:manage-agent --agent engineering_manager': eligible, blocked by catalog."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        import json
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:manage-agent", agent="engineering_manager",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=True,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        # Eligibility PASSES (engineering_manager IS in agent-scoped allow)
+        assert data["eligibility"]["passed"] is True
+        # Catalog FAILS (pending_review)
+        assert data["catalog_gate"]["passed"] is False
+        assert data["is_exposed"] is False

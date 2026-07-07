@@ -15,4 +15,11 @@ skills:
     product_lead:
       allow:
         - hr:review
+        - hr:manage-agent
+        - hr:manage-repo
+      deny: []
+    engineering_manager:
+      allow:
+        - hr:manage-agent
+        - hr:manage-repo
       deny: []
