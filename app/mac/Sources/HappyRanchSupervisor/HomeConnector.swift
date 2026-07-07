@@ -69,6 +69,16 @@ public final class HomeConnector: @unchecked Sendable {
     /// The underlying network listener.
     private var listener: NWListener?
 
+    // MARK: - Connection tracking (A2.4 live-session revocation)
+
+    /// Lock guarding ``deviceConnections``.
+    private let connectionsLock = NSLock()
+
+    /// Active connections keyed by device credential.
+    /// When ``revokeDevice(credential:)`` is called, all connections
+    /// for that credential are immediately cancelled.
+    private var deviceConnections: [String: [NWConnection]] = [:]
+
     // MARK: - Init
 
     /// - Parameters:
@@ -146,6 +156,69 @@ public final class HomeConnector: @unchecked Sendable {
             listener = nil
             state = .stopped
         }
+        // Tear down all tracked connections.
+        connectionsLock.lock()
+        let allConnections = deviceConnections.values.flatMap { $0 }
+        deviceConnections.removeAll()
+        connectionsLock.unlock()
+        for connection in allConnections {
+            connection.cancel()
+        }
+    }
+
+    // MARK: - Connection tracking (A2.4)
+
+    /// Register a connection as active for the given device credential.
+    private func registerConnection(_ connection: NWConnection, forDevice deviceID: String) {
+        connectionsLock.lock()
+        var conns = deviceConnections[deviceID, default: []]
+        conns.append(connection)
+        deviceConnections[deviceID] = conns
+        connectionsLock.unlock()
+    }
+
+    /// Unregister a connection for the given device credential.
+    private func unregisterConnection(_ connection: NWConnection, forDevice deviceID: String) {
+        connectionsLock.lock()
+        guard var conns = deviceConnections[deviceID] else {
+            connectionsLock.unlock()
+            return
+        }
+        conns.removeAll { $0 === connection }
+        if conns.isEmpty {
+            deviceConnections.removeValue(forKey: deviceID)
+        } else {
+            deviceConnections[deviceID] = conns
+        }
+        connectionsLock.unlock()
+    }
+
+    /// Revoke a paired device **AND tear down its active proxy connections.**
+    ///
+    /// ## A2.4 live-session revocation invariant:
+    /// - Invalidates the device's pairing credential via ``PairedDeviceStore``.
+    /// - Actively cancels every open `NWConnection` (both client-side and
+    ///   daemon-side) associated with that credential.
+    /// - Returns `true` if a device was revoked, `false` if the credential
+    ///   was not found.
+    ///
+    /// After this call, any reconnect attempt with the same credential
+    /// receives 403 — ``isPaired(deviceID:)`` returns false for it.
+    public func revokeDevice(credential: String) -> Bool {
+        guard pairedDeviceStore.revokePairing(credential: credential) else {
+            return false
+        }
+
+        // Tear down all active connections for this device.
+        connectionsLock.lock()
+        let connections = deviceConnections.removeValue(forKey: credential) ?? []
+        connectionsLock.unlock()
+
+        for connection in connections {
+            connection.cancel()
+        }
+
+        return true
     }
 
     // MARK: - Listener state
@@ -282,6 +355,13 @@ public final class HomeConnector: @unchecked Sendable {
                 return
             }
 
+            // Register the client connection for live-session tracking (A2.4).
+            // If the device is later revoked, this connection will be actively
+            // torn down.
+            if !deviceID.isEmpty {
+                self.registerConnection(clientConnection, forDevice: deviceID)
+            }
+
             // --- INJECT CREDENTIAL ---
             let credential: String
             do {
@@ -305,7 +385,8 @@ public final class HomeConnector: @unchecked Sendable {
             self.relayToDaemon(
                 clientConnection: clientConnection,
                 modifiedRequest: modifiedRequest,
-                initialData: data
+                initialData: data,
+                deviceID: deviceID
             )
         }
     }
@@ -353,10 +434,16 @@ public final class HomeConnector: @unchecked Sendable {
     /// This handles HTTP (single request-response) and SSE (the daemon streams
     /// until it closes).  Full bidirectional WebSocket proxying is deferred to
     /// a future slice.
+    ///
+    /// - Parameters:
+    ///   - deviceID: The paired-device credential for live-session tracking
+    ///     (A2.4).  When non-empty, the daemon connection is registered and
+    ///     will be torn down if the device is revoked.
     private func relayToDaemon(
         clientConnection: NWConnection,
         modifiedRequest: String,
-        initialData: Data
+        initialData: Data,
+        deviceID: String
     ) {
         let daemonEndpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host("127.0.0.1"),
@@ -368,6 +455,13 @@ public final class HomeConnector: @unchecked Sendable {
             guard let clientConnection else { return }
             switch state {
             case .ready:
+                // Register the daemon-side connection for live-session
+                // tracking (A2.4).  When the device is revoked, this
+                // connection will be cancelled.
+                if !deviceID.isEmpty {
+                    self.registerConnection(daemonConnection, forDevice: deviceID)
+                }
+
                 let modifiedData = modifiedRequest.data(using: .utf8) ?? Data()
                 daemonConnection.send(
                     content: modifiedData,
@@ -379,6 +473,11 @@ public final class HomeConnector: @unchecked Sendable {
                     }
                 )
             case .failed, .cancelled:
+                // Clean up tracked connections when either side closes.
+                if !deviceID.isEmpty {
+                    self.unregisterConnection(daemonConnection, forDevice: deviceID)
+                    self.unregisterConnection(clientConnection, forDevice: deviceID)
+                }
                 clientConnection.cancel()
             default:
                 break

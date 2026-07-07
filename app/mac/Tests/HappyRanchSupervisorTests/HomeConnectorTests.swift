@@ -42,14 +42,26 @@ private final class FakeDaemonServer: @unchecked Sendable {
     private var listener: NWListener?
     private let lock = NSLock()
     private var _receivedRequests: [String] = []
+    private var _receivedConnectionCount: Int = 0
 
     var receivedRequests: [String] {
         lock.withLock { _receivedRequests }
     }
 
+    /// Number of connections accepted (not just requests).
+    var receivedConnectionCount: Int {
+        lock.withLock { _receivedConnectionCount }
+    }
+
     var responseBody: String = "{\"status\":\"ok\"}"
     var responseStatus: Int = 200
     var responseHeaders: [String: String] = ["Content-Type": "application/json"]
+
+    /// When true, the daemon receives requests but NEVER responds (keeps
+    /// the connection open indefinitely).  Used to test live-session
+    /// revocation — the connector must tear down a stalled connection
+    /// when the device is revoked.
+    var stallMode: Bool = false
 
     init(port: UInt16) {
         self.port = port
@@ -78,6 +90,8 @@ private final class FakeDaemonServer: @unchecked Sendable {
     }
 
     private func handleConnection(_ connection: NWConnection) {
+        self.lock.withLock { self._receivedConnectionCount += 1 }
+
         let body = responseBody
         let status = responseStatus
         let statusText = status == 200 ? "OK" : "Error"
@@ -99,6 +113,13 @@ private final class FakeDaemonServer: @unchecked Sendable {
                         return
                     }
                     self.lock.withLock { self._receivedRequests.append(request) }
+
+                    // Stall mode: record the request but keep the connection
+                    // open indefinitely — used to test live-session revocation.
+                    if self.stallMode {
+                        return
+                    }
+
                     connection.send(
                         content: responseData,
                         contentContext: .finalMessage,
@@ -148,8 +169,9 @@ private final class FakePairedDeviceStore: PairedDeviceStore, @unchecked Sendabl
 // MARK: - Helpers
 
 /// Thread-safe port allocator — avoids port conflicts between parallel tests.
+/// Start above common service ports and the xray proxy range (50000+).
 private let portAllocator = NSLock()
-nonisolated(unsafe) private var nextPort: UInt16 = 50000
+nonisolated(unsafe) private var nextPort: UInt16 = 55000
 
 /// Allocate a pair of ports (daemonPort, bindPort) for one test.
 private func allocatePortPair() -> (daemon: UInt16, bind: UInt16) {
@@ -158,7 +180,7 @@ private func allocatePortPair() -> (daemon: UInt16, bind: UInt16) {
     let daemon = nextPort
     let bind = nextPort + 1
     nextPort += 2
-    if nextPort > 60000 { nextPort = 50000 }
+    if nextPort > 60000 { nextPort = 55000 }
     return (daemon, bind)
 }
 
@@ -240,6 +262,114 @@ private func sendHTTPRequest(
                       userInfo: [NSLocalizedDescriptionKey: errMsg])
     }
     return result
+}
+
+// MARK: - Persistent connection helper (live-session revocation)
+
+/// A connection that stays alive across the test so we can observe
+/// whether it was torn down by revocation.
+private final class PersistentConnection: @unchecked Sendable {
+    let connection: NWConnection
+    let queue: DispatchQueue
+    private let lock = NSLock()
+    private var _wasCancelled = false
+    private var _wasFailed = false
+    private var _cancelledSemaphore = DispatchSemaphore(value: 0)
+
+    var wasCancelled: Bool { lock.withLock { _wasCancelled } }
+    var wasFailed: Bool { lock.withLock { _wasFailed } }
+
+    func markCancelled() {
+        lock.withLock { _wasCancelled = true }
+        _cancelledSemaphore.signal()
+    }
+    func markFailed() { lock.withLock { _wasFailed = true } }
+
+    /// Wait up to `timeout` seconds for the connection to be cancelled.
+    func waitForCancellation(timeout: TimeInterval) -> Bool {
+        return _cancelledSemaphore.wait(timeout: .now() + timeout) != .timedOut
+    }
+
+    init(connection: NWConnection, queue: DispatchQueue) {
+        self.connection = connection
+        self.queue = queue
+    }
+}
+
+/// Open a persistent connection to the given host:port, send an HTTP request,
+/// and return the connection kept alive.  The caller is responsible for
+/// observing the connection state and eventually cancelling it.
+private func sendPersistentHTTPRequest(
+    host: String,
+    port: UInt16,
+    path: String,
+    method: String = "GET",
+    headers: [String: String] = [:],
+    timeout: TimeInterval = 5
+) throws -> PersistentConnection {
+    let queue = DispatchQueue(label: "com.happyranch.test-persist-\(UUID().uuidString)")
+    let endpoint = NWEndpoint.hostPort(
+        host: NWEndpoint.Host(host),
+        port: NWEndpoint.Port(integerLiteral: port)
+    )
+    let connection = NWConnection(to: endpoint, using: .tcp)
+    let persistent = PersistentConnection(connection: connection, queue: queue)
+    let readySemaphore = DispatchSemaphore(value: 0)
+
+    connection.stateUpdateHandler = { state in
+        switch state {
+        case .ready:
+            var request = "\(method) \(path) HTTP/1.1\r\n"
+            request += "Host: \(host):\(port)\r\n"
+            for (key, value) in headers {
+                request += "\(key): \(value)\r\n"
+            }
+            request += "Connection: keep-alive\r\n\r\n"
+            connection.send(
+                content: request.data(using: .utf8),
+                completion: .contentProcessed { _ in
+                    // Start a receive to detect when the connection is
+                    // torn down by the remote side.  The callback fires
+                    // with an error or isComplete when the connection closes.
+                    connection.receive(
+                        minimumIncompleteLength: 1,
+                        maximumLength: 65536
+                    ) { _, _, isComplete, error in
+                        if error != nil || isComplete {
+                            persistent.markCancelled()
+                        }
+                    }
+                    readySemaphore.signal()
+                }
+            )
+        case .failed:
+            persistent.markFailed()
+            readySemaphore.signal()
+        case .cancelled:
+            persistent.markCancelled()
+        default:
+            break
+        }
+    }
+    connection.start(queue: queue)
+
+    if readySemaphore.wait(timeout: .now() + timeout) == .timedOut {
+        connection.cancel()
+        throw NSError(
+            domain: "test", code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "Persistent connection timed out"]
+        )
+    }
+
+    if persistent.wasFailed {
+        connection.cancel()
+        throw NSError(
+            domain: "test", code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "Persistent connection failed"]
+        )
+    }
+
+    return persistent
 }
 
 // MARK: - HomeConnector Tests
@@ -968,5 +1098,90 @@ struct HomeConnectorTests {
         #expect(afterResponse.status == 403,
                 "Expected 403 after revocation, got \(afterResponse.status)")
         #expect(afterResponse.body.contains("not paired"))
+    }
+
+    // MARK: - A2.4 LIVE-SESSION REVOCATION
+
+    /// INVARIANT: Revocation tears down ACTIVE proxy connections, not just
+    /// future ones.  This test opens a live session, revokes the device,
+    /// and asserts the connection is IMMEDIATELY dropped AND reconnect is
+    /// refused — satisfying both halves of the A2.4 invariant.
+    @Test("revocation tears down active proxy connection — live session dropped")
+    func revocationTearsDownActiveSession() throws {
+        let ports = allocatePortPair(); let daemonPort = ports.daemon
+        let bindPort = ports.bind
+
+        // Use a stalling fake daemon so the proxied connection stays open
+        // indefinitely — the revocation should tear it down.
+        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        fakeDaemon.stallMode = true
+        try fakeDaemon.start()
+        defer {
+            fakeDaemon.stallMode = false
+            fakeDaemon.stop()
+        }
+
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let pairingStore = RealPairingStore()
+
+        // Pair a device
+        let code = pairingStore.generatePairingCode()
+        guard let credential = pairingStore.pair(usingCode: code, deviceName: "test-client") else {
+            #expect(Bool(false), "Pairing should succeed")
+            return
+        }
+
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1", bindPort: bindPort,
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: pairingStore
+        )
+
+        try connector.start()
+        var waitCount = 0
+        while case .stopped = connector.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { connector.stop() }
+
+        // Open a persistent connection with the paired credential.
+        // This connection stays open (daemon is stalling).
+        let persistent = try sendPersistentHTTPRequest(
+            host: "127.0.0.1", port: bindPort, path: "/tasks",
+            headers: ["X-HappyRanch-Device-Credential": credential],
+            timeout: 5
+        )
+        defer { persistent.connection.cancel() }
+
+        // Wait for the daemon to receive the proxied request so we know
+        // the session was established.
+        var pollCount = 0
+        while fakeDaemon.receivedRequests.isEmpty, pollCount < 100 {
+            Thread.sleep(forTimeInterval: 0.1)
+            pollCount += 1
+        }
+        #expect(
+            !fakeDaemon.receivedRequests.isEmpty || fakeDaemon.receivedConnectionCount > 0,
+            "Fake daemon should have received the proxied request (conns: \(fakeDaemon.receivedConnectionCount), reqs: \(fakeDaemon.receivedRequests.count)) after \(pollCount * 100)ms"
+        )
+
+        // REVOKE: this must tear down the ACTIVE session.
+        let revoked = connector.revokeDevice(credential: credential)
+        #expect(revoked, "Revocation should succeed")
+
+        // The persistent connection MUST have been cancelled.
+        let cancelled = persistent.waitForCancellation(timeout: 3)
+        #expect(cancelled, "Active connection was NOT torn down by revocation")
+
+        // RECONNECT is refused — future requests with the revoked
+        // credential get 403.
+        let reconnectResponse = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort, path: "/tasks",
+            headers: ["X-HappyRanch-Device-Credential": credential],
+            timeout: 5
+        )
+        #expect(reconnectResponse.status == 403,
+                "Expected 403 on reconnect after revocation, got \(reconnectResponse.status)")
+        #expect(reconnectResponse.body.contains("not paired"))
     }
 }
