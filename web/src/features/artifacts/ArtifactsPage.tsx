@@ -24,9 +24,28 @@
  * Recency: the list is sorted by `modified_at` (the real, always-present server
  * mtime) descending — a stronger "Recent first" signal than the name-embedded
  * date, and ISO-8601 "Z" strings sort lexicographically = chronologically.
+ *
+ * Folder tree (THR-061 slice 8): when artifact names carry a '/'-separated path
+ * (CLAUDE.md documents '/' as the logical folder separator), the page becomes a
+ * navigable tree — subfolder rows + a breadcrumb, all DERIVED client-side from
+ * the name segments (see ./artifact-tree). No new route (the current folder is
+ * in-memory state) and no new field. When every name is flat the tree chrome is
+ * absent and the page stays the flat recency grid, so the feature is additive.
  */
 import { useId, useMemo, useRef, useState } from 'react';
-import { Download, File, FileDiff, FileText, GitPullRequest, Image, Trash2, Upload } from 'lucide-react';
+import {
+  Download,
+  File,
+  FileDiff,
+  FileText,
+  Folder,
+  GitPullRequest,
+  Home,
+  Image,
+  Info,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
@@ -43,6 +62,7 @@ import {
   parseProvenance,
   type ArtifactType,
 } from './artifact-meta';
+import { buildFolderView, hasFolders, type Crumb, type FolderEntry } from './artifact-tree';
 import { validateArtifactUpload } from './validation';
 
 /* ------------------------------------------------------------------ */
@@ -240,6 +260,87 @@ function ArtifactCard({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Folder tree — breadcrumb + folder rows (client-derived, slice 8)   */
+/* ------------------------------------------------------------------ */
+
+/** Root → cwd trail. Each hop navigates; the last is the current folder. */
+function Breadcrumb({
+  crumbs,
+  onNavigate,
+}: {
+  crumbs: Crumb[];
+  onNavigate: (path: string) => void;
+}): JSX.Element {
+  return (
+    <nav
+      aria-label="Folder breadcrumb"
+      className="mb-4 flex flex-wrap items-center gap-1 text-sm"
+    >
+      {crumbs.map((c, i) => {
+        const isLast = i === crumbs.length - 1;
+        const home = i === 0 ? <Home size={14} aria-hidden="true" /> : null;
+        return (
+          <span key={c.path || 'root'} className="flex items-center gap-1">
+            {i > 0 && (
+              <span className="text-text-muted" aria-hidden="true">
+                /
+              </span>
+            )}
+            {isLast ? (
+              <span
+                aria-current="page"
+                className="text-text-primary inline-flex items-center gap-1 px-2 py-0.5 font-medium"
+              >
+                {home}
+                {c.label}
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onNavigate(c.path)}
+                className="text-text-secondary hover:text-text-primary hover:bg-surface-hover inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-medium transition-colors"
+              >
+                {home}
+                {c.label}
+              </button>
+            )}
+          </span>
+        );
+      })}
+    </nav>
+  );
+}
+
+/** A single subfolder row — accent-tinted folder glyph, name, and file count. */
+function FolderRow({
+  folder,
+  onOpen,
+}: {
+  folder: FolderEntry;
+  onOpen: (path: string) => void;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(folder.path)}
+      className="bg-surface border-border-default shadow-pasture-sm hover:border-border-strong hover:bg-surface-hover flex items-center gap-3 rounded-lg border p-4 text-left transition-colors"
+    >
+      <span className="bg-accent-muted text-accent-text flex h-9 w-9 flex-none items-center justify-center rounded-xl">
+        <Folder size={19} aria-hidden="true" />
+      </span>
+      <span className="min-w-0">
+        <span className="font-display text-text-primary block truncate text-sm font-semibold">
+          {folder.name}/
+        </span>
+        <span className="text-text-muted block text-xs">
+          {folder.count} file{folder.count === 1 ? '' : 's'}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -255,6 +356,8 @@ export function ArtifactsPage(): JSX.Element {
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [showUpload, setShowUpload] = useState(false);
   const [activeFilter, setActiveFilter] = useState<ArtifactType | 'all'>('all');
+  // Current folder within the client-derived tree ('' = root). Never a route.
+  const [cwd, setCwd] = useState('');
 
   const listQuery = useQuery({
     queryKey: ['artifacts', slug],
@@ -317,17 +420,21 @@ export function ArtifactsPage(): JSX.Element {
   // Stable reference so the derived useMemos below don't recompute every render.
   const artifacts = useMemo(() => listQuery.data?.artifacts ?? [], [listQuery.data]);
 
-  // Recency-sorted (modified_at desc) once; filter is applied on top per-render.
-  const sorted = useMemo(
-    () => [...artifacts].sort((a, b) => b.modified_at.localeCompare(a.modified_at)),
-    [artifacts],
-  );
-  const visible = useMemo(
+  // Type filter applied first; the folder view then scopes to the current dir.
+  const filtered = useMemo(
     () =>
       activeFilter === 'all'
-        ? sorted
-        : sorted.filter((a) => deriveArtifactType(a.name) === activeFilter),
-    [sorted, activeFilter],
+        ? artifacts
+        : artifacts.filter((a) => deriveArtifactType(a.name) === activeFilter),
+    [artifacts, activeFilter],
+  );
+
+  // Folders exist only when some name carries a '/' path — otherwise the page
+  // stays the flat recency grid (the tree chrome is purely additive).
+  const showFolders = useMemo(() => hasFolders(artifacts), [artifacts]);
+  const view = useMemo(
+    () => buildFolderView(filtered, showFolders ? cwd : ''),
+    [filtered, cwd, showFolders],
   );
 
   // Eyebrow counts: artifacts from the list; threads = distinct parsed THR ids.
@@ -455,6 +562,26 @@ export function ArtifactsPage(): JSX.Element {
         {/* Card grid */}
         {hasData && artifacts.length > 0 && (
           <>
+            {/* Honesty note: folders are derived from the name path, not stored. */}
+            {showFolders && (
+              <div className="border-border-strong bg-surface-sunken text-text-muted mb-5 flex items-start gap-2 rounded-lg border border-dashed p-3 text-xs leading-relaxed">
+                <Info
+                  size={14}
+                  aria-hidden="true"
+                  className="text-attention-text mt-0.5 flex-none"
+                />
+                <p>
+                  Folders are derived from the path in each artifact&apos;s{' '}
+                  <span className="font-mono">name</span> — the only stored fields are{' '}
+                  <span className="font-mono">name</span>,{' '}
+                  <span className="font-mono">size_bytes</span>, and{' '}
+                  <span className="font-mono">modified_at</span>. Agent and date come from the{' '}
+                  <span className="font-mono">&lt;agent&gt;-&lt;YYYY-MM-DD&gt;-&lt;slug&gt;</span>{' '}
+                  filename convention; there is no separate folder record.
+                </p>
+              </div>
+            )}
+
             {/* Filter (segmented) + sort row (ART-02) */}
             <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
               <div
@@ -482,7 +609,9 @@ export function ArtifactsPage(): JSX.Element {
                   );
                 })}
               </div>
-              <span className="text-text-muted text-sm">Recent first</span>
+              <span className="text-text-muted text-sm">
+                {showFolders ? 'Folders first · recent files' : 'Recent first'}
+              </span>
             </div>
 
             {/* Banner for delete/download errors */}
@@ -497,34 +626,63 @@ export function ArtifactsPage(): JSX.Element {
               </p>
             )}
 
-            {visible.length === 0 ? (
-              <p className="text-text-muted text-sm">No artifacts match this filter.</p>
-            ) : (
+            {/* Breadcrumb — client-derived folder trail (only when folders exist). */}
+            {showFolders && <Breadcrumb crumbs={view.crumbs} onNavigate={setCwd} />}
+
+            {/* Subfolders of the current folder. */}
+            {view.folders.length > 0 && (
               <div
-                aria-label="Artifacts list"
-                className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+                aria-label="Folders"
+                className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
               >
-                {visible.map((a) => (
-                  <ArtifactCard
-                    key={a.name}
-                    name={a.name}
-                    sizeBytes={a.size_bytes}
-                    slug={slug}
-                    onDownload={(artifactName) => {
-                      setDownloadError(null);
-                      artifactsApi.downloadArtifact(slug, artifactName).catch((err: unknown) => {
-                        const msg =
-                          err instanceof ApiError
-                            ? `Download failed (HTTP ${err.status}).`
-                            : String(err);
-                        setDownloadError(msg);
-                      });
-                    }}
-                    onDelete={requestDelete}
-                    isDeleting={del.isPending && del.variables === a.name}
-                  />
+                {view.folders.map((f) => (
+                  <FolderRow key={f.path} folder={f} onOpen={setCwd} />
                 ))}
               </div>
+            )}
+
+            {/* Files directly in the current folder. */}
+            {view.folders.length === 0 && view.files.length === 0 ? (
+              <p className="text-text-muted text-sm">
+                No artifacts match this filter{cwd ? ' in this folder' : ''}.
+              </p>
+            ) : (
+              view.files.length > 0 && (
+                <>
+                  {view.folders.length > 0 && (
+                    <p className="text-text-muted mb-3 text-xs font-semibold tracking-wide uppercase">
+                      Files here
+                    </p>
+                  )}
+                  <div
+                    aria-label="Artifacts list"
+                    className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+                  >
+                    {view.files.map((a) => (
+                      <ArtifactCard
+                        key={a.name}
+                        name={a.name}
+                        sizeBytes={a.size_bytes}
+                        slug={slug}
+                        onDownload={(artifactName) => {
+                          setDownloadError(null);
+                          artifactsApi
+                            .downloadArtifact(slug, artifactName)
+                            .catch((err: unknown) => {
+                              const msg =
+                                err instanceof ApiError
+                                  ? `Download failed (HTTP ${err.status}).`
+                                  : String(err);
+                              setDownloadError(msg);
+                            });
+                        }}
+                        onDelete={requestDelete}
+                        isDeleting={del.isPending && del.variables === a.name}
+                      />
+                    ))}
+                  </div>
+                </>
+              )
             )}
           </>
         )}

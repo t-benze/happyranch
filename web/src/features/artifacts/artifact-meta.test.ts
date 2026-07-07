@@ -1,10 +1,20 @@
 import { describe, expect, test } from 'vitest';
 import {
+  baseName,
   deriveArtifactType,
   deriveTitle,
   formatProvenanceDate,
   parseProvenance,
 } from './artifact-meta';
+
+describe('baseName', () => {
+  test('returns the final path segment, or the whole name when flat', () => {
+    expect(baseName('reports/qa/qa_engineer-2026-06-14-parity.md')).toBe(
+      'qa_engineer-2026-06-14-parity.md',
+    );
+    expect(baseName('report.pdf')).toBe('report.pdf');
+  });
+});
 
 describe('deriveArtifactType', () => {
   test('classifies docs by extension', () => {
@@ -82,6 +92,16 @@ describe('parseProvenance', () => {
       threadId: 'THR-007',
     });
   });
+
+  test('parses agent/date from the file segment of a foldered name (ignores the path)', () => {
+    expect(parseProvenance('reports/qa/qa_engineer-2026-06-14-parity-report.md')).toEqual({
+      agent: 'qa_engineer',
+      date: '2026-06-14',
+      threadId: null,
+    });
+    // A THR token in the folder path is still surfaced.
+    expect(parseProvenance('THR-030/plain.md').threadId).toBe('THR-030');
+  });
 });
 
 describe('deriveTitle', () => {
@@ -97,6 +117,14 @@ describe('deriveTitle', () => {
   test('keeps the full name when the convention does not match', () => {
     expect(deriveTitle('report.pdf')).toBe('report.pdf');
     expect(deriveTitle('export.csv')).toBe('export.csv');
+  });
+
+  test('strips the folder path down to the file, then the convention prefix', () => {
+    expect(deriveTitle('reports/qa/qa_engineer-2026-06-14-parity-report.md')).toBe(
+      'parity-report.md',
+    );
+    // Foldered file that does not match the convention shows just its base name.
+    expect(deriveTitle('logs/build-log-20260613.txt')).toBe('build-log-20260613.txt');
   });
 });
 
