@@ -3,9 +3,9 @@
  * "Waiting on you" panel.
  *
  * Click to expand → rationale textarea autofocuses → ⌘↵ submits or Esc
- * collapses. Sends { decision: 'approve', rationale } to the existing
- * /tasks/{id}/resolve-escalation route. Reject-with-rationale lives on
- * the Tasks page's ResolveEscalationDialog; the dashboard is approve-only
+ * collapses. Sends { decision: 'continue', rationale } to the existing
+ * /tasks/{id}/resolve-escalation route. Cancel-with-rationale lives on
+ * the Tasks page's ResolveEscalationDialog; the dashboard is continue-only
  * because that's the common founder action.
  *
  * KB promotion is deferred — see spec §4.6.
@@ -51,7 +51,7 @@ export function EscalationInboxRow({
   }, [expanded]);
 
   async function submit() {
-    await resolve.mutateAsync({ decision: 'approve', rationale });
+    await resolve.mutateAsync({ decision: 'continue', rationale });
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -111,7 +111,7 @@ export function EscalationInboxRow({
               disabled={resolve.isPending}
               type="button"
             >
-              {resolve.isPending ? 'Resolving…' : 'Approve & resolve'}
+              {resolve.isPending ? 'Continuing…' : 'Continue & resolve'}
             </Button>
           </div>
         </div>

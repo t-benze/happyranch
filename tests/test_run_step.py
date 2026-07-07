@@ -1095,10 +1095,10 @@ def test_run_step_revisit_header_omits_note_line_when_none(
     assert "Founder note:" not in captured["prompt"]
 
 
-def test_run_step_resolved_escalation_header_injected_after_approve(
+def test_run_step_resolved_escalation_header_injected_after_continue(
     runtime, db, monkeypatch,
 ):
-    """After /resolve-escalation --approve, the task is re-enqueued (PENDING).
+    """After /resolve-escalation --continue, the task is re-enqueued (PENDING).
     On the manager's next decision step, the prompt must start with the
     ESCALATION RESOLVED header so the manager sees the founder's verdict."""
     from runtime.orchestrator.orchestrator import Orchestrator
@@ -1113,7 +1113,7 @@ def test_run_step_resolved_escalation_header_injected_after_approve(
     )
     db.insert_audit_log(
         task_id="TASK-080", agent="founder", action="escalation_resolved",
-        payload={"decision": "approve", "rationale": "approved one-time exception"},
+        payload={"decision": "continue", "rationale": "approved one-time exception"},
     )
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
 
@@ -1127,7 +1127,7 @@ def test_run_step_resolved_escalation_header_injected_after_approve(
     prompt = captured["prompt"]
     assert prompt.startswith("ESCALATION RESOLVED:")
     assert "approved one-time exception" in prompt
-    assert "founder approved" in prompt
+    assert "founder continued" in prompt
 
 
 def test_run_step_resolved_escalation_header_absent_after_next_step(
@@ -1148,7 +1148,7 @@ def test_run_step_resolved_escalation_header_absent_after_next_step(
     )
     db.insert_audit_log(
         task_id="TASK-081", agent="founder", action="escalation_resolved",
-        payload={"decision": "approve", "rationale": "ok"},
+        payload={"decision": "continue", "rationale": "ok"},
     )
     db.insert_audit_log(
         task_id="TASK-081", agent="orchestrator", action="orchestration_step",

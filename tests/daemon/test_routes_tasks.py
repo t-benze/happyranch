@@ -743,12 +743,12 @@ def test_resolve_escalation_accepts_blank_rationale(tmp_home, app, org_state, au
     client = TestClient(app)
     r = client.post(
         "/api/v1/orgs/alpha/tasks/TASK-045/resolve-escalation",
-        json={"decision": "approve", "rationale": ""},
+        json={"decision": "continue", "rationale": ""},
         headers=auth_headers,
     )
     assert r.status_code == 200
     t = org_state.db.get_task("TASK-045")
-    assert t.note == "Founder approved"
+    assert t.note == "Founder continued"
     entries = org_state.db.get_audit_logs("TASK-045")
     resolved = [e for e in entries if e["action"] == "escalation_resolved"]
     assert len(resolved) == 1
@@ -756,8 +756,8 @@ def test_resolve_escalation_accepts_blank_rationale(tmp_home, app, org_state, au
 
 
 def test_resolve_escalation_reject_without_rationale(tmp_home, app, org_state, auth_headers):
-    """THR-046: reject without rationale transitions to failed with note
-    'Founder rejected' and empty audit rationale."""
+    """THR-046: cancel without rationale transitions to cancelled with note
+    'Founder cancelled' and empty audit rationale."""
     from runtime.models import TaskRecord, TaskStatus
     org_state.db.insert_task(TaskRecord(
         id="TASK-046", brief="x",
@@ -768,13 +768,13 @@ def test_resolve_escalation_reject_without_rationale(tmp_home, app, org_state, a
     client = TestClient(app)
     r = client.post(
         "/api/v1/orgs/alpha/tasks/TASK-046/resolve-escalation",
-        json={"decision": "reject"},
+        json={"decision": "cancel"},
         headers=auth_headers,
     )
     assert r.status_code == 200
     t = org_state.db.get_task("TASK-046")
-    assert t.status == TaskStatus.FAILED
-    assert t.note == "Founder rejected"
+    assert t.status == TaskStatus.CANCELLED
+    assert t.note == "Founder cancelled"
     entries = org_state.db.get_audit_logs("TASK-046")
     resolved = [e for e in entries if e["action"] == "escalation_resolved"]
     assert len(resolved) == 1
@@ -880,13 +880,13 @@ def test_resolve_escalation_rejects_non_escalated_task(client_with_runtime):
 
     r = client.post(
         "/api/v1/orgs/alpha/tasks/T-1/resolve-escalation",
-        json={"decision": "approve", "rationale": "ok"},
+        json={"decision": "continue", "rationale": "ok"},
     )
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "task_not_escalated"
 
 
-def test_resolve_escalation_approve_resumes_task(client_with_runtime):
+def test_resolve_escalation_continue_resumes_task(client_with_runtime):
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
@@ -897,7 +897,7 @@ def test_resolve_escalation_approve_resumes_task(client_with_runtime):
 
     r = client.post(
         "/api/v1/orgs/alpha/tasks/T-1/resolve-escalation",
-        json={"decision": "approve", "rationale": "ok"},
+        json={"decision": "continue", "rationale": "ok"},
     )
     assert r.status_code == 200
     assert r.json()["new_status"] == "pending"
@@ -909,12 +909,12 @@ def test_resolve_escalation_approve_resumes_task(client_with_runtime):
     assert daemon.queue._queue.get_nowait() == ("alpha", "T-1", None)
 
 
-def test_resolve_escalation_approve_target_is_root(client_with_runtime):
+def test_resolve_escalation_continue_target_is_root(client_with_runtime):
     """THR-033 Change A: escalation is root-only (run_step's three escalation
     sites all gate on is_root; non-roots fail and route to their parent). So a
-    resolve-escalation approve ALWAYS lands on a root, where re-enqueue →
+    resolve-escalation continue ALWAYS lands on a root, where re-enqueue →
     fresh decision step (re-author) is the correct disposition. Locks the
-    invariant that the approve target is structurally a root."""
+    invariant that the continue target is structurally a root."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-ROOT", brief="x"))
@@ -927,16 +927,16 @@ def test_resolve_escalation_approve_target_is_root(client_with_runtime):
 
     r = client.post(
         "/api/v1/orgs/alpha/tasks/T-ROOT/resolve-escalation",
-        json={"decision": "approve", "rationale": "ok"},
+        json={"decision": "continue", "rationale": "ok"},
     )
     assert r.status_code == 200
     t = state.db.get_task("T-ROOT")
     assert t.status == TaskStatus.PENDING
-    assert t.parent_task_id is None  # approve target stays a root
+    assert t.parent_task_id is None  # continue target stays a root
     assert daemon.queue._queue.get_nowait() == ("alpha", "T-ROOT", None)
 
 
-def test_resolve_escalation_reject_transitions_to_failed(client_with_runtime):
+def test_resolve_escalation_cancel_transitions_to_cancelled(client_with_runtime):
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
@@ -944,11 +944,11 @@ def test_resolve_escalation_reject_transitions_to_failed(client_with_runtime):
 
     r = client.post(
         "/api/v1/orgs/alpha/tasks/T-1/resolve-escalation",
-        json={"decision": "reject", "rationale": "nope"},
+        json={"decision": "cancel", "rationale": "nope"},
     )
     assert r.status_code == 200
     t = state.db.get_task("T-1")
-    assert t.status == TaskStatus.FAILED
+    assert t.status == TaskStatus.CANCELLED
     assert t.block_kind is None
 
 
@@ -965,7 +965,7 @@ def test_resolve_escalation_overwrites_note_with_rationale(client_with_runtime):
 
     r = client.post(
         "/api/v1/orgs/alpha/tasks/T-1/resolve-escalation",
-        json={"decision": "approve", "rationale": "proceed with caveats"},
+        json={"decision": "continue", "rationale": "proceed with caveats"},
     )
     assert r.status_code == 200
     t = state.db.get_task("T-1")
@@ -974,8 +974,8 @@ def test_resolve_escalation_overwrites_note_with_rationale(client_with_runtime):
     assert "Original escalation reason" not in (t.note or "")
 
 
-def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runtime):
-    """Approve resumes the child itself; parent stays in_progress(delegated) and
+def test_resolve_escalation_continue_reenqueues_child_not_parent(client_with_runtime):
+    """Continue resumes the child itself; parent stays in_progress(delegated) and
     will be woken later when the child reaches a true terminal."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
@@ -994,10 +994,10 @@ def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runt
 
     r = client.post(
         "/api/v1/orgs/alpha/tasks/T-CHD/resolve-escalation",
-        json={"decision": "approve", "rationale": "ok"},
+        json={"decision": "continue", "rationale": "ok"},
     )
     assert r.status_code == 200
-    # Approve re-enqueues the child itself (resumes the work). Parent stays
+    # Continue re-enqueues the child itself (resumes the work). Parent stays
     # in_progress(delegated) and will be woken when the child next reaches a
     # true terminal — no immediate parent wake here.
     assert daemon.queue._queue.get_nowait() == ("alpha", "T-CHD", None)
@@ -1007,8 +1007,8 @@ def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runt
     assert par.block_kind == BlockKind.DELEGATED
 
 
-def test_resolve_escalation_reject_cascades_to_parent(client_with_runtime):
-    """Reject on a child fails it and wakes the parent via bounded
+def test_resolve_escalation_cancel_cascades_to_parent(client_with_runtime):
+    """Cancel on a child cancels it and wakes the parent via bounded
     failure-recovery (TASK-573) — parent stays in_progress(delegated) for
     a bounded-wake decision step, NOT cascade-failed."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
@@ -1025,11 +1025,11 @@ def test_resolve_escalation_reject_cascades_to_parent(client_with_runtime):
 
     r = client.post(
         "/api/v1/orgs/alpha/tasks/T-CHD/resolve-escalation",
-        json={"decision": "reject", "rationale": "no"},
+        json={"decision": "cancel", "rationale": "no"},
     )
     assert r.status_code == 200
     chd = state.db.get_task("T-CHD")
-    assert chd.status == TaskStatus.FAILED
+    assert chd.status == TaskStatus.CANCELLED
     par = state.db.get_task("T-PAR")
     # TASK-573: bounded-wake, not cascade-fail.
     assert par.status == TaskStatus.IN_PROGRESS

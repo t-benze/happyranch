@@ -522,7 +522,7 @@ async def submit_progress(task_id: str, body: ProgressBody, org: OrgDep) -> dict
 
 
 class ResolveEscalationBody(BaseModel):
-    decision: str  # "approve" | "reject"
+    decision: str  # "continue" | "cancel"
     rationale: str = ""
 
 
@@ -548,7 +548,7 @@ async def resolve_escalation_in_process(
         _kill_jobs_for_terminating_task,
     )
 
-    if decision not in ("approve", "reject"):
+    if decision not in ("continue", "cancel"):
         raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
     task = org.db.get_task(task_id)
     if task is None:
@@ -560,21 +560,21 @@ async def resolve_escalation_in_process(
             status_code=409,
             detail={"code": "task_not_escalated", "current_status": task.status.value},
         )
-    # approve resumes the work itself; reject terminates it. Pre-resolve we
-    # used to mark approve→COMPLETED and lean on parent wake-up to carry the
-    # work forward. That left root escalations (no parent) silently dropping
-    # the work the approval was meant to authorize. New shape: approve sends
+    # continue resumes the work itself; cancel terminates it. Continue sends
     # the task back to PENDING with the rationale on `note`, and the team
     # manager picks it up on the next step with a one-shot prompt header
     # (see `_resolved_escalation_header_if_applicable` in run_step.py).
+    # Cancel is a deliberate founder stop — status CANCELLED (not FAILED),
+    # with parent notification and job cleanup preserved.
     trimmed = rationale.strip()
-    verb = "approved" if decision == "approve" else "rejected"
+    verb = "continued" if decision == "continue" else "cancelled"
     resolved_note = f"Founder {verb}: {trimmed}" if trimmed else f"Founder {verb}"
     async with org.db_lock:
-        new_status = TaskStatus.PENDING if decision == "approve" else TaskStatus.FAILED
-        org.db.update_task(
-            task_id, status=new_status, block_kind=None, note=resolved_note,
-        )
+        new_status = TaskStatus.PENDING if decision == "continue" else TaskStatus.CANCELLED
+        update_kwargs: dict = dict(status=new_status, block_kind=None, note=resolved_note)
+        if decision == "cancel":
+            update_kwargs["cancelled_at"] = datetime.now(timezone.utc)
+        org.db.update_task(task_id, **update_kwargs)
         AuditLogger(org.db).log_escalation_resolved(
             task_id=task_id, decision=decision, rationale=rationale,
         )
@@ -584,7 +584,7 @@ async def resolve_escalation_in_process(
             org.db.consume_escalation_notification(
                 nrow["feishu_message_id"], consumed_by="cli-fallback",
             )
-    if decision == "approve":
+    if decision == "continue":
         # Re-enqueue self. The manager's next step sees the rationale via the
         # escalation-resolved prompt header (see
         # ``_resolved_escalation_header_if_applicable`` in run_step.py).
@@ -593,12 +593,9 @@ async def resolve_escalation_in_process(
         if state.queue is not None:
             state.queue.put_nowait(org.slug, task_id)
     else:
-        # Cascade-fail upward: the parent (if any) must learn this branch
-        # failed. The org's Orchestrator owns its slug + queue + db, so we
-        # just pass it through; ``_enqueue_parent_if_waiting`` calls _fail
-        # on the parent on FAILED siblings.
+        # Cancel is terminal — notify parent (parity with old reject path)
+        # and kill persistent jobs this task owns.
         _enqueue_parent_if_waiting(org.orchestrator, task_id)
-        # Reject is terminal — kill any persistent jobs this task owns.
         _kill_jobs_for_terminating_task(org.orchestrator, task_id)
     return new_status.value
 
