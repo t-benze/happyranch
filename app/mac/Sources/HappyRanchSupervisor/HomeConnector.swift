@@ -225,7 +225,37 @@ public final class HomeConnector: @unchecked Sendable {
                 return
             }
 
+            let method = parts[0]
             let path = parts[1]
+
+            // Parse headers for device credential extraction
+            let headers = Self.parseHeaders(from: lines)
+
+            // --- PAIRING ENDPOINT (handled locally, NOT proxied to daemon) ---
+            // POST /pair — client sends pairing code, gets back a per-device credential.
+            // This is BEFORE the surface-allow-list gate because pairing is a native
+            // connector operation, not a daemon surface.
+            if method == "POST" && path == "/pair" {
+                let body = Self.extractBody(from: requestString) ?? ""
+                if let credential = self.pairedDeviceStore.pair(
+                    usingCode: body.trimmingCharacters(in: .whitespaces),
+                    deviceName: "client"
+                ) {
+                    let responseBody = "{\"credential\":\"\(credential)\"}"
+                    self.sendJSONResponse(
+                        to: clientConnection,
+                        status: 200,
+                        body: responseBody
+                    )
+                } else {
+                    self.sendErrorResponse(
+                        to: clientConnection,
+                        status: 403,
+                        message: "Forbidden — invalid or expired pairing code"
+                    )
+                }
+                return
+            }
 
             // --- SURFACE ALLOW-LIST DENY GATE ---
             guard self.surfaceAllowList.isAllowed(path: path) else {
@@ -237,10 +267,12 @@ public final class HomeConnector: @unchecked Sendable {
                 return
             }
 
-            // --- PAIRED-DEVICE CHECK (stub in A2.1) ---
-            // A2.3 will extract a device ID from the request and check it.
-            // A2.1: all devices pass.
-            let deviceID = "stub-device"  // A2.3: extract from request header
+            // --- PAIRED-DEVICE CHECK ---
+            // Extract the device credential from the X-HappyRanch-Device-Credential header.
+            // An empty or missing credential is treated as "unpaired" and rejected.
+            // This is the hard invariant: tailnet presence is necessary but NOT sufficient;
+            // a random tailnet peer WITHOUT a valid pairing credential gets NOTHING.
+            let deviceID = headers["x-happyranch-device-credential"] ?? ""
             guard self.pairedDeviceStore.isPaired(deviceID: deviceID) else {
                 self.sendErrorResponse(
                     to: clientConnection,
@@ -387,6 +419,61 @@ public final class HomeConnector: @unchecked Sendable {
                 self.relayDaemonResponse(daemon: daemon, client: client)
             }
         }
+    }
+
+    // MARK: - Request parsing helpers
+
+    /// Parse HTTP headers from request lines into a dictionary.
+    /// Headers are normalized to lowercase keys for case-insensitive lookup.
+    private static func parseHeaders(from lines: [String]) -> [String: String] {
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {  // skip request line
+            guard !line.isEmpty else { continue }
+            guard let colonIndex = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<colonIndex]).trimmingCharacters(in: .whitespaces).lowercased()
+            let value = String(line[colonIndex...].dropFirst()).trimmingCharacters(in: .whitespaces)
+            headers[key] = value
+        }
+        return headers
+    }
+
+    /// Extract the HTTP body from a raw request string (content after \r\n\r\n).
+    private static func extractBody(from request: String) -> String? {
+        guard let bodyRange = request.range(of: "\r\n\r\n") else { return nil }
+        return String(request[bodyRange.upperBound...])
+    }
+
+    /// Send a JSON response and close the connection.
+    private func sendJSONResponse(
+        to connection: NWConnection,
+        status: Int,
+        body: String
+    ) {
+        let statusText: String = {
+            switch status {
+            case 200: return "OK"
+            case 201: return "Created"
+            case 403: return "Forbidden"
+            case 500: return "Internal Server Error"
+            default: return "OK"
+            }
+        }()
+
+        let response = """
+            HTTP/1.1 \(status) \(statusText)\r
+            Content-Type: application/json\r
+            Content-Length: \(body.utf8.count)\r
+            Connection: close\r
+            \r
+            \(body)
+            """
+
+        connection.send(
+            content: response.data(using: .utf8),
+            contentContext: .finalMessage,
+            isComplete: true,
+            completion: .idempotent
+        )
     }
 
     // MARK: - Error responses

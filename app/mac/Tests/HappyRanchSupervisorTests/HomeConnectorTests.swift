@@ -140,6 +140,9 @@ private final class FakeCredentialProvider: DaemonCredentialProvider, @unchecked
 private final class FakePairedDeviceStore: PairedDeviceStore, @unchecked Sendable {
     var isPairedResult = true
     func isPaired(deviceID: String) -> Bool { isPairedResult }
+    func generatePairingCode() -> String { return "FAKE-CODE" }
+    func pair(usingCode: String, deviceName: String) -> String? { return "fake-credential" }
+    func revokePairing(credential: String) -> Bool { return true }
 }
 
 // MARK: - Helpers
@@ -663,5 +666,307 @@ struct HomeConnectorTests {
             host: "127.0.0.1", port: bindPort, path: "/nonexistent", timeout: 5
         )
         #expect(response.status == 404)
+    }
+
+    // MARK: - A2.3 Pairing credential tests
+
+    // --- INVARIANT 3 (HARD): Unpaired peer is REJECTED ---
+
+    @Test("rejects request WITHOUT device credential header (unpaired peer)")
+    func rejectsUnpairedPeerNoCredential() throws {
+        let ports = allocatePortPair(); let daemonPort = ports.daemon
+        let bindPort = ports.bind
+
+        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        try fakeDaemon.start()
+        defer { fakeDaemon.stop() }
+
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let pairingStore = RealPairingStore()
+
+        // Do NOT pair any device — the store is empty.
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1", bindPort: bindPort,
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: pairingStore
+        )
+
+        try connector.start()
+        var waitCount = 0
+        while case .stopped = connector.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { connector.stop() }
+
+        // Send request WITHOUT X-HappyRanch-Device-Credential header.
+        // The connector MUST reject: tailnet presence is necessary but
+        // NOT sufficient — a random tailnet peer gets NOTHING.
+        let response = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort, path: "/tasks", timeout: 5
+        )
+        #expect(response.status == 403,
+                "Expected 403 Forbidden for unpaired peer, got \(response.status)")
+        #expect(response.body.contains("not paired"))
+    }
+
+    @Test("rejects request with INVALID device credential")
+    func rejectsInvalidCredential() throws {
+        let ports = allocatePortPair(); let daemonPort = ports.daemon
+        let bindPort = ports.bind
+
+        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        try fakeDaemon.start()
+        defer { fakeDaemon.stop() }
+
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let pairingStore = RealPairingStore()
+
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1", bindPort: bindPort,
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: pairingStore
+        )
+
+        try connector.start()
+        var waitCount = 0
+        while case .stopped = connector.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { connector.stop() }
+
+        // Send with a bogus credential
+        let response = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort, path: "/tasks",
+            headers: ["X-HappyRanch-Device-Credential": "hrpair_fakeinvalid12345678"],
+            timeout: 5
+        )
+        #expect(response.status == 403,
+                "Expected 403 Forbidden for invalid credential, got \(response.status)")
+        #expect(response.body.contains("not paired"))
+    }
+
+    @Test("allows request with VALID device credential after pairing")
+    func allowsPairedPeerWithValidCredential() throws {
+        let ports = allocatePortPair(); let daemonPort = ports.daemon
+        let bindPort = ports.bind
+
+        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        fakeDaemon.responseBody = "{\"daemon\":\"response\"}"
+        try fakeDaemon.start()
+        defer { fakeDaemon.stop() }
+
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let pairingStore = RealPairingStore()
+
+        // Generate a pairing code and pair a device
+        let code = pairingStore.generatePairingCode()
+        guard let credential = pairingStore.pair(usingCode: code, deviceName: "test-client") else {
+            #expect(Bool(false), "Pairing should succeed with valid code")
+            return
+        }
+
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1", bindPort: bindPort,
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: pairingStore
+        )
+
+        try connector.start()
+        var waitCount = 0
+        while case .stopped = connector.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { connector.stop() }
+
+        // Send with the valid credential
+        let response = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort, path: "/tasks",
+            headers: ["X-HappyRanch-Device-Credential": credential],
+            timeout: 5
+        )
+        #expect(response.status == 200,
+                "Expected 200 for paired peer, got \(response.status)")
+        #expect(response.body.contains("daemon"))
+    }
+
+    // --- Pairing endpoint tests ---
+
+    @Test("POST /pair with valid code returns a credential")
+    func pairingEndpointReturnsCredential() throws {
+        let ports = allocatePortPair(); let daemonPort = ports.daemon
+        let bindPort = ports.bind
+
+        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        try fakeDaemon.start()
+        defer { fakeDaemon.stop() }
+
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let pairingStore = RealPairingStore()
+        let code = pairingStore.generatePairingCode()
+
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1", bindPort: bindPort,
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: pairingStore
+        )
+
+        try connector.start()
+        var waitCount = 0
+        while case .stopped = connector.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { connector.stop() }
+
+        // Send POST /pair with the code as body
+        let response = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort,
+            path: "/pair", method: "POST",
+            headers: ["Content-Type": "text/plain"],
+            body: code,
+            timeout: 5
+        )
+        #expect(response.status == 200,
+                "Expected 200 for valid pairing code, got \(response.status)")
+        #expect(response.body.contains("\"credential\""))
+        #expect(response.body.contains("hrpair_"))
+        #expect(!response.body.contains("hr_token_"))
+        #expect(!response.body.contains("hr_session_"))
+    }
+
+    @Test("POST /pair with invalid code returns 403")
+    func pairingEndpointRejectsInvalidCode() throws {
+        let ports = allocatePortPair(); let daemonPort = ports.daemon
+        let bindPort = ports.bind
+
+        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        try fakeDaemon.start()
+        defer { fakeDaemon.stop() }
+
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let pairingStore = RealPairingStore()
+        _ = pairingStore.generatePairingCode()  // generates a code, but we send a different one
+
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1", bindPort: bindPort,
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: pairingStore
+        )
+
+        try connector.start()
+        var waitCount = 0
+        while case .stopped = connector.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { connector.stop() }
+
+        let response = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort,
+            path: "/pair", method: "POST",
+            body: "WRONG-CODE",
+            timeout: 5
+        )
+        #expect(response.status == 403,
+                "Expected 403 for invalid pairing code, got \(response.status)")
+        #expect(response.body.contains("invalid"))
+    }
+
+    @Test("POST /pair is one-time-use — second attempt fails")
+    func pairingCodeIsOneTimeUse() throws {
+        let ports = allocatePortPair(); let daemonPort = ports.daemon
+        let bindPort = ports.bind
+
+        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        try fakeDaemon.start()
+        defer { fakeDaemon.stop() }
+
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let pairingStore = RealPairingStore()
+        let code = pairingStore.generatePairingCode()
+
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1", bindPort: bindPort,
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: pairingStore
+        )
+
+        try connector.start()
+        var waitCount = 0
+        while case .stopped = connector.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { connector.stop() }
+
+        // First attempt: should succeed
+        let response1 = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort,
+            path: "/pair", method: "POST",
+            body: code, timeout: 5
+        )
+        #expect(response1.status == 200)
+
+        // Second attempt with same code: should fail
+        let response2 = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort,
+            path: "/pair", method: "POST",
+            body: code, timeout: 5
+        )
+        #expect(response2.status == 403,
+                "Expected 403 for reused pairing code, got \(response2.status)")
+    }
+
+    // --- Revocation tests (A2.4 pre-groundwork) ---
+
+    @Test("rejects request with revoked credential")
+    func rejectsRevokedCredential() throws {
+        let ports = allocatePortPair(); let daemonPort = ports.daemon
+        let bindPort = ports.bind
+
+        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        try fakeDaemon.start()
+        defer { fakeDaemon.stop() }
+
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let pairingStore = RealPairingStore()
+
+        let code = pairingStore.generatePairingCode()
+        guard let credential = pairingStore.pair(usingCode: code, deviceName: "test-client") else {
+            #expect(Bool(false), "Pairing should succeed")
+            return
+        }
+
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1", bindPort: bindPort,
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: pairingStore
+        )
+
+        try connector.start()
+        var waitCount = 0
+        while case .stopped = connector.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { connector.stop() }
+
+        // Before revocation: request succeeds
+        let beforeResponse = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort, path: "/tasks",
+            headers: ["X-HappyRanch-Device-Credential": credential],
+            timeout: 5
+        )
+        #expect(beforeResponse.status == 200, "Expected 200 before revocation")
+
+        // Revoke
+        let revoked = pairingStore.revokePairing(credential: credential)
+        #expect(revoked, "Revocation should succeed")
+
+        // After revocation: request is rejected
+        let afterResponse = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort, path: "/tasks",
+            headers: ["X-HappyRanch-Device-Credential": credential],
+            timeout: 5
+        )
+        #expect(afterResponse.status == 403,
+                "Expected 403 after revocation, got \(afterResponse.status)")
+        #expect(afterResponse.body.contains("not paired"))
     }
 }

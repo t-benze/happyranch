@@ -71,6 +71,17 @@ public final class ClientBridge: @unchecked Sendable {
     /// The underlying network listener.
     private var listener: NWListener?
 
+    /// The per-device pairing credential to inject on forwarded requests.
+    ///
+    /// Set after a successful pairing handshake (A2.3).  When non-nil,
+    /// the bridge adds `X-HappyRanch-Device-Credential: <credential>` to
+    /// every forwarded request so the home connector can authorize the device.
+    /// When nil (default), the home connector will reject all non-pairing requests.
+    ///
+    /// Thread-safe: this is set from outside the bridge, read on the bridge's
+    /// internal dispatch queue.
+    public var deviceCredential: String?
+
     /// The session-scoped credential prefix.
     private static let sessionCredentialPrefix = "hr_session_"
 
@@ -92,6 +103,7 @@ public final class ClientBridge: @unchecked Sendable {
         self.homeConnectorPort = homeConnectorPort
         self.requestedBridgePort = bridgePort
         self.queue = queue
+        self.deviceCredential = nil
     }
 
     // MARK: - Lifecycle
@@ -281,6 +293,28 @@ public final class ClientBridge: @unchecked Sendable {
         )
     }
 
+    // MARK: - Header injection helpers
+
+    /// Inject the `X-HappyRanch-Device-Credential` header into the request.
+    ///
+    /// Adds `X-HappyRanch-Device-Credential: <credential>\r\n` before the
+    /// first `\r\n\r\n` (end of headers).
+    private static func injectDeviceCredential(
+        _ credential: String,
+        into request: String
+    ) -> String {
+        let credHeader = "X-HappyRanch-Device-Credential: \(credential)\r\n"
+
+        if let headerEndRange = request.range(of: "\r\n\r\n") {
+            var modified = request
+            modified.insert(contentsOf: credHeader, at: headerEndRange.lowerBound)
+            return modified
+        }
+
+        // Fallback: append at end
+        return request + "\r\n" + credHeader
+    }
+
     // MARK: - Authorization header stripping
 
     /// Strip any `Authorization:` header from the request.
@@ -305,6 +339,17 @@ public final class ClientBridge: @unchecked Sendable {
         clientConnection: NWConnection,
         forwardedRequest: String
     ) {
+        // Inject the device credential header if we have one
+        let requestToSend: String
+        if let credential = deviceCredential, !credential.isEmpty {
+            requestToSend = Self.injectDeviceCredential(
+                credential,
+                into: forwardedRequest
+            )
+        } else {
+            requestToSend = forwardedRequest
+        }
+
         let homeEndpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(homeConnectorHost),
             port: NWEndpoint.Port(integerLiteral: homeConnectorPort)
@@ -315,7 +360,7 @@ public final class ClientBridge: @unchecked Sendable {
             guard let self, let clientConnection else { return }
             switch state {
             case .ready:
-                let requestData = forwardedRequest.data(using: .utf8) ?? Data()
+                let requestData = requestToSend.data(using: .utf8) ?? Data()
                 homeConnection.send(
                     content: requestData,
                     completion: .contentProcessed { [weak self] _ in
