@@ -478,3 +478,50 @@ manifest and refresh skills are:
 they do not modify ``resolve_managed_skills_index``, ``render_compact_skill_index``,
 the permission model, executor skill-load paths, or the SQLite schema. No new
 daemon routes are added.
+
+### 4.7 System-Contract Injection (THR-055 Phase 1)
+
+System-contract skills — ``start-task``, ``jobs``, ``make-worktree``, ``thread``,
+``dream`` — are mandatory operating-contract skills injected by the runtime based
+on session/context type. They are defined in the single-source-of-truth module
+``runtime/skills/system_contracts.py`` and are OUTSIDE the toggleable managed
+catalog (they are NOT displayed by ``skills catalog list`` and are never
+manager-toggleable).
+
+**Injection model.** On EVERY session creation, ``inject_system_contracts`` runs
+ALONGSIDE the existing ``refresh_session_skills`` wholesale dump (see §4.6).
+In Phase 1 the wholesale dump still copies all 8 skills; the explicit injection
+path is additive and will become the sole path in Phase 4 when the wholesale dump
+is removed.
+
+**Context-exposure predicates** (``SessionContext`` enum):
+
+| Contract | TASK | THREAD | WAKE | DREAM | Requires repos? |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| ``start-task`` | ✓ | | ✓ | | no |
+| ``jobs`` | ✓ | ✓ | ✓ | ✓ | no |
+| ``make-worktree`` | ✓ | ✓ | ✓ | ✓ | yes |
+| ``thread`` | ✓ | ✓ | ✓ | | no |
+| ``dream`` | | | | ✓ | no |
+
+**Session-context mapping:**
+- ``TASK`` — ``Orchestrator._run_agent`` (ordinary task/subtask session)
+- ``THREAD`` — ``thread_runner.run_invocation`` (thread reply/bootstrap)
+- ``WAKE`` — ``wake_runner.run_wake`` (working-hours wake / task-followup)
+- ``DREAM`` — ``dream_runner.run_dream`` (scheduled dream)
+
+**Repo-capability check.** ``make-worktree`` is gated on the agent workspace
+having at least one cloned git repository under ``repos/``. Agents with no
+repo write surface never receive ``make-worktree``.
+
+**Debug visibility.** ``happyranch skills effective --agent <name>`` displays
+a distinct "System Contracts (runtime-injected)" section separate from managed
+catalog skills. The optional ``--context`` flag filters the display by session
+context; ``--workspace`` enables the repo check.
+
+**Fences.** System-contract injection is additive only in Phase 1. It does not:
+- Grant tools, credentials, or capabilities (skills are permission-inert)
+- Modify the managed catalog, registry, or eligibility resolver
+- Require a SQLite migration (file/YAML-backed only)
+- Add new daemon routes
+- Change the existing permission model

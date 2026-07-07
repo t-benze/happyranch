@@ -40,7 +40,10 @@ from runtime.orchestrator.org_config import (
     resolve_org_timezone_display,
     resolve_protocol_doc_manifest,
 )
-from runtime.orchestrator.workspace_adapters import refresh_session_skills
+from runtime.orchestrator.workspace_adapters import (
+    inject_system_contracts,
+    refresh_session_skills,
+)
 from runtime.orchestrator.teams import TeamsRegistry
 
 logger = logging.getLogger(__name__)
@@ -562,6 +565,13 @@ class Orchestrator:
         # session so edits to system/contract skills reach agents without a
         # lifecycle event (THR-070).
         refresh_session_skills(workspace, self._settings, slug=self._slug)
+
+        # Explicit context-aware system-contract injection (THR-055 Phase 1).
+        # Runs alongside the wholesale dump above; context-aware filtering
+        # becomes the sole path in Phase 4.
+        inject_system_contracts(
+            workspace, self._settings, slug=self._slug, context="task",
+        )
 
         # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
         protocol_doc_manifest = resolve_protocol_doc_manifest(settings=self._settings)
