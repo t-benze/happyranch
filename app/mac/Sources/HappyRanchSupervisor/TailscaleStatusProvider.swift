@@ -8,9 +8,10 @@ import Foundation
 /// app being installed and running (the BYO premise).  No embedded
 /// tsnet, no Network Extension entitlement, no new dependency.
 ///
-/// Home-node discovery uses the peer list from the tailnet status:
-/// the first online peer whose hostname or DNS name matches a known
-/// home-node pattern, or falls back to a manually-entered address.
+/// Phase A1 is manual-fallback-ONLY: ``resolveHomeNode(fallbackAddress:)``
+/// returns the manually-entered `fallbackAddress` (if non-empty), or `nil`.
+/// Automatic home-node discovery via hostname/DNS-name matching on the
+/// peer list is deferred to Phase A2.
 public final class TailscaleStatusProvider: TailscaleStatusProviding, @unchecked Sendable {
 
     /// Path to the `tailscale` CLI binary.
@@ -70,16 +71,8 @@ public final class TailscaleStatusProvider: TailscaleStatusProviding, @unchecked
     }
 
     public func resolveHomeNode(fallbackAddress: String?) -> String? {
-        // Try automatic discovery from the peer list.
-        if let status = try? fetchStatus(), status.isRunning {
-            for peer in status.peers where peer.online {
-                if let ip = peer.tailscaleIPs.first {
-                    return ip
-                }
-            }
-        }
-
-        // Fall back to the manually-entered address.
+        // A1 is manual-fallback-ONLY.  Auto-discovery (hostname/DNS-name
+        // matching on the peer list) is deferred to Phase A2.
         if let fallback = fallbackAddress, !fallback.isEmpty {
             return fallback
         }

@@ -47,6 +47,20 @@ struct ConnectionStateTests {
         #expect(ConnectionState.tailnetNotDetected.description == "tailnetNotDetected")
         #expect(ConnectionState.pairedUnreachable.description == "pairedUnreachable")
     }
+
+    @Test("displayMessage returns user-facing copy for each state")
+    func displayMessageReturnsUserFacingCopy() {
+        // ACCEPTANCE GATE: .tailnetNotDetected MUST return the exact copy
+        // with em-dash (U+2014), NOT a hyphen.
+        #expect(
+            ConnectionState.tailnetNotDetected.displayMessage
+            == "Tailscale not detected \u{2014} start Tailscale to connect"
+        )
+        #expect(!ConnectionState.online.displayMessage.isEmpty)
+        #expect(!ConnectionState.offline.displayMessage.isEmpty)
+        #expect(!ConnectionState.reconnecting.displayMessage.isEmpty)
+        #expect(!ConnectionState.pairedUnreachable.displayMessage.isEmpty)
+    }
 }
 
 @Suite("ConnectionStateManager state machine")

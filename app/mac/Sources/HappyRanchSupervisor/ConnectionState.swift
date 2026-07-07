@@ -48,6 +48,24 @@ public enum ConnectionState: String, Sendable, Equatable, CustomStringConvertibl
     }
 
     public var description: String { rawValue }
+
+    /// User-facing display message for the connection-degradation surface.
+    /// Returns a human-readable string suitable for the status bar,
+    /// menu-bar extra, and connection-health popover.
+    public var displayMessage: String {
+        switch self {
+        case .tailnetNotDetected:
+            return "Tailscale not detected \u{2014} start Tailscale to connect"
+        case .offline:
+            return "Disconnected \u{2014} home node offline"
+        case .online:
+            return "Connected to home node"
+        case .reconnecting:
+            return "Reconnecting to home node\u{2026}"
+        case .pairedUnreachable:
+            return "Home node unreachable \u{2014} check connection"
+        }
+    }
 }
 
 // MARK: - ConnectionStateManager

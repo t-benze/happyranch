@@ -127,6 +127,59 @@ struct FakeTailscaleStatusProviderTests {
         #expect(result == nil)
     }
 
+    @Test("resolveHomeNode does NOT pick an arbitrary peer from multi-peer tailnet when no fallback")
+    func resolveHomeNodeNoArbitraryPeer() {
+        // A1 is manual-fallback-ONLY.  When no fallback is supplied,
+        // resolveHomeNode MUST return nil — it must NOT scan the peer
+        // list and return an arbitrary online peer's IP.
+        let fake = FakeTailscaleStatusProvider()
+        fake.stubHomeNodeAddress = nil
+
+        // Populate the stub status with multiple online peers to
+        // confirm the provider does NOT pick one arbitrarily.
+        fake.stubStatus = TailscaleStatus(
+            isRunning: true,
+            backendState: "Running",
+            peers: [
+                TailscalePeer(
+                    nodeID: "n001",
+                    hostName: "peer-alpha",
+                    dnsName: "peer-alpha.tailnet.ts.net",
+                    online: true,
+                    tailscaleIPs: ["100.64.0.2"]
+                ),
+                TailscalePeer(
+                    nodeID: "n002",
+                    hostName: "peer-beta",
+                    dnsName: "peer-beta.tailnet.ts.net",
+                    online: true,
+                    tailscaleIPs: ["100.64.0.3"]
+                ),
+                TailscalePeer(
+                    nodeID: "n003",
+                    hostName: "peer-gamma",
+                    dnsName: "peer-gamma.tailnet.ts.net",
+                    online: false,
+                    tailscaleIPs: ["100.64.0.4"]
+                )
+            ]
+        )
+
+        let result = fake.resolveHomeNode(fallbackAddress: nil)
+        #expect(result == nil, "Must not return an arbitrary peer when no fallback is supplied")
+    }
+
+    @Test("resolveHomeNode returns fallback address when no auto-discovery match")
+    func resolveHomeNodeFallbackNoMatch() {
+        // When stub auto-discovery is nil (no match / A1-only mode),
+        // the fallback address is used verbatim.
+        let fake = FakeTailscaleStatusProvider()
+        fake.stubHomeNodeAddress = nil
+
+        let result = fake.resolveHomeNode(fallbackAddress: "100.200.200.200")
+        #expect(result == "100.200.200.200")
+    }
+
     @Test("fetchStatus with error stub throws")
     func fetchStatusThrows() {
         let fake = FakeTailscaleStatusProvider()

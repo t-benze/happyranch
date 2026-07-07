@@ -107,10 +107,12 @@ public protocol TailscaleStatusProviding: AnyObject, Sendable {
 
     /// Resolve the home node's Tailscale address.
     ///
-    /// - Returns: The home node's Tailscale IP (100.x.y.z) or DNS name,
-    ///   or `nil` if the home node cannot be found.
-    /// - Parameter fallbackAddress: An optional one-time manually-entered
-    ///   address to use when automatic discovery fails. v1: user pastes
-    ///   the home node's tailnet IP.
+    /// Phase A1 is manual-fallback-ONLY: returns `fallbackAddress`
+    /// (if non-empty) or `nil`.  Automatic home-node discovery via
+    /// hostname/DNS-name matching on the peer list is deferred to A2.
+    ///
+    /// - Returns: The home node's Tailscale IP (100.x.y.z) or `nil`.
+    /// - Parameter fallbackAddress: A manually-entered address to use
+    ///   as the home-node target. v1: user pastes the home node's tailnet IP.
     func resolveHomeNode(fallbackAddress: String?) -> String?
 }
