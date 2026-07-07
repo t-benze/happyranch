@@ -2,101 +2,216 @@ import Foundation
 
 // MARK: - SurfaceAllowList
 
-/// Enforces the remote-surface allow-list as a **deny gate**.
+/// Enforces the remote-surface deny gate — **method-aware and route-aware**.
 ///
 /// Remote sessions expose the **normal Web SPA surface only**.
-/// The following surfaces are **EXCLUDED** (must be UNREACHABLE remotely):
+/// All agent-callback, management, memory-write, thread-mutating, and
+/// auth-bootstrap/registration-token routes are DENIED on BOTH prefixed
+/// (`/api/v1/...`) and unprefixed forms.
 ///
-/// - Agent-callback endpoints: `/report-completion`, `/dispatch`,
-///   `/threads/{id}/dispatch`, thread `/reply`, `/decline`, `/close-out`
-/// - Management endpoints: `/manage-agent`, `/manage-repo`
-/// - Memory/learning write endpoints: `/memory/add`, `/memory/update`,
-///   `/memory/promote`, `/learning/add`, `/learning/update`, `/learning/promote`
-/// - `--as-founder` / TTY override surfaces
-/// - Auth bootstrap & registration: `/auth/bootstrap`, `/auth/registration-token`
+/// The AUTHORITATIVE exclusion list is the ``EXCLUDED_PATHS`` map in
+/// ``web/src/test/openapi-coverage.test.ts`` (mirrored exactly below).
 ///
-/// Policy: **explicit allow-or-deny**.  Paths on the deny-list are
-/// always rejected.  Everything else is allowed (default-allow for
-/// the normal SPA surface, with explicit deny for the sensitive paths).
+/// Policy: **deny-by-default for sensitive routes, allow for normal SPA routes.**
+/// The deny gate is method-aware — a route may be denied for POST but allowed
+/// for GET.
 public struct SurfaceAllowList: Sendable {
 
-    /// Paths that are **denied** remotely.
-    private let deniedPaths: Set<String>
+    /// Method-aware deny entries.
+    /// Key format: `"<METHOD> <path>"`.
+    /// The path is the UNPREFIXED, CONCRETE daemon route path with `*`
+    /// wildcards replacing template segments (`{task_id}`, `{agent_name}`, etc.).
+    ///
+    /// Example: `"POST /tasks/*/completion"` matches `POST /tasks/TASK-123/completion`.
+    private let deniedMethods: Set<String>
 
-    /// Path prefixes that are **denied** remotely (prefix-match).
+    /// Path prefixes that are **denied** remotely (all methods, prefix-match).
     private let deniedPrefixes: [String]
+
+    /// Denied path patterns for routes with template placeholders.
+    /// Each tuple is `(method, segment, suffix)` meaning:
+    /// "deny if path contains `segment` AND ends with `suffix`".
+    /// This handles routes like `/agents/{agent_name}/memory` where the
+    /// method matters but the agent name varies.
+    private let deniedSegmentPatterns: [(method: String, segment: String, suffix: String)]
 
     // MARK: - Default policy
 
-    /// The default v1 remote-surface allow-list as specified in the THR-034 §4c
-    /// design document.
+    /// The authoritative v2 remote-surface deny gate.
+    ///
+    /// All EXCLUDED_PATHS from openapi-coverage.test.ts are denied on
+    /// BOTH prefixed and unprefixed forms, plus auth bootstrap,
+    /// registration-token, and --as-founder surfaces.
     public static let `default`: SurfaceAllowList = {
-        let deniedPaths: Set<String> = [
-            // Agent-callback endpoints
-            "/report-completion",
-            "/dispatch",
-            // Thread mutating endpoints
-            "/reply",
-            "/decline",
-            "/close-out",
-            // Management endpoints
-            "/manage-agent",
-            "/manage-repo",
-            // Auth bootstrap & registration
-            "/auth/bootstrap",
-            "/auth/registration-token",
+        var denied: [String] = []
+        var segmentPatterns: [(String, String, String)] = []
+
+        // ── Auth bootstrap & registration-token (FINDING 1+2) ──────────────
+        // Both methods, both prefixed and unprefixed forms.
+        for p in DaemonPathNormalizer.bothForms("/auth/bootstrap") {
+            denied.append("GET \(p)")
+            denied.append("POST \(p)")
+        }
+        for p in DaemonPathNormalizer.bothForms("/auth/registration-token") {
+            denied.append("GET \(p)")
+            denied.append("POST \(p)")
+        }
+
+        // ── Exact-match routes (no template placeholders) ──────────────────
+        // These are denied for specific methods only.
+        let exactDenies: [(String, String)] = [
+            // Agent self-service
+            ("POST", "/agents/manage"),
+            // Thread agent callbacks
+            ("POST", "/threads/compose-as-agent"),
+            ("POST", "/threads/{thread_id}/post-as-agent"),
+            // Thread-scoped attachments
+            ("GET", "/threads/{thread_id}/attachments"),
+            ("POST", "/threads/{thread_id}/attachments"),
+            // Jobs agent callback
+            ("POST", "/jobs/submit"),
+            // Dreams agent callback
+            ("POST", "/dreams/{dream_id}/complete"),
+            // Work-hours wake spawn
+            ("POST", "/work-hours/{work_hour_id}/spawn"),
+            // Executor conformance + registration
+            ("POST", "/executors/conformance-checkin"),
+            ("POST", "/executors/register"),
+            // Founder set-executor (CLI-only)
+            ("PUT", "/agents/{agent_name}/executor"),
         ]
+        for (method, path) in exactDenies {
+            denied.append("\(method) \(path)")
+        }
+
+        // ── Segment-pattern routes (template placeholders in middle of path) ──
+        // Format: (method, segment-to-contain, suffix-to-end-with)
+        let segmentDenies: [(String, String, String)] = [
+            // Task agent callbacks
+            ("POST", "/tasks/", "/completion"),
+            ("POST", "/tasks/", "/progress"),
+            // Agent self-service & management
+            ("POST", "/agents/", "/repos"),
+            ("PUT", "/agents/", "/executor"),
+            // Memory writes
+            ("POST", "/agents/", "/memory"),
+            ("PUT", "/agents/", "/memory"),
+            ("PATCH", "/agents/", "/memory"),
+            ("POST", "/agents/", "/promote"),
+            ("POST", "/agents/", "/reindex"),
+            ("POST", "/agents/", "/compact"),
+            ("PATCH", "/agents/", "/lifecycle"),
+            // Thread agent callbacks
+            ("POST", "/threads/", "/reply"),
+            ("POST", "/threads/", "/decline"),
+            ("POST", "/threads/", "/dispatch"),
+            // Dreams agent callback
+            ("POST", "/dreams/", "/complete"),
+            // Work-hours wake spawn
+            ("POST", "/work-hours/", "/spawn"),
+        ]
+        segmentPatterns = segmentDenies
+
+        // ── Legacy unprefixed deny list (defense-in-depth) ──────────────────
+        // Agent-callback endpoints
+        for p in ["/report-completion", "/dispatch"] {
+            denied.append("GET \(p)")
+            denied.append("POST \(p)")
+        }
+        // Thread mutating endpoints
+        for p in ["/reply", "/decline", "/close-out"] {
+            denied.append("GET \(p)")
+            denied.append("POST \(p)")
+        }
+        // Management endpoints
+        for p in ["/manage-agent", "/manage-repo"] {
+            denied.append("GET \(p)")
+            denied.append("POST \(p)")
+        }
 
         let deniedPrefixes: [String] = [
-            // Thread dispatch (dynamic ID in path)
-            "/threads/",
-            // Memory/learning add/update/promote
+            "/as-founder",
+            "/api/v1/as-founder",
+            // Defense-in-depth prefix denies
             "/memory/",
             "/learning/",
-            // --as-founder / TTY override surfaces
-            "/as-founder",
+            "/threads/",
         ]
 
-        return SurfaceAllowList(deniedPaths: deniedPaths, deniedPrefixes: deniedPrefixes)
+        return SurfaceAllowList(
+            deniedMethods: Set(denied),
+            deniedPrefixes: deniedPrefixes,
+            deniedSegmentPatterns: segmentPatterns
+        )
     }()
 
     // MARK: - Init
 
-    /// Create a custom allow-list (for testing).
-    ///
-    /// - Parameters:
-    ///   - deniedPaths: Exact paths that are denied.
-    ///   - deniedPrefixes: Path prefixes that are denied (prefix-match).
-    public init(deniedPaths: Set<String> = [], deniedPrefixes: [String] = []) {
-        self.deniedPaths = deniedPaths
+    public init(
+        deniedMethods: Set<String> = [],
+        deniedPrefixes: [String] = [],
+        deniedSegmentPatterns: [(method: String, segment: String, suffix: String)] = []
+    ) {
+        self.deniedMethods = deniedMethods
         self.deniedPrefixes = deniedPrefixes
+        self.deniedSegmentPatterns = deniedSegmentPatterns
     }
 
     // MARK: - Gate
 
-    /// Check whether a request path is **allowed** for remote access.
+    /// Check whether a request (method, path) is **allowed** for remote access.
     ///
-    /// - Parameter path: The URL path of the incoming request (e.g. `/tasks`).
-    /// - Returns: `true` if the path is allowed, `false` if it is denied.
-    public func isAllowed(path: String) -> Bool {
-        // Normalize: strip trailing slash for exact match (but keep for prefix)
-        let normalizedPath = path.hasSuffix("/") && path.count > 1
-            ? String(path.dropLast())
-            : path
+    /// - Parameters:
+    ///   - method: The HTTP method (e.g. "GET", "POST").
+    ///   - path: The normalized (unprefixed) path without api/orgs prefixes.
+    ///   - rawPath: The original raw path from the request.
+    /// - Returns: `true` if the request is allowed, `false` if it is denied.
+    public func isAllowed(method: String, path: String, rawPath: String) -> Bool {
+        // Build the set of paths to check: the normalized path plus its
+        // /api/v1-prefixed form (for defense-in-depth with unprefixed client requests).
+        let pathsToCheck = [path, "/api/v1\(path)"]
 
-        // 1. Exact-match deny
-        if deniedPaths.contains(normalizedPath) {
-            return false
+        for checkPath in pathsToCheck {
+            // 1. Method+path exact deny
+            let key = "\(method) \(checkPath)"
+            if deniedMethods.contains(key) {
+                return false
+            }
+
+            // 2. Segment-pattern deny (for template routes like /agents/*/memory)
+            for pattern in deniedSegmentPatterns {
+                guard method == pattern.method else { continue }
+                if checkPath.contains(pattern.segment) && checkPath.contains(pattern.suffix) {
+                    return false
+                }
+            }
+
+            // 3. Prefix-match deny (all methods)
+            for prefix in deniedPrefixes {
+                if checkPath.hasPrefix(prefix) {
+                    return false
+                }
+            }
         }
 
-        // 2. Prefix-match deny
+        // Also check the raw path against prefixes
         for prefix in deniedPrefixes {
-            if normalizedPath.hasPrefix(prefix) {
+            if rawPath.hasPrefix(prefix) {
                 return false
             }
         }
 
-        // 3. Default-allow for everything else (normal SPA surface)
+        return true
+    }
+
+    /// Legacy compatibility signature.
+    @available(*, deprecated, message: "Use isAllowed(method:path:rawPath:) instead")
+    public func isAllowed(path: String) -> Bool {
+        let normalizedPath = path.hasSuffix("/") && path.count > 1
+            ? String(path.dropLast())
+            : path
+        if !isAllowed(method: "GET", path: normalizedPath, rawPath: normalizedPath) { return false }
+        if !isAllowed(method: "POST", path: normalizedPath, rawPath: normalizedPath) { return false }
         return true
     }
 }

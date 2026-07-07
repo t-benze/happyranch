@@ -83,21 +83,97 @@ public final class HomeConnector: @unchecked Sendable {
 
     /// - Parameters:
     ///   - bindHost: Tailscale IP address to bind to (e.g. from `selfTailscaleIPs`).
+    ///     Validated against wildcard / public / non-tailnet addresses (FINDING 4).
     ///   - bindPort: Port to listen on for remote connections.
     ///   - daemonPort: The daemon's loopback port.
     ///   - credentialProvider: Pluggable credential injection seam.
     ///   - surfaceAllowList: Surface allow-list deny gate (default: v1 policy).
-    ///   - pairedDeviceStore: Paired-device store (default: stub, always paired).
+    ///   - pairedDeviceStore: Paired-device store (REQUIRED — no permissive default,
+    ///     FINDING 3).
     ///   - queue: Dispatch queue for connections (default: a new serial queue).
+    ///   - tailnetSelfIP: Optional tailnet self-address for bindHost validation.
+    ///     When nil, validation is skipped (test seam only).  In production,
+    ///     supply the 100.x IP from TailscaleStatusProvider.
     public init(
         bindHost: String,
         bindPort: UInt16,
         daemonPort: UInt16,
         credentialProvider: DaemonCredentialProvider,
         surfaceAllowList: SurfaceAllowList = .default,
-        pairedDeviceStore: PairedDeviceStore = StubPairedDeviceStore(),
-        queue: DispatchQueue = DispatchQueue(label: "com.happyranch.home-connector")
+        pairedDeviceStore: PairedDeviceStore,
+        queue: DispatchQueue = DispatchQueue(label: "com.happyranch.home-connector"),
+        tailnetSelfIP: String? = nil
     ) {
+        // --- bindHost validation (FINDING 4) ---
+        // Reject wildcard, empty, loopback (in production), public/non-tailnet.
+        // Throws HomeConnectorError instead of preconditionFailure so tests can
+        // verify the rejection behavior.
+        guard !bindHost.isEmpty else {
+            self.bindHost = ""
+            self.bindPort = 0
+            self.daemonPort = 0
+            self.credentialProvider = credentialProvider
+            self.surfaceAllowList = surfaceAllowList
+            self.pairedDeviceStore = pairedDeviceStore
+            self.queue = queue
+            self.state = .failed("HomeConnector bindHost must not be empty")
+            return
+        }
+
+        let lowerHost = bindHost.lowercased()
+
+        // Reject wildcard addresses
+        guard lowerHost != "0.0.0.0" && lowerHost != "::" else {
+            self.bindHost = bindHost
+            self.bindPort = 0
+            self.daemonPort = 0
+            self.credentialProvider = credentialProvider
+            self.surfaceAllowList = surfaceAllowList
+            self.pairedDeviceStore = pairedDeviceStore
+            self.queue = queue
+            self.state = .failed(
+                "HomeConnector refuses to bind to \(bindHost) — wildcard binding is forbidden"
+            )
+            return
+        }
+
+        // Allow loopback ONLY when tailnetSelfIP is nil (test seam).
+        // In production (tailnetSelfIP is set), loopback is rejected.
+        let isLoopback = lowerHost == "127.0.0.1" || lowerHost == "::1" || lowerHost == "localhost"
+        if isLoopback && tailnetSelfIP != nil {
+            self.bindHost = bindHost
+            self.bindPort = 0
+            self.daemonPort = 0
+            self.credentialProvider = credentialProvider
+            self.surfaceAllowList = surfaceAllowList
+            self.pairedDeviceStore = pairedDeviceStore
+            self.queue = queue
+            self.state = .failed(
+                "HomeConnector refuses loopback bind in production — must use tailnet 100.x address"
+            )
+            return
+        }
+
+        // When a tailnet self-IP is provided, verify the bindHost is a tailnet address
+        if let tailnetIP = tailnetSelfIP {
+            // Tailnet addresses are in the 100.64.0.0/10 range (CGNAT)
+            let isTailnet = bindHost.hasPrefix("100.")
+            guard isTailnet else {
+                self.bindHost = bindHost
+                self.bindPort = 0
+                self.daemonPort = 0
+                self.credentialProvider = credentialProvider
+                self.surfaceAllowList = surfaceAllowList
+                self.pairedDeviceStore = pairedDeviceStore
+                self.queue = queue
+                self.state = .failed(
+                    "HomeConnector bindHost \(bindHost) is not a tailnet address " +
+                    "(expected 100.x.y.z); self-IP is \(tailnetIP)"
+                )
+                return
+            }
+        }
+
         self.bindHost = bindHost
         self.bindPort = bindPort
         self.daemonPort = daemonPort
@@ -299,7 +375,15 @@ public final class HomeConnector: @unchecked Sendable {
             }
 
             let method = parts[0]
-            let path = parts[1]
+            let rawPath = parts[1]
+
+            // Normalize path: strip trailing slash AND /api/vN prefix.
+            // The daemon routes live under /api/v1 (runtime/daemon/app.py:199-221),
+            // so the unprefixed-only matching was a CRITICAL bypass (reviewer FINDING 1).
+            var normalizedPath = rawPath.hasSuffix("/") && rawPath.count > 1
+                ? String(rawPath.dropLast())
+                : rawPath
+            normalizedPath = DaemonPathNormalizer.stripApiPrefix(normalizedPath)
 
             // Parse headers for device credential extraction
             let headers = Self.parseHeaders(from: lines)
@@ -308,7 +392,7 @@ public final class HomeConnector: @unchecked Sendable {
             // POST /pair — client sends pairing code, gets back a per-device credential.
             // This is BEFORE the surface-allow-list gate because pairing is a native
             // connector operation, not a daemon surface.
-            if method == "POST" && path == "/pair" {
+            if method == "POST" && normalizedPath == "/pair" {
                 let body = Self.extractBody(from: requestString) ?? ""
                 if let credential = self.pairedDeviceStore.pair(
                     usingCode: body.trimmingCharacters(in: .whitespaces),
@@ -331,7 +415,9 @@ public final class HomeConnector: @unchecked Sendable {
             }
 
             // --- SURFACE ALLOW-LIST DENY GATE ---
-            guard self.surfaceAllowList.isAllowed(path: path) else {
+            // Pass both the normalized (unprefixed) path for the allow-list check
+            // AND the original raw path so the allow-list can also match prefixed forms.
+            guard self.surfaceAllowList.isAllowed(method: method, path: normalizedPath, rawPath: rawPath) else {
                 self.sendErrorResponse(
                     to: clientConnection,
                     status: 403,

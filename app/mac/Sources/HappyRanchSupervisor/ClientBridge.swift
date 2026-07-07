@@ -239,15 +239,19 @@ public final class ClientBridge: @unchecked Sendable {
             let method = parts[0]
             let path = parts[1]
 
-            // Normalize path (strip trailing slash for exact matching)
-            let normalizedPath = path.hasSuffix("/") && path.count > 1
+            // Normalize path: strip trailing slash AND /api/vN prefix.
+            // The SPA bootstraps via /api/v1/auth/bootstrap (web/src/lib/auth.ts:10),
+            // so the unprefixed-only check was a CRITICAL bypass (reviewer FINDING 1).
+            var normalizedPath = path.hasSuffix("/") && path.count > 1
                 ? String(path.dropLast())
                 : path
+            // Strip any /api/vN prefix so all path matching is prefix-agnostic.
+            normalizedPath = DaemonPathNormalizer.stripApiPrefix(normalizedPath)
 
             // --- BOOTSTRAP INTERCEPTION ---
-            // The bridge answers /auth/bootstrap locally with a session-scoped
-            // credential — NEVER forwarding it to the home connector (which
-            // would DENY it via the SurfaceAllowList anyway).
+            // The bridge answers /auth/bootstrap (AND /api/v1/auth/bootstrap)
+            // locally with a session-scoped credential — NEVER forwarding it
+            // to the home connector.
             if normalizedPath == "/auth/bootstrap" && method == "GET" {
                 self.handleAuthBootstrap(clientConnection: clientConnection)
                 return
@@ -265,12 +269,17 @@ public final class ClientBridge: @unchecked Sendable {
 
     // MARK: - /auth/bootstrap handler
 
-    /// Answer `GET /auth/bootstrap` with a session-scoped credential.
+    /// Answer `GET /auth/bootstrap` (and `GET /api/v1/auth/bootstrap`) with
+    /// a session-scoped credential.
     ///
     /// The credential is a fresh random token with `hr_session_` prefix.
     /// It is NOT the raw daemon token — that token is home-only and NEVER
     /// leaves the home machine.  The SPA uses this session credential for
     /// subsequent requests, but the bridge STRIPS it before forwarding.
+    ///
+    /// Both prefixed and unprefixed forms are handled here; the path
+    /// normalizer (DaemonPathNormalizer) strips the /api/v1 prefix before
+    /// the comparison in receiveFromClient.
     private func handleAuthBootstrap(clientConnection: NWConnection) {
         let sessionToken = ClientBridge.generateSessionCredential()
         let body = """

@@ -225,7 +225,7 @@ struct SurfaceAllowListTests {
     @Test("custom policy denies only specified paths")
     func customPolicy() {
         let policy = SurfaceAllowList(
-            deniedPaths: ["/secret"],
+            deniedMethods: ["GET /secret", "POST /secret"],
             deniedPrefixes: ["/admin/"]
         )
         #expect(!policy.isAllowed(path: "/secret"))
@@ -240,5 +240,94 @@ struct SurfaceAllowListTests {
         #expect(policy.isAllowed(path: "/report-completion"))
         #expect(policy.isAllowed(path: "/anything"))
         #expect(policy.isAllowed(path: "/"))
+    }
+
+    // MARK: - FINDING 2 [CRITICAL] — method-aware deny gate
+
+    /// The authoritative set of excluded routes from web/src/test/openapi-coverage.test.ts
+    /// EXCLUDED_PATHS.  Tested with concrete values for template placeholders.
+    private static let excludedRoutes: [(method: String, path: String)] = [
+        // Task agent callbacks
+        ("POST", "/tasks/TASK-123/completion"),
+        ("POST", "/tasks/TASK-123/progress"),
+        // Agent self-service
+        ("POST", "/agents/manage"),
+        ("POST", "/agents/dev_agent/repos"),
+        // Founder set-executor
+        ("PUT", "/agents/dev_agent/executor"),
+        // Memory writes
+        ("POST", "/agents/dev_agent/memory"),
+        ("POST", "/agents/dev_agent/memory/entries/"),
+        ("PUT", "/agents/dev_agent/memory/entries/entry-1"),
+        ("POST", "/agents/dev_agent/memory/entries/entry-1/promote"),
+        ("POST", "/agents/dev_agent/memory/entries/reindex"),
+        ("PATCH", "/agents/dev_agent/memory/entries/entry-1/lifecycle"),
+        ("POST", "/agents/dev_agent/memory/entries/compact"),
+        // Thread agent callbacks
+        ("POST", "/threads/thr-abc/reply"),
+        ("POST", "/threads/thr-abc/decline"),
+        ("POST", "/threads/thr-abc/dispatch"),
+        ("POST", "/threads/compose-as-agent"),
+        ("POST", "/threads/thr-abc/post-as-agent"),
+        // Thread-scoped attachments
+        ("GET", "/threads/thr-abc/attachments"),
+        ("POST", "/threads/thr-abc/attachments"),
+        // Jobs agent callback
+        ("POST", "/jobs/submit"),
+        // Dreams agent callback
+        ("POST", "/dreams/dream-1/complete"),
+        // Work-hours wake spawn
+        ("POST", "/work-hours/wh-1/spawn"),
+        // Registration-token mint
+        ("POST", "/auth/registration-token"),
+        // Executor conformance + registration
+        ("POST", "/executors/conformance-checkin"),
+        ("POST", "/executors/register"),
+    ]
+
+    @Test("each EXCLUDED_PATHS route is denied (prefixed /api/v1 form, concrete paths)")
+    func eachExcludedRouteDeniedPrefixed() {
+        let policy = SurfaceAllowList.default
+        for (method, path) in Self.excludedRoutes {
+            let prefixedPath = "/api/v1/orgs/happyranch\(path)"
+            // Normalize: HomeConnector strips /api/v1 and /orgs/{slug} before checking
+            let normalizedPath = DaemonPathNormalizer.stripApiPrefix(prefixedPath)
+            let allowed = policy.isAllowed(method: method, path: normalizedPath, rawPath: prefixedPath)
+            #expect(!allowed, "\(method) \(prefixedPath) should be DENIED but was ALLOWED (normalized: \(normalizedPath))")
+        }
+    }
+
+    @Test("each EXCLUDED_PATHS route is denied (unprefixed form, concrete paths)")
+    func eachExcludedRouteDeniedUnprefixed() {
+        let policy = SurfaceAllowList.default
+        for (method, path) in Self.excludedRoutes {
+            let allowed = policy.isAllowed(method: method, path: path, rawPath: path)
+            #expect(!allowed, "\(method) \(path) should be DENIED but was ALLOWED")
+        }
+    }
+
+    @Test("normal browser-facing route is ALLOWED (GET /api/v1/orgs/{slug}/tasks)")
+    func normalBrowserRouteAllowed() {
+        let policy = SurfaceAllowList.default
+        // A normal SPA route should be allowed
+        #expect(policy.isAllowed(method: "GET", path: "/tasks", rawPath: "/api/v1/orgs/happyranch/tasks"))
+        #expect(policy.isAllowed(method: "GET", path: "/agents", rawPath: "/api/v1/orgs/happyranch/agents"))
+        #expect(policy.isAllowed(method: "GET", path: "/dashboard/summary", rawPath: "/api/v1/orgs/happyranch/dashboard/summary"))
+    }
+
+    @Test("auth bootstrap denied via method-aware API (both prefixed and unprefixed)")
+    func authBootstrapDeniedMethodAware() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "GET", path: "/auth/bootstrap", rawPath: "/auth/bootstrap"))
+        #expect(!policy.isAllowed(method: "GET", path: "/auth/bootstrap", rawPath: "/api/v1/auth/bootstrap"))
+        #expect(!policy.isAllowed(method: "POST", path: "/auth/bootstrap", rawPath: "/auth/bootstrap"))
+    }
+
+    @Test("auth registration-token denied via method-aware API (both forms)")
+    func authRegistrationTokenDeniedMethodAware() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/auth/registration-token", rawPath: "/auth/registration-token"))
+        #expect(!policy.isAllowed(method: "POST", path: "/auth/registration-token", rawPath: "/api/v1/auth/registration-token"))
+        #expect(!policy.isAllowed(method: "GET", path: "/auth/registration-token", rawPath: "/api/v1/auth/registration-token"))
     }
 }

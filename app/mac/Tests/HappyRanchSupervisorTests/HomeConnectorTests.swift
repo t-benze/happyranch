@@ -165,6 +165,13 @@ private final class FakePairedDeviceStore: PairedDeviceStore, @unchecked Sendabl
     func pair(usingCode: String, deviceName: String) -> String? { return "fake-credential" }
     func revokePairing(credential: String) -> Bool { return true }
 }
+/// Permissive stub for existing tests that don't test pairing behavior.
+private func makePermissiveStub() -> StubPairedDeviceStore {
+    let stub = StubPairedDeviceStore()
+    stub.setAllowAll(true)
+    return stub
+}
+
 
 // MARK: - Helpers
 
@@ -383,16 +390,21 @@ struct HomeConnectorTests {
         bindPort: UInt16,
         credentialProvider: DaemonCredentialProvider,
         surfaceAllowList: SurfaceAllowList = .default,
-        pairedDeviceStore: PairedDeviceStore = StubPairedDeviceStore(),
+        pairedDeviceStore: PairedDeviceStore? = nil,
         body: (HomeConnector) throws -> Void
     ) throws {
+        let store = pairedDeviceStore ?? {
+            let stub = StubPairedDeviceStore()
+            stub.setAllowAll(true)
+            return stub
+        }()
         let connector = HomeConnector(
             bindHost: "127.0.0.1",
             bindPort: bindPort,
             daemonPort: daemonPort,
             credentialProvider: credentialProvider,
             surfaceAllowList: surfaceAllowList,
-            pairedDeviceStore: pairedDeviceStore
+            pairedDeviceStore: store
         )
         try connector.start()
         var waitCount = 0
@@ -415,7 +427,8 @@ struct HomeConnectorTests {
             bindHost: "100.64.0.1",
             bindPort: 8443,
             daemonPort: 9876,
-            credentialProvider: credProvider
+            credentialProvider: credProvider,
+            pairedDeviceStore: makePermissiveStub()
         )
         #expect(connector.state == .stopped)
     }
@@ -434,7 +447,8 @@ struct HomeConnectorTests {
             bindHost: "127.0.0.1",
             bindPort: bindPort,
             daemonPort: daemonPort,
-            credentialProvider: credProvider
+            credentialProvider: credProvider,
+            pairedDeviceStore: makePermissiveStub()
         )
 
         #expect(connector.state == .stopped)
@@ -472,7 +486,8 @@ struct HomeConnectorTests {
             bindHost: "127.0.0.1",
             bindPort: bindPort,
             daemonPort: daemonPort,
-            credentialProvider: credProvider
+            credentialProvider: credProvider,
+            pairedDeviceStore: makePermissiveStub()
         )
 
         try connector.start()
@@ -523,7 +538,8 @@ struct HomeConnectorTests {
         let credProvider = FakeCredentialProvider(token: "hr_token_secret_xyz")
         let connector = HomeConnector(
             bindHost: "127.0.0.1", bindPort: bindPort,
-            daemonPort: daemonPort, credentialProvider: credProvider
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: makePermissiveStub()
         )
 
         try connector.start()
@@ -606,7 +622,8 @@ struct HomeConnectorTests {
         let credProvider = FakeCredentialProvider(token: "test-token")
         let connector = HomeConnector(
             bindHost: "127.0.0.1", bindPort: bindPort,
-            daemonPort: daemonPort, credentialProvider: credProvider
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: makePermissiveStub()
         )
 
         try connector.start()
@@ -625,7 +642,7 @@ struct HomeConnectorTests {
 
     // --- INVARIANT 4: Paired-device check ---
 
-    @Test("allows request when device is paired (stub always returns true)")
+    @Test("allows request when device is paired (stub explicitly configured to allow)")
     func allowsWhenPaired() throws {
         let ports = allocatePortPair(); let daemonPort = ports.daemon
         let bindPort = ports.bind
@@ -635,7 +652,7 @@ struct HomeConnectorTests {
         defer { fakeDaemon.stop() }
 
         let credProvider = FakeCredentialProvider(token: "test-token")
-        let pairedStore = StubPairedDeviceStore()
+        let pairedStore = makePermissiveStub()
         let connector = HomeConnector(
             bindHost: "127.0.0.1", bindPort: bindPort,
             daemonPort: daemonPort, credentialProvider: credProvider,
@@ -694,7 +711,8 @@ struct HomeConnectorTests {
         let credProvider = FakeCredentialProvider(token: "t")
         let connector = HomeConnector(
             bindHost: "100.64.0.1", bindPort: 8443,
-            daemonPort: 9876, credentialProvider: credProvider
+            daemonPort: 9876, credentialProvider: credProvider,
+            pairedDeviceStore: makePermissiveStub()
         )
         #expect(connector.state == .stopped)
     }
@@ -713,7 +731,8 @@ struct HomeConnectorTests {
         let credProvider = FakeCredentialProvider(token: "test-token")
         let connector = HomeConnector(
             bindHost: "127.0.0.1", bindPort: bindPort,
-            daemonPort: daemonPort, credentialProvider: credProvider
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: makePermissiveStub()
         )
 
         try connector.start()
@@ -747,7 +766,8 @@ struct HomeConnectorTests {
         let credProvider = FakeCredentialProvider(token: "test-token")
         let connector = HomeConnector(
             bindHost: "127.0.0.1", bindPort: bindPort,
-            daemonPort: daemonPort, credentialProvider: credProvider
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: makePermissiveStub()
         )
 
         try connector.start()
@@ -782,7 +802,8 @@ struct HomeConnectorTests {
         let credProvider = FakeCredentialProvider(token: "test-token")
         let connector = HomeConnector(
             bindHost: "127.0.0.1", bindPort: bindPort,
-            daemonPort: daemonPort, credentialProvider: credProvider
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: makePermissiveStub()
         )
 
         try connector.start()
@@ -1183,5 +1204,199 @@ struct HomeConnectorTests {
         #expect(reconnectResponse.status == 403,
                 "Expected 403 on reconnect after revocation, got \(reconnectResponse.status)")
         #expect(reconnectResponse.body.contains("not paired"))
+    }
+
+    // MARK: - FINDING 3 [CRITICAL] — permissive paired-device default
+
+    @Test("REJECTS request WITHOUT device credential header (deny-by-default store)")
+    func rejectsMissingCredentialWithDenyingStore() throws {
+        let ports = allocatePortPair(); let daemonPort = ports.daemon
+        let bindPort = ports.bind
+
+        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        try fakeDaemon.start()
+        defer { fakeDaemon.stop() }
+
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        // Use a DENYING stub — the default behavior after FINDING 3 fix
+        let denyingStore = StubPairedDeviceStore()  // denies all by default
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1", bindPort: bindPort,
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: denyingStore
+        )
+
+        try connector.start()
+        var waitCount = 0
+        while case .stopped = connector.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { connector.stop() }
+
+        // Send request WITHOUT any device credential header.
+        // The denying store MUST reject — a random tailnet peer gets NOTHING.
+        let response = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort, path: "/tasks", timeout: 5
+        )
+        #expect(response.status == 403,
+                "Expected 403 for missing credential with deny-by-default store, got \(response.status)")
+        #expect(response.body.contains("not paired"))
+    }
+
+    @Test("REJECTS request with INVALID device credential (deny-by-default store)")
+    func rejectsInvalidCredentialWithDenyingStore() throws {
+        let ports = allocatePortPair(); let daemonPort = ports.daemon
+        let bindPort = ports.bind
+
+        let fakeDaemon = FakeDaemonServer(port: daemonPort)
+        try fakeDaemon.start()
+        defer { fakeDaemon.stop() }
+
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let denyingStore = StubPairedDeviceStore()  // denies all by default
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1", bindPort: bindPort,
+            daemonPort: daemonPort, credentialProvider: credProvider,
+            pairedDeviceStore: denyingStore
+        )
+
+        try connector.start()
+        var waitCount = 0
+        while case .stopped = connector.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { connector.stop() }
+
+        // Send with a bogus credential
+        let response = try sendHTTPRequest(
+            host: "127.0.0.1", port: bindPort, path: "/tasks",
+            headers: ["X-HappyRanch-Device-Credential": "hrpair_fakeinvalid12345678"],
+            timeout: 5
+        )
+        #expect(response.status == 403,
+                "Expected 403 for invalid credential with deny-by-default store, got \(response.status)")
+        #expect(response.body.contains("not paired"))
+    }
+
+    // MARK: - FINDING 4 [HIGH] — unvalidated bindHost
+
+    @Test("bindHost validation: wildcard 0.0.0.0 sets state to .failed")
+    func bindHostRejectsWildcard() {
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let store = makePermissiveStub()
+
+        let connector = HomeConnector(
+            bindHost: "0.0.0.0",
+            bindPort: 8443,
+            daemonPort: 9876,
+            credentialProvider: credProvider,
+            pairedDeviceStore: store
+        )
+
+        // Must be in .failed state due to wildcard rejection
+        guard case .failed(let msg) = connector.state else {
+            #expect(Bool(false), "Expected .failed state for wildcard bind, got \(connector.state)")
+            return
+        }
+        #expect(msg.contains("wildcard") || msg.contains("0.0.0.0"),
+                "Error message should mention wildcard rejection, got: \(msg)")
+    }
+
+    @Test("bindHost validation: empty host sets state to .failed")
+    func bindHostRejectsEmpty() {
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let store = makePermissiveStub()
+
+        let connector = HomeConnector(
+            bindHost: "",
+            bindPort: 8443,
+            daemonPort: 9876,
+            credentialProvider: credProvider,
+            pairedDeviceStore: store
+        )
+
+        guard case .failed(let msg) = connector.state else {
+            #expect(Bool(false), "Expected .failed state for empty bind, got \(connector.state)")
+            return
+        }
+        #expect(msg.contains("empty") || msg.contains("must not"),
+                "Error message should mention empty rejection, got: \(msg)")
+    }
+
+    @Test("bindHost validation: public IP sets state to .failed with tailnetSelfIP")
+    func bindHostRejectsPublicIP() {
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let store = makePermissiveStub()
+
+        let connector = HomeConnector(
+            bindHost: "8.8.8.8",
+            bindPort: 8443,
+            daemonPort: 9876,
+            credentialProvider: credProvider,
+            pairedDeviceStore: store,
+            tailnetSelfIP: "100.64.0.1"
+        )
+
+        guard case .failed(let msg) = connector.state else {
+            #expect(Bool(false), "Expected .failed state for public IP, got \(connector.state)")
+            return
+        }
+        #expect(msg.contains("not a tailnet") || msg.contains("8.8.8.8"),
+                "Error message should mention non-tailnet rejection, got: \(msg)")
+    }
+
+    @Test("bindHost validation: tailnet 100.x address is ACCEPTED")
+    func bindHostAcceptsTailnetAddress() {
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let store = makePermissiveStub()
+
+        let connector = HomeConnector(
+            bindHost: "100.64.0.1",
+            bindPort: 8443,
+            daemonPort: 9876,
+            credentialProvider: credProvider,
+            pairedDeviceStore: store,
+            tailnetSelfIP: "100.64.0.1"
+        )
+        #expect(connector.state == .stopped,
+                "Tailnet 100.x address should be accepted, got: \(connector.state)")
+    }
+
+    @Test("bindHost validation: loopback is ACCEPTED when tailnetSelfIP is nil (test seam)")
+    func bindHostAcceptsLoopbackWithoutTailnetIP() {
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let store = makePermissiveStub()
+
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1",
+            bindPort: 8443,
+            daemonPort: 9876,
+            credentialProvider: credProvider,
+            pairedDeviceStore: store
+        )
+        #expect(connector.state == .stopped,
+                "Loopback should be accepted when tailnetSelfIP is nil, got: \(connector.state)")
+    }
+
+    @Test("bindHost validation: loopback sets state to .failed with tailnetSelfIP (production)")
+    func bindHostRejectsLoopbackWithTailnetIP() {
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let store = makePermissiveStub()
+
+        let connector = HomeConnector(
+            bindHost: "127.0.0.1",
+            bindPort: 8443,
+            daemonPort: 9876,
+            credentialProvider: credProvider,
+            pairedDeviceStore: store,
+            tailnetSelfIP: "100.64.0.1"
+        )
+
+        guard case .failed(let msg) = connector.state else {
+            #expect(Bool(false), "Expected .failed state for loopback in production, got \(connector.state)")
+            return
+        }
+        #expect(msg.contains("loopback") || msg.contains("production"),
+                "Error message should mention loopback rejection, got: \(msg)")
     }
 }

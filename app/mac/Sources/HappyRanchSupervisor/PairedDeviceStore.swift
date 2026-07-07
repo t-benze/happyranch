@@ -70,22 +70,43 @@ public protocol PairedDeviceStore: AnyObject, Sendable {
     func revokePairing(credential: String) -> Bool
 }
 
-// MARK: - StubPairedDeviceStore (A2.1 only)
+// MARK: - StubPairedDeviceStore (test-only)
 
-/// v1 stub: all devices are considered paired.
+/// Test stub: **denies all devices by default**.
 ///
-/// This is deliberately visible so the code_reviewer can confirm
-/// the seam is clean and the real implementation (A2.3) requires
-/// only conforming a new type to ``PairedDeviceStore`` — no
-/// connector changes.
+/// Tests MUST explicitly configure accepted credentials via
+/// ``alwaysAllow(_:)`` or by injecting their own conforming type.
+/// A random tailnet peer with NO credential or an invalid credential
+/// is ALWAYS rejected — the permissive A2.1 default was a CRITICAL
+/// bypass (reviewer FINDING 3).
+///
+/// For production, use ``RealPairingStore`` (A2.3).
 public final class StubPairedDeviceStore: PairedDeviceStore, @unchecked Sendable {
+
+    /// Set of credentials that are considered paired.
+    /// Empty by default — caller must explicitly add credentials.
+    private var allowedCredentials: Set<String> = []
+
+    /// Whether to allow all credentials (test convenience).
+    /// When false (default), only credentials in ``allowedCredentials`` pass.
+    private var allowAll = false
 
     public init() {}
 
+    /// Configure a specific credential to be accepted.
+    public func allowCredential(_ credential: String) {
+        allowedCredentials.insert(credential)
+    }
+
+    /// Opt-in to permissive mode (tests that need the old A2.1 behavior).
+    public func setAllowAll(_ allow: Bool) {
+        allowAll = allow
+    }
+
     public func isPaired(deviceID: String) -> Bool {
-        // A2.1: all devices are paired.
-        // A2.3: replace with real pairing check.
-        return true
+        if allowAll { return true }
+        guard !deviceID.isEmpty else { return false }
+        return allowedCredentials.contains(deviceID)
     }
 
     public func generatePairingCode() -> String {
@@ -93,10 +114,16 @@ public final class StubPairedDeviceStore: PairedDeviceStore, @unchecked Sendable
     }
 
     public func pair(usingCode: String, deviceName: String) -> String? {
-        return "stub-credential"
+        let credential = "stub-credential-\(UUID().uuidString.prefix(8))"
+        allowedCredentials.insert(credential)
+        return credential
     }
 
     public func revokePairing(credential: String) -> Bool {
-        return true
+        if allowedCredentials.contains(credential) {
+            allowedCredentials.remove(credential)
+            return true
+        }
+        return false
     }
 }

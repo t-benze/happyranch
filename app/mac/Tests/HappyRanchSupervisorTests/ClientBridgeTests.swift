@@ -820,4 +820,131 @@ struct ClientBridgeTests {
             #expect(req.contains("POST /api/data HTTP/1.1"))
         }
     }
+
+    // MARK: - FINDING 1 [CRITICAL] — prefixed /api/v1/auth/bootstrap
+
+    @Test("answers /api/v1/auth/bootstrap with session-scoped credential — NOT daemon token")
+    func prefixedAuthBootstrapReturnsSessionCredential() throws {
+        let ports = allocatePortPair()
+        let bridgePort = ports.bridge
+        let homePort = ports.homeConnector
+
+        let fakeHome = FakeHomeConnectorServer(port: homePort)
+        try fakeHome.start()
+        defer { fakeHome.stop() }
+
+        let bridge = ClientBridge(
+            homeConnectorHost: "127.0.0.1",
+            homeConnectorPort: homePort,
+            bridgePort: bridgePort
+        )
+
+        try bridge.start()
+        var waitCount = 0
+        while case .stopped = bridge.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { bridge.stop() }
+
+        // Request the PREFIXED bootstrap path — the one the real SPA uses
+        let response = try sendHTTPRequest(
+            host: "127.0.0.1", port: bridgePort, path: "/api/v1/auth/bootstrap", timeout: 5
+        )
+
+        #expect(response.status == 200)
+        #expect(response.body.contains("token"), "Response must contain a token")
+
+        // INVARIANT: the token must NOT be a raw daemon token
+        #expect(
+            !response.body.contains("hr_token_"),
+            "Prefixed bootstrap response MUST NOT contain the raw daemon token (hr_token_ prefix)"
+        )
+        // Session-scoped credential uses hr_session_ prefix
+        #expect(
+            response.body.contains("hr_session_"),
+            "Prefixed bootstrap response must contain a session-scoped credential (hr_session_ prefix)"
+        )
+    }
+
+    @Test("/api/v1/auth/bootstrap is NOT forwarded to home connector")
+    func prefixedAuthBootstrapNotForwarded() throws {
+        let ports = allocatePortPair()
+        let bridgePort = ports.bridge
+        let homePort = ports.homeConnector
+
+        let fakeHome = FakeHomeConnectorServer(port: homePort)
+        try fakeHome.start()
+        defer { fakeHome.stop() }
+
+        let bridge = ClientBridge(
+            homeConnectorHost: "127.0.0.1",
+            homeConnectorPort: homePort,
+            bridgePort: bridgePort
+        )
+
+        try bridge.start()
+        var waitCount = 0
+        while case .stopped = bridge.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { bridge.stop() }
+
+        _ = try sendHTTPRequest(
+            host: "127.0.0.1", port: bridgePort, path: "/api/v1/auth/bootstrap", timeout: 5
+        )
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // The fake home connector should NOT have received this request
+        let requests = fakeHome.receivedRequests
+        #expect(requests.isEmpty,
+                "Home connector should NOT receive /api/v1/auth/bootstrap — bridge handles it locally")
+    }
+
+    @Test("raw daemon token (hr_token_) never appears in any forwarded request bytes")
+    func hrTokenNeverInForwardedBytes() throws {
+        let ports = allocatePortPair()
+        let bridgePort = ports.bridge
+        let homePort = ports.homeConnector
+
+        let fakeHome = FakeHomeConnectorServer(port: homePort)
+        try fakeHome.start()
+        defer { fakeHome.stop() }
+
+        let bridge = ClientBridge(
+            homeConnectorHost: "127.0.0.1",
+            homeConnectorPort: homePort,
+            bridgePort: bridgePort
+        )
+
+        try bridge.start()
+        var waitCount = 0
+        while case .stopped = bridge.state, waitCount < 50 {
+            Thread.sleep(forTimeInterval: 0.05); waitCount += 1
+        }
+        defer { bridge.stop() }
+
+        // Bootstrap through both path forms
+        _ = try sendHTTPRequest(
+            host: "127.0.0.1", port: bridgePort, path: "/auth/bootstrap", timeout: 5
+        )
+        Thread.sleep(forTimeInterval: 0.1)
+        _ = try sendHTTPRequest(
+            host: "127.0.0.1", port: bridgePort, path: "/api/v1/auth/bootstrap", timeout: 5
+        )
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // Send a normal request too
+        _ = try sendHTTPRequest(
+            host: "127.0.0.1", port: bridgePort, path: "/tasks", timeout: 5
+        )
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // Verify NO forwarded request contains hr_token_
+        for req in fakeHome.receivedRequests {
+            #expect(
+                !req.contains("hr_token_"),
+                "Forwarded request MUST NOT contain raw daemon token: \(req.prefix(200))"
+            )
+        }
+    }
 }
