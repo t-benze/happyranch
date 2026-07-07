@@ -409,8 +409,10 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
 
-    // Escalated is an ATTENTION state, NOT dimmed/terminal.
-    expect(escalatedHeading.closest('section')).not.toHaveClass('opacity-60');
+    // Escalated is an ATTENTION state, NOT dimmed/terminal. THR-061 a-tasks:
+    // the group label sits above its rows-card, so the dimming lives on the
+    // heading's wrapper (its parent), not on the rows-card section.
+    expect(escalatedHeading.parentElement).not.toHaveClass('opacity-60');
   });
 
   test('cancelled group renders the muted/terminal treatment and is in the dimmed set', async () => {
@@ -432,7 +434,8 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     expect(dot).toHaveClass('text-status-archived');
 
     // Cancelled sits in the terminal/dimmed set (calmer than completed).
-    expect(cancelledHeading.closest('section')).toHaveClass('opacity-60');
+    // Dimming is on the heading's wrapper (a-tasks: label above rows-card).
+    expect(cancelledHeading.parentElement).toHaveClass('opacity-60');
   });
 
   test('no `blocked` group label or dot path remains on this surface', async () => {
@@ -515,8 +518,9 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
     expect(screen.getByText('THREAD')).toBeInTheDocument();
     expect(screen.getByText('UPDATED')).toBeInTheDocument();
     // Verify the DOM order: STATUS before TASK, TASK before TITLE.
-    // THR-046 msg-11: column header uses rounded-lg + bg-surface-sunken (no border-b).
-    const headerDivs = document.querySelectorAll('[class*="rounded-lg"][class*="bg-surface-sunken"] > div');
+    // THR-061 a-tasks: column header is a bordered surface-page card (matching
+    // the group row-cards below), replacing the old sunken bar.
+    const headerDivs = document.querySelectorAll('[class*="rounded-xl"][class*="bg-surface-page"] > div');
     const labels = Array.from(headerDivs).map((d) => d.textContent);
     expect(labels).toEqual(['STATUS', 'TASK', 'TITLE', 'AGENT', 'THREAD', 'UPDATED']);
   });
@@ -766,19 +770,20 @@ describe('TasksPage — THR-046 msg-11 layout reshape', () => {
     return mountAt(`/orgs/${SLUG}/tasks`);
   }
 
-  test('column header bar is rounded with surface-sunken background', async () => {
+  test('column header is a rounded bordered surface-page card', async () => {
     mountTasks([
       rootTask({ task_id: 'TASK-0700', status: 'in_progress', severity_rollup: 'in_progress' }),
     ]);
     await waitFor(() => {
       expect(screen.getByText('STATUS')).toBeInTheDocument();
     });
-    // The column header is the first element with both rounded-lg and
-    // bg-surface-sunken classes inside the <main> scroll area.
-    const header = document.querySelector('[class*="rounded-lg"][class*="bg-surface-sunken"]');
+    // THR-061 a-tasks: the column header is the first bordered surface-page card
+    // in the <main> scroll area — it precedes the group row-cards in DOM order.
+    const header = document.querySelector('[class*="rounded-xl"][class*="bg-surface-page"]');
     expect(header).not.toBeNull();
-    expect(header).toHaveClass('rounded-lg');
-    expect(header).toHaveClass('bg-surface-sunken');
+    expect(header).toHaveClass('rounded-xl');
+    expect(header).toHaveClass('bg-surface-page');
+    expect(header).toHaveClass('border');
   });
 
   test('each group section is a rounded bordered card', async () => {
@@ -829,8 +834,9 @@ describe('TasksPage — THR-046 msg-11 layout reshape', () => {
     const dot = heading.querySelector('span[aria-hidden="true"]');
     expect(dot).not.toBeNull();
     expect(dot).toHaveClass('text-status-escalated');
-    // Not dimmed.
-    expect(heading.closest('section')).not.toHaveClass('opacity-60');
+    // Not dimmed (dimming lives on the heading's wrapper — a-tasks label
+    // above rows-card).
+    expect(heading.parentElement).not.toHaveClass('opacity-60');
   });
 
   test('in_progress group renders as "Active" with green status dot', async () => {
