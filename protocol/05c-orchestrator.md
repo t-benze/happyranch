@@ -131,7 +131,7 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="budget", severity="medium", summary="Refund of $200 requested by tourist for cancelled tour. Exceeds my $150 authority.")`.
 **Task state**: Moves to `waiting_for_approval`. The agent completes all other work on the task and submits a completion report with the pending approval clearly noted.
 **Orchestrator action**: Routes the escalation per the 12 rules in `04-escalation-rules.md`. Creates a founder notification with the agent's summary and recommendation. Holds the specific blocked step (not the entire Team). non-root tasks do not escalate directly to the founder.
-**Resolution**: Founder continues or cancels via the dashboard. Orchestrator resumes the task with the decision injected into context.
+**Resolution**: Founder resolves via Continue or Cancel. On Continue the orchestrator re-enqueues the task to pending and injects the founder's input into the manager's next-step prompt. On Cancel the task terminates in CANCELLED (cancelled_at set) with no resume/context injection.
 
 #### Type 3: Needs another agent's work
 **What**: The task has a cross-agent or cross-team dependency.

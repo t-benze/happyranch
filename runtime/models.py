@@ -23,8 +23,8 @@ class TaskStatus(StrEnum):
     # NEW (Path B), non-terminal. A task that needs a founder decision (genuine
     # agent escalation, failure-round-bound exhaustion, or budget exhaustion).
     # Was the legacy blocked(escalated) state; `block_kind` is cleared. The
-    # founder resolves it via resolve-escalation (approve → pending / reject →
-    # failed). NOT in any terminal predicate.
+    # founder resolves it via resolve-escalation (continue → pending / cancel →
+    # cancelled, cancelled_at set). NOT in any terminal predicate.
     ESCALATED = "escalated"
     COMPLETED = "completed"              # terminal
     FAILED = "failed"                   # terminal

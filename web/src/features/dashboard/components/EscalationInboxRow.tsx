@@ -1,5 +1,5 @@
 /**
- * EscalationInboxRow — inline approve-and-resolve expander for the
+ * EscalationInboxRow — inline continue-and-resolve expander for the
  * "Waiting on you" panel.
  *
  * Click to expand → rationale textarea autofocuses → ⌘↵ submits or Esc
