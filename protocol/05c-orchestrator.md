@@ -386,7 +386,7 @@ A skill reaches an agent session only when **both** gates pass:
 | Policy class | Governance |
 | --- | --- |
 | `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids (e.g., `review`). Owner or team manager may approve. Passes the catalog gate without per-version founder approval. |
-| `high_impact_policy` | Pricing, legal/compliance, security, production release, escalation thresholds. Founder or designated-owner approval required for catalog admission AND each version upgrade. |
+| `high_impact_policy` | Pricing, legal/compliance, security, production release, escalation thresholds, agent roster governance (e.g., ``manage-agent``, ``manage-repo``). Founder or designated-owner approval required for catalog admission AND each version upgrade. |
 | `system_contract` | Runtime protocol and mandatory operating-contract skills (e.g., `start-task`, `thread`, `jobs`). **Outside the toggleable catalog** — not shown, not toggleable. |
 
 ### 4.3 Compact Session Skill INDEX
@@ -576,3 +576,76 @@ registered and eligibility is scoped; the wholesale dump is untouched.
 - Require a SQLite migration (file/YAML-backed only)
 - Add new daemon routes
 - Change the existing permission model or auth
+
+### 4.9 Managed-Catalog High-Impact Entries — ``manage-agent`` + ``manage-repo`` (THR-055 Phase 3)
+
+The ``manage-agent`` and ``manage-repo`` skills are registered as
+``high_impact_policy`` managed-catalog entries. They govern agent roster
+management (enroll/update/terminate agents) and agent workspace repository
+configuration (add/remove/update repos).
+
+**Package locations.**
+- ``runtime/skills/manage-agent/{skill.yaml,SKILL.md}``
+- ``runtime/skills/manage-repo/{skill.yaml,SKILL.md}``
+
+**Registration metadata.**
+- ``hr:manage-agent`` and ``hr:manage-repo``
+- ``policy_class``: ``high_impact_policy``
+- ``owner``: ``engineering_manager``
+- ``approval_state``: ``pending_review`` (UNAPPROVED — fail-closed)
+- ``version``: ``1.0.0``
+
+**Fail-closed on unapproved version.** Both skills are registered but NOT
+exposed because their ``approval_state`` is ``pending_review`` — the catalog
+gate blocks them (founder or designated-owner approval is required for exact-version
+``high_impact_policy`` admission). Recording a ``high_impact_policy`` approval is
+a founder action (maker-checker); it must NOT be self-approved by any agent.
+
+**Version-specific approval required for admission AND every upgrade.**
+Per the founder ruling (THR-055 seq 17, encoded in §4.1 gate logic):
+- Approval of version ``1.0.0`` does not imply approval of version ``1.1.0``.
+- A version bump returns the skill to ``pending_review`` / unavailable until the
+  new version is separately approved.
+- ``draft``, ``pending_review``, ``rejected``, ``deprecated``, or ``disabled``
+  approval_state → fail-closed / not exposed.
+- ``approved_by`` must be ``founder`` or the skill's designated owner
+  (``engineering_manager``); any other approver → fail-closed.
+
+**Eligibility scoping.** ``manage-agent`` and ``manage-repo`` visibility is
+scoped to **MANAGER/OPERATOR agents** — NOT org-wide. The default eligibility
+policy in ``org/config.yaml`` grants access to:
+- ``engineering_manager`` via agent-scoped allow (engineering team manager).
+- ``product_lead`` via agent-scoped allow (product team manager).
+
+Non-manager agents (including engineering team workers such as ``dev_agent``,
+``code_reviewer``, ``qa_engineer``) do NOT resolve ``manage-agent`` or
+``manage-repo`` as exposed — even if they are in the engineering team. The
+eligibility formula is the standard additive-inheritance model (see §4.1):
+agent-scoped allow only; no team or org scope.
+
+**HIGH-IMPACT POLICY = GUIDANCE VISIBILITY + VERSION PROVENANCE ONLY — NOT
+COMMAND ACCESS.** ``high_impact_policy`` governs guidance visibility + version
+provenance in the compact skill index. It does NOT grant or deny command
+execution. ``manage-agent`` and ``manage-repo`` command access remains
+separately governed by allow_rules / daemon auth per the existing permission
+model (§3). The policy model is additive and permission-inert.
+
+**Phase-3 additive constraint.** The ``manage-agent`` and ``manage-repo``
+SKILL.md bodies also remain in ``protocol/skills/manage-agent/`` and
+``protocol/skills/manage-repo/`` so that the existing wholesale-dump path
+(``refresh_session_skills``) continues to deliver them to all agents as a
+safety net. Physical removal from the always-injected set is a Phase-4
+change gated on a completeness test proving catalog resolution delivers the
+full required set. Phase 3 is ADDITIVE only — the managed-catalog entries are
+registered and eligibility is scoped; the wholesale dump is untouched.
+
+**Fences.** Phase 3 does not:
+- Grant tools, credentials, or capabilities (manage-agent/manage-repo command
+  access remains in allow_rules / daemon auth per the existing permission model)
+- Physically delete ``manage-agent`` or ``manage-repo`` from ``protocol/skills/``
+  (Phase 4)
+- Require a SQLite migration (file/YAML-backed only)
+- Add new daemon routes
+- Change the existing permission model or auth
+- Add a web admin UI
+- Record any founder approval for the version (maker-checker — founder action only)
