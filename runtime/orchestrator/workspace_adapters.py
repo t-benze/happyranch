@@ -806,7 +806,15 @@ class ClaudeWorkspaceAdapter:
         )
 
     def _copy_skills(self, workspace: Path) -> None:
-        """Copy protocol/skills/ tree into workspace/.claude/skills/."""
+        """Copy protocol/skills/ tree into workspace/.claude/skills/.
+
+        **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default
+        OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
+        ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
+        delivery path.
+        """
+        if not _WHOLESALE_DUMP_ENABLED:
+            return
         _copy_skills_tree(
             _resolve_skills_src(self._settings),
             workspace / ".claude" / "skills",
@@ -868,7 +876,15 @@ class CodexWorkspaceAdapter:
         (workspace / "AGENTS.md").write_text("\n".join(sections))
 
     def _copy_skills(self, workspace: Path) -> None:
-        """Copy protocol/skills/ tree into workspace/.agents/skills/."""
+        """Copy protocol/skills/ tree into workspace/.agents/skills/.
+
+        **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default
+        OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
+        ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
+        delivery path.
+        """
+        if not _WHOLESALE_DUMP_ENABLED:
+            return
         _copy_skills_tree(
             _resolve_skills_src(self._settings),
             workspace / ".agents" / "skills",
@@ -956,7 +972,14 @@ class OpencodeWorkspaceAdapter:
         ``.claude/skills/``, or ``.agents/skills/``. We pick ``.agents/``
         to share the layout with Codex workspaces — a workspace can be
         re-bootstrapped between executors without churn.
+
+        **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default
+        OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
+        ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
+        delivery path.
         """
+        if not _WHOLESALE_DUMP_ENABLED:
+            return
         _copy_skills_tree(
             _resolve_skills_src(self._settings),
             workspace / ".agents" / "skills",

@@ -449,11 +449,23 @@ set-executor). Before THR-070, live agents' on-disk skill bodies froze until
 the next lifecycle event — an edit to a skill in the bundle would not reach a
 running agent.
 
-Now, the skill tree is **refreshed on EVERY session creation** (task/subtask,
-thread reply, wake, dream) by a shared idempotent helper that re-copies from
-the bundled source into both ``.claude/skills/`` and ``.agents/skills/``. The
-source is always ``_resolve_skills_src(settings)`` = ``project_root/protocol/skills/``
-(the bundled runtime), never a workspace clone or stale frozen copy.
+**Phase-4 cutover (THR-055).** The session-time wholesale refresh and the
+bootstrap ``_copy_skills`` wholesale copy are BOTH gated behind the reversible
+``_WHOLESALE_DUMP_ENABLED`` flag (default ``False`` in
+``workspace_adapters.py``). The flag gates two code paths:
+- **Session-time:** ``refresh_session_skills`` — called on every session
+  creation to re-copy the bundled ``protocol/skills/`` tree into
+  ``.claude/skills/`` and ``.agents/skills/``.
+- **Bootstrap:** ``_copy_skills`` in the three executor adapters
+  (``ClaudeWorkspaceAdapter``, ``CodexWorkspaceAdapter``,
+  ``OpencodeWorkspaceAdapter``) — called from ``ensure_workspace_ready`` at
+  lifecycle events (init-agent, set-executor).
+
+When the flag is ``False`` (the cutover default), neither code path copies
+skills. The explicit injection paths — ``inject_system_contracts`` (§4.7) and
+``inject_managed_skills`` (§4.10) — are the SOLE skill-delivery mechanism.
+The flag can be set to ``True`` for rollback to the legacy wholesale-dump
+model without a code revert.
 
 **Protocol doc manifest.** Protocol ``.md`` docs (the files in
 ``project_root/protocol/*.md``) are NEVER copied to agent workspaces. Instead,
@@ -490,12 +502,22 @@ manager-toggleable).
 
 **Injection model (Phase 4 — CUT OVER).** On EVERY session creation,
 ``inject_system_contracts`` and ``inject_managed_skills`` (see §4.10) are the
-SOLE skill-injection paths. The legacy ``refresh_session_skills`` wholesale dump
-is DISABLED by default (gated behind ``_WHOLESALE_DUMP_ENABLED = False`` in
-``workspace_adapters.py`` — re-enable by setting to ``True`` for rollback without
-a code revert). The explicit injection paths deliver the COMPLETE required skill
-set (system contracts + managed catalog) without the wholesale copy, as proven by
-the contract-completeness guard test in ``test_skill_cutover_completeness.py``.
+SOLE skill-injection paths. The wholesale ``protocol/skills/`` dump is DISABLED
+through TWO code paths, both gated behind the reversible
+``_WHOLESALE_DUMP_ENABLED = False`` flag in ``workspace_adapters.py``:
+
+1. **Session-time** — ``refresh_session_skills`` (called on every session
+   creation) is a no-op when the flag is ``False``.
+2. **Bootstrap** — ``_copy_skills`` in the three executor adapters
+   (Claude, Codex, Opencode), called from ``ensure_workspace_ready`` at
+   lifecycle events, is a no-op when the flag is ``False``.
+
+Both gates prevent the wholesale copy of ALL 8 ``protocol/skills/``
+directories (including the 3 managed-catalog skills) into the workspace.
+A freshly-bootstrapped workspace receives NO skills from the wholesale path;
+skills are delivered exclusively through the explicit injection paths. The
+completeness of this delivery model is proven by the contract-completeness
+guard test in ``test_skill_cutover_completeness.py``.
 
 **Phase 1 (historical).** The initial deployment ran ``inject_system_contracts``
 ADDITIVELY alongside the wholesale dump. This was the safety net proved correct
@@ -646,11 +668,14 @@ change gated on a completeness test proving catalog resolution delivers the
 full required set. Phase 3 is ADDITIVE only — the managed-catalog entries are
 registered and eligibility is scoped; the wholesale dump is untouched.
 
-**Phase-4 cutover (COMPLETED).** The ``protocol/skills/`` wholesale dump is
-disabled (``_WHOLESALE_DUMP_ENABLED = False``). The 8 ``protocol/skills/``
-directories remain on disk as a packaged safety net (re-enable with the flag)
-but are no longer copied into workspaces. The ``SKILL.md`` source of truth
-for the 3 managed-catalog skills lives in ``runtime/skills/<id>/``.
+**Phase-4 cutover (COMPLETED).** The wholesale ``protocol/skills/`` dump is
+disabled through both paths — session-time ``refresh_session_skills`` and
+bootstrap ``_copy_skills`` in the three executor adapters — gated behind
+``_WHOLESALE_DUMP_ENABLED = False``. The 8 ``protocol/skills/`` directories
+remain on disk as a packaged safety net (re-enable with the flag) but are
+no longer copied into workspaces. The ``SKILL.md`` source of truth for the
+3 managed-catalog skills lives in ``runtime/skills/<id>/``. See §4.6 and
+§4.10 for the full delivery model.
 
 **Fences.** Phase 3 does not:
 - Grant tools, credentials, or capabilities (manage-agent/manage-repo command
@@ -693,8 +718,11 @@ skills with missing or mismatched ``approved_version`` are NOT injected.
 The catalog gate is independent of the eligibility gate — both must pass.
 
 **Reversible gate.** The wholesale dump is disabled by default
-(``_WHOLESALE_DUMP_ENABLED = False`` in ``workspace_adapters.py``). Setting
-the flag to ``True`` re-enables the legacy dump without a code revert.
+(``_WHOLESALE_DUMP_ENABLED = False`` in ``workspace_adapters.py``). This
+gates TWO code paths — the session-time ``refresh_session_skills`` and the
+bootstrap-time ``_copy_skills`` in the three executor adapters
+(Claude, Codex, Opencode). Setting the flag to ``True`` re-enables the
+legacy wholesale dump through both paths without a code revert.
 
 The ``protocol/skills/`` directories remain on disk as packaged source
 material for the system-contract injection path and as a reversion safety

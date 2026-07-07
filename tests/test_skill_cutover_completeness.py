@@ -3,16 +3,22 @@ COMPLETE required system-contract + managed-catalog skill set WITHOUT the
 wholesale protocol/skills dump.
 
 This test is the GATE for THR-055 Phase 4 (the cutover). It must fail red
-before the managed-skill injection path exists and pass green after.
+when the bootstrap _copy_skills still leaks the wholesale dump; it must pass
+green when the gate on _WHOLESALE_DUMP_ENABLED stops both bootstrap and
+session-time wholesale copy.
 
 Coverage:
-  - 7 agents (dev_agent, code_reviewer, qa_engineer, frontend_engineer,
-    engineering_manager, product_lead, consultant_head)
-  - 4 session contexts (task, thread, wake, dream)
-  - 2 repo states (with repos, without repos)
-  - System contracts: start-task, jobs, make-worktree, thread, dream
-  - Managed catalog: review (standard_operational), manage-agent + manage-repo
-    (high_impact_policy, pending_review → FAIL CLOSED)
+  - Derive agent roster from REAL org agents directory (prompt_loader.list_agents)
+  - Use REAL eligibility policy (org/config.yaml)
+  - Exercise ensure_workspace_ready() (bootstrap) + inject_system_contracts +
+    inject_managed_skills — the same code paths the 4 session callers use
+  - Assert EXACT final .claude/skills and .agents/skills contents:
+    * System contracts are context-correct
+    * review is present ONLY for eligible agents
+    * manage-agent/manage-repo are NEVER present (fail-closed)
+  - TDD: with _WHOLESALE_DUMP_ENABLED = False, bootstrap + explicit injection
+    must produce the correct result; a wholesale-dump bypass would be caught
+    by unexpected manage-agent/manage-repo in the final dirs.
 """
 
 from __future__ import annotations
@@ -22,10 +28,25 @@ from pathlib import Path
 import pytest
 
 from runtime.config import Settings
+from runtime.orchestrator._paths import OrgPaths
 
-# ── Agent roster as defined in the org ───────────────────────────────
 
-AGENT_ROSTER: dict[str, str] = {
+# ── Agent roster: derived from the org agents directory by prompt_loader, ─
+# not hardcoded. We list them here for the expected set-construction but the
+# actual roster comes from the real list_agents() call.
+
+ALL_AGENTS = [
+    "dev_agent",
+    "code_reviewer",
+    "qa_engineer",
+    "frontend_engineer",
+    "engineering_manager",
+    "product_lead",
+    "consultant_head",
+]
+
+# Team mapping for each agent — matches the real org.
+AGENT_TEAM: dict[str, str] = {
     "dev_agent": "engineering",
     "code_reviewer": "engineering",
     "qa_engineer": "engineering",
@@ -35,19 +56,14 @@ AGENT_ROSTER: dict[str, str] = {
     "consultant_head": "consultant",
 }
 
-# Engineering team (workers + manager) + product_lead get review
-# (product_lead has agent-scoped allow per the Phase 2 eligibility policy)
-REVIEW_ELIGIBLE_AGENTS = {
+# Review-eligible agents per the real eligibility policy
+REVIEW_ELIGIBLE = {
     "dev_agent", "code_reviewer", "qa_engineer",
     "frontend_engineer", "engineering_manager",
     "product_lead",
 }
 
-# Manager-eligible agents (for manage-agent / manage-repo — but these
-# are fail-closed as pending_review, so they should NOT appear)
-MANAGER_AGENTS = {"engineering_manager", "product_lead"}
-
-# ── Expected system contracts per (context, has_repos) ───────────────
+# ── Expected system contracts per (context, has_repos) ─────────────────
 
 SYSTEM_CONTRACT_EXPECTATIONS: dict[str, dict[bool, set[str]]] = {
     "task": {
@@ -68,23 +84,66 @@ SYSTEM_CONTRACT_EXPECTATIONS: dict[str, dict[bool, set[str]]] = {
     },
 }
 
-# ── Helpers ──────────────────────────────────────────────────────────
+
+# ── Fixture builders ────────────────────────────────────────────────────
 
 
-def _setup_skills_fixtures(settings: Settings, tmp_path: Path) -> Path:
-    """Build the protocol/skills/ tree, runtime/skills/ managed catalog,
-    and org/config.yaml eligibility policy.
+def _write_agent_file(paths: OrgPaths, name: str, team: str, role: str = "worker") -> None:
+    """Write a minimal agent .md file so prompt_loader.list_agents() picks it up."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-    Creates all 8 skill directories with SKILL.md files so both
-    inject_system_contracts and the future inject_managed_skills can
-    find their source content.
+    agent = AgentDef(
+        name=name,
+        team=team,
+        role=role,  # type: ignore[arg-type]
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=None,
+        system_prompt=f"You are {name}.\n",
+    )
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
 
-    Returns the managed skills_root path.
+
+def _write_teams_config(paths: OrgPaths) -> None:
+    """Write org/teams.yaml so TeamsRegistry.load() works."""
+    import yaml
+
+    payload = {
+        "teams": {
+            "engineering": {
+                "manager": "engineering_manager",
+                "workers": [
+                    "dev_agent", "code_reviewer", "qa_engineer", "frontend_engineer",
+                ],
+            },
+            "product": {
+                "manager": "product_lead",
+                "workers": [],
+            },
+            "consultant": {
+                "manager": "consultant_head",
+                "workers": [],
+            },
+        },
+    }
+    paths.org_dir.mkdir(parents=True, exist_ok=True)
+    (paths.teams_config_path).write_text(yaml.safe_dump(payload, sort_keys=False))
+
+
+def _write_eligibility_config(settings: Settings, paths: OrgPaths) -> None:
+    """Write the REAL eligibility policy to both Locations:
+    - ``settings.project_root / org / config.yaml`` (read by inject_managed_skills)
+    - ``paths.org_dir / config.yaml`` (read by TeamsRegistry and prompt_loader)
     """
-    # ── org/config.yaml (eligibility policy) ─────────────────────────
-    org_dir = settings.project_root / "org"
-    org_dir.mkdir(parents=True, exist_ok=True)
-    (org_dir / "config.yaml").write_text(
+    config_text = (
+        "# ── Skill eligibility policy ────────────────────────────────────────\n"
+        "# Additive inheritance: effective = (org ∪ team ∪ agent) minus denies.\n"
+        "# Deny wins over allow. Unknown skill ids produce validation warnings.\n"
+        "\n"
         "skills:\n"
         "  org:\n"
         "    allow: []\n"
@@ -93,12 +152,6 @@ def _setup_skills_fixtures(settings: Settings, tmp_path: Path) -> Path:
         "    engineering:\n"
         "      allow:\n"
         "        - hr:review\n"
-        "      deny: []\n"
-        "    product:\n"
-        "      allow: []\n"
-        "      deny: []\n"
-        "    consultant:\n"
-        "      allow: []\n"
         "      deny: []\n"
         "  agents:\n"
         "    product_lead:\n"
@@ -113,8 +166,13 @@ def _setup_skills_fixtures(settings: Settings, tmp_path: Path) -> Path:
         "        - hr:manage-repo\n"
         "      deny: []\n"
     )
+    for parent in (settings.project_root / "org", paths.org_dir):
+        parent.mkdir(parents=True, exist_ok=True)
+        (parent / "config.yaml").write_text(config_text)
 
-    # ── protocol/skills/ (system contracts + legacy safety net) ──────
+
+def _create_protocol_skills(settings: Settings) -> None:
+    """Create the 8 protocol/skills/ directories with minimal SKILL.md bodies."""
     proto_skills = settings.get_protocol_dir() / "skills"
     for name in (
         "start-task", "jobs", "make-worktree", "thread", "dream",
@@ -123,15 +181,19 @@ def _setup_skills_fixtures(settings: Settings, tmp_path: Path) -> Path:
         (proto_skills / name).mkdir(parents=True)
         (proto_skills / name / "SKILL.md").write_text(f"# {name}\n")
 
-    # ── runtime/skills/ (managed catalog) ────────────────────────────
-    # Use a temp dir that will be passed as the skills_root.
-    managed_root = tmp_path / "runtime_skills"
-    managed_root.mkdir(parents=True)
 
-    # review: standard_operational, approved, engineering-scoped
-    (managed_root / "review").mkdir(parents=True)
-    (managed_root / "review" / "SKILL.md").write_text("# review\n")
-    (managed_root / "review" / "skill.yaml").write_text(
+def _create_managed_catalog(project_root: Path) -> Path:
+    """Create runtime/skills/ managed catalog with proper skill.yaml entries.
+
+    Returns the skills_root path that inject_managed_skills expects.
+    """
+    skills_root = project_root / "runtime" / "skills"
+    skills_root.mkdir(parents=True)
+
+    # review: standard_operational, approved
+    (skills_root / "review").mkdir(parents=True)
+    (skills_root / "review" / "SKILL.md").write_text("# review\n")
+    (skills_root / "review" / "skill.yaml").write_text(
         "id: hr:review\n"
         "slug: review\n"
         "name: Review\n"
@@ -144,13 +206,13 @@ def _setup_skills_fixtures(settings: Settings, tmp_path: Path) -> Path:
         "approval_state: approved\n"
         "approved_by: engineering_manager\n"
         "approved_at: 2026-07-07T00:00:00Z\n"
-        "status: enabled\n"
+        "status: enabled\n",
     )
 
-    # manage-agent: high_impact_policy, pending_review (FAIL CLOSED)
-    (managed_root / "manage-agent").mkdir(parents=True)
-    (managed_root / "manage-agent" / "SKILL.md").write_text("# manage-agent\n")
-    (managed_root / "manage-agent" / "skill.yaml").write_text(
+    # manage-agent: high_impact_policy, pending_review → FAIL CLOSED
+    (skills_root / "manage-agent").mkdir(parents=True)
+    (skills_root / "manage-agent" / "SKILL.md").write_text("# manage-agent\n")
+    (skills_root / "manage-agent" / "skill.yaml").write_text(
         "id: hr:manage-agent\n"
         "slug: manage-agent\n"
         "name: Manage Agent\n"
@@ -161,13 +223,13 @@ def _setup_skills_fixtures(settings: Settings, tmp_path: Path) -> Path:
         "source: runtime/skills/manage-agent\n"
         "policy_class: high_impact_policy\n"
         "approval_state: pending_review\n"
-        "status: enabled\n"
+        "status: enabled\n",
     )
 
-    # manage-repo: high_impact_policy, pending_review (FAIL CLOSED)
-    (managed_root / "manage-repo").mkdir(parents=True)
-    (managed_root / "manage-repo" / "SKILL.md").write_text("# manage-repo\n")
-    (managed_root / "manage-repo" / "skill.yaml").write_text(
+    # manage-repo: high_impact_policy, pending_review → FAIL CLOSED
+    (skills_root / "manage-repo").mkdir(parents=True)
+    (skills_root / "manage-repo" / "SKILL.md").write_text("# manage-repo\n")
+    (skills_root / "manage-repo" / "skill.yaml").write_text(
         "id: hr:manage-repo\n"
         "slug: manage-repo\n"
         "name: Manage Repo\n"
@@ -178,14 +240,14 @@ def _setup_skills_fixtures(settings: Settings, tmp_path: Path) -> Path:
         "source: runtime/skills/manage-repo\n"
         "policy_class: high_impact_policy\n"
         "approval_state: pending_review\n"
-        "status: enabled\n"
+        "status: enabled\n",
     )
 
-    return managed_root
+    return skills_root
 
 
 def _build_ws(tmp_path: Path, name: str, *, has_repos: bool) -> Path:
-    """Create a workspace directory, optionally with repos/."""
+    """Create a workspace directory, optionally with repos/ marker."""
     ws = tmp_path / name
     ws.mkdir(parents=True)
     if has_repos:
@@ -194,7 +256,7 @@ def _build_ws(tmp_path: Path, name: str, *, has_repos: bool) -> Path:
 
 
 def _collect_skill_ids(skills_dir: Path) -> set[str]:
-    """List skill subdirectory names from .claude/skills/ (or any dir)."""
+    """List skill subdirectory names from a skills dir (e.g. .claude/skills/)."""
     if not skills_dir.is_dir():
         return set()
     return {
@@ -204,53 +266,112 @@ def _collect_skill_ids(skills_dir: Path) -> set[str]:
     }
 
 
-# ── The contract-completeness test ───────────────────────────────────
+# ── The contract-completeness gate test ─────────────────────────────────
 
 
 class TestContractCompletenessPostCutover:
     """Prove EVERY agent × session-context receives its complete required
-    skill set via explicit injection ONLY (NO wholesale dump)."""
+    skill set via explicit injection ONLY (NO wholesale dump from bootstrap
+    or session-time refresh)."""
 
     def test_all_agents_all_contexts_all_repo_states(
-        self, test_settings: Settings, tmp_path: Path,
+        self, test_settings: Settings, tmp_path: Path, test_runtime: OrgPaths,
     ):
-        """The gate: iterate every (agent, context, repo_state) and assert
-        the complete required set is injected without refresh_session_skills."""
+        """The HARD PRECONDITION gate.
+
+        Iterates every (agent, context, repo_state) combination, bootstraps
+        a fresh workspace, injects system contracts + managed skills, and
+        asserts the EXACT final .claude/skills and .agents/skills contents.
+
+        With _WHOLESALE_DUMP_ENABLED = False:
+        - Bootstrap must NOT leak any skills into the workspace
+        - Only explicit injection delivers skills
+        - manage-agent/manage-repo must NEVER appear (fail-closed)
+        - review must appear ONLY for eligible agents
+        """
+        import runtime.orchestrator.workspace_adapters as wa
+        from runtime.orchestrator.context_builder import ContextBuilder
         from runtime.orchestrator.workspace_adapters import (
             inject_system_contracts,
-            inject_managed_skills,  # WILL NOT EXIST YET — red
+            inject_managed_skills,
         )
         from runtime.skills.system_contracts import (
-            resolve_system_contracts_for_session,
             SessionContext,
+            resolve_system_contracts_for_session,
         )
 
-        managed_root = _setup_skills_fixtures(test_settings, tmp_path)
+        # ── Confirm the flag is OFF ──────────────────────────────────
+        assert wa._WHOLESALE_DUMP_ENABLED is False, (
+            "_WHOLESALE_DUMP_ENABLED must be OFF for the cutover gate test"
+        )
 
-        # Temporarily override _SKILLS_SRC for the managed injection
-        import runtime.orchestrator.workspace_adapters as wa
+        # ── Set up org configuration ─────────────────────────────────
+        for name in ALL_AGENTS:
+            role = "manager" if name in ("engineering_manager", "product_lead", "consultant_head") else "worker"
+            _write_agent_file(test_runtime, name, AGENT_TEAM[name], role=role)
+        _write_teams_config(test_runtime)
+        _write_eligibility_config(test_settings, test_runtime)
 
+        # ── Set up skill sources ─────────────────────────────────────
+        _create_protocol_skills(test_settings)
+        managed_root = _create_managed_catalog(test_settings.project_root)
+
+        # Verify the roster is correctly loaded
+        from runtime.orchestrator.prompt_loader import list_agents
+        agent_names = {a.name for a in list_agents(test_runtime)}
+        expected_names = set(ALL_AGENTS)
+        assert agent_names == expected_names, (
+            f"Agent roster mismatch: got {agent_names}, expected {expected_names}"
+        )
+
+        # ── Iterate every (agent, context, repo_state) ───────────────
         failures: list[str] = []
 
-        for agent_name in sorted(AGENT_ROSTER):
-            team_name = AGENT_ROSTER[agent_name]
+        for agent_name in sorted(ALL_AGENTS):
+            team_name = AGENT_TEAM[agent_name]
 
             for context_str in ("task", "thread", "wake", "dream"):
                 ctx = SessionContext(context_str)
 
                 for has_repos in (True, False):
-                    # Unique workspace per variant
                     ws_name = f"ws_{agent_name}_{context_str}_repos{has_repos}"
                     ws = _build_ws(tmp_path, ws_name, has_repos=has_repos)
 
-                    # ── Inject system contracts ──────────────────────
+                    # ── Step 1: Bootstrap (must NOT leak skills) ────
+                    builder = ContextBuilder(
+                        test_settings, test_runtime, slug="test",
+                    )
+                    builder.ensure_workspace_ready(
+                        ws, agent_name, "system prompt",
+                    )
+
+                    # After bootstrap, skills dirs should be EMPTY
+                    # (bootstrap _copy_skills is gated behind the flag)
+                    claude_after_bootstrap = _collect_skill_ids(
+                        ws / ".claude" / "skills",
+                    )
+                    agents_after_bootstrap = _collect_skill_ids(
+                        ws / ".agents" / "skills",
+                    )
+                    if claude_after_bootstrap:
+                        failures.append(
+                            f"BOOTSTRAP LEAK: .claude/skills/ has "
+                            f"{claude_after_bootstrap} after bootstrap for "
+                            f"({agent_name}, {context_str}, repos={has_repos})"
+                        )
+                    if agents_after_bootstrap:
+                        failures.append(
+                            f"BOOTSTRAP LEAK: .agents/skills/ has "
+                            f"{agents_after_bootstrap} after bootstrap for "
+                            f"({agent_name}, {context_str}, repos={has_repos})"
+                        )
+
+                    # ── Step 2: Inject system contracts ──────────────
                     inject_system_contracts(
                         ws, test_settings, slug="test", context=context_str,
                     )
 
-                    # ── Inject managed-catalog skills ─────────────────
-                    # This call is the NEW injection path that will be added
-                    # in Phase 4. It does not exist yet → red test.
+                    # ── Step 3: Inject managed-catalog skills ────────
                     inject_managed_skills(
                         ws, test_settings,
                         slug="test",
@@ -259,21 +380,20 @@ class TestContractCompletenessPostCutover:
                         skills_root=managed_root,
                     )
 
-                    # ── Collect what was injected ────────────────────
-                    sys_contracts = resolve_system_contracts_for_session(
-                        ctx, workspace=ws,
-                    )
+                    # ── Step 4: Collect final state ──────────────────
                     injected = _collect_skill_ids(ws / ".claude" / "skills")
                     agents_injected = _collect_skill_ids(ws / ".agents" / "skills")
 
+                    # Both dirs must match
+                    if injected != agents_injected:
+                        failures.append(
+                            f"SKILL DIR MISMATCH for "
+                            f"({agent_name}, {context_str}, repos={has_repos}): "
+                            f".claude={injected}, .agents={agents_injected}"
+                        )
+
                     # ── Verify system contracts ──────────────────────
                     expected_sys = SYSTEM_CONTRACT_EXPECTATIONS[context_str][has_repos]
-                    sys_ids = {sc.id for sc in sys_contracts}
-                    assert sys_ids == expected_sys, (
-                        f"resolve_system_contracts mismatch for "
-                        f"({agent_name}, {context_str}, repos={has_repos}): "
-                        f"got {sys_ids}, expected {expected_sys}"
-                    )
 
                     for sc_id in expected_sys:
                         if sc_id not in injected:
@@ -281,30 +401,22 @@ class TestContractCompletenessPostCutover:
                                 f"MISSING system contract '{sc_id}' for "
                                 f"({agent_name}, {context_str}, repos={has_repos})"
                             )
-                        if sc_id not in agents_injected:
-                            failures.append(
-                                f"MISSING system contract '{sc_id}' in .agents/ for "
-                                f"({agent_name}, {context_str}, repos={has_repos})"
-                            )
 
                     # ── Verify managed-catalog skills ────────────────
-                    if agent_name in REVIEW_ELIGIBLE_AGENTS:
-                        # review should be injected
+                    if agent_name in REVIEW_ELIGIBLE:
                         if "review" not in injected:
                             failures.append(
                                 f"MISSING managed skill 'review' for "
                                 f"({agent_name}, {context_str}, repos={has_repos})"
                             )
                     else:
-                        # review should NOT be injected
                         if "review" in injected:
                             failures.append(
                                 f"UNEXPECTED managed skill 'review' for "
                                 f"({agent_name}, {context_str}, repos={has_repos})"
                             )
 
-                    # manage-agent / manage-repo: fail-closed for ALL agents
-                    # (pending_review — catalog gate blocked)
+                    # manage-agent / manage-repo: fail-closed for ALL
                     for hi_skill in ("manage-agent", "manage-repo"):
                         if hi_skill in injected:
                             failures.append(
@@ -313,11 +425,16 @@ class TestContractCompletenessPostCutover:
                                 f"— should be fail-closed (pending_review)"
                             )
 
-                    # ── Verify dream/bloat exclusion ─────────────────
-                    if context_str != "dream" and "dream" in injected:
+                    # ── Verify no bloat / no extra skills ────────────
+                    # Assemble the expected complete set
+                    expected_full = set(expected_sys)
+                    if agent_name in REVIEW_ELIGIBLE:
+                        expected_full.add("review")
+                    unexpected = injected - expected_full
+                    if unexpected:
                         failures.append(
-                            f"UNEXPECTED 'dream' for ({agent_name}, {context_str}, "
-                            f"repos={has_repos}) — dream is DREAM-only"
+                            f"UNEXPECTED skills {unexpected} for "
+                            f"({agent_name}, {context_str}, repos={has_repos})"
                         )
 
         # ── Report ───────────────────────────────────────────────────
