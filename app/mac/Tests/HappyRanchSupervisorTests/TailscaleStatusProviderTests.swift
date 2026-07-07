@@ -377,6 +377,122 @@ struct TailscaleStatusParsingTests {
     }
 }
 
+// MARK: - Production TailscaleStatusProvider resolveHomeNode regression
+
+@Suite("TailscaleStatusProvider production resolveHomeNode")
+struct TailscaleStatusProviderProductionResolveHomeNodeTests {
+
+    /// Build a multi-peer `tailscale status --json` payload as a shell
+    /// script that a real ``TailscaleStatusProvider`` will execute.
+    /// The JSON includes 3 peers (2 online, 1 offline) so that a
+    /// hypothetical "first-online-peer" auto-discovery implementation
+    /// would return a non-nil peer IP and fail the nil-fallback assertion.
+    private func makeTailscaleScript(in dir: URL) throws -> URL {
+        let peer1: [String: Any] = [
+            "HostName": "peer-alpha",
+            "DNSName": "peer-alpha.tailnet.ts.net",
+            "Online": true,
+            "TailscaleIPs": ["100.64.0.2"]
+        ]
+        let peer2: [String: Any] = [
+            "HostName": "peer-beta",
+            "DNSName": "peer-beta.tailnet.ts.net",
+            "Online": true,
+            "TailscaleIPs": ["100.64.0.3"]
+        ]
+        let peer3: [String: Any] = [
+            "HostName": "peer-gamma",
+            "DNSName": "peer-gamma.tailnet.ts.net",
+            "Online": false,
+            "TailscaleIPs": ["100.64.0.4"]
+        ]
+        let dict: [String: Any] = [
+            "Version": "1.80.0",
+            "BackendState": "Running",
+            "Self": [
+                "DNSName": "my-mac.tailnet.ts.net",
+                "TailscaleIPs": ["100.64.0.1"]
+            ],
+            "Peer": [
+                "nodeid:peer1": peer1,
+                "nodeid:peer2": peer2,
+                "nodeid:peer3": peer3
+            ]
+        ]
+        let jsonData = try JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys])
+        let jsonString = String(data: jsonData, encoding: .utf8)!
+
+        // Use a single-quoted heredoc so no shell escaping is needed.
+        let script = """
+        #!/bin/sh
+        cat <<'SCRIPTEOF'
+        \(jsonString)
+        SCRIPTEOF
+        """
+
+        let scriptPath = dir.appendingPathComponent("tailscale")
+        try script.write(to: scriptPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: scriptPath.path
+        )
+        return scriptPath
+    }
+
+    @Test("resolveHomeNode returns nil when no fallback is supplied — does NOT auto-pick an arbitrary peer")
+    func resolveHomeNodeNoFallbackReturnsNil() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TASK-2181-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let scriptPath = try makeTailscaleScript(in: tempDir)
+        let provider = TailscaleStatusProvider(tailscalePath: scriptPath.path)
+
+        // ACCEPTANCE GATE: Phase A1 is manual-fallback-ONLY.
+        // When no fallback is supplied, resolveHomeNode MUST return nil.
+        // It must NOT call fetchStatus() to auto-discover a peer.
+        let result = provider.resolveHomeNode(fallbackAddress: nil)
+        #expect(result == nil, "Must not return an arbitrary peer when no fallback is supplied")
+    }
+
+    @Test("resolveHomeNode returns explicit fallback address verbatim")
+    func resolveHomeNodeReturnsFallbackVerbatim() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TASK-2181-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let scriptPath = try makeTailscaleScript(in: tempDir)
+        let provider = TailscaleStatusProvider(tailscalePath: scriptPath.path)
+
+        // When an explicit fallback is supplied, it's returned verbatim.
+        let result = provider.resolveHomeNode(fallbackAddress: "100.200.200.200")
+        #expect(result == "100.200.200.200", "Must return explicit fallback address")
+    }
+
+    @Test("fetchStatus seam works — script output parses correctly")
+    func fetchStatusSeamWorks() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TASK-2181-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let scriptPath = try makeTailscaleScript(in: tempDir)
+        let provider = TailscaleStatusProvider(tailscalePath: scriptPath.path)
+
+        // Verify the tailscalePath seam works: fetchStatus() runs the
+        // script and parses its JSON output correctly.
+        let status = try provider.fetchStatus()
+        #expect(status.isRunning)
+        #expect(status.backendState == "Running")
+        #expect(status.peers.count == 3)
+
+        let onlinePeers = status.peers.filter { $0.online }
+        #expect(onlinePeers.count == 2)
+    }
+}
+
 // MARK: - Testing-only exposure
 
 extension TailscaleStatusProvider {
