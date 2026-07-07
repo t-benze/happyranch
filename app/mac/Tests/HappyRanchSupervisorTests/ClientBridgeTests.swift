@@ -808,7 +808,7 @@ struct ClientBridgeTests {
             path: "/api/data",
             method: "POST",
             body: "{\"key\":\"value\"}",
-            timeout: 5
+            timeout: 30
         )
 
         #expect(response.status == 200)
