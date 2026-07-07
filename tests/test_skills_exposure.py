@@ -392,6 +392,176 @@ class TestVersionSpecificHighImpactApproval:
         assert "approved_by" in result.reason.lower()
 
 
+class TestReviewSkillCatalogGate:
+    """Catalog gate tests for the review skill (standard_operational)."""
+
+    def test_review_passes_catalog_gate(self):
+        """The review skill (standard_operational, approved, enabled) passes catalog gate."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.exposure import catalog_gate
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:review")
+        result = catalog_gate(entry)
+        assert result.passed is True
+
+    def test_review_approval_provenance(self):
+        """The review skill's catalog gate carries approval provenance."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.exposure import catalog_gate
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:review")
+        result = catalog_gate(entry)
+        assert "passes catalog gate" in result.reason
+        assert entry.approved_by is not None
+        assert entry.approved_at is not None
+
+
+class TestTwoGateExposureReview:
+    """Two-gate exposure tests for the review skill with team-scoped eligibility."""
+
+    def test_review_exposed_to_engineering_team_member(self):
+        """A dev_agent in the engineering team resolves review as exposed."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        policy = {
+            "teams": {
+                "engineering": {"allow": ["hr:review"], "deny": []},
+            },
+        }
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org="happyranch", team="engineering", agent="dev_agent"
+        )
+
+        exposed_ids = {s.skill.id for s in exposed}
+        assert "hr:review" in exposed_ids
+
+    def test_review_not_exposed_to_non_participant_agent(self):
+        """An agent NOT in the engineering team does NOT resolve review."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        policy = {
+            "teams": {
+                "engineering": {"allow": ["hr:review"], "deny": []},
+            },
+        }
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org="happyranch", team="cx", agent="support_agent"
+        )
+
+        exposed_ids = {s.skill.id for s in exposed}
+        assert "hr:review" not in exposed_ids
+
+    def test_review_exposed_to_product_lead_via_agent_scope(self):
+        """product_lead (a team manager but not in engineering) resolves review via agent scope."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        policy = {
+            "teams": {
+                "engineering": {"allow": ["hr:review"], "deny": []},
+            },
+            "agents": {
+                "product_lead": {"allow": ["hr:review"], "deny": []},
+            },
+        }
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org="happyranch", team="product", agent="product_lead"
+        )
+
+        exposed_ids = {s.skill.id for s in exposed}
+        assert "hr:review" in exposed_ids
+
+    def test_review_not_exposed_to_org_wide_non_participant(self):
+        """An org-wide agent with no explicit allow does NOT resolve review."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        policy = {
+            "teams": {
+                "engineering": {"allow": ["hr:review"], "deny": []},
+            },
+        }
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org="happyranch", team="marketing", agent="content_creator"
+        )
+
+        exposed_ids = {s.skill.id for s in exposed}
+        assert "hr:review" not in exposed_ids
+
+    def test_review_not_exposed_with_no_policy_at_all(self):
+        """Without any eligibility policy, review is NOT exposed (empty allow union)."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        resolver = EligibilityResolver({})
+        exposed = resolve_exposed_skills(
+            registry, resolver, org="happyranch", team="engineering", agent="dev_agent"
+        )
+
+        exposed_ids = {s.skill.id for s in exposed}
+        assert "hr:review" not in exposed_ids
+
+    def test_review_exposed_with_provenance(self):
+        """Exposed review carries correct eligibility provenance."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        policy = {
+            "teams": {
+                "engineering": {"allow": ["hr:review"], "deny": []},
+            },
+        }
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org="happyranch", team="engineering", agent="dev_agent"
+        )
+
+        for s in exposed:
+            if s.skill.id == "hr:review":
+                assert s.catalog_approved is True
+                assert len(s.allowed_by) > 0
+                assert any(r.scope == "team" and r.id == "engineering" for r in s.allowed_by)
+                assert len(s.denied_by) == 0
+
+
+class TestReviewSkillNotInSystemContracts:
+    """Verify review is NOT a system contract (it's standard_operational, managed catalog)."""
+
+    def test_review_not_in_system_contracts_list(self):
+        """review does not appear in the system_contracts tuple."""
+        from runtime.skills.system_contracts import list_system_contracts
+
+        contracts = list_system_contracts()
+        ids = {sc.id for sc in contracts}
+        assert "review" not in ids
+        # The 5 system contracts remain intact
+        assert "start-task" in ids
+        assert "jobs" in ids
+        assert "make-worktree" in ids
+        assert "thread" in ids
+        assert "dream" in ids
+
+
 class TestTwoGateExposure:
     """Acceptance criterion 6: a skill must pass BOTH gates to be exposed."""
 
