@@ -17,15 +17,14 @@ interface Props {
 }
 
 export function ResolveEscalationDialog({ taskId, onClose }: Props): JSX.Element {
-  const [decision, setDecision] = useState<'approve' | 'reject'>('approve');
   const [rationale, setRationale] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const resolve = useResolveEscalation(taskId);
+  const resolveContinue = useResolveEscalation(taskId);
 
-  const onSubmit = async () => {
+  const onContinue = async () => {
     setError(null);
     try {
-      await resolve.mutateAsync({ decision, rationale });
+      await resolveContinue.mutateAsync({ decision: 'continue', rationale });
       onClose();
     } catch (e: unknown) {
       const code = (e as { code?: string }).code;
@@ -33,45 +32,39 @@ export function ResolveEscalationDialog({ taskId, onClose }: Props): JSX.Element
     }
   };
 
+  const onCancel = async () => {
+    setError(null);
+    try {
+      await resolveContinue.mutateAsync({ decision: 'cancel', rationale });
+      onClose();
+    } catch (e: unknown) {
+      const code = (e as { code?: string }).code;
+      setError(code ? (TASKS_ERROR_STRINGS[code] ?? code) : 'Resolve failed.');
+    }
+  };
+
+  const rationaleEmpty = rationale.trim() === '';
+
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Resolve escalation</DialogTitle>
         </DialogHeader>
-        <fieldset className="flex gap-4">
-          <label className="text-fg flex items-center gap-2">
-            <input
-              type="radio"
-              name="decision"
-              value="approve"
-              checked={decision === 'approve'}
-              onChange={() => setDecision('approve')}
-            />
-            Approve
-          </label>
-          <label className="text-fg flex items-center gap-2">
-            <input
-              type="radio"
-              name="decision"
-              value="reject"
-              checked={decision === 'reject'}
-              onChange={() => setDecision('reject')}
-            />
-            Reject
-          </label>
-        </fieldset>
         <Textarea
           value={rationale}
           onChange={(e) => setRationale(e.target.value)}
           rows={4}
-          placeholder="Rationale (optional)"
+          placeholder="Rationale (required for continue)"
         />
         {error && <p className="text-danger text-sm">{error}</p>}
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button disabled={resolve.isPending} onClick={onSubmit}>
-            {resolve.isPending ? 'Resolving…' : 'Resolve'}
+          <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+          <Button
+            disabled={rationaleEmpty || resolveContinue.isPending}
+            onClick={onContinue}
+          >
+            {resolveContinue.isPending ? 'Continuing…' : 'Continue'}
           </Button>
         </DialogFooter>
       </DialogContent>

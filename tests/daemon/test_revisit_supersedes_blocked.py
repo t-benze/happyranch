@@ -163,7 +163,7 @@ async def test_revisit_completed_predecessor_is_not_superseded(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_manual_resolve_escalation_approve_does_not_supersede(tmp_path: Path):
-    """Maker-checker negative: the founder's manual `resolve-escalation approve`
+    """Maker-checker negative: the founder's manual `resolve-escalation continue`
     is a DISTINCT path that re-runs the work (→ PENDING). It must never produce
     RESOLVED_SUPERSEDED — only a human-authorized continuation does that."""
     from runtime.daemon.routes.tasks import resolve_escalation_in_process
@@ -176,7 +176,7 @@ async def test_manual_resolve_escalation_approve_does_not_supersede(tmp_path: Pa
     db.list_open_notifications_for_task = MagicMock(return_value=[])
 
     new_status = await resolve_escalation_in_process(
-        org, state, task_id="TASK-1", decision="approve", rationale="ship it",
+        org, state, task_id="TASK-1", decision="continue", rationale="ship it",
     )
     assert new_status == "pending"
     assert db.get_task("TASK-1").status == TaskStatus.PENDING

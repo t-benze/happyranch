@@ -128,8 +128,8 @@ describe('Tasks write path', () => {
     expect(cancelBody).toEqual({ rationale: '' });
   });
 
-  test('resolves escalation with blank rationale', async () => {
-    // THR-046: approve/reject with blank rationale is allowed.
+  test('resolves escalation with continue and rationale', async () => {
+    // THR-075: continue requires non-empty rationale; cancel sends cancel.
     const escalatedTask = { ...TASK, status: 'escalated', block_kind: null };
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
@@ -181,14 +181,23 @@ describe('Tasks write path', () => {
     await screen.findByRole('button', { name: /Resolve…/ });
     await user.click(screen.getByRole('button', { name: /Resolve…/ }));
 
-    // The ResolveEscalationDialog is open. Submit without typing rationale.
-    await user.click(screen.getByRole('button', { name: /^Resolve$/ }));
+    // The ResolveEscalationDialog is open. Continue should be disabled when
+    // rationale textarea is empty.
+    const continueBtn = screen.getByRole('button', { name: /^Continue$/ });
+    expect(continueBtn).toBeDisabled();
+
+    // Type rationale.
+    await user.type(screen.getByPlaceholderText(/Rationale/), 'go ahead');
+    expect(continueBtn).not.toBeDisabled();
+
+    // Submit Continue.
+    await user.click(continueBtn);
 
     // Dialog should close after successful mutation
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: /^Resolve$/ })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^Continue$/ })).toBeNull();
     });
 
-    expect(resolveBody).toEqual({ decision: 'approve', rationale: '' });
+    expect(resolveBody).toEqual({ decision: 'continue', rationale: 'go ahead' });
   });
 });
