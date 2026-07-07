@@ -30,7 +30,19 @@ from runtime.orchestrator.workspace_adapters import (
 
 
 class TestRefreshSessionSkills:
-    """Prove refresh_session_skills re-copies from source on every call."""
+    """Prove refresh_session_skills re-copies from source on every call.
+
+    The Phase 4 cutover gates the wholesale dump behind _WHOLESALE_DUMP_ENABLED
+    (default OFF). These tests re-enable it via monkeypatch so they continue
+    to verify the wholesale-dump path independently of the cutover."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_wholesale_dump(self, monkeypatch) -> None:
+        """Re-enable the wholesale dump for these refresh_session_skills tests."""
+        monkeypatch.setattr(
+            "runtime.orchestrator.workspace_adapters._WHOLESALE_DUMP_ENABLED",
+            True,
+        )
 
     def test_refresh_copies_skills_to_both_targets(
         self, test_settings: Settings, tmp_path: Path,
@@ -532,6 +544,14 @@ class TestProtocolDocManifestInPrompts:
 class TestInjectSystemContracts:
     """Prove inject_system_contracts correctly injects context-appropriate
     system contracts alongside the wholesale refresh_session_skills dump."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_wholesale_dump(self, monkeypatch) -> None:
+        """Re-enable the wholesale dump for idempotent test with refresh_session_skills."""
+        monkeypatch.setattr(
+            "runtime.orchestrator.workspace_adapters._WHOLESALE_DUMP_ENABLED",
+            True,
+        )
 
     def test_task_context_injects_correct_contracts(
         self, test_settings: Settings, tmp_path: Path,

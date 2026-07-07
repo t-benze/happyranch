@@ -81,6 +81,16 @@ def _copy_skill_file(src: Path, dst: Path, *, slug: str) -> None:
         shutil.copy2(src, dst)
 
 
+# ── Phase-4 cutover flag: reversible gate on the wholesale protocol/skills/ dump ─
+#
+# Default OFF post-cutover — the wholesale copy is DISABLED by default.
+# Set True to re-enable the legacy safety-net dump without a code revert
+# (useful for rollback if the explicit injection paths prove incomplete).
+# The contract-completeness guard test in test_skill_cutover_completeness.py
+# runs with this flag OFF and must pass green before the cutover is accepted.
+_WHOLESALE_DUMP_ENABLED: bool = False
+
+
 def refresh_session_skills(
     workspace: Path, settings: Settings, *, slug: str,
 ) -> None:
@@ -94,7 +104,13 @@ def refresh_session_skills(
 
     Reuses ``_copy_skills_tree`` (the same logic that ``ensure_workspace_ready``
     calls). The source is always the bundled ``_resolve_skills_src(settings)``.
+
+    **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default OFF).
+    When OFF this function is a no-op — skill delivery is handled exclusively by
+    ``inject_system_contracts`` and ``inject_managed_skills``.
     """
+    if not _WHOLESALE_DUMP_ENABLED:
+        return
     src = _resolve_skills_src(settings)
     _copy_skills_tree(src, workspace / ".claude" / "skills", slug=slug)
     _copy_skills_tree(src, workspace / ".agents" / "skills", slug=slug)
@@ -156,6 +172,92 @@ def inject_system_contracts(
         _copy_skills_tree(
             src_dir,
             workspace / ".agents" / "skills" / contract.id,
+            slug=slug,
+        )
+
+
+def inject_managed_skills(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    agent_name: str,
+    team: str,
+    skills_root: Path,
+) -> None:
+    """Inject managed-catalog skills into the workspace based on the
+    runtime-managed skill policy (two-gate model).
+
+    This is the injection path for skills that live in the managed catalog
+    (``runtime/skills/<id>/``) — the counterpart to ``inject_system_contracts``
+    for system contracts. Together they replace the wholesale
+    ``refresh_session_skills`` dump in Phase 4.
+
+    Resolution:
+    1. Load the SkillRegistry from ``skills_root``.
+    2. Load the eligibility policy from ``<project_root>/org/config.yaml``.
+    3. Resolve exposed skills via ``resolve_exposed_skills`` (both gates).
+    4. Copy each exposed skill's package from the managed catalog into
+       ``.claude/skills/<id>/`` and ``.agents/skills/<id>/``.
+
+    **Fail-closed:** unapproved, pending_review, rejected, deprecated,
+    disabled, or ineligible skills are NOT injected. High-impact policy
+    skills with missing or mismatched version approval are NOT injected.
+
+    **Visibility only — NO capability change.** Skills grant no tools,
+    credentials, network access, filesystem access, sandbox policy, or
+    permission-map/allow-rule/auth changes.
+
+    Args:
+        workspace: agent workspace root (receives ``.claude/skills/`` etc.)
+        settings: project Settings (for org slug substitution)
+        slug: org slug for ``{ORG_SLUG}`` substitution in .md files
+        agent_name: agent to resolve eligibility for
+        team: agent's team name (e.g. "engineering", "product", "consultant")
+        skills_root: directory containing managed-catalog skill packages
+    """
+    from runtime.skills.registry import SkillRegistry
+    from runtime.skills.resolver import EligibilityResolver
+    from runtime.skills.exposure import resolve_exposed_skills
+
+    if not skills_root.is_dir():
+        return
+
+    registry = SkillRegistry(skills_root=skills_root)
+    if not registry.list_all():
+        return
+
+    # Load eligibility policy from org config YAML
+    policy: dict = {}
+    config_path = settings.project_root / "org" / "config.yaml"
+    if config_path.is_file():
+        import yaml
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                policy = raw.get("skills", {})
+        except (yaml.YAMLError, OSError):
+            pass
+
+    resolver = EligibilityResolver(policy)
+    exposed = resolve_exposed_skills(
+        registry, resolver, org=slug, team=team, agent=agent_name,
+    )
+
+    for es in exposed:
+        skill_id_slug = es.skill.slug
+        # The managed-catalog package lives at <skills_root>/<slug>/
+        src_dir = skills_root / skill_id_slug
+        if not src_dir.is_dir():
+            continue
+        _copy_skills_tree(
+            src_dir,
+            workspace / ".claude" / "skills" / skill_id_slug,
+            slug=slug,
+        )
+        _copy_skills_tree(
+            src_dir,
+            workspace / ".agents" / "skills" / skill_id_slug,
             slug=slug,
         )
 

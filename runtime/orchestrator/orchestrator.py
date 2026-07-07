@@ -41,6 +41,7 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
+    inject_managed_skills,
     inject_system_contracts,
     refresh_session_skills,
 )
@@ -571,6 +572,25 @@ class Orchestrator:
         # becomes the sole path in Phase 4.
         inject_system_contracts(
             workspace, self._settings, slug=self._slug, context="task",
+        )
+
+        # Managed-catalog skill injection (THR-055 Phase 4).
+        # Resolves the two-gated catalog + eligibility policy and injects
+        # managed skills (review, manage-agent, manage-repo) into the
+        # workspace alongside system contracts.
+        try:
+            from runtime.orchestrator.prompt_loader import load_agent
+            agent_def = load_agent(self._paths, agent_name)
+            team = agent_def.team if agent_def else "engineering"
+        except Exception:
+            team = "engineering"
+        skills_root = self._settings.project_root / "runtime" / "skills"
+        inject_managed_skills(
+            workspace, self._settings,
+            slug=self._slug,
+            agent_name=agent_name,
+            team=team,
+            skills_root=skills_root,
         )
 
         # Protocol doc manifest — bundled-path one-liner per doc (THR-070).

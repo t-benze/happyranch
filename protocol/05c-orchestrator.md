@@ -479,7 +479,7 @@ they do not modify ``resolve_managed_skills_index``, ``render_compact_skill_inde
 the permission model, executor skill-load paths, or the SQLite schema. No new
 daemon routes are added.
 
-### 4.7 System-Contract Injection (THR-055 Phase 1)
+### 4.7 System-Contract Injection (THR-055 Phase 1 + Phase 4)
 
 System-contract skills — ``start-task``, ``jobs``, ``make-worktree``, ``thread``,
 ``dream`` — are mandatory operating-contract skills injected by the runtime based
@@ -488,11 +488,18 @@ on session/context type. They are defined in the single-source-of-truth module
 catalog (they are NOT displayed by ``skills catalog list`` and are never
 manager-toggleable).
 
-**Injection model.** On EVERY session creation, ``inject_system_contracts`` runs
-ALONGSIDE the existing ``refresh_session_skills`` wholesale dump (see §4.6).
-In Phase 1 the wholesale dump still copies all 8 skills; the explicit injection
-path is additive and will become the sole path in Phase 4 when the wholesale dump
-is removed.
+**Injection model (Phase 4 — CUT OVER).** On EVERY session creation,
+``inject_system_contracts`` and ``inject_managed_skills`` (see §4.10) are the
+SOLE skill-injection paths. The legacy ``refresh_session_skills`` wholesale dump
+is DISABLED by default (gated behind ``_WHOLESALE_DUMP_ENABLED = False`` in
+``workspace_adapters.py`` — re-enable by setting to ``True`` for rollback without
+a code revert). The explicit injection paths deliver the COMPLETE required skill
+set (system contracts + managed catalog) without the wholesale copy, as proven by
+the contract-completeness guard test in ``test_skill_cutover_completeness.py``.
+
+**Phase 1 (historical).** The initial deployment ran ``inject_system_contracts``
+ADDITIVELY alongside the wholesale dump. This was the safety net proved correct
+in the guard test, then removed in Phase 4.
 
 **Context-exposure predicates** (``SessionContext`` enum):
 
@@ -519,7 +526,7 @@ a distinct "System Contracts (runtime-injected)" section separate from managed
 catalog skills. The optional ``--context`` flag filters the display by session
 context; ``--workspace`` enables the repo check.
 
-**Fences.** System-contract injection is additive only in Phase 1. It does not:
+**Fences.** System-contract injection does not:
 - Grant tools, credentials, or capabilities (skills are permission-inert)
 - Modify the managed catalog, registry, or eligibility resolver
 - Require a SQLite migration (file/YAML-backed only)
@@ -639,13 +646,86 @@ change gated on a completeness test proving catalog resolution delivers the
 full required set. Phase 3 is ADDITIVE only — the managed-catalog entries are
 registered and eligibility is scoped; the wholesale dump is untouched.
 
+**Phase-4 cutover (COMPLETED).** The ``protocol/skills/`` wholesale dump is
+disabled (``_WHOLESALE_DUMP_ENABLED = False``). The 8 ``protocol/skills/``
+directories remain on disk as a packaged safety net (re-enable with the flag)
+but are no longer copied into workspaces. The ``SKILL.md`` source of truth
+for the 3 managed-catalog skills lives in ``runtime/skills/<id>/``.
+
 **Fences.** Phase 3 does not:
 - Grant tools, credentials, or capabilities (manage-agent/manage-repo command
   access remains in allow_rules / daemon auth per the existing permission model)
-- Physically delete ``manage-agent`` or ``manage-repo`` from ``protocol/skills/``
-  (Phase 4)
 - Require a SQLite migration (file/YAML-backed only)
 - Add new daemon routes
 - Change the existing permission model or auth
 - Add a web admin UI
 - Record any founder approval for the version (maker-checker — founder action only)
+
+### 4.10 Phase-4 Cutover — Managed-Skill Workspace Injection (THR-055 Phase 4)
+
+The Phase-4 cutover completes the migration by STOPPING the wholesale
+``protocol/skills/`` dump and delivering skills EXCLUSIVELY through:
+1. ``inject_system_contracts`` — context-aware system-contract injection (§4.7)
+2. ``inject_managed_skills`` — policy-resolved managed-catalog injection (this section)
+
+**Injection model.** On EVERY session creation (task/subtask, thread reply,
+wake, dream), ``inject_managed_skills`` resolves the two-gated catalog +
+eligibility policy for the session's (agent, team) and copies each EXPOSED
+managed skill from ``runtime/skills/<id>/`` into ``.claude/skills/<id>/``
+and ``.agents/skills/<id>/``.
+
+**Resolution flow:**
+1. Load ``SkillRegistry`` from ``<project_root>/runtime/skills/``.
+2. Load eligibility policy from ``<project_root>/org/config.yaml``
+   (``skills`` section).
+3. Resolve exposed skills via ``resolve_exposed_skills`` (both gates:
+   catalog gate + eligibility gate).
+4. Copy each exposed skill's package into the workspace skill dirs.
+
+**Context-exposure rules:** managed skills are context-AGNOSTIC — ``review``,
+``manage-agent``, and ``manage-repo`` are injected into ALL session types
+where the agent is eligible ($4.1 two-gate model). System contracts remain
+context-aware ($4.7).
+
+**Fail-closed.** Unapproved, ``pending_review``, rejected, deprecated,
+disabled, or ineligible skills are NOT injected. ``high_impact_policy``
+skills with missing or mismatched ``approved_version`` are NOT injected.
+The catalog gate is independent of the eligibility gate — both must pass.
+
+**Reversible gate.** The wholesale dump is disabled by default
+(``_WHOLESALE_DUMP_ENABLED = False`` in ``workspace_adapters.py``). Setting
+the flag to ``True`` re-enables the legacy dump without a code revert.
+
+The ``protocol/skills/`` directories remain on disk as packaged source
+material for the system-contract injection path and as a reversion safety
+net. They are NOT deleted — only the copy-into-workspace step is gated.
+
+**Coverage.** The contract-completeness guard test
+(``test_skill_cutover_completeness.py``) proves that every agent (7) × every
+session context (4) × every repo state (2) = 56 combinations receive the
+complete required set without the wholesale dump. The test asserts:
+- System contracts are context-correct per §4.7 predicates.
+- ``review`` is injected for engineering team + product_lead.
+- ``manage-agent`` / ``manage-repo`` are fail-closed for ALL agents
+  (``pending_review`` → catalog gate blocked).
+- ``dream`` is excluded from non-dream contexts.
+- ``make-worktree`` is repo-gated.
+
+**Session-path coverage.** ``inject_managed_skills`` is wired into all 4
+session-creation callers:
+1. ``Orchestrator._run_agent`` (task/subtask) — resolves team via
+   ``load_agent``.
+2. ``thread_runner.run_invocation`` (thread reply/bootstrap) — resolves
+   team from ``ThreadParticipant`` record.
+3. ``wake_runner.run_wake`` (working-hours wake) — resolves team from
+   ``agent_def``.
+4. ``dream_runner.run_dream`` (private dream) — resolves team via
+   ``load_agent``.
+
+**Fences.** Phase 4 does not:
+- Grant tools, credentials, or capabilities (skills are permission-inert)
+- Modify the permission model, auth, allow_rules, or daemon authorization
+- Require a SQLite migration (file/YAML-backed only)
+- Add new daemon routes
+- Add a web admin UI
+- Delete ``protocol/skills/`` directories (reversible via flag)
