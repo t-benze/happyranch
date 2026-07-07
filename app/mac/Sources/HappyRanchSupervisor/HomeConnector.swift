@@ -155,6 +155,8 @@ public final class HomeConnector: @unchecked Sendable {
         }
 
         // When a tailnet self-IP is provided, verify the bindHost is a tailnet address
+        // AND that it matches the self-IP EXACTLY (FINDING B).
+        // A different 100.x address (e.g. another tailnet peer's IP) is REJECTED.
         if let tailnetIP = tailnetSelfIP {
             // Tailnet addresses are in the 100.64.0.0/10 range (CGNAT)
             let isTailnet = bindHost.hasPrefix("100.")
@@ -169,6 +171,21 @@ public final class HomeConnector: @unchecked Sendable {
                 self.state = .failed(
                     "HomeConnector bindHost \(bindHost) is not a tailnet address " +
                     "(expected 100.x.y.z); self-IP is \(tailnetIP)"
+                )
+                return
+            }
+            // Exact-match requirement: bindHost must equal the self-IP,
+            // not just any 100.x address on the tailnet.
+            guard bindHost == tailnetIP else {
+                self.bindHost = bindHost
+                self.bindPort = 0
+                self.daemonPort = 0
+                self.credentialProvider = credentialProvider
+                self.surfaceAllowList = surfaceAllowList
+                self.pairedDeviceStore = pairedDeviceStore
+                self.queue = queue
+                self.state = .failed(
+                    "HomeConnector bindHost \(bindHost) does not match tailnet self-IP \(tailnetIP)"
                 )
                 return
             }

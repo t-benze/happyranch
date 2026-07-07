@@ -1362,6 +1362,28 @@ struct HomeConnectorTests {
                 "Tailnet 100.x address should be accepted, got: \(connector.state)")
     }
 
+    @Test("bindHost validation: different 100.x address than tailnetSelfIP sets state to .failed")
+    func bindHostRejectsNonSelf100x() {
+        let credProvider = FakeCredentialProvider(token: "test-token")
+        let store = makePermissiveStub()
+
+        let connector = HomeConnector(
+            bindHost: "100.64.0.2",
+            bindPort: 8443,
+            daemonPort: 9876,
+            credentialProvider: credProvider,
+            pairedDeviceStore: store,
+            tailnetSelfIP: "100.64.0.1"
+        )
+
+        guard case .failed(let msg) = connector.state else {
+            #expect(Bool(false), "Expected .failed state for non-self 100.x address, got \(connector.state)")
+            return
+        }
+        #expect(msg.contains("not") || msg.contains("tailnet") || msg.contains("self") || msg.contains("100.64.0.2"),
+                "Error message should mention non-self rejection, got: \(msg)")
+    }
+
     @Test("bindHost validation: loopback is ACCEPTED when tailnetSelfIP is nil (test seam)")
     func bindHostAcceptsLoopbackWithoutTailnetIP() {
         let credProvider = FakeCredentialProvider(token: "test-token")

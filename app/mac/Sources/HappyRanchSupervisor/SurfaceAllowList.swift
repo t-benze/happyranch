@@ -79,6 +79,12 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/executors/register"),
             // Founder set-executor (CLI-only)
             ("PUT", "/agents/{agent_name}/executor"),
+            // Artifacts — agent-facing v1 (upload, list)
+            ("POST", "/artifacts"),
+            ("GET", "/artifacts"),
+            // Metrics — agent/CLI facing (operational metrics)
+            ("GET", "/metrics"),
+            ("GET", "/metrics/history"),
         ]
         for (method, path) in exactDenies {
             denied.append("\(method) \(path)")
@@ -109,6 +115,8 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/dreams/", "/complete"),
             // Work-hours wake spawn
             ("POST", "/work-hours/", "/spawn"),
+            // Artifacts — agent-facing download (GET /artifacts/{name})
+            ("GET", "/artifacts/", ""),
         ]
         segmentPatterns = segmentDenies
 
@@ -181,7 +189,9 @@ public struct SurfaceAllowList: Sendable {
             // 2. Segment-pattern deny (for template routes like /agents/*/memory)
             for pattern in deniedSegmentPatterns {
                 guard method == pattern.method else { continue }
-                if checkPath.contains(pattern.segment) && checkPath.contains(pattern.suffix) {
+                let segmentMatch = checkPath.contains(pattern.segment)
+                let suffixMatch = pattern.suffix.isEmpty || checkPath.contains(pattern.suffix)
+                if segmentMatch && suffixMatch {
                     return false
                 }
             }

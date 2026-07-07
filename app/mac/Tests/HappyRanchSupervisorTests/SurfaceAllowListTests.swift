@@ -180,10 +180,10 @@ struct SurfaceAllowListTests {
         #expect(policy.isAllowed(path: "/kb"))
     }
 
-    @Test("allows /artifacts — normal SPA surface")
-    func allowsArtifacts() {
+    @Test("denies /artifacts — excluded from remote surface (agent-facing v1)")
+    func deniesArtifacts() {
         let policy = SurfaceAllowList.default
-        #expect(policy.isAllowed(path: "/artifacts"))
+        #expect(!policy.isAllowed(path: "/artifacts"))
     }
 
     @Test("allows /jobs — normal SPA surface")
@@ -283,6 +283,13 @@ struct SurfaceAllowListTests {
         // Executor conformance + registration
         ("POST", "/executors/conformance-checkin"),
         ("POST", "/executors/register"),
+        // Artifacts — agent-facing v1 (upload, list, download)
+        ("POST", "/artifacts"),
+        ("GET", "/artifacts"),
+        ("GET", "/artifacts/report.pdf"),
+        // Metrics — agent/CLI facing (operational metrics)
+        ("GET", "/metrics"),
+        ("GET", "/metrics/history"),
     ]
 
     @Test("each EXCLUDED_PATHS route is denied (prefixed /api/v1 form, concrete paths)")
@@ -329,5 +336,73 @@ struct SurfaceAllowListTests {
         #expect(!policy.isAllowed(method: "POST", path: "/auth/registration-token", rawPath: "/auth/registration-token"))
         #expect(!policy.isAllowed(method: "POST", path: "/auth/registration-token", rawPath: "/api/v1/auth/registration-token"))
         #expect(!policy.isAllowed(method: "GET", path: "/auth/registration-token", rawPath: "/api/v1/auth/registration-token"))
+    }
+
+    // MARK: - FINDING A: artifacts + metrics deny, prefixed & unprefixed regression
+
+    @Test("denies GET /artifacts (unprefixed)")
+    func deniesArtifactsGetUnprefixed() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "GET", path: "/artifacts", rawPath: "/artifacts"))
+    }
+
+    @Test("denies GET /artifacts (prefixed /api/v1/orgs/{slug} form)")
+    func deniesArtifactsGetPrefixed() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "GET", path: "/artifacts", rawPath: "/api/v1/orgs/happyranch/artifacts"))
+    }
+
+    @Test("denies POST /artifacts (unprefixed)")
+    func deniesArtifactsPostUnprefixed() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/artifacts", rawPath: "/artifacts"))
+    }
+
+    @Test("denies POST /artifacts (prefixed /api/v1/orgs/{slug} form)")
+    func deniesArtifactsPostPrefixed() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "POST", path: "/artifacts", rawPath: "/api/v1/orgs/happyranch/artifacts"))
+    }
+
+    @Test("denies GET /artifacts/{name} (unprefixed concrete path)")
+    func deniesArtifactsGetNameUnprefixed() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "GET", path: "/artifacts/report.pdf", rawPath: "/artifacts/report.pdf"))
+    }
+
+    @Test("denies GET /artifacts/{name} (prefixed /api/v1/orgs/{slug} form)")
+    func deniesArtifactsGetNamePrefixed() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "GET", path: "/artifacts/report.pdf", rawPath: "/api/v1/orgs/happyranch/artifacts/report.pdf"))
+    }
+
+    @Test("denies GET /metrics (unprefixed)")
+    func deniesMetricsGetUnprefixed() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "GET", path: "/metrics", rawPath: "/metrics"))
+    }
+
+    @Test("denies GET /metrics (prefixed /api/v1 form — no orgs slug)")
+    func deniesMetricsGetPrefixed() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "GET", path: "/metrics", rawPath: "/api/v1/metrics"))
+    }
+
+    @Test("denies GET /metrics/history (unprefixed)")
+    func deniesMetricsHistoryGetUnprefixed() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "GET", path: "/metrics/history", rawPath: "/metrics/history"))
+    }
+
+    @Test("denies GET /metrics/history (prefixed /api/v1 form)")
+    func deniesMetricsHistoryGetPrefixed() {
+        let policy = SurfaceAllowList.default
+        #expect(!policy.isAllowed(method: "GET", path: "/metrics/history", rawPath: "/api/v1/metrics/history"))
+    }
+
+    @Test("allows DELETE /artifacts/{name} — browser-facing delete route")
+    func allowsArtifactsDelete() {
+        let policy = SurfaceAllowList.default
+        #expect(policy.isAllowed(method: "DELETE", path: "/artifacts/report.pdf", rawPath: "/api/v1/orgs/happyranch/artifacts/report.pdf"))
     }
 }
