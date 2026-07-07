@@ -50,7 +50,9 @@ def _copy_skills_tree(src: Path, dst: Path, *, slug: str) -> None:
     dst.mkdir(parents=True, exist_ok=True)
     for child in src.iterdir():
         target = dst / child.name
-        if target.exists():
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.is_dir():
             shutil.rmtree(target)
         if child.is_dir():
             _copy_skill_dir(child, target, slug=slug)
@@ -96,6 +98,66 @@ def refresh_session_skills(
     src = _resolve_skills_src(settings)
     _copy_skills_tree(src, workspace / ".claude" / "skills", slug=slug)
     _copy_skills_tree(src, workspace / ".agents" / "skills", slug=slug)
+
+
+def inject_system_contracts(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    context: str,
+) -> None:
+    """Inject system-contract skills into the workspace based on session context.
+
+    ADDITIVE alongside ``refresh_session_skills`` (the wholesale dump). In
+    Phase 1 the wholesale dump still copies all 8 skills; this function adds
+    an EXPLICIT, context-aware injection path that will become the sole
+    injection path in Phase 4 when the wholesale dump is removed.
+
+    Each system contract is re-copied from ``protocol/skills/<id>/`` into
+    both ``.claude/skills/`` and ``.agents/skills/``. The contracts injected
+    are determined by session context:
+
+    - start-task: TASK, WAKE sessions
+    - jobs: all sessions
+    - make-worktree: any session where the workspace has repos
+    - thread: TASK, THREAD, WAKE sessions
+    - dream: DREAM sessions only
+
+    ``context`` is a string matching ``SessionContext`` ("task", "thread",
+    "wake", "dream"). Unknown values fall through to no-op (graceful
+    degradation).
+    """
+    from runtime.skills.system_contracts import (
+        SessionContext,
+        resolve_system_contracts_for_session,
+    )
+
+    try:
+        ctx = SessionContext(context)
+    except ValueError:
+        # Unknown context — no-op, graceful degradation
+        return
+
+    contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
+    src_root = _resolve_skills_src(settings)
+
+    for contract in contracts:
+        src_dir = src_root / contract.id
+        if not src_dir.is_dir():
+            continue
+        # _copy_skills_tree copies the CONTENTS of src_dir into the
+        # destination, so we target a subdirectory named after the contract.
+        _copy_skills_tree(
+            src_dir,
+            workspace / ".claude" / "skills" / contract.id,
+            slug=slug,
+        )
+        _copy_skills_tree(
+            src_dir,
+            workspace / ".agents" / "skills" / contract.id,
+            slug=slug,
+        )
 
 
 def _memory_bootstrap_section(workspace: Path) -> list[str]:

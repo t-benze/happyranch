@@ -32,7 +32,10 @@ from runtime.orchestrator.org_config import (
     resolve_org_timezone_display,
     resolve_protocol_doc_manifest,
 )
-from runtime.orchestrator.workspace_adapters import refresh_session_skills
+from runtime.orchestrator.workspace_adapters import (
+    inject_system_contracts,
+    refresh_session_skills,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -527,6 +530,14 @@ async def run_invocation(
     # Refresh on-disk skill bodies on EVERY session (THR-070).
     try:
         refresh_session_skills(workspace, settings, slug=org_state.slug)
+    except Exception:
+        pass
+
+    # Explicit context-aware system-contract injection (THR-055 Phase 1).
+    try:
+        inject_system_contracts(
+            workspace, settings, slug=org_state.slug, context="thread",
+        )
     except Exception:
         pass
 
