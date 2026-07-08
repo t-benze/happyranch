@@ -503,12 +503,16 @@ public final class HomeConnector: @unchecked Sendable {
     private func injectCredential(into request: String, credential: String) -> String {
         let authHeader = "Authorization: Bearer \(credential)\r\n"
 
-        // Find the end of headers (first \r\n\r\n)
+        // Find the end of headers (first \r\n\r\n).
+        // Insert at lowerBound + 2 (past the first \r\n of the separator,
+        // which terminates the last header line) so the new header lands on
+        // its own line, not merged into the preceding header.
         if let headerEndRange = request.range(of: "\r\n\r\n") {
             var modified = request
+            let insertPos = request.index(headerEndRange.lowerBound, offsetBy: 2)
             modified.insert(
                 contentsOf: authHeader,
-                at: headerEndRange.lowerBound
+                at: insertPos
             )
             return modified
         }
