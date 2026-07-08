@@ -31,22 +31,7 @@ import { PendingEnrollmentsTab } from './PendingEnrollmentsTab';
 import { AgentDetailPane } from './AgentDetailPane';
 import type { AgentSummary } from '@/lib/api/types';
 import { AddAgentDialog } from './AddAgentDialog';
-
-/**
- * AGENTS-02: avatar-initial chip text, derived CLIENT-SIDE from the agent
- * name (no backend field). A two-token name (split on `_`, `-`, or space) →
- * first letter of each of the first two parts (engineering_manager → 'EM',
- * code_reviewer → 'CR'); a single-token name → its first two letters
- * (consultant → 'CO'). No per-agent hardcoded map — names are arbitrary.
- */
-function agentInitials(name: string): string {
-  const parts = name.split(/[_\s-]+/).filter(Boolean);
-  const letters =
-    parts.length >= 2
-      ? parts[0][0] + parts[1][0]
-      : (parts[0] ?? name).slice(0, 2);
-  return letters.toUpperCase();
-}
+import { AgentAvatar } from './AgentAvatar';
 
 /**
  * AGENTS-02: capitalized role label for the roster meta line. The
@@ -206,24 +191,19 @@ export function AgentsPage(): JSX.Element {
                           <div className="flex items-start gap-2.5">
                             {/* AGENTS-02: role-colored avatar-initial chip,
                                 mirroring the existing led-dot role logic. */}
-                            <span
-                              aria-hidden="true"
-                              className={`text-text-inverse flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-semibold ${
-                                a.role === 'manager'
-                                  ? 'bg-agent-manager'
-                                  : 'bg-agent-worker'
-                              }`}
-                            >
-                              {agentInitials(a.name)}
-                            </span>
+                            <AgentAvatar name={a.name} role={a.role} size="sm" />
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
                                 <span className="font-display text-text-primary truncate text-sm font-medium">
                                   {a.name}
                                 </span>
+                                {/* AGENTS-04: role dot on the row's right edge
+                                    (Direction-A `a-agents`), not crowding the
+                                    name. Role-colored — never an active/idle
+                                    status the roster payload doesn't carry. */}
                                 <span
                                   aria-hidden="true"
-                                  className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                                  className={`ml-auto inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
                                     a.role === 'manager'
                                       ? 'bg-agent-manager'
                                       : 'bg-agent-worker'
