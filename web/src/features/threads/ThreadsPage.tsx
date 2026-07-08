@@ -718,6 +718,7 @@ function DetailColumn({
               <ul className="space-y-1.5">
                 {threadTasks.data.map((t) => (
                   <li key={t.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <StatusBadge status={t.status} />
                     {slug ? (
                       <Link
                         to={`/orgs/${slug}/tasks/${t.id}`}
@@ -728,7 +729,6 @@ function DetailColumn({
                     ) : (
                       <span className="text-text-secondary font-mono text-xs">{t.id}</span>
                     )}
-                    <StatusBadge status={t.status} />
                   </li>
                 ))}
               </ul>

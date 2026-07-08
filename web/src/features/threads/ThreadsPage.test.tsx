@@ -1285,9 +1285,21 @@ describe('ThreadsPage — Tasks from this thread panel (THR-061 seq79)', () => {
     expect(link900).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-900`);
 
     // seq79: each row now carries the task's REAL status as a pill alongside
-    // the id (in_progress / completed here come straight from the payload).
-    expect(await screen.findByText('in_progress')).toBeInTheDocument();
-    expect(await screen.findByText('completed')).toBeInTheDocument();
+    // the id (in_progress / completed here come straight from the payload),
+    // and the pill must render BEFORE the id within the row (STATUS-PILL + ID).
+    const row901 = link901.closest('li') as HTMLElement;
+    const pill901 = within(row901).getByText('in_progress');
+    expect(
+      pill901.compareDocumentPosition(link901) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const row900 = link900.closest('li') as HTMLElement;
+    const pill900 = within(row900).getByText('completed');
+    expect(
+      pill900.compareDocumentPosition(link900) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
 
     // The removed brief/title and agent-name lines must NOT appear.
     expect(
