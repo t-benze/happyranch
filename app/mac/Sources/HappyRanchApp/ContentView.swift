@@ -55,7 +55,78 @@ struct ContentView: View {
 
     // MARK: - Placeholder
 
+    /// Whether this is the first launch (no role preference persisted yet).
+    private var isFirstLaunch: Bool {
+        appDelegate.connectionRolePreference == nil
+    }
+
+    @ViewBuilder
     private var placeholderView: some View {
+        if isFirstLaunch {
+            roleSelectionView
+        } else {
+            normalPlaceholderView
+        }
+    }
+
+    /// First-launch welcome screen: user picks HOME (run daemon) or CLIENT (connect to remote).
+    private var roleSelectionView: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "desktopcomputer")
+                .font(.system(size: 48))
+                .foregroundColor(.secondary)
+
+            Text("Welcome to HappyRanch")
+                .font(.title)
+                .fontWeight(.semibold)
+
+            Text("How will you use this Mac?")
+                .font(.callout)
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 32) {
+                // HOME option
+                Button(action: {
+                    appDelegate.setRolePreference(.home)
+                }) {
+                    VStack(spacing: 8) {
+                        Image(systemName: "house.fill")
+                            .font(.system(size: 28))
+                        Text("Run Daemon Here")
+                            .font(.headline)
+                        Text("Host the HappyRanch runtime\non this machine")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(width: 180, height: 140)
+                }
+                .buttonStyle(.borderedProminent)
+
+                // CLIENT option
+                Button(action: {
+                    appDelegate.setRolePreference(.client)
+                }) {
+                    VStack(spacing: 8) {
+                        Image(systemName: "arrow.triangle.swap")
+                            .font(.system(size: 28))
+                        Text("Connect to Remote")
+                            .font(.headline)
+                        Text("Connect to a remote\nHappyRanch runtime")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(width: 180, height: 140)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Normal placeholder (after role has been selected).
+    private var normalPlaceholderView: some View {
         VStack(spacing: 16) {
             Image(systemName: "desktopcomputer")
                 .font(.system(size: 48))
@@ -67,34 +138,49 @@ struct ContentView: View {
             Text(appDelegate.stateText)
                 .foregroundColor(.secondary)
 
-            if appDelegate.supervisor.state == .notConfigured ||
-               appDelegate.supervisor.state == .stopped ||
-               appDelegate.supervisor.state == .crashed ||
-               appDelegate.supervisor.state == .stalePid ||
-               appDelegate.supervisor.state == .failed {
-                Button("Start Daemon") {
-                    appDelegate.startDaemon()
-                }
-                .buttonStyle(.borderedProminent)
-                .padding(.top, 8)
+            if appDelegate.connectionRole == .home {
+                // LOCAL daemon controls
+                daemonControls
             }
 
-            if appDelegate.supervisor.state == .externalRunning {
-                Text("External daemon detected — attach to view it")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
+            Divider()
+                .padding(.horizontal, 40)
 
-                Button("Probe & Connect") {
-                    if let port = appDelegate.supervisor.observedPort {
-                        Task { @MainActor in
-                            await appDelegate.probeAndLoad(port: port)
-                        }
-                    }
-                }
-                .buttonStyle(.bordered)
-            }
+            // A2 Remote connection surface (shown in both roles)
+            RemoteConnectionView()
+                .environmentObject(appDelegate)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var daemonControls: some View {
+        if appDelegate.supervisor.state == .notConfigured ||
+           appDelegate.supervisor.state == .stopped ||
+           appDelegate.supervisor.state == .crashed ||
+           appDelegate.supervisor.state == .stalePid ||
+           appDelegate.supervisor.state == .failed {
+            Button("Start Daemon") {
+                appDelegate.startDaemon()
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.top, 8)
+        }
+
+        if appDelegate.supervisor.state == .externalRunning {
+            Text("External daemon detected — attach to view it")
+                .font(.callout)
+                .foregroundColor(.secondary)
+
+            Button("Probe & Connect") {
+                if let port = appDelegate.supervisor.observedPort {
+                    Task { @MainActor in
+                        await appDelegate.probeAndLoad(port: port)
+                    }
+                }
+            }
+            .buttonStyle(.bordered)
+        }
     }
 
     // MARK: - Unhealthy / failed banner
