@@ -280,6 +280,28 @@ fan-out parents when all children are already terminal (same as
 single-delegation). The join context is built from persisted audit rows when
 the CAS winner processes the wake.
 
+#### Daemon restart recovery — pid-liveness probe (THR-079)
+
+On daemon restart, tasks that were `in_progress` with `block_kind IS NULL`
+(i.e., had a live executor subprocess) are NOT assumed dead. Instead, the
+sweep reads the persisted `executor_pid` (set at session start by the
+orchestrator's `_on_started` closure) and probes the OS with `os.kill(pid, 0)`:
+
+| Probe result | Action |
+|---|---|
+| pid ALIVE | **Leave alone** — session survived the restart; no reconcile. |
+| pid DEAD (`ProcessLookupError`) | **FAILED** with reason "session died on daemon restart — executor pid not alive". |
+| pid NULL or probe inconclusive (`PermissionError`, etc.) | **FAILED** with reason "session liveness undeterminable on daemon restart" (fail-closed default). |
+
+No auto-revisit is spawned for any of these outcomes — the founder receives
+a `daemon_restart_failure` audit row and decides whether to re-dispatch.
+Pre-migration rows (NULL `executor_pid`) are fail-closed on the first
+post-deploy restart (intended and acceptable).
+
+NOTE: `os.kill(pid, 0)` carries a pid-recycle caveat — a recycled pid could
+read as falsely-alive. A falsely-alive false-positive is acceptable relative
+to the risk of duplicate runs from a false-negative.
+
 #### Transitions
 
 ```

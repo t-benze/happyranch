@@ -59,8 +59,8 @@ def test_sweep_in_progress_to_failed(tmp_path: Path) -> None:
 
     t = db.get_task("T-1")
     assert t.status == TaskStatus.FAILED
-    assert t.note and "daemon_restart" in t.note
-    assert "infra fault" in (t.note or "")
+    # THR-079: null executor_pid → fail-closed with undeterminable liveness note.
+    assert t.note and "liveness undeterminable" in t.note
 
 
 def test_sweep_parked_delegated_with_all_children_terminal_reenqueues(tmp_path):
@@ -607,11 +607,10 @@ def test_thr064_parked_ancestor_skips_auto_revisit(tmp_path):
 
     _sweep_on_startup(db, queue, "test", orch)
 
-    # Child force-failed with the enriched restart note.
+    # Child force-failed (null executor_pid → fail-closed).
     chd = db.get_task("T-CHD")
     assert chd.status == TaskStatus.FAILED
-    assert "daemon_restart" in (chd.note or "")
-    assert "infra fault" in (chd.note or "")
+    assert "liveness undeterminable" in (chd.note or "")
 
     # Parent stays parked (bounded-wake), NOT cascade-failed.
     par = db.get_task("T-ROOT")
@@ -640,12 +639,10 @@ def test_thr064_parked_ancestor_skips_auto_revisit(tmp_path):
 
 
 def test_thr064_guardrail1_worker_root_still_auto_revisits(tmp_path):
-    """PRESERVATION GUARD (passes pre- AND post-fix — not red-first).
-
-    GUARDRAIL 1: a genuine parentless worker/leaf root subprocess death
-    (no parked non-terminal ancestor) STILL auto-revisits — proves the skip
-    is not over-scoped. This behavior existed pre-fix; the test is a
-    regression guard, not evidence of new behavior."""
+    """THR-079 UPDATE: a genuine parentless worker root subprocess death
+    (no parked non-terminal ancestor) is FAILED but NO LONGER auto-revisits.
+    The THR-079 pid-liveness probe supersedes the old auto-revisit approach.
+    A daemon_restart_failure audit row suffices; the founder decides."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     # A root task with NO parent and NO block_kind — a genuine worker root.
     db.insert_task(TaskRecord(
@@ -659,18 +656,18 @@ def test_thr064_guardrail1_worker_root_still_auto_revisits(tmp_path):
 
     _sweep_on_startup(db, queue, "test", orch)
 
-    # Killed task is failed.
+    # Killed task is failed (null executor_pid → fail-closed).
     t = db.get_task("T-WORKER")
     assert t.status == TaskStatus.FAILED
 
-    # Auto-revisit WAS spawned — no parked ancestor to suppress it.
+    # THR-079: NO auto-revisit twin — pid-liveness probe supersedes auto-revisit.
     revisits = [
         t for t in (db.get_task(tid)
                     for tid in db.get_nonterminal_task_ids())
         if t is not None and t.revisit_of_task_id == "T-WORKER"
     ]
-    assert len(revisits) == 1, (
-        f"guardrail-1: expected 1 auto-revisit for genuine worker root; "
+    assert len(revisits) == 0, (
+        f"THR-079: expected 0 auto-revisit twins (pid-liveness probe supersedes auto-revisit); "
         f"got {len(revisits)}"
     )
 
