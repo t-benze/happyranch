@@ -480,9 +480,14 @@ public final class ClientBridge: @unchecked Sendable {
     ) -> String {
         let credHeader = "X-HappyRanch-Device-Credential: \(credential)\r\n"
 
+        // Insert the credential header on its own line before the \r\n\r\n
+        // header/body separator.  We insert at lowerBound + 2 (past the first
+        // \r\n of the separator, which is the end of the last header line)
+        // to avoid merging into the preceding header.
         if let headerEndRange = request.range(of: "\r\n\r\n") {
             var modified = request
-            modified.insert(contentsOf: credHeader, at: headerEndRange.lowerBound)
+            let insertPos = request.index(headerEndRange.lowerBound, offsetBy: 2)
+            modified.insert(contentsOf: credHeader, at: insertPos)
             return modified
         }
 
@@ -502,6 +507,14 @@ public final class ClientBridge: @unchecked Sendable {
         let lines = request.components(separatedBy: "\r\n")
         let filteredLines = lines.filter { line in
             !line.lowercased().hasPrefix("authorization:")
+        }
+        // If nothing was filtered, return the original request unchanged.
+        // The split/join cycle adds extra \r\n (from trailing empty strings
+        // created by components(separatedBy:)), which corrupts the header/body
+        // boundary and causes subsequent header injection (e.g.
+        // injectDeviceCredential) to merge into the preceding header line.
+        if filteredLines.count == lines.count {
+            return request
         }
         return filteredLines.joined(separator: "\r\n")
     }
