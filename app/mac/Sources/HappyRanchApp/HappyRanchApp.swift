@@ -32,6 +32,12 @@ struct HappyRanchApp: App {
 
                 Divider()
 
+                Button("Show Remote Access…") {
+                    appDelegate.showRemoteAccess = true
+                }
+
+                Divider()
+
                 Button("Show Diagnostics…") {
                     appDelegate.showDiagnostics = true
                 }

@@ -45,6 +45,10 @@ struct ContentView: View {
         .sheet(isPresented: $appDelegate.showDiagnostics) {
             DiagnosticsView(diagnostics: appDelegate.diagnostics, supervisor: appDelegate.supervisor)
         }
+        .sheet(isPresented: $appDelegate.showRemoteAccess) {
+            RemoteAccessSheet()
+                .environmentObject(appDelegate)
+        }
         .navigationTitle(windowTitle)
     }
 
@@ -217,5 +221,32 @@ struct ContentView: View {
         )
         .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+}
+
+// MARK: - Remote Access sheet wrapper (TASK-2298)
+
+/// Sheet wrapper around RemoteConnectionView with a Done button for dismissal.
+/// Presented from the body-level .sheet in ContentView when showRemoteAccess
+/// is toggled — reachable in ALL app states (placeholder AND WebView).
+struct RemoteAccessSheet: View {
+    @EnvironmentObject var appDelegate: AppDelegate
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Button("Done") {
+                    appDelegate.showRemoteAccess = false
+                }
+                .keyboardShortcut(.escape, modifiers: [])
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+            }
+            Divider()
+            RemoteConnectionView()
+                .environmentObject(appDelegate)
+        }
+        .frame(minWidth: 500, minHeight: 400)
     }
 }
