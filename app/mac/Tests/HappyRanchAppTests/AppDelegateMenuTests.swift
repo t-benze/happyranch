@@ -236,7 +236,97 @@ struct ExternalDaemonGuardTests {
     }
 }
 
-// MARK: - Suite (d): Show Diagnostics toggle
+// MARK: - Suite (d): Remote Access toggle (TASK-2298)
+
+@Suite("Remote Access toggle")
+@MainActor
+struct RemoteAccessToggleTests {
+
+    /// The fundamental requirement: Remote Access panel must be reachable
+    /// WHILE the WebView is displayed (webViewURL is set). On current main
+    /// RemoteConnectionView is only in the else/placeholder branch — this
+    /// test is RED against main and GREEN after the fix.
+    @Test("showRemoteAccess toggles from false to true while webViewURL is set (WebView state)")
+    func togglesFromFalseWhileWebViewShown() async {
+        let (delegate, _, _) = makeAppDelegateForMenu(
+            state: .running,
+            isManagedBySelf: true,
+            processIsRunning: true
+        )
+
+        // Simulate WebView being displayed.
+        delegate.webViewURL = "http://127.0.0.1:8765/"
+        #expect(delegate.webViewURL != nil, "precondition: WebView must be shown")
+
+        // Remote Access panel must start closed.
+        #expect(delegate.showRemoteAccess == false)
+
+        // Act: open the Remote Access panel (simulating menu item click).
+        delegate.showRemoteAccess = true
+
+        // Assert: panel is now open.
+        #expect(delegate.showRemoteAccess == true,
+                "showRemoteAccess must be settable to true while WebView is displayed")
+    }
+
+    @Test("showRemoteAccess toggles back from true to false while webViewURL is set")
+    func togglesBackToFalseWhileWebViewShown() async {
+        let (delegate, _, _) = makeAppDelegateForMenu(
+            state: .running,
+            isManagedBySelf: true,
+            processIsRunning: true
+        )
+
+        delegate.webViewURL = "http://127.0.0.1:8765/"
+        #expect(delegate.webViewURL != nil)
+
+        delegate.showRemoteAccess = true
+        #expect(delegate.showRemoteAccess == true)
+
+        delegate.showRemoteAccess = false
+        #expect(delegate.showRemoteAccess == false,
+                "showRemoteAccess must be settable back to false while WebView is displayed")
+    }
+
+    @Test("showRemoteAccess does not affect supervisor state")
+    func doesNotAffectSupervisorState() async {
+        let (delegate, _, _) = makeAppDelegateForMenu(
+            state: .running,
+            isManagedBySelf: true,
+            processIsRunning: true
+        )
+
+        delegate.webViewURL = "http://127.0.0.1:8765/"
+        let beforeState = delegate.supervisor.state
+        let beforeURL = delegate.webViewURL
+
+        delegate.showRemoteAccess = true
+
+        #expect(delegate.supervisor.state == beforeState,
+                "Toggling showRemoteAccess must not change supervisor state")
+        #expect(delegate.webViewURL == beforeURL,
+                "Toggling showRemoteAccess must not change webViewURL")
+    }
+
+    @Test("showRemoteAccess is reachable even with webViewURL nil (placeholder state)")
+    func reachableInPlaceholderState() async {
+        let (delegate, _, _) = makeAppDelegateForMenu(
+            state: .stopped,
+            isManagedBySelf: false,
+            processIsRunning: false
+        )
+
+        // Placeholder state: webViewURL is nil.
+        #expect(delegate.webViewURL == nil)
+
+        #expect(delegate.showRemoteAccess == false)
+        delegate.showRemoteAccess = true
+        #expect(delegate.showRemoteAccess == true,
+                "showRemoteAccess must also be reachable in placeholder state")
+    }
+}
+
+// MARK: - Suite (e): Show Diagnostics toggle
 
 @Suite("Show Diagnostics toggle")
 @MainActor

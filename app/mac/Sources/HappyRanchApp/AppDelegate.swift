@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var webViewURL: String?
     @Published var stateText: String = DaemonState.notConfigured.description
     @Published var showDiagnostics = false
+    @Published var showRemoteAccess = false
 
     // MARK: - A2 Remote connection state
 
