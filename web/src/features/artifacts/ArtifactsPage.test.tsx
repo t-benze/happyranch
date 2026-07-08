@@ -429,4 +429,81 @@ describe('ArtifactsPage', () => {
       .map((h) => h.textContent);
     expect(titles).toEqual(['newer.md', 'older.md']);
   });
+
+  /* ------------------------------------------------------------------ */
+  /*  Folder tree + breadcrumb (THR-061 slice 8) — client-derived        */
+  /* ------------------------------------------------------------------ */
+
+  function stubFolderedArtifacts() {
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({
+          artifacts: [
+            { name: 'reports/code_reviewer-2026-06-15-notes.md', size_bytes: 1024, modified_at: '2026-06-15T00:00:00Z' },
+            { name: 'reports/qa/qa_engineer-2026-06-14-parity.md', size_bytes: 2048, modified_at: '2026-06-14T00:00:00Z' },
+            { name: 'release-checklist.md', size_bytes: 512, modified_at: '2026-06-16T00:00:00Z' },
+          ],
+        }),
+      ),
+    );
+  }
+
+  test('groups foldered names into a subfolder row + shows only root files at the root', async () => {
+    seedToken();
+    stubBaseHandlers();
+    stubFolderedArtifacts();
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    // The root-level flat file is a card; the foldered files are hidden under a folder.
+    expect(await screen.findByText('release-checklist.md')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /reports\/\s*2 files/i })).toBeInTheDocument();
+    expect(screen.queryByText('notes.md')).not.toBeInTheDocument();
+    expect(screen.queryByText('parity.md')).not.toBeInTheDocument();
+    // Breadcrumb root is present (folders exist).
+    expect(screen.getByRole('navigation', { name: /breadcrumb/i })).toBeInTheDocument();
+  });
+
+  test('navigates into a folder and back out via the breadcrumb', async () => {
+    seedToken();
+    stubBaseHandlers();
+    stubFolderedArtifacts();
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    await screen.findByRole('button', { name: /reports\/\s*2 files/i });
+    await user.click(screen.getByRole('button', { name: /reports\/\s*2 files/i }));
+
+    // Inside reports: the direct file shows, a deeper subfolder appears, the root file is gone.
+    expect(await screen.findByText('notes.md')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /qa\/\s*1 file/i })).toBeInTheDocument();
+    expect(screen.queryByText('release-checklist.md')).not.toBeInTheDocument();
+
+    // Climb back to the root via the breadcrumb.
+    await user.click(screen.getByRole('button', { name: 'Artifacts' }));
+    expect(await screen.findByText('release-checklist.md')).toBeInTheDocument();
+    expect(screen.queryByText('notes.md')).not.toBeInTheDocument();
+  });
+
+  test('flat-only names render with no breadcrumb or folder chrome', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({
+          artifacts: [
+            { name: 'a.md', size_bytes: 10, modified_at: '2026-06-11T00:00:00Z' },
+            { name: 'b.txt', size_bytes: 20, modified_at: '2026-06-12T00:00:00Z' },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    await screen.findByText('a.md');
+    expect(screen.queryByRole('navigation', { name: /breadcrumb/i })).not.toBeInTheDocument();
+    expect(screen.getByText('Recent first')).toBeInTheDocument();
+  });
 });

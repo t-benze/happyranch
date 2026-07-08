@@ -49,6 +49,17 @@ function extensionOf(name: string): string {
   return dot === -1 ? '' : name.slice(dot + 1).toLowerCase();
 }
 
+/**
+ * The final `/`-separated segment of an artifact name — the file itself,
+ * stripped of any folder path. Artifact names may carry a logical folder path
+ * (CLAUDE.md "Shared Artifacts": '/' is the folder separator); provenance and
+ * the display title are derived from this base, not the full path.
+ */
+export function baseName(name: string): string {
+  const slash = name.lastIndexOf('/');
+  return slash === -1 ? name : name.slice(slash + 1);
+}
+
 export function deriveArtifactType(name: string): ArtifactType {
   // An explicit PR token wins over the extension (a PR write-up may be a .md).
   if (PR_RE.test(name)) return 'pull-request';
@@ -60,17 +71,20 @@ export function deriveArtifactType(name: string): ArtifactType {
 }
 
 export function parseProvenance(name: string): ArtifactProvenance {
+  // A THR token may sit anywhere in the path (folder or file); the
+  // `<agent>-<date>-<slug>` convention applies to the file segment only.
   const thr = name.match(THR_RE);
   const threadId = thr ? `THR-${thr[1]}` : null;
-  const m = name.match(PROVENANCE_RE);
+  const m = baseName(name).match(PROVENANCE_RE);
   if (!m) return { agent: null, date: null, threadId };
   return { agent: m[1], date: m[2], threadId };
 }
 
-/** Clean display title: the slug after the `<agent>-<date>-` prefix, else the name. */
+/** Clean display title: the file's slug after the `<agent>-<date>-` prefix, else its base name. */
 export function deriveTitle(name: string): string {
-  const m = name.match(PROVENANCE_RE);
-  return m ? m[3] : name;
+  const base = baseName(name);
+  const m = base.match(PROVENANCE_RE);
+  return m ? m[3] : base;
 }
 
 const MONTHS = [
