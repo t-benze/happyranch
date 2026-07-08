@@ -14,28 +14,31 @@ import { TASKS_ERROR_STRINGS } from './strings';
 interface Props {
   taskId: string;
   onClose: () => void;
+  /**
+   * Which escalation-resolution decision this dialog drives. BOTH decisions
+   * POST to /tasks/{id}/resolve-escalation via useResolveEscalation (THR-075),
+   * NOT the generic /cancel route: 'continue' resumes the task → pending and
+   * REQUIRES a rationale; 'cancel' terminates the escalated task → cancelled
+   * with an OPTIONAL rationale (consumes the Feishu escalation notification and
+   * writes the escalation-resolved audit row). Defaults to 'continue'.
+   */
+  intent?: 'continue' | 'cancel';
 }
 
-export function ResolveEscalationDialog({ taskId, onClose }: Props): JSX.Element {
+export function ResolveEscalationDialog({
+  taskId,
+  onClose,
+  intent = 'continue',
+}: Props): JSX.Element {
   const [rationale, setRationale] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const resolveContinue = useResolveEscalation(taskId);
+  const resolve = useResolveEscalation(taskId);
+  const isContinue = intent === 'continue';
 
-  const onContinue = async () => {
+  const onSubmit = async () => {
     setError(null);
     try {
-      await resolveContinue.mutateAsync({ decision: 'continue', rationale });
-      onClose();
-    } catch (e: unknown) {
-      const code = (e as { code?: string }).code;
-      setError(code ? (TASKS_ERROR_STRINGS[code] ?? code) : 'Resolve failed.');
-    }
-  };
-
-  const onCancel = async () => {
-    setError(null);
-    try {
-      await resolveContinue.mutateAsync({ decision: 'cancel', rationale });
+      await resolve.mutateAsync({ decision: intent, rationale });
       onClose();
     } catch (e: unknown) {
       const code = (e as { code?: string }).code;
@@ -44,27 +47,38 @@ export function ResolveEscalationDialog({ taskId, onClose }: Props): JSX.Element
   };
 
   const rationaleEmpty = rationale.trim() === '';
+  // Continue requires a rationale; cancel does not.
+  const submitDisabled = (isContinue && rationaleEmpty) || resolve.isPending;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Resolve escalation</DialogTitle>
+          <DialogTitle>
+            {isContinue ? 'Continue task' : 'Cancel escalated task'}
+          </DialogTitle>
         </DialogHeader>
         <Textarea
           value={rationale}
           onChange={(e) => setRationale(e.target.value)}
           rows={4}
-          placeholder="Rationale (required for continue)"
+          placeholder={
+            isContinue ? 'Rationale (required)' : 'Rationale (optional)'
+          }
         />
         {error && <p className="text-danger text-sm">{error}</p>}
         <DialogFooter>
-          <Button variant="ghost" onClick={onCancel}>Cancel</Button>
-          <Button
-            disabled={rationaleEmpty || resolveContinue.isPending}
-            onClick={onContinue}
-          >
-            {resolveContinue.isPending ? 'Continuing…' : 'Continue'}
+          <Button variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+          <Button disabled={submitDisabled} onClick={onSubmit}>
+            {isContinue
+              ? resolve.isPending
+                ? 'Continuing…'
+                : 'Continue task'
+              : resolve.isPending
+                ? 'Cancelling…'
+                : 'Cancel task'}
           </Button>
         </DialogFooter>
       </DialogContent>

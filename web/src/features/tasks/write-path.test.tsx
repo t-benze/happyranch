@@ -58,6 +58,44 @@ function stubBaseHandlers() {
   );
 }
 
+const ESCALATED_TASK = { ...TASK, status: 'escalated', block_kind: null };
+
+// Mirrors stubBaseHandlers but serves the task in the `escalated` status so the
+// TaskDetailPage renders the escalation action set (Continue + Cancel).
+function stubEscalatedHandlers() {
+  server.use(
+    http.get('/api/v1/orgs', () =>
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      HttpResponse.json({ tasks: [ESCALATED_TASK] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
+      HttpResponse.json({
+        task: ESCALATED_TASK,
+        results: [],
+        audit_log: [],
+        revisit_chain: [],
+        direct_revisits: [],
+        predecessor_prior_status: null,
+      }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
+      HttpResponse.json({
+        task_id: TASK.task_id,
+        assigned_agent: 'content_writer',
+        brief: TASK.brief,
+        status: 'escalated',
+        output_summary: null,
+        children: [],
+      }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/events`, () =>
+      HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+    ),
+  );
+}
+
 describe('Tasks write path', () => {
   test('cancels a task end-to-end', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
@@ -128,47 +166,67 @@ describe('Tasks write path', () => {
     expect(cancelBody).toEqual({ rationale: '' });
   });
 
-  test('resolves escalation with continue and rationale', async () => {
-    // THR-075: continue requires non-empty rationale; cancel sends cancel.
-    const escalatedTask = { ...TASK, status: 'escalated', block_kind: null };
+  test('escalated task detail shows only Continue + Cancel (no Resolve…/Revisit)', async () => {
+    // THR-069 msg74: the escalated action set is exactly Continue + Cancel.
     sessionStorage.setItem('happyranch.token', 'tok');
-    server.use(
-      http.get('/api/v1/orgs', () =>
-        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
-        HttpResponse.json({ tasks: [escalatedTask] }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
-        HttpResponse.json({
-          task: escalatedTask,
-          results: [],
-          audit_log: [],
-          revisit_chain: [],
-          direct_revisits: [],
-          predecessor_prior_status: null,
-        }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
-        HttpResponse.json({
-          task_id: TASK.task_id,
-          assigned_agent: 'content_writer',
-          brief: TASK.brief,
-          status: 'escalated',
-          output_summary: null,
-          children: [],
-        }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/events`, () =>
-        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
-      ),
-    );
+    stubEscalatedHandlers();
+
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+
+    // Continue + Cancel are present…
+    await screen.findByRole('button', { name: /^Continue$/ });
+    expect(screen.getByRole('button', { name: /^Cancel$/ })).toBeInTheDocument();
+
+    // …and Resolve… / Revisit are gone for an escalated task.
+    expect(screen.queryByRole('button', { name: /Resolve…/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Revisit$/ })).toBeNull();
+  });
+
+  test('non-escalated task detail keeps Revisit + Cancel (no Continue)', async () => {
+    // Guardrail: the change is scoped to isEscalated only — a normal
+    // in_progress task still offers Revisit + the generic Cancel.
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+
+    await screen.findByRole('button', { name: /^Revisit$/ });
+    expect(screen.getByRole('button', { name: /^Cancel$/ })).toBeInTheDocument();
+
+    // No escalation-only actions on a non-escalated task.
+    expect(screen.queryByRole('button', { name: /^Continue$/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Resolve…/ })).toBeNull();
+  });
+
+  test('escalated Cancel routes to resolve-escalation cancel, NOT generic /cancel', async () => {
+    // LOAD-BEARING (THR-075 ruling): escalated Cancel MUST hit
+    // POST /resolve-escalation {decision:'cancel'} — the generic /cancel would
+    // leave the Feishu escalation notification dangling and write the wrong
+    // audit row.
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubEscalatedHandlers();
 
     let resolveBody: unknown = null;
+    let genericCancelCalled = false;
     server.use(
-      http.post(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/resolve-escalation`, async ({ request }) => {
-        resolveBody = await request.json();
-        return HttpResponse.json({ ok: true, task_id: TASK.task_id, new_status: 'pending' });
+      http.post(
+        `/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/resolve-escalation`,
+        async ({ request }) => {
+          resolveBody = await request.json();
+          return HttpResponse.json({
+            ok: true,
+            task_id: TASK.task_id,
+            new_status: 'cancelled',
+          });
+        },
+      ),
+      http.post(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/cancel`, () => {
+        genericCancelCalled = true;
+        return HttpResponse.json({});
       }),
     );
 
@@ -177,25 +235,63 @@ describe('Tasks write path', () => {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
     });
 
-    // Wait for the "Resolve…" button on the escalated task detail
-    await screen.findByRole('button', { name: /Resolve…/ });
-    await user.click(screen.getByRole('button', { name: /Resolve…/ }));
+    // Open the escalation Cancel dialog from the action row.
+    await screen.findByRole('button', { name: /^Cancel$/ });
+    await user.click(screen.getByRole('button', { name: /^Cancel$/ }));
 
-    // The ResolveEscalationDialog is open. Continue should be disabled when
-    // rationale textarea is empty.
-    const continueBtn = screen.getByRole('button', { name: /^Continue$/ });
-    expect(continueBtn).toBeDisabled();
+    // Rationale is optional for cancel — submit straight away.
+    await user.click(screen.getByRole('button', { name: /^Cancel task$/ }));
 
-    // Type rationale.
-    await user.type(screen.getByPlaceholderText(/Rationale/), 'go ahead');
-    expect(continueBtn).not.toBeDisabled();
-
-    // Submit Continue.
-    await user.click(continueBtn);
-
-    // Dialog should close after successful mutation
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: /^Continue$/ })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^Cancel task$/ })).toBeNull();
+    });
+
+    expect(resolveBody).toEqual({ decision: 'cancel', rationale: '' });
+    expect(genericCancelCalled).toBe(false);
+  });
+
+  test('escalated Continue routes to resolve-escalation continue with required rationale', async () => {
+    // THR-075: continue requires non-empty rationale and resumes → pending.
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubEscalatedHandlers();
+
+    let resolveBody: unknown = null;
+    server.use(
+      http.post(
+        `/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/resolve-escalation`,
+        async ({ request }) => {
+          resolveBody = await request.json();
+          return HttpResponse.json({
+            ok: true,
+            task_id: TASK.task_id,
+            new_status: 'pending',
+          });
+        },
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+
+    // Open the Continue dialog from the action row.
+    await screen.findByRole('button', { name: /^Continue$/ });
+    await user.click(screen.getByRole('button', { name: /^Continue$/ }));
+
+    // Dialog primary "Continue task" is disabled while rationale is empty.
+    const confirmBtn = screen.getByRole('button', { name: /^Continue task$/ });
+    expect(confirmBtn).toBeDisabled();
+
+    await user.type(screen.getByPlaceholderText(/Rationale/), 'go ahead');
+    expect(confirmBtn).not.toBeDisabled();
+
+    await user.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: /^Continue task$/ }),
+      ).toBeNull();
     });
 
     expect(resolveBody).toEqual({ decision: 'continue', rationale: 'go ahead' });
