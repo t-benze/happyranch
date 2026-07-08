@@ -26,11 +26,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: - A2 Remote connection state
 
+    /// Persisted role preference (nil = first launch / undetermined).
+    /// Stored in UserDefaults under `connectionRolePreference`.
+    /// When the user explicitly picks HOME or CLIENT on first launch,
+    /// this preference takes priority over supervisor-state heuristics.
+    @Published var connectionRolePreference: ConnectionRolePreference? {
+        didSet {
+            if let pref = connectionRolePreference {
+                UserDefaults.standard.set(pref.rawValue, forKey: "connectionRolePreference")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "connectionRolePreference")
+            }
+        }
+    }
+
     /// The connection role of this machine (HOME vs CLIENT).
-    /// Derived from ``DaemonSupervisor/state`` — HOME if configured,
-    /// CLIENT if `.notConfigured`.
+    /// Consults the explicit ``connectionRolePreference`` first;
+    /// falls back to ``DaemonSupervisor/state`` when undetermined.
     var connectionRole: ConnectionRole {
-        ConnectionRole.detect(supervisor: supervisor)
+        ConnectionRole.detect(supervisor: supervisor, preference: connectionRolePreference)
     }
 
     /// Shared pairing store used by both the HomeConnector and the UI.
@@ -83,8 +97,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
 
+        // Load persisted role preference from UserDefaults
+        if let raw = UserDefaults.standard.string(forKey: "connectionRolePreference"),
+           let pref = ConnectionRolePreference(rawValue: raw) {
+            connectionRolePreference = pref
+        }
+
         let home = daemonHome()
-        supervisor.configure(homeDir: home)
+        // Only configure the supervisor when the user intent is HOME or undetermined.
+        // For CLIENT machines, skip supervisor.configure entirely — the role will
+        // be derived from the explicit preference (ConnectionRole.detect returns
+        // .client before the preference is consulted, and the preference takes priority).
+        if connectionRolePreference != .client {
+            supervisor.configure(homeDir: home)
+        }
         refreshDerivedState()
 
         // Check for existing daemon
@@ -513,6 +539,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             } else {
                 diagnostics.recordHealthProbe(success: false, latencyMs: latencyMs, errorMessage: errorMessage)
             }
+        }
+    }
+
+    // MARK: - Role preference
+
+    /// Persist the user's role choice and reconfigure the supervisor accordingly.
+    ///
+    /// - HOME: configures the supervisor with the standard daemon home
+    ///   and refreshes derived state (same as the normal launch path).
+    /// - CLIENT: resets the supervisor to `.notConfigured` and stops any
+    ///   active home connector.
+    func setRolePreference(_ preference: ConnectionRolePreference) {
+        connectionRolePreference = preference
+
+        switch preference {
+        case .home:
+            if supervisor.state == .notConfigured {
+                supervisor.configure(homeDir: daemonHome())
+                refreshDerivedState()
+            }
+        case .client:
+            // Stop any active home connector first
+            if let connector = homeConnector {
+                connector.stop()
+                homeConnector = nil
+            }
+            // Reset supervisor to notConfigured so the daemon-related
+            // UI (controls, health probes) gracefully degrades
+            supervisor.forceState(.notConfigured)
+            refreshDerivedState()
+        case .undetermined:
+            break // Should not be persisted; treat as no-op
         }
     }
 

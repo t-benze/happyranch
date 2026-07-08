@@ -55,7 +55,78 @@ struct ContentView: View {
 
     // MARK: - Placeholder
 
+    /// Whether this is the first launch (no role preference persisted yet).
+    private var isFirstLaunch: Bool {
+        appDelegate.connectionRolePreference == nil
+    }
+
+    @ViewBuilder
     private var placeholderView: some View {
+        if isFirstLaunch {
+            roleSelectionView
+        } else {
+            normalPlaceholderView
+        }
+    }
+
+    /// First-launch welcome screen: user picks HOME (run daemon) or CLIENT (connect to remote).
+    private var roleSelectionView: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "desktopcomputer")
+                .font(.system(size: 48))
+                .foregroundColor(.secondary)
+
+            Text("Welcome to HappyRanch")
+                .font(.title)
+                .fontWeight(.semibold)
+
+            Text("How will you use this Mac?")
+                .font(.callout)
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 32) {
+                // HOME option
+                Button(action: {
+                    appDelegate.setRolePreference(.home)
+                }) {
+                    VStack(spacing: 8) {
+                        Image(systemName: "house.fill")
+                            .font(.system(size: 28))
+                        Text("Run Daemon Here")
+                            .font(.headline)
+                        Text("Host the HappyRanch runtime\non this machine")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(width: 180, height: 140)
+                }
+                .buttonStyle(.borderedProminent)
+
+                // CLIENT option
+                Button(action: {
+                    appDelegate.setRolePreference(.client)
+                }) {
+                    VStack(spacing: 8) {
+                        Image(systemName: "arrow.triangle.swap")
+                            .font(.system(size: 28))
+                        Text("Connect to Remote")
+                            .font(.headline)
+                        Text("Connect to a remote\nHappyRanch runtime")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(width: 180, height: 140)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Normal placeholder (after role has been selected).
+    private var normalPlaceholderView: some View {
         VStack(spacing: 16) {
             Image(systemName: "desktopcomputer")
                 .font(.system(size: 48))
