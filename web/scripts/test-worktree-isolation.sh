@@ -53,8 +53,8 @@ echo ""
 # ── Invariant 1: node_modules is a real directory, not a symlink ────
 NODE_MODULES="$WEB_DIR/node_modules"
 if [ ! -e "$NODE_MODULES" ]; then
-    echo "SKIP: web/node_modules does not exist (fresh worktree, not yet set up)"
-    echo "      Run 'npm ci' or './scripts/setup-worktree.sh' to install."
+    fail "web/node_modules does not exist — cannot verify isolation
+      Run 'npm ci' in this worktree to install dependencies, then re-run this guard."
 elif [ -L "$NODE_MODULES" ]; then
     TARGET="$(readlink "$NODE_MODULES")"
     fail "web/node_modules is a symlink → $TARGET
@@ -67,21 +67,27 @@ else
 fi
 
 # ── Invariant 2: node_modules is not the shared main clone's ─────────
-# Opportunistic — only checks when the main clone is accessible.
-MAIN_WEB="$(cd "$WEB_DIR/../../.." && pwd -P 2>/dev/null || true)/web/node_modules"
-# Resolve to the actual worktree's web (not through the main clone)
-WORKTREE_REAL="$(cd "$WEB_DIR" && pwd -P)"
-
-if [ -d "$MAIN_WEB" ] && [ -d "$NODE_MODULES" ]; then
-    NM_REAL="$(cd "$NODE_MODULES" 2>/dev/null && pwd -P || true)"
-    MAIN_REAL="$(cd "$MAIN_WEB" 2>/dev/null && pwd -P || true)"
-    if [ "$NM_REAL" = "$MAIN_REAL" ] && [ "$NM_REAL" != "" ]; then
-        fail "web/node_modules resolves to the shared main clone ($MAIN_REAL)
+# Locate the main working tree via git worktree porcelain (or override env var).
+MAIN_CHECKOUT="${MAIN_CHECKOUT:-}"
+if [ -z "$MAIN_CHECKOUT" ]; then
+    MAIN_CHECKOUT=$(git worktree list --porcelain 2>/dev/null | \
+        awk '/^worktree /{path=$2} /^branch refs\/heads\/main$/{print path; exit}')
+fi
+if [ -n "$MAIN_CHECKOUT" ] && [ -d "$NODE_MODULES" ]; then
+    MAIN_NM="$MAIN_CHECKOUT/web/node_modules"
+    if [ -d "$MAIN_NM" ]; then
+        NM_REAL="$(cd "$NODE_MODULES" 2>/dev/null && pwd -P || true)"
+        MAIN_REAL="$(cd "$MAIN_NM" 2>/dev/null && pwd -P || true)"
+        if [ "$NM_REAL" = "$MAIN_REAL" ] && [ "$NM_REAL" != "" ]; then
+            fail "web/node_modules resolves to the shared main clone ($MAIN_REAL)
       This means the symlink (or mount) points at the shared checkout.
       Per-worktree isolation requires an independent node_modules."
-    else
-        pass "web/node_modules is independent of the shared main clone"
+        else
+            pass "web/node_modules is independent of the shared main clone (main at $MAIN_CHECKOUT)"
+        fi
     fi
+elif [ -z "$MAIN_CHECKOUT" ]; then
+    echo "NOTE: could not locate main clone via git worktree; set MAIN_CHECKOUT env var to enable shared-checkout check"
 fi
 
 echo ""
@@ -115,13 +121,44 @@ cat > "$WT_B/package.json" <<'PKGJSON'
 {"name":"wt-b","private":true,"dependencies":{"arr-flatten":"1.1.0"}}
 PKGJSON
 
-echo "--- Installing wt-a (is-odd) ---"
-(cd "$WT_A" && npm install --no-audit --no-fund --loglevel error 2>&1) || \
-    fail "npm install failed in wt-a"
+# Generate lockfiles at test time (not committed into the repo tree).
+# npm ci is the dangerous operation — it dereferences symlinks and silently
+# empties shared dirs with only a "warn reify Removing non-directory".
+# We must exercise exactly that path to prove the invariant.
+LOCK_STAGE="$TMP/lock-stage"
+mkdir -p "$LOCK_STAGE"
 
-echo "--- Installing wt-b (arr-flatten) ---"
-(cd "$WT_B" && npm install --no-audit --no-fund --loglevel error 2>&1) || \
-    fail "npm install failed in wt-b"
+echo "--- Generating lockfile for wt-a (is-odd) ---"
+cat > "$LOCK_STAGE/package.json" <<'PKGJSON'
+{"name":"wt-a","private":true,"dependencies":{"is-odd":"3.0.1"}}
+PKGJSON
+(cd "$LOCK_STAGE" && npm install --package-lock-only --no-audit --no-fund --loglevel error 2>&1) || \
+    fail "npm install --package-lock-only failed for wt-a (staging)"
+[ -f "$LOCK_STAGE/package-lock.json" ] || fail "lockfile not generated for wt-a"
+cp "$LOCK_STAGE/package-lock.json" "$WT_A/"
+
+echo "--- Generating lockfile for wt-b (arr-flatten) ---"
+rm -f "$LOCK_STAGE/package.json" "$LOCK_STAGE/package-lock.json"
+cat > "$LOCK_STAGE/package.json" <<'PKGJSON'
+{"name":"wt-b","private":true,"dependencies":{"arr-flatten":"1.1.0"}}
+PKGJSON
+(cd "$LOCK_STAGE" && npm install --package-lock-only --no-audit --no-fund --loglevel error 2>&1) || \
+    fail "npm install --package-lock-only failed for wt-b (staging)"
+[ -f "$LOCK_STAGE/package-lock.json" ] || fail "lockfile not generated for wt-b"
+cp "$LOCK_STAGE/package-lock.json" "$WT_B/"
+
+rm -rf "$LOCK_STAGE"
+
+# Remove any pre-existing node_modules before running npm ci
+rm -rf "$WT_A/node_modules" "$WT_B/node_modules" 2>/dev/null || true
+
+echo "--- Installing wt-a (is-odd) via npm ci ---"
+(cd "$WT_A" && npm ci --no-audit --no-fund --loglevel error 2>&1) || \
+    fail "npm ci failed in wt-a"
+
+echo "--- Installing wt-b (arr-flatten) via npm ci ---"
+(cd "$WT_B" && npm ci --no-audit --no-fund --loglevel error 2>&1) || \
+    fail "npm ci failed in wt-b"
 
 # ── Assertions ──────────────────────────────────────────────────────
 
