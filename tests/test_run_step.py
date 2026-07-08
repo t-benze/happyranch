@@ -1937,9 +1937,11 @@ def test_failed_child_wakes_parent_for_decision_step_not_cascade(
     assert tid == "T-PAR"
 
 
-def test_two_failed_children_escalates_parent_not_fail(runtime, db, monkeypatch):
-    """Exhausting the 2-round bound (>1 prior failed child) escalates the
-    parent to escalated, NOT failed. The founder can then resolve."""
+def test_two_failed_children_wakes_owner_not_escalate(runtime, db, monkeypatch):
+    """THR-078: two failed children with no revisit lineage (different
+    slices, each failing for the first time) wakes the owner for
+    adjudication, NOT escalated.  The old count-based _FAILURE_ROUND_BOUND
+    auto-escalation is retired."""
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -1948,7 +1950,7 @@ def test_two_failed_children_escalates_parent_not_fail(runtime, db, monkeypatch)
                               task_type="task"))
     db.update_task("T-PAR", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED, note="waiting")
 
-    # Round 0 had one failed child already.
+    # Two different slices, each failing for the first time.
     db.insert_task(TaskRecord(
         id="T-F1", brief="first failed child",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
@@ -1957,14 +1959,13 @@ def test_two_failed_children_escalates_parent_not_fail(runtime, db, monkeypatch)
     db.update_task("T-F1", status=TaskStatus.FAILED,
                    note="first failure")
 
-    # Current (second) failed child — this should push the bound to 2 → escalate.
     db.insert_task(TaskRecord(
         id="T-F2", brief="second failed child",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
         task_type="subtask",
     ))
     db.update_task("T-F2", status=TaskStatus.FAILED,
-                   note="second failure — bound exhausted")
+                   note="second failure — different slice")
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -1974,16 +1975,16 @@ def test_two_failed_children_escalates_parent_not_fail(runtime, db, monkeypatch)
     _enqueue_parent_if_waiting(orch, "T-F2")
 
     parent = db.get_task("T-PAR")
-    assert parent.status == TaskStatus.ESCALATED, (  # Path B: top-level status
-        f"parent should go to ESCALATED, got {parent.status}"
+    # No revisit lineage → owner is woken, not escalated.
+    assert parent.status == TaskStatus.IN_PROGRESS, (
+        f"owner should be woken for adjudication, got {parent.status}"
     )
-    assert parent.block_kind is None, (
-        f"exhausted bound escalates parent (block_kind cleared), got {parent.block_kind}"
-    )
-    assert "T-F2" in (parent.note or "")
+    assert parent.block_kind == BlockKind.DELEGATED
 
-    # No queue entries — escalation is not the same as waking the parent.
-    assert orch._queue.qsize() == 0
+    # Parent is enqueued for its next decision step.
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
 
 
 def test_chain_leg_failure_wakes_parent_not_cascade(runtime, db, monkeypatch):
@@ -2275,7 +2276,7 @@ def test_enqueue_parent_exhaustion_nonroot_parent_routes_upward(runtime, db):
         parent_task_id="T-GP", task_type="task",
     ))
     db.update_task("T-MID", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED, note="waiting")
-    # Two failed children of T-MID → bound exhausted.
+    # Two failed children of T-MID with no revisit lineage.
     db.insert_task(TaskRecord(
         id="T-F1", brief="f1", assigned_agent="dev_agent",
         parent_task_id="T-MID", task_type="subtask",
@@ -2286,7 +2287,7 @@ def test_enqueue_parent_exhaustion_nonroot_parent_routes_upward(runtime, db):
         parent_task_id="T-MID", task_type="subtask",
     ))
     db.update_task("T-F2", status=TaskStatus.FAILED,
-                   note="second failure — bound exhausted")
+                   note="second failure — different slice")
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -2295,11 +2296,210 @@ def test_enqueue_parent_exhaustion_nonroot_parent_routes_upward(runtime, db):
     _enqueue_parent_if_waiting(orch, "T-F2")
 
     mid = db.get_task("T-MID")
-    # Non-root parent must NOT escalate — it fails and routes upward.
-    assert mid.status == TaskStatus.FAILED
-    assert mid.block_kind is None
+    # THR-078: no revisit lineage → non-root parent is woken for
+    # adjudication, not failed.  Only per-slice ceiling exhaustion
+    # (a child retry that fails again) would fail the non-root.
+    assert mid.status == TaskStatus.IN_PROGRESS
+    assert mid.block_kind == BlockKind.DELEGATED
 
-
-    # Grandparent (root) woken for bounded recovery (1 failed child < bound).
+    # Non-root parent is enqueued.
     assert orch._queue.qsize() == 1
-    assert orch._queue.get_nowait() == ("test", "T-GP")
+    assert orch._queue.get_nowait() == ("test", "T-MID")
+
+
+# --- THR-078: per-slice retry ceiling, owner-adjudication primary ---
+
+
+def test_fanout_mixed_outcome_wakes_owner_not_escalate(runtime, db, monkeypatch):
+    """THR-078: any fan-out round with >=1 non-clean slice wakes the root
+    owner with per-slice join context, NOT auto-escalated to founder.
+
+    Even with 2+ failed siblings (old _FAILURE_ROUND_BOUND trigger),
+    the new design wakes the owner to adjudicate."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    # Root parent with 3 fan-out children: 2 failed, 1 completed.
+    db.insert_task(TaskRecord(
+        id="T-MIXED", brief="fan-out parent",
+        assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.update_task("T-MIXED", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="fan-out in flight")
+
+    # Child 1: failed (REQUEST_CHANGES via carrier verdict mismatch)
+    db.insert_task(TaskRecord(
+        id="T-MIXED-C1", brief="build feature",
+        assigned_agent="dev_agent", parent_task_id="T-MIXED",
+        task_type="subtask",
+    ))
+    db.update_task("T-MIXED-C1", status=TaskStatus.FAILED,
+                   note="carrier verdict mismatch: expected 'APPROVE', got 'REQUEST_CHANGES'")
+    # Child 2: failed (no-op self-block)
+    db.insert_task(TaskRecord(
+        id="T-MIXED-C2", brief="no-op task",
+        assigned_agent="dev_agent", parent_task_id="T-MIXED",
+        task_type="subtask",
+    ))
+    db.update_task("T-MIXED-C2", status=TaskStatus.FAILED,
+                   note="self-blocked: already shipped, nothing to do")
+    # Child 3: completed cleanly
+    db.insert_task(TaskRecord(
+        id="T-MIXED-C3", brief="test",
+        assigned_agent="qa_engineer", parent_task_id="T-MIXED",
+        task_type="subtask",
+    ))
+    db.update_task("T-MIXED-C3", status=TaskStatus.COMPLETED)
+    # Add completion report for child 3.
+    db.insert_task_result(
+        task_id="T-MIXED-C3", agent="qa_engineer", session_id="s",
+        status="completed", confidence_score=90, output_summary="Done",
+        risks_flagged=[],
+    )
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    # Fire on the last terminal child (C2).
+    _enqueue_parent_if_waiting(orch, "T-MIXED-C2")
+
+    parent = db.get_task("T-MIXED")
+    # Parent is woken (re-enqueued), NOT escalated.
+    assert parent.status == TaskStatus.IN_PROGRESS, (
+        f"owner should be woken, not escalated; got status {parent.status}"
+    )
+    assert parent.block_kind == BlockKind.DELEGATED
+
+    # Parent is enqueued for its decision step.
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-MIXED"
+
+
+def test_per_slice_retry_ceiling_escalates_on_second_failure(runtime, db, monkeypatch):
+    """THR-078: per-slice retry ceiling = 1.  A slice that fails, gets
+    re-dispatched by the owner (revisit_of_task_id set), and fails again
+    forces escalation to founder — even when the TOTAL failed sibling
+    count is only 1 (the original slice succeeded or was a different
+    status).
+
+    This is a RED test pre-impl: the old code wakes the owner (count=1 <
+    _FAILURE_ROUND_BOUND=2) but the new per-slice design escalates."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    # Root parent.
+    db.insert_task(TaskRecord(
+        id="T-RETRY2", brief="fan-out parent",
+        assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.update_task("T-RETRY2", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="fan-out in flight")
+
+    # Original slice completed (first attempt was clean, but context changed).
+    db.insert_task(TaskRecord(
+        id="T-RETRY2-C1", brief="build feature X",
+        assigned_agent="dev_agent", parent_task_id="T-RETRY2",
+        task_type="subtask",
+    ))
+    db.update_task("T-RETRY2-C1", status=TaskStatus.COMPLETED)
+    db.insert_task_result(
+        task_id="T-RETRY2-C1", agent="dev_agent", session_id="s",
+        status="completed", confidence_score=90, output_summary="Done",
+        risks_flagged=[],
+    )
+
+    # Another child completed cleanly.
+    db.insert_task(TaskRecord(
+        id="T-RETRY2-C2", brief="build feature Y",
+        assigned_agent="dev_agent", parent_task_id="T-RETRY2",
+        task_type="subtask",
+    ))
+    db.update_task("T-RETRY2-C2", status=TaskStatus.COMPLETED)
+    db.insert_task_result(
+        task_id="T-RETRY2-C2", agent="dev_agent", session_id="s",
+        status="completed", confidence_score=90, output_summary="Done",
+        risks_flagged=[],
+    )
+
+    # Re-dispatched slice: revisit_of_task_id points to the COMPLETED C1.
+    # The owner re-delegated this slice post-fanout-join; it fails (2nd
+    # failure of this slice). Total failed siblings = 1 (just this one).
+    db.insert_task(TaskRecord(
+        id="T-RETRY2-C1-R", brief="re-dispatched: build feature X",
+        assigned_agent="dev_agent", parent_task_id="T-RETRY2",
+        revisit_of_task_id="T-RETRY2-C1",
+        task_type="subtask",
+    ))
+    db.update_task("T-RETRY2-C1-R", status=TaskStatus.FAILED,
+                   note="second failure of this slice — ceiling exhausted")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    # Fire on the re-dispatched child's failure.
+    _enqueue_parent_if_waiting(orch, "T-RETRY2-C1-R")
+
+    parent = db.get_task("T-RETRY2")
+    # Ceiling exhausted → escalated to founder, NOT woken.
+    assert parent.status == TaskStatus.ESCALATED, (
+        f"per-slice ceiling exhausted should escalate; got status {parent.status}"
+    )
+    assert parent.block_kind is None
+    assert "T-RETRY2-C1-R" in (parent.note or "")
+
+    # No queue entries — escalation is not waking the parent.
+    assert orch._queue.qsize() == 0
+
+
+def test_regression_all_completed_clean_fanout_still_happy_path(runtime, db, monkeypatch):
+    """THR-078 regression: a clean all-completed fan-out still takes the
+    happy path and wakes the owner for its next decision step."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    db.insert_task(TaskRecord(
+        id="T-CLEAN", brief="fan-out parent",
+        assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.update_task("T-CLEAN", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="fan-out in flight")
+
+    # All children completed.
+    for i, (cid, agent) in enumerate([
+        ("T-CLEAN-C1", "dev_agent"),
+        ("T-CLEAN-C2", "dev_agent"),
+        ("T-CLEAN-C3", "qa_engineer"),
+    ]):
+        db.insert_task(TaskRecord(
+            id=cid, brief=f"task {i}",
+            assigned_agent=agent, parent_task_id="T-CLEAN",
+            task_type="subtask",
+        ))
+        db.update_task(cid, status=TaskStatus.COMPLETED)
+        db.insert_task_result(
+            task_id=cid, agent=agent, session_id="s",
+            status="completed", confidence_score=90, output_summary="Done",
+            risks_flagged=[],
+        )
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    _enqueue_parent_if_waiting(orch, "T-CLEAN-C3")
+
+    parent = db.get_task("T-CLEAN")
+    assert parent.status == TaskStatus.IN_PROGRESS
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-CLEAN"

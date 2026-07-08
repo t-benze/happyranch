@@ -633,6 +633,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             status=TaskStatus.PENDING,
             session_timeout_seconds=task.session_timeout_seconds,
             task_type="subtask",
+            # THR-078: carry revisit_of_task_id from the owner's decision
+            # so the fan-out barrier can derive per-slice retry count
+            # from existing DB lineage (no schema migration).
+            revisit_of_task_id=decision.revisit_of_task_id,
         )
         # Atomic CAS: insert child + transition parent to IN_PROGRESS(DELEGATED)
         # under the same RLock acquisition. Serializes against /cancel via
@@ -1486,7 +1490,44 @@ def _carrier_complete_on_chain_complete(
     return True
 
 
-_FAILURE_ROUND_BOUND = 2  # at most 2 re-spawn rounds before escalation
+# THR-078: per-slice retry ceiling = 1.  When a fan-out owner re-dispatches a
+# failed slice (revisit_of_task_id on the new child points to the failed
+# predecessor), the orchestrator can derive retry count from existing DB
+# lineage — no schema migration.
+_FAILURE_ROUND_BOUND = 2  # kept as doc-only reference (protocol/05c)
+_SLICE_RETRY_CEILING = 1  # per-slice retry ceiling; 2nd failure escalates
+
+
+def _is_slice_retry_exhausted(
+    orch: "Orchestrator", child: "TaskRecord", parent: "TaskRecord",
+) -> bool:
+    """Return True if ``child`` is a retry of a previously-failed slice
+    under the same ``parent``, meaning the per-slice ceiling (_SLICE_RETRY_CEILING)
+    of 1 has been exhausted.
+
+    Derivation: follow the child's ``revisit_of_task_id`` chain.  If any
+    ancestor in that chain (excluding the child itself) has
+    ``parent_task_id == parent.id``, the child is a retry — the ancestor was
+    the original slice, and we are now looking at its 2nd failure.  This uses
+    ONLY the existing ``revisit_of_task_id`` column on TaskRecord (no schema
+    migration).
+    """
+    if child.revisit_of_task_id is None:
+        return False
+    db = orch._db
+    # Walk the revisit chain from this child.
+    # walk_revisit_chain returns [child, predecessor, ..., original].
+    from runtime.infrastructure.database import LineageTooDeep
+    try:
+        chain = db.walk_revisit_chain(child.id, max_hops=200, truncate=True)
+    except LineageTooDeep:
+        chain = []
+    # Skip the first entry (the child itself); check each ancestor for
+    # same-parent membership.
+    for ancestor in chain[1:]:
+        if ancestor.parent_task_id == parent.id:
+            return True
+    return False
 
 
 def _enqueue_parent_if_waiting(
@@ -1576,40 +1617,45 @@ def _enqueue_parent_if_waiting(
 
     failed = [s for s in siblings if s.status == TaskStatus.FAILED]
     if failed:
-        # Bounded failure-recovery (TASK-573): count FAILED subtasks to
-        # derive the re-spawn round count from existing DB state (no schema
-        # change). At most _FAILURE_ROUND_BOUND (2) re-spawns before
-        # escalation.
-        if len(failed) >= _FAILURE_ROUND_BOUND:
-            # Round bound exhausted → escalate, NOT cascade-fail.
-            last = failed[-1]
-            reason = (
-                f"failure-round bound ({_FAILURE_ROUND_BOUND}) exhausted: "
-                f"subtask {last.id} failed: {last.note or '(no note)'}"
-            )
-            if parent.active_chain is not None:
-                orch._db.update_task_active_chain(parent.id, None)
-            if parent.active_fanout is not None:
-                orch._db.update_task_active_fanout(parent.id, None)
-            if is_root(parent):
-                # Root parent escalates to the founder (unchanged).
-                if orch._db.try_escalate(parent.id, reason=reason):
-                    orch._audit.log_escalation(parent.id, "orchestrator", reason)
-                    _maybe_post_thread_escalation(
-                        orch, parent.id, reason=reason,
-                    )
-            else:
-                # THR-033 Change A lock-in: a non-root parent never escalates
-                # directly (currently impossible — only roots have children).
-                # Fail it and recurse the failure up to its own parent.
-                _fail(orch, parent.id, note=reason)
-                _enqueue_parent_if_waiting(orch, parent.id)
-            return
-        # Within the bound: clear chain, enqueue parent for a fresh
-        # manager decision step. Do NOT cascade-fail.
+        # THR-078: per-slice retry ceiling (replaces old count-based
+        # _FAILURE_ROUND_BOUND).  Each failed child is checked for
+        # revisit lineage within the same parent — a child whose
+        # revisit_of_task_id ancestor lived under this parent is a
+        # retry.  If ANY child has exhausted the ceiling (_SLICE_RETRY_CEILING
+        # = 1, i.e. this is its 2nd failure), escalate.  Otherwise,
+        # wake the root owner to adjudicate (pack per-slice terminal
+        # context via _inject_fanout_join_context on fan-out parents).
+
+        # Per-slice ceiling check: escalate if any failed child is a retry.
+        for s in failed:
+            if _is_slice_retry_exhausted(orch, s, parent):
+                reason = (
+                    f"per-slice retry ceiling ({_SLICE_RETRY_CEILING}) exhausted: "
+                    f"slice {s.id} (revisit of {s.revisit_of_task_id}) "
+                    f"failed: {s.note or '(no note)'}"
+                )
+                if parent.active_chain is not None:
+                    orch._db.update_task_active_chain(parent.id, None)
+                if parent.active_fanout is not None:
+                    orch._db.update_task_active_fanout(parent.id, None)
+                if is_root(parent):
+                    if orch._db.try_escalate(parent.id, reason=reason):
+                        orch._audit.log_escalation(parent.id, "orchestrator", reason)
+                        _maybe_post_thread_escalation(
+                            orch, parent.id, reason=reason,
+                        )
+                else:
+                    # THR-033 Change A lock-in: a non-root parent never
+                    # escalates directly.  Fail it and recurse upward.
+                    _fail(orch, parent.id, note=reason)
+                    _enqueue_parent_if_waiting(orch, parent.id)
+                return
+
+        # No per-slice ceiling hit: clear chain, enqueue parent for a fresh
+        # manager decision step.  Do NOT cascade-fail.
         # NOTE: active_fanout is NOT cleared here — the CAS-winner needs
         # it to inject structured join context (child verdict, confidence,
-        # output_dir, failure note) via _inject_fanout_join_context. The
+        # output_dir, failure note) via _inject_fanout_join_context.  The
         # CAS-winner clears active_fanout after injecting join context.
         if parent.active_chain is not None:
             orch._db.update_task_active_chain(parent.id, None)

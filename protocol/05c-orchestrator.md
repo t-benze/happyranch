@@ -162,7 +162,7 @@ There are four types of permission blocks, each handled differently:
 
 > **Deprecated — `blocked` (fully retired Phase 3).** Before THR-037 Change B (Path B, stored source-of-truth), the surfaced vocabulary used a single `blocked` state discriminated by `block_kind` (`delegated`/`escalated`/`blocked_on_job`). Path B collapsed it; the value was retained for the transition window + reverse migration and was fully retired in Phase 3 after a soak.
 
-#### Failure-recovery contract (TASK-573, THR-028)
+#### Failure-recovery contract (TASK-573, THR-028, THR-078)
 
 When a subtask reaches a terminal state, the orchestrator evaluates the parent task
 for advancement. If any subtask FAILED (rather than COMPLETED), the parent is NOT
@@ -173,23 +173,37 @@ cascade-failed. Instead:
    (`note` + completion report / error context) is available to the parent so it
    can author an updated brief and re-delegate.
 
-2. **Round bound.** At most 2 re-spawn rounds per delegation slot. The round count
-   is derived from EXISTING database state (count of FAILED subtasks of this
-   parent) — no schema migration, no new/alter/overload column. Each child
-   failure that re-wakes the parent consumes one round.
+2. **Owner-adjudication primary (THR-078).** Any fan-out round with ≥1 non-clean
+   slice packs per-slice terminal context (status + verdict + confidence + note +
+   output_dir) and wakes the root owner to adjudicate — the orchestrator does NOT
+   auto-escalate to founder on a mixed round. The owner classifies each slice
+   (merge greens / re-dispatch legit REQUEST_CHANGES as revise / drop no-ops /
+   retry genuine failures). Applies uniformly to benign AND real failures.
 
-3. **Exhaustion escalation.** When the round bound is exhausted (> 2 FAILED
-   subtasks in this delegation slot), the parent transitions to
-   `escalated` via `db.try_escalate()`, carrying the last failure
-   reason. The parent does NOT cascade-fail — the founder can resolve the
-   escalation per existing routes. non-root tasks never escalate directly — they fail and hand back to their parent; only the (root) parent escalates on exhaustion.
+3. **Per-slice retry ceiling (THR-078).** A per-slice retry ceiling of 1
+   replaces the old count-based `_FAILURE_ROUND_BOUND` (2). The owner may
+   re-drive a given slice ONCE; if that same slice fails AGAIN (its 2nd failure),
+   the orchestrator forces escalation to founder. The guard moves from 'count of
+   FAILED siblings anywhere in the fan-out' to 'this specific slice is genuinely
+   stuck after one retry'. Per-slice retry count is derived from EXISTING database
+   lineage: the child's `revisit_of_task_id` chain (no schema migration). When a
+   fan-out owner re-dispatches a failed slice, the new child carries
+   `revisit_of_task_id` pointing to the failed predecessor; if that retry child
+   also fails, the orchestrator detects the revisit ancestor within the same
+   parent and escalates.
 
-4. **Chain-leg failure.** When a workflow chain leg fails (subtask is FAILED, not
+4. **Exhaustion escalation.** When the per-slice ceiling is exhausted (a slice's
+   2nd failure), the parent transitions to `escalated` via
+   `db.try_escalate()`, carrying the last failure reason. The parent does NOT
+   cascade-fail — the founder can resolve the escalation per existing routes.
+   non-root tasks never escalate directly — they fail and hand back to their
+   parent; only the (root) parent escalates on exhaustion.
+
+5. **Chain-leg failure.** When a workflow chain leg fails (subtask is FAILED, not
    COMPLETED), the chain does NOT cascade-fail the parent. Instead, the
-   chain is cleared and the parent is handed back to its manager decision step
-   (subject to the same 2-round bound and exhaustion escalation).
+   chain is cleared and the parent is handed back to its manager decision step.
 
-5. **Happy path unchanged.** All subtasks COMPLETED → parent advances to its
+6. **Happy path unchanged.** All subtasks COMPLETED → parent advances to its
    next decision step (existing behavior). REVISE-verdict auto-advance is
    unchanged.
 
@@ -241,14 +255,19 @@ parent's barrier. The fan-out parent does not join until ALL children
 do not count toward the fan-out parent's barrier — only the mutating child's
 own terminal status does.
 
-Failure-join reuses bounded failure-recovery (§Failure-recovery contract):
-failed fan-out children individually consume re-spawn rounds; the parent wakes
-on each terminal child, and exhaustion escalates the parent after
-`_FAILURE_ROUND_BOUND` (2) failed children. For a pipeline carrier this is
-**fail-closed at the carrier**: a leg verdict-mismatch or a failed leg fails
-the whole carrier (no partial-chain completion), and the failed carrier then
-feeds the parent's barrier exactly as any failed child does. No partial-join
-or cascade-fail semantics are introduced.
+Failure-join (THR-078): any fan-out round with ≥1 failed child wakes the
+root owner with structured per-slice join context (status + verdict +
+confidence + note + output_dir) — the orchestrator does NOT auto-escalate
+based on failed-sibling count.  The owner adjudicates each slice.  A
+retained per-slice retry ceiling (ceiling = 1) fires escalation only when
+the SAME slice fails twice: the re-dispatched child carries
+`revisit_of_task_id` pointing to the failed predecessor, and the
+orchestrator detects the revisit ancestor within the same parent.  For a
+pipeline carrier this is **fail-closed at the carrier**: a leg
+verdict-mismatch or a failed leg fails the whole carrier (no partial-chain
+completion), and the failed carrier then feeds the parent's barrier exactly
+as any failed child does.  No partial-join or cascade-fail semantics are
+introduced.
 
 **Worktree isolation (mutating fan-out).** Each mutating child inherits the
 make-worktree pattern: it receives its own git worktree on a per-task branch

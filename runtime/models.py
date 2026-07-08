@@ -144,6 +144,10 @@ class NextStep(BaseModel):
     then: list[ChainLeg] = Field(default_factory=list)
     children: list[FanoutChild] = Field(default_factory=list)
     width_cap_ack: int | None = None
+    # THR-078: when a fan-out owner re-delegates a failed slice, this field
+    # carries the failed child's task id so the orchestrator can track
+    # per-slice retry count from existing DB lineage (no schema migration).
+    revisit_of_task_id: str | None = None
 
     @field_validator('action')
     @classmethod
