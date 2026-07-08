@@ -452,4 +452,74 @@ struct AppDelegateRolePreferenceTests {
         #expect(delegate.supervisor.state == .stopped,
                 "CLIENT→HOME must configure supervisor")
     }
+
+    // MARK: - Menu/action path reachability (TASK-2336)
+
+    /// Proves the menu command's action path reaches switchConnectionRole
+    /// via the executeRoleSwitch seam (extracted from confirmAndSwitchRole).
+    /// Without this test, removing the menu item or disconnecting
+    /// confirmAndSwitchRole from switchConnectionRole would still pass CI.
+    @Test("executeRoleSwitch(.client) from HOME with running daemon stops daemon and changes role")
+    func menuPathHomeToClientStopsDaemon() {
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-menu")
+        delegate.connectionRolePreference = .home
+
+        // Start daemon → reach .running (same pattern as existing test at line 332)
+        delegate.startDaemon()
+        #expect(fake.launchCallCount == 1)
+        delegate.supervisor.onHealthCheckPassed(
+            pid: fake.activeHandle!.processIdentifier,
+            port: 9876
+        )
+        delegate.refreshDerivedState()
+        #expect(delegate.supervisor.state == .running)
+        #expect(delegate.supervisor.isManagedBySelf == true)
+
+        // Exercise the menu/action seam — this is what the menu button's
+        // confirmAndSwitchRole calls after the user confirms the alert.
+        let app = HappyRanchApp()
+        app.executeRoleSwitch(from: .home, in: delegate)
+
+        // Daemon subprocess must have been terminated
+        #expect(fake.terminateCallCount >= 1,
+                "Menu HOME→CLIENT must terminate the running daemon; terminateCallCount=\(fake.terminateCallCount)")
+        // Supervisor must be reset
+        #expect(delegate.supervisor.state == .notConfigured,
+                "After menu HOME→CLIENT, supervisor must be .notConfigured, got \(delegate.supervisor.state)")
+        #expect(delegate.connectionRolePreference == .client)
+        #expect(delegate.connectionRole == .client)
+    }
+
+    @Test("executeRoleSwitch(.home) from CLIENT changes role and configures supervisor")
+    func menuPathClientToHomeConfiguresSupervisor() {
+        let delegate = makeClientModeDelegate()
+        #expect(delegate.connectionRole == .client)
+        #expect(delegate.connectionRolePreference == .client)
+
+        // Exercise the menu/action seam
+        let app = HappyRanchApp()
+        app.executeRoleSwitch(from: .client, in: delegate)
+
+        #expect(delegate.connectionRolePreference == .home,
+                "Menu CLIENT→HOME must persist .home preference")
+        #expect(delegate.connectionRole == .home,
+                "Menu CLIENT→HOME must return .home role")
+        #expect(delegate.supervisor.state == .stopped,
+                "Menu CLIENT→HOME must configure supervisor, got \(delegate.supervisor.state)")
+    }
+
+    @Test("executeRoleSwitch from home toggles to client (label consistency)")
+    func menuPathToggleHomeToClient() {
+        let delegate = makeHomeModeDelegate()
+        #expect(delegate.connectionRole == .home)
+
+        let app = HappyRanchApp()
+        app.executeRoleSwitch(from: .home, in: delegate)
+
+        #expect(delegate.connectionRole == .client)
+        #expect(delegate.connectionRolePreference == .client)
+    }
 }

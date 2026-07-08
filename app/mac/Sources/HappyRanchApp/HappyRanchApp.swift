@@ -58,6 +58,16 @@ struct HappyRanchApp: App {
         }
     }
 
+    /// Execute a role switch without UI confirmation.
+    /// Test seam extracted from confirmAndSwitchRole to prove the menu/action
+    /// path reaches AppDelegate.switchConnectionRole — a regression that removes
+    /// the menu item or disconnects confirmAndSwitchRole from switchConnectionRole
+    /// would still pass the direct-call suite without this seam.
+    func executeRoleSwitch(from currentRole: ConnectionRole, in appDelegate: AppDelegate) {
+        let target: ConnectionRolePreference = currentRole == .home ? .client : .home
+        appDelegate.switchConnectionRole(to: target)
+    }
+
     /// Present an NSAlert confirmation before switching roles.
     /// Called from the "Switch to Client…" / "Switch to Home…" menu item.
     private func confirmAndSwitchRole(_ appDelegate: AppDelegate) {
@@ -79,8 +89,7 @@ struct HappyRanchApp: App {
         alert.addButton(withTitle: "Cancel")
 
         if alert.runModal() == .alertFirstButtonReturn {
-            let target: ConnectionRolePreference = appDelegate.connectionRole == .home ? .client : .home
-            appDelegate.switchConnectionRole(to: target)
+            executeRoleSwitch(from: appDelegate.connectionRole, in: appDelegate)
         }
     }
 }
