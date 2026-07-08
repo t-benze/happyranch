@@ -328,7 +328,6 @@ class TestThr055Regression:
         """render_compact_skill_index signature and behavior unchanged."""
         from runtime.orchestrator.org_config import render_compact_skill_index
         from runtime.skills.models import (
-            ApprovalState,
             ExposedSkill,
             PolicyClass,
             SkillEntry,
@@ -345,15 +344,11 @@ class TestThr055Regression:
             owner="test",
             source="runtime/skills/test-skill",
             policy_class=PolicyClass.STANDARD_OPERATIONAL,
-            approval_state=ApprovalState.APPROVED,
-            approved_by="founder",
-            approved_at=None,
             status=SkillStatus.ENABLED,
             skill_md_path=Path("/fake/SKILL.md"),
         )
         exposed = ExposedSkill(
             skill=entry,
-            catalog_approved=True,
             allowed_by=[],
             denied_by=[],
         )

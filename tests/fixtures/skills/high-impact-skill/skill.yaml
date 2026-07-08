@@ -7,9 +7,5 @@ when_to_use: Use when testing high-impact policy skills.
 owner: security_team
 source: runtime/skills/high-impact-skill
 policy_class: high_impact_policy
-approval_state: approved
-approved_by: founder
-approved_at: 2026-07-01T00:00:00Z
-approved_version: 1.0.0
 status: enabled
 tags: [testing, policy, high-impact]

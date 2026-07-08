@@ -24,7 +24,6 @@ from runtime.skills.registry import SkillRegistry
 from runtime.skills.resolver import EligibilityResolver
 from runtime.skills.exposure import catalog_gate, resolve_exposed_skills
 from runtime.skills.models import (
-    ApprovalState,
     ExposedSkill,
     PolicyClass,
     SkillStatus,
@@ -71,22 +70,16 @@ def _load_eligibility_policy(policy_path: Path | None) -> dict:
 # Output formatting helpers
 # ---------------------------------------------------------------------------
 
-def _fmt_approval(entry) -> str:
-    """Format catalog-approval record for output."""
+def _fmt_entry(entry) -> str:
+    """Format a skill entry for output."""
     pc = entry.policy_class.value if isinstance(entry.policy_class, PolicyClass) else str(entry.policy_class)
-    state = entry.approval_state.value if isinstance(entry.approval_state, ApprovalState) else str(entry.approval_state)
     status = entry.status.value if isinstance(entry.status, SkillStatus) else str(entry.status)
     parts = [
         f"id={entry.id}",
         f"version={entry.version}",
         f"policy_class={pc}",
-        f"approval_state={state}",
         f"status={status}",
     ]
-    if entry.approved_by:
-        parts.append(f"approved_by={entry.approved_by}")
-    if entry.approved_at:
-        parts.append(f"approved_at={entry.approved_at}")
     return "  ".join(parts)
 
 
@@ -119,11 +112,8 @@ def cmd_skills_catalog_list(args: argparse.Namespace) -> None:
                 "version": entry.version,
                 "description": entry.description,
                 "policy_class": entry.policy_class.value if isinstance(entry.policy_class, PolicyClass) else str(entry.policy_class),
-                "approval_state": entry.approval_state.value if isinstance(entry.approval_state, ApprovalState) else str(entry.approval_state),
                 "status": entry.status.value if isinstance(entry.status, SkillStatus) else str(entry.status),
                 "owner": entry.owner,
-                "approved_by": entry.approved_by,
-                "approved_at": str(entry.approved_at) if entry.approved_at else None,
                 "when_to_use": entry.when_to_use,
             })
         print(json.dumps(output, indent=2))
@@ -136,7 +126,7 @@ def cmd_skills_catalog_list(args: argparse.Namespace) -> None:
     print(f"Skills root: {skills_root}")
     print(f"Total: {len(entries)} skill(s)\n")
     for entry in sorted(entries, key=lambda e: e.id):
-        print(_fmt_approval(entry))
+        print(_fmt_entry(entry))
         print(f"  name: {entry.name}")
         print(f"  description: {entry.description}")
         print(f"  when_to_use: {entry.when_to_use}")
@@ -284,12 +274,8 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
                 "name": s.skill.name,
                 "version": s.skill.version,
                 "policy_class": s.skill.policy_class.value if isinstance(s.skill.policy_class, PolicyClass) else str(s.skill.policy_class),
-                "approval_state": s.skill.approval_state.value if isinstance(s.skill.approval_state, ApprovalState) else str(s.skill.approval_state),
-                "approved_by": s.skill.approved_by,
-                "approved_at": str(s.skill.approved_at) if s.skill.approved_at else None,
                 "allowed_by": [{"scope": r.scope, "id": r.id, "action": r.action} for r in s.allowed_by],
                 "denied_by": [{"scope": r.scope, "id": r.id, "action": r.action} for r in s.denied_by],
-                "catalog_approved": s.catalog_approved,
             })
 
         blocked_list = []
@@ -344,7 +330,7 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
     for s in exposed:
         print(f"  {s.skill.id}@{s.skill.version}  {s.skill.name}")
         print(f"    policy_class={_fmt_pc(s.skill.policy_class)}")
-        print(f"    catalog: approved (by {s.skill.approved_by or 'none'})")
+        print(f"    catalog: present (status={s.skill.status.value})")
         for r in s.allowed_by:
             print(f"    eligibility: {r.scope}({r.id}) ALLOW")
         print(f"    when_to_use: {s.skill.when_to_use}")
@@ -466,12 +452,7 @@ def cmd_skills_policy_explain(args: argparse.Namespace) -> None:
     print("--- Catalog Gate ---")
     if catalog.passed:
         print(f"  PASS: {catalog.reason}")
-        print(f"  approval_state: {entry.approval_state.value}")
         print(f"  status: {entry.status.value}")
-        if entry.approved_by:
-            print(f"  approved_by: {entry.approved_by}")
-        if entry.approved_at:
-            print(f"  approved_at: {entry.approved_at}")
     else:
         print(f"  FAIL: {catalog.reason}")
     print()

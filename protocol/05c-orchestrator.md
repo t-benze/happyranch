@@ -347,37 +347,37 @@ verdict waste the delegation and burn a re-spawn round.
 ## 4. Runtime-Managed Skill Policy (CONTEXT/ADMISSION)
 
 The runtime-managed skill policy is an agent **context/admission** mechanism
-— it controls which approved skills appear in an agent session's compact skill
-index. It is **explicitly NOT a permission layer**. Capability remains
-governed ONLY by the existing permission model (§3). Skills do not grant
-tools, credentials, network access, filesystem access, sandbox policy, or
+— it controls which skills appear in an agent session's compact skill index.
+It is **explicitly NOT a permission layer**. Capability remains governed
+ONLY by the existing permission model (§3). Skills do not grant tools,
+credentials, network access, filesystem access, sandbox policy, or
 permission-map/allow-rule/auth changes.
+
+**Founder ruling (THR-055 seq 55):** The catalog-approval gate is REMOVED for
+first-party HappyRanch skills. For first-party skills, runtime approval
+duplicates the release pipeline — PR review + merge + deploy IS the approval.
+Exposure is now: catalog-presence + status==enabled + eligibility-matched.
+Runtime approval is DEFERRED to a future user-authored-skills feature and will
+be re-introduced only if/when that audience ships.
 
 ### 4.1 Two-Gate Model
 
 A skill reaches an agent session only when **both** gates pass:
 
-1. **Catalog Gate** — the registry entry is approved for catalog use.
-   - `approval_state` must be `approved`.
+1. **Catalog Gate** — the skill is present in the catalog and enabled.
    - `status` must be `enabled`.
-   - **Founder ruling (THR-055 seq 17):** `high_impact_policy` skills require
-     founder or designated-owner approval before catalog admission AND before
-     EACH version upgrade. Approval is version-specific — approval of `1.0.0`
-     does not imply approval of `1.1.0`. Upgrading a `high_impact_policy`
-     skill returns it to `pending_review` / unavailable until the new version
-     is approved.
-   - `draft`, `pending_review`, `rejected`, `deprecated`, or missing approval
-     metadata blocks the catalog gate.
+   - Disabled skills are blocked.
+   - There is NO approval gate — for first-party skills, the release pipeline
+     (PR review + merge + deploy) IS the approval.
 
 2. **Eligibility Gate** — org/team/agent policy makes the skill eligible.
    - Additive inheritance with explicit deny (`deny` wins over `allow`):
      ```
-     effective = approved_catalog
+     effective = present_catalog
        ∩ (org.allow ∪ team.allow ∪ agent.allow)
        \ (org.deny ∪ team.deny ∪ agent.deny)
      ```
-   - An unapproved skill remains unavailable even if eligibility allows it.
-   - A disabled registry entry remains unavailable even if approved and eligible.
+   - A disabled registry entry remains unavailable even if eligible.
    - Unknown skill ids in eligibility config produce validation warnings and
      are excluded from the session index.
 
@@ -385,8 +385,8 @@ A skill reaches an agent session only when **both** gates pass:
 
 | Policy class | Governance |
 | --- | --- |
-| `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids (e.g., `review`). Owner or team manager may approve. Passes the catalog gate without per-version founder approval. |
-| `high_impact_policy` | Pricing, legal/compliance, security, production release, escalation thresholds, agent roster governance (e.g., ``manage-agent``, ``manage-repo``). Founder or designated-owner approval required for catalog admission AND each version upgrade. |
+| `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids (e.g., `review`). Passes the catalog gate with status=enabled. |
+| `high_impact_policy` | Pricing, legal/compliance, security, production release, escalation thresholds, agent roster governance (e.g., ``manage-agent``, ``manage-repo``). Scoped to managers/operators via eligibility policy (`policy_class` still scopes eligibility). Passes the catalog gate with status=enabled (no per-version approval gate — release pipeline IS the approval). |
 | `system_contract` | Runtime protocol and mandatory operating-contract skills (e.g., `start-task`, `thread`, `jobs`). **Outside the toggleable catalog** — not shown, not toggleable. |
 
 ### 4.3 Compact Session Skill INDEX

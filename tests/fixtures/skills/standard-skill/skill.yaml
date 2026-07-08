@@ -7,9 +7,6 @@ when_to_use: Use when testing standard operational skills.
 owner: engineering_manager
 source: runtime/skills/standard-skill
 policy_class: standard_operational
-approval_state: approved
-approved_by: engineering_manager
-approved_at: 2026-07-01T00:00:00Z
 status: enabled
 compatibility:
   executors: [codex, claude, opencode]

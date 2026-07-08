@@ -23,13 +23,12 @@ class TestSkillRegistryLoad:
         assert entry.name == "Standard Operational Skill"
         assert entry.version == "1.0.0"
         assert entry.policy_class == "standard_operational"
-        assert entry.approval_state == "approved"
         assert entry.status == "enabled"
         assert entry.owner == "engineering_manager"
         assert entry.when_to_use == "Use when testing standard operational skills."
 
     def test_loads_high_impact_policy_skill(self):
-        """A high_impact_policy skill with founder approval loads successfully."""
+        """A high_impact_policy skill loads successfully."""
         from runtime.skills.registry import SkillRegistry
 
         registry = SkillRegistry(skills_root=FIXTURES)
@@ -37,8 +36,6 @@ class TestSkillRegistryLoad:
 
         assert entry is not None
         assert entry.policy_class == "high_impact_policy"
-        assert entry.approval_state == "approved"
-        assert entry.approved_by == "founder"
 
     def test_skips_system_contract_skills(self):
         """system_contract skills are NOT loaded as toggleable entries."""
@@ -156,11 +153,10 @@ class TestReviewSkillRegistration:
         assert entry.id == "hr:review"
         assert entry.slug == "review"
         assert entry.policy_class == "standard_operational"
-        assert entry.approval_state == "approved"
         assert entry.status == "enabled"
 
     def test_review_skill_has_required_metadata(self):
-        """The review skill carries owner, version, source, and approval provenance."""
+        """The review skill carries owner, version, source."""
         from runtime.skills.registry import SkillRegistry
 
         registry = SkillRegistry(skills_root=FIXTURES)
@@ -170,8 +166,6 @@ class TestReviewSkillRegistration:
         assert entry.version == "1.0.0"
         assert entry.owner == "engineering_manager"
         assert entry.source.startswith("runtime/skills/review")
-        assert entry.approved_by is not None
-        assert entry.approved_at is not None
         assert entry.when_to_use != ""
         assert entry.description != ""
 
@@ -209,7 +203,6 @@ class TestManageAgentManageRepoRegistration:
         assert entry.id == "hr:manage-agent"
         assert entry.slug == "manage-agent"
         assert entry.policy_class == "high_impact_policy"
-        assert entry.approval_state == "pending_review"
         assert entry.status == "enabled"
 
     def test_manage_repo_loaded_as_high_impact_policy(self):
@@ -223,11 +216,10 @@ class TestManageAgentManageRepoRegistration:
         assert entry.id == "hr:manage-repo"
         assert entry.slug == "manage-repo"
         assert entry.policy_class == "high_impact_policy"
-        assert entry.approval_state == "pending_review"
         assert entry.status == "enabled"
 
     def test_manage_agent_has_required_metadata(self):
-        """manage-agent carries owner, version, source, and is unapproved."""
+        """manage-agent carries owner, version, source."""
         from runtime.skills.registry import SkillRegistry
 
         registry = SkillRegistry(skills_root=FIXTURES)
@@ -237,15 +229,11 @@ class TestManageAgentManageRepoRegistration:
         assert entry.version == "1.0.0"
         assert entry.owner == "engineering_manager"
         assert entry.source.startswith("runtime/skills/manage-agent")
-        # Fail-closed: NO approved_by, NO approved_at, NO approved_version
-        assert entry.approved_by is None
-        assert entry.approved_at is None
-        assert entry.approved_version is None
         assert entry.when_to_use != ""
         assert entry.description != ""
 
     def test_manage_repo_has_required_metadata(self):
-        """manage-repo carries owner, version, source, and is unapproved."""
+        """manage-repo carries owner, version, source."""
         from runtime.skills.registry import SkillRegistry
 
         registry = SkillRegistry(skills_root=FIXTURES)
@@ -255,10 +243,6 @@ class TestManageAgentManageRepoRegistration:
         assert entry.version == "1.0.0"
         assert entry.owner == "engineering_manager"
         assert entry.source.startswith("runtime/skills/manage-repo")
-        # Fail-closed: NO approved_by, NO approved_at, NO approved_version
-        assert entry.approved_by is None
-        assert entry.approved_at is None
-        assert entry.approved_version is None
         assert entry.when_to_use != ""
         assert entry.description != ""
 
