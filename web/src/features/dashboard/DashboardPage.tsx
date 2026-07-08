@@ -364,7 +364,7 @@ export function DashboardPage(): JSX.Element {
               {slug ? (
                 <Link
                   to={`/orgs/${slug}/spend`}
-                  aria-label="View token spend on the Spend page"
+                  aria-label="View token spend on the Usage page"
                   className="group flex items-end justify-between"
                 >
                   <div>

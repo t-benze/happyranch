@@ -1,7 +1,9 @@
 /**
  * SettingsPage — full page (not dialog) with sticky left sub-nav + field panel.
  *
- * Sub-nav: Assistant · System · Organization · Agents · Executors · Usage.
+ * Sub-nav: Assistant · System · Organization · Agents · Executors.
+ * (THR-061 seq79: the Usage sub-tab was removed — token usage now lives on
+ * the standalone /usage page.)
  * Each sub-nav item routes to /orgs/:slug/settings/:section.
  * The Organization section has real saves via PUT /settings/org.
  *
@@ -24,7 +26,6 @@ import {
   Home as HomeIcon,
   Users,
   Terminal,
-  BarChart3,
   type LucideIcon,
 } from 'lucide-react';
 import { useSettings } from '@/hooks/settings';
@@ -36,7 +37,6 @@ const SECTIONS = [
   { key: 'organization', label: 'Organization', icon: HomeIcon },
   { key: 'agents', label: 'Agents', icon: Users },
   { key: 'executors', label: 'Executors', icon: Terminal },
-  { key: 'usage', label: 'Usage', icon: BarChart3 },
 ] as const satisfies ReadonlyArray<{
   key: string;
   label: string;
@@ -88,7 +88,6 @@ export function SettingsPage(): JSX.Element {
               />
               <Route path="agents" element={<AgentsPanel />} />
               <Route path="executors" element={<ExecutorsPanel />} />
-              <Route path="usage" element={<UsagePanel />} />
               <Route path="*" element={<Navigate to={`/orgs/${slug}/settings/assistant`} replace />} />
             </Routes>
           </main>
@@ -145,7 +144,6 @@ import { SystemSection } from './sections/SystemSection';
 import { OrganizationSection } from './sections/OrganizationSection';
 import { AgentsSection } from './sections/AgentsSection';
 import { ExecutorsSection } from './sections/ExecutorsSection';
-import { UsageSection } from './sections/UsageSection';
 import type { SystemSettings, OrgSettings } from '@/lib/api/types';
 
 function AssistantPanel(): JSX.Element {
@@ -197,18 +195,6 @@ function ExecutorsPanel(): JSX.Element {
     <div className="max-w-2xl p-6">
       <h2 className="font-display mb-4 text-lg font-semibold">Executors</h2>
       <ExecutorsSection />
-    </div>
-  );
-}
-
-function UsagePanel(): JSX.Element {
-  return (
-    <div className="max-w-2xl p-6">
-      <h2 className="font-display mb-4 text-lg font-semibold">Usage</h2>
-      <p className="text-text-secondary mb-4 text-sm">
-        Token consumption across the org.
-      </p>
-      <UsageSection />
     </div>
   );
 }

@@ -46,7 +46,7 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
  *    org switcher — restyled from the native footer `<select>` (BUG-01/08).
  *  - Primary group: Home, Threads, Tasks, Agents, Knowledge, Artifacts — each
  *    with a leading icon (BUG-03).
- *  - Operate group: Spend, Dreams, Work Hours, Audit, Jobs.
+ *  - Operate group: Usage, Dreams, Work Hours, Audit, Jobs.
  *  - Footer: Settings as a labeled row above the account row (BUG-02), then an
  *    avatar + identity account row (BUG-07).
  *
@@ -222,8 +222,8 @@ export function Sidebar(): JSX.Element {
       <div className="mt-3 px-3">
         <SidebarGroupLabel>Operate</SidebarGroupLabel>
         <nav className="flex flex-col gap-0.5">
-          <SidebarNavItem {...sidebarLink('spend', true)} icon={Wallet}>
-            Spend
+          <SidebarNavItem {...sidebarLink('usage', true)} icon={Wallet}>
+            Usage
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('dreams', true)} icon={Sparkles}>
             Dreams

@@ -361,7 +361,7 @@ describe('DashboardPage', () => {
     expect(within(tile).queryByText('—')).not.toBeInTheDocument();
   });
 
-  test("This week's burn card renders a real 7d token figure with a chevron deep-link to Spend (THR-030 HOME-06)", async () => {
+  test("This week's burn card renders a real 7d token figure with a chevron deep-link to Usage (THR-030 HOME-06)", async () => {
     const s = emptySummary();
     s.org_age_days = 14;
     // A real this-week token total resolved by the (mocked) week-summing hook.
