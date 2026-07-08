@@ -75,6 +75,18 @@ if [ -z "$MAIN_CHECKOUT" ]; then
 fi
 if [ -n "$MAIN_CHECKOUT" ] && [ -d "$NODE_MODULES" ]; then
     MAIN_NM="$MAIN_CHECKOUT/web/node_modules"
+    # A symlink at the shared checkout IS the wipe hazard this guard exists to
+    # prevent.  [ -d ] is true for symlink-to-directory, so this check must
+    # run BEFORE the same-dir realpath comparison.
+    if [ -L "$MAIN_NM" ]; then
+        TARGET="$(readlink "$MAIN_NM")"
+        fail "Shared main clone has a symlink web/node_modules → $TARGET
+      A symlink at the shared checkout is EXACTLY the wipe hazard
+      this guard exists to prevent:
+        - npm ci dereferences the symlink and empties the target
+        - rm -rf node_modules/ (trailing slash) wipes the target
+      Replace the symlink with a real node_modules directory."
+    fi
     if [ -d "$MAIN_NM" ]; then
         NM_REAL="$(cd "$NODE_MODULES" 2>/dev/null && pwd -P || true)"
         MAIN_REAL="$(cd "$MAIN_NM" 2>/dev/null && pwd -P || true)"
