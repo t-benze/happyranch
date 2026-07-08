@@ -68,27 +68,43 @@ struct HappyRanchApp: App {
         appDelegate.switchConnectionRole(to: target)
     }
 
-    /// Present an NSAlert confirmation before switching roles.
-    /// Called from the "Switch to Client…" / "Switch to Home…" menu item.
-    private func confirmAndSwitchRole(_ appDelegate: AppDelegate) {
+    /// Present an NSAlert confirmation dialog for role switching.
+    /// Returns true iff the user clicks "Switch".
+    static func presentRoleSwitchAlert(title: String, body: String) -> Bool {
         let alert = NSAlert()
-        alert.messageText = "Change Connection Role"
+        alert.messageText = title
+        alert.informativeText = body
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Switch")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Confirm and execute a role switch, gated by a confirmation callback.
+    /// Called from the "Switch to Client…" / "Switch to Home…" menu item.
+    /// - Parameters:
+    ///   - appDelegate: The AppDelegate on which to operate.
+    ///   - confirmed: A closure that receives the alert title and body, and
+    ///     returns true if the switch should proceed. Defaults to the real
+    ///     NSAlert presentation; inject a stub in tests to bypass the modal.
+    func confirmAndSwitchRole(
+        _ appDelegate: AppDelegate,
+        confirmed: @MainActor (String, String) -> Bool = HappyRanchApp.presentRoleSwitchAlert
+    ) {
+        let title = "Change Connection Role"
+        let body: String
 
         if appDelegate.roleSwitchRequiresTeardown {
-            alert.informativeText = appDelegate.connectionRole == .home
+            body = appDelegate.connectionRole == .home
                 ? "Switching to Client will stop the running daemon. Are you sure?"
                 : "Switching to Home will disconnect from the remote runtime. Are you sure?"
         } else {
-            alert.informativeText = appDelegate.connectionRole == .home
+            body = appDelegate.connectionRole == .home
                 ? "Switch to Client mode? You will connect to a remote HappyRanch runtime."
                 : "Switch to Home mode? You will run the HappyRanch daemon locally."
         }
 
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Switch")
-        alert.addButton(withTitle: "Cancel")
-
-        if alert.runModal() == .alertFirstButtonReturn {
+        if confirmed(title, body) {
             executeRoleSwitch(from: appDelegate.connectionRole, in: appDelegate)
         }
     }

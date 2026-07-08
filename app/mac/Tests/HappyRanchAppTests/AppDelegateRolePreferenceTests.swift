@@ -522,4 +522,102 @@ struct AppDelegateRolePreferenceTests {
         #expect(delegate.connectionRole == .client)
         #expect(delegate.connectionRolePreference == .client)
     }
+
+    // MARK: - confirmAndSwitchRole confirm→switch path (TASK-2350)
+
+    /// Proves the full confirmAndSwitchRole path with a stub confirmation:
+    /// HOME→CLIENT with a running daemon, stub returns true → daemon teardown + role switch.
+    /// This closes the reviewer gap: the existing tests only exercised executeRoleSwitch
+    /// directly, bypassing confirmAndSwitchRole (the method the menu Button invokes).
+    @Test("confirmAndSwitchRole HOME→CLIENT with running daemon, stub returns true, tears down daemon")
+    func confirmAndSwitchRoleHomeToClientRunningDaemonConfirmedTrue() {
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-confirm-1")
+        delegate.connectionRolePreference = .home
+
+        // Start daemon → reach .running (same pattern as existing tests)
+        delegate.startDaemon()
+        #expect(fake.launchCallCount == 1)
+        delegate.supervisor.onHealthCheckPassed(
+            pid: fake.activeHandle!.processIdentifier,
+            port: 9876
+        )
+        delegate.refreshDerivedState()
+        #expect(delegate.supervisor.state == .running)
+        #expect(delegate.supervisor.isManagedBySelf == true)
+        #expect(delegate.connectionRole == .home)
+
+        // Exercise confirmAndSwitchRole directly with a stub that returns true
+        let app = HappyRanchApp()
+        app.confirmAndSwitchRole(delegate) { _, _ in true }
+
+        // Daemon subprocess must have been terminated through confirmAndSwitchRole
+        #expect(fake.terminateCallCount >= 1,
+                "confirmAndSwitchRole must terminate the daemon subprocess; terminateCallCount=\(fake.terminateCallCount)")
+        // Supervisor must be reset
+        #expect(delegate.supervisor.state == .notConfigured,
+                "After confirmAndSwitchRole HOME→CLIENT, supervisor must be .notConfigured, got \(delegate.supervisor.state)")
+        #expect(delegate.connectionRolePreference == .client,
+                "confirmAndSwitchRole must persist .client preference")
+        #expect(delegate.connectionRole == .client,
+                "confirmAndSwitchRole must return .client role")
+    }
+
+    /// Proves the confirmation gate: stub returns false → NO switch happens.
+    /// A regression that removes or disconnects the confirmation gate
+    /// would still switch roles even with the stub returning false.
+    @Test("confirmAndSwitchRole with stub returning false does NOT switch (confirmation gate)")
+    func confirmAndSwitchRoleCancelGateStubReturnsFalse() {
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-confirm-2")
+        delegate.connectionRolePreference = .home
+
+        // Start daemon → reach .running
+        delegate.startDaemon()
+        #expect(fake.launchCallCount == 1)
+        delegate.supervisor.onHealthCheckPassed(
+            pid: fake.activeHandle!.processIdentifier,
+            port: 9876
+        )
+        delegate.refreshDerivedState()
+        #expect(delegate.supervisor.state == .running)
+        #expect(delegate.connectionRole == .home)
+
+        // Exercise confirmAndSwitchRole directly with a stub that returns false
+        let app = HappyRanchApp()
+        app.confirmAndSwitchRole(delegate) { _, _ in false }
+
+        // NO switch must have occurred — confirmation gate is load-bearing
+        #expect(fake.terminateCallCount == 0,
+                "confirmAndSwitchRole with stub=false must NOT terminate daemon; terminateCallCount=\(fake.terminateCallCount)")
+        #expect(delegate.supervisor.state == .running,
+                "After confirmAndSwitchRole stub=false, supervisor must still be .running, got \(delegate.supervisor.state)")
+        #expect(delegate.connectionRolePreference == .home,
+                "confirmAndSwitchRole stub=false must NOT change preference")
+        #expect(delegate.connectionRole == .home,
+                "confirmAndSwitchRole stub=false must NOT change role")
+    }
+
+    /// CLIENT→HOME via confirmAndSwitchRole with stub returning true.
+    @Test("confirmAndSwitchRole CLIENT→HOME with stub returning true configures supervisor")
+    func confirmAndSwitchRoleClientToHomeConfirmedTrue() {
+        let delegate = makeClientModeDelegate()
+        #expect(delegate.connectionRole == .client)
+        #expect(delegate.connectionRolePreference == .client)
+        #expect(delegate.supervisor.state == .notConfigured)
+
+        let app = HappyRanchApp()
+        app.confirmAndSwitchRole(delegate) { _, _ in true }
+
+        #expect(delegate.connectionRolePreference == .home,
+                "confirmAndSwitchRole CLIENT→HOME must persist .home preference")
+        #expect(delegate.connectionRole == .home,
+                "confirmAndSwitchRole CLIENT→HOME must return .home role")
+        #expect(delegate.supervisor.state == .stopped,
+                "confirmAndSwitchRole CLIENT→HOME must configure supervisor, got \(delegate.supervisor.state)")
+    }
 }
