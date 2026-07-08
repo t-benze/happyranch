@@ -3,6 +3,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
 } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { useParams } from 'react-router-dom';
@@ -25,6 +26,36 @@ import type {
 function useRealOrgSlug(): string {
   const { slug } = useParams<{ slug: string }>();
   return slug ?? '';
+}
+
+// Invalidate every task-LIST family after a status mutation. The lists are
+// keyed independently ('tasks', 'tasks-infinite', 'tasks-roots',
+// 'tasks-roots-infinite'), and React Query partial-matches by key prefix
+// segment-by-segment — so a plain ['tasks', slug] invalidation does NOT
+// reach 'tasks-roots-infinite' (the list TasksPage actually renders), which
+// is why a detail-page status change left the list stale (THR-069 msg78).
+// A predicate on the 'tasks' key stem sweeps all of them at once; the detail
+// key ['task', slug, taskId] is invalidated explicitly ('task' does not
+// start with 'tasks', and neither does 'task-recall', so neither is swept).
+function invalidateTaskLists(
+  qc: QueryClient,
+  slug: string,
+  taskId?: string,
+): void {
+  qc.invalidateQueries({
+    predicate: (query) => {
+      const key = query.queryKey;
+      return (
+        Array.isArray(key) &&
+        typeof key[0] === 'string' &&
+        key[0].startsWith('tasks') &&
+        key[1] === slug
+      );
+    },
+  });
+  if (taskId) {
+    qc.invalidateQueries({ queryKey: ['task', slug, taskId] });
+  }
 }
 
 function useTasksList(params?: { status?: string; limit?: number }) {
@@ -165,8 +196,7 @@ function useCancelTask(taskId: string): MutationLike<CancelTaskArgs, CancelTaskR
   return useMutation({
     mutationFn: (body: CancelTaskArgs) => tasksApi.cancelTask(slug, taskId, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['task', slug, taskId] });
-      qc.invalidateQueries({ queryKey: ['tasks', slug] });
+      invalidateTaskLists(qc, slug, taskId);
     },
   });
 }
@@ -177,7 +207,7 @@ function useRevisitTask(taskId: string): MutationLike<RevisitTaskArgs, RevisitTa
   return useMutation({
     mutationFn: (body: RevisitTaskArgs) => tasksApi.revisitTask(slug, taskId, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['tasks', slug] });
+      invalidateTaskLists(qc, slug, taskId);
     },
   });
 }
@@ -189,8 +219,7 @@ function useResolveEscalation(taskId: string): MutationLike<ResolveEscalationArg
     mutationFn: (body: ResolveEscalationArgs) =>
       tasksApi.resolveEscalation(slug, taskId, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['task', slug, taskId] });
-      qc.invalidateQueries({ queryKey: ['tasks', slug] });
+      invalidateTaskLists(qc, slug, taskId);
     },
   });
 }
