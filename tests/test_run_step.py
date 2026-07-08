@@ -2401,16 +2401,18 @@ def test_per_slice_retry_ceiling_escalates_on_second_failure(runtime, db, monkey
     db.update_task("T-RETRY2", status=TaskStatus.IN_PROGRESS,
                    block_kind=BlockKind.DELEGATED, note="fan-out in flight")
 
-    # Original slice completed (first attempt was clean, but context changed).
+    # Original slice FAILED (first attempt was not clean).
+    # Per-slice ceiling: exactly one retry after the FIRST FAILURE.
     db.insert_task(TaskRecord(
         id="T-RETRY2-C1", brief="build feature X",
         assigned_agent="dev_agent", parent_task_id="T-RETRY2",
         task_type="subtask",
     ))
-    db.update_task("T-RETRY2-C1", status=TaskStatus.COMPLETED)
+    db.update_task("T-RETRY2-C1", status=TaskStatus.FAILED,
+                   note="first failure of this slice")
     db.insert_task_result(
         task_id="T-RETRY2-C1", agent="dev_agent", session_id="s",
-        status="completed", confidence_score=90, output_summary="Done",
+        status="failed", confidence_score=0, output_summary="Failed",
         risks_flagged=[],
     )
 
@@ -2503,3 +2505,215 @@ def test_regression_all_completed_clean_fanout_still_happy_path(runtime, db, mon
     assert orch._queue.qsize() == 1
     slug, tid = orch._queue.get_nowait()
     assert tid == "T-CLEAN"
+
+
+def test_retry_of_completed_predecessor_does_not_escalate_on_first_failure(runtime, db, monkeypatch):
+    """THR-078 Fix 1 negative: a retry of a previously COMPLETED (successful)
+    slice does NOT exhaust the ceiling on its first failure.  Ceiling=1 means
+    exactly ONE retry after a slice's FIRST FAILURE; a COMPLETED predecessor
+    means this is a fresh dispatch, not a retry — so the ceiling is not
+    triggered.
+
+    RED test: current code treats ANY same-parent ancestor as exhausting the
+    ceiling, so this test will FAIL against the unfixed code."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    db.insert_task(TaskRecord(
+        id="T-CMPL", brief="fan-out parent",
+        assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.update_task("T-CMPL", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="fan-out in flight")
+
+    # Original slice COMPLETED (clean first attempt).
+    db.insert_task(TaskRecord(
+        id="T-CMPL-C1", brief="build feature X",
+        assigned_agent="dev_agent", parent_task_id="T-CMPL",
+        task_type="subtask",
+    ))
+    db.update_task("T-CMPL-C1", status=TaskStatus.COMPLETED)
+    db.insert_task_result(
+        task_id="T-CMPL-C1", agent="dev_agent", session_id="s",
+        status="completed", confidence_score=90, output_summary="Done",
+        risks_flagged=[],
+    )
+
+    # Another child completed cleanly.
+    db.insert_task(TaskRecord(
+        id="T-CMPL-C2", brief="build feature Y",
+        assigned_agent="dev_agent", parent_task_id="T-CMPL",
+        task_type="subtask",
+    ))
+    db.update_task("T-CMPL-C2", status=TaskStatus.COMPLETED)
+    db.insert_task_result(
+        task_id="T-CMPL-C2", agent="dev_agent", session_id="s",
+        status="completed", confidence_score=90, output_summary="Done",
+        risks_flagged=[],
+    )
+
+    # Re-dispatched slice: revisit_of_task_id points to the COMPLETED C1.
+    # The owner re-delegated this slice post-fanout-join; it fails (first
+    # failure of this slice). This is NOT an exhaustion — the predecessor
+    # was COMPLETED, not FAILED.
+    db.insert_task(TaskRecord(
+        id="T-CMPL-C1-R", brief="re-dispatched: build feature X",
+        assigned_agent="dev_agent", parent_task_id="T-CMPL",
+        revisit_of_task_id="T-CMPL-C1",
+        task_type="subtask",
+    ))
+    db.update_task("T-CMPL-C1-R", status=TaskStatus.FAILED,
+                   note="first failure of this re-dispatched slice")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    _enqueue_parent_if_waiting(orch, "T-CMPL-C1-R")
+
+    parent = db.get_task("T-CMPL")
+    # COMPLETED predecessor → NOT escalated, owner is woken instead.
+    assert parent.status == TaskStatus.IN_PROGRESS, (
+        f"COMPLETED predecessor should NOT trigger escalation; "
+        f"owner should be woken; got status {parent.status}"
+    )
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-CMPL"
+
+
+def test_delegate_without_revisit_of_task_id_when_failed_sibling_is_rejected(runtime, db, monkeypatch):
+    """THR-078 Fix 4: a delegate that re-targets the agent of a FAILED sibling
+    WITHOUT revisit_of_task_id is HARD-REJECTED.  The retry-link field is
+    MANDATORY — even the first retry of a failed slice is DISALLOWED
+    without the field.
+
+    RED test: current code silently allows the delegate through, treating
+    it as an unlinked fresh dispatch that resets the ceiling."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+
+    db.insert_task(TaskRecord(
+        id="T-NOLINK", brief="fan-out parent",
+        assigned_agent="engineering_head",
+        task_type="task",
+    ))
+
+    # A FAILED child targeting dev_agent.
+    db.insert_task(TaskRecord(
+        id="T-NOLINK-C1", brief="build feature X",
+        assigned_agent="dev_agent", parent_task_id="T-NOLINK",
+        task_type="subtask",
+    ))
+    db.update_task("T-NOLINK-C1", status=TaskStatus.FAILED,
+                   note="failed to build feature X")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    # Mock the executor: owner returns delegate to dev_agent WITHOUT
+    # revisit_of_task_id even though dev_agent has a failed sibling.
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({
+                "action": "delegate",
+                "agent": "dev_agent",
+                "prompt": "retry build feature X",
+                # OMIT revisit_of_task_id — should be REJECTED.
+            }),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    # Run the step — the delegate handler should REJECT before spawning.
+    orch.run_step("T-NOLINK")
+
+    # After rejection, parent should still be PENDING (re-enqueued for retry),
+    # NOT in_progress(delegated).
+    parent = db.get_task("T-NOLINK")
+    assert parent.status == TaskStatus.PENDING, (
+        f"Parent should be PENDING after reject; got {parent.status}"
+    )
+    assert parent.block_kind is None, (
+        f"block_kind should be None after reject; got {parent.block_kind}"
+    )
+
+    # No NEW child should have been spawned (only T-NOLINK-C1 was pre-existing).
+    children = db.get_children("T-NOLINK")
+    assert len(children) == 1, (
+        f"No new child should be spawned; got {len(children)} children"
+    )
+    assert children[0] == "T-NOLINK-C1"
+
+    # Parent should be re-enqueued for another decision step.
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-NOLINK"
+
+
+def test_delegate_with_revisit_of_task_id_e2e_ceiling_fires(runtime, db, monkeypatch):
+    """THR-078 Fix 2: end-to-end.  Parent with a failed slice + uncleared
+    active_fanout wakes → join context is injected.  Simulate the second
+    phase: the retry child (which carries revisit_of_task_id pointing at the
+    FAILED predecessor) itself fails → ceiling fires, parent escalates.
+
+    This validates the real _enqueue_parent_if_waiting path: the revisited
+    FAILED ancestor under the same parent triggers the ceiling."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    db.insert_task(TaskRecord(
+        id="T-E2E", brief="fan-out parent",
+        assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.update_task("T-E2E", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="fan-out in flight")
+
+    # FAILED predecessor (original slice, first failure).
+    db.insert_task(TaskRecord(
+        id="T-E2E-C1-ORIG", brief="build feature Y (original)",
+        assigned_agent="dev_agent", parent_task_id="T-E2E",
+        task_type="subtask",
+    ))
+    db.update_task("T-E2E-C1-ORIG", status=TaskStatus.FAILED,
+                   note="first failure")
+
+    # Another child completed cleanly.
+    db.insert_task(TaskRecord(
+        id="T-E2E-C2", brief="build feature Z",
+        assigned_agent="qa_engineer", parent_task_id="T-E2E",
+        task_type="subtask",
+    ))
+    db.update_task("T-E2E-C2", status=TaskStatus.COMPLETED)
+
+    # Retry child: revisit_of_task_id points at the FAILED predecessor.
+    # This is the retry after the first failure — when IT fails, the ceiling
+    # fires (1 retry exhausted).
+    db.insert_task(TaskRecord(
+        id="T-E2E-C1-R", brief="retry: build feature Y",
+        assigned_agent="dev_agent", parent_task_id="T-E2E",
+        revisit_of_task_id="T-E2E-C1-ORIG",
+        task_type="subtask",
+    ))
+    db.update_task("T-E2E-C1-R", status=TaskStatus.FAILED,
+                   note="second failure — ceiling exhausted")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    _enqueue_parent_if_waiting(orch, "T-E2E-C1-R")
+
+    parent = db.get_task("T-E2E")
+    # Ceiling exhausted → escalated (T-E2E is root).
+    assert parent.status == TaskStatus.ESCALATED, (
+        f"second failure should escalate; got status {parent.status}"
+    )
+    assert parent.block_kind is None

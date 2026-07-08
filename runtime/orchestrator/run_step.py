@@ -599,6 +599,39 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             if orch._queue is not None:
                 orch._queue.put_nowait(orch._slug, task_id)
             return
+
+        # THR-078 seq15: MANDATORY retry-link.  When this parent has FAILED
+        # children and the owner is re-delegating to the same agent as a
+        # failed child, revisit_of_task_id is REQUIRED — even the first retry
+        # of a failed slice is DISALLOWED without the field.  Omission is
+        # hard-rejected (feedback + re-enqueue), never silently treated as
+        # an unlinked fresh dispatch that resets the ceiling.
+        retry_link_err = _check_retry_link_required(orch, task_id, decision)
+        if retry_link_err is not None:
+            feedback = (
+                f"Missing revisit_of_task_id: {retry_link_err}. "
+                f"When re-delegating to an agent with a FAILED child under "
+                f"this parent, you MUST set revisit_of_task_id to the "
+                f"failed predecessor's task id."
+            )
+            db.insert_task_result(
+                task_id=task_id,
+                agent=agent,
+                session_id="",
+                status="completed",
+                confidence_score=0,
+                output_summary=feedback,
+                risks_flagged=[],
+            )
+            orch._audit.log_orchestration_step(
+                task_id, next_count,
+                {"action": "feedback", "reason": feedback},
+            )
+            db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
+            if orch._queue is not None:
+                orch._queue.put_nowait(orch._slug, task_id)
+            return
+
         from runtime.models import TaskRecord
         # Revision tracking: bump the delegating task's revision_count only
         # when the manager re-delegates to the *worker-of-record* — i.e. the
@@ -711,6 +744,37 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
         err = _validate_one_leg(orch, agent=leg.agent, where=str(i + 2))
         if err is not None:
             return err
+    return None
+
+
+def _check_retry_link_required(
+    orch: "Orchestrator", task_id: str, decision,
+) -> str | None:
+    """Return an error message if the delegate decision omits
+    ``revisit_of_task_id`` when it's mandatory.
+
+    THR-078 seq15: when this parent has FAILED children and the delegate
+    re-targets the agent of any FAILED child, ``revisit_of_task_id`` is
+    MANDATORY — even the first retry is disallowed without the field.
+    Returns None if the link is set OR no FAILED sibling matches the
+    target agent."""
+    if decision.revisit_of_task_id is not None:
+        return None  # owner set the link; good.
+    target_agent = decision.agent
+    if target_agent is None:
+        return None  # shouldn't happen after _validate_delegate, but safe.
+    db = orch._db
+    children = db.get_children(task_id)
+    for cid in children:
+        child = db.get_task(cid)
+        if child is None:
+            continue
+        if child.status == TaskStatus.FAILED and child.assigned_agent == target_agent:
+            return (
+                f"cannot re-delegate to {target_agent!r} without "
+                f"revisit_of_task_id — this agent has a FAILED child "
+                f"({child.id}) under the same parent"
+            )
     return None
 
 
@@ -1501,16 +1565,21 @@ _SLICE_RETRY_CEILING = 1  # per-slice retry ceiling; 2nd failure escalates
 def _is_slice_retry_exhausted(
     orch: "Orchestrator", child: "TaskRecord", parent: "TaskRecord",
 ) -> bool:
-    """Return True if ``child`` is a retry of a previously-failed slice
+    """Return True if ``child`` is a retry of a previously-FAILED slice
     under the same ``parent``, meaning the per-slice ceiling (_SLICE_RETRY_CEILING)
     of 1 has been exhausted.
 
+    Ceiling=1 means: exactly ONE retry is allowed AFTER a slice's FIRST
+    FAILURE; the SAME slice's SECOND failure escalates.  A retry of a
+    previously COMPLETED (successful) slice must NOT escalate on its first
+    failure — the ceiling only fires after a predecessor FAILED.
+
     Derivation: follow the child's ``revisit_of_task_id`` chain.  If any
-    ancestor in that chain (excluding the child itself) has
+    FAILED ancestor in that chain (excluding the child itself) has
     ``parent_task_id == parent.id``, the child is a retry — the ancestor was
-    the original slice, and we are now looking at its 2nd failure.  This uses
-    ONLY the existing ``revisit_of_task_id`` column on TaskRecord (no schema
-    migration).
+    the original FAILED slice, and we are now looking at its 2nd failure.
+    This uses ONLY the existing ``revisit_of_task_id`` column on TaskRecord
+    (no schema migration).
     """
     if child.revisit_of_task_id is None:
         return False
@@ -1523,9 +1592,11 @@ def _is_slice_retry_exhausted(
     except LineageTooDeep:
         chain = []
     # Skip the first entry (the child itself); check each ancestor for
-    # same-parent membership.
+    # same-parent membership AND FAILED status.  Only a FAILED predecessor
+    # counts toward the ceiling — a retry of a COMPLETED slice is a fresh
+    # dispatch, not an escalation trigger.
     for ancestor in chain[1:]:
-        if ancestor.parent_task_id == parent.id:
+        if ancestor.parent_task_id == parent.id and ancestor.status == TaskStatus.FAILED:
             return True
     return False
 

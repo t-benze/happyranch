@@ -115,6 +115,17 @@ def build_fanout_join_context(
         "`happyranch audit <id>`. Decide the next step (delegate, "
         "done, escalate, or fanout again) based on these outcomes."
     )
+    lines.append("")
+    lines.append(
+        "IMPORTANT: When re-delegating (retrying) any FAILED child above, "
+        "you MUST set `revisit_of_task_id` on your delegate decision to "
+        "the FAILED child's task id. Example: "
+        '{"action": "delegate", "agent": "...", "prompt": "...", '
+        '"revisit_of_task_id": "<FAILED child id>"}. '
+        "Omitting this field when re-delegating to a failed-slice agent "
+        "is a HARD REJECT — the orchestrator will deny the delegate and "
+        "ask you to retry with the field set."
+    )
     lines.append("=========================================")
     return "\n".join(lines)
 

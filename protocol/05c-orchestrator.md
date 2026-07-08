@@ -190,7 +190,11 @@ cascade-failed. Instead:
    fan-out owner re-dispatches a failed slice, the new child carries
    `revisit_of_task_id` pointing to the failed predecessor; if that retry child
    also fails, the orchestrator detects the revisit ancestor within the same
-   parent and escalates.
+   parent and escalates.  **The `revisit_of_task_id` field is MANDATORY** —
+   a re-delegate to an agent with a FAILED child under the same parent that
+   omits this field is HARD-REJECTED (feedback, no child spawned), even on
+   the first retry.  Only FAILED ancestors count toward the ceiling; a retry
+   of a COMPLETED predecessor does not trigger escalation on its first failure.
 
 4. **Exhaustion escalation.** When the per-slice ceiling is exhausted (a slice's
    2nd failure), the parent transitions to `escalated` via
