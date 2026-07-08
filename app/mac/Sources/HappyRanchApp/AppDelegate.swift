@@ -575,6 +575,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    // MARK: - Role switching
+
+    /// The label for role-switch menu item — dynamic based on current role.
+    var switchRoleMenuLabel: String {
+        switch connectionRole {
+        case .home: return "Switch to Client…"
+        case .client: return "Switch to Home…"
+        }
+    }
+
+    /// Whether switching roles requires teardown of an active daemon or connection.
+    var roleSwitchRequiresTeardown: Bool {
+        switch connectionRole {
+        case .home:
+            return supervisor.isManagedBySelf &&
+                   (supervisor.state == .running || supervisor.state == .starting || supervisor.state == .unhealthy)
+        case .client:
+            return clientBridge != nil
+        }
+    }
+
+    /// Switch the connection role to the given preference, handling in-flight teardown.
+    ///
+    /// - HOME → CLIENT: stops running daemon subprocess (via ``stopDaemon(confirmed:)``)
+    ///   and home connector, then persists the CLIENT preference.
+    /// - CLIENT → HOME: disconnects client bridge (via ``disconnectRemote()``),
+    ///   then persists the HOME preference which configures the supervisor.
+    ///
+    /// No-op when the target role equals the current effective role.
+    /// This method is safe to call from tests (no UI dependency).
+    func switchConnectionRole(to preference: ConnectionRolePreference) {
+        let currentRole = connectionRole
+        let targetRole = ConnectionRole.detect(supervisor: supervisor, preference: preference)
+
+        guard currentRole != targetRole else { return }
+
+        switch currentRole {
+        case .home:
+            // Stop running daemon subprocess before switching (load-bearing).
+            // Reuses the existing stopDaemon path — supervisor.stop + terminateManagedProcess.
+            if supervisor.isManagedBySelf,
+               supervisor.state == .running || supervisor.state == .starting || supervisor.state == .unhealthy {
+                stopDaemon(confirmed: true)
+            }
+            // Stop home connector (also done by setRolePreference, but be explicit).
+            if homeConnector != nil {
+                stopHomeConnector()
+            }
+        case .client:
+            // Disconnect client bridge if active.
+            if clientBridge != nil {
+                disconnectRemote()
+            }
+        }
+
+        setRolePreference(preference)
+    }
+
     // MARK: - A2 Remote connection actions
 
     /// Start the home connector on the tailnet interface.
