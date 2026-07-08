@@ -268,4 +268,356 @@ struct AppDelegateRolePreferenceTests {
         // supervisor does NOT crash or throw.
         #expect(delegate.connectionRole == .client)
     }
+
+    // MARK: - Role switch after first launch (TASK-2318)
+
+    @Test("switchConnectionRole(.client) from HOME after first launch changes role and persists preference")
+    func switchToClientAfterFirstLaunchChangesRole() {
+        let delegate = makeHomeModeDelegate()
+        #expect(delegate.connectionRole == .home)
+        #expect(delegate.connectionRolePreference == .home)
+
+        delegate.switchConnectionRole(to: .client)
+
+        #expect(delegate.connectionRolePreference == .client,
+                "switchConnectionRole(.client) must persist .client preference")
+        #expect(delegate.connectionRole == .client,
+                "switchConnectionRole(.client) must return .client role")
+        #expect(delegate.supervisor.state == .notConfigured,
+                "switchConnectionRole(.client) must reset supervisor to .notConfigured")
+    }
+
+    @Test("switchConnectionRole(.home) from CLIENT after first launch changes role and configures supervisor")
+    func switchToHomeAfterFirstLaunchChangesRole() {
+        let delegate = makeClientModeDelegate()
+        #expect(delegate.connectionRole == .client)
+        #expect(delegate.connectionRolePreference == .client)
+
+        delegate.switchConnectionRole(to: .home)
+
+        #expect(delegate.connectionRolePreference == .home,
+                "switchConnectionRole(.home) must persist .home preference")
+        #expect(delegate.connectionRole == .home,
+                "switchConnectionRole(.home) must return .home role")
+        #expect(delegate.supervisor.state == .stopped,
+                "switchConnectionRole(.home) must configure supervisor (state .stopped), got \(delegate.supervisor.state)")
+    }
+
+    @Test("switchConnectionRole to same role is a no-op")
+    func switchToSameRoleIsNoOp() {
+        let delegate = makeHomeModeDelegate()
+        #expect(delegate.connectionRole == .home)
+        let beforeState = delegate.supervisor.state
+
+        delegate.switchConnectionRole(to: .home)
+
+        #expect(delegate.connectionRolePreference == .home)
+        #expect(delegate.connectionRole == .home)
+        #expect(delegate.supervisor.state == beforeState,
+                "Switching to same role must not change supervisor state")
+    }
+
+    @Test("switchConnectionRole(.client) from CLIENT is a no-op")
+    func switchToClientFromClientIsNoOp() {
+        let delegate = makeClientModeDelegate()
+        #expect(delegate.connectionRole == .client)
+
+        delegate.switchConnectionRole(to: .client)
+
+        #expect(delegate.connectionRolePreference == .client)
+        #expect(delegate.connectionRole == .client)
+        #expect(delegate.supervisor.state == .notConfigured)
+    }
+
+    // MARK: - Role switch with running daemon (TASK-2318)
+
+    @Test("HOME→CLIENT with running daemon stops the daemon subprocess")
+    func homeToClientWithRunningDaemonStopsDaemon() {
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-switch")
+        delegate.connectionRolePreference = .home
+
+        // Start daemon via the real path (launches through fake)
+        delegate.startDaemon()
+        #expect(fake.launchCallCount == 1)
+
+        // Simulate health-check success to reach .running
+        delegate.supervisor.onHealthCheckPassed(
+            pid: fake.activeHandle!.processIdentifier,
+            port: 9876
+        )
+        delegate.refreshDerivedState()
+        #expect(delegate.supervisor.state == .running)
+        #expect(delegate.supervisor.isManagedBySelf == true)
+
+        // Switch to CLIENT — must stop the running daemon
+        delegate.switchConnectionRole(to: .client)
+
+        // The daemon subprocess must have been terminated
+        #expect(fake.terminateCallCount >= 1,
+                "HOME→CLIENT must terminate the running daemon subprocess; terminateCallCount=\(fake.terminateCallCount)")
+        // After switch, supervisor must be reset
+        #expect(delegate.supervisor.state == .notConfigured,
+                "After HOME→CLIENT, supervisor must be .notConfigured")
+        #expect(delegate.connectionRolePreference == .client)
+        #expect(delegate.connectionRole == .client)
+    }
+
+    @Test("HOME→CLIENT with running daemon stops home connector")
+    func homeToClientWithRunningDaemonStopsHomeConnector() {
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-switch")
+        delegate.connectionRolePreference = .home
+
+        // Set up a home connector
+        let connector = HomeConnector(
+            bindHost: "100.64.0.1",
+            bindPort: 8443,
+            daemonPort: 8765,
+            credentialProvider: LocalTokenCredentialProvider(homeDir: "/tmp/test-hr-switch"),
+            pairedDeviceStore: RealPairingStore(),
+            tailnetSelfIP: "100.64.0.1"
+        )
+        delegate.homeConnector = connector
+
+        // Start daemon so it's running
+        delegate.startDaemon()
+        delegate.supervisor.onHealthCheckPassed(
+            pid: fake.activeHandle!.processIdentifier,
+            port: 9876
+        )
+        delegate.refreshDerivedState()
+        #expect(delegate.supervisor.state == .running)
+
+        // Switch to CLIENT
+        delegate.switchConnectionRole(to: .client)
+
+        // Both daemon and home connector must be stopped
+        #expect(fake.terminateCallCount >= 1,
+                "HOME→CLIENT must terminate the daemon subprocess")
+        #expect(delegate.homeConnector == nil,
+                "HOME→CLIENT must nil out homeConnector")
+        #expect(delegate.connectionRolePreference == .client)
+        #expect(delegate.connectionRole == .client)
+    }
+
+    @Test("HOME→CLIENT with already-stopped daemon does not double-terminate")
+    func homeToClientWithStoppedDaemonNoDoubleTerminate() {
+        let delegate = makeHomeModeDelegate()
+        #expect(delegate.supervisor.state == .stopped)
+        #expect(delegate.connectionRole == .home)
+
+        // Switch to CLIENT with daemon already stopped
+        delegate.switchConnectionRole(to: .client)
+
+        #expect(delegate.supervisor.state == .notConfigured,
+                "After switch from stopped HOME, supervisor must be .notConfigured")
+        #expect(delegate.connectionRolePreference == .client)
+        #expect(delegate.connectionRole == .client)
+    }
+
+    // MARK: - CLIENT→HOME with active client connection (TASK-2318)
+
+    @Test("CLIENT→HOME clears clientBridge and resets connection state")
+    func clientToHomeClearsClientBridge() {
+        let delegate = makeClientModeDelegate()
+        #expect(delegate.connectionRole == .client)
+
+        // Set up a fake active client bridge
+        delegate.clientBridge = ClientBridge(
+            homeConnectorHost: "100.64.0.1",
+            homeConnectorPort: 8443
+        )
+        delegate.clientHomeHost = "100.64.0.1"
+        delegate.webViewURL = "http://127.0.0.1:9876/"
+        delegate.connectionStateManager.forceState(.online)
+        delegate.connectionState = delegate.connectionStateManager.state
+        #expect(delegate.clientBridge != nil)
+        #expect(delegate.webViewURL != nil)
+        #expect(delegate.connectionState == .online)
+
+        // Switch to HOME
+        delegate.switchConnectionRole(to: .home)
+
+        #expect(delegate.clientBridge == nil,
+                "CLIENT→HOME must nil out clientBridge")
+        #expect(delegate.webViewURL == nil,
+                "CLIENT→HOME must clear webViewURL")
+        #expect(delegate.connectionRolePreference == .home)
+        #expect(delegate.connectionRole == .home)
+        #expect(delegate.supervisor.state == .stopped,
+                "CLIENT→HOME must configure supervisor")
+    }
+
+    // MARK: - Menu/action path reachability (TASK-2336)
+
+    /// Proves the menu command's action path reaches switchConnectionRole
+    /// via the executeRoleSwitch seam (extracted from confirmAndSwitchRole).
+    /// Without this test, removing the menu item or disconnecting
+    /// confirmAndSwitchRole from switchConnectionRole would still pass CI.
+    @Test("executeRoleSwitch(.client) from HOME with running daemon stops daemon and changes role")
+    func menuPathHomeToClientStopsDaemon() {
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-menu")
+        delegate.connectionRolePreference = .home
+
+        // Start daemon → reach .running (same pattern as existing test at line 332)
+        delegate.startDaemon()
+        #expect(fake.launchCallCount == 1)
+        delegate.supervisor.onHealthCheckPassed(
+            pid: fake.activeHandle!.processIdentifier,
+            port: 9876
+        )
+        delegate.refreshDerivedState()
+        #expect(delegate.supervisor.state == .running)
+        #expect(delegate.supervisor.isManagedBySelf == true)
+
+        // Exercise the menu/action seam — this is what the menu button's
+        // confirmAndSwitchRole calls after the user confirms the alert.
+        let app = HappyRanchApp()
+        app.executeRoleSwitch(from: .home, in: delegate)
+
+        // Daemon subprocess must have been terminated
+        #expect(fake.terminateCallCount >= 1,
+                "Menu HOME→CLIENT must terminate the running daemon; terminateCallCount=\(fake.terminateCallCount)")
+        // Supervisor must be reset
+        #expect(delegate.supervisor.state == .notConfigured,
+                "After menu HOME→CLIENT, supervisor must be .notConfigured, got \(delegate.supervisor.state)")
+        #expect(delegate.connectionRolePreference == .client)
+        #expect(delegate.connectionRole == .client)
+    }
+
+    @Test("executeRoleSwitch(.home) from CLIENT changes role and configures supervisor")
+    func menuPathClientToHomeConfiguresSupervisor() {
+        let delegate = makeClientModeDelegate()
+        #expect(delegate.connectionRole == .client)
+        #expect(delegate.connectionRolePreference == .client)
+
+        // Exercise the menu/action seam
+        let app = HappyRanchApp()
+        app.executeRoleSwitch(from: .client, in: delegate)
+
+        #expect(delegate.connectionRolePreference == .home,
+                "Menu CLIENT→HOME must persist .home preference")
+        #expect(delegate.connectionRole == .home,
+                "Menu CLIENT→HOME must return .home role")
+        #expect(delegate.supervisor.state == .stopped,
+                "Menu CLIENT→HOME must configure supervisor, got \(delegate.supervisor.state)")
+    }
+
+    @Test("executeRoleSwitch from home toggles to client (label consistency)")
+    func menuPathToggleHomeToClient() {
+        let delegate = makeHomeModeDelegate()
+        #expect(delegate.connectionRole == .home)
+
+        let app = HappyRanchApp()
+        app.executeRoleSwitch(from: .home, in: delegate)
+
+        #expect(delegate.connectionRole == .client)
+        #expect(delegate.connectionRolePreference == .client)
+    }
+
+    // MARK: - confirmAndSwitchRole confirm→switch path (TASK-2350)
+
+    /// Proves the full confirmAndSwitchRole path with a stub confirmation:
+    /// HOME→CLIENT with a running daemon, stub returns true → daemon teardown + role switch.
+    /// This closes the reviewer gap: the existing tests only exercised executeRoleSwitch
+    /// directly, bypassing confirmAndSwitchRole (the method the menu Button invokes).
+    @Test("confirmAndSwitchRole HOME→CLIENT with running daemon, stub returns true, tears down daemon")
+    func confirmAndSwitchRoleHomeToClientRunningDaemonConfirmedTrue() {
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-confirm-1")
+        delegate.connectionRolePreference = .home
+
+        // Start daemon → reach .running (same pattern as existing tests)
+        delegate.startDaemon()
+        #expect(fake.launchCallCount == 1)
+        delegate.supervisor.onHealthCheckPassed(
+            pid: fake.activeHandle!.processIdentifier,
+            port: 9876
+        )
+        delegate.refreshDerivedState()
+        #expect(delegate.supervisor.state == .running)
+        #expect(delegate.supervisor.isManagedBySelf == true)
+        #expect(delegate.connectionRole == .home)
+
+        // Exercise confirmAndSwitchRole directly with a stub that returns true
+        let app = HappyRanchApp()
+        app.confirmAndSwitchRole(delegate) { _, _ in true }
+
+        // Daemon subprocess must have been terminated through confirmAndSwitchRole
+        #expect(fake.terminateCallCount >= 1,
+                "confirmAndSwitchRole must terminate the daemon subprocess; terminateCallCount=\(fake.terminateCallCount)")
+        // Supervisor must be reset
+        #expect(delegate.supervisor.state == .notConfigured,
+                "After confirmAndSwitchRole HOME→CLIENT, supervisor must be .notConfigured, got \(delegate.supervisor.state)")
+        #expect(delegate.connectionRolePreference == .client,
+                "confirmAndSwitchRole must persist .client preference")
+        #expect(delegate.connectionRole == .client,
+                "confirmAndSwitchRole must return .client role")
+    }
+
+    /// Proves the confirmation gate: stub returns false → NO switch happens.
+    /// A regression that removes or disconnects the confirmation gate
+    /// would still switch roles even with the stub returning false.
+    @Test("confirmAndSwitchRole with stub returning false does NOT switch (confirmation gate)")
+    func confirmAndSwitchRoleCancelGateStubReturnsFalse() {
+        let fake = FakeProcessController()
+        let delegate = AppDelegate()
+        delegate.processController = fake
+        delegate.supervisor.configure(homeDir: "/tmp/test-hr-confirm-2")
+        delegate.connectionRolePreference = .home
+
+        // Start daemon → reach .running
+        delegate.startDaemon()
+        #expect(fake.launchCallCount == 1)
+        delegate.supervisor.onHealthCheckPassed(
+            pid: fake.activeHandle!.processIdentifier,
+            port: 9876
+        )
+        delegate.refreshDerivedState()
+        #expect(delegate.supervisor.state == .running)
+        #expect(delegate.connectionRole == .home)
+
+        // Exercise confirmAndSwitchRole directly with a stub that returns false
+        let app = HappyRanchApp()
+        app.confirmAndSwitchRole(delegate) { _, _ in false }
+
+        // NO switch must have occurred — confirmation gate is load-bearing
+        #expect(fake.terminateCallCount == 0,
+                "confirmAndSwitchRole with stub=false must NOT terminate daemon; terminateCallCount=\(fake.terminateCallCount)")
+        #expect(delegate.supervisor.state == .running,
+                "After confirmAndSwitchRole stub=false, supervisor must still be .running, got \(delegate.supervisor.state)")
+        #expect(delegate.connectionRolePreference == .home,
+                "confirmAndSwitchRole stub=false must NOT change preference")
+        #expect(delegate.connectionRole == .home,
+                "confirmAndSwitchRole stub=false must NOT change role")
+    }
+
+    /// CLIENT→HOME via confirmAndSwitchRole with stub returning true.
+    @Test("confirmAndSwitchRole CLIENT→HOME with stub returning true configures supervisor")
+    func confirmAndSwitchRoleClientToHomeConfirmedTrue() {
+        let delegate = makeClientModeDelegate()
+        #expect(delegate.connectionRole == .client)
+        #expect(delegate.connectionRolePreference == .client)
+        #expect(delegate.supervisor.state == .notConfigured)
+
+        let app = HappyRanchApp()
+        app.confirmAndSwitchRole(delegate) { _, _ in true }
+
+        #expect(delegate.connectionRolePreference == .home,
+                "confirmAndSwitchRole CLIENT→HOME must persist .home preference")
+        #expect(delegate.connectionRole == .home,
+                "confirmAndSwitchRole CLIENT→HOME must return .home role")
+        #expect(delegate.supervisor.state == .stopped,
+                "confirmAndSwitchRole CLIENT→HOME must configure supervisor, got \(delegate.supervisor.state)")
+    }
 }
