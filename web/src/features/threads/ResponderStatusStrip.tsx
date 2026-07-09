@@ -15,14 +15,37 @@ export function ResponderStatusStrip({
   );
   if (terminal.length === 0) return null;
   const now = nowMs ?? Date.now();
+  // Carded "Responders · this dispatch" strip (THR-061 a-thread-detail mockup).
+  // Per-agent terminal record with a category note + a color-coded pill. The
+  // in-flight working/queued states stay on the tail TypingBubble (no dup here).
   return (
-    <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-neutral-500">
-      {terminal.map((s) => (
-        <span key={s.agent_name}>
-          <span className="font-medium">{s.agent_name}</span>:{' '}
-          <span className={statusClass(s.status)}>{statusLabel(s, now)}</span>
-        </span>
-      ))}
+    <div className="border-border-subtle bg-surface-sunken mt-2 max-w-md overflow-hidden rounded-lg border">
+      <div className="text-text-muted border-border-subtle text-overline border-b px-3 py-2 font-semibold tracking-wide uppercase">
+        Responders · this dispatch
+      </div>
+      <ul>
+        {terminal.map((s) => (
+          <li
+            key={s.agent_name}
+            className="border-border-subtle flex items-center gap-2 border-t px-3 py-2 text-xs first:border-t-0"
+          >
+            <span className="text-text-primary font-mono text-xs">{s.agent_name}</span>
+            {(s.status === 'declined' || s.status === 'failed') && s.category && (
+              <span className="text-text-muted text-caption font-mono">category: {s.category}</span>
+            )}
+            <span
+              className={`text-overline ml-auto inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 font-bold tracking-wide uppercase ${pillClass(s.status)}`}
+            >
+              {s.status === 'replied' && (
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" aria-hidden="true">
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+              )}
+              {statusLabel(s, now)}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -68,17 +91,19 @@ function terminalLabel(s: ResponderStatusEntry): string | null {
   }
 }
 
-function statusClass(s: ResponderStatus): string {
+// Pill palette for the carded strip — maps each terminal state to a design
+// token soft/foreground pair (mirrors the a-thread-detail resp-pill styles).
+function pillClass(s: ResponderStatus): string {
   switch (s) {
     case 'queued':
-      return 'text-neutral-400';
+      return 'bg-surface border-border-default text-text-muted border';
     case 'working':
-      return 'text-sky-600';
+      return 'bg-info-soft text-info';
     case 'replied':
-      return 'text-emerald-600';
+      return 'bg-accent-soft text-accent-text';
     case 'declined':
-      return 'text-neutral-500';
+      return 'bg-attention-soft text-attention-text';
     case 'failed':
-      return 'text-amber-600';
+      return 'bg-danger-soft text-danger';
   }
 }

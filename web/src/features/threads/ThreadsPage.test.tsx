@@ -663,7 +663,7 @@ describe('ThreadsPage — structured detail rail (THREADDET-02)', () => {
 /* ------------------------------------------------------------------ */
 
 describe('ThreadsPage — system message rendering (design-overhaul)', () => {
-  test('system cards render with system badge, distinct from agent-turn cards', async () => {
+  test('system rows render as a "system event · broadcast to all" divider, distinct from agent-turn bubbles', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     setupThreadWithMessages('THR-010', [
       mkMessage(1, 'agent_a', 'message', 'Regular agent message'),
@@ -672,11 +672,11 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
     ]);
     mountAt(`/orgs/${SLUG}/threads/THR-010`);
     await waitFor(() => {
-      // System card badge
+      // Divider description carries the real system event.
       expect(screen.getByText(/invited agent_c/)).toBeInTheDocument();
-      // System event label should be visible
-      const systemLabels = screen.getAllByText('system');
-      expect(systemLabels.length).toBeGreaterThanOrEqual(1);
+      // THR-061 a-thread-detail divider suffix replaces the old "system" badge.
+      const dividers = screen.getAllByText(/system event · broadcast to all/);
+      expect(dividers.length).toBeGreaterThanOrEqual(1);
     });
   });
 
