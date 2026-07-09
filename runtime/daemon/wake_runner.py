@@ -33,6 +33,7 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
+    inject_managed_skills,
     inject_system_contracts,
     refresh_session_skills,
 )
@@ -164,6 +165,19 @@ async def run_wake(
     inject_system_contracts(
         workspace, settings, slug=org_state.slug, context="wake",
     )
+
+    # Managed-catalog skill injection (THR-055 Phase 4).
+    try:
+        skills_root = settings.project_root / "runtime" / "skills"
+        inject_managed_skills(
+            workspace, settings,
+            slug=org_state.slug,
+            agent_name=record.agent_name,
+            team=agent_def.team,
+            skills_root=skills_root,
+        )
+    except Exception:
+        pass
 
     protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
 

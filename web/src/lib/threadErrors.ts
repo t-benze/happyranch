@@ -14,6 +14,7 @@ export const THREAD_ERROR_STRINGS: Record<string, string> = {
   empty_body: 'Body is required.',
   unknown_agent: "That agent doesn't exist in this org.",
   unknown_team: "That team doesn't exist in this org.",
+  not_participant: "That agent isn't a participant in this thread.",
   thread_not_open: 'This thread is no longer open.',
   not_found: 'Thread not found.',
   invalid_token: 'Invalid invocation token (agent operation).',

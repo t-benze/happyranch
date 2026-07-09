@@ -1657,8 +1657,8 @@ describe('TaskDetailPage — escalation reason', () => {
     // Escalation reason banner is visible.
     expect(screen.getByText(/Escalation reason:/)).toBeInTheDocument();
     expect(screen.getByText(ESCALATION_NOTE)).toBeInTheDocument();
-    // The Resolve button is present because the task is escalated.
-    expect(screen.getByRole('button', { name: /Resolve/ })).toBeInTheDocument();
+    // The escalated action set (Continue) is present because the task is escalated.
+    expect(screen.getByRole('button', { name: /^Continue$/ })).toBeInTheDocument();
   });
 
   test('displays escalation reason for a legacy blocked+escalated task with a note', async () => {
@@ -1678,8 +1678,8 @@ describe('TaskDetailPage — escalation reason', () => {
     expect(
       screen.getByText('Legacy escalation: budget override required'),
     ).toBeInTheDocument();
-    // The Resolve button is present for the legacy form too.
-    expect(screen.getByRole('button', { name: /Resolve/ })).toBeInTheDocument();
+    // The escalated action set (Continue) is present for the legacy form too.
+    expect(screen.getByRole('button', { name: /^Continue$/ })).toBeInTheDocument();
   });
 
   test('does not display escalation reason for a non-escalated task with a note', async () => {
@@ -1697,9 +1697,9 @@ describe('TaskDetailPage — escalation reason', () => {
       await screen.findByRole('heading', { name: 'Brief' }),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Escalation reason:/)).not.toBeInTheDocument();
-    // No Resolve button for non-escalated tasks.
+    // No escalation-only Continue action for non-escalated tasks.
     expect(
-      screen.queryByRole('button', { name: /Resolve/ }),
+      screen.queryByRole('button', { name: /^Continue$/ }),
     ).not.toBeInTheDocument();
   });
 
@@ -1718,8 +1718,8 @@ describe('TaskDetailPage — escalation reason', () => {
     ).toBeInTheDocument();
     // Empty note → no escalation reason banner.
     expect(screen.queryByText(/Escalation reason:/)).not.toBeInTheDocument();
-    // Resolve button is still present (task is escalated, just no note).
-    expect(screen.getByRole('button', { name: /Resolve/ })).toBeInTheDocument();
+    // Continue action is still present (task is escalated, just no note).
+    expect(screen.getByRole('button', { name: /^Continue$/ })).toBeInTheDocument();
   });
 });
 

@@ -34,7 +34,8 @@ def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings,
 
     assert (workspace / "CLAUDE.md").exists()
     assert (workspace / ".claude" / "settings.json").exists()
-    assert (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
+    # Cutover: wholesale dump disabled — no skills land during bootstrap.
+    assert not (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
     assert (workspace / "memory").is_dir()
     assert (workspace / "memory" / "_index.md").exists()
     assert not (workspace / "learnings.md").exists()
@@ -74,10 +75,10 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
 
     assert (workspace / "AGENTS.md").exists()
     assert not (workspace / "CLAUDE.md").exists()
-    # Codex skills land under .agents/skills/, not .claude/skills/
+    # Cutover: wholesale dump disabled — no skills land during bootstrap.
     assert not (workspace / ".claude" / "skills" / "start-task").exists()
-    assert (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
-    assert (workspace / ".agents" / "skills" / "review" / "SKILL.md").exists()
+    assert not (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
+    assert not (workspace / ".agents" / "skills" / "review" / "SKILL.md").exists()
     # Fresh workspace: migrated layout (memory/ dir, no flat learnings.md).
     assert (workspace / "memory").is_dir()
     assert (workspace / "memory" / "_index.md").exists()
@@ -120,7 +121,15 @@ def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
     workspace.mkdir()
 
     adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="hk-tourism")
-    adapter._copy_skills(workspace)
+    # Re-enable wholesale dump for this direct _copy_skills test so the
+    # substitution logic can still be verified.
+    import runtime.orchestrator.workspace_adapters as wa_mod
+    old = wa_mod._WHOLESALE_DUMP_ENABLED
+    wa_mod._WHOLESALE_DUMP_ENABLED = True
+    try:
+        adapter._copy_skills(workspace)
+    finally:
+        wa_mod._WHOLESALE_DUMP_ENABLED = old
 
     out = (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").read_text()
     assert "{ORG_SLUG}" not in out
@@ -152,8 +161,8 @@ def test_opencode_adapter_bootstrap_creates_agents_md_skills_and_opencode_json(
 
     assert (workspace / "AGENTS.md").exists()
     assert not (workspace / "CLAUDE.md").exists()
-    # Skills under .agents/skills/ — same layout as Codex.
-    assert (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
+    # Cutover: wholesale dump disabled — no skills land during bootstrap.
+    assert not (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
     assert not (workspace / ".claude" / "skills" / "start-task").exists()
     # Fresh workspace: migrated layout.
     assert (workspace / "memory").is_dir()

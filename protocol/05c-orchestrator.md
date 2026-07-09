@@ -131,7 +131,7 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="budget", severity="medium", summary="Refund of $200 requested by tourist for cancelled tour. Exceeds my $150 authority.")`.
 **Task state**: Moves to `waiting_for_approval`. The agent completes all other work on the task and submits a completion report with the pending approval clearly noted.
 **Orchestrator action**: Routes the escalation per the 12 rules in `04-escalation-rules.md`. Creates a founder notification with the agent's summary and recommendation. Holds the specific blocked step (not the entire Team). non-root tasks do not escalate directly to the founder.
-**Resolution**: Founder approves or denies via the dashboard. Orchestrator resumes the task with the decision injected into context.
+**Resolution**: Founder resolves via Continue or Cancel. On Continue the orchestrator re-enqueues the task to pending and injects the founder's input into the manager's next-step prompt. On Cancel the task terminates in CANCELLED (cancelled_at set) with no resume/context injection.
 
 #### Type 3: Needs another agent's work
 **What**: The task has a cross-agent or cross-team dependency.
@@ -147,7 +147,7 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="novel", severity="medium", summary="...")` with its best assessment and a recommendation.
 **Task state**: Moves to `waiting_for_guidance`.
 **Orchestrator action**: Routes to founder. The agent's recommendation is included so the founder can often just approve/deny rather than research from scratch.
-**Resolution**: Founder runs `happyranch resolve-escalation` to clear the task and — when the ruling should bind future occurrences — writes a KB entry via `happyranch kb add` (with `source_task: <task-id>` in frontmatter) so the next agent finds the answer without re-escalating.
+**Resolution**: Founder runs `happyranch resolve-escalation --decision continue` (to resume the work) or `--decision cancel` (to terminate it) to clear the task and — when the ruling should bind future occurrences — writes a KB entry via `happyranch kb add` (with `source_task: <task-id>` in frontmatter) so the next agent finds the answer without re-escalating.
 
 ### Task state machine
 
@@ -287,10 +287,10 @@ pending → (run_step pickup) → in_progress → { completed | failed | cancell
 
 in_progress(delegated) → (all children terminal) → in_progress (re-entry, block_kind cleared on claim)
 in_progress(blocked_on_job) → (all blocking jobs reach terminal state; _maybe_resume_blocked_task enqueues while the row stays in_progress) → in_progress (run_step CAS admits exactly one on pickup, clearing block_kind)
-escalated → (POST /resolve-escalation approve) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
-escalated → (POST /resolve-escalation reject)  → failed (cascade-fails the parent if any)
+escalated → (POST /resolve-escalation continue) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
+escalated → (POST /resolve-escalation cancel)  → cancelled (deliberate founder stop; notifies parent and kills owned jobs — parity with old reject path, but terminal status is CANCELLED not FAILED)
 escalated | in_progress(delegated) → (revisit / thread-dispatch names it in lineage) → resolved_superseded (terminal; block_kind cleared, audit cites the continuation root task_id; NO re-enqueue. The delegated close is gated on all children being terminal and never cascade-SIGTERMs live siblings)
-escalated → (POST /resolve-escalation approve on exhaustion escalation) → pending (re-enqueued; parent carries the exhaustion context + failure reason from the failed subtask — manager can re-ground and re-delegate)
+escalated → (POST /resolve-escalation continue on exhaustion escalation) → pending (re-enqueued; parent carries the exhaustion context + failure reason from the failed subtask — manager can re-ground and re-delegate)
 (any non-terminal) → (founder cancel) → cancelled
 ```
 
@@ -449,11 +449,23 @@ set-executor). Before THR-070, live agents' on-disk skill bodies froze until
 the next lifecycle event — an edit to a skill in the bundle would not reach a
 running agent.
 
-Now, the skill tree is **refreshed on EVERY session creation** (task/subtask,
-thread reply, wake, dream) by a shared idempotent helper that re-copies from
-the bundled source into both ``.claude/skills/`` and ``.agents/skills/``. The
-source is always ``_resolve_skills_src(settings)`` = ``project_root/protocol/skills/``
-(the bundled runtime), never a workspace clone or stale frozen copy.
+**Phase-4 cutover (THR-055).** The session-time wholesale refresh and the
+bootstrap ``_copy_skills`` wholesale copy are BOTH gated behind the reversible
+``_WHOLESALE_DUMP_ENABLED`` flag (default ``False`` in
+``workspace_adapters.py``). The flag gates two code paths:
+- **Session-time:** ``refresh_session_skills`` — called on every session
+  creation to re-copy the bundled ``protocol/skills/`` tree into
+  ``.claude/skills/`` and ``.agents/skills/``.
+- **Bootstrap:** ``_copy_skills`` in the three executor adapters
+  (``ClaudeWorkspaceAdapter``, ``CodexWorkspaceAdapter``,
+  ``OpencodeWorkspaceAdapter``) — called from ``ensure_workspace_ready`` at
+  lifecycle events (init-agent, set-executor).
+
+When the flag is ``False`` (the cutover default), neither code path copies
+skills. The explicit injection paths — ``inject_system_contracts`` (§4.7) and
+``inject_managed_skills`` (§4.10) — are the SOLE skill-delivery mechanism.
+The flag can be set to ``True`` for rollback to the legacy wholesale-dump
+model without a code revert.
 
 **Protocol doc manifest.** Protocol ``.md`` docs (the files in
 ``project_root/protocol/*.md``) are NEVER copied to agent workspaces. Instead,
@@ -479,7 +491,7 @@ they do not modify ``resolve_managed_skills_index``, ``render_compact_skill_inde
 the permission model, executor skill-load paths, or the SQLite schema. No new
 daemon routes are added.
 
-### 4.7 System-Contract Injection (THR-055 Phase 1)
+### 4.7 System-Contract Injection (THR-055 Phase 1 + Phase 4)
 
 System-contract skills — ``start-task``, ``jobs``, ``make-worktree``, ``thread``,
 ``dream`` — are mandatory operating-contract skills injected by the runtime based
@@ -488,11 +500,28 @@ on session/context type. They are defined in the single-source-of-truth module
 catalog (they are NOT displayed by ``skills catalog list`` and are never
 manager-toggleable).
 
-**Injection model.** On EVERY session creation, ``inject_system_contracts`` runs
-ALONGSIDE the existing ``refresh_session_skills`` wholesale dump (see §4.6).
-In Phase 1 the wholesale dump still copies all 8 skills; the explicit injection
-path is additive and will become the sole path in Phase 4 when the wholesale dump
-is removed.
+**Injection model (Phase 4 — CUT OVER).** On EVERY session creation,
+``inject_system_contracts`` and ``inject_managed_skills`` (see §4.10) are the
+SOLE skill-injection paths. The wholesale ``protocol/skills/`` dump is DISABLED
+through TWO code paths, both gated behind the reversible
+``_WHOLESALE_DUMP_ENABLED = False`` flag in ``workspace_adapters.py``:
+
+1. **Session-time** — ``refresh_session_skills`` (called on every session
+   creation) is a no-op when the flag is ``False``.
+2. **Bootstrap** — ``_copy_skills`` in the three executor adapters
+   (Claude, Codex, Opencode), called from ``ensure_workspace_ready`` at
+   lifecycle events, is a no-op when the flag is ``False``.
+
+Both gates prevent the wholesale copy of ALL 8 ``protocol/skills/``
+directories (including the 3 managed-catalog skills) into the workspace.
+A freshly-bootstrapped workspace receives NO skills from the wholesale path;
+skills are delivered exclusively through the explicit injection paths. The
+completeness of this delivery model is proven by the contract-completeness
+guard test in ``test_skill_cutover_completeness.py``.
+
+**Phase 1 (historical).** The initial deployment ran ``inject_system_contracts``
+ADDITIVELY alongside the wholesale dump. This was the safety net proved correct
+in the guard test, then removed in Phase 4.
 
 **Context-exposure predicates** (``SessionContext`` enum):
 
@@ -519,7 +548,7 @@ a distinct "System Contracts (runtime-injected)" section separate from managed
 catalog skills. The optional ``--context`` flag filters the display by session
 context; ``--workspace`` enables the repo check.
 
-**Fences.** System-contract injection is additive only in Phase 1. It does not:
+**Fences.** System-contract injection does not:
 - Grant tools, credentials, or capabilities (skills are permission-inert)
 - Modify the managed catalog, registry, or eligibility resolver
 - Require a SQLite migration (file/YAML-backed only)
@@ -639,13 +668,92 @@ change gated on a completeness test proving catalog resolution delivers the
 full required set. Phase 3 is ADDITIVE only — the managed-catalog entries are
 registered and eligibility is scoped; the wholesale dump is untouched.
 
+**Phase-4 cutover (COMPLETED).** The wholesale ``protocol/skills/`` dump is
+disabled through both paths — session-time ``refresh_session_skills`` and
+bootstrap ``_copy_skills`` in the three executor adapters — gated behind
+``_WHOLESALE_DUMP_ENABLED = False``. The 8 ``protocol/skills/`` directories
+remain on disk as a packaged safety net (re-enable with the flag) but are
+no longer copied into workspaces. The ``SKILL.md`` source of truth for the
+3 managed-catalog skills lives in ``runtime/skills/<id>/``. See §4.6 and
+§4.10 for the full delivery model.
+
 **Fences.** Phase 3 does not:
 - Grant tools, credentials, or capabilities (manage-agent/manage-repo command
   access remains in allow_rules / daemon auth per the existing permission model)
-- Physically delete ``manage-agent`` or ``manage-repo`` from ``protocol/skills/``
-  (Phase 4)
 - Require a SQLite migration (file/YAML-backed only)
 - Add new daemon routes
 - Change the existing permission model or auth
 - Add a web admin UI
 - Record any founder approval for the version (maker-checker — founder action only)
+
+### 4.10 Phase-4 Cutover — Managed-Skill Workspace Injection (THR-055 Phase 4)
+
+The Phase-4 cutover completes the migration by STOPPING the wholesale
+``protocol/skills/`` dump and delivering skills EXCLUSIVELY through:
+1. ``inject_system_contracts`` — context-aware system-contract injection (§4.7)
+2. ``inject_managed_skills`` — policy-resolved managed-catalog injection (this section)
+
+**Injection model.** On EVERY session creation (task/subtask, thread reply,
+wake, dream), ``inject_managed_skills`` resolves the two-gated catalog +
+eligibility policy for the session's (agent, team) and copies each EXPOSED
+managed skill from ``runtime/skills/<id>/`` into ``.claude/skills/<id>/``
+and ``.agents/skills/<id>/``.
+
+**Resolution flow:**
+1. Load ``SkillRegistry`` from ``<project_root>/runtime/skills/``.
+2. Load eligibility policy from ``<project_root>/org/config.yaml``
+   (``skills`` section).
+3. Resolve exposed skills via ``resolve_exposed_skills`` (both gates:
+   catalog gate + eligibility gate).
+4. Copy each exposed skill's package into the workspace skill dirs.
+
+**Context-exposure rules:** managed skills are context-AGNOSTIC — ``review``,
+``manage-agent``, and ``manage-repo`` are injected into ALL session types
+where the agent is eligible ($4.1 two-gate model). System contracts remain
+context-aware ($4.7).
+
+**Fail-closed.** Unapproved, ``pending_review``, rejected, deprecated,
+disabled, or ineligible skills are NOT injected. ``high_impact_policy``
+skills with missing or mismatched ``approved_version`` are NOT injected.
+The catalog gate is independent of the eligibility gate — both must pass.
+
+**Reversible gate.** The wholesale dump is disabled by default
+(``_WHOLESALE_DUMP_ENABLED = False`` in ``workspace_adapters.py``). This
+gates TWO code paths — the session-time ``refresh_session_skills`` and the
+bootstrap-time ``_copy_skills`` in the three executor adapters
+(Claude, Codex, Opencode). Setting the flag to ``True`` re-enables the
+legacy wholesale dump through both paths without a code revert.
+
+The ``protocol/skills/`` directories remain on disk as packaged source
+material for the system-contract injection path and as a reversion safety
+net. They are NOT deleted — only the copy-into-workspace step is gated.
+
+**Coverage.** The contract-completeness guard test
+(``test_skill_cutover_completeness.py``) proves that every agent (7) × every
+session context (4) × every repo state (2) = 56 combinations receive the
+complete required set without the wholesale dump. The test asserts:
+- System contracts are context-correct per §4.7 predicates.
+- ``review`` is injected for engineering team + product_lead.
+- ``manage-agent`` / ``manage-repo`` are fail-closed for ALL agents
+  (``pending_review`` → catalog gate blocked).
+- ``dream`` is excluded from non-dream contexts.
+- ``make-worktree`` is repo-gated.
+
+**Session-path coverage.** ``inject_managed_skills`` is wired into all 4
+session-creation callers:
+1. ``Orchestrator._run_agent`` (task/subtask) — resolves team via
+   ``load_agent``.
+2. ``thread_runner.run_invocation`` (thread reply/bootstrap) — resolves
+   team from ``ThreadParticipant`` record.
+3. ``wake_runner.run_wake`` (working-hours wake) — resolves team from
+   ``agent_def``.
+4. ``dream_runner.run_dream`` (private dream) — resolves team via
+   ``load_agent``.
+
+**Fences.** Phase 4 does not:
+- Grant tools, credentials, or capabilities (skills are permission-inert)
+- Modify the permission model, auth, allow_rules, or daemon authorization
+- Require a SQLite migration (file/YAML-backed only)
+- Add new daemon routes
+- Add a web admin UI
+- Delete ``protocol/skills/`` directories (reversible via flag)

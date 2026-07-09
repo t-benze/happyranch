@@ -14,18 +14,31 @@ import { TASKS_ERROR_STRINGS } from './strings';
 interface Props {
   taskId: string;
   onClose: () => void;
+  /**
+   * Which escalation-resolution decision this dialog drives. BOTH decisions
+   * POST to /tasks/{id}/resolve-escalation via useResolveEscalation (THR-075),
+   * NOT the generic /cancel route: 'continue' resumes the task → pending and
+   * REQUIRES a rationale; 'cancel' terminates the escalated task → cancelled
+   * with an OPTIONAL rationale (consumes the Feishu escalation notification and
+   * writes the escalation-resolved audit row). Defaults to 'continue'.
+   */
+  intent?: 'continue' | 'cancel';
 }
 
-export function ResolveEscalationDialog({ taskId, onClose }: Props): JSX.Element {
-  const [decision, setDecision] = useState<'approve' | 'reject'>('approve');
+export function ResolveEscalationDialog({
+  taskId,
+  onClose,
+  intent = 'continue',
+}: Props): JSX.Element {
   const [rationale, setRationale] = useState('');
   const [error, setError] = useState<string | null>(null);
   const resolve = useResolveEscalation(taskId);
+  const isContinue = intent === 'continue';
 
   const onSubmit = async () => {
     setError(null);
     try {
-      await resolve.mutateAsync({ decision, rationale });
+      await resolve.mutateAsync({ decision: intent, rationale });
       onClose();
     } catch (e: unknown) {
       const code = (e as { code?: string }).code;
@@ -33,45 +46,39 @@ export function ResolveEscalationDialog({ taskId, onClose }: Props): JSX.Element
     }
   };
 
+  const rationaleEmpty = rationale.trim() === '';
+  // Continue requires a rationale; cancel does not.
+  const submitDisabled = (isContinue && rationaleEmpty) || resolve.isPending;
+
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Resolve escalation</DialogTitle>
+          <DialogTitle>
+            {isContinue ? 'Continue task' : 'Cancel escalated task'}
+          </DialogTitle>
         </DialogHeader>
-        <fieldset className="flex gap-4">
-          <label className="text-fg flex items-center gap-2">
-            <input
-              type="radio"
-              name="decision"
-              value="approve"
-              checked={decision === 'approve'}
-              onChange={() => setDecision('approve')}
-            />
-            Approve
-          </label>
-          <label className="text-fg flex items-center gap-2">
-            <input
-              type="radio"
-              name="decision"
-              value="reject"
-              checked={decision === 'reject'}
-              onChange={() => setDecision('reject')}
-            />
-            Reject
-          </label>
-        </fieldset>
         <Textarea
           value={rationale}
           onChange={(e) => setRationale(e.target.value)}
           rows={4}
-          placeholder="Rationale (optional)"
+          placeholder={
+            isContinue ? 'Rationale (required)' : 'Rationale (optional)'
+          }
         />
         {error && <p className="text-danger text-sm">{error}</p>}
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button disabled={resolve.isPending} onClick={onSubmit}>
-            {resolve.isPending ? 'Resolving…' : 'Resolve'}
+          <Button variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+          <Button disabled={submitDisabled} onClick={onSubmit}>
+            {isContinue
+              ? resolve.isPending
+                ? 'Continuing…'
+                : 'Continue task'
+              : resolve.isPending
+                ? 'Cancelling…'
+                : 'Cancel task'}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -2067,6 +2067,64 @@ async def invite_thread_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# THR-069 msg85 — POST /threads/{id}/remove-participant
+# ---------------------------------------------------------------------------
+
+
+class RemoveParticipantBody(BaseModel):
+    agent_name: str
+
+
+@router.post("/threads/{thread_id}/remove-participant")
+async def remove_thread_participant_endpoint(
+    slug: str, thread_id: str, body: RemoveParticipantBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+
+    org_paths = OrgPaths(root=org.root)
+    agent_def = prompt_loader.load_agent(org_paths, body.agent_name)
+    workspace_exists = (org.root / "workspaces" / body.agent_name).exists()
+    if agent_def is None or not workspace_exists:
+        raise HTTPException(status_code=404, detail={"code": "unknown_agent"})
+
+    async with org.db_lock:
+        removed = org.db.remove_thread_participant(thread_id, body.agent_name)
+        if not removed:
+            raise HTTPException(status_code=409, detail={"code": "not_participant"})
+
+        # Decline any pending invocations for this agent in this thread.
+        org.db.decline_pending_invocations_for_agent(
+            thread_id, body.agent_name,
+            decline_reason="participant_removed",
+        )
+
+        sys_seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker="founder",
+            kind=ThreadMessageKind.SYSTEM,
+            system_payload={
+                "kind_tag": "participant_removed",
+                "agent_name": body.agent_name,
+                "removed_by": "founder",
+            },
+        )
+        AuditLogger(org.db).log_thread_participant_removed(
+            thread_id, agent_name=body.agent_name, removed_by="founder",
+        )
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=sys_seq, speaker="founder",
+        kind="system", preview=f"removed {body.agent_name}", status="open",
+    )
+
+    return {"thread_id": thread_id, "agent_name": body.agent_name, "system_message_seq": sys_seq}
+
+
+# ---------------------------------------------------------------------------
 # Task 26 — POST /threads/{id}/extend
 # ---------------------------------------------------------------------------
 

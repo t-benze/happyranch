@@ -3231,6 +3231,18 @@ class Database:
         ]
 
     @_synchronized
+    def remove_thread_participant(
+        self, thread_id: str, agent_name: str
+    ) -> bool:
+        """Hard-delete a participant row. Returns True if a row was deleted."""
+        cursor = self._conn.execute(
+            "DELETE FROM thread_participants WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
     def get_thread_session(
         self, thread_id: str, agent_name: str
     ) -> tuple[str | None, int]:
@@ -3602,6 +3614,25 @@ class Database:
         )
         self._conn.commit()
         return cursor.rowcount == 1
+
+    @_synchronized
+    def decline_pending_invocations_for_agent(
+        self, thread_id: str, agent_name: str,
+        *, decline_reason: str | None = None,
+    ) -> int:
+        """Bulk-decline all pending invocations for (thread_id, agent_name).
+
+        Returns the count of rows updated.
+        """
+        now = _now().isoformat()
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations SET status = 'declined', "
+            "consumed_at = ?, decline_reason = ? "
+            "WHERE thread_id = ? AND agent_name = ? AND status = 'pending'",
+            (now, decline_reason, thread_id, agent_name),
+        )
+        self._conn.commit()
+        return cursor.rowcount
 
     @_synchronized
     def record_dispatch_on_invocation(

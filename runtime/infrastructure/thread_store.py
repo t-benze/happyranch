@@ -104,6 +104,8 @@ def render_transcript_body(messages: list) -> str:
             tag = payload.get("kind_tag", "system")
             if tag == "participant_added":
                 rendered = f"founder added {payload.get('agent_name')} to the thread"
+            elif tag == "participant_removed":
+                rendered = f"founder removed {payload.get('agent_name')} from the thread"
             elif tag == "task_dispatched":
                 tgt = payload.get("target_agent")
                 tid = payload.get("task_id")
