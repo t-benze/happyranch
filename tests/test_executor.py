@@ -683,8 +683,11 @@ def test_resolve_binary_unresolvable_raises_actionable_diagnostic():
 
     assert error_msg is not None, "Expected RuntimeError for unresolvable binary"
     assert "nonexistent-cli-tool-xyz" in error_msg
-    # Must mention search dirs.
-    assert "PATH" in error_msg.lower() or "searched" in error_msg.lower() or "directory" in error_msg.lower()
+    # Must mention actionable guidance — the error tells the operator what to do.
+    assert (
+        "not registered" in error_msg.lower()
+        or "not found" in error_msg.lower()
+    )
 
 
 @patch("runtime.orchestrator.executors.subprocess")

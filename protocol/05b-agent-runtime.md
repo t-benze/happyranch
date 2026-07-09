@@ -75,6 +75,40 @@ provided; additional agentic CLIs can be registered as custom profiles via org
 configuration (THR-052). Swapping an agent from one executor to another is a
 one-line config change in `agent.yaml`.
 
+### Executor binary-path resolution (THR-085)
+
+At spawn time, each executor's CLI binary is resolved as follows:
+
+1. **Absolute path** — if the `cli_path` in Settings is already absolute
+   (founder-configured override), trust it as-is.
+2. **Machine-local registry** — consult the per-host binary-path registry at
+   `<daemon-home>/executors.json`. If the executor kind (e.g. `claude`) is
+   registered, validate the stored path: it must exist and be executable.
+   - **Valid** → use the stored path.
+   - **Invalid (stale path)** → raise an **actionable block** that names the
+     kind, the stale path, and the fix (`happyranch executor set`). No silent
+     fallback to PATH.
+3. **PATH fallback** — if the kind is NOT registered, fall back to
+   `shutil.which` over the current `PATH`.
+   - **Found** → use the resolved path, **with a logged warning** that this
+     binary was resolved from PATH and should be registered (non-silent
+     fallback per invariant 3).
+   - **Not found** → raise an **actionable block** naming the kind and the
+     fix (`happyranch executor set <kind> <absolute-path>`).
+
+The actionble block is an `ExecutorBinaryBlocked` exception (subclass of
+`RuntimeError`). It always names the specific executor kind and gives the
+operator a concrete command to fix it — never an opaque `rc=143` or bare
+ENOENT death.
+
+**Why a separate `executors.json` file?** The binary-path registry is
+machine-local and must be writable at runtime by the `/api/v1/executor-binaries/register`
+route. Keeping it in a dedicated file under `<daemon-home>` isolates runtime
+writes from `config.yaml` (which holds Settings values that may be under
+version control or shared across hosts). This is distinct from the THR-052
+executor profile registry (`org/config.yaml`), which describes *which*
+executor kinds and capabilities exist and is org-portable.
+
 ---
 
 ## 2. Agent Memory Architecture
