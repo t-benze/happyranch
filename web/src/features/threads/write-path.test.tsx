@@ -624,4 +624,122 @@ describe('ThreadsPage — write path', () => {
       });
     });
   });
+
+  describe('RemoveParticipantDialog', () => {
+    const REMOVE_THREAD_ID = 'THR-003';
+
+    // Detail GET reflects the mutable participant list so we can assert the
+    // list re-renders (without the removed agent) after the mutation
+    // invalidates ['thread', slug, threadId].
+    function stubRemoveStubs(participantsRef: { current: string[] }) {
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}`, () =>
+          HttpResponse.json({
+            thread_id: REMOVE_THREAD_ID,
+            subject: 'Remove test thread',
+            status: 'open',
+            started_at: '2026-06-30T00:00:00Z',
+            archived_at: null,
+            forwarded_from_id: null,
+            forwarded_from_kind: null,
+            turn_cap: 500,
+            turns_used: 2,
+            summary: null,
+            transcript_path: null,
+            participants: [...participantsRef.current],
+            messages: [],
+          }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/messages`, () =>
+          HttpResponse.json({ messages: [] }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/tail`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+      );
+    }
+
+    test('confirm-removes a participant and drops it from the rail after invalidation', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      const participantsRef = { current: ['founder', 'agent_a'] };
+      stubRemoveStubs(participantsRef);
+
+      const removeCalls: unknown[] = [];
+      server.use(
+        http.post(
+          `/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/remove-participant`,
+          async ({ request: req }) => {
+            removeCalls.push(await req.json());
+            // Reflect the removal so the invalidated detail refetch drops it.
+            participantsRef.current = participantsRef.current.filter((n) => n !== 'agent_a');
+            return HttpResponse.json({
+              thread_id: REMOVE_THREAD_ID,
+              agent_name: 'agent_a',
+              system_message_seq: 3,
+            });
+          },
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}` });
+
+      // The per-participant Remove control is attached to each chip.
+      await user.click(await screen.findByRole('button', { name: /^Remove agent_a$/i }));
+
+      // A confirm step appears before anything fires — no POST yet.
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByText(/Remove participant/i)).toBeInTheDocument();
+      expect(removeCalls).toHaveLength(0);
+
+      // Confirm.
+      await user.click(within(dialog).getByRole('button', { name: /^Remove$/i }));
+
+      // Exactly one POST with { agent_name: 'agent_a' }.
+      await waitFor(() => {
+        expect(removeCalls).toHaveLength(1);
+        expect(removeCalls[0]).toEqual({ agent_name: 'agent_a' });
+      });
+
+      // The rail re-renders without the removed agent (same query key invite
+      // invalidates → participants list refetches).
+      await waitFor(() => {
+        expect(screen.queryByRole('button', { name: /^Remove agent_a$/i })).not.toBeInTheDocument();
+      });
+    });
+
+    test('surfaces a not_participant error and keeps the dialog open', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      const participantsRef = { current: ['founder', 'agent_a'] };
+      stubRemoveStubs(participantsRef);
+
+      server.use(
+        http.post(
+          `/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/remove-participant`,
+          async () =>
+            HttpResponse.json({ detail: { code: 'not_participant' } }, { status: 409 }),
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}` });
+
+      await user.click(await screen.findByRole('button', { name: /^Remove agent_a$/i }));
+      const dialog = await screen.findByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: /^Remove$/i }));
+
+      // The mapped error string appears; the dialog stays open.
+      await waitFor(() => {
+        expect(
+          screen.getByText("That agent isn't a participant in this thread."),
+        ).toBeInTheDocument();
+      });
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+  });
 });
