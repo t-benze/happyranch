@@ -44,6 +44,7 @@ import {
 } from '@/hooks/threads';
 import { ArchiveDialog } from './ArchiveDialog';
 import { InviteDialog } from './InviteDialog';
+import { RemoveParticipantDialog } from './RemoveParticipantDialog';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { ResumeButton } from './ResumeButton';
@@ -568,6 +569,8 @@ function DetailColumn({
   slug,
 }: DetailColumnProps): JSX.Element {
   const queryClient = useQueryClient();
+  // Participant pending removal — drives the confirm dialog (THR-069 msg85).
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   // Real produced artifacts aggregated from the transcript (THREADDET-02).
   // Computed before the early returns so the hook order stays stable.
   const artifacts = useMemo(() => collectThreadArtifacts(messages), [messages]);
@@ -690,8 +693,21 @@ function DetailColumn({
             {thread.participants.length > 0 ? (
               <ul className="space-y-1">
                 {thread.participants.map((p) => (
-                  <li key={p}>
+                  <li key={p} className="flex items-center justify-between gap-2">
                     <AgentChip name={p} role={participantChipRole(p)} />
+                    {/* Remove — founder-only, mirrors the Invite gate (open threads
+                        only). Fires a confirm step before the mutation. THR-069 msg85. */}
+                    {open && (
+                      <button
+                        type="button"
+                        aria-label={`Remove ${p}`}
+                        title={`Remove ${p}`}
+                        onClick={() => setRemoveTarget(p)}
+                        className="text-text-muted hover:text-feedback-danger shrink-0 rounded px-1 text-sm leading-none transition-colors"
+                      >
+                        ×
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -797,6 +813,11 @@ function DetailColumn({
           )}
         </aside>
       </div>
+      <RemoveParticipantDialog
+        threadId={thread.thread_id}
+        agentName={removeTarget}
+        onClose={() => setRemoveTarget(null)}
+      />
     </section>
   );
 }
@@ -951,6 +972,8 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
       return `invited ${payload.agent}`;
     case 'participant_added':
       return `added ${payload.agent_name}`;
+    case 'participant_removed':
+      return `removed ${payload.agent_name}`;
     case 'archive_requested':
       return 'archive requested';
     case 'archived':

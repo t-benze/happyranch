@@ -28,6 +28,7 @@ import type {
   InviteArgs,
   MutationLike,
   QueryLike,
+  RemoveParticipantArgs,
   ResumeArgs,
   SendFollowUpArgs,
   ThreadsApi,
@@ -229,6 +230,21 @@ function useInviteAgent(threadId: string): MutationLike<
   });
 }
 
+function useRemoveParticipant(threadId: string): MutationLike<
+  RemoveParticipantArgs,
+  Awaited<ReturnType<typeof threadsApi.removeParticipantFromThread>>
+> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: RemoveParticipantArgs) =>
+      threadsApi.removeParticipantFromThread(slug, threadId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+    },
+  });
+}
+
 function useArchiveThread(threadId: string): MutationLike<
   ArchiveArgs,
   Awaited<ReturnType<typeof threadsApi.archiveThread>>
@@ -290,6 +306,7 @@ export const realThreadsApi: ThreadsApi = {
   useComposeThread,
   useSendFollowUp,
   useInviteAgent,
+  useRemoveParticipant,
   useArchiveThread,
   useResumeThread,
   useAbortReplies,

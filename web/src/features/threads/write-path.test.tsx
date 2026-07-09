@@ -624,4 +624,117 @@ describe('ThreadsPage — write path', () => {
       });
     });
   });
+
+  describe('RemoveParticipantDialog', () => {
+    const REMOVE_THREAD_ID = 'THR-002';
+
+    function stubRemoveStubs() {
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [] })),
+        http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}`, () =>
+          HttpResponse.json({
+            thread_id: REMOVE_THREAD_ID,
+            subject: 'Remove test thread',
+            status: 'open',
+            started_at: '2026-06-30T00:00:00Z',
+            archived_at: null,
+            forwarded_from_id: null,
+            forwarded_from_kind: null,
+            turn_cap: 500,
+            turns_used: 2,
+            summary: null,
+            transcript_path: null,
+            participants: ['founder', 'agent_a'],
+            messages: [],
+          }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/messages`, () =>
+          HttpResponse.json({ messages: [] }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/tail`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+      );
+    }
+
+    test('confirm step fires exactly one remove for the chosen participant', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      stubRemoveStubs();
+
+      const removeCalls: unknown[] = [];
+      server.use(
+        http.post(
+          `/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/remove-participant`,
+          async ({ request: req }) => {
+            removeCalls.push(await req.json());
+            return HttpResponse.json({
+              thread_id: REMOVE_THREAD_ID,
+              agent_name: 'agent_a',
+              system_message_seq: 2,
+            });
+          },
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}` });
+
+      // Trigger the per-participant Remove affordance for agent_a in the rail.
+      await user.click(await screen.findByRole('button', { name: /Remove agent_a/i }));
+
+      // A confirm dialog appears; no POST until it is confirmed.
+      const dialog = await screen.findByRole('dialog');
+      expect(removeCalls).toHaveLength(0);
+
+      // Confirm via the dialog's Remove button (scoped to the dialog to avoid
+      // the rail's per-participant "Remove …" buttons).
+      await user.click(within(dialog).getByRole('button', { name: /^Remove$/i }));
+
+      // Exactly one remove POST with { agent_name: 'agent_a' }.
+      await waitFor(() => {
+        expect(removeCalls).toHaveLength(1);
+        expect(removeCalls[0]).toEqual({ agent_name: 'agent_a' });
+      });
+    });
+
+    test('cancel dismisses the confirm without firing a remove', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      stubRemoveStubs();
+
+      const removeCalls: unknown[] = [];
+      server.use(
+        http.post(
+          `/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/remove-participant`,
+          async ({ request: req }) => {
+            removeCalls.push(await req.json());
+            return HttpResponse.json({
+              thread_id: REMOVE_THREAD_ID,
+              agent_name: 'agent_a',
+              system_message_seq: 2,
+            });
+          },
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}` });
+
+      // The rail × opens a confirm gate (data-state open), not an immediate remove.
+      await user.click(await screen.findByRole('button', { name: /Remove agent_a/i }));
+      const dialog = await screen.findByRole('dialog');
+      expect(dialog).toHaveAttribute('data-state', 'open');
+      // The confirm gate holds — nothing has been removed yet.
+      expect(within(dialog).getByRole('button', { name: /^Remove$/i })).toBeInTheDocument();
+      expect(removeCalls).toHaveLength(0);
+
+      // Backing out via Cancel fires no remove mutation.
+      await user.click(within(dialog).getByRole('button', { name: /^Cancel$/i }));
+      expect(removeCalls).toHaveLength(0);
+    });
+  });
 });
