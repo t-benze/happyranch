@@ -28,6 +28,7 @@ const SECTION_TITLES: Record<string, string> = {
   audit: 'Audit',
   settings: 'Settings',
   jobs: 'Jobs',
+  health: 'Runtime Health',
   assistant: 'Assistant',
 };
 

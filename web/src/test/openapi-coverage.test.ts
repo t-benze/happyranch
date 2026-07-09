@@ -149,6 +149,9 @@ const INCLUDED_PATHS = new Set<string>([
   'PUT /api/v1/orgs/{slug}/settings/org',
   // settings — teams membership editing (Phase 2)
   'PUT /api/v1/orgs/{slug}/settings/teams',
+  // metrics — Runtime Health page (THR-061 slice 10)
+  'GET /api/v1/metrics',
+  'GET /api/v1/metrics/history',
 ]);
 
 /**
@@ -209,10 +212,6 @@ const EXCLUDED_PATHS = new Map<string, string>([
   // executor registration — scoped-token-only (THR-052 PR-2);
   // conformance-gated, daemon-verified write of executor_profiles to config
   ['POST /api/v1/orgs/{slug}/executors/register', 'conformance-gated executor registration (THR-052 PR-2)'],
-  // operational metrics — agent/CLI facing; web dashboard panel deferred (THR-066 follow-up)
-  ['GET /api/v1/metrics', 'operational metrics — agent/CLI facing; web dashboard panel deferred (THR-066 follow-up)'],
-  ['GET /api/v1/metrics/history', 'operational metrics history — agent/CLI facing (THR-066 PR-2)'],
-
 ]);
 
 describe('openapi coverage', () => {

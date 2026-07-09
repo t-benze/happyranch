@@ -25,6 +25,7 @@ import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { UsagePage } from '@/features/usage/UsagePage';
+import { HealthPage } from '@/features/health/HealthPage';
 import { DreamsPage } from '@/features/dreams/DreamsPage';
 import { OverviewPage as WorkHoursOverviewPage } from '@/features/work-hours-config/OverviewPage';
 import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/WakesView';
@@ -104,6 +105,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="agents/:agent_name" element={<AgentsPage />} />
           <Route path="jobs" element={<JobsPage />} />
           <Route path="jobs/:job_id" element={<JobDetailPage />} />
+          <Route path="health" element={<HealthPage />} />
           <Route path="usage" element={<UsagePage />} />
           {/* THR-061 seq79: Spend renamed to Usage. Keep the old /spend
               bookmark (and the dashboard deep-link) working via redirect. */}
