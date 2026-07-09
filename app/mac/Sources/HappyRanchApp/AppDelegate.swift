@@ -172,13 +172,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// (2) packagingMode() == "bundled" (fallback)
     /// (3) ~/.happyranch (default)
     nonisolated static func resolvedDaemonHome() -> String {
-        // Step 0: explicit persisted override (set by app when bundled)
-        if let persisted = UserDefaults.standard.string(forKey: daemonHomeOverrideKey),
+        // Step 0: explicit persisted override (set by app when bundled).
+        // Only consulted when running in a .app bundle; in non-bundled/dev
+        // mode skip UserDefaults so an intentionally-exported
+        // HAPPYRANCH_DAEMON_HOME env var is not masked by a stale
+        // auto-written value from a prior bundled launch.
+        if isRunningInAppBundle(),
+           let persisted = UserDefaults.standard.string(forKey: daemonHomeOverrideKey),
            !persisted.isEmpty {
             return persisted
         }
-        // Step 1: env var (preserved for dev iteration)
-        if let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"] {
+        // Step 1: env var (preserved for dev iteration).
+        // Reject empty (or whitespace-only) values — a present-but-empty var
+        // must not yield "". Fall through to the next branch instead.
+        if let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"],
+           !envHome.trimmingCharacters(in: .whitespaces).isEmpty {
             return envHome
         }
         let home = NSHomeDirectory()

@@ -63,27 +63,31 @@ struct PackagingAndHomeResolutionTests {
 
     // MARK: resolvedDaemonHome() precedence
 
-    @Test("resolvedDaemonHome honors explicit UserDefaults override")
+    @Test("resolvedDaemonHome honors explicit UserDefaults override (bundled mode)")
     func resolvedDaemonHomeUsesUserDefaultsOverride() {
         let testHome = "/tmp/test-user-defaults-home"
         AppDelegate._testPackagingMode = nil
+        AppDelegate._testIsRunningInAppBundle = true
         UserDefaults.standard.set(testHome, forKey: "HappyRanchDaemonHome")
         defer {
             AppDelegate._testPackagingMode = nil
+            AppDelegate._testIsRunningInAppBundle = nil
             UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
         }
 
         let result = AppDelegate.resolvedDaemonHome()
         #expect(result == testHome,
-                "UserDefaults override should win, got \(result) expected \(testHome)")
+                "UserDefaults override should win (bundled mode), got \(result) expected \(testHome)")
     }
 
-    @Test("resolvedDaemonHome ignores empty UserDefaults value")
+    @Test("resolvedDaemonHome ignores empty UserDefaults value (bundled mode)")
     func resolvedDaemonHomeIgnoresEmptyUserDefaults() {
         AppDelegate._testPackagingMode = nil
+        AppDelegate._testIsRunningInAppBundle = true
         UserDefaults.standard.set("", forKey: "HappyRanchDaemonHome")
         defer {
             AppDelegate._testPackagingMode = nil
+            AppDelegate._testIsRunningInAppBundle = nil
             UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
         }
 
@@ -151,6 +155,29 @@ struct PackagingAndHomeResolutionTests {
                     "Should return env var when no override, got \(result) expected \(envHome)")
         }
         #expect(!result.isEmpty, "result must never be empty")
+    }
+
+    @Test("resolvedDaemonHome ignores empty HAPPYRANCH_DAEMON_HOME env var")
+    func resolvedDaemonHomeIgnoresEmptyEnvVar() {
+        UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        AppDelegate._testPackagingMode = nil
+        let oldHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        setenv("HAPPYRANCH_DAEMON_HOME", "", 1)
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+            if let old = oldHome {
+                setenv("HAPPYRANCH_DAEMON_HOME", old, 1)
+            } else {
+                unsetenv("HAPPYRANCH_DAEMON_HOME")
+            }
+        }
+
+        let result = AppDelegate.resolvedDaemonHome()
+        #expect(!result.isEmpty, "Result must not be empty when env var is empty, got '\(result)'")
+        let expected = "\(NSHomeDirectory())/.happyranch"
+        #expect(result == expected,
+                "Should fall through to default dotdir when env var is empty, got \(result)")
     }
 
     // MARK: isRunningInAppBundle()
@@ -305,10 +332,12 @@ struct PackagingAndHomeResolutionTests {
     @Test("daemonHome() delegates to resolvedDaemonHome()")
     func daemonHomeDelegatesToResolved() {
         AppDelegate._testPackagingMode = nil
+        AppDelegate._testIsRunningInAppBundle = true
         let testHome = "/tmp/test-delegation"
         UserDefaults.standard.set(testHome, forKey: "HappyRanchDaemonHome")
         defer {
             AppDelegate._testPackagingMode = nil
+            AppDelegate._testIsRunningInAppBundle = nil
             UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
         }
 
@@ -338,8 +367,10 @@ struct PackagingAndHomeResolutionTests {
         let bundledHome = "\(NSHomeDirectory())/Library/Application Support/HappyRanch"
         UserDefaults.standard.set(bundledHome, forKey: "HappyRanchDaemonHome")
         AppDelegate._testPackagingMode = nil
+        AppDelegate._testIsRunningInAppBundle = true
         defer {
             AppDelegate._testPackagingMode = nil
+            AppDelegate._testIsRunningInAppBundle = nil
             UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
         }
 
