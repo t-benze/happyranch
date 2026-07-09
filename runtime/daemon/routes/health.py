@@ -105,11 +105,12 @@ def health_prereqs(request: Request) -> PrereqsResponse:
     Honesty fence: invents no badges, metrics, or fake status — just
     present/absent + hint.
     """
+    state = request.app.state.daemon
     registry = get_registry()
     names = registry.list_profile_names()
     results: list[ExecutorPrereq] = []
     for name in names:
-        cli = _get_cli_binary(name, _settings)
+        cli = _get_cli_binary(name, state.settings)
         if not cli:
             continue
         resolved = _presence_checker(cli)

@@ -110,3 +110,53 @@ def test_prereqs_response_shape() -> None:
         assert isinstance(entry["present"], bool)
         assert entry["path"] is None or isinstance(entry["path"], str)
         assert isinstance(entry["hint"], str)
+
+
+def test_prereqs_uses_daemon_settings_not_global_settings() -> None:
+    """health_prereqs must resolve CLI paths from the daemon's Settings,
+    NOT the module-global settings singleton.
+
+    Bug: health_prereqs() passed the module-global `_settings` to
+    `_get_cli_binary`, so a daemon configured with a non-default CLI path
+    (e.g. Settings(codex_cli_path='custom-codex')) would probe the default
+    binary name 'codex' instead of the configured 'custom-codex'.
+    """
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.config import Settings
+
+    # Build a daemon whose settings carry a custom codex CLI path.
+    custom_settings = Settings(codex_cli_path="custom-codex")
+    daemon = DaemonState.idle(custom_settings)
+    app = create_app(daemon)
+
+    # Install a fake presence checker that records every CLI string it is
+    # asked to resolve. This records at the source: if the route uses the
+    # global singleton, we will see 'codex'; if it uses the daemon's
+    # settings, we will see 'custom-codex'.
+    seen: list[str] = []
+
+    def _recording_checker(cli: str) -> str | None:
+        seen.append(cli)
+        return f"/fake/install/{cli}"
+
+    _set_presence_checker(_recording_checker)
+    try:
+        client = TestClient(app)
+        r = client.get("/api/v1/health/prereqs")
+        assert r.status_code == 200
+
+        # The checker must have been asked about 'custom-codex' — the
+        # daemon-configured path — and NOT about the default 'codex'.
+        assert "custom-codex" in seen, (
+            f"Expected presence checker to be called with 'custom-codex', "
+            f"but saw: {seen}"
+        )
+        assert "codex" not in seen, (
+            f"Presence checker should NOT be called with the default 'codex' "
+            f"when daemon settings override it. Saw: {seen}"
+        )
+    finally:
+        import shutil
+
+        _set_presence_checker(shutil.which)
