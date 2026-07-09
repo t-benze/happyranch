@@ -163,7 +163,7 @@ def test_validate_invalid_path(client):
     assert "absolute" in body["error"].lower()
 
 
-def test_routes_require_auth(app):
+def test_routes_require_auth(app, tmp_home):
     """All executor-binary routes require bearer auth."""
     # Unauthenticated
     from fastapi.testclient import TestClient

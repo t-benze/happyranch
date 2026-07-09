@@ -26,14 +26,14 @@ def cmd_executor_binaries_register(args: argparse.Namespace) -> None:
 
     Calls POST /api/v1/executor-binaries/register (validate-then-store).
     """
-    client = OpcClient.from_env()
-
     if not args.path.startswith("/"):
         print(
             f"error: --path must be an absolute path (got {args.path!r})",
             file=sys.stderr,
         )
         sys.exit(1)
+
+    client = OpcClient.from_env()
 
     try:
         r = client.post(
