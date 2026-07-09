@@ -18,7 +18,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
-import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { Composer } from '@/design-system/patterns/Composer';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -97,6 +96,52 @@ function lastSpeakerChip(speaker: string | null | undefined): { name: string; ro
  */
 function participantChipRole(name: string): 'worker' | 'founder' {
   return name === 'founder' ? 'founder' : 'worker';
+}
+
+/**
+ * Two-letter (max) avatar initials for a message sender. `founder` renders as
+ * YOU (the founder viewing their own thread); agent names split on separators
+ * and take the first letter of the first two segments (engineering_manager →
+ * EM, product_lead → PL). Presentational only — no fabricated identity.
+ */
+function speakerInitials(name: string): string {
+  if (name === 'founder') return 'YOU';
+  const parts = name.split(/[_\s.-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
+/**
+ * Latest known responder state per agent across the transcript, keyed by
+ * agent_name. Honest enrichment for the participants rail — reads the same
+ * responder_status the ResponderStatusStrip renders (no fabrication). Messages
+ * are server-ordered oldest→newest, so the last write wins (newest state).
+ */
+function latestResponderStatusByAgent(messages: ThreadMessage[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const m of messages) {
+    for (const s of m.responder_status ?? []) {
+      map.set(s.agent_name, s.status);
+    }
+  }
+  return map;
+}
+
+/**
+ * Per-sender avatar square for a transcript turn (THR-061 a-thread-detail).
+ * Role color mirrors AgentChip's honest founder-vs-worker mapping; the initials
+ * are decor. `aria-hidden` because the speaker name is announced by the bubble.
+ */
+function TurnAvatar({ name }: { name: string }): JSX.Element {
+  const bg = participantChipRole(name) === 'founder' ? 'bg-agent-founder' : 'bg-agent-worker';
+  return (
+    <span
+      aria-hidden="true"
+      className={`text-overline flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-bold text-white ${bg}`}
+    >
+      {speakerInitials(name)}
+    </span>
+  );
 }
 
 /**
@@ -585,6 +630,9 @@ function DetailColumn({
   // Real produced artifacts aggregated from the transcript (THREADDET-02).
   // Computed before the early returns so the hook order stays stable.
   const artifacts = useMemo(() => collectThreadArtifacts(messages), [messages]);
+  // Latest responder state per agent — feeds the participants rail status
+  // column (honest, derived from the same responder_status the strip shows).
+  const statusByAgent = useMemo(() => latestResponderStatusByAgent(messages), [messages]);
   // Tasks dispatched from this thread (THR-061). Called before the early
   // returns so the hook order stays stable; self-gates on threadId.
   const threadTasks = useThreadTasks(threadId);
@@ -698,27 +746,37 @@ function DetailColumn({
           aria-label="Thread properties"
           className="border-border-default bg-surface-sunken w-rail flex shrink-0 flex-col gap-3 overflow-auto border-l p-4"
         >
-          {/* Participants — avatar chips (AgentChip idiom, role-colored dot) */}
+          {/* Participants — LED + mono name + latest-response status (THR-061
+              a-thread-detail .prow). Status is derived from responder_status
+              (honest); founder is labelled by role. Remove ✕ preserved. */}
           <div>
             <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Participants</h3>
             {thread.participants.length > 0 ? (
-              <ul className="space-y-1">
-                {thread.participants.map((p) => (
-                  <li key={p} className="group flex items-center justify-between gap-2">
-                    <AgentChip name={p} role={participantChipRole(p)} />
-                    {open && (
-                      <button
-                        type="button"
-                        aria-label={`Remove ${p}`}
-                        title={`Remove ${p}`}
-                        onClick={() => onRemoveParticipant(p)}
-                        className="text-text-muted hover:text-feedback-danger shrink-0 rounded px-1 text-xs leading-none opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </li>
-                ))}
+              <ul className="space-y-0.5">
+                {thread.participants.map((p) => {
+                  const led = participantChipRole(p) === 'founder' ? 'bg-agent-founder' : 'bg-agent-worker';
+                  const status = p === 'founder' ? 'founder' : (statusByAgent.get(p) ?? null);
+                  return (
+                    <li key={p} className="group flex items-center gap-2 py-1">
+                      <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${led}`} />
+                      <span className="text-text-primary truncate font-mono text-xs">{p}</span>
+                      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                        {status && <span className="text-text-muted text-caption">{status}</span>}
+                        {open && (
+                          <button
+                            type="button"
+                            aria-label={`Remove ${p}`}
+                            title={`Remove ${p}`}
+                            onClick={() => onRemoveParticipant(p)}
+                            className="text-text-muted hover:text-feedback-danger rounded px-1 text-xs leading-none opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
               <p className="text-text-muted text-xs">none</p>
@@ -761,22 +819,34 @@ function DetailColumn({
             )}
           </div>
 
-          {/* Status */}
+          {/* This thread — meta card (THR-061 a-thread-detail). Groups Status ·
+              Cost · Opened. Per-thread token rollup ("Fresh tokens") is
+              Category C — no field/route exists — so it is OMITTED; Cost is a
+              static honest "not metered" fence, never a fabricated number. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Status</h3>
-            <span
-              className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}
-            >
-              {thread.status === 'open' ? 'active' : 'archived'}
-            </span>
-          </div>
-
-          {/* Opened */}
-          <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Opened</h3>
-            <p className="text-text-secondary text-xs">
-              {new Date(thread.started_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
-            </p>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">This thread</h3>
+            <dl className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-text-muted text-xs">Status</dt>
+                <dd>
+                  <span
+                    className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}
+                  >
+                    {thread.status === 'open' ? 'active' : 'archived'}
+                  </span>
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-text-muted text-xs">Cost</dt>
+                <dd className="text-text-disabled text-xs">not metered</dd>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-text-muted text-xs">Opened</dt>
+                <dd className="text-text-secondary text-xs">
+                  {new Date(thread.started_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                </dd>
+              </div>
+            </dl>
           </div>
 
           {/* Artifacts — real attachments produced across the transcript,
@@ -877,35 +947,43 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: Tr
         const variant = messageVariant(m);
         return (
           <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
-            {/* System cards — visually distinct */}
+            {/* System rows — centered "· system event · broadcast to all"
+                divider (THR-061 a-thread-detail .sys), not a chat bubble. */}
             {variant === 'system' ? (
-              <SystemCard
-                seq={m.seq}
+              <SystemDivider
                 timestamp={m.created_at}
                 systemPayload={m.system_payload}
                 slug={slug}
               />
             ) : (
-              <MessageBubble
-                variant={variant}
-                seq={m.seq}
-                speaker={m.speaker}
-                speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
-                timestamp={m.created_at}
-                body={m.body_markdown}
-                declineReason={m.decline_reason}
-                attachments={m.attachments}
-                onAttachmentDownload={slug && threadId ? (attachment) => {
-                  if (attachment.thread_attachment_id) {
-                    artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id, attachment.display_name);
-                  } else {
-                    artifactsApi.downloadArtifact(slug, attachment.artifact_name);
-                  }
-                } : undefined}
-              />
-            )}
-            {m.kind === 'message' && (
-              <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
+              // Turn = per-sender avatar square + chat-bubble body column
+              // (THR-061 a-thread-detail .turn). The responder strip aligns
+              // under the bubble because it lives inside the body column.
+              <div className="flex gap-3">
+                <TurnAvatar name={m.speaker} />
+                <div className="min-w-0 flex-1">
+                  <MessageBubble
+                    variant={variant}
+                    seq={m.seq}
+                    speaker={m.speaker}
+                    speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
+                    timestamp={m.created_at}
+                    body={m.body_markdown}
+                    declineReason={m.decline_reason}
+                    attachments={m.attachments}
+                    onAttachmentDownload={slug && threadId ? (attachment) => {
+                      if (attachment.thread_attachment_id) {
+                        artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id, attachment.display_name);
+                      } else {
+                        artifactsApi.downloadArtifact(slug, attachment.artifact_name);
+                      }
+                    } : undefined}
+                  />
+                  {m.kind === 'message' && (
+                    <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
+                  )}
+                </div>
+              </div>
             )}
           </div>
         );
@@ -925,31 +1003,30 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: Tr
 }
 
 /* ------------------------------------------------------------------ */
-/*  System card — visually distinct from agent-turn cards              */
+/*  System divider — centered "· system event · broadcast to all"      */
 /* ------------------------------------------------------------------ */
 
-interface SystemCardProps {
-  seq: number;
+interface SystemDividerProps {
   timestamp: string;
   systemPayload: Record<string, unknown> | null;
   slug?: string;
 }
 
-function SystemCard({ seq, timestamp, systemPayload, slug }: SystemCardProps): JSX.Element {
+function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): JSX.Element {
   const description = describeSystem(systemPayload, slug);
   return (
-    <div className="bg-surface-sunken border-border-subtle flex items-center gap-2 rounded-md border px-2 py-1.5">
-      <span className="text-caption text-text-muted font-mono">{seq}</span>
-      <span className="text-caption bg-bg-raised text-text-muted rounded-full px-1.5 py-0.5 font-medium uppercase">
-        {S.systemEventLabel}
+    <div className="my-1 flex items-center gap-3" title={new Date(timestamp).toLocaleString()}>
+      <span aria-hidden="true" className="bg-border-subtle h-px flex-1" />
+      <span className="text-text-muted text-mono-sm flex min-w-0 items-center gap-1.5 font-mono">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0" aria-hidden="true">
+          <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" />
+          <circle cx="9" cy="7" r="3" />
+          <path d="M22 21v-2a4 4 0 00-3-3.9" />
+        </svg>
+        <span className="text-text-secondary truncate">{description}</span>
+        <span className="text-text-disabled shrink-0 whitespace-nowrap">· {S.systemEventLabel} event · broadcast to all</span>
       </span>
-      <span className="text-text-secondary flex-1 text-xs">{description}</span>
-      <time
-        dateTime={timestamp}
-        className="text-caption text-text-disabled shrink-0"
-      >
-        {new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      </time>
+      <span aria-hidden="true" className="bg-border-subtle h-px flex-1" />
     </div>
   );
 }
