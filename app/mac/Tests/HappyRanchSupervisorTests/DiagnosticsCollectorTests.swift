@@ -7,7 +7,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects basic system information")
     func collectsBasicInfo() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         let bundle = collector.collect()
 
         // Should contain these keys
@@ -18,7 +18,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects daemon state information")
     func collectsDaemonState() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordDaemonState(pid: 12345, port: 9876, bindHost: "127.0.0.1", state: "running")
         let bundle = collector.collect()
 
@@ -30,7 +30,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects launch log safely")
     func collectsLaunchLog() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordLaunchLog("Starting daemon...\nBearer token: secret123\nDaemon running on port 8888")
 
         let bundle = collector.collect()
@@ -45,7 +45,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects daemon log tail safely")
     func collectsDaemonLogTail() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordDaemonLogTail("""
         INFO: Health check passed
         DEBUG: Token refresh: abc-def-ghi
@@ -62,7 +62,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects health probe result")
     func collectsHealthProbeResult() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordHealthProbe(success: true, latencyMs: 42, errorMessage: nil)
 
         let bundle = collector.collect()
@@ -72,7 +72,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects failed health probe result")
     func collectsFailedHealthProbe() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordHealthProbe(success: false, latencyMs: 0, errorMessage: "Connection refused")
 
         let bundle = collector.collect()
@@ -82,7 +82,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects last exit information")
     func collectsExitInfo() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordExit(exitCode: 1, signal: nil)
 
         let bundle = collector.collect()
@@ -92,7 +92,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects signal exit information")
     func collectsSignalExit() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordExit(exitCode: -1, signal: 9)
 
         let bundle = collector.collect()
@@ -102,7 +102,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("export bundle does not contain raw token")
     func exportBundleNoRawToken() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordDaemonState(pid: 123, port: 456, bindHost: "127.0.0.1", state: "running")
 
         // Simulate a token being present in the environment
@@ -117,7 +117,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("start command mode is captured")
     func capturesStartCommandMode() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordStartCommand("uv run python -m runtime.daemon")
 
         let bundle = collector.collect()
@@ -126,7 +126,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("active runtime path is captured")
     func capturesActiveRuntimePath() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordActiveRuntimePath("/Users/user/happyranch")
 
         let bundle = collector.collect()
@@ -137,7 +137,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("live-collected struct redacts probe error with bearer token")
     func liveCollectRedactsProbeErrorWithBearerToken() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
 
         // Feed a probe error containing a bearer token
         collector.recordHealthProbe(
@@ -184,7 +184,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("live-collected struct redacts secrets — live and export identical")
     func liveAndExportRedactionIdentical() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
 
         // Feed a launch log containing secrets
         collector.recordLaunchLog("Bearer token=hr_token_topsecret")
@@ -209,7 +209,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects macOS version as string and numeric tuple")
     func collectsMacOSVersion() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         let bundle = collector.collect()
 
         let versionString = bundle["macos_version"] as? String ?? ""
@@ -223,7 +223,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects architecture via utsname")
     func collectsArchitecture() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         let bundle = collector.collect()
 
         let arch = bundle["architecture"] as? String ?? ""
@@ -234,7 +234,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects build SHA (best-effort, falls back to unknown)")
     func collectsBuildSHA() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         let bundle = collector.collect()
 
         let sha = bundle["build_sha"] as? String ?? ""
@@ -247,7 +247,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("collects env/PATH summary")
     func collectsEnvPathSummary() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         let bundle = collector.collect()
 
         let envSummary = bundle["env_path_summary"] as? String ?? ""
@@ -257,7 +257,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("env/PATH summary redaction — token-shaped values redacted")
     func envPathSummaryRedactsTokens() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         setenv("HAPPYRANCH_TEST_TOKEN", "hr_token_test_secret_123", 1)
         defer { unsetenv("HAPPYRANCH_TEST_TOKEN") }
 
@@ -271,7 +271,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("recordDaemonStderr stores captured stderr")
     func recordDaemonStderr() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordDaemonStderr("Fatal error: port already in use\nStack trace: ...")
 
         let bundle = collector.collect()
@@ -282,7 +282,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("daemon stderr redacts bearer tokens")
     func daemonStderrRedactsTokens() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordDaemonStderr("ERROR: Bearer hr_token_leaked_secret\n")
 
         let bundle = collector.collect()
@@ -302,7 +302,7 @@ struct DiagnosticsCollectorTests {
             .appendingPathComponent("test-diagnostics-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
-        let collector = DiagnosticsCollector(homeDir: tmpDir.path)
+        let collector = DiagnosticsCollector(homeDir: tmpDir.path, registerAsShared: false)
         collector.recordLaunchLog("Launcher started")
         collector.recordDaemonStderr("error: something went wrong")
         collector.recordExit(exitCode: 1, signal: nil)
@@ -325,7 +325,7 @@ struct DiagnosticsCollectorTests {
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordLaunchLog("Bearer token=hr_token_secret")
         collector.recordDaemonStderr("error: hr_token_leaked")
         collector.recordExit(exitCode: 1, signal: nil)
@@ -343,7 +343,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("diagnosticsDirectory returns path under daemon home")
     func diagnosticsDirectoryPath() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         let dir = collector.diagnosticsDirectory
         #expect(dir.path.hasSuffix("/diagnostics"))
         #expect(dir.path.contains("/tmp/test-hr"))
@@ -353,7 +353,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("recordDaemonStdout stores captured stdout")
     func recordDaemonStdout() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordDaemonStdout("daemon v1.0 starting on port 8765\nListening for connections...")
 
         let bundle = collector.collect()
@@ -364,7 +364,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("daemon stdout redacts bearer tokens")
     func daemonStdoutRedactsTokens() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordDaemonStdout("INFO: token refresh hr_token_exposed_in_stdout\n")
 
         let bundle = collector.collect()
@@ -382,7 +382,7 @@ struct DiagnosticsCollectorTests {
             .appendingPathComponent("test-stdout-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
-        let collector = DiagnosticsCollector(homeDir: tmpDir.path)
+        let collector = DiagnosticsCollector(homeDir: tmpDir.path, registerAsShared: false)
         collector.recordDaemonStdout("daemon started successfully\n")
         collector.recordExit(exitCode: 0, signal: nil)
 
@@ -407,7 +407,7 @@ struct DiagnosticsCollectorTests {
         let homeDir = tmpDir.appendingPathComponent("daemon-home")
         try FileManager.default.createDirectory(at: homeDir, withIntermediateDirectories: true)
 
-        let collector = DiagnosticsCollector(homeDir: homeDir.path)
+        let collector = DiagnosticsCollector(homeDir: homeDir.path, registerAsShared: false)
         collector.recordDaemonStdout("INFO: Bearer hr_token_zip_leak\ndaemon ready")
         collector.recordDaemonStderr("error: hr_token_stderr_leak")
         collector.recordExit(exitCode: 1, signal: nil)
@@ -450,7 +450,7 @@ struct DiagnosticsCollectorTests {
         let homeDir = tmpDir.appendingPathComponent("daemon-home")
         try FileManager.default.createDirectory(at: homeDir, withIntermediateDirectories: true)
 
-        let collector = DiagnosticsCollector(homeDir: homeDir.path)
+        let collector = DiagnosticsCollector(homeDir: homeDir.path, registerAsShared: false)
         collector.recordDaemonStderr("FATAL: hr_token_crash_secret\nport bind failed")
         collector.recordExit(exitCode: 1, signal: nil)
 
@@ -478,7 +478,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("recordConnectPathLog appends timestamped stage-labeled lines")
     func recordConnectPathLogAppendsTimestampedLines() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
 
         collector.recordConnectPathLog(
             stage: "redeemPairing-start",
@@ -510,7 +510,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("connect-path log lines are timestamped with ISO-8601 format")
     func connectPathLogTimestampFormat() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         collector.recordConnectPathLog(stage: "test-stage", message: "test message")
 
         let bundle = collector.collect()
@@ -529,7 +529,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("connect-path log redacts hr_token_ credentials")
     func connectPathLogRedactsHrToken() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
 
         // Would-be credential-bearing line — MUST be redacted
         collector.recordConnectPathLog(
@@ -553,7 +553,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("connect-path log redacts bearer token patterns")
     func connectPathLogRedactsBearerToken() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
 
         collector.recordConnectPathLog(
             stage: "test-stage",
@@ -576,7 +576,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("connect-path log — pairing code is never present (defense-in-depth)")
     func connectPathLogNeverContainsPairingCode() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
 
         // Simulate would-be pairing-code-bearing lines as defense-in-depth proof
         // that NO log call passes the code value.
@@ -617,7 +617,7 @@ struct DiagnosticsCollectorTests {
 
     @Test("empty connect-path log does not appear in collect bundle")
     func emptyConnectPathLogNotInBundle() {
-        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr", registerAsShared: false)
         let bundle = collector.collect()
 
         // When no connect-path logs are recorded, the key must be absent
@@ -634,7 +634,7 @@ struct DiagnosticsCollectorTests {
         let homeDir = tmpDir.appendingPathComponent("daemon-home")
         try FileManager.default.createDirectory(at: homeDir, withIntermediateDirectories: true)
 
-        let collector = DiagnosticsCollector(homeDir: homeDir.path)
+        let collector = DiagnosticsCollector(homeDir: homeDir.path, registerAsShared: false)
         collector.recordConnectPathLog(
             stage: "redeemPairing-start",
             message: "Attempting to redeem pairing"
@@ -663,8 +663,13 @@ struct DiagnosticsCollectorTests {
 
     @Test("DiagnosticsCollector.shared is set on init")
     func sharedInstanceSetOnInit() {
+        // Save the previous shared instance so we can restore it after this
+        // test — prevents cross-suite contamination when running under
+        // parallel swift test.
+        let oldShared = DiagnosticsCollector.shared
         let collector = DiagnosticsCollector(homeDir: "/tmp/test-shared")
         #expect(DiagnosticsCollector.shared === collector,
                 "Shared instance must be set to the most recently created collector")
+        DiagnosticsCollector.shared = oldShared
     }
 }

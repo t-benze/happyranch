@@ -14,7 +14,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     /// (e.g. connect-path logs) to the same collector without wiring it
     /// through every call chain.
     /// Protected by ``sharedLock``.
-    public nonisolated(unsafe) private(set) static var shared: DiagnosticsCollector?
+    public nonisolated(unsafe) internal(set) static var shared: DiagnosticsCollector?
 
     private let homeDir: String
     public private(set) var daemonPid: Int32?
@@ -41,13 +41,15 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     /// Lock guarding ``connectPathLogLines``.
     private let logLinesLock = NSLock()
 
-    public init(homeDir: String) {
+    public init(homeDir: String, registerAsShared: Bool = true) {
         self.homeDir = homeDir
         // Register as the shared instance so that connect-path loggers
         // and other optional contributors can find the same collector.
-        Self.sharedLock.lock()
-        Self.shared = self
-        Self.sharedLock.unlock()
+        if registerAsShared {
+            Self.sharedLock.lock()
+            Self.shared = self
+            Self.sharedLock.unlock()
+        }
     }
 
     // MARK: - Record methods
