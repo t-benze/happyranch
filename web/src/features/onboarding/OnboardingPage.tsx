@@ -20,8 +20,8 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, ArrowRight, Check, Sparkles } from 'lucide-react';
-import { orgs as orgsApi } from '@/lib/api';
+import { AlertTriangle, ArrowRight, Check, Info, Sparkles } from 'lucide-react';
+import { health as healthApi, orgs as orgsApi } from '@/lib/api';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
@@ -208,8 +208,9 @@ function CreateStep({
         )}
 
         {/* Template picker (createOrg `from_example`) is founder-gated (G12
-            #312) — omitted here, not stubbed. Executor-prereq readiness is
-            backend #314 (a later PR); its clean seam mounts here once shipped. */}
+            #312) — omitted here, not stubbed. */}
+
+        <ExecutorPrereqPanel />
 
         <div className="flex items-center gap-2 pt-4">
           <Button type="submit" disabled={!valid || create.isPending}>
@@ -304,6 +305,85 @@ function BrokenOrgList({
             <p className="text-text-secondary mt-1 font-mono text-xs break-words">
               {b.error}
             </p>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Executor prereq readiness (THR-061 backend #314)                    */
+/* ------------------------------------------------------------------ */
+
+function ExecutorPrereqPanel(): JSX.Element | null {
+  const prereqsQuery = useQuery({
+    queryKey: ['health', 'prereqs'],
+    queryFn: healthApi.getPrereqs,
+    staleTime: 120_000, // 2 min — CLI presence doesn't change mid-session
+    retry: 1,
+  });
+
+  // While loading or on error, show nothing — this is informational only.
+  if (prereqsQuery.isPending || prereqsQuery.isError) return null;
+
+  const prereqs = prereqsQuery.data?.prereqs ?? [];
+  if (prereqs.length === 0) return null;
+
+  const absent = prereqs.filter((p) => !p.present);
+  // If every executor is present, show a compact success line.
+  if (absent.length === 0) {
+    return (
+      <div
+        aria-label="Executor readiness"
+        className="border-border-default bg-surface mt-4 rounded-md border px-3 py-2"
+      >
+        <p className="text-text-muted flex items-center gap-1.5 text-xs">
+          <Check aria-hidden="true" size={14} className="text-feedback-success shrink-0" />
+          All executor CLIs found on PATH.
+        </p>
+      </div>
+    );
+  }
+
+  // At least one executor is absent — show a diagnostically useful panel.
+  return (
+    <section
+      aria-label="Executor readiness"
+      className="border-feedback-warning/25 bg-feedback-warning/5 mt-4 rounded-md border p-3"
+    >
+      <div className="flex items-center gap-1.5">
+        <Info aria-hidden="true" size={14} className="text-feedback-warning shrink-0" />
+        <p className="text-text-primary text-xs font-medium">
+          Executor readiness — {absent.length} missing
+        </p>
+      </div>
+      <ul className="mt-2 space-y-1.5">
+        {prereqs.map((p) => (
+          <li key={p.tool} className="flex items-start gap-1.5">
+            {p.present ? (
+              <Check
+                aria-hidden="true"
+                size={13}
+                className="text-feedback-success mt-px shrink-0"
+              />
+            ) : (
+              <AlertTriangle
+                aria-hidden="true"
+                size={13}
+                className="text-feedback-warning mt-px shrink-0"
+              />
+            )}
+            <span className="text-text-secondary text-xs">
+              <span
+                className={
+                  p.present ? 'text-text-primary font-medium' : 'text-text-primary'
+                }
+              >
+                {p.tool}
+              </span>
+              {p.present ? ' — ready' : ` — not found. ${p.hint}`}
+            </span>
           </li>
         ))}
       </ul>

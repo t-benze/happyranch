@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { OnboardingPage } from './OnboardingPage';
-import { orgs as orgsApi } from '@/lib/api';
+import { health as healthApi, orgs as orgsApi } from '@/lib/api';
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -21,6 +21,15 @@ beforeEach(() => {
   vi.restoreAllMocks();
   // Default: a healthy, empty container (no orgs, none broken).
   vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
+  // Default prereqs: all present (compact success line).
+  vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+    prereqs: [
+      { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Install Claude Code' },
+      { tool: 'codex', present: true, path: '/usr/bin/codex', hint: 'Install Codex' },
+      { tool: 'opencode', present: true, path: '/usr/bin/opencode', hint: 'Install opencode' },
+      { tool: 'pi', present: true, path: '/usr/bin/pi', hint: 'Install Pi' },
+    ],
+  });
 });
 
 describe('OnboardingPage', () => {
@@ -113,5 +122,58 @@ describe('OnboardingPage', () => {
     expect(
       screen.queryByRole('button', { name: /retry/i }),
     ).not.toBeInTheDocument();
+  });
+
+  test('executor prereqs — all present shows compact success line', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /create your first org/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText('Executor readiness'),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(/all executor clis found on path/i),
+    ).toBeInTheDocument();
+  });
+
+  test('executor prereqs — missing executors show warning panel with hint', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Install Claude Code' },
+        { tool: 'pi', present: false, path: null, hint: 'Install Pi' },
+      ],
+    });
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /create your first org/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText('Executor readiness'),
+      ).toBeInTheDocument(),
+    );
+    // Absence surfaced with the hint.
+    expect(screen.getByText(/Install Pi/)).toBeInTheDocument();
+    // Panel header shows missing count.
+    expect(screen.getByText(/1 missing/)).toBeInTheDocument();
+    // The present executor still shows.
+    expect(screen.getByText(/claude/)).toBeInTheDocument();
+  });
+
+  test('executor prereqs — query error is silent (no panel rendered)', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(healthApi, 'getPrereqs').mockRejectedValue(new Error('network'));
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /create your first org/i }));
+
+    // The panel is absent — this is a silent degradation.
+    await waitFor(() => {
+      expect(
+        screen.queryByLabelText('Executor readiness'),
+      ).not.toBeInTheDocument();
+    });
   });
 });
