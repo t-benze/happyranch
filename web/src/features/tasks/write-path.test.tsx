@@ -243,7 +243,7 @@ describe('Tasks write path', () => {
     });
 
     expect(revisitBody).toEqual({
-      note: 'Retry with updated brief.',
+      founder_note: 'Retry with updated brief.',
       session_timeout_seconds: undefined,
     });
   });
@@ -286,7 +286,7 @@ describe('Tasks write path', () => {
     });
 
     expect(revisitBody).toEqual({
-      note: undefined,
+      founder_note: undefined,
       session_timeout_seconds: undefined,
     });
   });
