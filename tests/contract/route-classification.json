@@ -37,6 +37,7 @@
     "GET /api/v1/orgs/{slug}/threads/{thread_id}/tail",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/send",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/invite",
+    "POST /api/v1/orgs/{slug}/threads/{thread_id}/remove-participant",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/extend",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/archive",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/abort-replies",

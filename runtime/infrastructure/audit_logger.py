@@ -658,6 +658,20 @@ class AuditLogger:
             payload={"agent_name": agent_name, "added_by": added_by},
         )
 
+    def log_thread_participant_removed(
+        self,
+        thread_id: str,
+        *,
+        agent_name: str,
+        removed_by: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=removed_by,
+            action="thread_participant_removed",
+            payload={"agent_name": agent_name, "removed_by": removed_by},
+        )
+
     def log_thread_dispatch(
         self,
         thread_id: str,
