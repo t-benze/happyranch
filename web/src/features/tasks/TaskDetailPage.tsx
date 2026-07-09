@@ -381,6 +381,145 @@ function BriefSection({ brief }: { brief: string }): JSX.Element {
 }
 
 /* ================================================================
+ * Revisit & dependency chain — predecessor lineage timeline
+ * (a-task-detail reference "Revisit & dependency chain" card).
+ *
+ * PRESENTATIONAL: renders the revisit / parent PREDECESSOR lineage as a
+ * vertical timeline of clickable task nodes, entirely from data already on
+ * the TaskDetailResponse envelope — `revisit_chain` ([this, predecessor, …,
+ * original]), `parent_task_id`, and `direct_revisits` (tasks that revisit
+ * THIS one). The current task node is highlighted.
+ *
+ * Honesty fence: predecessor / revised-by nodes are id-only links — the chain
+ * arrays carry ids, not records, so there is no per-node status/agent/title to
+ * render without fabricating it. Only the current node carries a real
+ * StatusBadge + title (from the fetched TaskRecord). Forward *dependents*
+ * traversal (the blocked-dependent graph the mockup hints at) needs backend
+ * assembly and is intentionally omitted, never faked. The superseded-by
+ * successor stays in the header lineage strip (already shipped + tested) to
+ * avoid a duplicate rendering.
+ * ================================================================ */
+
+type ChainNodeState = 'done' | 'current' | 'pending';
+
+interface ChainCardNode {
+  id: string;
+  role: string;
+  state: ChainNodeState;
+}
+
+function chainDotClass(state: ChainNodeState): string {
+  switch (state) {
+    case 'current':
+      return 'bg-accent-default ring-2 ring-offset-1 ring-offset-surface';
+    case 'done':
+      return 'bg-status-open';
+    case 'pending':
+      return 'bg-border-strong';
+  }
+}
+
+function ChainNodeItem({
+  node,
+  isLast,
+  detailHref,
+  current,
+}: {
+  node: ChainCardNode;
+  isLast: boolean;
+  detailHref: string;
+  current?: { status: TaskRecord['status']; title: string | null };
+}): JSX.Element {
+  return (
+    <li className="flex gap-3">
+      {/* Connector: node dot + vertical line to the next node */}
+      <div className="flex flex-col items-center">
+        <div
+          className={`mt-3 h-2.5 w-2.5 shrink-0 rounded-full ${chainDotClass(node.state)}`}
+        />
+        {!isLast && <div className="bg-border-default mt-1 w-0.5 flex-1" />}
+      </div>
+      <div
+        className={`mb-2 min-w-0 flex-1 rounded-md border p-3 ${
+          node.state === 'current'
+            ? 'border-accent-default bg-surface-sunken'
+            : 'border-border-default'
+        }`}
+      >
+        <p className="text-text-muted text-xs font-medium tracking-wider uppercase">
+          {node.role}
+        </p>
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          {node.state === 'current' ? (
+            <IdBadge kind="task" id={node.id} />
+          ) : (
+            <IdBadge kind="task" id={node.id} to={detailHref} />
+          )}
+          {current && <StatusBadge status={current.status} />}
+        </div>
+        {current?.title && (
+          <p className="text-text-secondary mt-1 truncate text-sm">
+            {current.title}
+          </p>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function RevisitDependencyChain({
+  task,
+  revisitChain,
+  directRevisits,
+  routes,
+}: {
+  task: TaskRecord;
+  revisitChain: string[];
+  directRevisits: string[];
+  routes: ReturnType<typeof useTasksRoutes>;
+}): JSX.Element | null {
+  const parentId = task.parent_task_id;
+  // revisit_chain = [this, predecessor, …, original]; predecessors are
+  // slice(1) reversed so they read oldest → newest ahead of the current node.
+  const predecessors = revisitChain.slice(1).reverse();
+  const hasLineage =
+    !!parentId || predecessors.length > 0 || directRevisits.length > 0;
+  if (!hasLineage) return null;
+
+  const nodes: ChainCardNode[] = [];
+  if (parentId) nodes.push({ id: parentId, role: 'Parent', state: 'done' });
+  for (const id of predecessors) {
+    nodes.push({ id, role: 'Revisit of', state: 'done' });
+  }
+  nodes.push({ id: task.task_id, role: 'This task', state: 'current' });
+  for (const id of directRevisits) {
+    nodes.push({ id, role: 'Revised by', state: 'pending' });
+  }
+
+  const title = snippet(task.brief, 72);
+  return (
+    <section className="mt-5">
+      <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
+        Revisit &amp; dependency chain
+      </h3>
+      <ol>
+        {nodes.map((n, i) => (
+          <ChainNodeItem
+            key={`${n.role}-${n.id}`}
+            node={n}
+            isLast={i === nodes.length - 1}
+            detailHref={routes.detail(n.id)}
+            current={
+              n.state === 'current' ? { status: task.status, title } : undefined
+            }
+          />
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+/* ================================================================
  * Chain + block context query
  * ================================================================ */
 
@@ -396,6 +535,13 @@ interface ChainWithBlock {
    *  Null when the task never joined a fan-out. `active_fanout` is cleared
    *  after join, so this audit row is the only backing for the joined band. */
   joinedFanout: JoinedFanout | null;
+  /** Revisit lineage from the envelope: `[this, predecessor, …, original]`.
+   *  Length 1 (or empty) means the task was never revisited. Backs the
+   *  "Revisit & dependency chain" predecessor timeline. */
+  revisitChain: string[];
+  /** Task ids that revisit THIS task (forward, single-hop — NOT a dependents
+   *  traversal). Rendered as trailing "Revised by" nodes on the chain. */
+  directRevisits: string[];
 }
 
 function useChainWithBlock(slug: string | undefined, taskId: string | undefined) {
@@ -415,6 +561,14 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
             )
           : null;
       const sbti = rr.superseded_by_task_id;
+      const rc = rr.revisit_chain;
+      const revisitChain = Array.isArray(rc)
+        ? rc.filter((v): v is string => typeof v === 'string')
+        : [];
+      const dr = rr.direct_revisits;
+      const directRevisits = Array.isArray(dr)
+        ? dr.filter((v): v is string => typeof v === 'string')
+        : [];
       return {
         chain: r.active_chain ?? null,
         blockedOnJobs,
@@ -424,6 +578,8 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
         superseded_by_task_id:
           typeof sbti === 'string' && sbti ? sbti : null,
         joinedFanout: latestFanoutJoin(r.audit_log),
+        revisitChain,
+        directRevisits,
       };
     },
     enabled: !!slug && !!taskId,
@@ -788,6 +944,15 @@ export function TaskDetailPage(): JSX.Element {
           {/* Body */}
           <section className="py-4">
             {task.data?.brief && <BriefSection brief={brief} />}
+
+            {task.data && (
+              <RevisitDependencyChain
+                task={task.data}
+                revisitChain={chainQuery.data?.revisitChain ?? []}
+                directRevisits={chainQuery.data?.directRevisits ?? []}
+                routes={routes}
+              />
+            )}
 
             {chainQuery.data?.chain && (
               <WorkflowChainTimeline
