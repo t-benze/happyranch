@@ -201,6 +201,13 @@ describe('Tasks write path', () => {
     expect(cancelBody).toEqual({ rationale: '' });
   });
 
+  // ── escalation resolution tests ──
+  // THR-061 reconciliation honesty-fence: feat's pre-THR-075 test
+  //   `resolves escalation with blank rationale`
+  // was INTENTIONALLY dropped (not lost). main's THR-075 (#334) replaced
+  // escalation Approve/Reject with Continue (REQUIRED rationale) / Cancel,
+  // removing the blank-rationale Resolve path entirely. The tests below
+  // adopt main's superseding Continue/Cancel coverage.
   test('escalated task detail shows only Continue + Cancel (no Resolve…/Revisit)', async () => {
     // THR-069 msg74: the escalated action set is exactly Continue + Cancel.
     sessionStorage.setItem('happyranch.token', 'tok');
