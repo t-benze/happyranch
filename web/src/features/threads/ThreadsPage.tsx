@@ -79,6 +79,24 @@ function threadStatusOrFallback(status: string): 'open' | 'archived' {
 }
 
 /**
+ * Relative age label for a thread's start time (THR-061 a-threads `.t-time`,
+ * e.g. "1d ago"). Mirrors the local relativeAge pattern already used by
+ * TaskCard / DashboardPage — no date library added. Pure over an injected
+ * `nowMs` so it stays testable. Returns "just now" under a minute (no "ago").
+ * `started_at` is always present on the thread-LIST payload (ThreadRecord);
+ * per-row participants/preview/count are NOT and stay omitted (honesty fence).
+ */
+function relativeStartLabel(iso: string, nowMs: number): string {
+  const min = Math.round((nowMs - new Date(iso).getTime()) / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.round(hr / 24);
+  return `${d}d ago`;
+}
+
+/**
  * Derive a display label for the last speaker.
  * Returns { name, role } for AgentChip, or null if the thread has no speaker yet.
  */
@@ -492,7 +510,11 @@ export function ThreadsPage(): JSX.Element {
                     needsYou={false}
                     active={t.thread_id === threadId}
                     fromDream={!!t.composed_from_dream_id}
-                    meta={undefined}
+                    meta={
+                      <span className="whitespace-nowrap tabular-nums">
+                        {relativeStartLabel(t.started_at, nowMs)}
+                      </span>
+                    }
                     href={path}
                     onSelect={() => navigate(path)}
                   />

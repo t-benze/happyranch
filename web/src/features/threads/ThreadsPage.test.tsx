@@ -34,6 +34,7 @@ function mkThread(
     turns_used: number;
     composed_from_dream_id: string | null;
     last_speaker: string | null;
+    started_at: string;
   }>,
 ) {
   return {
@@ -192,6 +193,31 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       // Last speakers should appear
       expect(screen.getByText(/dev_agent/)).toBeInTheDocument();
       expect(screen.getByText(/founder/)).toBeInTheDocument();
+    });
+  });
+
+  test('shows a relative start-time per row (THR-061 a-threads .t-time)', async () => {
+    // started_at is on the thread-LIST payload (ThreadRecord), so per-row
+    // relative age is honest enrichment. Fixed to a far-past date so the label
+    // is always "Nd ago" against the real clock — deterministic without faking
+    // timers (fake timers break waitFor + msw async).
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({
+          threads: [
+            mkThread('THR-001', 'Aged thread', { started_at: '2026-05-14T00:00:00Z' }),
+          ],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => {
+      // "<n>d ago" relative timestamp appears on the row (a-threads .t-time).
+      expect(screen.getByText(/^\d+d ago$/)).toBeInTheDocument();
     });
   });
 
