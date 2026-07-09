@@ -338,12 +338,36 @@ public final class HomeConnector: @unchecked Sendable {
     // MARK: - Connection handling
 
     private func handleNewConnection(_ clientConnection: NWConnection) {
+        DiagnosticsCollector.shared?.recordConnectPathLog(
+            stage: "homeConnector-accepted",
+            message: "New inbound connection accepted on \(bindHost):\(bindPort)"
+        )
+
         clientConnection.stateUpdateHandler = { [weak self, weak clientConnection] state in
             guard let self, let clientConnection else { return }
             switch state {
+            case .waiting(let error):
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-connection-waiting",
+                    message: "Inbound connection waiting: \(error.localizedDescription)"
+                )
             case .ready:
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-connection-ready",
+                    message: "Inbound connection ready — reading request"
+                )
                 self.receiveFromClient(clientConnection)
-            case .failed, .cancelled:
+            case .failed(let error):
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-connection-failed",
+                    message: "Inbound connection failed: \(error.localizedDescription)"
+                )
+                clientConnection.cancel()
+            case .cancelled:
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-connection-cancelled",
+                    message: "Inbound connection cancelled"
+                )
                 clientConnection.cancel()
             default:
                 break
@@ -394,6 +418,11 @@ public final class HomeConnector: @unchecked Sendable {
             let method = parts[0]
             let rawPath = parts[1]
 
+            DiagnosticsCollector.shared?.recordConnectPathLog(
+                stage: "homeConnector-request-received",
+                message: "Received \(method) \(rawPath)"
+            )
+
             // Normalize path: strip trailing slash AND /api/vN prefix.
             // The daemon routes live under /api/v1 (runtime/daemon/app.py:199-221),
             // so the unprefixed-only matching was a CRITICAL bypass (reviewer FINDING 1).
@@ -410,11 +439,19 @@ public final class HomeConnector: @unchecked Sendable {
             // This is BEFORE the surface-allow-list gate because pairing is a native
             // connector operation, not a daemon surface.
             if method == "POST" && normalizedPath == "/pair" {
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-pair-request",
+                    message: "POST /pair — attempting pairing (code NOT logged)"
+                )
                 let body = Self.extractBody(from: requestString) ?? ""
                 if let credential = self.pairedDeviceStore.pair(
                     usingCode: body.trimmingCharacters(in: .whitespaces),
                     deviceName: "client"
                 ) {
+                    DiagnosticsCollector.shared?.recordConnectPathLog(
+                        stage: "homeConnector-pair-success",
+                        message: "Pairing succeeded — device credential issued (value NOT logged)"
+                    )
                     let responseBody = "{\"credential\":\"\(credential)\"}"
                     self.sendJSONResponse(
                         to: clientConnection,
@@ -422,6 +459,10 @@ public final class HomeConnector: @unchecked Sendable {
                         body: responseBody
                     )
                 } else {
+                    DiagnosticsCollector.shared?.recordConnectPathLog(
+                        stage: "homeConnector-pair-rejected",
+                        message: "Pairing rejected — invalid or expired pairing code"
+                    )
                     self.sendErrorResponse(
                         to: clientConnection,
                         status: 403,
@@ -435,6 +476,10 @@ public final class HomeConnector: @unchecked Sendable {
             // Pass both the normalized (unprefixed) path for the allow-list check
             // AND the original raw path so the allow-list can also match prefixed forms.
             guard self.surfaceAllowList.isAllowed(method: method, path: normalizedPath, rawPath: rawPath) else {
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-surface-deny",
+                    message: "Surface allow-list DENY for \(method) \(rawPath)"
+                )
                 self.sendErrorResponse(
                     to: clientConnection,
                     status: 403,
@@ -449,7 +494,12 @@ public final class HomeConnector: @unchecked Sendable {
             // This is the hard invariant: tailnet presence is necessary but NOT sufficient;
             // a random tailnet peer WITHOUT a valid pairing credential gets NOTHING.
             let deviceID = headers["x-happyranch-device-credential"] ?? ""
+            let deviceIDForLog = deviceID.isEmpty ? "(empty)" : "(present, NOT logged)"
             guard self.pairedDeviceStore.isPaired(deviceID: deviceID) else {
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-device-unauthorized",
+                    message: "Device credential not paired — rejecting (deviceID: \(deviceIDForLog))"
+                )
                 self.sendErrorResponse(
                     to: clientConnection,
                     status: 403,
@@ -457,6 +507,10 @@ public final class HomeConnector: @unchecked Sendable {
                 )
                 return
             }
+            DiagnosticsCollector.shared?.recordConnectPathLog(
+                stage: "homeConnector-device-authorized",
+                message: "Device credential paired — authorizing (deviceID: \(deviceIDForLog))"
+            )
 
             // Register the client connection for live-session tracking (A2.4).
             // If the device is later revoked, this connection will be actively
@@ -470,6 +524,10 @@ public final class HomeConnector: @unchecked Sendable {
             do {
                 credential = try self.credentialProvider.credential()
             } catch {
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-credential-unavailable",
+                    message: "Credential provider failed: \(error.localizedDescription)"
+                )
                 self.sendErrorResponse(
                     to: clientConnection,
                     status: 500,
@@ -477,6 +535,10 @@ public final class HomeConnector: @unchecked Sendable {
                 )
                 return
             }
+            DiagnosticsCollector.shared?.recordConnectPathLog(
+                stage: "homeConnector-credential-injected",
+                message: "Daemon credential injected (value NOT logged)"
+            )
 
             // Modify the request: inject the Authorization header
             let modifiedRequest = self.injectCredential(
@@ -485,6 +547,10 @@ public final class HomeConnector: @unchecked Sendable {
             )
 
             // --- RELAY TO DAEMON ---
+            DiagnosticsCollector.shared?.recordConnectPathLog(
+                stage: "homeConnector-relay-start",
+                message: "Relaying \(method) \(rawPath) to daemon on 127.0.0.1:\(daemonPort)"
+            )
             self.relayToDaemon(
                 clientConnection: clientConnection,
                 modifiedRequest: modifiedRequest,
@@ -561,7 +627,16 @@ public final class HomeConnector: @unchecked Sendable {
         daemonConnection.stateUpdateHandler = { [weak clientConnection] state in
             guard let clientConnection else { return }
             switch state {
+            case .waiting(let error):
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-daemon-connection-waiting",
+                    message: "Daemon connection waiting: \(error.localizedDescription)"
+                )
             case .ready:
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-daemon-connection-ready",
+                    message: "Daemon connection ready — forwarding request"
+                )
                 // Register the daemon-side connection for live-session
                 // tracking (A2.4).  When the device is revoked, this
                 // connection will be cancelled.
@@ -579,7 +654,22 @@ public final class HomeConnector: @unchecked Sendable {
                         )
                     }
                 )
-            case .failed, .cancelled:
+            case .failed(let error):
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-daemon-connection-failed",
+                    message: "Daemon connection failed: \(error.localizedDescription)"
+                )
+                // Clean up tracked connections when either side closes.
+                if !deviceID.isEmpty {
+                    self.unregisterConnection(daemonConnection, forDevice: deviceID)
+                    self.unregisterConnection(clientConnection, forDevice: deviceID)
+                }
+                clientConnection.cancel()
+            case .cancelled:
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "homeConnector-daemon-connection-cancelled",
+                    message: "Daemon connection cancelled"
+                )
                 // Clean up tracked connections when either side closes.
                 if !deviceID.isEmpty {
                     self.unregisterConnection(daemonConnection, forDevice: deviceID)
