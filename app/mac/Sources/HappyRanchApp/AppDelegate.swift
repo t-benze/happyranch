@@ -104,7 +104,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             connectionRolePreference = pref
         }
 
-        let home = daemonHome()
+        // Resolve the daemon home. In bundled mode, persist the app's intended
+        // home so daemonHome() does not silently defer to a stale inherited
+        // HAPPYRANCH_DAEMON_HOME env var.
+        if Self.isRunningInAppBundle() {
+            let bundledHome = "\(NSHomeDirectory())/Library/Application Support/HappyRanch"
+            UserDefaults.standard.set(bundledHome, forKey: "HappyRanchDaemonHome")
+        }
+
+        let home = AppDelegate.resolvedDaemonHome()
+
+        // Log the resolution for diagnostics (branch disambiguation).
+        diagnostics.recordLaunchLog(
+            AppDelegate.launchDiagnosticLogLine(resolvedHome: home)
+        )
+
         // Only configure the supervisor when the user intent is HOME or undetermined.
         // For CLIENT machines, skip supervisor.configure entirely — the role will
         // be derived from the explicit preference (ConnectionRole.detect returns
@@ -129,17 +143,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: - Daemon home
 
-    nonisolated static func daemonHome() -> String {
-        if let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"] {
+    /// UserDefaults key for an explicit daemon-home override.
+    /// Set by applicationDidFinishLaunching when the app detects it is running
+    /// as a .app bundle, to prevent a stale inherited HAPPYRANCH_DAEMON_HOME
+    /// env var from overriding the app's intended isolated home.
+    nonisolated private static let daemonHomeOverrideKey = "HappyRanchDaemonHome"
+
+    /// Returns true when running from within a .app bundle (as opposed to
+    /// `swift run`). Uses structural bundle-path detection that is independent
+    /// of the PACKAGING_MODE env var.
+    /// Test seam: override via _testIsRunningInAppBundle.
+    nonisolated(unsafe) private static var __testIsRunningInAppBundle: Bool?
+    nonisolated private static let _testIsRunningInAppBundleLock = NSLock()
+
+    nonisolated static var _testIsRunningInAppBundle: Bool? {
+        get { _testIsRunningInAppBundleLock.withLock { __testIsRunningInAppBundle } }
+        set { _testIsRunningInAppBundleLock.withLock { __testIsRunningInAppBundle = newValue } }
+    }
+
+    nonisolated static func isRunningInAppBundle() -> Bool {
+        if let override = _testIsRunningInAppBundle { return override }
+        return Bundle.main.bundlePath.hasSuffix(".app")
+    }
+
+    /// Resolves the daemon home with the intended precedence:
+    /// (0) Explicit UserDefaults override (set by app startup in bundled mode)
+    /// (1) HAPPYRANCH_DAEMON_HOME env var (dev iteration)
+    /// (2) packagingMode() == "bundled" (fallback)
+    /// (3) ~/.happyranch (default)
+    nonisolated static func resolvedDaemonHome() -> String {
+        // Step 0: explicit persisted override (set by app when bundled).
+        // Only consulted when running in a .app bundle; in non-bundled/dev
+        // mode skip UserDefaults so an intentionally-exported
+        // HAPPYRANCH_DAEMON_HOME env var is not masked by a stale
+        // auto-written value from a prior bundled launch.
+        if isRunningInAppBundle(),
+           let persisted = UserDefaults.standard.string(forKey: daemonHomeOverrideKey),
+           !persisted.isEmpty {
+            return persisted
+        }
+        // Step 1: env var (preserved for dev iteration).
+        // Reject empty (or whitespace-only) values — a present-but-empty var
+        // must not yield "". Fall through to the next branch instead.
+        if let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"],
+           !envHome.trimmingCharacters(in: .whitespaces).isEmpty {
             return envHome
         }
         let home = NSHomeDirectory()
-        // Bundled mode: own app-support directory so the app's runtime
-        // (port file, DB, logs, config) is isolated from dev data.
+        // Step 2: packaging-mode detection (fallback)
         if packagingMode() == "bundled" {
             return "\(home)/Library/Application Support/HappyRanch"
         }
+        // Step 3: default
         return "\(home)/.happyranch"
+    }
+
+    /// Legacy entry point — delegates to resolvedDaemonHome() so every
+    /// caller inherits the same explicit-pass-through behavior.
+    nonisolated static func daemonHome() -> String {
+        resolvedDaemonHome()
+    }
+
+    /// Returns a single-line diagnostic log recording how daemonHome was resolved.
+    /// Format: "resolved_home=<path> branch=<branch> env_present=<bool>"
+    /// branch is one of: user-defaults, env, bundled-appsupport, default-dotdir
+    nonisolated static func launchDiagnosticLogLine(resolvedHome: String) -> String {
+        let envPresent = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"] != nil
+        let branch: String
+        if let persisted = UserDefaults.standard.string(forKey: daemonHomeOverrideKey),
+           !persisted.isEmpty, persisted == resolvedHome {
+            branch = "user-defaults"
+        } else if envPresent,
+                  let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"],
+                  envHome == resolvedHome {
+            branch = "env"
+        } else if packagingMode() == "bundled" {
+            branch = "bundled-appsupport"
+        } else {
+            branch = "default-dotdir"
+        }
+        return "resolved_home=\(resolvedHome) branch=\(branch) env_present=\(envPresent)"
     }
 
     private func daemonHome() -> String { AppDelegate.daemonHome() }
