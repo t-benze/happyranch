@@ -212,6 +212,11 @@ const EXCLUDED_PATHS = new Map<string, string>([
   // operational metrics — agent/CLI facing; web dashboard panel deferred (THR-066 follow-up)
   ['GET /api/v1/metrics', 'operational metrics — agent/CLI facing; web dashboard panel deferred (THR-066 follow-up)'],
   ['GET /api/v1/metrics/history', 'operational metrics history — agent/CLI facing (THR-066 PR-2)'],
+  // executor binary-path registry — machine-local operator/daemon config surface;
+  // browser TS client wrappers land in THR-085 PR-2 web slice.
+  ['GET /api/v1/executor-binaries', 'executor binary-path registry — machine-local operator/daemon config surface; browser TS client wrappers land in THR-085 PR-2 web slice'],
+  ['POST /api/v1/executor-binaries/register', 'executor binary-path registry — machine-local operator/daemon config surface; browser TS client wrappers land in THR-085 PR-2 web slice'],
+  ['POST /api/v1/executor-binaries/validate', 'executor binary-path registry — machine-local operator/daemon config surface; browser TS client wrappers land in THR-085 PR-2 web slice'],
 
 ]);
 

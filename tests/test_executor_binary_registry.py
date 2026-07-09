@@ -223,7 +223,12 @@ def test_resolve_unregistered_on_path_resolves_non_silent(tmp_path, monkeypatch)
     fake_bin.parent.mkdir(parents=True)
     fake_bin.touch(mode=0o755)
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
-    monkeypatch.setenv("PATH", f"{fake_bin.parent}:/usr/bin:/bin")
+
+    # Mock shutil.which to return a deterministic on-path result
+    monkeypatch.setattr(
+        "runtime.orchestrator.executors.shutil.which",
+        lambda name, path=None: str(fake_bin) if name == "claude" else None,
+    )
 
     # Capture the warning log
     from runtime.orchestrator import executors as ex_mod
@@ -240,7 +245,12 @@ def test_resolve_unregistered_not_on_path_raises_actionable_block(
     """When a kind is unregistered AND not on PATH, raise ExecutorBinaryBlocked
     with an actionable message."""
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
-    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    # Mock shutil.which to return None (not found on PATH)
+    monkeypatch.setattr(
+        "runtime.orchestrator.executors.shutil.which",
+        lambda name, path=None: None,
+    )
 
     with pytest.raises(ExecutorBinaryBlocked) as exc_info:
         _resolve_binary("pi")
@@ -282,7 +292,11 @@ def test_registered_valid_vs_path_uses_registry(tmp_path, monkeypatch):
     reg_bin.touch(mode=0o755)
 
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
-    monkeypatch.setenv("PATH", str(path_bin.parent))
+    # Mock shutil.which to return the PATH binary (must NOT be used)
+    monkeypatch.setattr(
+        "runtime.orchestrator.executors.shutil.which",
+        lambda name, path=None: str(path_bin) if name == "claude" else None,
+    )
     set_binary("claude", str(reg_bin))
 
     result = _resolve_binary("claude")

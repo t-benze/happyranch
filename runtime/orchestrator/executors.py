@@ -90,7 +90,7 @@ class ExecutorBinaryBlocked(RuntimeError):
     registry AND is not on PATH — or when a stored path is stale.
 
     The message is always actionable: it names the executor kind and tells the
-    operator exactly how to fix it (e.g. 'register via happyranch executor set').
+    operator exactly how to fix it via ``happyranch executor-binaries register``.
     """
 
 
@@ -127,7 +127,7 @@ def _resolve_binary(cli_path: str) -> str:
         raise ExecutorBinaryBlocked(
             f"Executor binary '{cli_path}' is registered at {stored!r} "
             f"but the path does not exist or is not executable. "
-            f"Re-register it: happyranch executor set {cli_path} <absolute-path>"
+            f"Re-register it: happyranch executor-binaries register {cli_path} --path <absolute-path>"
         )
 
     # Not registered — fall back to PATH (non-silent).
@@ -135,11 +135,12 @@ def _resolve_binary(cli_path: str) -> str:
     if resolved is None:
         raise ExecutorBinaryBlocked(
             f"Executor '{cli_path}' is not registered and not found on PATH. "
-            f"Register it: happyranch executor set {cli_path} <absolute-path>"
+            f"Register it: happyranch executor-binaries register {cli_path} --path <absolute-path>"
         )
     logger.warning(
         "Executor '%s' has no stored binary path; resolved from PATH as %s. "
-        "Register it for reliable resolution: happyranch executor set %s %s",
+        "Register it for reliable resolution: "
+        "happyranch executor-binaries register %s --path %s",
         cli_path, resolved, cli_path, resolved,
     )
     return resolved

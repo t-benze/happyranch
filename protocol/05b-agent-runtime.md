@@ -86,7 +86,7 @@ At spawn time, each executor's CLI binary is resolved as follows:
    registered, validate the stored path: it must exist and be executable.
    - **Valid** → use the stored path.
    - **Invalid (stale path)** → raise an **actionable block** that names the
-     kind, the stale path, and the fix (`happyranch executor set`). No silent
+     kind, the stale path, and the fix (`happyranch executor-binaries register <kind> --path <absolute-path>`). No silent
      fallback to PATH.
 3. **PATH fallback** — if the kind is NOT registered, fall back to
    `shutil.which` over the current `PATH`.
@@ -94,7 +94,7 @@ At spawn time, each executor's CLI binary is resolved as follows:
      binary was resolved from PATH and should be registered (non-silent
      fallback per invariant 3).
    - **Not found** → raise an **actionable block** naming the kind and the
-     fix (`happyranch executor set <kind> <absolute-path>`).
+     fix (`happyranch executor-binaries register <kind> --path <absolute-path>`).
 
 The actionble block is an `ExecutorBinaryBlocked` exception (subclass of
 `RuntimeError`). It always names the specific executor kind and gives the
