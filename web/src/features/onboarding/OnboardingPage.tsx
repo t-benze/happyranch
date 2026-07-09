@@ -20,7 +20,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, ArrowRight, Check, Info, Sparkles } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Check, Info, Plus } from 'lucide-react';
 import { health as healthApi, orgs as orgsApi } from '@/lib/api';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { Button } from '@/design-system/primitives/Button';
@@ -97,37 +97,83 @@ function WelcomeStep({
   existingCount: number;
   onStart: () => void;
 }): JSX.Element {
+  const firstRun = existingCount === 0;
   return (
-    <section>
-      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-8">
-        <span
+    <section className="pt-6 sm:pt-10">
+      <RanchLogo className="text-accent h-14 w-14" />
+      <p className="text-accent-text mt-5 text-xs font-semibold tracking-wider uppercase">
+        {firstRun ? 'Fresh runtime' : 'New workspace'}
+      </p>
+      <h1 className="font-display text-display text-text-primary mt-3 font-medium">
+        {firstRun ? (
+          <>
+            Welcome to HappyRanch.
+            <br />
+            Let&rsquo;s create your first org.
+          </>
+        ) : (
+          'Create another org'
+        )}
+      </h1>
+      <p className="text-text-secondary mt-3 max-w-lg text-base leading-relaxed">
+        An <span className="text-text-primary font-medium">org</span> is a
+        workspace where your agents, threads, and tasks live.{' '}
+        {firstRun
+          ? "You don't have one yet — create one to get started. Everything else stays quiet until then."
+          : 'Add another to run a separate one, or return to an existing org from the sidebar.'}
+      </p>
+      <div className="mt-7 flex flex-wrap items-center gap-4">
+        <Button onClick={onStart}>
+          <Plus aria-hidden="true" />
+          {firstRun ? 'Create your first org' : 'Create another org'}
+        </Button>
+        <span className="text-text-muted text-xs">Takes a few seconds.</span>
+      </div>
+      <div className="border-border-default bg-surface-sunken mt-8 flex max-w-lg items-start gap-3 rounded-lg border p-4">
+        <Info
           aria-hidden="true"
-          className="bg-accent-soft text-accent-text inline-flex h-11 w-11 items-center justify-center rounded-full"
-        >
-          <Sparkles size={20} />
-        </span>
-        <h1 className="font-display text-h1 text-text-primary mt-4 font-medium">
-          Welcome to HappyRanch
-        </h1>
-        <p className="text-text-secondary mt-2 text-sm leading-relaxed">
-          HappyRanch runs your AI agent organization — teams of agents that pick
-          up tasks, collaborate in threads, and report back. An{' '}
-          <span className="text-text-primary font-medium">org</span> is a single
-          workspace with its own agents, tasks, and knowledge.
+          size={17}
+          className="text-text-muted mt-0.5 shrink-0"
+        />
+        <p className="text-text-secondary text-xs leading-relaxed">
+          Creating an org sets up the workspace only. It does{' '}
+          <span className="text-text-primary font-semibold">not</span> install
+          agent runtimes or CLIs (<span className="font-mono">claude</span>,{' '}
+          <span className="font-mono">codex</span>,{' '}
+          <span className="font-mono">node</span>…) — you&rsquo;ll wire those up
+          separately from Settings once the org exists.
         </p>
-        <p className="text-text-muted mt-3 text-sm">
-          {existingCount > 0
-            ? 'Add another org to run a separate workspace, or return to one from the sidebar.'
-            : 'Create your first org to get started.'}
-        </p>
-        <div className="mt-6">
-          <Button onClick={onStart}>
-            {existingCount > 0 ? 'Create another org' : 'Create your first org'}
-            <ArrowRight aria-hidden="true" />
-          </Button>
-        </div>
       </div>
     </section>
+  );
+}
+
+/** HappyRanch brand mark — mirrors the Sidebar Brandmark path at hero scale. */
+function RanchLogo({ className }: { className?: string }): JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 100 100"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      className={className}
+    >
+      <g transform="rotate(-7 50 44)">
+        <path
+          d="M50 26 C68 26 78 34 78 44 C78 54 66 60 50 60 C34 60 22 54 22 44 C22 34 32 26 50 26 Z"
+          strokeWidth="6.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </g>
+      <ellipse cx="41" cy="59" rx="6.2" ry="5" strokeWidth="5" />
+      <path
+        d="M44 63 C50 78 70 82 80 71 C85 65 83 59 77 60"
+        strokeWidth="6.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
