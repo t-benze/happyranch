@@ -44,6 +44,7 @@ import {
 } from '@/hooks/threads';
 import { ArchiveDialog } from './ArchiveDialog';
 import { InviteDialog } from './InviteDialog';
+import { RemoveParticipantDialog } from './RemoveParticipantDialog';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { ResumeButton } from './ResumeButton';
@@ -568,6 +569,10 @@ function DetailColumn({
   slug,
 }: DetailColumnProps): JSX.Element {
   const queryClient = useQueryClient();
+  // Participant pending removal (opens the confirm dialog). Mirrors the invite
+  // affordance's founder-only gate: the remove control is only shown while the
+  // thread is open (see the participants rail below).
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   // Real produced artifacts aggregated from the transcript (THREADDET-02).
   // Computed before the early returns so the hook order stays stable.
   const artifacts = useMemo(() => collectThreadArtifacts(messages), [messages]);
@@ -690,8 +695,21 @@ function DetailColumn({
             {thread.participants.length > 0 ? (
               <ul className="space-y-1">
                 {thread.participants.map((p) => (
-                  <li key={p}>
+                  <li key={p} className="group flex items-center justify-between gap-2">
                     <AgentChip name={p} role={participantChipRole(p)} />
+                    {/* Remove control — mirrors the Invite affordance's gate
+                        (open threads only). Confirm step via RemoveParticipantDialog. */}
+                    {open && (
+                      <button
+                        type="button"
+                        onClick={() => setRemoveTarget(p)}
+                        aria-label={`Remove ${p}`}
+                        title={`Remove ${p}`}
+                        className="text-text-muted hover:text-feedback-danger shrink-0 rounded px-1 text-xs leading-none opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -797,6 +815,11 @@ function DetailColumn({
           )}
         </aside>
       </div>
+      <RemoveParticipantDialog
+        threadId={thread.thread_id}
+        agentName={removeTarget}
+        onClose={() => setRemoveTarget(null)}
+      />
     </section>
   );
 }
@@ -951,6 +974,8 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
       return `invited ${payload.agent}`;
     case 'participant_added':
       return `added ${payload.agent_name}`;
+    case 'participant_removed':
+      return `removed ${payload.agent_name}`;
     case 'archive_requested':
       return 'archive requested';
     case 'archived':

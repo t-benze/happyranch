@@ -90,6 +90,11 @@ export type SendFollowUpResult = Awaited<ReturnType<typeof threadsApi.sendThread
 export type InviteArgs = Parameters<typeof threadsApi.inviteToThread>[2];
 export type InviteResult = Awaited<ReturnType<typeof threadsApi.inviteToThread>>;
 
+export type RemoveParticipantArgs = Parameters<typeof threadsApi.removeParticipantFromThread>[2];
+export type RemoveParticipantResult = Awaited<
+  ReturnType<typeof threadsApi.removeParticipantFromThread>
+>;
+
 export type ArchiveArgs = Parameters<typeof threadsApi.archiveThread>[2];
 export type ArchiveResult = Awaited<ReturnType<typeof threadsApi.archiveThread>>;
 
@@ -122,6 +127,9 @@ export interface ThreadsApi {
   useComposeThread: () => MutationLike<ComposeArgs, ComposeResult>;
   useSendFollowUp: (threadId: string) => MutationLike<SendFollowUpArgs, SendFollowUpResult>;
   useInviteAgent: (threadId: string) => MutationLike<InviteArgs, InviteResult>;
+  useRemoveParticipant: (
+    threadId: string,
+  ) => MutationLike<RemoveParticipantArgs, RemoveParticipantResult>;
   useArchiveThread: (threadId: string) => MutationLike<ArchiveArgs, ArchiveResult>;
   useResumeThread: (threadId: string) => MutationLike<ResumeArgs, ResumeResult>;
   useAbortReplies: (threadId: string) => MutationLike<AbortRepliesArgs, AbortRepliesResult>;

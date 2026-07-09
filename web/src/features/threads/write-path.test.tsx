@@ -624,4 +624,126 @@ describe('ThreadsPage — write path', () => {
       });
     });
   });
+
+  describe('RemoveParticipantDialog', () => {
+    const REMOVE_THREAD_ID = 'THR-003';
+
+    /** Stateful thread-detail stub: the GET reflects the current participants
+     *  array so an invalidation-driven refetch after a successful remove is
+     *  observable (the removed agent disappears from the rail). Returns the
+     *  mutable array so the POST handler can splice it. */
+    function stubRemoveStubs(): { participants: string[] } {
+      const state = { participants: ['founder', 'agent_a'] };
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}`, () =>
+          HttpResponse.json({
+            thread_id: REMOVE_THREAD_ID,
+            subject: 'Remove test thread',
+            status: 'open',
+            started_at: '2026-06-30T00:00:00Z',
+            archived_at: null,
+            forwarded_from_id: null,
+            forwarded_from_kind: null,
+            turn_cap: 500,
+            turns_used: 2,
+            summary: null,
+            transcript_path: null,
+            participants: [...state.participants],
+            messages: [],
+          }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/messages`, () =>
+          HttpResponse.json({ messages: [] }),
+        ),
+        http.get(`/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/tail`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+      );
+      return state;
+    }
+
+    test('confirms then POSTs remove-participant and drops the agent from the rail', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      const state = stubRemoveStubs();
+
+      const removeCalls: unknown[] = [];
+      server.use(
+        http.post(
+          `/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/remove-participant`,
+          async ({ request: req }) => {
+            const body = (await req.json()) as { agent_name: string };
+            removeCalls.push(body);
+            // Mutate shared state so the invalidation-driven refetch omits it.
+            state.participants = state.participants.filter((p) => p !== body.agent_name);
+            return HttpResponse.json({
+              thread_id: REMOVE_THREAD_ID,
+              agent_name: body.agent_name,
+              system_message_seq: 2,
+            });
+          },
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}` });
+
+      // The per-participant remove control mirrors the invite affordance.
+      await user.click(await screen.findByRole('button', { name: /^Remove agent_a$/i }));
+
+      // Confirm step — a dialog guards the destructive action. Scoped by name
+      // to disambiguate from the always-mounted Ranch Assistant dock (also
+      // role="dialog").
+      const dialog = await screen.findByRole('dialog', { name: /Remove participant/i });
+      await user.click(within(dialog).getByRole('button', { name: /^Remove$/i }));
+
+      // Exactly one remove POST with the selected agent name.
+      await waitFor(() => {
+        expect(removeCalls).toHaveLength(1);
+        expect(removeCalls[0]).toEqual({ agent_name: 'agent_a' });
+      });
+
+      // After invalidation the rail no longer lists the removed agent.
+      await waitFor(() => {
+        expect(screen.queryByRole('button', { name: /^Remove agent_a$/i })).not.toBeInTheDocument();
+      });
+    });
+
+    test('cancel closes the confirm dialog without removing', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      stubRemoveStubs();
+
+      let posted = false;
+      server.use(
+        http.post(
+          `/api/v1/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}/remove-participant`,
+          async () => {
+            posted = true;
+            return HttpResponse.json({
+              thread_id: REMOVE_THREAD_ID,
+              agent_name: 'agent_a',
+              system_message_seq: 2,
+            });
+          },
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${REMOVE_THREAD_ID}` });
+
+      await user.click(await screen.findByRole('button', { name: /^Remove agent_a$/i }));
+      const dialog = await screen.findByRole('dialog', { name: /Remove participant/i });
+      await user.click(within(dialog).getByRole('button', { name: /^Cancel$/i }));
+
+      // No POST fired and the confirm dialog is dismissed.
+      await waitFor(() => {
+        expect(
+          screen.queryByRole('dialog', { name: /Remove participant/i }),
+        ).not.toBeInTheDocument();
+      });
+      expect(posted).toBe(false);
+      expect(screen.getByRole('button', { name: /^Remove agent_a$/i })).toBeInTheDocument();
+    });
+  });
 });
