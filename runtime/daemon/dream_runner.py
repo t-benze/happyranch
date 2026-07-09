@@ -20,7 +20,11 @@ from runtime.orchestrator.org_config import (
     resolve_managed_skills_index,
     resolve_protocol_doc_manifest,
 )
-from runtime.orchestrator.workspace_adapters import refresh_session_skills
+from runtime.orchestrator.workspace_adapters import (
+    inject_managed_skills,
+    inject_system_contracts,
+    refresh_session_skills,
+)
 
 # Cap on the agent's window audit rows folded into the dream prompt. The most
 # recent N (chronological); keeps the prompt bounded on busy agents.
@@ -136,6 +140,33 @@ async def run_dream(
     # Refresh on-disk skill bodies on EVERY session (THR-070).
     try:
         refresh_session_skills(workspace, settings, slug=org_state.slug)
+    except Exception:
+        pass
+
+    # Explicit context-aware system-contract injection (THR-055 Phase 1).
+    try:
+        inject_system_contracts(
+            workspace, settings, slug=org_state.slug, context="dream",
+        )
+    except Exception:
+        pass
+
+    # Managed-catalog skill injection (THR-055 Phase 4).
+    try:
+        from runtime.orchestrator.prompt_loader import load_agent
+        agent_def = load_agent(paths, dream.agent_name)
+        agent_team = agent_def.team if agent_def else "engineering"
+    except Exception:
+        agent_team = "engineering"
+    try:
+        skills_root = settings.project_root / "runtime" / "skills"
+        inject_managed_skills(
+            workspace, settings,
+            slug=org_state.slug,
+            agent_name=dream.agent_name,
+            team=agent_team,
+            skills_root=skills_root,
+        )
     except Exception:
         pass
 

@@ -10,6 +10,7 @@ import {
   inviteToThread,
   listThreadMessages,
   listThreads,
+  removeParticipantFromThread,
   sendThreadFollowUp,
   threadInboxEventsPath,
   threadTailPath,
@@ -129,6 +130,7 @@ describe('threads api mirror', () => {
   test.each([
     ['sendThreadFollowUp', () => sendThreadFollowUp(SLUG, 'THR-001', { body_markdown: 'x' }), '/send'],
     ['inviteToThread', () => inviteToThread(SLUG, 'THR-001', { agent_name: 'a' }), '/invite'],
+    ['removeParticipantFromThread', () => removeParticipantFromThread(SLUG, 'THR-001', { agent_name: 'a' }), '/remove-participant'],
     ['extendThreadCap', () => extendThreadCap(SLUG, 'THR-001', { new_cap: 999 }), '/extend'],
     ['archiveThread', () => archiveThread(SLUG, 'THR-001', { summary: 'done' }), '/archive'],
     ['abortReplies', () => abortReplies(SLUG, 'THR-001'), '/abort-replies'],
@@ -146,6 +148,25 @@ describe('threads api mirror', () => {
     );
     await call();
     expect(hit).toBe(true);
+  });
+
+  test('removeParticipantFromThread POSTs the right body', async () => {
+    seedToken();
+    let received: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/remove-participant`, async ({ request: req }) => {
+        received = await req.json();
+        return HttpResponse.json(
+          { thread_id: 'THR-001', agent_name: 'qa_engineer', system_message_seq: 3 },
+          { status: 200 },
+        );
+      }),
+    );
+    const r = await removeParticipantFromThread(SLUG, 'THR-001', { agent_name: 'qa_engineer' });
+    expect(r.thread_id).toBe('THR-001');
+    expect(r.agent_name).toBe('qa_engineer');
+    expect(r.system_message_seq).toBe(3);
+    expect(received).toEqual({ agent_name: 'qa_engineer' });
   });
 
   test('SSE path helpers return stable strings', () => {

@@ -1,5 +1,5 @@
 /**
- * SpendPage — Direction-A Pasture fidelity pass (THR-030 Leg B batch 5).
+ * UsagePage — Direction-A Pasture fidelity pass (THR-030 Leg B batch 5).
  *
  * Tokens-only observability. No dollar amounts — render "$0.00 · not metered"
  * per the honesty fence. Cache reads in a separate column, never folded into
@@ -20,17 +20,17 @@
  * Error (retry), Populated (hero + breakdown + top-threads).
  */
 import { useMemo, useState, useCallback, useRef } from 'react';
-import { useSpendByAgent, useSpendByThread, useSpendByModel } from '@/hooks/spend';
+import { useUsageByAgent, useUsageByThread, useUsageByModel } from '@/hooks/usage';
 import { useAgentsList } from '@/hooks/agents';
 import { cn } from '@/lib/utils';
-// classifyModel is the single canonical model-label renderer; Spend and
+// classifyModel is the single canonical model-label renderer; Usage and
 // Dashboard must never disagree. Moving it out of @/features/dashboard
 // would be a cosmetic refactor that adds no safety value.
 // eslint-disable-next-line no-restricted-imports
 import { classifyModel } from '@/features/dashboard/topTokens';
 import { Button } from '@/design-system/primitives/Button';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
-import type { TokenUsageRollup } from '@/hooks/spend';
+import type { TokenUsageRollup } from '@/hooks/usage';
 
 /* ------------------------------------------------------------------ */
 /*  Window constants                                                   */
@@ -48,7 +48,7 @@ type BreakdownSegment = 'agent' | 'thread' | 'model';
 /*  Storage helpers                                                    */
 /* ------------------------------------------------------------------ */
 
-const STORAGE_KEY = 'hr-spend-window';
+const STORAGE_KEY = 'hr-usage-window';
 
 function loadWindowIdx(): number {
   try {
@@ -88,7 +88,7 @@ const MONTHS = [
 ] as const;
 
 /**
- * Human date-range label for the selected spend window, e.g. "Jun 17–24"
+ * Human date-range label for the selected usage window, e.g. "Jun 17–24"
  * (same month, en-dash) or "May 28 – Jun 3" (cross-month). Reads LOCAL date
  * parts of the honest [since .. now] bounds the client already queried — the
  * window is known client-side, so this is real data, never a hardcoded range.
@@ -152,7 +152,7 @@ function HeroCard({
         </p>
         {/* Dollars always zero — honesty fence: no dollar metric in data-model. */}
         <p className="text-text-muted mt-1 text-sm">$0.00 · not metered</p>
-        <p className="text-text-muted mt-2 text-sm">No token spend in this window</p>
+        <p className="text-text-muted mt-2 text-sm">No token usage in this window</p>
       </section>
     );
   }
@@ -337,7 +337,7 @@ function BreakdownTable({
   if (error) {
     return (
       <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
-        <p className="text-feedback-danger text-sm">Couldn't load spend breakdown — retry</p>
+        <p className="text-feedback-danger text-sm">Couldn't load usage breakdown — retry</p>
       </div>
     );
   }
@@ -357,7 +357,7 @@ function BreakdownTable({
   if (rows.length === 0) {
     return (
       <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
-        <p className="text-text-muted text-sm">No token spend in this window</p>
+        <p className="text-text-muted text-sm">No token usage in this window</p>
       </div>
     );
   }
@@ -438,7 +438,7 @@ interface TeamBurnRow {
 const UNATTRIBUTED_LABEL = 'unattributed';
 
 /** Deterministic categorical dot palette — design-system tokens only (no
- *  hardcoded hex), mirroring how the rest of Spend fills with token classes.
+ *  hardcoded hex), mirroring how the rest of Usage fills with token classes.
  *  Five visually distinct hues; assignment is by stable alphabetical index so a
  *  given team always keeps the same color regardless of burn ordering. */
 const TEAM_DOT_TOKENS = [
@@ -521,7 +521,7 @@ function ByTeamCard({
         By team
       </h3>
       {error ? (
-        <p className="text-feedback-danger text-sm">Couldn't load spend by team — retry</p>
+        <p className="text-feedback-danger text-sm">Couldn't load usage by team — retry</p>
       ) : loading ? (
         <div className="animate-pulse space-y-2">
           {[1, 2, 3].map((i) => (
@@ -529,7 +529,7 @@ function ByTeamCard({
           ))}
         </div>
       ) : rows.length === 0 ? (
-        <p className="text-text-muted text-sm">No token spend in this window</p>
+        <p className="text-text-muted text-sm">No token usage in this window</p>
       ) : (
         <ul className="space-y-1.5 font-mono text-xs">
           {rows.map((r) => (
@@ -568,7 +568,7 @@ interface TopThreadRow {
 }
 
 /** Rank threads by totalTokens DESC, slice to top N. Uses the shared
- *  classifyModel helper from @/features/dashboard/topTokens so Spend and the
+ *  classifyModel helper from @/features/dashboard/topTokens so Usage and the
  *  dashboard never disagree about a row's model label. */
 function rankTopThreads(rollup: TokenUsageRollup[], topN: number): TopThreadRow[] {
   return rollup
@@ -703,7 +703,7 @@ function WindowToggle({
 }): JSX.Element {
   const { refs, handleKeyDown } = useRovingFocus<HTMLButtonElement>(WINDOWS.length);
   return (
-    <div className="flex gap-1 font-mono text-xs" role="group" aria-label="Spend window">
+    <div className="flex gap-1 font-mono text-xs" role="group" aria-label="Usage window">
       {WINDOWS.map((w, i) => (
         <button
           key={w.label}
@@ -789,7 +789,7 @@ function downloadCSV(csv: string, filename: string): void {
 /*  Main page                                                          */
 /* ------------------------------------------------------------------ */
 
-export function SpendPage(): JSX.Element {
+export function UsagePage(): JSX.Element {
   const [winIdx, setWinIdx] = useState<number>(loadWindowIdx);
   const win = WINDOWS[winIdx];
   const since = useMemo(
@@ -803,9 +803,9 @@ export function SpendPage(): JSX.Element {
     [since],
   );
 
-  const agentQ = useSpendByAgent({ since });
-  const threadQ = useSpendByThread({ since });
-  const modelQ = useSpendByModel({ since });
+  const agentQ = useUsageByAgent({ since });
+  const threadQ = useUsageByThread({ since });
+  const modelQ = useUsageByModel({ since });
   // Roster join source for the by-team card — the LIST payload carries each
   // agent's `team`. Not windowed; the roster is a small static set.
   const agentsQ = useAgentsList();
@@ -868,7 +868,7 @@ export function SpendPage(): JSX.Element {
 
   const handleExport = useCallback(() => {
     const csv = breakdownRowsToCSV(exportRows);
-    downloadCSV(csv, `spend-${segment}-${win.label}.csv`);
+    downloadCSV(csv, `usage-${segment}-${win.label}.csv`);
   }, [exportRows, segment, win.label]);
 
   const isAnyLoading = agentQ.isLoading || threadQ.isLoading || modelQ.isLoading;
@@ -882,7 +882,7 @@ export function SpendPage(): JSX.Element {
         {/* Header — Pasture PageHeader pattern */}
         <header className="mb-6 flex items-start justify-between gap-3">
           <PageHeader
-            title="Spend"
+            title="Usage"
             meta="Token usage and cache savings"
           />
           <div className="flex items-center gap-3">
@@ -899,7 +899,7 @@ export function SpendPage(): JSX.Element {
         {isAnyError && !isAnyLoading && (
           <div className="border-feedback-danger/30 bg-feedback-danger/5 mb-6 rounded-lg border p-4">
             <p className="text-feedback-danger text-sm">
-              Couldn't load spend data. Try changing the window to reload.
+              Couldn't load usage data. Try changing the window to reload.
             </p>
           </div>
         )}

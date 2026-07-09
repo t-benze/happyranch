@@ -1,11 +1,11 @@
 /**
- * EscalationInboxRow — inline approve-and-resolve expander for the
+ * EscalationInboxRow — inline continue-and-resolve expander for the
  * "Waiting on you" panel.
  *
  * Click to expand → rationale textarea autofocuses → ⌘↵ submits or Esc
- * collapses. Sends { decision: 'approve', rationale } to the existing
- * /tasks/{id}/resolve-escalation route. Reject-with-rationale lives on
- * the Tasks page's ResolveEscalationDialog; the dashboard is approve-only
+ * collapses. Sends { decision: 'continue', rationale } to the existing
+ * /tasks/{id}/resolve-escalation route. Cancel-with-rationale lives on
+ * the Tasks page's ResolveEscalationDialog; the dashboard is continue-only
  * because that's the common founder action.
  *
  * KB promotion is deferred — see spec §4.6.
@@ -16,6 +16,30 @@ import type { DashboardEscalationRow } from '@/lib/api/types';
 import { useResolveEscalation } from '@/hooks/tasks';
 import { Button } from '@/design-system/primitives/Button';
 import { Textarea } from '@/design-system/primitives/Textarea';
+
+/** An escalation is "stale" once it has waited a full day (THR-061 slice 1).
+ *  Purely client-derived from the real `age_seconds` field — no new metric. */
+const STALE_THRESHOLD_SECONDS = 86_400;
+
+/**
+ * Per-flavor chip tint (THR-061 slice 1). Maps each DERIVED `flavor`
+ * ("needs-decision" | "exhausted" | "over-budget") to an EXISTING Pasture
+ * status tint so the founder can tell WHY a task is waiting at a glance.
+ * Existing design-system tokens only — no new hex (hex gate). Unknown
+ * flavors fall back to the neutral escalated tint the chip shipped with.
+ */
+function flavorChipClass(flavor: string): string {
+  switch (flavor) {
+    case 'needs-decision':
+      return 'bg-attention-soft text-attention-text';
+    case 'over-budget':
+      return 'bg-tier-yellow-tint text-status-archiving';
+    case 'exhausted':
+      return 'bg-tier-red-tint text-status-abandoned';
+    default:
+      return 'bg-tier-red-tint text-status-escalated';
+  }
+}
 
 interface EscalationInboxRowProps {
   row: DashboardEscalationRow;
@@ -42,6 +66,7 @@ export function EscalationInboxRow({
   const [rationale, setRationale] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
   const resolve = useResolveEscalation(row.task_id);
+  const isStale = row.age_seconds >= STALE_THRESHOLD_SECONDS;
 
   useEffect(() => {
     if (expanded) {
@@ -51,7 +76,7 @@ export function EscalationInboxRow({
   }, [expanded]);
 
   async function submit() {
-    await resolve.mutateAsync({ decision: 'approve', rationale });
+    await resolve.mutateAsync({ decision: 'continue', rationale });
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -70,7 +95,7 @@ export function EscalationInboxRow({
       className="border-border-subtle rounded-md border p-3"
       onClick={() => !expanded && onExpand()}
     >
-      <div className="flex items-baseline gap-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="text-text-primary font-mono text-xs font-medium">
           {row.agent}
         </span>
@@ -82,11 +107,28 @@ export function EscalationInboxRow({
           >
             {row.task_id}
           </Link>
-          {' · '}{row.team}{' · '}{relativeAge(row.age_seconds)}
+          {' · '}{row.team}{' · '}
+          <span
+            className={isStale ? 'text-status-escalated font-medium' : undefined}
+          >
+            {relativeAge(row.age_seconds)}
+          </span>
         </span>
+        {isStale && (
+          <span
+            className="border-tier-red text-status-escalated rounded border px-1 text-xs font-medium uppercase"
+            title="Waiting 24h+"
+          >
+            stale
+          </span>
+        )}
         {row.flavor && (
-          <span className="text-status-escalated text-xs font-medium">
-            · {row.flavor}
+          <span
+            className={`rounded-full px-2 py-0.5 text-xs font-medium ${flavorChipClass(
+              row.flavor,
+            )}`}
+          >
+            {row.flavor}
           </span>
         )}
       </div>
@@ -111,7 +153,7 @@ export function EscalationInboxRow({
               disabled={resolve.isPending}
               type="button"
             >
-              {resolve.isPending ? 'Resolving…' : 'Approve & resolve'}
+              {resolve.isPending ? 'Continuing…' : 'Continue & resolve'}
             </Button>
           </div>
         </div>

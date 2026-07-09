@@ -27,6 +27,7 @@ import {
 import { useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
 import { useDensity } from '@/hooks/density';
+import { AgentAvatar } from './AgentAvatar';
 
 const EXECUTOR_OPTIONS = [
   { value: 'claude', label: 'claude' },
@@ -278,7 +279,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   return (
     <section className="flex h-full flex-col">
       {/* --- Header --- */}
-      <header className="border-border-default flex items-start justify-between gap-3 border-b px-5 py-4">
+      <header className="border-border-default flex items-start gap-3.5 border-b px-5 py-4">
+        {/* AGENTS-04: detail-hero avatar anchor (Direction-A `a-agents`),
+            reusing the roster's role-colored initial chip. */}
+        <AgentAvatar name={agentName} role={agent?.role ?? null} size="lg" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3">
             <h2 className="font-display text-text-primary truncate text-xl font-medium">

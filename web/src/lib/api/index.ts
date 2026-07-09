@@ -7,6 +7,7 @@ export * as settings from './settings';
 export * as dreams from './dreams';
 export * as health from './health';
 export * as kb from './kb';
+export * as metrics from './metrics';
 export * as orgs from './orgs';
 export * as runtime from './runtime';
 export * as jobs from './jobs';

@@ -1,0 +1,10 @@
+id: hr:manage-agent
+slug: manage-agent
+name: Manage Agent
+version: 1.0.0
+description: Agent roster governance — enroll, update, or terminate agents, manage system prompts, executors, repos, and allow-rules. Enrollment requires founder approval.
+when_to_use: Use when managing the agent roster — enrolling a new agent, updating an existing agent's system prompt/executor/repos, or terminating an agent.
+owner: engineering_manager
+source: runtime/skills/manage-agent
+policy_class: high_impact_policy
+status: enabled

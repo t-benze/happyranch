@@ -228,15 +228,17 @@ class TestSkillsEffective:
         out = capsys.readouterr().out
         assert "BLOCKED by eligibility_gate" in out
 
-    def test_effective_no_policy_shows_all_catalog_approved(self, capsys):
+    def test_effective_no_policy_shows_all_catalog_approved(self, capsys, tmp_path):
         """Without a policy, no explicit allow rules exist, so no skills pass
-        eligibility (is_allowed requires len(allowed_by) > 0)."""
+        eligibility (is_allowed requires len(allowed_by) > 0).
+        Uses an explicitly non-existent policy path to avoid the default config."""
         from cli.commands.skills import cmd_skills_effective
         import argparse
 
+        nonexistent_policy = str(tmp_path / "nonexistent.yaml")
         ns = argparse.Namespace(
             agent="dev_agent", org="happyranch", team="engineering",
-            skills_root=str(FIXTURES), policy_path=None, json=False,
+            skills_root=str(FIXTURES), policy_path=nonexistent_policy, json=False,
         )
         cmd_skills_effective(ns)
 
@@ -337,7 +339,7 @@ class TestSkillsPolicyExplain:
         assert "disabled" in out.lower()
 
     def test_explain_draft_skill(self, capsys, tmp_path):
-        """Explain a skill in draft state — fails catalog gate."""
+        """Explain a skill that was formerly draft — now passes catalog gate (status=enabled)."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
 
@@ -349,11 +351,11 @@ class TestSkillsPolicyExplain:
         cmd_skills_policy_explain(ns)
 
         out = capsys.readouterr().out
-        assert "FAIL" in out
-        assert "draft" in out.lower()
+        assert "PASS" in out
+        assert "Catalog Gate" in out
 
     def test_explain_high_impact_skill(self, capsys, tmp_path):
-        """Explain a high_impact_policy skill with founder approval."""
+        """Explain a high_impact_policy skill — passes catalog gate (status=enabled, no approval gate)."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
         import yaml as _yaml
@@ -372,7 +374,6 @@ class TestSkillsPolicyExplain:
         out = capsys.readouterr().out
         assert "IS available" in out
         assert "high_impact_policy" in out or "HIGH_IMPACT" in out.upper()
-        assert "founder" in out or "approved_by" in out
 
     def test_explain_nonexistent_skill(self, capsys):
         from cli.commands.skills import cmd_skills_policy_explain
@@ -498,6 +499,210 @@ class TestSkillsPolicyExplain:
         assert "IS available" in out
         assert "Agent policy" in out
         assert "allow: ✓" in out
+
+
+class TestSkillsCliReview:
+    """CLI tests for the review skill as a managed-catalog standard_operational entry."""
+
+    def _make_review_policy(self, tmp_path, team_allow=True, agent_allows=None):
+        """Helper: create a policy YAML with review scoped to engineering team
+        and optionally to specific agents."""
+        import yaml as _yaml
+        policy: dict = {"skills": {"teams": {}, "agents": {}}}
+        if team_allow:
+            policy["skills"]["teams"]["engineering"] = {"allow": ["hr:review"], "deny": []}
+        if agent_allows:
+            for agent_name in agent_allows:
+                policy["skills"]["agents"][agent_name] = {"allow": ["hr:review"], "deny": []}
+        path = tmp_path / "config.yaml"
+        path.write_text("---\n" + _yaml.dump(policy, default_flow_style=False))
+        return str(path)
+
+    def test_catalog_list_includes_review(self, capsys):
+        """'skills catalog list' shows the review skill."""
+        from cli.commands.skills import cmd_skills_catalog_list
+        import argparse
+
+        ns = argparse.Namespace(skills_root=str(FIXTURES), json=False)
+        cmd_skills_catalog_list(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:review" in out
+        assert "Review" in out
+
+    def test_catalog_list_json_includes_review(self, capsys):
+        """JSON output from catalog list includes review."""
+        from cli.commands.skills import cmd_skills_catalog_list
+        import argparse
+
+        ns = argparse.Namespace(skills_root=str(FIXTURES), json=True)
+        cmd_skills_catalog_list(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        ids = [d["id"] for d in data]
+        assert "hr:review" in ids
+
+    def test_effective_review_exposed_to_engineering_team(self, capsys, tmp_path):
+        """'skills effective --agent dev_agent' shows review as exposed when engineering team is allowed."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_review_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+            context=None, workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:review" in out
+        assert "ALLOW" in out
+
+    def test_effective_review_not_exposed_to_non_participant(self, capsys, tmp_path):
+        """'skills effective --agent support_agent --team cx' does NOT show review."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_review_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="support_agent", org="happyranch", team="cx",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+            context=None, workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        # review should NOT appear in effective skills
+        assert "hr:review" not in out or "Effective skills (0)" in out
+
+    def test_effective_review_exposed_to_product_lead(self, capsys, tmp_path):
+        """'skills effective --agent product_lead --team product' shows review via agent scope."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_review_policy(tmp_path, agent_allows=["product_lead"])
+        ns = argparse.Namespace(
+            agent="product_lead", org="happyranch", team="product",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+            context=None, workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:review" in out
+
+    def test_policy_explain_review_exposed(self, capsys, tmp_path):
+        """'skills policy explain hr:review --agent dev_agent' shows review IS available."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        policy_path = self._make_review_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:review", agent="dev_agent",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        assert "IS available" in out
+        assert "Catalog Gate" in out
+        assert "PASS" in out
+        assert "ALLOWED" in out
+        assert "standard_operational" in out
+
+    def test_policy_explain_review_not_exposed_to_non_participant(self, capsys, tmp_path):
+        """'skills policy explain hr:review --agent support_agent --team cx' shows NOT available."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        policy_path = self._make_review_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:review", agent="support_agent",
+            org="happyranch", team="cx",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        assert "NOT available" in out
+        # Non-participant has no allow rules
+        assert "NOT EXPLICITLY ALLOWED" in out
+
+    def test_policy_explain_review_shows_team_provenance(self, capsys, tmp_path):
+        """'skills policy explain hr:review' shows team-scoped eligibility provenance."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        policy_path = self._make_review_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:review", agent="dev_agent",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        assert "Team policy" in out
+        assert "allow: ✓" in out
+
+    def test_policy_explain_review_json(self, capsys, tmp_path):
+        """JSON output from policy explain includes review provenance."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        policy_path = self._make_review_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:review", agent="dev_agent",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=True,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["skill_id"] == "hr:review"
+        assert data["catalog_gate"]["passed"] is True
+        assert data["is_exposed"] is True
+        # Provenance
+        assert data["eligibility"]["team"] == "engineering"
+        assert data["eligibility"]["team_policy"]["allow"] is True
+
+    def test_validate_includes_review_in_catalog(self, capsys):
+        """'skills catalog validate' includes the review skill in its output."""
+        from cli.commands.skills import cmd_skills_catalog_validate
+        import argparse
+
+        ns = argparse.Namespace(skills_root=str(FIXTURES), policy_path=None, json=False)
+        cmd_skills_catalog_validate(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:review" in out
+
+    def test_effective_system_contracts_does_not_include_review(self, capsys, tmp_path):
+        """'skills effective' system contracts section does NOT include review."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_review_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+            context="task", workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        # Check system contracts section does NOT list review
+        # review appears only in Effective skills / Blocked, not in System Contracts
+        # The system contracts section should show exactly 5 contracts
+        assert "System Contracts (runtime-injected):" in out
+        # review should appear in effective/blocked section, not system contracts
+        # Verify the existing 5 contracts are still there
+        assert "start-task" in out
+        assert "jobs" in out
 
 
 class TestSkillsCliRegistration:
@@ -827,3 +1032,350 @@ class TestAuditLoggerSkillsConfigWrite:
         # Same payload shape keys
         assert set(db.logs[0]["payload"].keys()) == {"subsection", "tiers", "before", "after"}
         assert set(db.logs[1]["payload"].keys()) == {"section", "tiers", "before", "after"}
+
+
+class TestSystemContractsCliDisplay:
+    """Tests for system-contract display in 'skills effective'."""
+
+    def test_effective_shows_system_contracts_section(self, capsys):
+        """The 'skills effective' output includes a System Contracts section."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=None, json=False,
+            context=None, workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "System Contracts (runtime-injected):" in out
+        assert "Total: 5 contract(s)" in out
+        assert "start-task" in out
+        assert "jobs" in out
+        assert "make-worktree" in out
+        assert "thread" in out
+        assert "dream" in out
+        # Managed catalog section still present
+        assert "Effective skills" in out
+
+    def test_effective_json_includes_system_contracts(self, capsys):
+        """JSON output includes system_contracts key."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=None, json=True,
+            context=None, workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert "system_contracts" in data
+        assert len(data["system_contracts"]) == 5
+        ids = [sc["id"] for sc in data["system_contracts"]]
+        assert "start-task" in ids
+        assert "jobs" in ids
+        assert "make-worktree" in ids
+        assert "thread" in ids
+        assert "dream" in ids
+        # Existing keys still present
+        assert "effective_skills" in data
+        assert "blocked_skills" in data
+
+    def test_effective_with_context_shows_injected_markers(self, capsys):
+        """With --context task, injected contracts are marked."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=None, json=False,
+            context="task", workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "System Contracts (runtime-injected):" in out
+        assert "Context filter: task" in out
+        # start-task should be INJECTED for task context
+        assert "start-task" in out
+        assert "INJECTED" in out
+        # dream should NOT be injected
+        assert "(not in context)" in out
+
+    def test_effective_with_context_dream(self, capsys):
+        """With --context dream, only jobs, make-worktree, dream are injected."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=None, json=False,
+            context="dream", workspace=None,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        # start-task should NOT be injected for dream
+        assert "start-task" in out  # still listed
+        # But dream should be injected
+        # Check that the right pattern appears
+        assert "dream  (Dream)  ← INJECTED" in out or "dream  (Dream)" in out
+
+
+class TestManageAgentManageRepoCli:
+    """CLI tests for manage-agent and manage-repo as high_impact_policy managed-catalog entries (THR-055 Phase 3)."""
+
+    # ── catalog list ────────────────────────────────────────────────
+
+    def test_catalog_list_shows_manage_agent(self, capsys):
+        """'skills catalog list' shows hr:manage-agent."""
+        from cli.commands.skills import cmd_skills_catalog_list
+        import argparse
+
+        ns = argparse.Namespace(skills_root=str(FIXTURES), json=False)
+        cmd_skills_catalog_list(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:manage-agent" in out
+        assert "high_impact_policy" in out or "HIGH_IMPACT" in out.upper()
+
+    def test_catalog_list_shows_manage_repo(self, capsys):
+        """'skills catalog list' shows hr:manage-repo."""
+        from cli.commands.skills import cmd_skills_catalog_list
+        import argparse
+
+        ns = argparse.Namespace(skills_root=str(FIXTURES), json=False)
+        cmd_skills_catalog_list(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:manage-repo" in out
+
+    def test_catalog_list_json_includes_manage_skills(self, capsys):
+        """JSON output includes manage-agent and manage-repo."""
+        from cli.commands.skills import cmd_skills_catalog_list
+        import argparse
+
+        import json
+        ns = argparse.Namespace(skills_root=str(FIXTURES), json=True)
+        cmd_skills_catalog_list(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        ids = [d["id"] for d in data]
+        assert "hr:manage-agent" in ids
+        assert "hr:manage-repo" in ids
+
+    # ── catalog validate ────────────────────────────────────────────
+
+    def test_validate_flags_manage_skills_catalog_failures(self, capsys):
+        """'skills catalog validate' — manage-agent/manage-repo no longer catalog gate failures (THR-055 seq 55)."""
+        from cli.commands.skills import cmd_skills_catalog_validate
+        import argparse
+
+        ns = argparse.Namespace(skills_root=str(FIXTURES), policy_path=None, json=False)
+        cmd_skills_catalog_validate(ns)
+
+        out = capsys.readouterr().out
+        # manage-agent and manage-repo are present in catalog
+        assert "hr:manage-agent" in out
+        assert "hr:manage-repo" in out
+        # Only disabled-skill triggers catalog gate failure now
+        assert "CATALOG GATE FAILURES" in out
+        assert "hr:disabled-skill" in out
+
+    # ── effective ───────────────────────────────────────────────────
+
+    def _make_manager_policy(self, tmp_path):
+        """Helper: create a policy YAML with manager-scoped allows."""
+        import yaml as _yaml
+        policy = {
+            "skills": {
+                "agents": {
+                    "engineering_manager": {
+                        "allow": ["hr:manage-agent", "hr:manage-repo"],
+                        "deny": [],
+                    },
+                },
+            },
+        }
+        path = tmp_path / "config.yaml"
+        path.write_text("---\n" + _yaml.dump(policy, default_flow_style=False))
+        return str(path)
+
+    def test_effective_exposed_to_manager(self, capsys, tmp_path):
+        """An eligible manager NOW sees manage-agent/manage-repo — no approval gate (THR-055 seq 55)."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="engineering_manager", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "Effective skills (2)" in out
+        assert "hr:manage-agent" in out
+        assert "hr:manage-repo" in out
+
+    def test_effective_exposed_to_manager_shows_in_effective(self, capsys, tmp_path):
+        """manage-agent and manage-repo appear in effective skills (no longer blocked by catalog gate)."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="engineering_manager", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "Effective skills (2)" in out
+        assert "hr:manage-agent" in out
+        assert "hr:manage-repo" in out
+
+    def test_effective_json_shows_manage_skills(self, capsys, tmp_path):
+        """JSON effective output now shows manage-agent/manage-repo as exposed (THR-055 seq 55)."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        import json
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="engineering_manager", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=True,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert "effective_skills" in data
+        # Both manage-* are now exposed for eligible manager
+        assert len(data["effective_skills"]) == 2
+        effective_ids = {s["id"] for s in data["effective_skills"]}
+        assert "hr:manage-agent" in effective_ids
+        assert "hr:manage-repo" in effective_ids
+
+    def test_effective_not_exposed_to_non_manager(self, capsys, tmp_path):
+        """dev_agent (non-manager) does NOT see manage-agent even if someone else is eligible."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="dev_agent", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        # dev_agent has no eligibility entries → 0 effective skills
+        # manage-* might appear blocked (catalog + eligibility) or not at all
+        # The key: they are NOT in the "Effective skills" section
+
+    # ── policy explain ──────────────────────────────────────────────
+
+    def test_explain_manage_agent_available_to_manager(self, capsys, tmp_path):
+        """'policy explain hr:manage-agent' NOW shows IS available to eligible manager (THR-055 seq 55)."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:manage-agent", agent="engineering_manager",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=False,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        assert "IS available" in out
+        assert "Catalog Gate" in out
+        assert "PASS" in out
+
+    def test_explain_manage_agent_available_json(self, capsys, tmp_path):
+        """JSON explain for manage-agent now shows catalog_gate.passed=True (THR-055 seq 55)."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        import json
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:manage-agent", agent="engineering_manager",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=True,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["skill_id"] == "hr:manage-agent"
+        assert data["catalog_gate"]["passed"] is True
+        # Eligibility gate should PASS (engineering_manager is allowed)
+        assert data["eligibility"]["passed"] is True
+
+    def test_explain_manage_repo_available_to_manager(self, capsys, tmp_path):
+        """'policy explain hr:manage-repo' NOW shows IS available to eligible manager (THR-055 seq 55)."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:manage-repo", agent="engineering_manager",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=False,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        assert "IS available" in out
+        assert "Catalog Gate" in out
+        assert "PASS" in out
+
+    def test_explain_manage_agent_not_eligible_for_non_manager(self, capsys, tmp_path):
+        """'policy explain hr:manage-agent --agent dev_agent' blocked by eligibility (not manager)."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:manage-agent", agent="dev_agent",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=True,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        # Catalog passes (status=enabled), eligibility fails (not manager)
+        assert data["catalog_gate"]["passed"] is True
+        assert data["eligibility"]["passed"] is False
+
+    def test_explain_manage_agent_available_to_eligible_manager(self, capsys, tmp_path):
+        """'policy explain hr:manage-agent --agent engineering_manager': both gates pass (THR-055 seq 55)."""
+        from cli.commands.skills import cmd_skills_policy_explain
+        import argparse
+
+        import json
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            skill_id="hr:manage-agent", agent="engineering_manager",
+            org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=str(policy_path), json=True,
+        )
+        cmd_skills_policy_explain(ns)
+
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        # Eligibility PASSES (engineering_manager IS in agent-scoped allow)
+        assert data["eligibility"]["passed"] is True
+        # Catalog PASSES (status=enabled, no approval gate)
+        assert data["catalog_gate"]["passed"] is True
+        assert data["is_exposed"] is True

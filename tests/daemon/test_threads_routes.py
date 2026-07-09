@@ -12,6 +12,7 @@ from runtime.models import (
     TaskStatus,
     ThreadAttachment,
     ThreadInvocationPurpose,
+    ThreadInvocationStatus,
     ThreadMessageKind,
     ThreadRecord,
     ThreadStatus,
@@ -1614,6 +1615,268 @@ def test_invite_already_participant_409(tmp_home, app, org_state, auth_headers):
         headers=auth_headers,
     )
     assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# THR-069 msg85 — POST /threads/{id}/remove-participant
+# ---------------------------------------------------------------------------
+
+
+def test_remove_participant_succeeds(tmp_home, app, org_state, auth_headers):
+    """Founder removes a participant; row is hard-deleted, system message emitted."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    # Invite qa_engineer first.
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/invite",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    assert org_state.db.is_thread_participant(tid, "qa_engineer") is True
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/remove-participant",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["thread_id"] == tid
+    assert body["agent_name"] == "qa_engineer"
+    assert "system_message_seq" in body
+
+    # Participant row hard-deleted.
+    assert org_state.db.is_thread_participant(tid, "qa_engineer") is False
+
+
+def test_remove_participant_emits_system_message_correct_tag(tmp_home, app, org_state, auth_headers):
+    """Remove emits a SYSTEM message with kind_tag='participant_removed'."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/invite",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/remove-participant",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+
+    msgs = org_state.db.list_thread_messages(tid)
+    sys_msgs = [m for m in msgs if m.kind.value == "system"]
+    assert any(
+        m.system_payload.get("kind_tag") == "participant_removed"
+        for m in sys_msgs
+    ), f"Expected participant_removed in system messages, got: {[m.system_payload for m in sys_msgs]}"
+
+
+def test_remove_participant_non_participant_409(tmp_home, app, org_state, auth_headers):
+    """Removing a non-participant returns 409 (mirrors invite's already_participant 409)."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/remove-participant",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409, resp.text
+
+
+def test_remove_participant_clears_pending_invocations(tmp_home, app, org_state, auth_headers):
+    """After removing a participant, their pending invocations are declined."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    # Invite qa_engineer, then dev_agent replies to mint a reply invocation for qa_engineer.
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/invite",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    dev_inv = next(
+        inv for inv in org_state.db.list_thread_invocations(tid)
+        if inv.agent_name == "dev_agent"
+    )
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": dev_inv.invocation_token,
+            "speaker": "dev_agent",
+            "body_markdown": "hello!",
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+
+    # Confirm qa_engineer has a pending REPLY invocation.
+    pending_before = org_state.db.list_thread_invocations(tid, status=ThreadInvocationStatus.PENDING)
+    assert any(inv.agent_name == "qa_engineer" for inv in pending_before)
+
+    # Remove the participant.
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/remove-participant",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+
+    # qa_engineer's pending invocations should now be declined.
+    pending_after = org_state.db.list_thread_invocations(tid, status=ThreadInvocationStatus.PENDING)
+    assert not any(inv.agent_name == "qa_engineer" for inv in pending_after)
+    all_invocations = org_state.db.list_thread_invocations(tid)
+    qa_inv = next(inv for inv in all_invocations if inv.agent_name == "qa_engineer")
+    assert qa_inv.status is ThreadInvocationStatus.DECLINED
+
+
+def test_remove_participant_removed_from_participant_list(tmp_home, app, org_state, auth_headers):
+    """Removed agent no longer appears in list_thread_participants."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/invite",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    participants_before = [
+        p.agent_name for p in org_state.db.list_thread_participants(tid)
+    ]
+    assert "qa_engineer" in participants_before
+
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/remove-participant",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    participants_after = [
+        p.agent_name for p in org_state.db.list_thread_participants(tid)
+    ]
+    assert "qa_engineer" not in participants_after
+
+
+def test_remove_participant_writes_audit_row(tmp_home, app, org_state, auth_headers):
+    """Removal writes a thread_participant_removed audit row."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/invite",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/remove-participant",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+
+    rows = org_state.db.get_audit_logs(tid)
+    assert any(r["action"] == "thread_participant_removed" for r in rows)
+    removed_row = next(r for r in rows if r["action"] == "thread_participant_removed")
+    assert removed_row["payload"].get("agent_name") == "qa_engineer"
+    assert removed_row["payload"].get("removed_by") == "founder"
+
+
+def test_remove_participant_404_missing_thread(tmp_home, app, org_state, auth_headers):
+    """Remove-participant on a non-existent thread returns 404 not_found."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads/THR-NOSUCH/remove-participant",
+        json={"agent_name": "dev_agent"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "not_found"
+
+
+def test_remove_participant_404_unknown_agent(tmp_home, app, org_state, auth_headers):
+    """Remove-participant with a non-existent agent name returns 404 unknown_agent."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/remove-participant",
+        json={"agent_name": "ghost_agent"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "unknown_agent"
+
+
+def test_remove_participant_401_missing_auth(tmp_home, app, org_state, auth_headers):
+    """Remove-participant without bearer token returns 401 (founder-only)."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/remove-participant",
+        json={"agent_name": "dev_agent"},
+    )
+    assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------

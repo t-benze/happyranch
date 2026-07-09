@@ -32,7 +32,11 @@ from runtime.orchestrator.org_config import (
     resolve_org_timezone_display,
     resolve_protocol_doc_manifest,
 )
-from runtime.orchestrator.workspace_adapters import refresh_session_skills
+from runtime.orchestrator.workspace_adapters import (
+    inject_managed_skills,
+    inject_system_contracts,
+    refresh_session_skills,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -527,6 +531,35 @@ async def run_invocation(
     # Refresh on-disk skill bodies on EVERY session (THR-070).
     try:
         refresh_session_skills(workspace, settings, slug=org_state.slug)
+    except Exception:
+        pass
+
+    # Explicit context-aware system-contract injection (THR-055 Phase 1).
+    try:
+        inject_system_contracts(
+            workspace, settings, slug=org_state.slug, context="thread",
+        )
+    except Exception:
+        pass
+
+    # Managed-catalog skill injection (THR-055 Phase 4).
+    try:
+        agent_team = "engineering"
+        for p in participants:
+            if p.agent_name == inv.agent_name:
+                agent_team = p.team
+                break
+    except Exception:
+        agent_team = "engineering"
+    try:
+        skills_root = settings.project_root / "runtime" / "skills"
+        inject_managed_skills(
+            workspace, settings,
+            slug=org_state.slug,
+            agent_name=inv.agent_name,
+            team=agent_team,
+            skills_root=skills_root,
+        )
     except Exception:
         pass
 

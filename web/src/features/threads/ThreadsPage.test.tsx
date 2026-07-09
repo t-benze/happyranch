@@ -34,6 +34,7 @@ function mkThread(
     turns_used: number;
     composed_from_dream_id: string | null;
     last_speaker: string | null;
+    started_at: string;
   }>,
 ) {
   return {
@@ -192,6 +193,31 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       // Last speakers should appear
       expect(screen.getByText(/dev_agent/)).toBeInTheDocument();
       expect(screen.getByText(/founder/)).toBeInTheDocument();
+    });
+  });
+
+  test('shows a relative start-time per row (THR-061 a-threads .t-time)', async () => {
+    // started_at is on the thread-LIST payload (ThreadRecord), so per-row
+    // relative age is honest enrichment. Fixed to a far-past date so the label
+    // is always "Nd ago" against the real clock — deterministic without faking
+    // timers (fake timers break waitFor + msw async).
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({
+          threads: [
+            mkThread('THR-001', 'Aged thread', { started_at: '2026-05-14T00:00:00Z' }),
+          ],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => {
+      // "<n>d ago" relative timestamp appears on the row (a-threads .t-time).
+      expect(screen.getByText(/^\d+d ago$/)).toBeInTheDocument();
     });
   });
 
@@ -663,7 +689,7 @@ describe('ThreadsPage — structured detail rail (THREADDET-02)', () => {
 /* ------------------------------------------------------------------ */
 
 describe('ThreadsPage — system message rendering (design-overhaul)', () => {
-  test('system cards render with system badge, distinct from agent-turn cards', async () => {
+  test('system rows render as a "system event · broadcast to all" divider, distinct from agent-turn bubbles', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     setupThreadWithMessages('THR-010', [
       mkMessage(1, 'agent_a', 'message', 'Regular agent message'),
@@ -672,11 +698,11 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
     ]);
     mountAt(`/orgs/${SLUG}/threads/THR-010`);
     await waitFor(() => {
-      // System card badge
+      // Divider description carries the real system event.
       expect(screen.getByText(/invited agent_c/)).toBeInTheDocument();
-      // System event label should be visible
-      const systemLabels = screen.getAllByText('system');
-      expect(systemLabels.length).toBeGreaterThanOrEqual(1);
+      // THR-061 a-thread-detail divider suffix replaces the old "system" badge.
+      const dividers = screen.getAllByText(/system event · broadcast to all/);
+      expect(dividers.length).toBeGreaterThanOrEqual(1);
     });
   });
 
@@ -1244,13 +1270,14 @@ describe('ThreadsPage — retry invalidates correct query keys', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  'Tasks from this thread' rail panel (THR-061 msg51)                */
-/*  Founder feedback: the 3-line-per-entry render was too dense —      */
-/*  each row is now a single line: just the task id, linked to its     */
-/*  task-detail page. Brief/title and agent-name lines were removed.   */
+/*  'Tasks from this thread' rail panel (THR-061 seq79)                */
+/*  Founder ruling seq79: the rail shows STATUS-PILL + ID — overriding */
+/*  the earlier msg51 id-only note. Two elements per row (real status  */
+/*  + linked id); the dropped brief/title and agent-name lines stay    */
+/*  gone (honesty fence — no invented fields).                         */
 /* ------------------------------------------------------------------ */
-describe('ThreadsPage — Tasks from this thread panel (THR-061 msg51)', () => {
-  test('renders each task as an id-only link and omits brief + agent', async () => {
+describe('ThreadsPage — Tasks from this thread panel (THR-061 seq79)', () => {
+  test('renders each task as a status-pill + id link, omitting brief + agent', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     setupThreadWithMessages('THR-070', [mkMessage(1, 'founder', 'message', 'Hi')]);
     server.use(
@@ -1282,6 +1309,23 @@ describe('ThreadsPage — Tasks from this thread panel (THR-061 msg51)', () => {
     expect(link901).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-901`);
     const link900 = await screen.findByRole('link', { name: 'TASK-900' });
     expect(link900).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-900`);
+
+    // seq79: each row now carries the task's REAL status as a pill alongside
+    // the id (in_progress / completed here come straight from the payload),
+    // and the pill must render BEFORE the id within the row (STATUS-PILL + ID).
+    const row901 = link901.closest('li') as HTMLElement;
+    const pill901 = within(row901).getByText('in_progress');
+    expect(
+      pill901.compareDocumentPosition(link901) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const row900 = link900.closest('li') as HTMLElement;
+    const pill900 = within(row900).getByText('completed');
+    expect(
+      pill900.compareDocumentPosition(link900) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
 
     // The removed brief/title and agent-name lines must NOT appear.
     expect(

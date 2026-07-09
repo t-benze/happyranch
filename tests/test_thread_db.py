@@ -455,6 +455,94 @@ def test_thread_session_defaults_and_roundtrip(tmp_path):
     assert db.get_thread_session("THR-001", "alice") == (None, 0)
 
 
+def test_remove_thread_participant_succeeds(tmp_path):
+    """Remove a participant returns True and the row is hard-deleted."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    assert db.is_thread_participant("THR-001", "alice") is True
+
+    result = db.remove_thread_participant("THR-001", "alice")
+    assert result is True
+    assert db.is_thread_participant("THR-001", "alice") is False
+
+
+def test_remove_thread_participant_non_participant_returns_false(tmp_path):
+    """Removing a non-participant returns False (idempotent-safe)."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    result = db.remove_thread_participant("THR-001", "alice")
+    assert result is False
+
+
+def test_remove_thread_participant_only_removes_target(tmp_path):
+    """Only the specified participant is removed; others remain."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.add_thread_participant("THR-001", "bob", added_by="founder")
+
+    db.remove_thread_participant("THR-001", "alice")
+    assert db.is_thread_participant("THR-001", "alice") is False
+    assert db.is_thread_participant("THR-001", "bob") is True
+
+
+def test_decline_pending_invocations_for_agent(tmp_path):
+    """Bulk-decline all pending invocations for (thread, agent)."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import (ThreadRecord, ThreadInvocationPurpose,
+                                ThreadInvocationStatus)
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.add_thread_participant("THR-001", "bob", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="bob",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    count = db.decline_pending_invocations_for_agent("THR-001", "alice")
+    assert count == 1
+
+    # alice's invocation is now declined
+    alice_invocations = db.list_thread_invocations("THR-001")
+    alice_inv = next(inv for inv in alice_invocations if inv.agent_name == "alice")
+    assert alice_inv.status is ThreadInvocationStatus.DECLINED
+
+    # bob's invocation is still pending
+    bob_inv = next(inv for inv in alice_invocations if inv.agent_name == "bob")
+    assert bob_inv.status is ThreadInvocationStatus.PENDING
+
+
+def test_decline_pending_invocations_no_pending_returns_zero(tmp_path):
+    """No pending invocations → returns 0."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    count = db.decline_pending_invocations_for_agent("THR-001", "alice")
+    assert count == 0
+
+
 def test_grouped_invocations_include_started_at(tmp_path):
     from runtime.infrastructure.database import Database
     from runtime.models import ThreadRecord, ThreadInvocationPurpose, ThreadMessageKind

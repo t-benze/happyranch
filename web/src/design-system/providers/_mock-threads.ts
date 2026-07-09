@@ -24,6 +24,8 @@ import type {
   InviteResult,
   MutationLike,
   QueryLike,
+  RemoveParticipantArgs,
+  RemoveParticipantResult,
   ResumeArgs,
   ResumeResult,
   SendFollowUpArgs,
@@ -345,6 +347,39 @@ function useInviteAgent(threadId: string): MutationLike<InviteArgs, InviteResult
   });
 }
 
+function useRemoveParticipant(
+  threadId: string,
+): MutationLike<RemoveParticipantArgs, RemoveParticipantResult> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: RemoveParticipantArgs) => {
+      await sleep(120);
+      const list = store.participants[threadId] ?? [];
+      store.participants[threadId] = list.filter((n) => n !== body.agent_name);
+      const seq = nextSeq(threadId);
+      store.messages[threadId] = [
+        ...(store.messages[threadId] ?? []),
+        {
+          seq,
+          speaker: 'founder',
+          kind: 'system',
+          body_markdown: null,
+          decline_reason: null,
+          system_payload: { kind_tag: 'participant_removed', agent_name: body.agent_name },
+          attachments: [],
+          created_at: '2026-05-15T12:00:00Z',
+          responder_status: [],
+        },
+      ];
+      return { thread_id: threadId, agent_name: body.agent_name, system_message_seq: seq };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-thread-messages', threadId] });
+    },
+  });
+}
+
 function useArchiveThread(threadId: string): MutationLike<ArchiveArgs, ArchiveResult> {
   const qc = useQueryClient();
   return useMutation({
@@ -439,6 +474,7 @@ export const mockThreadsApi: ThreadsApi = {
   useComposeThread,
   useSendFollowUp,
   useInviteAgent,
+  useRemoveParticipant,
   useArchiveThread,
   useResumeThread,
   useAbortReplies,

@@ -46,7 +46,6 @@ from runtime.orchestrator.org_config import (
 )
 from runtime.skills.exposure import resolve_exposed_skills
 from runtime.skills.models import (
-    ApprovalState,
     EligibilityRule,
     ExposedSkill,
     PolicyClass,
@@ -83,14 +82,10 @@ def _make_exposed(
         owner="test",
         source=source,
         policy_class=policy_class,
-        approval_state=ApprovalState.APPROVED,
-        approved_by="test",
-        approved_at=datetime.now(timezone.utc),
         status=SkillStatus.ENABLED,
     )
     return ExposedSkill(
         skill=entry,
-        catalog_approved=True,
         allowed_by=[EligibilityRule(scope="org", id="test", skill_id=skill_id, action="allow")],
         denied_by=[],
     )
@@ -485,7 +480,7 @@ class TestIntegrationResolveAndRender:
         assert "hr:disabled-skill" not in result
 
     def test_draft_skill_not_in_index(self):
-        """A draft skill fails catalog gate → not in index."""
+        """A formerly-draft skill (now enabled, no approval_state) appears when eligible."""
         registry = SkillRegistry(skills_root=FIXTURES)
         policy = {
             "org": {"allow": ["hr:draft-skill"], "deny": []},
@@ -495,7 +490,8 @@ class TestIntegrationResolveAndRender:
             registry, resolver, org="test", team="engineering", agent="dev_agent"
         )
         result = render_compact_skill_index(exposed)
-        assert "hr:draft-skill" not in result
+        # draft-skill has status=enabled, no approval gate → should appear when eligible
+        assert "hr:draft-skill" in result
 
     def test_denied_skill_not_in_index(self):
         """An eligible-by-allow skill that is denied → not in index."""
@@ -646,8 +642,8 @@ class TestResolveManagedSkillsIndex:
         assert "hr:disabled-skill" not in result  # disabled → excluded
         assert "hr:standard-skill" in result
 
-    def test_draft_skill_excluded(self, tmp_runtime):
-        """A draft skill does not pass catalog gate → excluded from index."""
+    def test_draft_skill_now_appears(self, tmp_runtime):
+        """A formerly-draft skill (now enabled, no approval_state) appears in index when eligible."""
         from runtime.orchestrator._paths import OrgPaths
         from runtime.orchestrator.org_config import resolve_managed_skills_index
 
@@ -667,7 +663,7 @@ class TestResolveManagedSkillsIndex:
         paths = OrgPaths(root=tmp_runtime)
         result = resolve_managed_skills_index(paths=paths, agent_name="dev_agent")
 
-        assert "hr:draft-skill" not in result  # draft → excluded
+        assert "hr:draft-skill" in result  # enabled + eligible → appears
         assert "hr:standard-skill" in result
 
     def test_system_contract_skill_excluded(self, tmp_runtime):

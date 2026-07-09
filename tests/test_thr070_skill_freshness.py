@@ -21,6 +21,7 @@ from runtime.orchestrator.org_config import (
 )
 from runtime.orchestrator.workspace_adapters import (
     refresh_session_skills,
+    inject_system_contracts,
     _copy_skills_tree,
 )
 
@@ -29,7 +30,19 @@ from runtime.orchestrator.workspace_adapters import (
 
 
 class TestRefreshSessionSkills:
-    """Prove refresh_session_skills re-copies from source on every call."""
+    """Prove refresh_session_skills re-copies from source on every call.
+
+    The Phase 4 cutover gates the wholesale dump behind _WHOLESALE_DUMP_ENABLED
+    (default OFF). These tests re-enable it via monkeypatch so they continue
+    to verify the wholesale-dump path independently of the cutover."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_wholesale_dump(self, monkeypatch) -> None:
+        """Re-enable the wholesale dump for these refresh_session_skills tests."""
+        monkeypatch.setattr(
+            "runtime.orchestrator.workspace_adapters._WHOLESALE_DUMP_ENABLED",
+            True,
+        )
 
     def test_refresh_copies_skills_to_both_targets(
         self, test_settings: Settings, tmp_path: Path,
@@ -315,7 +328,6 @@ class TestThr055Regression:
         """render_compact_skill_index signature and behavior unchanged."""
         from runtime.orchestrator.org_config import render_compact_skill_index
         from runtime.skills.models import (
-            ApprovalState,
             ExposedSkill,
             PolicyClass,
             SkillEntry,
@@ -332,15 +344,11 @@ class TestThr055Regression:
             owner="test",
             source="runtime/skills/test-skill",
             policy_class=PolicyClass.STANDARD_OPERATIONAL,
-            approval_state=ApprovalState.APPROVED,
-            approved_by="founder",
-            approved_at=None,
             status=SkillStatus.ENABLED,
             skill_md_path=Path("/fake/SKILL.md"),
         )
         exposed = ExposedSkill(
             skill=entry,
-            catalog_approved=True,
             allowed_by=[],
             denied_by=[],
         )
@@ -523,3 +531,188 @@ class TestProtocolDocManifestInPrompts:
         )
         assert "## Protocol Docs" in prompt
         assert "Read: /abs/path" in prompt
+
+
+# ── PART D: inject_system_contracts (THR-055 Phase 1) ────────────────
+
+
+class TestInjectSystemContracts:
+    """Prove inject_system_contracts correctly injects context-appropriate
+    system contracts alongside the wholesale refresh_session_skills dump."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_wholesale_dump(self, monkeypatch) -> None:
+        """Re-enable the wholesale dump for idempotent test with refresh_session_skills."""
+        monkeypatch.setattr(
+            "runtime.orchestrator.workspace_adapters._WHOLESALE_DUMP_ENABLED",
+            True,
+        )
+
+    def test_task_context_injects_correct_contracts(
+        self, test_settings: Settings, tmp_path: Path,
+    ):
+        """TASK context: start-task, jobs, make-worktree (if repos), thread."""
+        skills_root = test_settings.get_protocol_dir() / "skills"
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (skills_root / name).mkdir(parents=True)
+            (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
+
+        # Create a workspace WITH repos
+        ws = tmp_path / "ws"
+        (ws / "repos" / "happyranch" / ".git").mkdir(parents=True)
+
+        inject_system_contracts(ws, test_settings, slug="test", context="task")
+
+        claude_skills = ws / ".claude" / "skills"
+        agents_skills = ws / ".agents" / "skills"
+
+        # start-task injected
+        assert (claude_skills / "start-task" / "SKILL.md").exists()
+        assert (agents_skills / "start-task" / "SKILL.md").exists()
+
+        # jobs injected
+        assert (claude_skills / "jobs" / "SKILL.md").exists()
+        assert (agents_skills / "jobs" / "SKILL.md").exists()
+
+        # make-worktree injected (repo-capable)
+        assert (claude_skills / "make-worktree" / "SKILL.md").exists()
+        assert (agents_skills / "make-worktree" / "SKILL.md").exists()
+
+        # thread injected
+        assert (claude_skills / "thread" / "SKILL.md").exists()
+        assert (agents_skills / "thread" / "SKILL.md").exists()
+
+        # dream NOT injected
+        assert not (claude_skills / "dream" / "SKILL.md").exists()
+        assert not (agents_skills / "dream" / "SKILL.md").exists()
+
+    def test_task_without_repos_omits_make_worktree(
+        self, test_settings: Settings, tmp_path: Path,
+    ):
+        """TASK context without repos: no make-worktree."""
+        skills_root = test_settings.get_protocol_dir() / "skills"
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (skills_root / name).mkdir(parents=True)
+            (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        inject_system_contracts(ws, test_settings, slug="test", context="task")
+
+        claude_skills = ws / ".claude" / "skills"
+
+        assert (claude_skills / "start-task" / "SKILL.md").exists()
+        assert (claude_skills / "jobs" / "SKILL.md").exists()
+        assert not (claude_skills / "make-worktree" / "SKILL.md").exists()
+        assert (claude_skills / "thread" / "SKILL.md").exists()
+        assert not (claude_skills / "dream" / "SKILL.md").exists()
+
+    def test_dream_context_injects_dream_not_start_task(
+        self, test_settings: Settings, tmp_path: Path,
+    ):
+        """DREAM context: jobs, make-worktree (if repos), dream. NOT start-task or thread."""
+        skills_root = test_settings.get_protocol_dir() / "skills"
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (skills_root / name).mkdir(parents=True)
+            (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
+
+        ws = tmp_path / "ws"
+        (ws / "repos" / "happyranch" / ".git").mkdir(parents=True)
+
+        inject_system_contracts(ws, test_settings, slug="test", context="dream")
+
+        claude_skills = ws / ".claude" / "skills"
+
+        assert not (claude_skills / "start-task" / "SKILL.md").exists()
+        assert (claude_skills / "jobs" / "SKILL.md").exists()
+        assert (claude_skills / "make-worktree" / "SKILL.md").exists()
+        assert not (claude_skills / "thread" / "SKILL.md").exists()
+        assert (claude_skills / "dream" / "SKILL.md").exists()
+
+    def test_thread_context_injects_thread_not_dream(
+        self, test_settings: Settings, tmp_path: Path,
+    ):
+        """THREAD context: jobs, make-worktree (if repos), thread. NOT start-task or dream."""
+        skills_root = test_settings.get_protocol_dir() / "skills"
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (skills_root / name).mkdir(parents=True)
+            (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
+
+        ws = tmp_path / "ws"
+        (ws / "repos" / "happyranch" / ".git").mkdir(parents=True)
+
+        inject_system_contracts(ws, test_settings, slug="test", context="thread")
+
+        claude_skills = ws / ".claude" / "skills"
+
+        assert not (claude_skills / "start-task" / "SKILL.md").exists()
+        assert (claude_skills / "jobs" / "SKILL.md").exists()
+        assert (claude_skills / "make-worktree" / "SKILL.md").exists()
+        assert (claude_skills / "thread" / "SKILL.md").exists()
+        assert not (claude_skills / "dream" / "SKILL.md").exists()
+
+    def test_wake_context_same_as_task(
+        self, test_settings: Settings, tmp_path: Path,
+    ):
+        """WAKE context: same as TASK (start-task, jobs, make-worktree if repos, thread)."""
+        skills_root = test_settings.get_protocol_dir() / "skills"
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (skills_root / name).mkdir(parents=True)
+            (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
+
+        ws = tmp_path / "ws"
+        (ws / "repos" / "happyranch" / ".git").mkdir(parents=True)
+
+        inject_system_contracts(ws, test_settings, slug="test", context="wake")
+
+        claude_skills = ws / ".claude" / "skills"
+
+        assert (claude_skills / "start-task" / "SKILL.md").exists()
+        assert (claude_skills / "jobs" / "SKILL.md").exists()
+        assert (claude_skills / "make-worktree" / "SKILL.md").exists()
+        assert (claude_skills / "thread" / "SKILL.md").exists()
+        assert not (claude_skills / "dream" / "SKILL.md").exists()
+
+    def test_unknown_context_is_noop(
+        self, test_settings: Settings, tmp_path: Path,
+    ):
+        """An unknown context string gracefully degrades to a no-op."""
+        skills_root = test_settings.get_protocol_dir() / "skills"
+        (skills_root / "start-task").mkdir(parents=True)
+        (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        # Should not raise, just do nothing
+        inject_system_contracts(ws, test_settings, slug="test", context="nonexistent")
+
+        # No skills directory created at all since no contracts resolved
+        assert not (ws / ".claude" / "skills").exists()
+
+    def test_idempotent_with_refresh_session_skills(
+        self, test_settings: Settings, tmp_path: Path,
+    ):
+        """Calling both refresh_session_skills and inject_system_contracts
+        is idempotent — the same skill bodies are re-copied."""
+        skills_root = test_settings.get_protocol_dir() / "skills"
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+            (skills_root / name).mkdir(parents=True)
+            (skills_root / name / "SKILL.md").write_text(f"# {name} v1\n")
+
+        ws = tmp_path / "ws"
+        (ws / "repos" / "happyranch" / ".git").mkdir(parents=True)
+
+        # First: wholesale dump
+        refresh_session_skills(ws, test_settings, slug="test")
+
+        # Edit a source skill
+        (skills_root / "start-task" / "SKILL.md").write_text("# start-task v2\n")
+
+        # Second: explicit contract injection picks up the edit
+        inject_system_contracts(ws, test_settings, slug="test", context="task")
+
+        # Both reflect the latest version
+        skill = ws / ".claude" / "skills" / "start-task" / "SKILL.md"
+        assert skill.read_text() == "# start-task v2\n"

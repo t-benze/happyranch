@@ -23,14 +23,14 @@ describe('ResponderStatusStrip', () => {
     expect(screen.getByText('declined')).toBeInTheDocument();
   });
 
-  it('renders failed status in amber', () => {
+  it('renders a failed status with the danger pill token', () => {
     const { container } = render(
       <ResponderStatusStrip
         statuses={[{ agent_name: 'delta', status: 'failed', responded_at: null, started_at: null, decline_reason: null, category: null }]}
       />,
     );
     expect(screen.getByText('failed')).toBeInTheDocument();
-    const failedSpan = container.querySelector('.text-amber-600');
+    const failedSpan = container.querySelector('.text-danger');
     expect(failedSpan).not.toBeNull();
   });
 
@@ -164,7 +164,7 @@ describe('ResponderStatusStrip', () => {
     expect(screen.getByText('failed')).toBeInTheDocument();
   });
 
-  it('renders a replied entry unchanged (replied, emerald) — no regression', () => {
+  it('renders a replied entry with the accent pill token — no regression', () => {
     const { container } = render(
       <ResponderStatusStrip
         statuses={[
@@ -180,6 +180,6 @@ describe('ResponderStatusStrip', () => {
       />,
     );
     expect(screen.getByText('replied')).toBeInTheDocument();
-    expect(container.querySelector('.text-emerald-600')).not.toBeNull();
+    expect(container.querySelector('.text-accent-text')).not.toBeNull();
   });
 });

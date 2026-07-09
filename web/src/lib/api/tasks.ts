@@ -51,7 +51,7 @@ export const recallTask = (
 export const resolveEscalation = (
   slug: string,
   taskId: string,
-  body: { decision: 'approve' | 'reject'; rationale?: string },
+  body: { decision: 'continue' | 'cancel'; rationale?: string },
 ): Promise<Record<string, unknown>> =>
   request(`/orgs/${slug}/tasks/${taskId}/resolve-escalation`, {
     method: 'POST',
@@ -61,7 +61,7 @@ export const resolveEscalation = (
 export const revisitTask = (
   slug: string,
   taskId: string,
-  body: { note?: string; session_timeout_seconds?: number },
+  body: { founder_note?: string; session_timeout_seconds?: number },
 ): Promise<TaskRecord> =>
   request(`/orgs/${slug}/tasks/${taskId}/revisit`, { method: 'POST', body });
 

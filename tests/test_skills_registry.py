@@ -23,13 +23,12 @@ class TestSkillRegistryLoad:
         assert entry.name == "Standard Operational Skill"
         assert entry.version == "1.0.0"
         assert entry.policy_class == "standard_operational"
-        assert entry.approval_state == "approved"
         assert entry.status == "enabled"
         assert entry.owner == "engineering_manager"
         assert entry.when_to_use == "Use when testing standard operational skills."
 
     def test_loads_high_impact_policy_skill(self):
-        """A high_impact_policy skill with founder approval loads successfully."""
+        """A high_impact_policy skill loads successfully."""
         from runtime.skills.registry import SkillRegistry
 
         registry = SkillRegistry(skills_root=FIXTURES)
@@ -37,8 +36,6 @@ class TestSkillRegistryLoad:
 
         assert entry is not None
         assert entry.policy_class == "high_impact_policy"
-        assert entry.approval_state == "approved"
-        assert entry.approved_by == "founder"
 
     def test_skips_system_contract_skills(self):
         """system_contract skills are NOT loaded as toggleable entries."""
@@ -140,6 +137,154 @@ class TestSkillRegistryLoad:
         assert entry.skill_md_path is not None
         assert entry.skill_md_path.name == "SKILL.md"
         assert entry.skill_md_path.exists()
+
+
+class TestReviewSkillRegistration:
+    """Tests for the review skill as a managed-catalog standard_operational entry."""
+
+    def test_review_skill_loaded_as_standard_operational(self):
+        """The review skill is loaded as a managed catalog entry (not system_contract)."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:review")
+
+        assert entry is not None, "review skill should be in managed catalog"
+        assert entry.id == "hr:review"
+        assert entry.slug == "review"
+        assert entry.policy_class == "standard_operational"
+        assert entry.status == "enabled"
+
+    def test_review_skill_has_required_metadata(self):
+        """The review skill carries owner, version, source."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:review")
+
+        assert entry.name == "Review"
+        assert entry.version == "1.0.0"
+        assert entry.owner == "engineering_manager"
+        assert entry.source.startswith("runtime/skills/review")
+        assert entry.when_to_use != ""
+        assert entry.description != ""
+
+    def test_review_skill_has_skill_md(self):
+        """The review skill's SKILL.md body is available."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:review")
+
+        assert entry.skill_md_path is not None
+        assert entry.skill_md_path.name == "SKILL.md"
+        assert entry.skill_md_path.exists()
+
+    def test_review_skill_appears_in_catalog_list(self):
+        """list_all() includes the review skill."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        all_ids = {e.id for e in registry.list_all()}
+        assert "hr:review" in all_ids
+
+
+class TestManageAgentManageRepoRegistration:
+    """Tests for manage-agent and manage-repo as high_impact_policy managed-catalog entries (THR-055 Phase 3)."""
+
+    def test_manage_agent_loaded_as_high_impact_policy(self):
+        """manage-agent is loaded as a managed catalog entry with high_impact_policy."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:manage-agent")
+
+        assert entry is not None, "manage-agent should be in managed catalog"
+        assert entry.id == "hr:manage-agent"
+        assert entry.slug == "manage-agent"
+        assert entry.policy_class == "high_impact_policy"
+        assert entry.status == "enabled"
+
+    def test_manage_repo_loaded_as_high_impact_policy(self):
+        """manage-repo is loaded as a managed catalog entry with high_impact_policy."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:manage-repo")
+
+        assert entry is not None, "manage-repo should be in managed catalog"
+        assert entry.id == "hr:manage-repo"
+        assert entry.slug == "manage-repo"
+        assert entry.policy_class == "high_impact_policy"
+        assert entry.status == "enabled"
+
+    def test_manage_agent_has_required_metadata(self):
+        """manage-agent carries owner, version, source."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:manage-agent")
+
+        assert entry.name == "Manage Agent"
+        assert entry.version == "1.0.0"
+        assert entry.owner == "engineering_manager"
+        assert entry.source.startswith("runtime/skills/manage-agent")
+        assert entry.when_to_use != ""
+        assert entry.description != ""
+
+    def test_manage_repo_has_required_metadata(self):
+        """manage-repo carries owner, version, source."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:manage-repo")
+
+        assert entry.name == "Manage Repo"
+        assert entry.version == "1.0.0"
+        assert entry.owner == "engineering_manager"
+        assert entry.source.startswith("runtime/skills/manage-repo")
+        assert entry.when_to_use != ""
+        assert entry.description != ""
+
+    def test_manage_agent_has_skill_md(self):
+        """manage-agent SKILL.md body is available."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:manage-agent")
+
+        assert entry.skill_md_path is not None
+        assert entry.skill_md_path.name == "SKILL.md"
+        assert entry.skill_md_path.exists()
+
+    def test_manage_repo_has_skill_md(self):
+        """manage-repo SKILL.md body is available."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        entry = registry.get("hr:manage-repo")
+
+        assert entry.skill_md_path is not None
+        assert entry.skill_md_path.name == "SKILL.md"
+        assert entry.skill_md_path.exists()
+
+    def test_both_skills_appear_in_catalog_list(self):
+        """list_all() includes manage-agent and manage-repo."""
+        from runtime.skills.registry import SkillRegistry
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        all_ids = {e.id for e in registry.list_all()}
+        assert "hr:manage-agent" in all_ids
+        assert "hr:manage-repo" in all_ids
+
+    def test_manager_skills_not_system_contracts(self):
+        """manage-agent and manage-repo are NOT system contracts."""
+        from runtime.skills.system_contracts import list_system_contracts
+
+        contracts = list_system_contracts()
+        ids = {sc.id for sc in contracts}
+        assert "manage-agent" not in ids
+        assert "manage-repo" not in ids
 
 
 class TestSkillRegistryEmptyDirectory:

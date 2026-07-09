@@ -50,7 +50,9 @@ def _copy_skills_tree(src: Path, dst: Path, *, slug: str) -> None:
     dst.mkdir(parents=True, exist_ok=True)
     for child in src.iterdir():
         target = dst / child.name
-        if target.exists():
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.is_dir():
             shutil.rmtree(target)
         if child.is_dir():
             _copy_skill_dir(child, target, slug=slug)
@@ -79,6 +81,16 @@ def _copy_skill_file(src: Path, dst: Path, *, slug: str) -> None:
         shutil.copy2(src, dst)
 
 
+# ── Phase-4 cutover flag: reversible gate on the wholesale protocol/skills/ dump ─
+#
+# Default OFF post-cutover — the wholesale copy is DISABLED by default.
+# Set True to re-enable the legacy safety-net dump without a code revert
+# (useful for rollback if the explicit injection paths prove incomplete).
+# The contract-completeness guard test in test_skill_cutover_completeness.py
+# runs with this flag OFF and must pass green before the cutover is accepted.
+_WHOLESALE_DUMP_ENABLED: bool = False
+
+
 def refresh_session_skills(
     workspace: Path, settings: Settings, *, slug: str,
 ) -> None:
@@ -92,10 +104,162 @@ def refresh_session_skills(
 
     Reuses ``_copy_skills_tree`` (the same logic that ``ensure_workspace_ready``
     calls). The source is always the bundled ``_resolve_skills_src(settings)``.
+
+    **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default OFF).
+    When OFF this function is a no-op — skill delivery is handled exclusively by
+    ``inject_system_contracts`` and ``inject_managed_skills``.
     """
+    if not _WHOLESALE_DUMP_ENABLED:
+        return
     src = _resolve_skills_src(settings)
     _copy_skills_tree(src, workspace / ".claude" / "skills", slug=slug)
     _copy_skills_tree(src, workspace / ".agents" / "skills", slug=slug)
+
+
+def inject_system_contracts(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    context: str,
+) -> None:
+    """Inject system-contract skills into the workspace based on session context.
+
+    ADDITIVE alongside ``refresh_session_skills`` (the wholesale dump). In
+    Phase 1 the wholesale dump still copies all 8 skills; this function adds
+    an EXPLICIT, context-aware injection path that will become the sole
+    injection path in Phase 4 when the wholesale dump is removed.
+
+    Each system contract is re-copied from ``protocol/skills/<id>/`` into
+    both ``.claude/skills/`` and ``.agents/skills/``. The contracts injected
+    are determined by session context:
+
+    - start-task: TASK, WAKE sessions
+    - jobs: all sessions
+    - make-worktree: any session where the workspace has repos
+    - thread: TASK, THREAD, WAKE sessions
+    - dream: DREAM sessions only
+
+    ``context`` is a string matching ``SessionContext`` ("task", "thread",
+    "wake", "dream"). Unknown values fall through to no-op (graceful
+    degradation).
+    """
+    from runtime.skills.system_contracts import (
+        SessionContext,
+        resolve_system_contracts_for_session,
+    )
+
+    try:
+        ctx = SessionContext(context)
+    except ValueError:
+        # Unknown context — no-op, graceful degradation
+        return
+
+    contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
+    src_root = _resolve_skills_src(settings)
+
+    for contract in contracts:
+        src_dir = src_root / contract.id
+        if not src_dir.is_dir():
+            continue
+        # _copy_skills_tree copies the CONTENTS of src_dir into the
+        # destination, so we target a subdirectory named after the contract.
+        _copy_skills_tree(
+            src_dir,
+            workspace / ".claude" / "skills" / contract.id,
+            slug=slug,
+        )
+        _copy_skills_tree(
+            src_dir,
+            workspace / ".agents" / "skills" / contract.id,
+            slug=slug,
+        )
+
+
+def inject_managed_skills(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    agent_name: str,
+    team: str,
+    skills_root: Path,
+) -> None:
+    """Inject managed-catalog skills into the workspace based on the
+    runtime-managed skill policy (two-gate model).
+
+    This is the injection path for skills that live in the managed catalog
+    (``runtime/skills/<id>/``) — the counterpart to ``inject_system_contracts``
+    for system contracts. Together they replace the wholesale
+    ``refresh_session_skills`` dump in Phase 4.
+
+    Resolution:
+    1. Load the SkillRegistry from ``skills_root``.
+    2. Load the eligibility policy from ``<project_root>/org/config.yaml``.
+    3. Resolve exposed skills via ``resolve_exposed_skills`` (both gates).
+    4. Copy each exposed skill's package from the managed catalog into
+       ``.claude/skills/<id>/`` and ``.agents/skills/<id>/``.
+
+    **Fail-closed:** unapproved, pending_review, rejected, deprecated,
+    disabled, or ineligible skills are NOT injected. High-impact policy
+    skills with missing or mismatched version approval are NOT injected.
+
+    **Visibility only — NO capability change.** Skills grant no tools,
+    credentials, network access, filesystem access, sandbox policy, or
+    permission-map/allow-rule/auth changes.
+
+    Args:
+        workspace: agent workspace root (receives ``.claude/skills/`` etc.)
+        settings: project Settings (for org slug substitution)
+        slug: org slug for ``{ORG_SLUG}`` substitution in .md files
+        agent_name: agent to resolve eligibility for
+        team: agent's team name (e.g. "engineering", "product", "consultant")
+        skills_root: directory containing managed-catalog skill packages
+    """
+    from runtime.skills.registry import SkillRegistry
+    from runtime.skills.resolver import EligibilityResolver
+    from runtime.skills.exposure import resolve_exposed_skills
+
+    if not skills_root.is_dir():
+        return
+
+    registry = SkillRegistry(skills_root=skills_root)
+    if not registry.list_all():
+        return
+
+    # Load eligibility policy from org config YAML
+    policy: dict = {}
+    config_path = settings.project_root / "org" / "config.yaml"
+    if config_path.is_file():
+        import yaml
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                policy = raw.get("skills", {})
+        except (yaml.YAMLError, OSError):
+            pass
+
+    resolver = EligibilityResolver(policy)
+    exposed = resolve_exposed_skills(
+        registry, resolver, org=slug, team=team, agent=agent_name,
+    )
+
+    for es in exposed:
+        skill_id_slug = es.skill.slug
+        # The managed-catalog package lives at <skills_root>/<slug>/
+        src_dir = skills_root / skill_id_slug
+        if not src_dir.is_dir():
+            continue
+        _copy_skills_tree(
+            src_dir,
+            workspace / ".claude" / "skills" / skill_id_slug,
+            slug=slug,
+        )
+        _copy_skills_tree(
+            src_dir,
+            workspace / ".agents" / "skills" / skill_id_slug,
+            slug=slug,
+        )
 
 
 def _memory_bootstrap_section(workspace: Path) -> list[str]:
@@ -642,7 +806,15 @@ class ClaudeWorkspaceAdapter:
         )
 
     def _copy_skills(self, workspace: Path) -> None:
-        """Copy protocol/skills/ tree into workspace/.claude/skills/."""
+        """Copy protocol/skills/ tree into workspace/.claude/skills/.
+
+        **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default
+        OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
+        ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
+        delivery path.
+        """
+        if not _WHOLESALE_DUMP_ENABLED:
+            return
         _copy_skills_tree(
             _resolve_skills_src(self._settings),
             workspace / ".claude" / "skills",
@@ -704,7 +876,15 @@ class CodexWorkspaceAdapter:
         (workspace / "AGENTS.md").write_text("\n".join(sections))
 
     def _copy_skills(self, workspace: Path) -> None:
-        """Copy protocol/skills/ tree into workspace/.agents/skills/."""
+        """Copy protocol/skills/ tree into workspace/.agents/skills/.
+
+        **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default
+        OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
+        ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
+        delivery path.
+        """
+        if not _WHOLESALE_DUMP_ENABLED:
+            return
         _copy_skills_tree(
             _resolve_skills_src(self._settings),
             workspace / ".agents" / "skills",
@@ -792,7 +972,14 @@ class OpencodeWorkspaceAdapter:
         ``.claude/skills/``, or ``.agents/skills/``. We pick ``.agents/``
         to share the layout with Codex workspaces — a workspace can be
         re-bootstrapped between executors without churn.
+
+        **Phase-4 cutover:** gated behind ``_WHOLESALE_DUMP_ENABLED`` (default
+        OFF). When OFF bootstrap does NOT wholesale-copy; the per-session
+        ``inject_system_contracts`` + ``inject_managed_skills`` are the sole
+        delivery path.
         """
+        if not _WHOLESALE_DUMP_ENABLED:
+            return
         _copy_skills_tree(
             _resolve_skills_src(self._settings),
             workspace / ".agents" / "skills",

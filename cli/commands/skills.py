@@ -24,7 +24,6 @@ from runtime.skills.registry import SkillRegistry
 from runtime.skills.resolver import EligibilityResolver
 from runtime.skills.exposure import catalog_gate, resolve_exposed_skills
 from runtime.skills.models import (
-    ApprovalState,
     ExposedSkill,
     PolicyClass,
     SkillStatus,
@@ -71,22 +70,16 @@ def _load_eligibility_policy(policy_path: Path | None) -> dict:
 # Output formatting helpers
 # ---------------------------------------------------------------------------
 
-def _fmt_approval(entry) -> str:
-    """Format catalog-approval record for output."""
+def _fmt_entry(entry) -> str:
+    """Format a skill entry for output."""
     pc = entry.policy_class.value if isinstance(entry.policy_class, PolicyClass) else str(entry.policy_class)
-    state = entry.approval_state.value if isinstance(entry.approval_state, ApprovalState) else str(entry.approval_state)
     status = entry.status.value if isinstance(entry.status, SkillStatus) else str(entry.status)
     parts = [
         f"id={entry.id}",
         f"version={entry.version}",
         f"policy_class={pc}",
-        f"approval_state={state}",
         f"status={status}",
     ]
-    if entry.approved_by:
-        parts.append(f"approved_by={entry.approved_by}")
-    if entry.approved_at:
-        parts.append(f"approved_at={entry.approved_at}")
     return "  ".join(parts)
 
 
@@ -119,11 +112,8 @@ def cmd_skills_catalog_list(args: argparse.Namespace) -> None:
                 "version": entry.version,
                 "description": entry.description,
                 "policy_class": entry.policy_class.value if isinstance(entry.policy_class, PolicyClass) else str(entry.policy_class),
-                "approval_state": entry.approval_state.value if isinstance(entry.approval_state, ApprovalState) else str(entry.approval_state),
                 "status": entry.status.value if isinstance(entry.status, SkillStatus) else str(entry.status),
                 "owner": entry.owner,
-                "approved_by": entry.approved_by,
-                "approved_at": str(entry.approved_at) if entry.approved_at else None,
                 "when_to_use": entry.when_to_use,
             })
         print(json.dumps(output, indent=2))
@@ -136,7 +126,7 @@ def cmd_skills_catalog_list(args: argparse.Namespace) -> None:
     print(f"Skills root: {skills_root}")
     print(f"Total: {len(entries)} skill(s)\n")
     for entry in sorted(entries, key=lambda e: e.id):
-        print(_fmt_approval(entry))
+        print(_fmt_entry(entry))
         print(f"  name: {entry.name}")
         print(f"  description: {entry.description}")
         print(f"  when_to_use: {entry.when_to_use}")
@@ -239,7 +229,12 @@ def cmd_skills_catalog_validate(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_skills_effective(args: argparse.Namespace) -> None:
-    """Show effective skills for an agent after both gates."""
+    """Show effective skills for an agent after both gates.
+
+    Includes a distinct "System Contracts (runtime-injected)" section separate
+    from the managed catalog skills. When ``--context`` is provided, only
+    system contracts matching that session context are shown.
+    """
     if not args.agent:
         print("error: --agent <name> is required", file=sys.stderr)
         sys.exit(1)
@@ -253,6 +248,10 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
     org = args.org or "happyranch"
     team = args.team or "engineering"
     agent = args.agent
+
+    # ── System Contracts (runtime-injected) ──────────────────────────
+    # Always shown, clearly separated from managed catalog skills.
+    _print_system_contracts_section(args, org, agent)
 
     exposed = resolve_exposed_skills(registry, resolver, org=org, team=team, agent=agent)
 
@@ -275,12 +274,8 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
                 "name": s.skill.name,
                 "version": s.skill.version,
                 "policy_class": s.skill.policy_class.value if isinstance(s.skill.policy_class, PolicyClass) else str(s.skill.policy_class),
-                "approval_state": s.skill.approval_state.value if isinstance(s.skill.approval_state, ApprovalState) else str(s.skill.approval_state),
-                "approved_by": s.skill.approved_by,
-                "approved_at": str(s.skill.approved_at) if s.skill.approved_at else None,
                 "allowed_by": [{"scope": r.scope, "id": r.id, "action": r.action} for r in s.allowed_by],
                 "denied_by": [{"scope": r.scope, "id": r.id, "action": r.action} for r in s.denied_by],
-                "catalog_approved": s.catalog_approved,
             })
 
         blocked_list = []
@@ -294,10 +289,30 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
                 "catalog_ok": catalog_ok.get(skill_id, False),
             })
 
+        # ── System contracts (for JSON output) ─────────────────────
+        from runtime.skills.system_contracts import (
+            SessionContext,
+            list_system_contracts,
+            resolve_system_contracts_for_session,
+        )
+        all_sc = list_system_contracts()
+        system_contracts_json = []
+        for sc in all_sc:
+            system_contracts_json.append({
+                "id": sc.id,
+                "name": sc.name,
+                "description": sc.description,
+                "when_to_use": sc.when_to_use,
+                "source_path": sc.source_path,
+                "contexts": [c.value for c in sc.contexts],
+                "requires_repo": sc.requires_repo,
+            })
+
         output = {
             "agent": agent,
             "org": org,
             "team": team,
+            "system_contracts": system_contracts_json,
             "effective_skills": effective_list,
             "blocked_skills": blocked_list,
         }
@@ -315,7 +330,7 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
     for s in exposed:
         print(f"  {s.skill.id}@{s.skill.version}  {s.skill.name}")
         print(f"    policy_class={_fmt_pc(s.skill.policy_class)}")
-        print(f"    catalog: approved (by {s.skill.approved_by or 'none'})")
+        print(f"    catalog: present (status={s.skill.status.value})")
         for r in s.allowed_by:
             print(f"    eligibility: {r.scope}({r.id}) ALLOW")
         print(f"    when_to_use: {s.skill.when_to_use}")
@@ -437,12 +452,7 @@ def cmd_skills_policy_explain(args: argparse.Namespace) -> None:
     print("--- Catalog Gate ---")
     if catalog.passed:
         print(f"  PASS: {catalog.reason}")
-        print(f"  approval_state: {entry.approval_state.value}")
         print(f"  status: {entry.status.value}")
-        if entry.approved_by:
-            print(f"  approved_by: {entry.approved_by}")
-        if entry.approved_at:
-            print(f"  approved_at: {entry.approved_at}")
     else:
         print(f"  FAIL: {catalog.reason}")
     print()
@@ -509,6 +519,69 @@ def cmd_skills_policy_explain(args: argparse.Namespace) -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+def _print_system_contracts_section(
+    args: argparse.Namespace, org: str, agent: str,
+) -> None:
+    """Print the system-contracts section for ``skills effective``.
+
+    Always shows all 5 system contracts with their context predicates and
+    repo requirement. When ``--context`` is provided, marks which contracts
+    would be injected for that session context (respecting the repo check
+    if ``--workspace`` is also given).
+    """
+    from runtime.skills.system_contracts import (
+        SessionContext,
+        list_system_contracts,
+        resolve_system_contracts_for_session,
+    )
+
+    all_contracts = list_system_contracts()
+
+    if args.json:
+        contracts_json = []
+        for sc in all_contracts:
+            contracts_json.append({
+                "id": sc.id,
+                "name": sc.name,
+                "description": sc.description,
+                "when_to_use": sc.when_to_use,
+                "source_path": sc.source_path,
+                "contexts": [c.value for c in sc.contexts],
+                "requires_repo": sc.requires_repo,
+            })
+        return  # JSON handled inline in cmd_skills_effective
+
+    print("System Contracts (runtime-injected):")
+    print(f"  Total: {len(all_contracts)} contract(s)")
+    print()
+
+    # If context is specified, resolve which contracts would be injected
+    injected_ids: set[str] = set()
+    if getattr(args, "context", None):
+        ctx = SessionContext(args.context)
+        workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path("/nonexistent")
+        resolved = resolve_system_contracts_for_session(ctx, workspace=workspace)
+        injected_ids = {sc.id for sc in resolved}
+        print(f"  Context filter: {args.context}")
+        if getattr(args, "workspace", None):
+            print(f"  Workspace: {args.workspace}")
+        print()
+
+    for sc in all_contracts:
+        marker = ""
+        if injected_ids:
+            marker = "  ← INJECTED" if sc.id in injected_ids else "  (not in context)"
+        contexts_str = ", ".join(c.value for c in sc.contexts)
+        repo_note = " [requires repos]" if sc.requires_repo else ""
+        print(f"  {sc.id}  ({sc.name}){marker}")
+        print(f"    description: {sc.description}")
+        print(f"    when_to_use: {sc.when_to_use}")
+        print(f"    contexts: {contexts_str}{repo_note}")
+        print(f"    source: {sc.source_path}")
+        print()
+
+
 def _fmt_pc(pc) -> str:
     """Format policy class for display."""
     return pc.value if isinstance(pc, PolicyClass) else str(pc)
@@ -546,6 +619,12 @@ def register(sub) -> None:
     p_eff.add_argument("--skills-root", help="Path to skills directory")
     p_eff.add_argument("--policy", dest="policy_path", help="Path to eligibility policy YAML")
     p_eff.add_argument("--json", action="store_true", help="Output as JSON")
+    p_eff.add_argument(
+        "--context",
+        choices=["task", "thread", "wake", "dream"],
+        help="Session context for system-contract filtering",
+    )
+    p_eff.add_argument("--workspace", help="Agent workspace path (for repo-capable check)")
     p_eff.set_defaults(func=cmd_skills_effective)
 
     # --- skills policy explain <skill_id> --agent <name> ---

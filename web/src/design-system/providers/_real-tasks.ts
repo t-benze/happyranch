@@ -27,6 +27,38 @@ function useRealOrgSlug(): string {
   return slug ?? '';
 }
 
+// Shared invalidation for every surface that reads task status. The task LIST
+// is served by FOUR query families — 'tasks', 'tasks-infinite', 'tasks-roots',
+// and 'tasks-roots-infinite' (TasksPage reads the last one) — each keyed as
+// [family, slug, params]. React Query's invalidateQueries prefix-matches array
+// keys element-by-element, so invalidating ['tasks', slug] alone never reaches
+// the other three families (different first element), leaving the list showing
+// a stale status after a detail-page mutation (THR-069 msg78). Foreground
+// polling on the infinite lists is disabled, so onSuccess invalidation is the
+// only refresh path. A predicate on key[0].startsWith('tasks') covers all four
+// families in one shot; 'task' and 'task-recall' don't start with 'tasks', so
+// the detail/recall keys are correctly excluded and invalidated explicitly.
+function invalidateTaskViews(
+  qc: ReturnType<typeof useQueryClient>,
+  slug: string,
+  taskId?: string,
+): void {
+  qc.invalidateQueries({
+    predicate: (query) => {
+      const key = query.queryKey;
+      return (
+        Array.isArray(key) &&
+        typeof key[0] === 'string' &&
+        key[0].startsWith('tasks') &&
+        key[1] === slug
+      );
+    },
+  });
+  if (taskId) {
+    qc.invalidateQueries({ queryKey: ['task', slug, taskId] });
+  }
+}
+
 function useTasksList(params?: { status?: string; limit?: number }) {
   const slug = useRealOrgSlug();
   return useQuery({
@@ -150,8 +182,7 @@ function useTaskTailSSE(
       onMessage: (ev) => {
         onEvent(ev);
         if (ev.type === 'task_complete' || ev.type === 'task_failed' || ev.type === 'task_blocked') {
-          qc.invalidateQueries({ queryKey: ['task', slug, taskId] });
-          qc.invalidateQueries({ queryKey: ['tasks', slug] });
+          invalidateTaskViews(qc, slug, taskId);
         }
       },
     }).catch(() => { /* swallow */ });
@@ -165,8 +196,7 @@ function useCancelTask(taskId: string): MutationLike<CancelTaskArgs, CancelTaskR
   return useMutation({
     mutationFn: (body: CancelTaskArgs) => tasksApi.cancelTask(slug, taskId, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['task', slug, taskId] });
-      qc.invalidateQueries({ queryKey: ['tasks', slug] });
+      invalidateTaskViews(qc, slug, taskId);
     },
   });
 }
@@ -177,7 +207,7 @@ function useRevisitTask(taskId: string): MutationLike<RevisitTaskArgs, RevisitTa
   return useMutation({
     mutationFn: (body: RevisitTaskArgs) => tasksApi.revisitTask(slug, taskId, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['tasks', slug] });
+      invalidateTaskViews(qc, slug, taskId);
     },
   });
 }
@@ -189,8 +219,7 @@ function useResolveEscalation(taskId: string): MutationLike<ResolveEscalationArg
     mutationFn: (body: ResolveEscalationArgs) =>
       tasksApi.resolveEscalation(slug, taskId, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['task', slug, taskId] });
-      qc.invalidateQueries({ queryKey: ['tasks', slug] });
+      invalidateTaskViews(qc, slug, taskId);
     },
   });
 }

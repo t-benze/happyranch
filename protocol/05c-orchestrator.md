@@ -131,7 +131,7 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="budget", severity="medium", summary="Refund of $200 requested by tourist for cancelled tour. Exceeds my $150 authority.")`.
 **Task state**: Moves to `waiting_for_approval`. The agent completes all other work on the task and submits a completion report with the pending approval clearly noted.
 **Orchestrator action**: Routes the escalation per the 12 rules in `04-escalation-rules.md`. Creates a founder notification with the agent's summary and recommendation. Holds the specific blocked step (not the entire Team). non-root tasks do not escalate directly to the founder.
-**Resolution**: Founder approves or denies via the dashboard. Orchestrator resumes the task with the decision injected into context.
+**Resolution**: Founder resolves via Continue or Cancel. On Continue the orchestrator re-enqueues the task to pending and injects the founder's input into the manager's next-step prompt. On Cancel the task terminates in CANCELLED (cancelled_at set) with no resume/context injection.
 
 #### Type 3: Needs another agent's work
 **What**: The task has a cross-agent or cross-team dependency.
@@ -147,7 +147,7 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="novel", severity="medium", summary="...")` with its best assessment and a recommendation.
 **Task state**: Moves to `waiting_for_guidance`.
 **Orchestrator action**: Routes to founder. The agent's recommendation is included so the founder can often just approve/deny rather than research from scratch.
-**Resolution**: Founder runs `happyranch resolve-escalation` to clear the task and — when the ruling should bind future occurrences — writes a KB entry via `happyranch kb add` (with `source_task: <task-id>` in frontmatter) so the next agent finds the answer without re-escalating.
+**Resolution**: Founder runs `happyranch resolve-escalation --decision continue` (to resume the work) or `--decision cancel` (to terminate it) to clear the task and — when the ruling should bind future occurrences — writes a KB entry via `happyranch kb add` (with `source_task: <task-id>` in frontmatter) so the next agent finds the answer without re-escalating.
 
 ### Task state machine
 
@@ -287,10 +287,10 @@ pending → (run_step pickup) → in_progress → { completed | failed | cancell
 
 in_progress(delegated) → (all children terminal) → in_progress (re-entry, block_kind cleared on claim)
 in_progress(blocked_on_job) → (all blocking jobs reach terminal state; _maybe_resume_blocked_task enqueues while the row stays in_progress) → in_progress (run_step CAS admits exactly one on pickup, clearing block_kind)
-escalated → (POST /resolve-escalation approve) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
-escalated → (POST /resolve-escalation reject)  → failed (cascade-fails the parent if any)
+escalated → (POST /resolve-escalation continue) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
+escalated → (POST /resolve-escalation cancel)  → cancelled (deliberate founder stop; notifies parent and kills owned jobs — parity with old reject path, but terminal status is CANCELLED not FAILED)
 escalated | in_progress(delegated) → (revisit / thread-dispatch names it in lineage) → resolved_superseded (terminal; block_kind cleared, audit cites the continuation root task_id; NO re-enqueue. The delegated close is gated on all children being terminal and never cascade-SIGTERMs live siblings)
-escalated → (POST /resolve-escalation approve on exhaustion escalation) → pending (re-enqueued; parent carries the exhaustion context + failure reason from the failed subtask — manager can re-ground and re-delegate)
+escalated → (POST /resolve-escalation continue on exhaustion escalation) → pending (re-enqueued; parent carries the exhaustion context + failure reason from the failed subtask — manager can re-ground and re-delegate)
 (any non-terminal) → (founder cancel) → cancelled
 ```
 
@@ -347,37 +347,37 @@ verdict waste the delegation and burn a re-spawn round.
 ## 4. Runtime-Managed Skill Policy (CONTEXT/ADMISSION)
 
 The runtime-managed skill policy is an agent **context/admission** mechanism
-— it controls which approved skills appear in an agent session's compact skill
-index. It is **explicitly NOT a permission layer**. Capability remains
-governed ONLY by the existing permission model (§3). Skills do not grant
-tools, credentials, network access, filesystem access, sandbox policy, or
+— it controls which skills appear in an agent session's compact skill index.
+It is **explicitly NOT a permission layer**. Capability remains governed
+ONLY by the existing permission model (§3). Skills do not grant tools,
+credentials, network access, filesystem access, sandbox policy, or
 permission-map/allow-rule/auth changes.
+
+**Founder ruling (THR-055 seq 55):** The catalog-approval gate is REMOVED for
+first-party HappyRanch skills. For first-party skills, runtime approval
+duplicates the release pipeline — PR review + merge + deploy IS the approval.
+Exposure is now: catalog-presence + status==enabled + eligibility-matched.
+Runtime approval is DEFERRED to a future user-authored-skills feature and will
+be re-introduced only if/when that audience ships.
 
 ### 4.1 Two-Gate Model
 
 A skill reaches an agent session only when **both** gates pass:
 
-1. **Catalog Gate** — the registry entry is approved for catalog use.
-   - `approval_state` must be `approved`.
+1. **Catalog Gate** — the skill is present in the catalog and enabled.
    - `status` must be `enabled`.
-   - **Founder ruling (THR-055 seq 17):** `high_impact_policy` skills require
-     founder or designated-owner approval before catalog admission AND before
-     EACH version upgrade. Approval is version-specific — approval of `1.0.0`
-     does not imply approval of `1.1.0`. Upgrading a `high_impact_policy`
-     skill returns it to `pending_review` / unavailable until the new version
-     is approved.
-   - `draft`, `pending_review`, `rejected`, `deprecated`, or missing approval
-     metadata blocks the catalog gate.
+   - Disabled skills are blocked.
+   - There is NO approval gate — for first-party skills, the release pipeline
+     (PR review + merge + deploy) IS the approval.
 
 2. **Eligibility Gate** — org/team/agent policy makes the skill eligible.
    - Additive inheritance with explicit deny (`deny` wins over `allow`):
      ```
-     effective = approved_catalog
+     effective = present_catalog
        ∩ (org.allow ∪ team.allow ∪ agent.allow)
        \ (org.deny ∪ team.deny ∪ agent.deny)
      ```
-   - An unapproved skill remains unavailable even if eligibility allows it.
-   - A disabled registry entry remains unavailable even if approved and eligible.
+   - A disabled registry entry remains unavailable even if eligible.
    - Unknown skill ids in eligibility config produce validation warnings and
      are excluded from the session index.
 
@@ -385,8 +385,8 @@ A skill reaches an agent session only when **both** gates pass:
 
 | Policy class | Governance |
 | --- | --- |
-| `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids. Owner or team manager may approve. |
-| `high_impact_policy` | Pricing, legal/compliance, security, production release, escalation thresholds. Founder or designated-owner approval required for catalog admission AND each version upgrade. |
+| `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids (e.g., `review`). Passes the catalog gate with status=enabled. |
+| `high_impact_policy` | Pricing, legal/compliance, security, production release, escalation thresholds, agent roster governance (e.g., ``manage-agent``, ``manage-repo``). Scoped to managers/operators via eligibility policy (`policy_class` still scopes eligibility). Passes the catalog gate with status=enabled (no per-version approval gate — release pipeline IS the approval). |
 | `system_contract` | Runtime protocol and mandatory operating-contract skills (e.g., `start-task`, `thread`, `jobs`). **Outside the toggleable catalog** — not shown, not toggleable. |
 
 ### 4.3 Compact Session Skill INDEX
@@ -417,8 +417,8 @@ exposure directly from disk (no daemon round-trip):
 - `happyranch skills effective --agent <name>` — show effective skills for an
   agent, with provenance (which scope+rule admitted/denied each skill).
 - `happyranch skills policy explain <skill_id> --agent <name>` — explain why
-  a skill is or isn't available, including both gate results, approval
-  records, and eligibility provenance.
+  a skill is or isn't available, including both gate results and
+  eligibility provenance.
 
 Registry and eligibility mutations emit audit rows under the `config:skills`
 scope prefix (matching the established `config:<section>` convention from
@@ -449,11 +449,23 @@ set-executor). Before THR-070, live agents' on-disk skill bodies froze until
 the next lifecycle event — an edit to a skill in the bundle would not reach a
 running agent.
 
-Now, the skill tree is **refreshed on EVERY session creation** (task/subtask,
-thread reply, wake, dream) by a shared idempotent helper that re-copies from
-the bundled source into both ``.claude/skills/`` and ``.agents/skills/``. The
-source is always ``_resolve_skills_src(settings)`` = ``project_root/protocol/skills/``
-(the bundled runtime), never a workspace clone or stale frozen copy.
+**Phase-4 cutover (THR-055).** The session-time wholesale refresh and the
+bootstrap ``_copy_skills`` wholesale copy are BOTH gated behind the reversible
+``_WHOLESALE_DUMP_ENABLED`` flag (default ``False`` in
+``workspace_adapters.py``). The flag gates two code paths:
+- **Session-time:** ``refresh_session_skills`` — called on every session
+  creation to re-copy the bundled ``protocol/skills/`` tree into
+  ``.claude/skills/`` and ``.agents/skills/``.
+- **Bootstrap:** ``_copy_skills`` in the three executor adapters
+  (``ClaudeWorkspaceAdapter``, ``CodexWorkspaceAdapter``,
+  ``OpencodeWorkspaceAdapter``) — called from ``ensure_workspace_ready`` at
+  lifecycle events (init-agent, set-executor).
+
+When the flag is ``False`` (the cutover default), neither code path copies
+skills. The explicit injection paths — ``inject_system_contracts`` (§4.7) and
+``inject_managed_skills`` (§4.10) — are the SOLE skill-delivery mechanism.
+The flag can be set to ``True`` for rollback to the legacy wholesale-dump
+model without a code revert.
 
 **Protocol doc manifest.** Protocol ``.md`` docs (the files in
 ``project_root/protocol/*.md``) are NEVER copied to agent workspaces. Instead,
@@ -478,3 +490,261 @@ manifest and refresh skills are:
 they do not modify ``resolve_managed_skills_index``, ``render_compact_skill_index``,
 the permission model, executor skill-load paths, or the SQLite schema. No new
 daemon routes are added.
+
+### 4.7 System-Contract Injection (THR-055 Phase 1 + Phase 4)
+
+System-contract skills — ``start-task``, ``jobs``, ``make-worktree``, ``thread``,
+``dream`` — are mandatory operating-contract skills injected by the runtime based
+on session/context type. They are defined in the single-source-of-truth module
+``runtime/skills/system_contracts.py`` and are OUTSIDE the toggleable managed
+catalog (they are NOT displayed by ``skills catalog list`` and are never
+manager-toggleable).
+
+**Injection model (Phase 4 — CUT OVER).** On EVERY session creation,
+``inject_system_contracts`` and ``inject_managed_skills`` (see §4.10) are the
+SOLE skill-injection paths. The wholesale ``protocol/skills/`` dump is DISABLED
+through TWO code paths, both gated behind the reversible
+``_WHOLESALE_DUMP_ENABLED = False`` flag in ``workspace_adapters.py``:
+
+1. **Session-time** — ``refresh_session_skills`` (called on every session
+   creation) is a no-op when the flag is ``False``.
+2. **Bootstrap** — ``_copy_skills`` in the three executor adapters
+   (Claude, Codex, Opencode), called from ``ensure_workspace_ready`` at
+   lifecycle events, is a no-op when the flag is ``False``.
+
+Both gates prevent the wholesale copy of ALL 8 ``protocol/skills/``
+directories (including the 3 managed-catalog skills) into the workspace.
+A freshly-bootstrapped workspace receives NO skills from the wholesale path;
+skills are delivered exclusively through the explicit injection paths. The
+completeness of this delivery model is proven by the contract-completeness
+guard test in ``test_skill_cutover_completeness.py``.
+
+**Phase 1 (historical).** The initial deployment ran ``inject_system_contracts``
+ADDITIVELY alongside the wholesale dump. This was the safety net proved correct
+in the guard test, then removed in Phase 4.
+
+**Context-exposure predicates** (``SessionContext`` enum):
+
+| Contract | TASK | THREAD | WAKE | DREAM | Requires repos? |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| ``start-task`` | ✓ | | ✓ | | no |
+| ``jobs`` | ✓ | ✓ | ✓ | ✓ | no |
+| ``make-worktree`` | ✓ | ✓ | ✓ | ✓ | yes |
+| ``thread`` | ✓ | ✓ | ✓ | | no |
+| ``dream`` | | | | ✓ | no |
+
+**Session-context mapping:**
+- ``TASK`` — ``Orchestrator._run_agent`` (ordinary task/subtask session)
+- ``THREAD`` — ``thread_runner.run_invocation`` (thread reply/bootstrap)
+- ``WAKE`` — ``wake_runner.run_wake`` (working-hours wake / task-followup)
+- ``DREAM`` — ``dream_runner.run_dream`` (scheduled dream)
+
+**Repo-capability check.** ``make-worktree`` is gated on the agent workspace
+having at least one cloned git repository under ``repos/``. Agents with no
+repo write surface never receive ``make-worktree``.
+
+**Debug visibility.** ``happyranch skills effective --agent <name>`` displays
+a distinct "System Contracts (runtime-injected)" section separate from managed
+catalog skills. The optional ``--context`` flag filters the display by session
+context; ``--workspace`` enables the repo check.
+
+**Fences.** System-contract injection does not:
+- Grant tools, credentials, or capabilities (skills are permission-inert)
+- Modify the managed catalog, registry, or eligibility resolver
+- Require a SQLite migration (file/YAML-backed only)
+- Add new daemon routes
+- Change the existing permission model
+
+### 4.8 Managed-Catalog Standard-Operational Entry — ``review`` (THR-055 Phase 2)
+
+The ``review`` skill is the first HappyRanch skill migrated into the managed
+catalog as a ``standard_operational`` entry. It was previously delivered via
+the wholesale ``protocol/skills/`` dump alongside the system contracts.
+
+**Package location.** ``runtime/skills/review/{skill.yaml,SKILL.md}``.
+
+**Registration metadata.**
+- ``id``: ``hr:review``
+- ``policy_class``: ``standard_operational``
+- ``owner``: ``engineering_manager``
+- ``version``: ``1.0.0``
+
+**Eligibility scoping.** ``review`` visibility is scoped to **team managers and
+review-loop participants** — NOT org-wide. The default eligibility policy in
+``org/config.yaml`` grants access to:
+- The ``engineering`` team (dev_agent, code_reviewer, qa_engineer,
+  engineering_manager).
+- ``product_lead`` via agent-scoped allow (team manager outside the
+  engineering team who participates in founder review loops).
+
+A non-participant agent (e.g., ``support_agent`` on the ``cx`` team, or any
+agent outside these allow lists) does NOT resolve ``review`` as exposed.
+The eligibility formula is the standard additive-inheritance model (see §4.1):
+team-scoped allow, with agent-scoped allow for team managers outside the
+engineering team.
+
+**Provenance.** ``skills effective --agent dev_agent`` shows ``review`` with
+``team(engineering) ALLOW`` eligibility provenance and ``standard_operational``
+policy class. ``skills policy explain hr:review --agent dev_agent`` shows the
+catalog gate (PASS — present, enabled) and eligibility gate (team-scoped allow).
+
+**Phase-2 additive constraint.** The ``review`` SKILL.md body also remains
+in ``protocol/skills/review/`` so that the existing wholesale-dump path
+(``refresh_session_skills``) continues to deliver ``review`` to all agents
+as a safety net. Physical removal from the always-injected set is a Phase-4
+change gated on a completeness test proving catalog resolution delivers the
+full required set. Phase 2 is ADDITIVE only — the managed-catalog entry is
+registered and eligibility is scoped; the wholesale dump is untouched.
+
+**Fences.** Phase 2 does not:
+- Grant tools, credentials, or capabilities (review command access remains
+  in allow_rules / daemon auth per the existing permission model)
+- Physically delete ``review`` from ``protocol/skills/`` (Phase 4)
+- Require a SQLite migration (file/YAML-backed only)
+- Add new daemon routes
+- Change the existing permission model or auth
+
+### 4.9 Managed-Catalog High-Impact Entries — ``manage-agent`` + ``manage-repo`` (THR-055 Phase 3)
+
+The ``manage-agent`` and ``manage-repo`` skills are registered as
+``high_impact_policy`` managed-catalog entries. They govern agent roster
+management (enroll/update/terminate agents) and agent workspace repository
+configuration (add/remove/update repos).
+
+**Package locations.**
+- ``runtime/skills/manage-agent/{skill.yaml,SKILL.md}``
+- ``runtime/skills/manage-repo/{skill.yaml,SKILL.md}``
+
+**Registration metadata.**
+- ``hr:manage-agent`` and ``hr:manage-repo``
+- ``policy_class``: ``high_impact_policy``
+- ``owner``: ``engineering_manager``
+- ``version``: ``1.0.0``
+
+**Eligibility-scoped exposure.** ``manage-agent`` and ``manage-repo`` visibility
+is governed EXCLUSIVELY by the two-gate model (§4.1): catalog-presence +
+status==enabled + eligibility-matched. There is NO per-version approval gate —
+for first-party skills, the release pipeline (PR review + merge + deploy) IS the
+approval. An eligible manager/operator resolves them as exposed; a non-eligible
+agent does not.
+
+Any future approval concept (for user-authored or third-party skills) would be a
+PLATFORM-OWNER catalog-admission gate — not a second-stage gate within the
+first-party release pipeline and not a customer-self-serve feature.
+
+**Eligibility scoping.** ``manage-agent`` and ``manage-repo`` visibility is
+scoped to **MANAGER/OPERATOR agents** — NOT org-wide. The default eligibility
+policy in ``org/config.yaml`` grants access to:
+- ``engineering_manager`` via agent-scoped allow (engineering team manager).
+- ``product_lead`` via agent-scoped allow (product team manager).
+
+Non-manager agents (including engineering team workers such as ``dev_agent``,
+``code_reviewer``, ``qa_engineer``) do NOT resolve ``manage-agent`` or
+``manage-repo`` as exposed — even if they are in the engineering team. The
+eligibility formula is the standard additive-inheritance model (see §4.1):
+agent-scoped allow only; no team or org scope.
+
+**HIGH-IMPACT POLICY = GUIDANCE VISIBILITY + VERSION PROVENANCE ONLY — NOT
+COMMAND ACCESS.** ``high_impact_policy`` governs guidance visibility + version
+provenance in the compact skill index. It does NOT grant or deny command
+execution. ``manage-agent`` and ``manage-repo`` command access remains
+separately governed by allow_rules / daemon auth per the existing permission
+model (§3). The policy model is additive and permission-inert.
+
+**Phase-3 additive constraint.** The ``manage-agent`` and ``manage-repo``
+SKILL.md bodies also remain in ``protocol/skills/manage-agent/`` and
+``protocol/skills/manage-repo/`` so that the existing wholesale-dump path
+(``refresh_session_skills``) continues to deliver them to all agents as a
+safety net. Physical removal from the always-injected set is a Phase-4
+change gated on a completeness test proving catalog resolution delivers the
+full required set. Phase 3 is ADDITIVE only — the managed-catalog entries are
+registered and eligibility is scoped; the wholesale dump is untouched.
+
+**Phase-4 cutover (COMPLETED).** The wholesale ``protocol/skills/`` dump is
+disabled through both paths — session-time ``refresh_session_skills`` and
+bootstrap ``_copy_skills`` in the three executor adapters — gated behind
+``_WHOLESALE_DUMP_ENABLED = False``. The 8 ``protocol/skills/`` directories
+remain on disk as a packaged safety net (re-enable with the flag) but are
+no longer copied into workspaces. The ``SKILL.md`` source of truth for the
+3 managed-catalog skills lives in ``runtime/skills/<id>/``. See §4.6 and
+§4.10 for the full delivery model.
+
+**Fences.** Phase 3 does not:
+- Grant tools, credentials, or capabilities (manage-agent/manage-repo command
+  access remains in allow_rules / daemon auth per the existing permission model)
+- Require a SQLite migration (file/YAML-backed only)
+- Add new daemon routes
+- Change the existing permission model or auth
+- Add a web admin UI
+- Record any founder approval for the version (maker-checker — founder action only)
+
+### 4.10 Phase-4 Cutover — Managed-Skill Workspace Injection (THR-055 Phase 4)
+
+The Phase-4 cutover completes the migration by STOPPING the wholesale
+``protocol/skills/`` dump and delivering skills EXCLUSIVELY through:
+1. ``inject_system_contracts`` — context-aware system-contract injection (§4.7)
+2. ``inject_managed_skills`` — policy-resolved managed-catalog injection (this section)
+
+**Injection model.** On EVERY session creation (task/subtask, thread reply,
+wake, dream), ``inject_managed_skills`` resolves the two-gated catalog +
+eligibility policy for the session's (agent, team) and copies each EXPOSED
+managed skill from ``runtime/skills/<id>/`` into ``.claude/skills/<id>/``
+and ``.agents/skills/<id>/``.
+
+**Resolution flow:**
+1. Load ``SkillRegistry`` from ``<project_root>/runtime/skills/``.
+2. Load eligibility policy from ``<project_root>/org/config.yaml``
+   (``skills`` section).
+3. Resolve exposed skills via ``resolve_exposed_skills`` (both gates:
+   catalog gate + eligibility gate).
+4. Copy each exposed skill's package into the workspace skill dirs.
+
+**Context-exposure rules:** managed skills are context-AGNOSTIC — ``review``,
+``manage-agent``, and ``manage-repo`` are injected into ALL session types
+where the agent is eligible ($4.1 two-gate model). System contracts remain
+context-aware ($4.7).
+
+**Fail-closed.** Disabled, catalog-absent, or ineligible skills are NOT
+injected. The catalog gate (presence + enabled) is independent of the
+eligibility gate — both must pass.
+
+**Reversible gate.** The wholesale dump is disabled by default
+(``_WHOLESALE_DUMP_ENABLED = False`` in ``workspace_adapters.py``). This
+gates TWO code paths — the session-time ``refresh_session_skills`` and the
+bootstrap-time ``_copy_skills`` in the three executor adapters
+(Claude, Codex, Opencode). Setting the flag to ``True`` re-enables the
+legacy wholesale dump through both paths without a code revert.
+
+The ``protocol/skills/`` directories remain on disk as packaged source
+material for the system-contract injection path and as a reversion safety
+net. They are NOT deleted — only the copy-into-workspace step is gated.
+
+**Coverage.** The contract-completeness guard test
+(``test_skill_cutover_completeness.py``) proves that every agent (7) × every
+session context (4) × every repo state (2) = 56 combinations receive the
+complete required set without the wholesale dump. The test asserts:
+- System contracts are context-correct per §4.7 predicates.
+- ``review`` is injected for engineering team + product_lead.
+- ``manage-agent`` / ``manage-repo`` are exposed to eligible managers/operators
+  only and hidden from non-eligible agents (eligibility gate).
+- ``dream`` is excluded from non-dream contexts.
+- ``make-worktree`` is repo-gated.
+
+**Session-path coverage.** ``inject_managed_skills`` is wired into all 4
+session-creation callers:
+1. ``Orchestrator._run_agent`` (task/subtask) — resolves team via
+   ``load_agent``.
+2. ``thread_runner.run_invocation`` (thread reply/bootstrap) — resolves
+   team from ``ThreadParticipant`` record.
+3. ``wake_runner.run_wake`` (working-hours wake) — resolves team from
+   ``agent_def``.
+4. ``dream_runner.run_dream`` (private dream) — resolves team via
+   ``load_agent``.
+
+**Fences.** Phase 4 does not:
+- Grant tools, credentials, or capabilities (skills are permission-inert)
+- Modify the permission model, auth, allow_rules, or daemon authorization
+- Require a SQLite migration (file/YAML-backed only)
+- Add new daemon routes
+- Add a web admin UI
+- Delete ``protocol/skills/`` directories (reversible via flag)

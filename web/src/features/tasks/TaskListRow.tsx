@@ -160,7 +160,7 @@ function agentChipRole(name: string): 'worker' | 'founder' {
 export function TaskListColumnHeader(): JSX.Element {
   return (
     <div
-      className={`${ROW_FLEX} text-text-muted bg-surface-sunken rounded-lg px-3 py-2 text-xs font-medium tracking-wide`}
+      className={`${ROW_FLEX} text-text-muted border-border-default bg-surface-page rounded-xl border px-3 py-2.5 text-xs font-medium tracking-wide`}
     >
       <div className={COL.status}>STATUS</div>
       <div className={COL.task}>TASK</div>

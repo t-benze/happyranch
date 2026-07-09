@@ -19,7 +19,7 @@ def _make_approved_catalog():
     registry = SkillRegistry(skills_root=FIXTURES)
     return [
         e for e in registry.list_all()
-        if e.approval_state == "approved" and e.status == "enabled"
+        if e.status == "enabled"
     ]
 
 
