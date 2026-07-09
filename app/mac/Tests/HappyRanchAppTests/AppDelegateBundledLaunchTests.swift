@@ -24,16 +24,17 @@ private func makeAppDelegateForBundled(
     return (delegate, fake)
 }
 
-// MARK: - Packaging mode detection
+// MARK: - Packaging mode + daemon home resolution (serialized — shared static state)
 
-@Suite("Packaging mode detection")
-struct PackagingModeTests {
+@Suite("Packaging mode detection and daemon home resolution", .serialized)
+struct PackagingAndHomeResolutionTests {
+
+    // MARK: packagingMode
 
     @Test("packagingMode returns dev by default")
     func packagingModeReturnsDevByDefault() {
-        // Explicitly reset the test seam to nil so a parallel test that set
-        // _testPackagingMode to "bundled" does not cause this assertion to fail.
         AppDelegate._testPackagingMode = nil
+        defer { AppDelegate._testPackagingMode = nil }
         #expect(AppDelegate.packagingMode() == "dev")
     }
 
@@ -43,12 +44,8 @@ struct PackagingModeTests {
         defer { AppDelegate._testPackagingMode = nil }
         #expect(AppDelegate.packagingMode() == "bundled")
     }
-}
 
-// MARK: - Start command strings
-
-@Suite("Start command strings")
-struct StartCommandTests {
+    // MARK: - Start command strings (depends on packagingMode)
 
     @Test("startCommandForCurrentMode returns dev command in dev mode")
     func devModeCommand() {
@@ -62,6 +59,293 @@ struct StartCommandTests {
         AppDelegate._testPackagingMode = "bundled"
         defer { AppDelegate._testPackagingMode = nil }
         #expect(AppDelegate.startCommandForCurrentMode() == "Contents/Resources/daemon/happyranch-daemon")
+    }
+
+    // MARK: resolvedDaemonHome() precedence
+
+    @Test("resolvedDaemonHome honors explicit UserDefaults override")
+    func resolvedDaemonHomeUsesUserDefaultsOverride() {
+        let testHome = "/tmp/test-user-defaults-home"
+        AppDelegate._testPackagingMode = nil
+        UserDefaults.standard.set(testHome, forKey: "HappyRanchDaemonHome")
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let result = AppDelegate.resolvedDaemonHome()
+        #expect(result == testHome,
+                "UserDefaults override should win, got \(result) expected \(testHome)")
+    }
+
+    @Test("resolvedDaemonHome ignores empty UserDefaults value")
+    func resolvedDaemonHomeIgnoresEmptyUserDefaults() {
+        AppDelegate._testPackagingMode = nil
+        UserDefaults.standard.set("", forKey: "HappyRanchDaemonHome")
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let result = AppDelegate.resolvedDaemonHome()
+        #expect(!result.isEmpty, "result must not be empty")
+        #expect(result != "", "empty UserDefaults override must be ignored")
+    }
+
+    @Test("resolvedDaemonHome with packagingMode=bundled returns AppSupport when no UD override")
+    func resolvedDaemonHomePackagingBundledReturnsAppSupport() {
+        UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        AppDelegate._testPackagingMode = "bundled"
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let result = AppDelegate.resolvedDaemonHome()
+        let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        if envHome == nil {
+            let expected = "\(NSHomeDirectory())/Library/Application Support/HappyRanch"
+            #expect(result == expected,
+                    "bundled mode should return AppSupport dir, got \(result) expected \(expected)")
+        } else {
+            // If env var is set, it takes priority over packaging mode (step 1 > step 2)
+            #expect(result == envHome,
+                    "env var should win over packaging mode when no UD override, got \(result) expected \(envHome!)")
+        }
+    }
+
+    @Test("resolvedDaemonHome returns dotdir default when no override, no env, packaging=dev")
+    func resolvedDaemonHomeReturnsDotdirDefault() {
+        UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        AppDelegate._testPackagingMode = nil
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let result = AppDelegate.resolvedDaemonHome()
+        let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        if envHome == nil {
+            let expected = "\(NSHomeDirectory())/.happyranch"
+            #expect(result == expected,
+                    "default should be ~/.happyranch, got \(result) expected \(expected)")
+        } else {
+            #expect(result == envHome,
+                    "env var should win when no UD override, got \(result) expected \(envHome!)")
+        }
+    }
+
+    @Test("resolvedDaemonHome returns env var when no override and env is set")
+    func resolvedDaemonHomeReturnsEnvVar() {
+        UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        AppDelegate._testPackagingMode = nil
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        let result = AppDelegate.resolvedDaemonHome()
+        if let envHome {
+            #expect(result == envHome,
+                    "Should return env var when no override, got \(result) expected \(envHome)")
+        }
+        #expect(!result.isEmpty, "result must never be empty")
+    }
+
+    // MARK: isRunningInAppBundle()
+
+    @Test("isRunningInAppBundle returns false in test runner")
+    func isRunningInAppBundleReturnsFalseInTests() {
+        AppDelegate._testIsRunningInAppBundle = nil
+        defer { AppDelegate._testIsRunningInAppBundle = nil }
+        #expect(AppDelegate.isRunningInAppBundle() == false,
+                "Test runner should not be detected as a bundled app")
+    }
+
+    @Test("isRunningInAppBundle honors test seam override")
+    func isRunningInAppBundleHonorsTestSeam() {
+        AppDelegate._testIsRunningInAppBundle = true
+        defer { AppDelegate._testIsRunningInAppBundle = nil }
+        #expect(AppDelegate.isRunningInAppBundle() == true)
+
+        AppDelegate._testIsRunningInAppBundle = false
+        #expect(AppDelegate.isRunningInAppBundle() == false)
+    }
+
+    // MARK: launchDiagnosticLogLine()
+
+    @Test("launchDiagnosticLogLine reports user-defaults branch when override matches resolvedHome")
+    func diagnosticLogLineReportsUserDefaultsBranch() {
+        AppDelegate._testPackagingMode = nil
+        let testHome = "/tmp/test-diag-ud"
+        UserDefaults.standard.set(testHome, forKey: "HappyRanchDaemonHome")
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let log = AppDelegate.launchDiagnosticLogLine(resolvedHome: testHome)
+        #expect(log.contains("branch=user-defaults"),
+                "Log should report branch=user-defaults when override matches, got: \(log)")
+        #expect(log.contains("resolved_home=\(testHome)"),
+                "Log should contain resolved_home, got: \(log)")
+    }
+
+    @Test("launchDiagnosticLogLine reports env branch when env matches and no UD")
+    func diagnosticLogLineReportsEnvBranch() {
+        AppDelegate._testPackagingMode = nil
+        UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        let resolvedHome = AppDelegate.resolvedDaemonHome()
+        let log = AppDelegate.launchDiagnosticLogLine(resolvedHome: resolvedHome)
+
+        let envPresent = envHome != nil
+        #expect(log.contains("env_present=\(envPresent)"),
+                "Log should report env_present=\(envPresent), got: \(log)")
+
+        if envHome != nil, envHome == resolvedHome {
+            #expect(log.contains("branch=env"),
+                    "Log should report branch=env when env matches, got: \(log)")
+        }
+    }
+
+    @Test("launchDiagnosticLogLine reports bundled-appsupport branch")
+    func diagnosticLogLineReportsBundledBranch() {
+        UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        AppDelegate._testPackagingMode = "bundled"
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let bundledHome = "\(NSHomeDirectory())/Library/Application Support/HappyRanch"
+        let log = AppDelegate.launchDiagnosticLogLine(resolvedHome: bundledHome)
+
+        let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        if envHome == nil {
+            #expect(log.contains("branch=bundled-appsupport"),
+                    "Log should report branch=bundled-appsupport, got: \(log)")
+        }
+        #expect(log.contains("env_present="),
+                "Log should always contain env_present, got: \(log)")
+    }
+
+    @Test("launchDiagnosticLogLine reports default-dotdir branch")
+    func diagnosticLogLineReportsDefaultBranch() {
+        UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        AppDelegate._testPackagingMode = nil
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let dotDirHome = "\(NSHomeDirectory())/.happyranch"
+        let log = AppDelegate.launchDiagnosticLogLine(resolvedHome: dotDirHome)
+
+        let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        if envHome == nil {
+            #expect(log.contains("branch=default-dotdir"),
+                    "Log should report branch=default-dotdir, got: \(log)")
+        }
+        #expect(log.contains("env_present="),
+                "Log should always contain env_present, got: \(log)")
+    }
+
+    @Test("launchDiagnosticLogLine contains all required fields")
+    func diagnosticLogLineHasAllFields() {
+        let log = AppDelegate.launchDiagnosticLogLine(resolvedHome: "/tmp/test")
+        #expect(log.contains("resolved_home="), "missing resolved_home")
+        #expect(log.contains("branch="), "missing branch")
+        #expect(log.contains("env_present="), "missing env_present")
+        #expect(!log.contains("\n"), "log must be single line")
+    }
+
+    @Test("launchLog is recorded in diagnostics during bundled launch")
+    @MainActor
+    func launchLogRecordedInDiagnostics() async throws {
+        AppDelegate._testPackagingMode = "bundled"
+        AppDelegate._testIsRunningInAppBundle = true
+
+        let bundledHome = "\(NSHomeDirectory())/Library/Application Support/HappyRanch"
+        UserDefaults.standard.set(bundledHome, forKey: "HappyRanchDaemonHome")
+        defer {
+            AppDelegate._testPackagingMode = nil
+            AppDelegate._testIsRunningInAppBundle = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let (delegate, _) = makeAppDelegateForBundled(
+            state: .stopped,
+            isManagedBySelf: true
+        )
+
+        let home = AppDelegate.resolvedDaemonHome()
+        delegate.diagnostics.recordLaunchLog(
+            AppDelegate.launchDiagnosticLogLine(resolvedHome: home)
+        )
+
+        let bundle = delegate.diagnostics.collect()
+        let launcherLog = bundle["launcher_log"] as? String ?? ""
+        #expect(launcherLog.contains("branch=user-defaults"),
+                "Launch log should report branch=user-defaults, got: \(launcherLog)")
+        #expect(launcherLog.contains("resolved_home=\(bundledHome)"),
+                "Launch log should contain bundled home, got: \(launcherLog)")
+        #expect(launcherLog.contains("env_present="),
+                "Launch log should contain env_present, got: \(launcherLog)")
+    }
+
+    // MARK: daemonHome() backward compatibility
+
+    @Test("daemonHome() delegates to resolvedDaemonHome()")
+    func daemonHomeDelegatesToResolved() {
+        AppDelegate._testPackagingMode = nil
+        let testHome = "/tmp/test-delegation"
+        UserDefaults.standard.set(testHome, forKey: "HappyRanchDaemonHome")
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let dhResult = AppDelegate.daemonHome()
+        let rdhResult = AppDelegate.resolvedDaemonHome()
+        #expect(dhResult == rdhResult,
+                "daemonHome() must delegate to resolvedDaemonHome()")
+        #expect(dhResult == testHome,
+                "Both should return UserDefaults override, got \(dhResult)")
+    }
+
+    @Test("daemonHome() never returns empty string")
+    func daemonHomeNeverReturnsEmpty() {
+        UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        AppDelegate._testPackagingMode = nil
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let result = AppDelegate.daemonHome()
+        #expect(!result.isEmpty, "daemonHome() must never return empty, got '\(result)'")
+    }
+
+    @Test("resolvedDaemonHome returns AppSupport when isRunningInAppBundle and UD set")
+    func resolvedDaemonHomeAppSupportWhenBundledAndUDSet() {
+        let bundledHome = "\(NSHomeDirectory())/Library/Application Support/HappyRanch"
+        UserDefaults.standard.set(bundledHome, forKey: "HappyRanchDaemonHome")
+        AppDelegate._testPackagingMode = nil
+        defer {
+            AppDelegate._testPackagingMode = nil
+            UserDefaults.standard.removeObject(forKey: "HappyRanchDaemonHome")
+        }
+
+        let result = AppDelegate.resolvedDaemonHome()
+        #expect(result == bundledHome,
+                "AppSupport home should be returned when UD is set by bundled startup, got \(result) expected \(bundledHome)")
     }
 }
 
@@ -237,27 +521,6 @@ struct BundledLaunchTests {
         let cmd = bundle["start_command"] as? String ?? ""
         #expect(cmd == "Contents/Resources/daemon/happyranch-daemon",
                 "Recovery diagnostics must record bundled start command, got \(cmd)")
-    }
-}
-
-// MARK: - Daemon home resolution
-
-@Suite("Daemon home resolution")
-struct DaemonHomeResolutionTests {
-
-    @Test("daemonHome returns explicit HAPPYRANCH_DAEMON_HOME override when set in environment")
-    func daemonHomeEnvOverrideWins() {
-        // If HAPPYRANCH_DAEMON_HOME is already set in the test runner's env,
-        // verify daemonHome() returns it (env override wins over mode-dependent default).
-        if let envHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"] {
-            #expect(AppDelegate.daemonHome() == envHome,
-                    "daemonHome must return HAPPYRANCH_DAEMON_HOME when set in env, got \(AppDelegate.daemonHome())")
-        }
-        // If not set, skip — the env-override-wins ordering is validated
-        // by the code structure: it's the first check in daemonHome().
-        // Bundled-mode app-support path and dev-mode ~/.happyranch are tested
-        // indirectly via PackagingModeTests (packagingMode()) + BundledLaunchTests
-        // (which exercise daemonHome() through startDaemon()).
     }
 }
 
