@@ -68,6 +68,10 @@ export const useInviteAgent: ReturnType<typeof useData>['threads']['useInviteAge
   threadId,
 ) => useData().threads.useInviteAgent(threadId);
 
+export const useRemoveParticipant: ReturnType<typeof useData>['threads']['useRemoveParticipant'] = (
+  threadId,
+) => useData().threads.useRemoveParticipant(threadId);
+
 export const useArchiveThread: ReturnType<typeof useData>['threads']['useArchiveThread'] = (
   threadId,
 ) => useData().threads.useArchiveThread(threadId);

@@ -128,3 +128,20 @@ def test_render_transcript_body_attachment_does_not_link_display_name() -> None:
         "(`artifact:THR-001-safe.pdf`) (123 bytes)"
     ) in rendered
     assert "- [report](https://evil.example) (" not in rendered
+
+
+def test_render_transcript_body_renders_participant_removed() -> None:
+    """System message with kind_tag='participant_removed' renders 'founder removed <agent> from the thread'."""
+    msg = ThreadMessage(
+        thread_id="THR-001",
+        seq=1,
+        speaker="founder",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={
+            "kind_tag": "participant_removed",
+            "agent_name": "qa_engineer",
+            "removed_by": "founder",
+        },
+    )
+    rendered = render_transcript_body([msg])
+    assert "founder removed qa_engineer from the thread" in rendered

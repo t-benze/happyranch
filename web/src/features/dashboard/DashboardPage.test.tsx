@@ -538,8 +538,8 @@ describe('DashboardPage', () => {
     expect(within(card).queryByText('0')).not.toBeInTheDocument();
   });
 
-  test('EscalationInboxRow approve submits blank rationale', async () => {
-    // THR-046: dashboard inline approve allows blank rationale.
+  test('EscalationInboxRow continue submits blank rationale', async () => {
+    // THR-046: dashboard inline continue allows blank rationale.
     const s = emptySummary();
     s.org_age_days = 14;
     s.narrative_counts.completed_today = 3;
@@ -578,10 +578,10 @@ describe('DashboardPage', () => {
     ) as HTMLElement;
     await user.click(row);
 
-    // The expanded view shows an "Approve & resolve" button.
+    // The expanded view shows a "Continue & resolve" button.
     // Click it without typing any rationale.
     await user.click(
-      screen.getByRole('button', { name: /Approve & resolve/i }),
+      screen.getByRole('button', { name: /Continue & resolve/i }),
     );
 
     // The mutation fires asynchronously; wait for the captured body to be set.
@@ -589,7 +589,7 @@ describe('DashboardPage', () => {
       expect(resolveBody).not.toBeNull();
     });
 
-    expect(resolveBody).toEqual({ decision: 'approve', rationale: '' });
+    expect(resolveBody).toEqual({ decision: 'continue', rationale: '' });
   });
 
   test('renders org pulse table when teams exist', async () => {

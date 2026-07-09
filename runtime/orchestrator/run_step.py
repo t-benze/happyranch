@@ -1051,11 +1051,11 @@ def _resolved_escalation_header_if_applicable(
     orch: "Orchestrator", task_id: str,
 ) -> str | None:
     """Return a 2-3 line header on the first manager step after a founder
-    `resolve-escalation --approve`, otherwise None.
+    `resolve-escalation --continue`, otherwise None.
 
     Trigger: the most recent `escalation_resolved` audit entry for this task
     has a higher row id than the most recent `orchestration_step` entry —
-    i.e. the founder approved AND the manager hasn't run yet. Audit `id` is
+    i.e. the founder continued AND the manager hasn't run yet. Audit `id` is
     autoincrement, so id-ordering is equivalent to chronological ordering.
     Once the manager produces its first decision after re-enqueue,
     `log_orchestration_step` writes a row with a higher id and this helper
@@ -1075,10 +1075,14 @@ def _resolved_escalation_header_if_applicable(
     if last_step is not None and last_step["id"] > last_resolved["id"]:
         return None
     payload = last_resolved["payload"] or {}
-    decision = payload.get("decision", "approve")
+    decision = payload.get("decision", "continue")
+    # Cancel is terminal — no resume header should ever fire for a cancelled
+    # escalation.
+    if decision == "cancel":
+        return None
     rationale = payload.get("rationale", "(no rationale recorded)")
     return (
-        f"ESCALATION RESOLVED: founder {decision}d your prior escalation.\n"
+        f"ESCALATION RESOLVED: founder continued your prior escalation.\n"
         f"Rationale: {rationale}\n"
         "Continue from where you parked, with this verdict in mind.\n\n"
     )

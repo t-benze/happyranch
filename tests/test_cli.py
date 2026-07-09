@@ -1172,7 +1172,7 @@ def test_resolve_escalation_rationale_is_optional():
     # Parse without --rationale
     ns = parser.parse_args([
         "resolve-escalation", "--task-id", "TASK-001",
-        "--decision", "approve",
+        "--decision", "continue",
     ])
     assert ns.rationale == ""
 

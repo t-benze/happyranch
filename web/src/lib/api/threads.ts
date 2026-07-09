@@ -81,6 +81,13 @@ export const inviteToThread = (
 ): Promise<{ thread_id: string; agent_name: string; system_message_seq: number }> =>
   request(`/orgs/${slug}/threads/${threadId}/invite`, { method: 'POST', body });
 
+export const removeParticipantFromThread = (
+  slug: string,
+  threadId: string,
+  body: { agent_name: string },
+): Promise<{ thread_id: string; agent_name: string; system_message_seq: number }> =>
+  request(`/orgs/${slug}/threads/${threadId}/remove-participant`, { method: 'POST', body });
+
 export const extendThreadCap = (
   slug: string,
   threadId: string,
