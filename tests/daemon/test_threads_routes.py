@@ -1828,6 +1828,57 @@ def test_remove_participant_writes_audit_row(tmp_home, app, org_state, auth_head
     assert removed_row["payload"].get("removed_by") == "founder"
 
 
+def test_remove_participant_404_missing_thread(tmp_home, app, org_state, auth_headers):
+    """Remove-participant on a non-existent thread returns 404 not_found."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads/THR-NOSUCH/remove-participant",
+        json={"agent_name": "dev_agent"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "not_found"
+
+
+def test_remove_participant_404_unknown_agent(tmp_home, app, org_state, auth_headers):
+    """Remove-participant with a non-existent agent name returns 404 unknown_agent."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/remove-participant",
+        json={"agent_name": "ghost_agent"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "unknown_agent"
+
+
+def test_remove_participant_401_missing_auth(tmp_home, app, org_state, auth_headers):
+    """Remove-participant without bearer token returns 401 (founder-only)."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/remove-participant",
+        json={"agent_name": "dev_agent"},
+    )
+    assert resp.status_code == 401
+
+
 # ---------------------------------------------------------------------------
 # Task 26 — POST /threads/{id}/extend
 # ---------------------------------------------------------------------------
