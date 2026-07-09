@@ -42,6 +42,7 @@ function loadDaemonRoutes(): Set<string> {
 const INCLUDED_PATHS = new Set<string>([
   // health + auth
   'GET /api/v1/health',
+  'GET /api/v1/health/prereqs',
   'GET /api/v1/auth/bootstrap',
   // runtime
   'GET /api/v1/runtime',

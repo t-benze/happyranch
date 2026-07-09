@@ -271,6 +271,19 @@ export interface HealthResponse {
   active_runtime: string | null;
 }
 
+/** Mirror of runtime/daemon/routes/health.py::ExecutorPrereq. */
+export interface ExecutorPrereq {
+  tool: string;
+  present: boolean;
+  path: string | null;
+  hint: string;
+}
+
+/** Mirror of runtime/daemon/routes/health.py::PrereqsResponse. */
+export interface PrereqsResponse {
+  prereqs: ExecutorPrereq[];
+}
+
 // ---------------------------------------------------------------------------
 // System assistant
 // ---------------------------------------------------------------------------
