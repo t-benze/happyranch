@@ -168,6 +168,107 @@ describe('DashboardPage', () => {
     expect(screen.getByText(/Photo licensing unclear/i)).toBeInTheDocument();
   });
 
+  test('header meta drops the $-today spend line (THR-061 slice 1)', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    s.narrative_counts.agents_active_now = 2;
+    s.narrative_counts.spend_today_usd = 42.5;
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    // The agents-active meta still renders...
+    expect(await screen.findByText(/2 agents active/i)).toBeInTheDocument();
+    // ...but spend now lives on the Usage page — no $-today line here.
+    expect(screen.queryByText(/spend ·/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$42\.50 today/i)).not.toBeInTheDocument();
+  });
+
+  test('escalation chip is tinted per-flavor from the real flavor field (THR-061 slice 1)', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    s.narrative_counts.escalated_open = 3;
+    s.escalations = [
+      {
+        task_id: 'TASK-301',
+        agent: 'qa_engineer',
+        team: 'engineering',
+        question: 'Needs a decision',
+        raised_at: '2026-05-30T11:00:00Z',
+        age_seconds: 3600,
+        flavor: 'needs-decision',
+      },
+      {
+        task_id: 'TASK-302',
+        agent: 'dev_agent',
+        team: 'engineering',
+        question: 'Ran out of budget',
+        raised_at: '2026-05-30T11:00:00Z',
+        age_seconds: 3600,
+        flavor: 'over-budget',
+      },
+      {
+        task_id: 'TASK-303',
+        agent: 'dev_agent',
+        team: 'engineering',
+        question: 'Retries exhausted',
+        raised_at: '2026-05-30T11:00:00Z',
+        age_seconds: 3600,
+        flavor: 'exhausted',
+      },
+    ];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const decision = await screen.findByText('needs-decision');
+    expect(decision).toHaveClass('bg-attention-soft', 'text-attention-text');
+    expect(screen.getByText('over-budget')).toHaveClass(
+      'bg-tier-yellow-tint',
+      'text-status-archiving',
+    );
+    expect(screen.getByText('exhausted')).toHaveClass(
+      'bg-tier-red-tint',
+      'text-status-abandoned',
+    );
+  });
+
+  test('a task waiting 24h+ gets a client-derived stale badge (THR-061 slice 1)', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    s.narrative_counts.escalated_open = 2;
+    s.escalations = [
+      {
+        task_id: 'TASK-401',
+        agent: 'qa_engineer',
+        team: 'engineering',
+        question: 'Fresh escalation',
+        raised_at: '2026-05-30T11:00:00Z',
+        age_seconds: 3600, // 1h — not stale
+      },
+      {
+        task_id: 'TASK-402',
+        agent: 'dev_agent',
+        team: 'engineering',
+        question: 'Old escalation',
+        raised_at: '2026-05-29T11:00:00Z',
+        age_seconds: 90_000, // > 24h — stale
+      },
+    ];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    await screen.findByText(/Old escalation/i);
+    // Exactly one stale badge — only the 24h+ row earns it.
+    const badges = screen.getAllByText('stale');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveClass('text-status-escalated');
+  });
+
   test('lays out a main column (queue + activity feed) beside a right rail (secondary cards)', async () => {
     const s = emptySummary();
     s.org_age_days = 14;
