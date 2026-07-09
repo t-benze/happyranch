@@ -1,4 +1,5 @@
 import {
+  Link,
   Navigate,
   Outlet,
   Route,
@@ -26,6 +27,7 @@ import { TasksPage } from '@/features/tasks/TasksPage';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { UsagePage } from '@/features/usage/UsagePage';
 import { HealthPage } from '@/features/health/HealthPage';
+import { OnboardingPage } from '@/features/onboarding/OnboardingPage';
 import { DreamsPage } from '@/features/dreams/DreamsPage';
 import { OverviewPage as WorkHoursOverviewPage } from '@/features/work-hours-config/OverviewPage';
 import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/WakesView';
@@ -44,7 +46,8 @@ function RootRedirect(): JSX.Element {
   if (!first) {
     return (
       <div className="text-fg-muted p-6">
-        No orgs loaded. Run <code className="text-fg">happyranch orgs init &lt;slug&gt;</code> from the CLI.
+        No orgs loaded. Run <code className="text-fg">happyranch orgs init &lt;slug&gt;</code> from the CLI, or{' '}
+        <Link to="/onboarding" className="text-accent hover:underline">get started</Link>.
       </div>
     );
   }
@@ -90,6 +93,10 @@ export function AppRoutes(): JSX.Element {
       {!DESIGN_ROUTE_DISABLED && designRoutes()}
       <Route element={<AppShell />}>
         <Route index element={<RootRedirect />} />
+        {/* Onboarding is GLOBAL (not org-scoped): the Welcome/create/success
+            shell drives the container-level /orgs list + create routes, so a
+            slug is not yet chosen. Mounted in AppShell like the org-less index. */}
+        <Route path="onboarding" element={<OnboardingPage />} />
         <Route path="/orgs/:slug" element={<OrgLayout />}>
           <Route index element={<NavigateToHome />} />
           <Route path="dashboard" element={<DashboardPage />} />
