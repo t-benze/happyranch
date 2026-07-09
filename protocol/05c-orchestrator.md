@@ -417,8 +417,8 @@ exposure directly from disk (no daemon round-trip):
 - `happyranch skills effective --agent <name>` — show effective skills for an
   agent, with provenance (which scope+rule admitted/denied each skill).
 - `happyranch skills policy explain <skill_id> --agent <name>` — explain why
-  a skill is or isn't available, including both gate results, approval
-  records, and eligibility provenance.
+  a skill is or isn't available, including both gate results and
+  eligibility provenance.
 
 Registry and eligibility mutations emit audit rows under the `config:skills`
 scope prefix (matching the established `config:<section>` convention from
@@ -567,8 +567,6 @@ the wholesale ``protocol/skills/`` dump alongside the system contracts.
 - ``id``: ``hr:review``
 - ``policy_class``: ``standard_operational``
 - ``owner``: ``engineering_manager``
-- ``approval_state``: ``approved``
-- ``approved_by``: ``engineering_manager``
 - ``version``: ``1.0.0``
 
 **Eligibility scoping.** ``review`` visibility is scoped to **team managers and
@@ -588,7 +586,7 @@ engineering team.
 **Provenance.** ``skills effective --agent dev_agent`` shows ``review`` with
 ``team(engineering) ALLOW`` eligibility provenance and ``standard_operational``
 policy class. ``skills policy explain hr:review --agent dev_agent`` shows the
-catalog gate (PASS, approval metadata) and eligibility gate (team-scoped allow).
+catalog gate (PASS — present, enabled) and eligibility gate (team-scoped allow).
 
 **Phase-2 additive constraint.** The ``review`` SKILL.md body also remains
 in ``protocol/skills/review/`` so that the existing wholesale-dump path
@@ -621,24 +619,18 @@ configuration (add/remove/update repos).
 - ``hr:manage-agent`` and ``hr:manage-repo``
 - ``policy_class``: ``high_impact_policy``
 - ``owner``: ``engineering_manager``
-- ``approval_state``: ``pending_review`` (UNAPPROVED — fail-closed)
 - ``version``: ``1.0.0``
 
-**Fail-closed on unapproved version.** Both skills are registered but NOT
-exposed because their ``approval_state`` is ``pending_review`` — the catalog
-gate blocks them (founder or designated-owner approval is required for exact-version
-``high_impact_policy`` admission). Recording a ``high_impact_policy`` approval is
-a founder action (maker-checker); it must NOT be self-approved by any agent.
+**Eligibility-scoped exposure.** ``manage-agent`` and ``manage-repo`` visibility
+is governed EXCLUSIVELY by the two-gate model (§4.1): catalog-presence +
+status==enabled + eligibility-matched. There is NO per-version approval gate —
+for first-party skills, the release pipeline (PR review + merge + deploy) IS the
+approval. An eligible manager/operator resolves them as exposed; a non-eligible
+agent does not.
 
-**Version-specific approval required for admission AND every upgrade.**
-Per the founder ruling (THR-055 seq 17, encoded in §4.1 gate logic):
-- Approval of version ``1.0.0`` does not imply approval of version ``1.1.0``.
-- A version bump returns the skill to ``pending_review`` / unavailable until the
-  new version is separately approved.
-- ``draft``, ``pending_review``, ``rejected``, ``deprecated``, or ``disabled``
-  approval_state → fail-closed / not exposed.
-- ``approved_by`` must be ``founder`` or the skill's designated owner
-  (``engineering_manager``); any other approver → fail-closed.
+Any future approval concept (for user-authored or third-party skills) would be a
+PLATFORM-OWNER catalog-admission gate — not a second-stage gate within the
+first-party release pipeline and not a customer-self-serve feature.
 
 **Eligibility scoping.** ``manage-agent`` and ``manage-repo`` visibility is
 scoped to **MANAGER/OPERATOR agents** — NOT org-wide. The default eligibility
@@ -712,10 +704,9 @@ and ``.agents/skills/<id>/``.
 where the agent is eligible ($4.1 two-gate model). System contracts remain
 context-aware ($4.7).
 
-**Fail-closed.** Unapproved, ``pending_review``, rejected, deprecated,
-disabled, or ineligible skills are NOT injected. ``high_impact_policy``
-skills with missing or mismatched ``approved_version`` are NOT injected.
-The catalog gate is independent of the eligibility gate — both must pass.
+**Fail-closed.** Disabled, catalog-absent, or ineligible skills are NOT
+injected. The catalog gate (presence + enabled) is independent of the
+eligibility gate — both must pass.
 
 **Reversible gate.** The wholesale dump is disabled by default
 (``_WHOLESALE_DUMP_ENABLED = False`` in ``workspace_adapters.py``). This
@@ -734,8 +725,8 @@ session context (4) × every repo state (2) = 56 combinations receive the
 complete required set without the wholesale dump. The test asserts:
 - System contracts are context-correct per §4.7 predicates.
 - ``review`` is injected for engineering team + product_lead.
-- ``manage-agent`` / ``manage-repo`` are fail-closed for ALL agents
-  (``pending_review`` → catalog gate blocked).
+- ``manage-agent`` / ``manage-repo`` are exposed to eligible managers/operators
+  only and hidden from non-eligible agents (eligibility gate).
 - ``dream`` is excluded from non-dream contexts.
 - ``make-worktree`` is repo-gated.
 

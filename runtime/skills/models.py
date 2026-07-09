@@ -134,6 +134,3 @@ class GateResult:
 
     passed: bool
     reason: str
-
-
-

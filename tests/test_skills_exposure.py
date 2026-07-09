@@ -536,7 +536,7 @@ class TestManageAgentManageRepoExposure:
         from runtime.skills.models import SkillEntry
         from runtime.skills.registry import SkillRegistry
         from runtime.skills.resolver import EligibilityResolver
-        from runtime.skills.exposure import resolve_exposed_skills
+        from runtime.skills.exposure import catalog_gate, resolve_exposed_skills
 
         # Build a catalog with a disabled manage-agent
         registry = SkillRegistry(skills_root=FIXTURES)
@@ -567,6 +567,13 @@ class TestManageAgentManageRepoExposure:
         exposed_ids = {s.skill.id for s in exposed}
         assert "hr:manage-agent-disabled" not in exposed_ids, (
             "Disabled manage-agent should NOT be exposed even when eligible"
+        )
+
+        # Direct gate check: catalog_gate must reject disabled entries.
+        # If disabled exposure were ever allowed, this assertion goes RED.
+        gate_result = catalog_gate(disabled_entry)
+        assert not gate_result.passed, (
+            f"catalog_gate must reject disabled entry, got: {gate_result}"
         )
 
 
