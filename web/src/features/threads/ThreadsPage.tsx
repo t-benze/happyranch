@@ -44,6 +44,7 @@ import {
 } from '@/hooks/threads';
 import { ArchiveDialog } from './ArchiveDialog';
 import { InviteDialog } from './InviteDialog';
+import { RemoveParticipantDialog } from './RemoveParticipantDialog';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { ResumeButton } from './ResumeButton';
@@ -245,6 +246,8 @@ export function ThreadsPage(): JSX.Element {
   >(undefined);
   const [showInvite, setShowInvite] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
+  // Participant pending removal — drives the confirm dialog; null keeps it closed.
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const openNew = () => {
     setNewPrefill(undefined);
     setShowNew(true);
@@ -471,6 +474,7 @@ export function ThreadsPage(): JSX.Element {
           backHref={routes.inbox()}
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
+          onRemoveParticipant={setRemoveTarget}
           composer={
             <Composer
               agents={agents}
@@ -516,6 +520,12 @@ export function ThreadsPage(): JSX.Element {
             open={showArchive}
             onClose={() => setShowArchive(false)}
           />
+          <RemoveParticipantDialog
+            threadId={threadId}
+            agentName={removeTarget}
+            open={removeTarget !== null}
+            onClose={() => setRemoveTarget(null)}
+          />
 
         </>
       )}
@@ -549,6 +559,8 @@ interface DetailColumnProps {
   backHref: string;
   onInvite: () => void;
   onArchive: () => void;
+  /** Open the confirm-remove dialog for the given participant. */
+  onRemoveParticipant: (name: string) => void;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -564,6 +576,7 @@ function DetailColumn({
   backHref,
   onInvite,
   onArchive,
+  onRemoveParticipant,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -690,8 +703,19 @@ function DetailColumn({
             {thread.participants.length > 0 ? (
               <ul className="space-y-1">
                 {thread.participants.map((p) => (
-                  <li key={p}>
+                  <li key={p} className="group flex items-center justify-between gap-2">
                     <AgentChip name={p} role={participantChipRole(p)} />
+                    {open && (
+                      <button
+                        type="button"
+                        aria-label={`Remove ${p}`}
+                        title={`Remove ${p}`}
+                        onClick={() => onRemoveParticipant(p)}
+                        className="text-text-muted hover:text-feedback-danger shrink-0 rounded px-1 text-xs leading-none opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -951,6 +975,8 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
       return `invited ${payload.agent}`;
     case 'participant_added':
       return `added ${payload.agent_name}`;
+    case 'participant_removed':
+      return `removed ${payload.agent_name}`;
     case 'archive_requested':
       return 'archive requested';
     case 'archived':
