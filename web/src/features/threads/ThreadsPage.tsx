@@ -24,6 +24,7 @@ import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
+import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
 import type { ThreadAttachment, ThreadAttachmentRef, ThreadMessage } from '@/lib/api/types';
@@ -733,12 +734,15 @@ function DetailColumn({
             ) : threadTasks.isError ? (
               <p className="text-feedback-danger text-xs">Couldn’t load tasks</p>
             ) : threadTasks.data && threadTasks.data.length > 0 ? (
-              // Founder feedback (THR-061 msg51): the 3-line-per-entry render was
-              // too dense — "a list of task id is enough". Render each task as a
-              // single compact line: the id linked to its task-detail page.
-              <ul className="space-y-1">
+              // Founder ruling (THR-061 seq79): the thread-tasks rail shows
+              // STATUS-PILL + ID — overriding the earlier msg51 id-only note.
+              // Two elements only (real t.status + linked id); no invented
+              // fields (honesty fence). Pill + id wrap so the narrow rail never
+              // overflows on long status labels.
+              <ul className="space-y-1.5">
                 {threadTasks.data.map((t) => (
-                  <li key={t.id}>
+                  <li key={t.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <StatusBadge status={t.status} />
                     {slug ? (
                       <Link
                         to={`/orgs/${slug}/tasks/${t.id}`}

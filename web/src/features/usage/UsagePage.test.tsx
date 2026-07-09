@@ -1,11 +1,11 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Mock the spend hooks so the page renders deterministically
-vi.mock('@/hooks/spend', () => ({
-  useSpendByAgent: vi.fn(),
-  useSpendByThread: vi.fn(),
-  useSpendByModel: vi.fn(),
+// Mock the usage hooks so the page renders deterministically
+vi.mock('@/hooks/usage', () => ({
+  useUsageByAgent: vi.fn(),
+  useUsageByThread: vi.fn(),
+  useUsageByModel: vi.fn(),
 }));
 
 // Mock the agents roster hook — SPEND-03 joins per-agent burn to each agent's
@@ -14,17 +14,17 @@ vi.mock('@/hooks/agents', () => ({
   useAgentsList: vi.fn(),
 }));
 
-import { useSpendByAgent, useSpendByThread, useSpendByModel } from '@/hooks/spend';
+import { useUsageByAgent, useUsageByThread, useUsageByModel } from '@/hooks/usage';
 import { useAgentsList } from '@/hooks/agents';
-import { SpendPage, fmtDateRange } from './SpendPage';
+import { UsagePage, fmtDateRange } from './UsagePage';
 
 // Stub URL.createObjectURL for CSV export tests
 const createObjectURL = vi.fn(() => 'blob:stub');
 URL.createObjectURL = createObjectURL;
 
-const mockAgentQ = vi.mocked(useSpendByAgent);
-const mockThreadQ = vi.mocked(useSpendByThread);
-const mockModelQ = vi.mocked(useSpendByModel);
+const mockAgentQ = vi.mocked(useUsageByAgent);
+const mockThreadQ = vi.mocked(useUsageByThread);
+const mockModelQ = vi.mocked(useUsageByModel);
 const mockAgentsList = vi.mocked(useAgentsList);
 
 function loaded<T>(data: T) {
@@ -45,7 +45,7 @@ function agentsLoaded(agents: { name: string; team: string | null }[]) {
   return loaded({ agents });
 }
 
-describe('SpendPage', () => {
+describe('UsagePage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Default: empty roster so the by-team card folds every burning agent into
@@ -64,9 +64,9 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
-    expect(screen.getByText('Spend')).toBeDefined();
+    expect(screen.getByText('Usage')).toBeDefined();
     expect(screen.getByText('Token usage and cache savings')).toBeDefined();
     expect(screen.getByRole('button', { name: '24h' })).toBeDefined();
     expect(screen.getByRole('button', { name: '7d' })).toBeDefined();
@@ -81,21 +81,21 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loading());
     mockModelQ.mockReturnValue(loading());
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // Loading state: the hero card should show the animate-pulse skeleton
     const skeletons = document.querySelectorAll('.animate-pulse');
     expect(skeletons.length).toBeGreaterThan(0);
   });
 
-  it('shows empty state when no token spend data', () => {
+  it('shows empty state when no token usage data', () => {
     mockAgentQ.mockReturnValue(loaded([]));
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
-    const empties = screen.getAllByText('No token spend in this window');
+    const empties = screen.getAllByText('No token usage in this window');
     expect(empties.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('$0.00 · not metered')).toBeDefined();
     // Pasture: hero empty state uses font-display
@@ -108,9 +108,9 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
-    expect(screen.getByText(/Couldn't load spend data/)).toBeDefined();
+    expect(screen.getByText(/Couldn't load usage data/)).toBeDefined();
   });
 
   it('renders hero totals from agent rollup', () => {
@@ -131,7 +131,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // Hero should show total churn = 1600
     const churns = screen.getAllByText('1.6K');
@@ -178,7 +178,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // Agent names in the breakdown table
     expect(screen.getByText('dev_agent')).toBeDefined();
@@ -212,7 +212,7 @@ describe('SpendPage', () => {
     );
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     expect(screen.getByText('Top threads by burn')).toBeDefined();
     expect(screen.getByText('THR-001')).toBeDefined();
@@ -243,7 +243,7 @@ describe('SpendPage', () => {
     );
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     expect(screen.getByText('(mixed)')).toBeDefined();
   });
@@ -268,7 +268,7 @@ describe('SpendPage', () => {
     );
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     expect(screen.getByText('(cli-unreported)')).toBeDefined();
   });
@@ -294,7 +294,7 @@ describe('SpendPage', () => {
     );
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     expect(screen.getByText('(unknown — pre-fix)')).toBeDefined();
   });
@@ -320,7 +320,7 @@ describe('SpendPage', () => {
     );
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     expect(screen.getByText('(unknown — ANOMALY)')).toBeDefined();
   });
@@ -332,7 +332,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     const btns = screen.getAllByRole('button', { name: /24h|7d|30d/ });
     expect(btns.length).toBe(3);
@@ -355,7 +355,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     const btns = screen.getAllByRole('button', { name: /24h|7d|30d/ });
 
@@ -392,7 +392,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     expect(screen.getByText('Export')).toBeDefined();
   });
@@ -402,7 +402,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // Export button should not be present when there's nothing to export
     expect(screen.queryByText('Export')).toBeNull();
@@ -436,7 +436,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     const exportBtn = screen.getByText('Export');
     expect(exportBtn).toBeDefined();
@@ -487,7 +487,7 @@ describe('SpendPage', () => {
     );
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // Switch to thread segment
     const threadBtn = screen.getByRole('button', { name: 'Thread' });
@@ -526,7 +526,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // Pasture: "Fresh" section, "From cache" section, "Detail" section
     expect(screen.getByText('Fresh')).toBeDefined();
@@ -541,7 +541,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     const h2 = screen.getByText('Where it went');
     expect(h2).toBeDefined();
@@ -555,7 +555,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     const btns = screen.getAllByRole('button', { name: /^(Agent|Thread|Model)$/ });
     expect(btns.length).toBe(3);
@@ -589,7 +589,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // N saved = total cache_read_tokens (fmtNum -> "2.0K"); % uses the SAME
     // denominator as the hero "of all reads" stat: cache / (fresh + cache).
@@ -619,7 +619,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // Honest zero — not a hidden element.
     expect(
@@ -648,26 +648,26 @@ describe('SpendPage', () => {
     // ghost_agent intentionally absent → unattributed
   ];
 
-  function renderSpend03(): HTMLElement {
+  function renderUsage03(): HTMLElement {
     mockAgentQ.mockReturnValue(loaded(SPEND03_AGENT_ROLLUP));
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
     mockAgentsList.mockReturnValue(
       agentsLoaded(SPEND03_ROSTER) as ReturnType<typeof useAgentsList>,
     );
-    render(<SpendPage />);
+    render(<UsagePage />);
     return screen.getByText('By team').closest('div') as HTMLElement;
   }
 
   it('renders a by-team card whose rows derive teams from the live roster', () => {
-    const card = renderSpend03();
+    const card = renderUsage03();
     // Teams come from the data, never fabricated.
     expect(within(card).getByText('engineering')).toBeDefined();
     expect(within(card).getByText('consultant')).toBeDefined();
   });
 
   it('each team total equals the summed burn of that team\'s agents', () => {
-    const card = renderSpend03();
+    const card = renderUsage03();
     // engineering = dev_agent 1600 + code_reviewer 400 = 2000
     expect(within(card).getByText('2,000')).toBeDefined();
     // consultant = consultant_a 300
@@ -675,14 +675,14 @@ describe('SpendPage', () => {
   });
 
   it('folds roster-less agents into an honest unattributed bucket', () => {
-    const card = renderSpend03();
+    const card = renderUsage03();
     // ghost_agent (absent from roster) → unattributed = 50
     expect(within(card).getByText('unattributed')).toBeDefined();
     expect(within(card).getByText('50')).toBeDefined();
   });
 
   it('renders a colored design-system dot per team row, distinct across teams', () => {
-    const card = renderSpend03();
+    const card = renderUsage03();
     const dotFor = (label: string): HTMLElement => {
       const row = within(card).getByText(label).closest('li') as HTMLElement;
       const dot = row.querySelector('span[aria-hidden="true"]') as HTMLElement;
@@ -704,7 +704,7 @@ describe('SpendPage', () => {
   });
 
   it('keeps the by-agent breakdown table alongside the new by-team card', () => {
-    renderSpend03();
+    renderUsage03();
     // The existing by-agent table is untouched: agent rows still render.
     expect(screen.getByText('dev_agent')).toBeDefined();
     expect(screen.getByText('code_reviewer')).toBeDefined();
@@ -716,13 +716,13 @@ describe('SpendPage', () => {
     mockAgentQ.mockReturnValue(loaded([]));
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
-    render(<SpendPage />);
+    render(<UsagePage />);
     const card = screen.getByText('By team').closest('div') as HTMLElement;
-    expect(within(card).getByText('No token spend in this window')).toBeDefined();
+    expect(within(card).getByText('No token usage in this window')).toBeDefined();
   });
 
   it('shows the honest by-team error state — not an all-unattributed table — when the roster request fails', () => {
-    // Roster (agents-list) request FAILS while the spend rollup SUCCEEDS with
+    // Roster (agents-list) request FAILS while the usage rollup SUCCEEDS with
     // non-empty burn. An unavailable roster must NOT be treated as proof that
     // no agents have teams: the by-team card must NOT silently fold every
     // burning agent into the 'unattributed' bucket (which fabricates a
@@ -732,15 +732,15 @@ describe('SpendPage', () => {
     mockModelQ.mockReturnValue(loaded([]));
     mockAgentsList.mockReturnValue(errored() as ReturnType<typeof useAgentsList>);
 
-    render(<SpendPage />);
+    render(<UsagePage />);
     const card = screen.getByText('By team').closest('div') as HTMLElement;
 
     // No fabricated 'unattributed' bucket from joining against the empty []
     // roster fallback when the roster itself failed.
     expect(within(card).queryByText('unattributed')).toBeNull();
-    // Honest error/unavailable state instead — mirrors the spend-rollup case.
+    // Honest error/unavailable state instead — mirrors the usage-rollup case.
     expect(
-      within(card).getByText("Couldn't load spend by team — retry"),
+      within(card).getByText("Couldn't load usage by team — retry"),
     ).toBeDefined();
   });
 
@@ -780,7 +780,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // Eyebrow keeps 'Token burn · {windowLabel}' and appends the honest range.
     expect(screen.getByText('Token burn · 7d · Jun 17–24')).toBeDefined();
@@ -793,7 +793,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     expect(screen.getByText('Token burn · 7d · Jun 17–24')).toBeDefined();
   });
@@ -821,7 +821,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // The breakdown row (default 'agent' segment) carries the observed model as
     // a small rounded pill — threadRollup is empty so this is the only source.
@@ -850,7 +850,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     const pill = screen.getByText('(mixed)');
     expect(pill.className).toContain('rounded-full');
@@ -879,7 +879,7 @@ describe('SpendPage', () => {
     mockThreadQ.mockReturnValue(loaded([]));
     mockModelQ.mockReturnValue(loaded([]));
 
-    render(<SpendPage />);
+    render(<UsagePage />);
 
     // Row still renders (agent label present) but no fabricated model pill.
     expect(screen.getByText('dev_agent')).toBeDefined();

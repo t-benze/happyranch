@@ -178,6 +178,14 @@
         ]
       }
     },
+    "/api/v1/health/prereqs": {
+      "GET": {
+        "params": [],
+        "responses": [
+          "200"
+        ]
+      }
+    },
     "/api/v1/metrics": {
       "GET": {
         "params": [

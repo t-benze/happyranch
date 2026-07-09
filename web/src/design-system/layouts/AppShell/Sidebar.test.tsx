@@ -104,7 +104,7 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       // Operate group label
       expect(screen.getByText('Operate')).toBeInTheDocument();
       // Operate nav items
-      expect(screen.getByText('Spend')).toBeInTheDocument();
+      expect(screen.getByText('Usage')).toBeInTheDocument();
       expect(screen.getByText('Dreams')).toBeInTheDocument();
       expect(screen.getByText('Work Hours')).toBeInTheDocument();
       expect(screen.getByText('Audit')).toBeInTheDocument();
@@ -252,7 +252,7 @@ describe('THR-046: nav count badges removed — no badge rendered anywhere', () 
       expect(aside.getByText('Knowledge').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/kb`);
       expect(aside.getByText('Artifacts').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/artifacts`);
       // Operate group
-      expect(aside.getByText('Spend').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/spend`);
+      expect(aside.getByText('Usage').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/usage`);
       expect(aside.getByText('Dreams').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dreams`);
       expect(aside.getByText('Work Hours').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/work-hours`);
       expect(aside.getByText('Audit').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/audit`);
@@ -346,10 +346,10 @@ describe('IA-10: Nav grouping (Primary / Operate)', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      const spendLink = screen.getByText('Spend');
+      const usageLink = screen.getByText('Usage');
       const dreamsLink = screen.getByText('Dreams');
       const workHoursLink = screen.getByText('Work Hours');
-      expect(spendLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/spend`);
+      expect(usageLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/usage`);
       expect(dreamsLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dreams`);
       expect(workHoursLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/work-hours`);
     });
@@ -357,9 +357,25 @@ describe('IA-10: Nav grouping (Primary / Operate)', () => {
 });
 
 describe('Operate surfaces', () => {
-  test('renders Spend surface', async () => {
+  test('renders Usage surface', async () => {
     seedSidebarShell();
-    // Seed token endpoints so SpendPage doesn't error
+    // Seed token endpoints so UsagePage doesn't error
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tokens`, ({ request }) => {
+        const url = new URL(request.url);
+        const groupBy = url.searchParams.get('group_by');
+        return HttpResponse.json({ rollup: groupBy === 'model' ? [] : [] });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/usage` });
+    await waitFor(() => {
+      expect(screen.getByText(/Token usage and cache savings/i)).toBeInTheDocument();
+    });
+  });
+
+  test('legacy /spend redirects to the Usage surface (THR-061 seq79)', async () => {
+    seedSidebarShell();
+    // Seed token endpoints so UsagePage doesn't error
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/tokens`, ({ request }) => {
         const url = new URL(request.url);

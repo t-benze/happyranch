@@ -1,8 +1,9 @@
 /**
  * Tasks list — Direction-A Pasture, roots-only dense list.
  *
- * Group by Status / Agent / Thread. Each group renders as a rounded bordered
- * Pasture card with serif section headings. Resolved groups are visually dimmed.
+ * Group by Status / Agent / Thread. Each group renders a lightweight sans
+ * label (dot + name + count) above a rounded bordered Pasture rows-card
+ * (a-tasks mockup). Resolved groups are visually dimmed.
  * Status pills follow ds.css .tag (rounded-pill, led dot).
  *
  * Per founder ruling: NO in-list 'show subtasks' toggle. The list is
@@ -76,9 +77,10 @@ function groupDot(key: string, by: GroupBy): GroupDot {
 }
 
 /**
- * Pasture group section heading — serif display, muted for resolved groups.
- * Carries a colored status dot and a count badge (TASKS-04). Both are pure
- * client-side derivations of the already-loaded roots payload.
+ * Pasture group section label (a-tasks mockup .grp-head) — a lightweight
+ * sans heading that sits ABOVE its rows-card: colored status dot + name +
+ * a plain muted count (TASKS-04). Both derivations are pure client-side reads
+ * of the already-loaded roots payload — no fetch, no fabrication.
  */
 function GroupHeading({
   label,
@@ -92,19 +94,19 @@ function GroupHeading({
   dimmed?: boolean;
 }): JSX.Element {
   return (
-    <h2
-      className={`font-display flex items-center gap-2 text-lg font-medium ${
-        dimmed ? 'text-text-muted' : 'text-text-primary'
-      }`}
-    >
+    <h2 className="mb-2 flex items-center gap-2 px-0.5">
       <span
         aria-hidden
         className={`inline-block h-2 w-2 shrink-0 rounded-full bg-current ${DOT_COLOR[dot]}`}
       />
-      <span>{label}</span>
-      <span className="bg-surface-sunken text-text-muted rounded-full px-1.5 py-0.5 text-xs font-medium tabular-nums">
-        {count}
+      <span
+        className={`text-sm font-semibold tracking-tight ${
+          dimmed ? 'text-text-muted' : 'text-text-primary'
+        }`}
+      >
+        {label}
       </span>
+      <span className="text-text-muted text-xs tabular-nums">{count}</span>
     </h2>
   );
 }
@@ -288,37 +290,32 @@ export function TasksPage(): JSX.Element {
         ) : allTasks.length === 0 ? (
           <EmptyState title="No tasks" body="No tasks match the current filters." />
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-6">
             <TaskListColumnHeader />
             {groups.map(([key, tasks]) => {
               const dimmed = isResolvedGroup(key, groupBy);
               return (
-                <section
-                  key={key}
-                  className={`border-border-default bg-surface-page rounded-xl border ${
-                    dimmed ? 'opacity-60' : ''
-                  }`}
-                >
-                  <div className="border-border-default border-b px-3 py-2.5">
-                    <GroupHeading
-                      label={groupLabel(key, groupBy)}
-                      count={tasks.length}
-                      dot={groupDot(key, groupBy)}
-                      dimmed={dimmed}
-                    />
-                  </div>
-                  <ul>
-                    {tasks.map((t) => (
-                      <li key={t.task_id}>
-                        <TaskListRow
-                          task={t}
-                          to={routes.detail(t.task_id)}
-                          taskRoutes={routes}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                </section>
+                <div key={key} className={dimmed ? 'opacity-60' : ''}>
+                  <GroupHeading
+                    label={groupLabel(key, groupBy)}
+                    count={tasks.length}
+                    dot={groupDot(key, groupBy)}
+                    dimmed={dimmed}
+                  />
+                  <section className="border-border-default bg-surface-page rounded-xl border">
+                    <ul>
+                      {tasks.map((t) => (
+                        <li key={t.task_id}>
+                          <TaskListRow
+                            task={t}
+                            to={routes.detail(t.task_id)}
+                            taskRoutes={routes}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                </div>
               );
             })}
             <div ref={sentinelRef} aria-hidden className="h-1" />

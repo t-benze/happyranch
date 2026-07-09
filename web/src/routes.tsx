@@ -1,4 +1,5 @@
 import {
+  Link,
   Navigate,
   Outlet,
   Route,
@@ -24,7 +25,9 @@ import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
-import { SpendPage } from '@/features/spend/SpendPage';
+import { UsagePage } from '@/features/usage/UsagePage';
+import { HealthPage } from '@/features/health/HealthPage';
+import { OnboardingPage } from '@/features/onboarding/OnboardingPage';
 import { DreamsPage } from '@/features/dreams/DreamsPage';
 import { OverviewPage as WorkHoursOverviewPage } from '@/features/work-hours-config/OverviewPage';
 import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/WakesView';
@@ -43,7 +46,8 @@ function RootRedirect(): JSX.Element {
   if (!first) {
     return (
       <div className="text-fg-muted p-6">
-        No orgs loaded. Run <code className="text-fg">happyranch orgs init &lt;slug&gt;</code> from the CLI.
+        No orgs loaded. Run <code className="text-fg">happyranch orgs init &lt;slug&gt;</code> from the CLI, or{' '}
+        <Link to="/onboarding" className="text-accent hover:underline">get started</Link>.
       </div>
     );
   }
@@ -89,6 +93,10 @@ export function AppRoutes(): JSX.Element {
       {!DESIGN_ROUTE_DISABLED && designRoutes()}
       <Route element={<AppShell />}>
         <Route index element={<RootRedirect />} />
+        {/* Onboarding is GLOBAL (not org-scoped): the Welcome/create/success
+            shell drives the container-level /orgs list + create routes, so a
+            slug is not yet chosen. Mounted in AppShell like the org-less index. */}
+        <Route path="onboarding" element={<OnboardingPage />} />
         <Route path="/orgs/:slug" element={<OrgLayout />}>
           <Route index element={<NavigateToHome />} />
           <Route path="dashboard" element={<DashboardPage />} />
@@ -104,7 +112,11 @@ export function AppRoutes(): JSX.Element {
           <Route path="agents/:agent_name" element={<AgentsPage />} />
           <Route path="jobs" element={<JobsPage />} />
           <Route path="jobs/:job_id" element={<JobDetailPage />} />
-          <Route path="spend" element={<SpendPage />} />
+          <Route path="health" element={<HealthPage />} />
+          <Route path="usage" element={<UsagePage />} />
+          {/* THR-061 seq79: Spend renamed to Usage. Keep the old /spend
+              bookmark (and the dashboard deep-link) working via redirect. */}
+          <Route path="spend" element={<SpendRedirect />} />
           <Route path="dreams" element={<DreamsPage />} />
           {/* THR-035: the standalone Schedule surface folded into Work Hours.
               Old bookmarks redirect to the Wakes view; the wake list now lives
@@ -146,6 +158,13 @@ function WorkHoursSurface(): JSX.Element {
 function ScheduleRedirect(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   return <Navigate to={`/orgs/${slug}/work-hours?view=wakes`} replace />;
+}
+
+/** THR-061 seq79: /spend was renamed to /usage. Redirect the old path so
+ *  existing bookmarks and the dashboard "This week's burn" deep-link resolve. */
+function SpendRedirect(): JSX.Element {
+  const { slug } = useParams<{ slug: string }>();
+  return <Navigate to={`/orgs/${slug}/usage`} replace />;
 }
 
 function NotFound(): JSX.Element {

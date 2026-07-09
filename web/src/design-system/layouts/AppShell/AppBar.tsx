@@ -22,16 +22,20 @@ const SECTION_TITLES: Record<string, string> = {
   agents: 'Agents',
   kb: 'Knowledge',
   artifacts: 'Artifacts',
-  spend: 'Spend',
+  usage: 'Usage',
   dreams: 'Dreams',
   'work-hours': 'Work Hours',
   audit: 'Audit',
   settings: 'Settings',
   jobs: 'Jobs',
+  health: 'Runtime Health',
   assistant: 'Assistant',
 };
 
 function pageTitleFromPath(pathname: string): string {
+  // Onboarding is a global (non-org-scoped) surface, so it isn't in the
+  // /orgs/:slug/:section map above.
+  if (pathname.startsWith('/onboarding')) return 'Get started';
   const match = pathname.match(/^\/orgs\/[^/]+\/([^/]+)/);
   const section = match?.[1];
   return (section && SECTION_TITLES[section]) || 'Home';

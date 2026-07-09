@@ -3,6 +3,7 @@
   "timestamp": "2026-07-07T20:21+08:00",
   "included": [
     "GET /api/v1/health",
+    "GET /api/v1/health/prereqs",
     "GET /api/v1/auth/bootstrap",
     "GET /api/v1/runtime",
     "POST /api/v1/runtime",

@@ -1244,13 +1244,14 @@ describe('ThreadsPage — retry invalidates correct query keys', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  'Tasks from this thread' rail panel (THR-061 msg51)                */
-/*  Founder feedback: the 3-line-per-entry render was too dense —      */
-/*  each row is now a single line: just the task id, linked to its     */
-/*  task-detail page. Brief/title and agent-name lines were removed.   */
+/*  'Tasks from this thread' rail panel (THR-061 seq79)                */
+/*  Founder ruling seq79: the rail shows STATUS-PILL + ID — overriding */
+/*  the earlier msg51 id-only note. Two elements per row (real status  */
+/*  + linked id); the dropped brief/title and agent-name lines stay    */
+/*  gone (honesty fence — no invented fields).                         */
 /* ------------------------------------------------------------------ */
-describe('ThreadsPage — Tasks from this thread panel (THR-061 msg51)', () => {
-  test('renders each task as an id-only link and omits brief + agent', async () => {
+describe('ThreadsPage — Tasks from this thread panel (THR-061 seq79)', () => {
+  test('renders each task as a status-pill + id link, omitting brief + agent', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     setupThreadWithMessages('THR-070', [mkMessage(1, 'founder', 'message', 'Hi')]);
     server.use(
@@ -1282,6 +1283,23 @@ describe('ThreadsPage — Tasks from this thread panel (THR-061 msg51)', () => {
     expect(link901).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-901`);
     const link900 = await screen.findByRole('link', { name: 'TASK-900' });
     expect(link900).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-900`);
+
+    // seq79: each row now carries the task's REAL status as a pill alongside
+    // the id (in_progress / completed here come straight from the payload),
+    // and the pill must render BEFORE the id within the row (STATUS-PILL + ID).
+    const row901 = link901.closest('li') as HTMLElement;
+    const pill901 = within(row901).getByText('in_progress');
+    expect(
+      pill901.compareDocumentPosition(link901) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const row900 = link900.closest('li') as HTMLElement;
+    const pill900 = within(row900).getByText('completed');
+    expect(
+      pill900.compareDocumentPosition(link900) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
 
     // The removed brief/title and agent-name lines must NOT appear.
     expect(

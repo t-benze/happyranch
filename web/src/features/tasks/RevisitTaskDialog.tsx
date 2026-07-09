@@ -35,7 +35,7 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
     }
     try {
       const out = await revisit.mutateAsync({
-        note: note || undefined,
+        founder_note: note || undefined,
         session_timeout_seconds: sst ? Number(sst) : undefined,
       });
       if (out.task_id) navigate(routes.detail(out.task_id));

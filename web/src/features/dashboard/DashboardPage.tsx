@@ -199,10 +199,6 @@ export function DashboardPage(): JSX.Element {
           <span>Day {s.org_age_days}</span>
           <span className="grow" />
           <span>{s.narrative_counts.agents_active_now} agents active</span>
-          <span>·</span>
-          <span>
-            spend · ${s.narrative_counts.spend_today_usd.toFixed(2)} today
-          </span>
         </div>
 
         {/* Direction-A a-dashboard layout: a wide MAIN column (Waiting-on-you
@@ -364,7 +360,7 @@ export function DashboardPage(): JSX.Element {
               {slug ? (
                 <Link
                   to={`/orgs/${slug}/spend`}
-                  aria-label="View token spend on the Spend page"
+                  aria-label="View token spend on the Usage page"
                   className="group flex items-end justify-between"
                 >
                   <div>

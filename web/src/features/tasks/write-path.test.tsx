@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
@@ -22,6 +22,8 @@ const TASK = {
   cancelled_at: null,
   session_timeout_seconds: null,
 };
+
+const ESCALATED_TASK = { ...TASK, status: 'escalated', block_kind: null };
 
 function stubBaseHandlers() {
   server.use(
@@ -58,7 +60,40 @@ function stubBaseHandlers() {
   );
 }
 
-const ESCALATED_TASK = { ...TASK, status: 'escalated', block_kind: null };
+/** Stub all read handlers for a task with the given status. */
+function stubTaskReadHandlers(task: typeof TASK) {
+  server.use(
+    http.get('/api/v1/orgs', () =>
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      HttpResponse.json({ tasks: [task] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
+      HttpResponse.json({
+        task,
+        results: [],
+        audit_log: [],
+        revisit_chain: [],
+        direct_revisits: [],
+        predecessor_prior_status: null,
+      }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
+      HttpResponse.json({
+        task_id: TASK.task_id,
+        assigned_agent: 'content_writer',
+        brief: TASK.brief,
+        status: task.status,
+        output_summary: null,
+        children: [],
+      }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/events`, () =>
+      HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+    ),
+  );
+}
 
 // Mirrors stubBaseHandlers but serves the task in the `escalated` status so the
 // TaskDetailPage renders the escalation action set (Continue + Cancel).
@@ -166,6 +201,13 @@ describe('Tasks write path', () => {
     expect(cancelBody).toEqual({ rationale: '' });
   });
 
+  // ── escalation resolution tests ──
+  // THR-061 reconciliation honesty-fence: feat's pre-THR-075 test
+  //   `resolves escalation with blank rationale`
+  // was INTENTIONALLY dropped (not lost). main's THR-075 (#334) replaced
+  // escalation Approve/Reject with Continue (REQUIRED rationale) / Cancel,
+  // removing the blank-rationale Resolve path entirely. The tests below
+  // adopt main's superseding Continue/Cancel coverage.
   test('escalated task detail shows only Continue + Cancel (no Resolve…/Revisit)', async () => {
     // THR-069 msg74: the escalated action set is exactly Continue + Cancel.
     sessionStorage.setItem('happyranch.token', 'tok');
@@ -295,5 +337,132 @@ describe('Tasks write path', () => {
     });
 
     expect(resolveBody).toEqual({ decision: 'continue', rationale: 'go ahead' });
+  });
+
+  test('revisits a failed task with a note', async () => {
+    // THR-061 G3: revisit write-path — spawns a new root inheriting the brief.
+    const NEW_ROOT_ID = 'TASK-0099';
+    const failedTask = { ...TASK, status: 'failed', block_kind: null };
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubTaskReadHandlers(failedTask);
+
+    let revisitBody: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/revisit`, async ({ request }) => {
+        revisitBody = await request.json();
+        return HttpResponse.json({
+          new_root_task_id: NEW_ROOT_ID,
+          predecessor_root_task_id: TASK.task_id,
+          flagged_task_id: TASK.task_id,
+          cascade: [TASK.task_id],
+          predecessor_status: 'failed',
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+
+    // Wait for the "Revisit" button on the failed task detail
+    await screen.findByRole('button', { name: /^Revisit$/ });
+    await user.click(screen.getByRole('button', { name: /^Revisit$/ }));
+
+    // The RevisitTaskDialog is open. Fill in a note.
+    await user.type(
+      screen.getByPlaceholderText(/Note for the new root/),
+      'Retry with updated brief.',
+    );
+
+    // Submit via the dialog's own "Revisit" button
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: /^Revisit$/ }));
+
+    // Dialog should close after successful mutation
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: /Revisit task/ })).toBeNull();
+    });
+
+    expect(revisitBody).toEqual({
+      founder_note: 'Retry with updated brief.',
+      session_timeout_seconds: undefined,
+    });
+  });
+
+  test('revisits a failed task without a note', async () => {
+    // THR-061 G3: revisit with blank note is allowed (like resolve-escalation blank rationale).
+    const NEW_ROOT_ID = 'TASK-0100';
+    const failedTask = { ...TASK, status: 'failed', block_kind: null };
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubTaskReadHandlers(failedTask);
+
+    let revisitBody: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/revisit`, async ({ request }) => {
+        revisitBody = await request.json();
+        return HttpResponse.json({
+          new_root_task_id: NEW_ROOT_ID,
+          predecessor_root_task_id: TASK.task_id,
+          flagged_task_id: TASK.task_id,
+          cascade: [TASK.task_id],
+          predecessor_status: 'failed',
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+
+    await screen.findByRole('button', { name: /^Revisit$/ });
+    await user.click(screen.getByRole('button', { name: /^Revisit$/ }));
+
+    // Submit without typing anything — use the dialog's button, not the header's
+    const dialog1 = screen.getByRole('dialog');
+    await user.click(within(dialog1).getByRole('button', { name: /^Revisit$/ }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: /Revisit task/ })).toBeNull();
+    });
+
+    expect(revisitBody).toEqual({
+      founder_note: undefined,
+      session_timeout_seconds: undefined,
+    });
+  });
+
+  test('revisit shows error on backend rejection', async () => {
+    // THR-061 G3: when backend rejects with 409 (non-revisitable state),
+    // the dialog shows the error instead of closing.
+    const failedTask = { ...TASK, status: 'failed', block_kind: null };
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubTaskReadHandlers(failedTask);
+
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/revisit`, () =>
+        HttpResponse.json(
+          { detail: { code: 'cannot_revisit', reason: 'predecessor TASK-0091 is in_progress' } },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+
+    await screen.findByRole('button', { name: /^Revisit$/ });
+    await user.click(screen.getByRole('button', { name: /^Revisit$/ }));
+
+    // Submit — backend rejects (use dialog-scoped button)
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: /^Revisit$/ }));
+
+    // Dialog stays open showing the error (human-readable string from TASKS_ERROR_STRINGS)
+    await screen.findByText(/This task cannot be revisited/);
+    expect(screen.getByRole('dialog')).toBeTruthy();
   });
 });

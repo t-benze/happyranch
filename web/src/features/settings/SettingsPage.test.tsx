@@ -101,7 +101,8 @@ describe('SettingsPage — sub-nav and routing', () => {
     expect(within(content).getByText('Organization')).toBeInTheDocument();
     expect(within(content).getByText('Agents')).toBeInTheDocument();
     expect(within(content).getByText('Executors')).toBeInTheDocument();
-    expect(within(content).getByText('Usage')).toBeInTheDocument();
+    // THR-061 seq79: the Usage sub-tab was removed (Usage now lives on /usage).
+    expect(within(content).queryByText('Usage')).not.toBeInTheDocument();
   });
 
   test('SET-03: each sub-nav item renders a leading icon', async () => {
@@ -120,7 +121,6 @@ describe('SettingsPage — sub-nav and routing', () => {
       'Organization',
       'Agents',
       'Executors',
-      'Usage',
     ]) {
       const link = within(subnav).getByRole('link', { name: label });
       // Each sub-nav link carries a leading (decorative) icon SVG.
@@ -775,133 +775,6 @@ describe('SettingsPage — Executors section', () => {
     expect(screen.getByTestId('registration-error').textContent).toContain(
       'required',
     );
-  });
-});
-
-describe('SettingsPage — Usage section', () => {
-  beforeEach(() => {
-    stubBaseHandlers();
-  });
-
-  test('renders Usage (NOT Billing) with token data', async () => {
-    mountAt(`/orgs/${SLUG}/settings/usage`);
-
-    await waitFor(() =>
-      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
-    );
-    const content = screen.getByTestId('settings-content');
-
-    expect(within(content).getByText('Token consumption across the org.')).toBeInTheDocument();
-
-    // Must NOT say "Billing"
-    expect(within(content).queryByText('Billing')).not.toBeInTheDocument();
-
-    // Shows token data
-    await waitFor(() =>
-      expect(within(content).getByText('15.0K')).toBeInTheDocument(),
-    );
-    expect(within(content).getByText('5.0K')).toBeInTheDocument();
-  });
-
-  test('shows stat cards for total tokens, cache reads, sessions, agents', async () => {
-    mountAt(`/orgs/${SLUG}/settings/usage`);
-
-    await waitFor(() =>
-      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
-    );
-    const content = screen.getByTestId('settings-content');
-
-    // Wait for loading to finish and data to appear
-    await waitFor(() =>
-      expect(within(content).getByText('Total Tokens')).toBeInTheDocument(),
-    );
-    expect(within(content).getByText('Cache Reads')).toBeInTheDocument();
-    expect(within(content).queryAllByText('Sessions').length).toBeGreaterThanOrEqual(1);
-    expect(within(content).getByText('Agents Active')).toBeInTheDocument();
-  });
-
-  test('loaded zero renders as "0", not placeholder', async () => {
-    // Override the tokens endpoint with zero-valued fields
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
-        HttpResponse.json({
-          rollup: [
-            { agent: 'zero_agent', total_tokens: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, sessions: 1 },
-          ],
-        }),
-      ),
-    );
-
-    mountAt(`/orgs/${SLUG}/settings/usage`);
-
-    await waitFor(() =>
-      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
-    );
-    const content = screen.getByTestId('settings-content');
-
-    // Wait for loading to finish
-    await waitFor(() =>
-      expect(within(content).getByText('zero_agent')).toBeInTheDocument(),
-    );
-
-    // Zero totals in table cells should render '0', NOT '—'
-    const rows = within(content).getAllByRole('row');
-    const dataRow = rows[1]; // first data row
-    const cells = within(dataRow).getAllByRole('cell');
-    // cells: [agent name, total_tokens, input_tokens, output_tokens, cache_read_tokens, sessions]
-    expect(cells[1]).toHaveTextContent('0');
-    expect(cells[2]).toHaveTextContent('0');
-    expect(cells[3]).toHaveTextContent('0');
-    expect(cells[4]).toHaveTextContent('0');
-
-    // Count eyebrow should show '0 total tokens' (not '— total tokens')
-    const eyebrow = within(content).getByText(/total tokens across/);
-    expect(eyebrow).toBeInTheDocument();
-    expect(eyebrow.textContent).toMatch(/^0\s+total tokens/);
-
-    // StatCards: Total Tokens and Cache Reads should show '0'
-    const statCards = within(content).getAllByText('0');
-    // There should be at least 2 occurrences of '0': Total Tokens stat + Cache Reads stat
-    // (plus row cells, but we're checking stat card presence)
-    expect(statCards.length).toBeGreaterThanOrEqual(2);
-  });
-
-  test('null/undefined fields render placeholder "\u2014"', async () => {
-    // Override the tokens endpoint — some token fields are null
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
-        HttpResponse.json({
-          rollup: [
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            { agent: 'partial_agent', total_tokens: null, input_tokens: null, output_tokens: 100, cache_read_tokens: 50, sessions: 1 } as any,
-          ],
-        }),
-      ),
-    );
-
-    mountAt(`/orgs/${SLUG}/settings/usage`);
-
-    await waitFor(() =>
-      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
-    );
-    const content = screen.getByTestId('settings-content');
-
-    // Wait for loading to finish
-    await waitFor(() =>
-      expect(within(content).getByText('partial_agent')).toBeInTheDocument(),
-    );
-
-    // Null total_tokens and input_tokens should render '—' in table cells
-    const rows = within(content).getAllByRole('row');
-    const dataRow = rows[1]; // first data row
-    const cells = within(dataRow).getAllByRole('cell');
-    // cells: [agent name, total_tokens, input_tokens, output_tokens, cache_read_tokens, sessions]
-    expect(cells[1]).toHaveTextContent('—'); // total_tokens null
-    expect(cells[2]).toHaveTextContent('—'); // input_tokens null
-    // output_tokens = 100 (non-zero, should show number)
-    expect(cells[3]).toHaveTextContent('100');
-    // cache_read_tokens = 50 (non-zero, should show number)
-    expect(cells[4]).toHaveTextContent('50');
   });
 });
 

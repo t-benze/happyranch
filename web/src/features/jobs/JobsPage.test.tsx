@@ -138,6 +138,23 @@ describe('JobsPage — approval-queue list', () => {
     expect(screen.getByText('exit 0')).toBeInTheDocument();
   });
 
+  test('groups jobs under status-section headers, each with a per-status count', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobsList();
+    mountAt(`/orgs/${SLUG}/jobs`);
+
+    // The fixture spreads one job across each of the five lifecycle states, so
+    // every status renders as a labelled section (an <section aria-label> →
+    // implicit ARIA "region" landmark), in founder-blocking-first order.
+    const pending = await screen.findByRole('region', { name: 'Pending' });
+    // The header carries the group count (exactly one pending in the fixture).
+    expect(within(pending).getByText('1')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Running' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Completed' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Failed' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Rejected' })).toBeInTheDocument();
+  });
+
   test('status filter narrows the list to the chosen lifecycle state', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobsList();

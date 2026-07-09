@@ -69,6 +69,38 @@ function JobStatusPill({ status }: { status: JobStatus }): JSX.Element {
   );
 }
 
+// ── Status-group headers ─────────────────────────────────────────────
+
+// Lifecycle order for the list's status-group sections — founder-blocking
+// pending first. Each header carries a colored dot + a count; the dot reuses
+// the same semantic status tokens as the row pills (no new tokens, no raw hex).
+const STATUS_GROUP_ORDER: JobStatus[] = ['pending', 'running', 'completed', 'failed', 'rejected'];
+
+const STATUS_GROUP_META: Record<JobStatus, { label: string; dot: string }> = {
+  pending: { label: 'Pending', dot: 'bg-status-archiving' },
+  running: { label: 'Running', dot: 'bg-feedback-info' },
+  completed: { label: 'Completed', dot: 'bg-status-open' },
+  failed: { label: 'Failed', dot: 'bg-status-abandoned' },
+  rejected: { label: 'Rejected', dot: 'bg-text-muted' },
+};
+
+/**
+ * Status-group section header — a colored lifecycle dot, the status label, and
+ * the count of rows in the group. Organizes the list into status sections
+ * without removing the filter rail (which narrows the fetched set these groups
+ * render over). Sticks to the top of the scroll area as its group scrolls past.
+ */
+function StatusGroupHeader({ status, count }: { status: JobStatus; count: number }): JSX.Element {
+  const { label, dot } = STATUS_GROUP_META[status];
+  return (
+    <div className="bg-surface-canvas border-border-default text-text-secondary sticky top-0 z-10 flex items-center gap-2 border-b px-4 py-2">
+      <span aria-hidden="true" className={`inline-block h-2 w-2 shrink-0 rounded-full ${dot}`} />
+      <span className="text-xs font-semibold tracking-wider uppercase">{label}</span>
+      <span className="text-mono-sm text-text-muted tabular-nums">{count}</span>
+    </div>
+  );
+}
+
 // ── Filter rail ──────────────────────────────────────────────────────
 
 type StatusFilter = 'all' | JobStatus;
@@ -320,13 +352,22 @@ export function JobsPage(): JSX.Element {
               {jobs.length === 0 ? 'No jobs yet.' : 'No jobs match the current filters.'}
             </p>
           ) : (
-            <ul>
-              {visible.map((job) => (
-                <li key={job.id}>
-                  <JobRow job={job} to={slug ? `/orgs/${slug}/jobs/${job.id}` : '#'} />
-                </li>
-              ))}
-            </ul>
+            STATUS_GROUP_ORDER.map((status) => {
+              const rows = visible.filter((j) => j.status === status);
+              if (rows.length === 0) return null;
+              return (
+                <section key={status} aria-label={STATUS_GROUP_META[status].label}>
+                  <StatusGroupHeader status={status} count={rows.length} />
+                  <ul>
+                    {rows.map((job) => (
+                      <li key={job.id}>
+                        <JobRow job={job} to={slug ? `/orgs/${slug}/jobs/${job.id}` : '#'} />
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              );
+            })
           )}
         </div>
       </main>

@@ -61,7 +61,7 @@ export const resolveEscalation = (
 export const revisitTask = (
   slug: string,
   taskId: string,
-  body: { note?: string; session_timeout_seconds?: number },
+  body: { founder_note?: string; session_timeout_seconds?: number },
 ): Promise<TaskRecord> =>
   request(`/orgs/${slug}/tasks/${taskId}/revisit`, { method: 'POST', body });
 

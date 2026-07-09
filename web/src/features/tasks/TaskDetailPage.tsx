@@ -484,6 +484,13 @@ function PropertyRail({
           <RailRow label="Status">
             <StatusBadge status={task.status} blockKind={task.block_kind} />
           </RailRow>
+          {task.block_kind && (
+            <RailRow label="Block kind">
+              <span className="text-text-secondary font-mono text-xs">
+                {task.block_kind}
+              </span>
+            </RailRow>
+          )}
           {task.assigned_agent && (
             <RailRow label="Assignee">
               <AgentChip
