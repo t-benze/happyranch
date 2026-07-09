@@ -203,6 +203,11 @@ public final class ClientBridge: @unchecked Sendable {
         homePort: UInt16,
         timeout: TimeInterval = 30
     ) async throws {
+        DiagnosticsCollector.shared?.recordConnectPathLog(
+            stage: "redeemPairing-start",
+            message: "Attempting to redeem pairing with \(homeHost):\(homePort), timeout=\(timeout)s (code length=\(code.count))"
+        )
+
         let completer = RedeemCompleter()
         let credential: String = try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<String, Error>) in
@@ -214,10 +219,19 @@ public final class ClientBridge: @unchecked Sendable {
             )
             let connection = NWConnection(to: endpoint, using: .tcp)
 
+            DiagnosticsCollector.shared?.recordConnectPathLog(
+                stage: "redeemPairing-connection-created",
+                message: "NWConnection created to \(homeHost):\(homePort)"
+            )
+
             completer.configure(continuation: continuation, connection: connection)
 
             // Timeout guard (30s to avoid CI flakiness — MEM-118)
             redeemQueue.asyncAfter(deadline: .now() + timeout) {
+                DiagnosticsCollector.shared?.recordConnectPathLog(
+                    stage: "redeemPairing-timeout-fired",
+                    message: "Timeout boundary reached after \(timeout)s — no response received from home connector"
+                )
                 completer.finish(with: .failure(
                     RedeemPairingError.connectionFailed("Request timed out")
                 ))
@@ -225,7 +239,21 @@ public final class ClientBridge: @unchecked Sendable {
 
             connection.stateUpdateHandler = { [completer] state in
                 switch state {
+                case .waiting(let error):
+                    DiagnosticsCollector.shared?.recordConnectPathLog(
+                        stage: "redeemPairing-connection-waiting",
+                        message: "NWConnection waiting: \(error.localizedDescription)"
+                    )
+                case .preparing:
+                    DiagnosticsCollector.shared?.recordConnectPathLog(
+                        stage: "redeemPairing-connection-preparing",
+                        message: "NWConnection preparing"
+                    )
                 case .ready:
+                    DiagnosticsCollector.shared?.recordConnectPathLog(
+                        stage: "redeemPairing-connection-ready",
+                        message: "NWConnection ready — sending POST /pair (code NOT logged)"
+                    )
                     let requestBody = code
                     let request = """
                         POST /pair HTTP/1.1\r
@@ -239,11 +267,19 @@ public final class ClientBridge: @unchecked Sendable {
                     connection.send(
                         content: request.data(using: .utf8),
                         completion: .contentProcessed { _ in
+                            DiagnosticsCollector.shared?.recordConnectPathLog(
+                                stage: "redeemPairing-request-sent",
+                                message: "POST /pair request sent, waiting for response"
+                            )
                             connection.receive(
                                 minimumIncompleteLength: 1,
                                 maximumLength: 65536
                             ) { data, _, _, error in
                                 if let error = error {
+                                    DiagnosticsCollector.shared?.recordConnectPathLog(
+                                        stage: "redeemPairing-receive-error",
+                                        message: "Receive error: \(error.localizedDescription)"
+                                    )
                                     completer.finish(with: .failure(
                                         RedeemPairingError.connectionFailed(error.localizedDescription)
                                     ))
@@ -251,19 +287,38 @@ public final class ClientBridge: @unchecked Sendable {
                                 }
                                 guard let data = data,
                                       let response = String(data: data, encoding: .utf8) else {
+                                    DiagnosticsCollector.shared?.recordConnectPathLog(
+                                        stage: "redeemPairing-response-empty",
+                                        message: "Response data is nil or not UTF-8 decodable"
+                                    )
                                     completer.finish(with: .failure(RedeemPairingError.invalidResponse))
                                     return
                                 }
+
+                                // Log status line from response (NO body — avoid credential leak)
+                                let statusLine = response.components(separatedBy: "\r\n").first ?? "(unknown)"
+                                DiagnosticsCollector.shared?.recordConnectPathLog(
+                                    stage: "redeemPairing-response-received",
+                                    message: "Response received: \(statusLine) (body NOT logged — may contain credential)"
+                                )
 
                                 Self.parseRedeemResponse(response, completer: completer)
                             }
                         }
                     )
                 case .failed(let error):
+                    DiagnosticsCollector.shared?.recordConnectPathLog(
+                        stage: "redeemPairing-connection-failed",
+                        message: "NWConnection failed: \(error.localizedDescription)"
+                    )
                     completer.finish(with: .failure(
                         RedeemPairingError.connectionFailed(error.localizedDescription)
                     ))
                 case .cancelled:
+                    DiagnosticsCollector.shared?.recordConnectPathLog(
+                        stage: "redeemPairing-connection-cancelled",
+                        message: "NWConnection cancelled"
+                    )
                     completer.finish(with: .failure(
                         RedeemPairingError.connectionFailed("Connection cancelled")
                     ))
@@ -272,8 +327,16 @@ public final class ClientBridge: @unchecked Sendable {
                 }
             }
             connection.start(queue: redeemQueue)
+            DiagnosticsCollector.shared?.recordConnectPathLog(
+                stage: "redeemPairing-connection-started",
+                message: "NWConnection.start() called on redeem queue"
+            )
         }
 
+        DiagnosticsCollector.shared?.recordConnectPathLog(
+            stage: "redeemPairing-success",
+            message: "Pairing redeemed successfully (credential NOT logged)"
+        )
         self.deviceCredential = credential
     }
 
@@ -323,6 +386,10 @@ public final class ClientBridge: @unchecked Sendable {
         }
 
         // Success — pass the credential back
+        DiagnosticsCollector.shared?.recordConnectPathLog(
+            stage: "redeemPairing-credential-extracted",
+            message: "Parsed 200 response — credential extracted (value NOT logged)"
+        )
         completer.finish(with: .success(credential))
     }
 

@@ -4,6 +4,18 @@ import Foundation
 /// and export. All sensitive data (tokens, secrets) is redacted.
 public final class DiagnosticsCollector: @unchecked Sendable {
 
+    // MARK: - Shared instance
+
+    /// Lock guarding ``shared``.
+    private static let sharedLock = NSLock()
+
+    /// The most recently created collector instance.
+    /// Set in `init` so callers can route additional diagnostic data
+    /// (e.g. connect-path logs) to the same collector without wiring it
+    /// through every call chain.
+    /// Protected by ``sharedLock``.
+    public nonisolated(unsafe) private(set) static var shared: DiagnosticsCollector?
+
     private let homeDir: String
     public private(set) var daemonPid: Int32?
     public private(set) var daemonPort: UInt16?
@@ -22,8 +34,20 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     public private(set) var activeRuntimePath: String?
     private var tokenValue: String?
 
+    /// Accumulated connect-path log lines (timestamped, stage-labeled).
+    /// Each call to ``recordConnectPathLog(_:)`` appends one line.
+    public private(set) var connectPathLogLines: [String] = []
+
+    /// Lock guarding ``connectPathLogLines``.
+    private let logLinesLock = NSLock()
+
     public init(homeDir: String) {
         self.homeDir = homeDir
+        // Register as the shared instance so that connect-path loggers
+        // and other optional contributors can find the same collector.
+        Self.sharedLock.lock()
+        Self.shared = self
+        Self.sharedLock.unlock()
     }
 
     // MARK: - Record methods
@@ -74,6 +98,34 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         tokenValue = DiagnosticsRedactor.redact(token)
     }
 
+    // MARK: - Connect-path logging
+
+    /// Append a timestamped, stage-labeled line to the connect-path log.
+    ///
+    /// Each line is automatically prefixed with an ISO-8601 timestamp.
+    /// The caller provides a stable `stage` label and a freeform
+    /// `message`.  Both are redacted before storage.
+    ///
+    /// - Parameters:
+    ///   - stage: Stable stage identifier (e.g. `"redeemPairing-start"`,
+    ///     `"homeConnector-accepted"`).  Used to identify the hang point
+    ///     from a transcript.
+    ///   - message: Freeform detail about this stage transition.
+    public func recordConnectPathLog(stage: String, message: String) {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone.current
+        let timestamp = formatter.string(from: Date())
+
+        let redactedStage = DiagnosticsRedactor.redact(stage)
+        let redactedMessage = DiagnosticsRedactor.redact(message)
+        let line = "[\(timestamp)] [\(redactedStage)] \(redactedMessage)"
+
+        logLinesLock.lock()
+        connectPathLogLines.append(line)
+        logLinesLock.unlock()
+    }
+
     /// The diagnostics persistence directory under the daemon home.
     public var diagnosticsDirectory: URL {
         URL(fileURLWithPath: homeDir).appendingPathComponent("diagnostics")
@@ -119,6 +171,12 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         if let log = daemonLogTailContent { bundle["daemon_log_tail"] = DiagnosticsRedactor.redact(log) }
         if let stderr = daemonStderrContent { bundle["daemon_stderr"] = DiagnosticsRedactor.redact(stderr) }
         if let stdout = daemonStdoutContent { bundle["daemon_stdout"] = DiagnosticsRedactor.redact(stdout) }
+
+        logLinesLock.lock()
+        if !connectPathLogLines.isEmpty {
+            bundle["connect_path_log"] = connectPathLogLines.map { DiagnosticsRedactor.redact($0) }
+        }
+        logLinesLock.unlock()
 
         if let success = lastHealthProbeSuccess {
             bundle["last_health_probe_success"] = success
@@ -189,6 +247,15 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         }
         if let logTail = daemonLogTailContent {
             try logTail.write(to: dir.appendingPathComponent("daemon_log_tail.txt"), atomically: true, encoding: .utf8)
+        }
+
+        logLinesLock.lock()
+        if !connectPathLogLines.isEmpty {
+            let connectLog = connectPathLogLines.joined(separator: "\n")
+            logLinesLock.unlock()
+            try connectLog.write(to: dir.appendingPathComponent("connect_path_log.txt"), atomically: true, encoding: .utf8)
+        } else {
+            logLinesLock.unlock()
         }
 
         return dir

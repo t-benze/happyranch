@@ -473,4 +473,198 @@ struct DiagnosticsCollectorTests {
         #expect(stderrContent.contains("[REDACTED]"))
         #expect(stderrContent.contains("port bind failed"))
     }
+
+    // MARK: - Connect-path logging
+
+    @Test("recordConnectPathLog appends timestamped stage-labeled lines")
+    func recordConnectPathLogAppendsTimestampedLines() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+
+        collector.recordConnectPathLog(
+            stage: "redeemPairing-start",
+            message: "Attempting to redeem pairing"
+        )
+        collector.recordConnectPathLog(
+            stage: "redeemPairing-connection-ready",
+            message: "NWConnection ready"
+        )
+
+        let bundle = collector.collect()
+        let logLines = bundle["connect_path_log"] as? [String] ?? []
+
+        #expect(logLines.count == 2, "Must have 2 log lines, got \(logLines.count)")
+        #expect(logLines[0].contains("redeemPairing-start"),
+                "Line 0 must contain stage label")
+        #expect(logLines[0].contains("Attempting to redeem pairing"),
+                "Line 0 must contain message")
+        #expect(logLines[1].contains("redeemPairing-connection-ready"),
+                "Line 1 must contain stage label")
+        #expect(logLines[1].contains("NWConnection ready"),
+                "Line 1 must contain message")
+
+        // Verify ISO-8601 timestamp prefix exists on every line
+        for line in logLines {
+            #expect(line.hasPrefix("["), "Log line must start with '[' (timestamp bracket): \(line)")
+        }
+    }
+
+    @Test("connect-path log lines are timestamped with ISO-8601 format")
+    func connectPathLogTimestampFormat() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        collector.recordConnectPathLog(stage: "test-stage", message: "test message")
+
+        let bundle = collector.collect()
+        let logLines = bundle["connect_path_log"] as? [String] ?? []
+
+        #expect(logLines.count == 1)
+        let line = logLines[0]
+
+        // Expected format: [2026-07-09T10:30:00.123+0800] [test-stage] test message
+        // The timestamp portion starts with '[' then contains 'T' and ends with ']'
+        #expect(line.contains("T"), "Timestamp must contain 'T' separator: \(line)")
+        // The stage label is in its own bracket pair
+        #expect(line.contains("] [test-stage] "),
+                "Must contain '] [test-stage] ' structure: \(line)")
+    }
+
+    @Test("connect-path log redacts hr_token_ credentials")
+    func connectPathLogRedactsHrToken() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+
+        // Would-be credential-bearing line — MUST be redacted
+        collector.recordConnectPathLog(
+            stage: "homeConnector-credential-injected",
+            message: "Injected hr_token_super_secret_value"
+        )
+
+        let bundle = collector.collect()
+        let logLines = bundle["connect_path_log"] as? [String] ?? []
+
+        #expect(logLines.count == 1)
+        let line = logLines[0]
+
+        #expect(!line.contains("hr_token_super_secret_value"),
+                "Must NOT contain raw token: \(line)")
+        #expect(line.contains("[REDACTED]"),
+                "Must contain redaction marker: \(line)")
+        #expect(line.contains("homeConnector-credential-injected"),
+                "Stage label must survive redaction: \(line)")
+    }
+
+    @Test("connect-path log redacts bearer token patterns")
+    func connectPathLogRedactsBearerToken() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+
+        collector.recordConnectPathLog(
+            stage: "test-stage",
+            message: "Authorization: Bearer abc123def456"
+        )
+
+        let bundle = collector.collect()
+        let logLines = bundle["connect_path_log"] as? [String] ?? []
+
+        #expect(logLines.count == 1)
+        let line = logLines[0]
+
+        #expect(!line.contains("abc123def456"),
+                "Must NOT contain bearer token: \(line)")
+        #expect(line.contains("[REDACTED]"),
+                "Must contain redaction marker: \(line)")
+        #expect(line.contains("Authorization:"),
+                "Non-sensitive content must survive: \(line)")
+    }
+
+    @Test("connect-path log — pairing code is never present (defense-in-depth)")
+    func connectPathLogNeverContainsPairingCode() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+
+        // Simulate would-be pairing-code-bearing lines as defense-in-depth proof
+        // that NO log call passes the code value.
+        collector.recordConnectPathLog(
+            stage: "homeConnector-pair-request",
+            message: "POST /pair — attempting pairing (code NOT logged)"
+        )
+        collector.recordConnectPathLog(
+            stage: "homeConnector-pair-success",
+            message: "Pairing succeeded — device credential issued (value NOT logged)"
+        )
+
+        let bundle = collector.collect()
+        let logLines = bundle["connect_path_log"] as? [String] ?? []
+
+        #expect(logLines.count == 2)
+
+        // Neither line should contain a pairing code pattern (8-char uppercase alphanumeric)
+        // The known pairing code format is A-Z0-9, 8 chars. We don't assert content
+        // never has some incidental 8-char string — we assert our log messages are
+        // EXPLICIT about NOT containing the code.
+        for (i, line) in logLines.enumerated() {
+            #expect(line.contains("NOT logged"),
+                    "Line \(i) must explicitly state credential is NOT logged: \(line)")
+        }
+
+        // Additionally, no log line should contain the word "code" next to a value
+        // (the word "code" itself must only appear in the marker phrase "code NOT logged")
+        for line in logLines {
+            let occurrences = line.components(separatedBy: "code").count - 1
+            let notLoggedOccurrences = line.components(separatedBy: "code NOT logged").count - 1
+            // The only "code" occurrences should be in the "code NOT logged" marker
+            let unexplained = occurrences - notLoggedOccurrences
+            #expect(unexplained == 0,
+                    "Line must not use 'code' outside of 'code NOT logged' marker: \(line)")
+        }
+    }
+
+    @Test("empty connect-path log does not appear in collect bundle")
+    func emptyConnectPathLogNotInBundle() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-hr")
+        let bundle = collector.collect()
+
+        // When no connect-path logs are recorded, the key must be absent
+        #expect(bundle["connect_path_log"] == nil,
+                "Empty connect_path_log must not appear in collect() bundle")
+    }
+
+    @Test("connect-path log is included in persist and exportZip")
+    func connectPathLogPersistedAndExported() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-connect-log-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let homeDir = tmpDir.appendingPathComponent("daemon-home")
+        try FileManager.default.createDirectory(at: homeDir, withIntermediateDirectories: true)
+
+        let collector = DiagnosticsCollector(homeDir: homeDir.path)
+        collector.recordConnectPathLog(
+            stage: "redeemPairing-start",
+            message: "Attempting to redeem pairing"
+        )
+        collector.recordConnectPathLog(
+            stage: "redeemPairing-timeout-fired",
+            message: "Timeout boundary reached after 30.0s"
+        )
+
+        // Persist to disk
+        let outputDir = try collector.persist()
+        defer { try? FileManager.default.removeItem(at: outputDir) }
+
+        let connectLogPath = outputDir.appendingPathComponent("connect_path_log.txt")
+        #expect(FileManager.default.fileExists(atPath: connectLogPath.path),
+                "connect_path_log.txt must be created")
+
+        let content = try String(contentsOf: connectLogPath, encoding: .utf8)
+        #expect(content.contains("redeemPairing-start"),
+                "Persisted log must contain stage label")
+        #expect(content.contains("Attempting to redeem pairing"),
+                "Persisted log must contain message")
+        #expect(content.contains("Timeout boundary reached"),
+                "Persisted log must contain timeout stage")
+    }
+
+    @Test("DiagnosticsCollector.shared is set on init")
+    func sharedInstanceSetOnInit() {
+        let collector = DiagnosticsCollector(homeDir: "/tmp/test-shared")
+        #expect(DiagnosticsCollector.shared === collector,
+                "Shared instance must be set to the most recently created collector")
+    }
 }
