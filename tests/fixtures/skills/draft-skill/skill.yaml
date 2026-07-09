@@ -7,7 +7,4 @@ when_to_use: Should not be exposed.
 owner: engineering_manager
 source: runtime/skills/draft-skill
 policy_class: standard_operational
-approval_state: draft
-approved_by: null
-approved_at: null
 status: enabled

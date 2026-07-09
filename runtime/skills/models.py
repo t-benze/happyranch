@@ -1,7 +1,12 @@
 """Skill registry data models for the HappyRanch runtime-managed skill policy v1.
 
-These models encode the registry metadata, policy classifications, approval
-states, and resolved-skill output shapes as defined in the THR-055 product spec.
+These models encode the registry metadata, policy classifications,
+and resolved-skill output shapes as defined in the THR-055 product spec.
+
+Approval-gate fields (approval_state, approved_by, approved_at, approved_version)
+were removed per THR-055 seq 55 (founder-authorized): for first-party skills,
+runtime approval duplicates the release pipeline. Exposure is now catalog-presence
++ status==enabled + eligibility-matched only.
 """
 
 from __future__ import annotations
@@ -25,16 +30,6 @@ class PolicyClass(str, Enum):
     STANDARD_OPERATIONAL = "standard_operational"
     HIGH_IMPACT_POLICY = "high_impact_policy"
     SYSTEM_CONTRACT = "system_contract"
-
-
-class ApprovalState(str, Enum):
-    """Approval lifecycle state for a skill entry."""
-
-    APPROVED = "approved"
-    DRAFT = "draft"
-    PENDING_REVIEW = "pending_review"
-    REJECTED = "rejected"
-    DEPRECATED = "deprecated"
 
 
 class SkillStatus(str, Enum):
@@ -61,8 +56,7 @@ class SkillEntry:
     """A single managed skill as read from the registry (skill.yaml).
 
     Required fields per spec: id, slug, name, version, description,
-    when_to_use, owner, source, policy_class, approval_state, approved_by,
-    approved_at, status.
+    when_to_use, owner, source, policy_class, status.
 
     Optional: compatibility, tags, supersedes, reviewed_at, review_notes.
     """
@@ -77,9 +71,6 @@ class SkillEntry:
     owner: str
     source: str
     policy_class: PolicyClass
-    approval_state: ApprovalState
-    approved_by: Optional[str]
-    approved_at: Optional[datetime]
     status: SkillStatus
 
     # Optional fields
@@ -88,7 +79,6 @@ class SkillEntry:
     supersedes: Optional[str] = None
     reviewed_at: Optional[datetime] = None
     review_notes: Optional[str] = None
-    approved_version: Optional[str] = None  # version for which this approval was granted
 
     # Internal — not from YAML
     skill_md_path: Optional[Path] = None
@@ -96,7 +86,6 @@ class SkillEntry:
     def __post_init__(self):
         """Coerce enum fields from strings."""
         self.policy_class = _coerce_enum(PolicyClass, self.policy_class)
-        self.approval_state = _coerce_enum(ApprovalState, self.approval_state)
         self.status = _coerce_enum(SkillStatus, self.status)
 
     def __repr__(self) -> str:
@@ -135,7 +124,6 @@ class ExposedSkill:
     """
 
     skill: SkillEntry
-    catalog_approved: bool
     allowed_by: list[EligibilityRule] = field(default_factory=list)
     denied_by: list[EligibilityRule] = field(default_factory=list)
 
@@ -146,15 +134,3 @@ class GateResult:
 
     passed: bool
     reason: str
-
-
-# The set of approval states that pass the catalog gate
-CATALOG_APPROVED_STATES: set[ApprovalState] = {ApprovalState.APPROVED}
-
-# The set of approval states that explicitly fail
-CATALOG_BLOCKED_STATES: set[ApprovalState] = {
-    ApprovalState.DRAFT,
-    ApprovalState.PENDING_REVIEW,
-    ApprovalState.REJECTED,
-    ApprovalState.DEPRECATED,
-}

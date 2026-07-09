@@ -339,7 +339,7 @@ class TestSkillsPolicyExplain:
         assert "disabled" in out.lower()
 
     def test_explain_draft_skill(self, capsys, tmp_path):
-        """Explain a skill in draft state — fails catalog gate."""
+        """Explain a skill that was formerly draft — now passes catalog gate (status=enabled)."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
 
@@ -351,11 +351,11 @@ class TestSkillsPolicyExplain:
         cmd_skills_policy_explain(ns)
 
         out = capsys.readouterr().out
-        assert "FAIL" in out
-        assert "draft" in out.lower()
+        assert "PASS" in out
+        assert "Catalog Gate" in out
 
     def test_explain_high_impact_skill(self, capsys, tmp_path):
-        """Explain a high_impact_policy skill with founder approval."""
+        """Explain a high_impact_policy skill — passes catalog gate (status=enabled, no approval gate)."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
         import yaml as _yaml
@@ -374,7 +374,6 @@ class TestSkillsPolicyExplain:
         out = capsys.readouterr().out
         assert "IS available" in out
         assert "high_impact_policy" in out or "HIGH_IMPACT" in out.upper()
-        assert "founder" in out or "approved_by" in out
 
     def test_explain_nonexistent_skill(self, capsys):
         from cli.commands.skills import cmd_skills_policy_explain
@@ -1174,7 +1173,7 @@ class TestManageAgentManageRepoCli:
     # ── catalog validate ────────────────────────────────────────────
 
     def test_validate_flags_manage_skills_catalog_failures(self, capsys):
-        """'skills catalog validate' flags manage-agent and manage-repo as catalog gate failures."""
+        """'skills catalog validate' — manage-agent/manage-repo no longer catalog gate failures (THR-055 seq 55)."""
         from cli.commands.skills import cmd_skills_catalog_validate
         import argparse
 
@@ -1182,10 +1181,12 @@ class TestManageAgentManageRepoCli:
         cmd_skills_catalog_validate(ns)
 
         out = capsys.readouterr().out
+        # manage-agent and manage-repo are present in catalog
         assert "hr:manage-agent" in out
         assert "hr:manage-repo" in out
+        # Only disabled-skill triggers catalog gate failure now
         assert "CATALOG GATE FAILURES" in out
-        assert "pending_review" in out
+        assert "hr:disabled-skill" in out
 
     # ── effective ───────────────────────────────────────────────────
 
@@ -1206,8 +1207,8 @@ class TestManageAgentManageRepoCli:
         path.write_text("---\n" + _yaml.dump(policy, default_flow_style=False))
         return str(path)
 
-    def test_effective_not_exposed_to_manager_when_unapproved(self, capsys, tmp_path):
-        """Even an eligible manager does NOT see manage-agent/manage-repo — fail-closed."""
+    def test_effective_exposed_to_manager(self, capsys, tmp_path):
+        """An eligible manager NOW sees manage-agent/manage-repo — no approval gate (THR-055 seq 55)."""
         from cli.commands.skills import cmd_skills_effective
         import argparse
 
@@ -1219,31 +1220,29 @@ class TestManageAgentManageRepoCli:
         cmd_skills_effective(ns)
 
         out = capsys.readouterr().out
-        assert "Effective skills (0)" in out
-        # manage-agent and manage-repo should NOT appear as exposed
-        # They may appear as blocked
-
-    def test_effective_shows_blocked_by_catalog_manage_agent(self, capsys, tmp_path):
-        """manage-agent appears in blocked skills due to catalog gate."""
-        from cli.commands.skills import cmd_skills_effective
-        import argparse
-
-        policy_path = self._make_manager_policy(tmp_path)
-        ns = argparse.Namespace(
-            agent="engineering_manager", org="happyranch", team="engineering",
-            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
-        )
-        cmd_skills_effective(ns)
-
-        out = capsys.readouterr().out
-        assert "BLOCKED" in out
+        assert "Effective skills (2)" in out
         assert "hr:manage-agent" in out
+        assert "hr:manage-repo" in out
 
-    def test_effective_json_shows_blocked_manage_skills(self, capsys, tmp_path):
-        """JSON effective output shows zero effective skills — manage-agent/manage-repo are
-        catalog-blocked (pending_review), not eligibility-denied. Blocked_skills list in JSON
-        only contains eligibility-denied skills; catalog-blocked skills that ARE eligible
-        still show up as zero effective skills."""
+    def test_effective_exposed_to_manager_shows_in_effective(self, capsys, tmp_path):
+        """manage-agent and manage-repo appear in effective skills (no longer blocked by catalog gate)."""
+        from cli.commands.skills import cmd_skills_effective
+        import argparse
+
+        policy_path = self._make_manager_policy(tmp_path)
+        ns = argparse.Namespace(
+            agent="engineering_manager", org="happyranch", team="engineering",
+            skills_root=str(FIXTURES), policy_path=policy_path, json=False,
+        )
+        cmd_skills_effective(ns)
+
+        out = capsys.readouterr().out
+        assert "Effective skills (2)" in out
+        assert "hr:manage-agent" in out
+        assert "hr:manage-repo" in out
+
+    def test_effective_json_shows_manage_skills(self, capsys, tmp_path):
+        """JSON effective output now shows manage-agent/manage-repo as exposed (THR-055 seq 55)."""
         from cli.commands.skills import cmd_skills_effective
         import argparse
 
@@ -1258,12 +1257,11 @@ class TestManageAgentManageRepoCli:
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "effective_skills" in data
-        # Effective skills should be empty (catalog gate blocks both manage-*)
-        assert len(data["effective_skills"]) == 0
-        # manage-agent and manage-repo are NOT in effective skills
+        # Both manage-* are now exposed for eligible manager
+        assert len(data["effective_skills"]) == 2
         effective_ids = {s["id"] for s in data["effective_skills"]}
-        assert "hr:manage-agent" not in effective_ids
-        assert "hr:manage-repo" not in effective_ids
+        assert "hr:manage-agent" in effective_ids
+        assert "hr:manage-repo" in effective_ids
 
     def test_effective_not_exposed_to_non_manager(self, capsys, tmp_path):
         """dev_agent (non-manager) does NOT see manage-agent even if someone else is eligible."""
@@ -1284,8 +1282,8 @@ class TestManageAgentManageRepoCli:
 
     # ── policy explain ──────────────────────────────────────────────
 
-    def test_explain_manage_agent_blocked_catalog_gate(self, capsys, tmp_path):
-        """'policy explain hr:manage-agent' attributes block to CATALOG gate (unapproved version)."""
+    def test_explain_manage_agent_available_to_manager(self, capsys, tmp_path):
+        """'policy explain hr:manage-agent' NOW shows IS available to eligible manager (THR-055 seq 55)."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
 
@@ -1298,12 +1296,12 @@ class TestManageAgentManageRepoCli:
         cmd_skills_policy_explain(ns)
 
         out = capsys.readouterr().out
-        assert "NOT available" in out
-        assert "Blocked by: catalog gate" in out
-        assert "pending_review" in out.lower()
+        assert "IS available" in out
+        assert "Catalog Gate" in out
+        assert "PASS" in out
 
-    def test_explain_manage_agent_blocked_json(self, capsys, tmp_path):
-        """JSON explain for manage-agent shows catalog_gate.passed=False."""
+    def test_explain_manage_agent_available_json(self, capsys, tmp_path):
+        """JSON explain for manage-agent now shows catalog_gate.passed=True (THR-055 seq 55)."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
 
@@ -1319,13 +1317,12 @@ class TestManageAgentManageRepoCli:
         out = capsys.readouterr().out
         data = json.loads(out)
         assert data["skill_id"] == "hr:manage-agent"
-        assert data["catalog_gate"]["passed"] is False
-        assert "pending_review" in data["catalog_gate"]["reason"].lower()
+        assert data["catalog_gate"]["passed"] is True
         # Eligibility gate should PASS (engineering_manager is allowed)
         assert data["eligibility"]["passed"] is True
 
-    def test_explain_manage_repo_blocked_catalog_gate(self, capsys, tmp_path):
-        """'policy explain hr:manage-repo' also blocked by catalog gate."""
+    def test_explain_manage_repo_available_to_manager(self, capsys, tmp_path):
+        """'policy explain hr:manage-repo' NOW shows IS available to eligible manager (THR-055 seq 55)."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
 
@@ -1338,9 +1335,9 @@ class TestManageAgentManageRepoCli:
         cmd_skills_policy_explain(ns)
 
         out = capsys.readouterr().out
-        assert "NOT available" in out
-        assert "Blocked by: catalog gate" in out
-        assert "pending_review" in out.lower()
+        assert "IS available" in out
+        assert "Catalog Gate" in out
+        assert "PASS" in out
 
     def test_explain_manage_agent_not_eligible_for_non_manager(self, capsys, tmp_path):
         """'policy explain hr:manage-agent --agent dev_agent' blocked by eligibility (not manager)."""
@@ -1357,12 +1354,12 @@ class TestManageAgentManageRepoCli:
 
         out = capsys.readouterr().out
         data = json.loads(out)
-        # Both gates should fail: catalog (pending_review) + eligibility (not manager)
-        assert data["catalog_gate"]["passed"] is False
+        # Catalog passes (status=enabled), eligibility fails (not manager)
+        assert data["catalog_gate"]["passed"] is True
         assert data["eligibility"]["passed"] is False
 
-    def test_explain_manage_agent_eligible_but_unapproved(self, capsys, tmp_path):
-        """'policy explain hr:manage-agent --agent engineering_manager': eligible, blocked by catalog."""
+    def test_explain_manage_agent_available_to_eligible_manager(self, capsys, tmp_path):
+        """'policy explain hr:manage-agent --agent engineering_manager': both gates pass (THR-055 seq 55)."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
 
@@ -1379,6 +1376,6 @@ class TestManageAgentManageRepoCli:
         data = json.loads(out)
         # Eligibility PASSES (engineering_manager IS in agent-scoped allow)
         assert data["eligibility"]["passed"] is True
-        # Catalog FAILS (pending_review)
-        assert data["catalog_gate"]["passed"] is False
-        assert data["is_exposed"] is False
+        # Catalog PASSES (status=enabled, no approval gate)
+        assert data["catalog_gate"]["passed"] is True
+        assert data["is_exposed"] is True

@@ -11,8 +11,7 @@ REAL-SOURCE GUARD: This test reads the REAL in-repo artifacts —
   - ``org/config.yaml`` (eligibility policy, shipped in Phase 2-3)
   - ``runtime/skills/`` (managed catalog with real approval states)
   - ``protocol/skills/`` (injection + bootstrap source skill bodies)
-If the shipped policy, catalog, or source dirs drift (e.g. manage-agent gets
-flipped to approved, review's policy_class changes, or a catalog entry
+If the shipped policy, catalog, or source dirs drift (e.g. review's policy_class changes, or a catalog entry
 regresses), this guard MUST fail — it is a fail-closed integrity check.
 """
 
@@ -458,19 +457,32 @@ class TestContractCompletenessPostCutover:
                                 f"({name}, {context_str}, repos={has_repos})"
                             )
 
-                    # manage-agent / manage-repo: fail-closed for ALL
+                    # manage-agent / manage-repo: exposed for eligible managers (THR-055 seq 55)
+                    # Per real org/config.yaml:
+                    #   engineering_manager: allow [manage-agent, manage-repo]
+                    #   product_lead: allow [review, manage-agent, manage-repo]
+                    #   All others: NO manage-* eligibility
+                    is_manager = name in {"engineering_manager", "product_lead"}
                     for hi_skill in ("manage-agent", "manage-repo"):
-                        if hi_skill in injected:
-                            failures.append(
-                                f"UNEXPECTED high-impact skill '{hi_skill}' for "
-                                f"({name}, {context_str}, repos={has_repos}) "
-                                f"— should be fail-closed (pending_review)"
-                            )
+                        if is_manager:
+                            if hi_skill not in injected:
+                                failures.append(
+                                    f"MISSING manage skill '{hi_skill}' for "
+                                    f"({name}, {context_str}, repos={has_repos})"
+                                )
+                        else:
+                            if hi_skill in injected:
+                                failures.append(
+                                    f"UNEXPECTED manage skill '{hi_skill}' for "
+                                    f"({name}, {context_str}, repos={has_repos})"
+                                )
 
                     # ── Verify no bloat / no extra skills ────────────
                     expected_full = set(expected_sys)
                     if name in _REVIEW_ELIGIBLE:
                         expected_full.add("review")
+                    if is_manager:
+                        expected_full.update({"manage-agent", "manage-repo"})
                     unexpected = injected - expected_full
                     if unexpected:
                         failures.append(

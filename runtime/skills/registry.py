@@ -16,7 +16,6 @@ from typing import Any, Optional
 import yaml
 
 from runtime.skills.models import (
-    ApprovalState,
     PolicyClass,
     SkillEntry,
     SkillStatus,
@@ -48,14 +47,6 @@ def _parse_policy_class(raw: str) -> PolicyClass:
     except ValueError:
         # Default to standard_operational for unknown values
         return PolicyClass.STANDARD_OPERATIONAL
-
-
-def _parse_approval_state(raw: str) -> ApprovalState:
-    """Parse an approval_state string to enum."""
-    try:
-        return ApprovalState(raw.lower())
-    except ValueError:
-        return ApprovalState.DRAFT
 
 
 def _parse_status(raw: str) -> SkillStatus:
@@ -148,15 +139,11 @@ class SkillRegistry:
             owner=data.get("owner", ""),
             source=data.get("source", f"runtime/skills/{slug_dir.name}"),
             policy_class=policy_class,
-            approval_state=_parse_approval_state(data.get("approval_state", "draft")),
-            approved_by=data.get("approved_by") or None,
-            approved_at=_parse_optional_datetime(data.get("approved_at")),
             status=_parse_status(data.get("status", "enabled")),
             compatibility=data.get("compatibility"),
             tags=data.get("tags"),
             supersedes=data.get("supersedes"),
             reviewed_at=_parse_optional_datetime(data.get("reviewed_at")),
             review_notes=data.get("review_notes"),
-            approved_version=data.get("approved_version") or None,
             skill_md_path=skill_md if skill_md.is_file() else None,
         )

@@ -7,5 +7,4 @@ when_to_use: Use when managing agent workspace repositories — adding a new rep
 owner: engineering_manager
 source: runtime/skills/manage-repo
 policy_class: high_impact_policy
-approval_state: pending_review
 status: enabled
