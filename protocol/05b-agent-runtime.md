@@ -101,6 +101,14 @@ The actionble block is an `ExecutorBinaryBlocked` exception (subclass of
 operator a concrete command to fix it — never an opaque `rc=143` or bare
 ENOENT death.
 
+**Auto-detect.** The daemon can scan standard install locations (Homebrew,
+`/usr/local/bin`, `~/.local/bin`, npm global prefix, and the system PATH) for
+executor binaries via `GET /api/v1/executor-binaries/detect`. The endpoint
+returns every valid (exists + executable) candidate path for each built-in
+executor kind. It is pure read-only — it does not store or modify the
+registry. This powers the THR-085 web registration UI's "detect installed
+binaries" flow.
+
 **Why a separate `executors.json` file?** The binary-path registry is
 machine-local and must be writable at runtime by the `/api/v1/executor-binaries/register`
 route. Keeping it in a dedicated file under `<daemon-home>` isolates runtime

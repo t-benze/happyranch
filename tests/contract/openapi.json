@@ -184,6 +184,20 @@
         ]
       }
     },
+    "/api/v1/executor-binaries/detect": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/executor-binaries/register": {
       "POST": {
         "params": [

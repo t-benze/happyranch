@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -164,3 +166,106 @@ def is_binary_valid(path_str: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Auto-detection
+# ---------------------------------------------------------------------------
+
+KNOWN_KINDS: tuple[str, ...] = ("claude", "codex", "opencode", "pi")
+
+
+def _candidate_dirs() -> list[Path]:
+    """Return the list of standard directories to scan for executables.
+
+    Order is stable, favouring common install locations first.
+    Does not throw when a directory does not exist — callers handle empty lists.
+    """
+    dirs: list[Path] = []
+
+    # macOS Homebrew (ARM)
+    hb_arm = Path("/opt/homebrew/bin")
+    if hb_arm.is_dir():
+        dirs.append(hb_arm)
+
+    # macOS Homebrew (Intel) / Linux /usr/local
+    usr_local = Path("/usr/local/bin")
+    if usr_local.is_dir():
+        dirs.append(usr_local)
+
+    # User-local bin (~/.local/bin)
+    local_bin = Path.home() / ".local" / "bin"
+    if local_bin.is_dir():
+        dirs.append(local_bin)
+
+    # npm global prefix bin (npm prefix -g)
+    try:
+        result = subprocess.run(
+            ["npm", "prefix", "-g"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            npm_prefix = Path(result.stdout.strip()) / "bin"
+            if npm_prefix.is_dir():
+                dirs.append(npm_prefix)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    # ~/.npm-global/bin (common fallback for npm -g without prefix)
+    npm_global = Path.home() / ".npm-global" / "bin"
+    if npm_global.is_dir():
+        dirs.append(npm_global)
+
+    return dirs
+
+
+def detect_candidates() -> dict[str, list[str]]:
+    """Auto-detect executor binary candidates from standard install locations.
+
+    For each built-in executor kind (claude, codex, opencode, pi), scans
+    standard directories and ``shutil.which`` for plausible binary paths.
+    Returns a dict mapping each kind to a list of valid (exists + executable)
+    absolute paths, de-duplicated and sorted for determinism.
+
+    Kinds with no candidates produce an empty list — the caller or web UI can
+    show "nothing detected — enter a path".
+
+    Pure read-only: does NOT read or mutate the stored registry. Detection is
+    independent of registration.
+
+    Must not throw on missing directories or a missing ``npm`` binary — the
+    target environment is a fresh host.
+    """
+    dirs = _candidate_dirs()
+    result: dict[str, list[str]] = {kind: [] for kind in KNOWN_KINDS}
+
+    for kind in KNOWN_KINDS:
+        seen: set[str] = set()
+
+        # 1. Scan standard directories for a file named <kind>
+        for d in dirs:
+            try:
+                candidate = d / kind
+                if candidate.is_file():
+                    resolved = str(candidate.resolve())
+                    if resolved not in seen and is_binary_valid(resolved):
+                        seen.add(resolved)
+                        result[kind].append(resolved)
+            except OSError:
+                # Permission denied on a directory entry — skip
+                continue
+
+        # 2. shutil.which — delegates to OS PATH and returns the absolute path
+        which_hit = shutil.which(kind)
+        if which_hit:
+            resolved = str(Path(which_hit).resolve())
+            if resolved not in seen and is_binary_valid(resolved):
+                seen.add(resolved)
+                result[kind].append(resolved)
+
+        # Deterministic output
+        result[kind].sort()
+
+    return result

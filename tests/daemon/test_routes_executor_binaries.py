@@ -201,3 +201,89 @@ def test_register_case_insensitive_kind(client, tmp_path):
     r2 = client.get("/api/v1/executor-binaries")
     entries = r2.json()["entries"]
     assert any(e["kind"] == "claude" for e in entries)
+
+
+# ─────────────────────────────────────────────────────────────────
+# GET /api/v1/executor-binaries/detect — auto-detect candidates
+# ─────────────────────────────────────────────────────────────────
+
+
+def test_detect_returns_all_four_kinds(client):
+    """GET /detect returns a candidates list covering all 4 kinds."""
+    r = client.get("/api/v1/executor-binaries/detect")
+    assert r.status_code == 200
+    body = r.json()
+    assert "candidates" in body
+    kinds_found = {c["kind"] for c in body["candidates"]}
+    assert kinds_found == {"claude", "codex", "opencode", "pi"}
+    for c in body["candidates"]:
+        assert "kind" in c
+        assert "path" in c
+        assert c["valid"] is True
+
+
+def test_detect_returns_candidates_when_binaries_exist(client, tmp_path, monkeypatch):
+    """GET /detect returns candidates when binaries are on the filesystem."""
+    from runtime.orchestrator import executor_binary_registry as reg_mod
+
+    # Create fake executables for two kinds
+    base = tmp_path / "fake_bin"
+    base.mkdir()
+    (base / "claude").touch(mode=0o755)
+    (base / "pi").touch(mode=0o755)
+
+    # Monkeypatch _candidate_dirs to scan only our fake directory
+    monkeypatch.setattr(reg_mod, "_candidate_dirs", lambda: [base])
+    monkeypatch.setattr(reg_mod.shutil, "which", lambda name, path=None: None)
+
+    r = client.get("/api/v1/executor-binaries/detect")
+    assert r.status_code == 200
+    body = r.json()
+    candidates = body["candidates"]
+
+    # All 4 kinds still present (empty-path sentinels for codex/opencode)
+    kinds_seen = {c["kind"] for c in candidates}
+    assert kinds_seen == {"claude", "codex", "opencode", "pi"}
+
+    claude_hits = [c for c in candidates if c["kind"] == "claude" and c["path"]]
+    pi_hits = [c for c in candidates if c["kind"] == "pi" and c["path"]]
+    assert len(claude_hits) >= 1
+    assert len(pi_hits) >= 1
+    for c in claude_hits + pi_hits:
+        assert c["valid"] is True
+        assert str(base) in c["path"]
+
+    # codex and opencode have sentinel entries with empty path
+    codex_entry = next(c for c in candidates if c["kind"] == "codex")
+    assert codex_entry["path"] == ""
+    opencode_entry = next(c for c in candidates if c["kind"] == "opencode")
+    assert opencode_entry["path"] == ""
+
+
+def test_detect_empty_env_returns_sentinels(client, monkeypatch):
+    """GET /detect in an empty environment returns sentinel entries (no error)."""
+    from runtime.orchestrator import executor_binary_registry as reg_mod
+
+    monkeypatch.setattr(reg_mod, "_candidate_dirs", lambda: [])
+    monkeypatch.setattr(reg_mod.shutil, "which", lambda name, path=None: None)
+
+    r = client.get("/api/v1/executor-binaries/detect")
+    assert r.status_code == 200
+    body = r.json()
+    candidates = body["candidates"]
+    # All 4 kinds present with empty-path sentinels
+    kinds_seen = {c["kind"] for c in candidates}
+    assert kinds_seen == {"claude", "codex", "opencode", "pi"}
+    assert len(candidates) == 4
+    for c in candidates:
+        assert c["valid"] is True
+        assert c["path"] == ""
+
+
+def test_detect_requires_auth(app, tmp_home):
+    """GET /detect requires bearer auth."""
+    from fastapi.testclient import TestClient
+    client_anon = TestClient(app)
+
+    r = client_anon.get("/api/v1/executor-binaries/detect")
+    assert r.status_code == 401

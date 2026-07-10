@@ -183,6 +183,276 @@ def test_is_binary_valid(tmp_path: Path):
 
 
 # ─────────────────────────────────────────────────────────────────
+# detect_candidates tests
+# ─────────────────────────────────────────────────────────────────
+
+
+class TestDetectCandidates:
+    """Unit tests for detect_candidates() — auto-detect executor binaries.
+
+    All tests use monkeypatched filesystem + shutil.which + subprocess.run
+    to avoid depending on the real PATH or real install directories.
+    """
+
+    KNOWN = ["claude", "codex", "opencode", "pi"]
+
+    def _setup_fake_bins(self, tmp_path: Path, monkeypatch, base_dir: Path, kinds: list[str]):
+        """Create fake executable binaries for the given kinds under base_dir,
+        and monkeypatch _candidate_dirs to return only that directory."""
+        base_dir.mkdir(parents=True, exist_ok=True)
+        for kind in kinds:
+            bin_path = base_dir / kind
+            bin_path.touch(mode=0o755)
+
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry._candidate_dirs",
+            lambda: [base_dir],
+        )
+
+        # Mock shutil.which to return None by default (no PATH hits)
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.shutil.which",
+            lambda name, path=None: None,
+        )
+
+    def test_all_four_kinds_found_in_one_dir(self, tmp_path, monkeypatch):
+        """When all 4 binaries exist in a scanned directory, all are detected."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        base = tmp_path / "homebrew" / "bin"
+        self._setup_fake_bins(tmp_path, monkeypatch, base, self.KNOWN)
+
+        result = detect_candidates()
+        assert set(result.keys()) == set(self.KNOWN)
+        for kind in self.KNOWN:
+            assert len(result[kind]) == 1
+            assert str(base / kind) in result[kind][0]
+
+    def test_empty_when_no_candidates(self, tmp_path, monkeypatch):
+        """When no binaries are found, every kind has an empty list."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        # No candidate dirs at all
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry._candidate_dirs",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.shutil.which",
+            lambda name, path=None: None,
+        )
+
+        result = detect_candidates()
+        assert set(result.keys()) == set(self.KNOWN)
+        for kind in self.KNOWN:
+            assert result[kind] == []
+
+    def test_some_kinds_missing(self, tmp_path, monkeypatch):
+        """When only some kinds are installed, missing kinds have empty lists."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        base = tmp_path / "usr_local" / "bin"
+        self._setup_fake_bins(tmp_path, monkeypatch, base, ["claude", "pi"])
+
+        result = detect_candidates()
+        assert len(result["claude"]) == 1
+        assert len(result["pi"]) == 1
+        assert result["codex"] == []
+        assert result["opencode"] == []
+
+    def test_non_executable_skipped(self, tmp_path, monkeypatch):
+        """Non-executable files are not returned as candidates."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        base = tmp_path / "brew" / "bin"
+        base.mkdir(parents=True)
+        # Create a file without executable bit
+        dead = base / "claude"
+        dead.touch(mode=0o644)
+
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry._candidate_dirs",
+            lambda: [base],
+        )
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.shutil.which",
+            lambda name, path=None: None,
+        )
+
+        result = detect_candidates()
+        assert result["claude"] == []
+
+    def test_directories_skipped(self, tmp_path, monkeypatch):
+        """Directories named like a kind are not returned as candidates."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        base = tmp_path / "brew" / "bin"
+        base.mkdir(parents=True)
+        # Create a directory named 'claude' (not a file)
+        (base / "claude").mkdir()
+
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry._candidate_dirs",
+            lambda: [base],
+        )
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.shutil.which",
+            lambda name, path=None: None,
+        )
+
+        result = detect_candidates()
+        assert result["claude"] == []
+
+    def test_shutil_which_hit_deduped_with_dir_scan(self, tmp_path, monkeypatch):
+        """A binary found both via dir scan and shutil.which is de-duplicated."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        base = tmp_path / "opt" / "bin"
+        bin_path = base / "claude"
+        base.mkdir(parents=True)
+        bin_path.touch(mode=0o755)
+
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry._candidate_dirs",
+            lambda: [base],
+        )
+        # shutil.which returns the same path
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.shutil.which",
+            lambda name, path=None: str(bin_path) if name == "claude" else None,
+        )
+
+        result = detect_candidates()
+        assert len(result["claude"]) == 1
+
+    def test_shutil_which_only_hit(self, tmp_path, monkeypatch):
+        """When dir scan finds nothing, a shutil.which hit is still returned."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        # No candidate dirs, but shutil.which finds a binary
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry._candidate_dirs",
+            lambda: [],
+        )
+        path_bin = "/opt/homebrew/bin/pi"
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.shutil.which",
+            lambda name, path=None: path_bin if name == "pi" else None,
+        )
+
+        # Need to make sure is_binary_valid returns True for this path
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.is_binary_valid",
+            lambda p: True,
+        )
+
+        result = detect_candidates()
+        assert len(result["pi"]) == 1
+        assert path_bin in result["pi"][0]
+
+    def test_invalid_shutil_which_hit_skipped(self, tmp_path, monkeypatch):
+        """A shutil.which hit that fails validation is not returned."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry._candidate_dirs",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.shutil.which",
+            lambda name, path=None: "/fake/claude" if name == "claude" else None,
+        )
+        # is_binary_valid returns False for the fake path
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.is_binary_valid",
+            lambda p: False,
+        )
+
+        result = detect_candidates()
+        assert result["claude"] == []
+
+    def test_missing_dir_does_not_throw(self, tmp_path, monkeypatch):
+        """detect_candidates does not throw when a candidate dir does not exist."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        # _candidate_dirs returns a non-existent directory
+        missing_dir = tmp_path / "nonexistent" / "bin"
+        assert not missing_dir.exists()
+
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry._candidate_dirs",
+            lambda: [missing_dir],
+        )
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.shutil.which",
+            lambda name, path=None: None,
+        )
+
+        result = detect_candidates()
+        # Should return empty results, not throw
+        assert set(result.keys()) == set(self.KNOWN)
+        for kind in self.KNOWN:
+            assert result[kind] == []
+
+    def test_multiple_dirs_same_binary_deduped(self, tmp_path, monkeypatch):
+        """When the same binary appears in two scanned dirs, it's only listed once."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        # Create a common binary and symlink it into two dirs
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        real_bin = real_dir / "claude"
+        real_bin.touch(mode=0o755)
+
+        dir_a = tmp_path / "a" / "bin"
+        dir_a.mkdir(parents=True)
+        (dir_a / "claude").symlink_to(real_bin)
+
+        dir_b = tmp_path / "b" / "bin"
+        dir_b.mkdir(parents=True)
+        (dir_b / "claude").symlink_to(real_bin)
+
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry._candidate_dirs",
+            lambda: [dir_a, dir_b],
+        )
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.shutil.which",
+            lambda name, path=None: None,
+        )
+
+        result = detect_candidates()
+        # The resolved path is the same real file — should be de-duplicated
+        assert len(result["claude"]) == 1
+
+    def test_permission_error_on_dir_scan_graceful(self, tmp_path, monkeypatch):
+        """OSError during directory scan (e.g., permission denied) is caught."""
+        from runtime.orchestrator.executor_binary_registry import detect_candidates
+
+        base = tmp_path / "restricted" / "bin"
+        base.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry._candidate_dirs",
+            lambda: [base],
+        )
+        monkeypatch.setattr(
+            "runtime.orchestrator.executor_binary_registry.shutil.which",
+            lambda name, path=None: None,
+        )
+        # Monkeypatch Path.is_file to raise OSError for claude
+        original_is_file = Path.is_file
+        def raising_is_file(self):
+            if self.name == "claude":
+                raise OSError("Permission denied")
+            return original_is_file(self)
+        monkeypatch.setattr(Path, "is_file", raising_is_file)
+
+        result = detect_candidates()
+        assert result["claude"] == []
+
+
+# ─────────────────────────────────────────────────────────────────
 # _resolve_binary stored-path-first resolution tests
 # ─────────────────────────────────────────────────────────────────
 
