@@ -11,6 +11,7 @@
  * `nowMs` tick; this component only renders. Reused by the threads transcript
  * and the System Assistant dock (THR-056).
  */
+import type { ReactNode } from 'react';
 import { AgentChip } from './AgentChip';
 import { formatElapsed } from '@/lib/elapsed';
 
@@ -19,11 +20,18 @@ export function TypingBubble({
   status,
   startedAt,
   nowMs,
+  trailing,
 }: {
   agentName: string;
   status: 'queued' | 'working';
   startedAt: string | null;
   nowMs?: number;
+  /**
+   * Optional inline control rendered at the far right of the header row, next
+   * to the "replying…" caption (e.g. the threads "Abort reply" button). Omitted
+   * by other consumers (System Assistant dock) so their layout is unchanged.
+   */
+  trailing?: ReactNode;
 }): JSX.Element {
   const now = nowMs ?? Date.now();
   const working = status === 'working';
@@ -37,6 +45,7 @@ export function TypingBubble({
       <header className="text-caption mb-2 flex items-baseline gap-2">
         <AgentChip name={agentName} role="worker" />
         <span className="text-text-muted ml-auto">{caption}</span>
+        {trailing}
       </header>
       <TypingDots animate={working} />
     </article>

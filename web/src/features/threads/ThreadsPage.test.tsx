@@ -1160,31 +1160,37 @@ describe('ThreadsPage — abort replies', () => {
     return mountAt(`/orgs/${SLUG}/threads/${threadId}`);
   }
 
-  test('abort button appears in composer footer when thread has queued/working responders', async () => {
+  test('abort control sits inline on the replying indicator (not the composer footer)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithResponders([
       { agent_name: 'dev_agent', status: 'working' },
     ]);
 
-    const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    // THR-061 fidelity FIX: "Abort reply" moved OUT of the composer footer and
+    // now sits inline on the transcript replying row (the TypingBubble).
+    const btn = await screen.findByRole('button', { name: /Abort reply/i });
     expect(btn).toBeEnabled();
-    // The button must be in the composer footer, not the header actions area
     const footer = document.querySelector('footer');
     expect(footer).not.toBeNull();
-    expect(footer!.contains(btn)).toBe(true);
+    expect(footer!.contains(btn)).toBe(false);
+    // It lives on the in-flight bubble row (article labelled "<agent> is replying").
+    const bubble = btn.closest('article');
+    expect(bubble?.getAttribute('aria-label')).toMatch(/is replying/i);
   });
 
-  test('abort button is disabled when no in-flight responders', async () => {
+  test('no abort control renders when there are no in-flight responders', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithResponders([]);
 
     // Wait for detail to render.
     await screen.findByText('Test thread');
-    const btn = screen.getByRole('button', { name: /Abort replies/i });
-    expect(btn).toBeDisabled();
+    // With no queued/working responder there is no replying row, so the inline
+    // "Abort reply" control is absent entirely (it is no longer a persistent,
+    // disabled footer button).
+    expect(screen.queryByRole('button', { name: /Abort reply/i })).toBeNull();
   });
 
-  test('disabled abort button does not call POST when clicked', async () => {
+  test('no POST is possible when there are no in-flight responders', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
 
     let abortHit = false;
@@ -1204,17 +1210,12 @@ describe('ThreadsPage — abort replies', () => {
     mountThreadWithResponders([]);
 
     await screen.findByText('Test thread');
-    const btn = screen.getByRole('button', { name: /Abort replies/i });
-    expect(btn).toBeDisabled();
-
-    const user = userEvent.setup();
-    await user.click(btn);
-
-    // The POST must NOT have been made — disabled button blocks the action.
+    // No replying row → no abort control → the POST can never fire.
+    expect(screen.queryByRole('button', { name: /Abort reply/i })).toBeNull();
     expect(abortHit).toBe(false);
   });
 
-  test('abort button calls POST /abort-replies exactly once when enabled', async () => {
+  test('abort control calls POST /abort-replies exactly once when clicked', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
 
     let abortCount = 0;
@@ -1235,7 +1236,7 @@ describe('ThreadsPage — abort replies', () => {
       { agent_name: 'dev_agent', status: 'queued' },
     ]);
 
-    const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    const btn = await screen.findByRole('button', { name: /Abort reply/i });
     expect(btn).toBeEnabled();
 
     const user = userEvent.setup();
@@ -1247,13 +1248,13 @@ describe('ThreadsPage — abort replies', () => {
     });
   });
 
-  test('abort button is enabled with queued responder', async () => {
+  test('abort control appears (enabled) for a queued responder', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithResponders([
       { agent_name: 'dev_agent', status: 'queued' },
     ]);
 
-    const btn = await screen.findByRole('button', { name: /Abort replies/i });
+    const btn = await screen.findByRole('button', { name: /Abort reply/i });
     expect(btn).toBeEnabled();
   });
 });
