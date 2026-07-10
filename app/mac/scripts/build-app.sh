@@ -83,6 +83,7 @@ echo "  Web dist copied."
 ICONSET_SRC="$PROJECT_DIR/Resources/AppIcon.appiconset"
 if [ -d "$ICONSET_SRC" ]; then
     TEMP_DIR="$(mktemp -d /tmp/happyranch-icon.XXXXXX)"
+    trap 'rm -rf "$TEMP_DIR"' EXIT
     TEMP_ICONSET="$TEMP_DIR/AppIcon.iconset"
     mkdir -p "$TEMP_ICONSET"
     # Map vendored filenames -> standard .iconset filenames per Contents.json
@@ -109,7 +110,6 @@ if [ -d "$ICONSET_SRC" ]; then
     cp "$ICONSET_SRC/icon_1024.png" "$TEMP_ICONSET/icon_512x512@2x.png"
     iconutil -c icns -o "$TEMP_ICONSET/AppIcon.icns" "$TEMP_ICONSET"
     cp "$TEMP_ICONSET/AppIcon.icns" "${BUNDLE_NAME}.app/Contents/Resources/AppIcon.icns"
-    rm -rf "$TEMP_DIR"
     echo "  AppIcon.icns assembled and copied into Resources."
 else
     echo "  WARNING: $ICONSET_SRC not found — skipping icon assembly."
