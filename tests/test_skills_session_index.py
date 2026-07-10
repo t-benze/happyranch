@@ -977,6 +977,7 @@ class TestCallPathManagedSkillsIndex:
             def __init__(self):
                 self.db = db
                 self.root = tmp_path
+                self.slug = 'test-org'
 
         await run_invocation(
             org_state=Org(), invocation_token=inv.invocation_token,
@@ -1034,6 +1035,7 @@ class TestCallPathManagedSkillsIndex:
             def __init__(self):
                 self.db = db
                 self.root = tmp_path
+                self.slug = 'test-org'
 
         await run_invocation(
             org_state=Org(), invocation_token=inv.invocation_token,
@@ -1147,6 +1149,7 @@ class TestCallPathManagedSkillsIndex:
             def __init__(self):
                 self.db = db
                 self.root = tmp_path
+                self.slug = 'test-org'
 
         await run_invocation(
             org_state=Org(), invocation_token=inv.invocation_token,
@@ -1278,6 +1281,7 @@ class TestCallPathManagedSkillsIndex:
             def __init__(self):
                 self.db = db
                 self.root = tmp_path
+                self.slug = 'test-org'
 
         await run_invocation(
             org_state=Org(), invocation_token=inv.invocation_token,
