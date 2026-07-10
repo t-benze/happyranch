@@ -903,16 +903,26 @@ function DetailColumn({
               head of the rail matches the design; server order is preserved
               within each group (stable sort). ALL real linked tasks are shown —
               nothing is dropped (honesty fence; the design sample has 2, real
-              threads have ~15). Whether to collapse to active-only behind a
-              "show all" expander is a product question flagged in the PR. */}
+              threads have ~42). The chip list is capped to a bounded height with
+              an INTERNAL scroll so a busy thread's task list cannot push the
+              "This thread / Fresh tokens" panel below the fold — every chip stays
+              rendered and reachable by scrolling within the cap (LAYOUT bound, not
+              a data cull). The header count signals when there are more than fit.
+              Whether to collapse to active-only behind a "show all" expander
+              remains a product question flagged in the PR. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Linked tasks</h3>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
+              Linked tasks
+              {threadTasks.data && threadTasks.data.length > 0 && (
+                <span className="text-text-disabled ml-1 tabular-nums normal-case">({threadTasks.data.length})</span>
+              )}
+            </h3>
             {threadTasks.isLoading ? (
               <p className="text-text-muted text-xs">Loading…</p>
             ) : threadTasks.isError ? (
               <p className="text-feedback-danger text-xs">Couldn’t load tasks</p>
             ) : threadTasks.data && threadTasks.data.length > 0 ? (
-              <ul className="flex flex-wrap gap-1.5">
+              <ul className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1">
                 {[...threadTasks.data]
                   .sort(
                     (a, b) =>
