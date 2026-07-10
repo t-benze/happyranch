@@ -208,8 +208,20 @@ def test_register_case_insensitive_kind(client, tmp_path):
 # ─────────────────────────────────────────────────────────────────
 
 
-def test_detect_returns_all_four_kinds(client):
+def test_detect_returns_all_four_kinds(client, tmp_path, monkeypatch):
     """GET /detect returns a candidates list covering all 4 kinds."""
+    from runtime.orchestrator import executor_binary_registry as reg_mod
+
+    # Create fake executables for all 4 kinds in a temp directory
+    # so the test is deterministic and doesn't depend on host state.
+    base = tmp_path / "fake_bin"
+    base.mkdir()
+    for kind in ("claude", "codex", "opencode", "pi"):
+        (base / kind).touch(mode=0o755)
+
+    monkeypatch.setattr(reg_mod, "_candidate_dirs", lambda: [base])
+    monkeypatch.setattr(reg_mod.shutil, "which", lambda name, path=None: None)
+
     r = client.get("/api/v1/executor-binaries/detect")
     assert r.status_code == 200
     body = r.json()
