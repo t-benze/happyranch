@@ -99,6 +99,7 @@ class FakeOrgState:
     def __init__(self, db: Database, root):
         self.db = db
         self.root = root
+        self.slug = "test"
 
 
 @pytest.mark.asyncio

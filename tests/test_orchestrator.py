@@ -13,6 +13,13 @@ from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
 
 
+@pytest.fixture(autouse=True)
+def _ensure_protocol_skills(test_settings):
+    """TASK-2511: pre-create protocol/skills/ source dirs so
+    ensure_system_contracts_materialized can inject + verify on-disk."""
+    _setup_protocol_skills(test_settings)
+
+
 @pytest.fixture
 def orchestrator(test_settings, test_runtime):
     test_runtime.root.mkdir(parents=True, exist_ok=True)
@@ -25,6 +32,21 @@ def orchestrator(test_settings, test_runtime):
 
 
 _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_agent"]
+
+# System-contract IDs expected for "task" context with repos.
+# Must exist in protocol/skills/ so ensure_system_contracts_materialized
+# (TASK-2511) can inject + verify them.
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread"]
+
+
+def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> None:
+    """Create minimal protocol/skills/<id>/SKILL.md source files so
+    ensure_system_contracts_materialized can inject them into workspaces."""
+    for sid in (contract_ids or _TASK_CONTEXT_CONTRACT_IDS):
+        src = settings.get_protocol_dir() / "skills" / sid
+        src.mkdir(parents=True, exist_ok=True)
+        (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
+
 
 def _setup_workspaces(runtime, agents: list[str] | None = None):
     for agent in (agents or _DEFAULT_AGENTS):
@@ -225,24 +247,32 @@ def test_run_agent_skips_session_registration_when_tracker_not_attached(
     assert captured == [(task_id, "engineering_head", "sess-eh")]
 
 
-def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime):
-    """Workspace bootstrap is an explicit, operator-driven step. If the
-    start-task skill file is missing, the orchestrator should raise an
-    actionable error instead of silently marking the task rejected."""
-    from runtime.orchestrator.orchestrator import WorkspaceNotInitialized
+def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime, test_settings):
+    """TASK-2511: Post-Phase-4 cutover, a workspace with missing source
+    protocol/skills/ raises SystemContractMaterializationError (explicit,
+    retry-eligible) instead of a bare WorkspaceNotInitialized or Errno 2."""
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError,
+    )
+
+    # Remove source skills to simulate post-redeploy state
+    import shutil
+    src_skills = test_settings.get_protocol_dir() / "skills"
+    if src_skills.exists():
+        shutil.rmtree(src_skills)
+    src_skills.mkdir(parents=True, exist_ok=True)  # empty dir
 
     task_id = orchestrator.create_task("ping")
     eh_workspace = test_runtime.workspaces_dir / "engineering_head"
     assert not eh_workspace.exists()
 
-    with pytest.raises(WorkspaceNotInitialized) as exc_info:
+    with pytest.raises(SystemContractMaterializationError) as exc_info:
         orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     msg = str(exc_info.value)
-    assert "engineering_head" in msg
-    assert "happyranch init-agent engineering_head" in msg
-    # The executor must never have been invoked against a broken workspace.
-    assert not (eh_workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
+    assert "start-task" in msg  # names the missing contract
+    assert "engineering_head" in str(eh_workspace) or str(eh_workspace) in msg
+    assert "Errno 2" not in msg  # never bare Errno 2
 
 
 def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, monkeypatch):

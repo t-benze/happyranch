@@ -21,6 +21,7 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
+    ensure_system_contracts_materialized,
     inject_managed_skills,
     inject_system_contracts,
     refresh_session_skills,
@@ -143,13 +144,35 @@ async def run_dream(
     except Exception:
         pass
 
-    # Explicit context-aware system-contract injection (THR-055 Phase 1).
+    # TASK-2511: resolve executor name early for the materialization guard.
+    _prov = _executor_name(workspace)
+    if not get_registry().is_registered(_prov):
+        _prov = "claude"
+
+    # Explicit context-aware system-contract injection with on-disk verification
+    # (THR-055 Phase 1 + TASK-2511 hardening). This is a HARD synchronous
+    # pre-spawn precondition — if materialization fails we persist the named
+    # error and STOP before executor spawn, never proceeding with missing
+    # contract files (REVISE TASK-2525).
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError,
+    )
     try:
-        inject_system_contracts(
+        ensure_system_contracts_materialized(
             workspace, settings, slug=org_state.slug, context="dream",
+            provider=_prov,
         )
-    except Exception:
-        pass
+    except SystemContractMaterializationError as e:
+        org_state.db.update_dream(
+            dream_id,
+            status=DreamStatus.FAILED,
+            ended_at=datetime.now(timezone.utc),
+            error=str(e),
+        )
+        AuditLogger(org_state.db).log_dream_failed(
+            dream_id, dream.agent_name, reason=str(e),
+        )
+        return
 
     # Managed-catalog skill injection (THR-055 Phase 4).
     try:
@@ -183,9 +206,7 @@ async def run_dream(
         protocol_doc_manifest=protocol_doc_manifest,
     )
 
-    executor_name = _executor_name(workspace)
-    if not get_registry().is_registered(executor_name):
-        executor_name = "claude"
+    executor_name = _prov  # already resolved above (TASK-2511)
     executor = executor_factory(executor_name, settings, paths) if executor_factory else _build_executor_for_provider(executor_name, settings, paths)
 
     loop = asyncio.get_running_loop()
