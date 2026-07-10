@@ -15,37 +15,20 @@ export function ResponderStatusStrip({
   );
   if (terminal.length === 0) return null;
   const now = nowMs ?? Date.now();
-  // Carded "Responders · this dispatch" strip (THR-061 a-thread-detail mockup).
-  // Per-agent terminal record with a category note + a color-coded pill. The
-  // in-flight working/queued states stay on the tail TypingBubble (no dup here).
+  // Light inline terminal record (THR-061 a-thread-detail — the founder found
+  // the old carded "Responders · this dispatch" panel too heavy). No card, no
+  // uppercase header: just a wrapped row of "· <agent> <state>" with a small
+  // color-coded dot + colored state label per agent. The in-flight
+  // working/queued states stay on the tail TypingBubble (no dup here).
   return (
-    <div className="border-border-subtle bg-surface-sunken mt-2 max-w-md overflow-hidden rounded-lg border">
-      <div className="text-text-muted border-border-subtle text-overline border-b px-3 py-2 font-semibold tracking-wide uppercase">
-        Responders · this dispatch
-      </div>
-      <ul>
-        {terminal.map((s) => (
-          <li
-            key={s.agent_name}
-            className="border-border-subtle flex items-center gap-2 border-t px-3 py-2 text-xs first:border-t-0"
-          >
-            <span className="text-text-primary font-mono text-xs">{s.agent_name}</span>
-            {(s.status === 'declined' || s.status === 'failed') && s.category && (
-              <span className="text-text-muted text-caption font-mono">category: {s.category}</span>
-            )}
-            <span
-              className={`text-overline ml-auto inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 font-bold tracking-wide uppercase ${pillClass(s.status)}`}
-            >
-              {s.status === 'replied' && (
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" aria-hidden="true">
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-              )}
-              {statusLabel(s, now)}
-            </span>
-          </li>
-        ))}
-      </ul>
+    <div className="text-caption mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+      {terminal.map((s) => (
+        <span key={s.agent_name} className="inline-flex items-center gap-1.5">
+          <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(s.status)}`} />
+          <span className="text-text-secondary font-mono">{s.agent_name}</span>
+          <span className={stateClass(s.status)}>{statusLabel(s, now)}</span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -91,19 +74,36 @@ function terminalLabel(s: ResponderStatusEntry): string | null {
   }
 }
 
-// Pill palette for the carded strip — maps each terminal state to a design
-// token soft/foreground pair (mirrors the a-thread-detail resp-pill styles).
-function pillClass(s: ResponderStatus): string {
+// Colored state LABEL token per terminal state (a-thread-detail). The replied
+// (accent) and failed (danger) tokens are asserted by ResponderStatusStrip
+// tests, so keep those class names stable.
+function stateClass(s: ResponderStatus): string {
   switch (s) {
     case 'queued':
-      return 'bg-surface border-border-default text-text-muted border';
+      return 'text-text-muted';
     case 'working':
-      return 'bg-info-soft text-info';
+      return 'text-info';
     case 'replied':
-      return 'bg-accent-soft text-accent-text';
+      return 'text-accent-text';
     case 'declined':
-      return 'bg-attention-soft text-attention-text';
+      return 'text-attention-text';
     case 'failed':
-      return 'bg-danger-soft text-danger';
+      return 'text-danger';
+  }
+}
+
+// Small leading dot color per terminal state (background token).
+function dotClass(s: ResponderStatus): string {
+  switch (s) {
+    case 'queued':
+      return 'bg-border-default';
+    case 'working':
+      return 'bg-info';
+    case 'replied':
+      return 'bg-accent';
+    case 'declined':
+      return 'bg-attention';
+    case 'failed':
+      return 'bg-danger';
   }
 }

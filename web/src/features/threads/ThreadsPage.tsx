@@ -23,7 +23,6 @@ import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
-import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
 import type { ThreadAttachment, ThreadAttachmentRef, ThreadMessage } from '@/lib/api/types';
@@ -139,6 +138,45 @@ function participantLed(name: string, status: string | null): string {
     default:
       return 'bg-agent-worker';
   }
+}
+
+// Linked-task statuses that count as ACTIVE (sorted to the top of the rail so
+// the visible head of the list matches the a-thread-detail chips, which show
+// active work first). Everything else is terminal/settled.
+const ACTIVE_TASK_STATUSES = new Set(['in_progress', 'pending', 'escalated', 'blocked']);
+
+function isActiveTaskStatus(status: string): boolean {
+  return ACTIVE_TASK_STATUSES.has(status);
+}
+
+/**
+ * Tint token pair for a linked-task chip (THR-061 a-thread-detail). Mirrors the
+ * shared StatusBadge status→token mapping so the two surfaces read the same,
+ * but packs the status word + id into ONE compact chip (which StatusBadge can't
+ * express). Active states get a colored fill; settled terminals stay muted.
+ */
+function taskChipClass(status: string): string {
+  switch (status) {
+    case 'in_progress':
+    case 'completed':
+      return 'bg-tier-green-tint text-status-open';
+    case 'pending':
+      return 'bg-tier-yellow-tint text-status-archiving';
+    case 'escalated':
+    case 'blocked':
+      return 'bg-tier-red-tint text-status-escalated';
+    case 'failed':
+      return 'bg-tier-red-tint text-status-abandoned';
+    default: // cancelled, resolved_superseded, archived, unknown
+      return 'border-border-default text-status-archived border';
+  }
+}
+
+// Chip status word — matches the StatusBadge label vocabulary (only
+// resolved_superseded is humanized); every other status renders verbatim so
+// the founder sees the REAL stored status, not a paraphrase.
+function taskStatusLabel(status: string): string {
+  return status === 'resolved_superseded' ? 'resolved (superseded)' : status;
 }
 
 /**
@@ -314,7 +352,6 @@ export function ThreadsPage(): JSX.Element {
       ),
     [messages],
   );
-  const inFlight = useMemo(() => selectInFlightResponders(messages), [messages]);
   const nowMs = useNowMs(anyWorking);
 
   // Send mutation lives at the page level so the Composer pattern is pure.
@@ -568,6 +605,8 @@ export function ThreadsPage(): JSX.Element {
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
           onRemoveParticipant={setRemoveTarget}
+          isAborting={abortReplies.isPending}
+          onAbortReplies={() => { abortReplies.mutateAsync().catch(() => {}); }}
           composer={
             <Composer
               agents={agents}
@@ -581,9 +620,6 @@ export function ThreadsPage(): JSX.Element {
               attachments={pendingAttachments}
               onAttachmentsChange={setPendingAttachments}
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
-              hasInFlightResponders={inFlight.length > 0}
-              isAborting={abortReplies.isPending}
-              onAbortReplies={() => { abortReplies.mutateAsync().catch(() => {}); }}
             />
           }
           slug={slug}
@@ -654,6 +690,10 @@ interface DetailColumnProps {
   onArchive: () => void;
   /** Open the confirm-remove dialog for the given participant. */
   onRemoveParticipant: (name: string) => void;
+  /** Abort all in-flight replies — rendered inline by the transcript replying indicator. */
+  onAbortReplies: () => void;
+  /** True while the abort mutation is in flight (button shows "Aborting…"). */
+  isAborting: boolean;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -670,6 +710,8 @@ function DetailColumn({
   onInvite,
   onArchive,
   onRemoveParticipant,
+  onAbortReplies,
+  isAborting,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -783,6 +825,8 @@ function DetailColumn({
               slug={slug}
               threadId={threadId}
               nowMs={nowMs}
+              onAbortReplies={onAbortReplies}
+              isAborting={isAborting}
             />
           </div>
           <footer className="border-border-default bg-surface-sunken border-t p-3">
@@ -853,36 +897,59 @@ function DetailColumn({
             )}
           </div>
 
-          {/* Tasks from this thread — read-only list of dispatched tasks,
-              newest-first (server-ordered; do NOT re-sort). THR-061. */}
+          {/* Linked tasks — compact COLORED CHIPS (status word + id in one
+              pill), THR-061 a-thread-detail. ACTIVE tasks
+              (in_progress/pending/escalated/blocked) sort to the top so the
+              head of the rail matches the design; server order is preserved
+              within each group (stable sort). ALL real linked tasks are shown —
+              nothing is dropped (honesty fence; the design sample has 2, real
+              threads have ~42). The chip list is capped to a bounded height with
+              an INTERNAL scroll so a busy thread's task list cannot push the
+              "This thread / Fresh tokens" panel below the fold — every chip stays
+              rendered and reachable by scrolling within the cap (LAYOUT bound, not
+              a data cull). The header count signals when there are more than fit.
+              Whether to collapse to active-only behind a "show all" expander
+              remains a product question flagged in the PR. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Linked tasks</h3>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
+              Linked tasks
+              {threadTasks.data && threadTasks.data.length > 0 && (
+                <span className="text-text-disabled ml-1 tabular-nums normal-case">({threadTasks.data.length})</span>
+              )}
+            </h3>
             {threadTasks.isLoading ? (
               <p className="text-text-muted text-xs">Loading…</p>
             ) : threadTasks.isError ? (
               <p className="text-feedback-danger text-xs">Couldn’t load tasks</p>
             ) : threadTasks.data && threadTasks.data.length > 0 ? (
-              // Founder ruling (THR-061 seq79): the thread-tasks rail shows
-              // STATUS-PILL + ID — overriding the earlier msg51 id-only note.
-              // Two elements only (real t.status + linked id); no invented
-              // fields (honesty fence). Pill + id wrap so the narrow rail never
-              // overflows on long status labels.
-              <ul className="space-y-1.5">
-                {threadTasks.data.map((t) => (
-                  <li key={t.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <StatusBadge status={t.status} />
-                    {slug ? (
-                      <Link
-                        to={`/orgs/${slug}/tasks/${t.id}`}
-                        className="text-accent font-mono text-xs hover:underline"
-                      >
-                        {t.id}
-                      </Link>
-                    ) : (
-                      <span className="text-text-secondary font-mono text-xs">{t.id}</span>
-                    )}
-                  </li>
-                ))}
+              <ul className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1">
+                {[...threadTasks.data]
+                  .sort(
+                    (a, b) =>
+                      (isActiveTaskStatus(a.status) ? 0 : 1) -
+                      (isActiveTaskStatus(b.status) ? 0 : 1),
+                  )
+                  .map((t) => (
+                    <li
+                      key={t.id}
+                      className={`text-mono-sm inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 ${taskChipClass(t.status)}`}
+                    >
+                      {isActiveTaskStatus(t.status) && (
+                        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden />
+                      )}
+                      <span className="font-semibold">{taskStatusLabel(t.status)}</span>
+                      {slug ? (
+                        <Link
+                          to={`/orgs/${slug}/tasks/${t.id}`}
+                          className="font-mono opacity-80 hover:underline"
+                        >
+                          {t.id}
+                        </Link>
+                      ) : (
+                        <span className="font-mono opacity-80">{t.id}</span>
+                      )}
+                    </li>
+                  ))}
               </ul>
             ) : (
               <p className="text-text-muted text-xs">No tasks dispatched from this thread yet</p>
@@ -978,9 +1045,12 @@ interface TranscriptProps {
   slug?: string;
   threadId?: string;
   nowMs?: number;
+  /** Abort all in-flight replies — surfaced inline next to the replying bubble. */
+  onAbortReplies?: () => void;
+  isAborting?: boolean;
 }
 
-function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: TranscriptProps): JSX.Element {
+function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, onAbortReplies, isAborting }: TranscriptProps): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
 
   // Agents mid-reply (working) or waiting to reply (queued)
@@ -1064,6 +1134,22 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: Tr
           status={s.status as 'queued' | 'working'}
           startedAt={s.started_at}
           nowMs={nowMs}
+          // "Abort reply" sits inline on the in-flight row (a-thread-detail);
+          // a single click aborts EVERY in-flight reply on the thread (the
+          // mutation is thread-level, covering both working and queued).
+          trailing={
+            onAbortReplies ? (
+              <button
+                type="button"
+                onClick={onAbortReplies}
+                disabled={isAborting}
+                title="Abort pending replies"
+                className="text-text-muted hover:text-feedback-danger disabled:text-text-disabled ml-1 shrink-0 rounded transition-colors disabled:cursor-default"
+              >
+                {isAborting ? 'Aborting…' : 'Abort reply'}
+              </button>
+            ) : undefined
+          }
         />
       ))}
       <div ref={endRef} />
