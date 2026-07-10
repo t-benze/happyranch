@@ -110,6 +110,9 @@ function setupThreadWithMessages(
     http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/tail`, () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
     ),
+    // Fresh-tokens rail row rides GET /tokens?group_by=thread; default to an
+    // empty rollup so the row is OMITTED (onUnhandledRequest:'error' guard).
+    http.get(`/api/v1/orgs/${SLUG}/tokens`, () => HttpResponse.json({ rollup: [] })),
   );
 }
 
@@ -553,6 +556,7 @@ describe('ThreadsPage — structured detail rail (THREADDET-02)', () => {
       http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/tail`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
       ),
+      http.get(`/api/v1/orgs/${SLUG}/tokens`, () => HttpResponse.json({ rollup: [] })),
     );
   }
 
@@ -636,6 +640,61 @@ describe('ThreadsPage — structured detail rail (THREADDET-02)', () => {
     expect(within(rail).queryByText(/linked items/i)).not.toBeInTheDocument();
     expect(within(rail).queryByText(/token cost/i)).not.toBeInTheDocument();
     expect(within(rail).queryByText(/pull request/i)).not.toBeInTheDocument();
+  });
+
+  test('renders the real per-thread Fresh tokens figure (input_tokens) in the rail', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupDetail('THR-204', ['dev_agent'], [
+      mkMessage(1, 'dev_agent', 'message', 'Hello'),
+    ]);
+    // Real per-thread rollup — fresh/uncached INPUT is 715_000 (→ "715.0K"),
+    // deliberately distinct from cache reads and the grand total so the row
+    // must bind to input_tokens, not total_tokens or cache_read_tokens.
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
+        HttpResponse.json({
+          rollup: [
+            {
+              thread_id: 'THR-204',
+              sessions: 3,
+              input_tokens: 715_000,
+              output_tokens: 12_000,
+              cache_read_tokens: 9_000_000,
+              cache_creation_tokens: 4_000,
+              reasoning_tokens: 0,
+              total_tokens: 727_000,
+            },
+          ],
+        }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads/THR-204`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Rail thread/i })).toBeInTheDocument();
+    });
+    const rail = screen.getByLabelText('Thread properties');
+    // The Fresh tokens row shows the fresh/uncached input total via formatTokens
+    // — NOT the grand total (727K) nor cache reads (9M).
+    expect(await within(rail).findByText('Fresh tokens')).toBeInTheDocument();
+    expect(within(rail).getByText('715.0K')).toBeInTheDocument();
+    // Cost stays the honest static fence — no dollar meter is fabricated.
+    expect(within(rail).getByText('not metered')).toBeInTheDocument();
+  });
+
+  test('omits the Fresh tokens row when the thread has no recorded usage', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // setupDetail stubs an empty rollup → no matching row → row omitted.
+    setupDetail('THR-205', ['dev_agent'], [
+      mkMessage(1, 'dev_agent', 'message', 'Hello'),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-205`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Rail thread/i })).toBeInTheDocument();
+    });
+    const rail = screen.getByLabelText('Thread properties');
+    // The "This thread" card still renders (Cost/Opened) but no Fresh tokens.
+    expect(within(rail).getByText('not metered')).toBeInTheDocument();
+    expect(within(rail).queryByText('Fresh tokens')).not.toBeInTheDocument();
   });
 
   // Thread-scoped attachments carry thread_attachment_id (non-null) and an

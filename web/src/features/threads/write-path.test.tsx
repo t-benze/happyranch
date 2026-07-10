@@ -20,6 +20,9 @@ function stubBaseHandlers() {
     http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
     ),
+    // Thread-detail rail fetches per-thread Fresh tokens over this route;
+    // default empty so onUnhandledRequest:'error' stays satisfied.
+    http.get(`/api/v1/orgs/${SLUG}/tokens`, () => HttpResponse.json({ rollup: [] })),
   );
 }
 
@@ -501,7 +504,7 @@ describe('ThreadsPage — write path', () => {
       renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${INVITE_THREAD_ID}` });
 
       // Open the Invite participant dialog.
-      await user.click(await screen.findByRole('button', { name: /^Invite$/i }));
+      await user.click(await screen.findByRole('button', { name: /Invite participant/i }));
 
       // The agent name input should have the same placeholder as NewThreadDialog's recipients field.
       const input = await screen.findByLabelText(/^Agent name$/i);
@@ -533,7 +536,7 @@ describe('ThreadsPage — write path', () => {
       renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${INVITE_THREAD_ID}` });
 
       // Open the Invite participant dialog.
-      await user.click(await screen.findByRole('button', { name: /^Invite$/i }));
+      await user.click(await screen.findByRole('button', { name: /Invite participant/i }));
 
       // Type an agent name prefix to trigger autocomplete.
       const input = screen.getByLabelText(/^Agent name$/i);
@@ -552,7 +555,7 @@ describe('ThreadsPage — write path', () => {
       });
 
       // Submit via the dialog's Invite button (scoped to the dialog to avoid
-      // the header's "Invite" button).
+      // the rail's "Invite participant" trigger).
       const dialog = screen.getByRole('dialog');
       await user.click(within(dialog).getByRole('button', { name: /^Invite$/i }));
 
@@ -587,7 +590,7 @@ describe('ThreadsPage — write path', () => {
       renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${INVITE_THREAD_ID}` });
 
       // Open the Invite participant dialog.
-      await user.click(await screen.findByRole('button', { name: /^Invite\b/i }));
+      await user.click(await screen.findByRole('button', { name: /Invite participant/i }));
 
       // Type multiple comma-separated agent names.
       const input = screen.getByLabelText(/^Agent name$/i);
@@ -612,7 +615,7 @@ describe('ThreadsPage — write path', () => {
       renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/${INVITE_THREAD_ID}` });
 
       // Open the Invite participant dialog.
-      await user.click(await screen.findByRole('button', { name: /^Invite\b/i }));
+      await user.click(await screen.findByRole('button', { name: /Invite participant/i }));
 
       // Submit with empty input via the dialog's Invite button.
       const dialog = screen.getByRole('dialog');
