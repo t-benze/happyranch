@@ -51,6 +51,43 @@ export function useTopThreadTokens(params?: {
 }
 
 /**
+ * FRESH (uncached input) token total for a single thread — powers the
+ * thread-detail "This thread · Fresh tokens" rail row (THR-061
+ * a-thread-detail). Rides the SAME existing `GET /tokens?group_by=thread`
+ * rollup the dashboard Top-token-threads panel uses, filtered to this thread
+ * via the route's `thread_id` param (no new daemon route, no OpenAPI drift).
+ *
+ * Returns the matching rollup row's `input_tokens` — the fresh/uncached input
+ * column, which is exactly what the mockup's "Fresh tokens" label denotes
+ * (cache reads/creation are excluded; they are separate columns). Returns
+ * `null` when the thread has no recorded usage so the caller OMITS the row
+ * rather than fabricating a number (data-honesty fence). The client-side
+ * `find` by thread_id keeps the mapping correct even if the server ignores the
+ * filter and returns the full rollup.
+ */
+export function useThreadFreshTokens(
+  threadId: string | undefined,
+): QueryLike<number | null> {
+  const { slug: routeSlug } = useParams<{ slug: string }>();
+  const ctxSlug = useOrgSlugOptional();
+  const slug = routeSlug ?? ctxSlug ?? '';
+  return useQuery({
+    queryKey: ['tokens', slug, 'thread-fresh', threadId ?? null],
+    queryFn: async () => {
+      const res = await tokensApi.listTokens(slug, {
+        group_by: 'thread',
+        thread_id: threadId,
+      });
+      const rollup = 'rollup' in res ? res.rollup : [];
+      const row = rollup.find((r) => r.thread_id === threadId);
+      return row ? row.input_tokens : null;
+    },
+    enabled: !!slug && !!threadId,
+    staleTime: 30_000,
+  }) as QueryLike<number | null>;
+}
+
+/**
  * Total tokens recorded since a `since` boundary — powers the dashboard
  * "Tokens today" tile (THR-030 HOME-04).
  *

@@ -30,6 +30,7 @@ import type { ThreadAttachment, ThreadAttachmentRef, ThreadMessage } from '@/lib
 import { attachmentContentType, safeArtifactName } from '@/lib/threadAttachments';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
+import { formatTokens, useThreadFreshTokens } from '@/hooks/tokens';
 import { isGPrefixArmed } from '@/hooks/global-jump';
 import {
   useAbortReplies,
@@ -114,6 +115,30 @@ function lastSpeakerChip(speaker: string | null | undefined): { name: string; ro
  */
 function participantChipRole(name: string): 'worker' | 'founder' {
   return name === 'founder' ? 'founder' : 'worker';
+}
+
+/**
+ * LED dot color for a participant row (THR-061 a-thread-detail .pled). The
+ * founder keeps their identity color; every other agent's dot reflects their
+ * LATEST responder state (honest — the same responder_status the strip shows):
+ * replied→accent green, working→info blue, declined→attention amber,
+ * failed→danger red. Agents with no recorded state fall back to the neutral
+ * worker color (also what the rail-chip test pins for a status-less agent).
+ */
+function participantLed(name: string, status: string | null): string {
+  if (name === 'founder') return 'bg-agent-founder';
+  switch (status) {
+    case 'working':
+      return 'bg-info';
+    case 'replied':
+      return 'bg-accent';
+    case 'declined':
+      return 'bg-attention';
+    case 'failed':
+      return 'bg-danger';
+    default:
+      return 'bg-agent-worker';
+  }
 }
 
 /**
@@ -658,6 +683,11 @@ function DetailColumn({
   // Tasks dispatched from this thread (THR-061). Called before the early
   // returns so the hook order stays stable; self-gates on threadId.
   const threadTasks = useThreadTasks(threadId);
+  // Fresh (uncached input) token total for this thread — the "This thread ·
+  // Fresh tokens" rail figure. Real, wired over the existing tokens rollup;
+  // null (→ row omitted) when the thread has no recorded usage. Called before
+  // the early returns to keep the hook order stable.
+  const freshTokens = useThreadFreshTokens(threadId);
   // Back affordance — the list column is collapsed in this view, so the link
   // back to the single-column thread list must stay reachable in every state.
   const backNav = (
@@ -715,10 +745,6 @@ function DetailColumn({
 
   const open = thread.status === 'open';
   const isDreamOriginated = !!thread.composed_from_dream_id;
-  const statusPillCls =
-    thread.status === 'open'
-      ? 'bg-accent-soft text-accent-text'
-      : 'bg-surface-sunken border border-border-default text-text-muted';
 
   return (
     <section className="flex h-full flex-col">
@@ -732,7 +758,8 @@ function DetailColumn({
         dreamOriginated={isDreamOriginated}
         actions={
           <>
-            <Button variant="ghost" size="sm" onClick={onInvite} disabled={!open} title="Invite (I)">Invite</Button>
+            {/* Invite moved into the Participants rail (a-thread-detail);
+                the header carries only Archive + archived-thread affordances. */}
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
             {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
             {slug && thread.participants[0] && (
@@ -776,21 +803,26 @@ function DetailColumn({
             {thread.participants.length > 0 ? (
               <ul className="space-y-0.5">
                 {thread.participants.map((p) => {
-                  const led = participantChipRole(p) === 'founder' ? 'bg-agent-founder' : 'bg-agent-worker';
-                  const status = p === 'founder' ? 'founder' : (statusByAgent.get(p) ?? null);
+                  // Latest responder state drives BOTH the LED color and the
+                  // status label (honest, derived — no fabrication). The
+                  // founder is the viewer, shown as "you" with a role label.
+                  const respStatus = statusByAgent.get(p) ?? null;
+                  const led = participantLed(p, respStatus);
+                  const statusLabel = p === 'founder' ? 'founder' : respStatus;
+                  const displayName = p === 'founder' ? 'you' : p;
                   return (
-                    <li key={p} className="group flex items-center gap-2 py-1">
+                    <li key={p} className="flex items-center gap-2 py-1">
                       <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${led}`} />
-                      <span className="text-text-primary truncate font-mono text-xs">{p}</span>
+                      <span className="text-text-primary truncate text-xs font-medium">{displayName}</span>
                       <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                        {status && <span className="text-text-muted text-caption">{status}</span>}
-                        {open && (
+                        {statusLabel && <span className="text-text-muted text-caption">{statusLabel}</span>}
+                        {open && p !== 'founder' && (
                           <button
                             type="button"
                             aria-label={`Remove ${p}`}
                             title={`Remove ${p}`}
                             onClick={() => onRemoveParticipant(p)}
-                            className="text-text-muted hover:text-feedback-danger rounded px-1 text-xs leading-none opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                            className="text-text-muted hover:text-feedback-danger rounded px-1 text-xs leading-none transition-colors"
                           >
                             ✕
                           </button>
@@ -803,12 +835,28 @@ function DetailColumn({
             ) : (
               <p className="text-text-muted text-xs">none</p>
             )}
+            {/* Invite participant — moved from the header into the rail to
+                match a-thread-detail. Open-thread only; opens the InviteDialog. */}
+            {open && (
+              <button
+                type="button"
+                onClick={onInvite}
+                title="Invite participant (I)"
+                className="border-border-default text-text-secondary hover:bg-surface-raised mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs transition-colors"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <circle cx="9" cy="8" r="3" />
+                  <path d="M3.5 20a5.5 5.5 0 0110 0M18 8v6M15 11h6" />
+                </svg>
+                Invite participant
+              </button>
+            )}
           </div>
 
           {/* Tasks from this thread — read-only list of dispatched tasks,
               newest-first (server-ordered; do NOT re-sort). THR-061. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Tasks from this thread</h3>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Linked tasks</h3>
             {threadTasks.isLoading ? (
               <p className="text-text-muted text-xs">Loading…</p>
             ) : threadTasks.isError ? (
@@ -841,23 +889,22 @@ function DetailColumn({
             )}
           </div>
 
-          {/* This thread — meta card (THR-061 a-thread-detail). Groups Status ·
-              Cost · Opened. Per-thread token rollup ("Fresh tokens") is
-              Category C — no field/route exists — so it is OMITTED; Cost is a
-              static honest "not metered" fence, never a fabricated number. */}
+          {/* This thread — meta card (THR-061 a-thread-detail). Fresh tokens ·
+              Cost · Opened. "Fresh tokens" is the REAL per-thread fresh/uncached
+              input total, wired over the existing tokens rollup and OMITTED when
+              the thread has no recorded usage (never a fabricated figure). Cost
+              stays a static honest "not metered" fence — no dollar meter exists
+              on main, so no number is invented. Status is shown in the header
+              pill, so it is not duplicated here. */}
           <div>
             <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">This thread</h3>
             <dl className="space-y-1">
-              <div className="flex items-center justify-between gap-2">
-                <dt className="text-text-muted text-xs">Status</dt>
-                <dd>
-                  <span
-                    className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}
-                  >
-                    {thread.status === 'open' ? 'active' : 'archived'}
-                  </span>
-                </dd>
-              </div>
+              {typeof freshTokens.data === 'number' && (
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-text-muted text-xs">Fresh tokens</dt>
+                  <dd className="text-text-secondary text-xs tabular-nums">{formatTokens(freshTokens.data)}</dd>
+                </div>
+              )}
               <div className="flex items-center justify-between gap-2">
                 <dt className="text-text-muted text-xs">Cost</dt>
                 <dd className="text-text-disabled text-xs">not metered</dd>
@@ -865,7 +912,7 @@ function DetailColumn({
               <div className="flex items-center justify-between gap-2">
                 <dt className="text-text-muted text-xs">Opened</dt>
                 <dd className="text-text-secondary text-xs">
-                  {new Date(thread.started_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                  {new Date(thread.started_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
                 </dd>
               </div>
             </dl>
