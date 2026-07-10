@@ -150,14 +150,29 @@ async def run_dream(
         _prov = "claude"
 
     # Explicit context-aware system-contract injection with on-disk verification
-    # (THR-055 Phase 1 + TASK-2511 hardening).
+    # (THR-055 Phase 1 + TASK-2511 hardening). This is a HARD synchronous
+    # pre-spawn precondition — if materialization fails we persist the named
+    # error and STOP before executor spawn, never proceeding with missing
+    # contract files (REVISE TASK-2525).
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError,
+    )
     try:
         ensure_system_contracts_materialized(
             workspace, settings, slug=org_state.slug, context="dream",
             provider=_prov,
         )
-    except Exception:
-        pass
+    except SystemContractMaterializationError as e:
+        org_state.db.update_dream(
+            dream_id,
+            status=DreamStatus.FAILED,
+            ended_at=datetime.now(timezone.utc),
+            error=str(e),
+        )
+        AuditLogger(org_state.db).log_dream_failed(
+            dream_id, dream.agent_name, reason=str(e),
+        )
+        return
 
     # Managed-catalog skill injection (THR-055 Phase 4).
     try:

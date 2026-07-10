@@ -57,45 +57,35 @@ def _copy_skills_tree(src: Path, dst: Path, *, slug: str) -> None:
     dst.mkdir(parents=True, exist_ok=True)
     for child in src.iterdir():
         target = dst / child.name
+        tmp_target = dst / f".tmp.{child.name}"
+        # Clean up any stale temp from a prior crashed copy
+        if tmp_target.exists():
+            if tmp_target.is_dir():
+                shutil.rmtree(tmp_target)
+            else:
+                tmp_target.unlink()
         if child.is_dir():
-            # Atomic (TASK-2511): copy new content into a temp, then swap
-            # on the same filesystem using os.rename (atomic). The swap is
-            # three steps:
-            #   1. Copy new into .tmp.<name>
-            #   2. If target exists: os.rename(target, .old.<name>) — instantly
-            #      removes old from view
-            #   3. os.rename(.tmp.<name>, target) — instantly makes new visible
-            #   4. Clean up .old.<name> in background (rmtree)
-            # A concurrent reader sees either complete-old, ENOENT (brief
-            # rename window), or complete-new — never a half-deleted tree.
-            tmp_target = dst / f".tmp.{child.name}"
-            old_target = dst / f".old.{child.name}"
-            # Clean up any stale temp/old from a prior crashed copy
-            for stale in (tmp_target, old_target):
-                if stale.exists():
-                    if stale.is_dir():
-                        shutil.rmtree(stale)
-                    else:
-                        stale.unlink()
+            # Per-file atomic replacement (REVISE TASK-2525): copy new
+            # content into a temp dir, then atomically replace each file
+            # using os.replace — never remove the target directory itself.
+            # A concurrent reader NEVER observes the canonical SKILL.md
+            # path missing: each existing file goes old→new atomically;
+            # new files appear without a gap; stale files are removed
+            # after all replacements complete.
             _copy_skill_dir(child, tmp_target, slug=slug)
-            # Atomically move old out of the way (if present)
-            if target.exists():
-                if target.is_dir():
-                    os.rename(target, old_target)
-                else:
-                    target.unlink()
-            # Atomically make new visible
-            os.rename(tmp_target, target)
-            # Clean up old in background (rmtree after the swap is complete;
-            # this may block briefly but does not affect visibility)
-            if old_target.exists():
-                shutil.rmtree(old_target)
+            target.mkdir(parents=True, exist_ok=True)
+            _atomic_replace_dir(tmp_target, target)
+            # Compare against SOURCE (not temp — os.replace moves files
+            # out of tmp, so checking tmp would falsely flag new files).
+            _remove_stale_entries(child, target)
+            shutil.rmtree(tmp_target)
         else:
             if target.is_symlink() or target.is_file():
                 target.unlink()
             elif target.is_dir():
                 shutil.rmtree(target)
-            _copy_skill_file(child, target, slug=slug)
+            _copy_skill_file(child, tmp_target, slug=slug)
+            os.replace(tmp_target, target)
 
 
 def _copy_skill_dir(src: Path, dst: Path, *, slug: str) -> None:
@@ -117,6 +107,41 @@ def _copy_skill_file(src: Path, dst: Path, *, slug: str) -> None:
         dst.write_text(text.replace("{ORG_SLUG}", slug))
     else:
         shutil.copy2(src, dst)
+
+
+def _atomic_replace_dir(src: Path, dst: Path) -> None:
+    """Atomically replace each file in ``dst`` with its counterpart from ``src``.
+
+    Uses ``os.replace`` which is atomic on POSIX and Windows when source and
+    destination are on the same filesystem. A concurrent reader never observes
+    an individual file missing — it sees either the old content or the new
+    content, with no gap (REVISE TASK-2525).
+    """
+    for item in src.iterdir():
+        target = dst / item.name
+        if item.is_dir():
+            target.mkdir(exist_ok=True)
+            _atomic_replace_dir(item, target)
+        else:
+            os.replace(item, target)
+
+
+def _remove_stale_entries(src: Path, dst: Path) -> None:
+    """Remove entries in ``dst`` that don't exist in ``src``.
+
+    Called after ``_atomic_replace_dir`` to clean up files/dirs present in the
+    old tree but not the new one. ``src`` is the ORIGINAL source (not the temp)
+    so the comparison is correct even after os.replace has moved files.
+    These entries are not observed by a concurrent reader during the
+    atomic-replace phase (they remain present until this cleanup step).
+    """
+    for item in list(dst.iterdir()):
+        counterpart = src / item.name
+        if not counterpart.exists():
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
 
 
 # ── System-contract materialization hardening (TASK-2511) ─────────────

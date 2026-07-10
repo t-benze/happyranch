@@ -536,14 +536,25 @@ async def run_invocation(
         pass
 
     # Explicit context-aware system-contract injection with on-disk verification
-    # (THR-055 Phase 1 + TASK-2511 hardening).
+    # (THR-055 Phase 1 + TASK-2511 hardening). This is a HARD synchronous
+    # pre-spawn precondition — if materialization fails we persist the named
+    # error and STOP before executor spawn, never proceeding with missing
+    # contract files (REVISE TASK-2525).
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError,
+    )
     try:
         ensure_system_contracts_materialized(
             workspace, settings, slug=org_state.slug, context="thread",
             provider=executor_name,
         )
-    except Exception:
-        pass
+    except SystemContractMaterializationError as e:
+        org_state.db.fail_invocation(
+            invocation_token,
+            status=ThreadInvocationStatus.FAILED,
+            decline_reason=str(e),
+        )
+        return
 
     # Managed-catalog skill injection (THR-055 Phase 4).
     try:

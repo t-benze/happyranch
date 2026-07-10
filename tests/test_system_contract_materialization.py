@@ -432,13 +432,13 @@ class TestCopySkillsTreeAtomicity:
             barrier.wait()
             for _ in range(200):
                 for sid in ["start-task", "jobs", "thread"]:
-                    dir_path = dst / sid
-                    skill_path = dir_path / "SKILL.md"
-                    # Atomic check: try to read the file. If the dir was
-                    # atomically renamed between is_dir() and is_file(),
-                    # we get FileNotFoundError — that's fine (ENOENT).
-                    # The bug we're guarding against: is_dir() returns True
-                    # but SKILL.md is missing or incomplete.
+                    skill_path = dst / sid / "SKILL.md"
+                    # REVISE TASK-2525: a concurrent reader must NEVER
+                    # observe the canonical SKILL.md path missing — that
+                    # is the forbidden failure mode. With per-file atomic
+                    # os.replace, each file goes old→new without a gap.
+                    # FileNotFoundError here means the replacement
+                    # mechanism created a gap — flag it as a failure.
                     try:
                         if skill_path.is_file():
                             content = skill_path.read_text()
@@ -450,7 +450,9 @@ class TestCopySkillsTreeAtomicity:
                                 )
                         # else: file doesn't exist — that's okay
                     except FileNotFoundError:
-                        pass  # renamed away between checks — acceptable
+                        bad_reads.append(
+                            f"{sid}: canonical SKILL.md absent during replacement"
+                        )
                     except Exception as e:
                         bad_reads.append(f"{sid}: {e}")
 
@@ -497,16 +499,19 @@ class TestCopySkillsTreeAtomicity:
         def reader():
             barrier.wait()
             for _ in range(200):
-                # Atomic observation: try reading directly. FileNotFoundError
-                # means the dir was renamed during the swap — acceptable.
-                # Only flag reads that SUCCEED but have wrong content.
+                # REVISE TASK-2525: with per-file atomic os.replace, the
+                # canonical SKILL.md is NEVER absent during replacement.
+                # FileNotFoundError here is the forbidden failure mode —
+                # flag it instead of ignoring it.
                 try:
                     target = dst / "start-task" / "SKILL.md"
                     content = target.read_text()
                     if content not in ("# old-start-task\n", "# new-start-task\n"):
                         bad_reads.append(f"Unexpected content: {content!r}")
                 except FileNotFoundError:
-                    pass
+                    bad_reads.append(
+                        "canonical SKILL.md absent during replacement"
+                    )
                 except Exception as e:
                     bad_reads.append(f"{type(e).__name__}: {e}")
 
