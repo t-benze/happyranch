@@ -837,6 +837,13 @@ class TestCallPathManagedSkillsIndex:
         from runtime.orchestrator.orchestrator import Orchestrator
         from runtime.orchestrator.teams import TeamsRegistry
 
+        # TASK-2511: pre-create protocol/skills/ source dirs so
+        # ensure_system_contracts_materialized can inject + verify.
+        for sid in ["start-task", "jobs", "make-worktree", "thread"]:
+            src = test_settings.get_protocol_dir() / "skills" / sid
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
+
         test_runtime.root.mkdir(parents=True, exist_ok=True)
         db = Database(test_runtime.db_path)
         teams = TeamsRegistry.load(test_runtime.root)

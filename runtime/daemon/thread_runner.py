@@ -33,6 +33,7 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
+    ensure_system_contracts_materialized,
     inject_managed_skills,
     inject_system_contracts,
     refresh_session_skills,
@@ -534,10 +535,12 @@ async def run_invocation(
     except Exception:
         pass
 
-    # Explicit context-aware system-contract injection (THR-055 Phase 1).
+    # Explicit context-aware system-contract injection with on-disk verification
+    # (THR-055 Phase 1 + TASK-2511 hardening).
     try:
-        inject_system_contracts(
+        ensure_system_contracts_materialized(
             workspace, settings, slug=org_state.slug, context="thread",
+            provider=executor_name,
         )
     except Exception:
         pass

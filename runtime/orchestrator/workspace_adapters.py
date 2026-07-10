@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -44,19 +45,56 @@ def _copy_skills_tree(src: Path, dst: Path, *, slug: str) -> None:
     Every ``.md`` file has ``{ORG_SLUG}`` substituted with ``slug`` so example
     ``happyranch`` invocations carry the per-workspace ``--org`` automatically. Other
     file types are copied byte-for-byte.
+
+    **Atomicity (TASK-2511):** each skill dir is copied into a temp sibling
+    then atomically ``os.replace``d over the target so a concurrent reader
+    always sees either the complete old or complete new tree, never a
+    half-deleted one. Individual file children (non-directory) are still
+    copied directly (they're rare and the window is much narrower).
     """
     if not src.exists():
         return
     dst.mkdir(parents=True, exist_ok=True)
     for child in src.iterdir():
         target = dst / child.name
-        if target.is_symlink() or target.is_file():
-            target.unlink()
-        elif target.is_dir():
-            shutil.rmtree(target)
         if child.is_dir():
-            _copy_skill_dir(child, target, slug=slug)
+            # Atomic (TASK-2511): copy new content into a temp, then swap
+            # on the same filesystem using os.rename (atomic). The swap is
+            # three steps:
+            #   1. Copy new into .tmp.<name>
+            #   2. If target exists: os.rename(target, .old.<name>) — instantly
+            #      removes old from view
+            #   3. os.rename(.tmp.<name>, target) — instantly makes new visible
+            #   4. Clean up .old.<name> in background (rmtree)
+            # A concurrent reader sees either complete-old, ENOENT (brief
+            # rename window), or complete-new — never a half-deleted tree.
+            tmp_target = dst / f".tmp.{child.name}"
+            old_target = dst / f".old.{child.name}"
+            # Clean up any stale temp/old from a prior crashed copy
+            for stale in (tmp_target, old_target):
+                if stale.exists():
+                    if stale.is_dir():
+                        shutil.rmtree(stale)
+                    else:
+                        stale.unlink()
+            _copy_skill_dir(child, tmp_target, slug=slug)
+            # Atomically move old out of the way (if present)
+            if target.exists():
+                if target.is_dir():
+                    os.rename(target, old_target)
+                else:
+                    target.unlink()
+            # Atomically make new visible
+            os.rename(tmp_target, target)
+            # Clean up old in background (rmtree after the swap is complete;
+            # this may block briefly but does not affect visibility)
+            if old_target.exists():
+                shutil.rmtree(old_target)
         else:
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+            elif target.is_dir():
+                shutil.rmtree(target)
             _copy_skill_file(child, target, slug=slug)
 
 
@@ -79,6 +117,119 @@ def _copy_skill_file(src: Path, dst: Path, *, slug: str) -> None:
         dst.write_text(text.replace("{ORG_SLUG}", slug))
     else:
         shutil.copy2(src, dst)
+
+
+# ── System-contract materialization hardening (TASK-2511) ─────────────
+
+
+class SystemContractMaterializationError(RuntimeError):
+    """Raised when system-contract skill files fail to materialize on disk.
+
+    Post-Phase-4 cutover, skill delivery is per-session injection only.
+    If the injection runs but the expected on-disk files are absent (missing
+    source, disk-full, permission error, concurrent-wipe race), this error
+    fires with an explicit, actionable message naming the missing contract(s)
+    and workspace — never a bare ``[Errno 2]`` from an unguarded file read.
+
+    This is retry-eligible: ``run_step_impl`` catches ``Exception`` →
+    classifies as "agent_exception" → triggers auto-revisit.
+    """
+
+    def __init__(
+        self,
+        *,
+        missing_contracts: list[str],
+        workspace: Path,
+        provider: str,
+    ) -> None:
+        self.missing_contracts = missing_contracts
+        self.workspace = workspace
+        self.provider = provider
+        missing_list = ", ".join(sorted(missing_contracts))
+        super().__init__(
+            f"System contract materialization failed for provider "
+            f"{provider!r}: {len(missing_contracts)} contract(s) not on disk "
+            f"— {missing_list} — in workspace {workspace}"
+        )
+
+
+def ensure_system_contracts_materialized(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    context: str,
+    provider: str,
+) -> None:
+    """Materialize system-contract skills AND verify they landed on disk.
+
+    TASK-2511 hardening: replaces the bare readiness-marker check with a
+    verify-after-materialize guard that runs on ALL 4 spawn paths
+    (task/thread/wake/dream) BEFORE reading the readiness marker or
+    building the prompt.
+
+    1. Runs ``inject_system_contracts`` to materialize the context-appropriate
+       system contracts into the workspace.
+    2. Resolves which contracts SHOULD have been injected for this context.
+    3. VERIFIES each contract's on-disk readiness file is present.
+    4. If any are missing, raises ``SystemContractMaterializationError``
+       naming the missing contract(s) + workspace — never a bare
+       ``[Errno 2]`` / ``FileNotFoundError``.
+
+    The verification uses the provider-appropriate path:
+    - Claude: ``.claude/skills/<id>/SKILL.md``
+    - Codex/Opencode/Pi: ``.agents/skills/<id>/SKILL.md``
+
+    Args:
+        workspace: agent workspace root
+        settings: project Settings
+        slug: org slug for ``{ORG_SLUG}`` substitution
+        context: session context string ("task", "thread", "wake", "dream")
+        provider: executor provider name ("claude", "codex", "opencode", "pi")
+
+    Raises:
+        SystemContractMaterializationError: one or more required contracts
+            are not on disk after injection
+        ValueError: unknown session context
+    """
+    from runtime.skills.system_contracts import (
+        SessionContext,
+        resolve_system_contracts_for_session,
+    )
+
+    # Step 1: Materialize via the existing injection path
+    inject_system_contracts(
+        workspace, settings, slug=slug, context=context,
+    )
+
+    # Step 2: Resolve expected contracts
+    try:
+        ctx = SessionContext(context)
+    except ValueError:
+        raise
+    expected = resolve_system_contracts_for_session(ctx, workspace=workspace)
+
+    # Step 3: Verify each expected contract is on disk
+    # Provider-appropriate skills root
+    is_claude = (provider == "claude")
+    skills_root = (
+        workspace / ".claude" / "skills"
+        if is_claude
+        else workspace / ".agents" / "skills"
+    )
+
+    missing: list[str] = []
+    for sc in expected:
+        marker = skills_root / sc.id / "SKILL.md"
+        if not marker.is_file():
+            missing.append(sc.id)
+
+    if missing:
+        raise SystemContractMaterializationError(
+            missing_contracts=missing,
+            workspace=workspace,
+            provider=provider,
+        )
 
 
 # ── Phase-4 cutover flag: reversible gate on the wholesale protocol/skills/ dump ─

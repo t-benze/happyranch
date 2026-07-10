@@ -41,6 +41,7 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
+    ensure_system_contracts_materialized,
     inject_managed_skills,
     inject_system_contracts,
     refresh_session_skills,
@@ -516,6 +517,17 @@ class Orchestrator:
         model_name = self._resolve_model_name(agent_name)
         executor = self._build_executor(provider)
 
+        # TASK-2511: materialize system-contract skills BEFORE the readiness
+        # marker check. Post-Phase-4 cutover, inject_system_contracts is the
+        # sole delivery path; a fresh/reset workspace has no marker until
+        # injection runs. The ensure call injects + verifies, raising a named
+        # SystemContractMaterializationError on failure (retry-eligible),
+        # never a bare Errno 2.
+        ensure_system_contracts_materialized(
+            workspace, self._settings, slug=self._slug, context="task",
+            provider=provider,
+        )
+
         # The orchestrator relies on the start-task skill to bridge prompt →
         # agent work → completion callback. If the workspace was bootstrapped
         # before skills existed (or the user wiped it), the agent never calls
@@ -567,12 +579,9 @@ class Orchestrator:
         # lifecycle event (THR-070).
         refresh_session_skills(workspace, self._settings, slug=self._slug)
 
-        # Explicit context-aware system-contract injection (THR-055 Phase 1).
-        # Runs alongside the wholesale dump above; context-aware filtering
-        # becomes the sole path in Phase 4.
-        inject_system_contracts(
-            workspace, self._settings, slug=self._slug, context="task",
-        )
+        # System-contract injection was done above by ensure_system_contracts_materialized
+        # (TASK-2511). Do NOT call inject_system_contracts here — it would be a
+        # redundant second injection.
 
         # Managed-catalog skill injection (THR-055 Phase 4).
         # Resolves the two-gated catalog + eligibility policy and injects
