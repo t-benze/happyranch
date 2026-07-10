@@ -38,9 +38,11 @@ def test_executor_binaries_register_requires_kind() -> None:
         _parse("executor-binaries", "register", "--path", "/some/path")
 
 
-def test_executor_binaries_register_requires_path() -> None:
-    with pytest.raises(SystemExit):
-        _parse("executor-binaries", "register", "claude")
+def test_executor_binaries_register_parses_without_path() -> None:
+    """--path is now optional; parse succeeds without it."""
+    ns = _parse("executor-binaries", "register", "claude")
+    assert ns.kind == "claude"
+    assert ns.path is None
 
 
 def test_executor_binaries_list_parses() -> None:
@@ -245,6 +247,88 @@ def test_cmd_executor_binaries_list_unexpected_http_error(capsys) -> None:
 
     err = capsys.readouterr().err
     assert "HTTP 500" in err
+
+
+# ── cmd_executor_binaries_register auto-resolve from PATH (THR-085) ──────
+
+
+def test_cmd_executor_binaries_register_auto_resolve_from_path(capsys) -> None:
+    """Omitted --path, binary on PATH -> POST with resolved absolute path."""
+    from cli.commands.executor_binaries import cmd_executor_binaries_register
+
+    fake = MagicMock()
+    fake.post.return_value = MagicMock(
+        status_code=200,
+        json=lambda: {"kind": "claude", "path": "/usr/local/bin/claude", "valid": True},
+    )
+
+    with patch(
+        "cli.commands.executor_binaries.OpcClient.from_env", return_value=fake
+    ), patch(
+        "cli.commands.executor_binaries.shutil.which", return_value="/usr/local/bin/claude"
+    ):
+        args = argparse.Namespace(kind="claude", path=None)
+        cmd_executor_binaries_register(args)
+
+    fake.post.assert_called_once_with(
+        "/api/v1/executor-binaries/register",
+        json={"kind": "claude", "path": "/usr/local/bin/claude"},
+    )
+    out = capsys.readouterr().out
+    assert "resolved claude from PATH" in out
+    assert "/usr/local/bin/claude" in out
+    assert "registered" in out
+
+
+def test_cmd_executor_binaries_register_not_on_path(capsys) -> None:
+    """Omitted --path, binary NOT on PATH -> actionable error + exit 1, no POST."""
+    from cli.commands.executor_binaries import cmd_executor_binaries_register
+
+    fake = MagicMock()
+
+    with patch(
+        "cli.commands.executor_binaries.OpcClient.from_env", return_value=fake
+    ), patch(
+        "cli.commands.executor_binaries.shutil.which", return_value=None
+    ):
+        with pytest.raises(SystemExit):
+            args = argparse.Namespace(kind="codex", path=None)
+            cmd_executor_binaries_register(args)
+
+    fake.post.assert_not_called()
+    err = capsys.readouterr().err
+    assert "'codex' was not found on your PATH" in err
+    assert "which codex" in err
+    assert "--path" in err
+
+
+def test_cmd_executor_binaries_register_explicit_path_still_works(capsys) -> None:
+    """Explicit --path is still accepted as override, same as today."""
+    from cli.commands.executor_binaries import cmd_executor_binaries_register
+
+    fake = MagicMock()
+    fake.post.return_value = MagicMock(
+        status_code=200,
+        json=lambda: {"kind": "pi", "path": "/custom/pi", "valid": True},
+    )
+
+    # shutil.which should NOT be called when --path is explicit
+    with patch(
+        "cli.commands.executor_binaries.OpcClient.from_env", return_value=fake
+    ), patch(
+        "cli.commands.executor_binaries.shutil.which"
+    ) as mock_which:
+        args = argparse.Namespace(kind="pi", path="/custom/pi")
+        cmd_executor_binaries_register(args)
+
+    mock_which.assert_not_called()
+    fake.post.assert_called_once_with(
+        "/api/v1/executor-binaries/register",
+        json={"kind": "pi", "path": "/custom/pi"},
+    )
+    out = capsys.readouterr().out
+    assert "registered" in out
+    assert "/custom/pi" in out
 
 
 # ── Integration: parser + handler wired together ─────────────────────────

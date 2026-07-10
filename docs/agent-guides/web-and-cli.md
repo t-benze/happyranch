@@ -134,6 +134,28 @@ profiles do — verified per CLI), the executor injects the substituted model fl
 CLI argv at launch time. When unset, each CLI uses its own default model (today's behavior
 for every existing agent).
 
+### Executor binary registration
+
+Register the absolute path to each executor CLI binary so the daemon can locate it at
+spawn time (THR-085). The daemon resolves binaries stored-path-first at launch;
+registration ensures headless daemons and fresh machines find the correct binary.
+
+```bash
+# Register with explicit path (override):
+happyranch executor-binaries register claude --path /opt/homebrew/bin/claude
+
+# Auto-resolve from your shell's PATH:
+happyranch executor-binaries register claude
+
+# List all registered binaries:
+happyranch executor-binaries list
+```
+
+When `--path` is omitted, the CLI resolves the binary from the invoking shell's PATH
+via `shutil.which(<kind>)` — the kind name (`claude`, `codex`, `pi`, `opencode`) is the
+binary name. If the binary is not found on PATH the command exits 1 with an actionable
+error message telling the user to confirm installation or pass `--path` explicitly.
+
 ### Token usage
 
 `happyranch tokens` shows `session_token_usage`. Default is the most recent rows;
