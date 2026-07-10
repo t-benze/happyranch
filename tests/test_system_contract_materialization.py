@@ -431,28 +431,45 @@ class TestCopySkillsTreeAtomicity:
         def reader():
             barrier.wait()
             for _ in range(200):
-                for sid in ["start-task", "jobs", "thread"]:
+                # Pre-existing canonical skills (pre-populated in dst
+                # BEFORE the copy): read SKILL.md DIRECTLY. Per-file
+                # atomic os.replace guarantees a pre-existing skill's
+                # canonical path is NEVER absent — FileNotFoundError
+                # here is the forbidden no-ENOENT mode this test must
+                # catch.  Content must be old or new only.
+                for sid in ["start-task", "jobs"]:
                     skill_path = dst / sid / "SKILL.md"
-                    # REVISE TASK-2525: a concurrent reader must NEVER
-                    # observe the canonical SKILL.md path missing — that
-                    # is the forbidden failure mode. With per-file atomic
-                    # os.replace, each file goes old→new without a gap.
-                    # FileNotFoundError here means the replacement
-                    # mechanism created a gap — flag it as a failure.
                     try:
-                        if skill_path.is_file():
-                            content = skill_path.read_text()
-                            if content not in ("# old\n", (
-                                f"# {sid}\n\nSkill body for {sid}.\n"
-                            )):
-                                bad_reads.append(
-                                    f"{sid}: unexpected content {content!r}"
-                                )
-                        # else: file doesn't exist — that's okay
+                        content = skill_path.read_text()
+                        if content not in (
+                            "# old\n",
+                            f"# {sid}\n\nSkill body for {sid}.\n",
+                        ):
+                            bad_reads.append(
+                                f"{sid}: unexpected content {content!r}"
+                            )
                     except FileNotFoundError:
                         bad_reads.append(
                             f"{sid}: canonical SKILL.md absent during replacement"
                         )
+                    except Exception as e:
+                        bad_reads.append(f"{sid}: {e}")
+                # Newly-introduced skill (NOT pre-populated in dst):
+                # thread — its transient absence before it first
+                # materializes is legitimate.  Keep only the
+                # is_file()-gated check + final-state assertion.
+                for sid in ["thread"]:
+                    skill_path = dst / sid / "SKILL.md"
+                    try:
+                        if skill_path.is_file():
+                            content = skill_path.read_text()
+                            if content not in (
+                                f"# {sid}\n\nSkill body for {sid}.\n",
+                            ):
+                                bad_reads.append(
+                                    f"{sid}: unexpected content {content!r}"
+                                )
+                        # else: file doesn't exist yet — that's okay
                     except Exception as e:
                         bad_reads.append(f"{sid}: {e}")
 
