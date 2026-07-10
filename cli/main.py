@@ -26,6 +26,7 @@ from cli.commands import (
     artifacts,
     assistant,
     dreams,
+    executor_binaries,
     executors,
     jobs,
     kb,
@@ -165,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     work_hours.register(sub)
     skills.register(sub)
     executors.register(sub)
+    executor_binaries.register(sub)
     threads.register(sub)
 
     return parser
