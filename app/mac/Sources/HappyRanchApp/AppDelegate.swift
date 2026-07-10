@@ -363,6 +363,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             .path
     }
 
+    /// Test seam: when true, bundledDaemonPreflightError always returns nil
+    /// (bypasses the filesystem check). Used by tests that exercise the bundled
+    /// launch path without a real daemon binary in the test bundle.
+    nonisolated(unsafe) private static var __testSkipBundledDaemonPreflight = false
+    nonisolated private static let _testSkipBundledDaemonPreflightLock = NSLock()
+
+    nonisolated static var _testSkipBundledDaemonPreflight: Bool {
+        get { _testSkipBundledDaemonPreflightLock.withLock { __testSkipBundledDaemonPreflight } }
+        set { _testSkipBundledDaemonPreflightLock.withLock { __testSkipBundledDaemonPreflight = newValue } }
+    }
+
+    /// Preflight check for the bundled daemon binary.
+    /// Returns an actionable error message naming the fix if the binary is
+    /// missing or not executable; nil if it is present and executable.
+    /// This is a pure seam — testable without a real Bundle.
+    nonisolated static func bundledDaemonPreflightError(path: String) -> String? {
+        if _testSkipBundledDaemonPreflight { return nil }
+        if !FileManager.default.isExecutableFile(atPath: path) {
+            return "Bundled daemon binary missing or not executable — rebuild the app with app/mac/scripts/build-app.sh; this build is incomplete."
+        }
+        return nil
+    }
+
     /// Returns the filesystem path to the bundled web/dist directory inside the .app bundle.
     nonisolated static func bundledWebDistPath() -> String? {
         guard let resourceURL = Bundle.main.resourceURL else { return nil }
@@ -389,6 +412,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func launchBundledDaemon(pc: ProcessControlling) {
         guard let daemonPath = Self.bundledDaemonPath() else {
             stateText = "Bundled daemon not found in app bundle"
+            return
+        }
+
+        if let preflightError = Self.bundledDaemonPreflightError(path: daemonPath) {
+            stateText = preflightError
+            diagnostics.recordLaunchLog(preflightError)
             return
         }
 

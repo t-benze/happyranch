@@ -69,6 +69,10 @@ echo "  Binary copied."
 # Copy frozen daemon bundle into Resources
 cp -R "$REPO_ROOT/dist/happyranch-daemon/" "${BUNDLE_NAME}.app/Contents/Resources/daemon/"
 chmod +x "${BUNDLE_NAME}.app/Contents/Resources/daemon/happyranch-daemon" 2>/dev/null || true
+if ! test -x "${BUNDLE_NAME}.app/Contents/Resources/daemon/happyranch-daemon"; then
+    echo "ERROR: Bundled daemon binary missing or not executable after staging — check dist/happyranch-daemon was built via packaging/build_daemon.sh" >&2
+    exit 1
+fi
 echo "  Daemon bundle copied."
 
 # Copy web/dist into Resources
