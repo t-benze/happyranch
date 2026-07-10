@@ -626,7 +626,7 @@ struct BundledLaunchEphemeralPortTests {
 
 // MARK: - Bundled daemon preflight check
 
-@Suite("Bundled daemon preflight check")
+@Suite("Bundled daemon preflight check", .serialized)
 struct BundledDaemonPreflightTests {
 
     @Test("bundledDaemonPreflightError returns fix-naming message for missing path")
@@ -653,6 +653,47 @@ struct BundledDaemonPreflightTests {
         #expect(error != nil, "Should return error for non-executable file /etc/hosts")
         #expect(error?.contains("build-app.sh") == true,
                 "Error message must name the fix command")
+    }
+
+    @Test("startDaemon with preflight active detects missing binary and prevents launch")
+    @MainActor
+    func startDaemonWithPreflightActivePreventsLaunch() async throws {
+        AppDelegate._testPackagingMode = "bundled"
+        // _testSkipBundledDaemonPreflight left at default false — preflight active.
+        // The bundled resolver returns a path that does not point to a real
+        // daemon binary in the test runner, so the preflight guard fires.
+        let oldHome = ProcessInfo.processInfo.environment["HAPPYRANCH_DAEMON_HOME"]
+        setenv("HAPPYRANCH_DAEMON_HOME", "/tmp/test-hr-bundled", 1)
+        defer {
+            AppDelegate._testPackagingMode = nil
+            if let old = oldHome {
+                setenv("HAPPYRANCH_DAEMON_HOME", old, 1)
+            } else {
+                unsetenv("HAPPYRANCH_DAEMON_HOME")
+            }
+        }
+
+        let (delegate, fake) = makeAppDelegateForBundled(
+            state: .stopped,
+            isManagedBySelf: true
+        )
+
+        delegate.startDaemon()
+
+        // (a) Launch was NOT called — the preflight guard returned first
+        #expect(fake.launchCallCount == 0,
+                "Preflight must prevent launch when daemon binary is missing, got launchCallCount \(fake.launchCallCount)")
+
+        // (b) stateText contains the production error message
+        let expectedMsg = "Bundled daemon binary missing or not executable — rebuild the app with app/mac/scripts/build-app.sh; this build is incomplete."
+        #expect(delegate.stateText == expectedMsg,
+                "stateText must match the production build-app.sh error message, got \(delegate.stateText)")
+
+        // (c) diagnostics.collect()["launcher_log"] records the same miss
+        let bundle = delegate.diagnostics.collect()
+        let launcherLog = bundle["launcher_log"] as? String ?? ""
+        #expect(launcherLog == expectedMsg,
+                "launcher_log must contain the preflight error, got \(launcherLog)")
     }
 }
 
