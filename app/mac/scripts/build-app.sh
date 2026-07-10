@@ -79,6 +79,42 @@ echo "  Daemon bundle copied."
 cp -R "$REPO_ROOT/web/dist/" "${BUNDLE_NAME}.app/Contents/Resources/web/dist/"
 echo "  Web dist copied."
 
+# ----- Assemble AppIcon.icns from vendored PNGs -----
+ICONSET_SRC="$PROJECT_DIR/Resources/AppIcon.appiconset"
+if [ -d "$ICONSET_SRC" ]; then
+    TEMP_DIR="$(mktemp -d /tmp/happyranch-icon.XXXXXX)"
+    TEMP_ICONSET="$TEMP_DIR/AppIcon.iconset"
+    mkdir -p "$TEMP_ICONSET"
+    # Map vendored filenames -> standard .iconset filenames per Contents.json
+    #   size       scale   source
+    #   16x16      1x      icon_16.png   -> icon_16x16.png
+    #   16x16      2x      icon_32.png   -> icon_16x16@2x.png
+    #   32x32      1x      icon_32.png   -> icon_32x32.png
+    #   32x32      2x      icon_64.png   -> icon_32x32@2x.png
+    #   128x128     1x      icon_128.png  -> icon_128x128.png
+    #   128x128     2x      icon_256.png  -> icon_128x128@2x.png
+    #   256x256     1x      icon_256.png  -> icon_256x256.png
+    #   256x256     2x      icon_512.png  -> icon_256x256@2x.png
+    #   512x512     1x      icon_512.png  -> icon_512x512.png
+    #   512x512     2x      icon_1024.png -> icon_512x512@2x.png
+    cp "$ICONSET_SRC/icon_16.png"   "$TEMP_ICONSET/icon_16x16.png"
+    cp "$ICONSET_SRC/icon_32.png"   "$TEMP_ICONSET/icon_16x16@2x.png"
+    cp "$ICONSET_SRC/icon_32.png"   "$TEMP_ICONSET/icon_32x32.png"
+    cp "$ICONSET_SRC/icon_64.png"   "$TEMP_ICONSET/icon_32x32@2x.png"
+    cp "$ICONSET_SRC/icon_128.png"  "$TEMP_ICONSET/icon_128x128.png"
+    cp "$ICONSET_SRC/icon_256.png"  "$TEMP_ICONSET/icon_128x128@2x.png"
+    cp "$ICONSET_SRC/icon_256.png"  "$TEMP_ICONSET/icon_256x256.png"
+    cp "$ICONSET_SRC/icon_512.png"  "$TEMP_ICONSET/icon_256x256@2x.png"
+    cp "$ICONSET_SRC/icon_512.png"  "$TEMP_ICONSET/icon_512x512.png"
+    cp "$ICONSET_SRC/icon_1024.png" "$TEMP_ICONSET/icon_512x512@2x.png"
+    iconutil -c icns -o "$TEMP_ICONSET/AppIcon.icns" "$TEMP_ICONSET"
+    cp "$TEMP_ICONSET/AppIcon.icns" "${BUNDLE_NAME}.app/Contents/Resources/AppIcon.icns"
+    rm -rf "$TEMP_DIR"
+    echo "  AppIcon.icns assembled and copied into Resources."
+else
+    echo "  WARNING: $ICONSET_SRC not found — skipping icon assembly."
+fi
+
 # Generate Info.plist from template with LSEnvironment for bundled mode
 cp "$PROJECT_DIR/scripts/Info.plist" "${BUNDLE_NAME}.app/Contents/Info.plist"
 
