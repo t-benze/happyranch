@@ -79,7 +79,7 @@ export function useThreadFreshTokens(
         thread_id: threadId,
       });
       const rollup = 'rollup' in res ? res.rollup : [];
-      const row = rollup.find((r) => r.thread_id === threadId) ?? rollup[0];
+      const row = rollup.find((r) => r.thread_id === threadId);
       return row ? row.input_tokens : null;
     },
     enabled: !!slug && !!threadId,

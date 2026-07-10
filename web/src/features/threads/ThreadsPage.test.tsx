@@ -697,6 +697,45 @@ describe('ThreadsPage — structured detail rail (THREADDET-02)', () => {
     expect(within(rail).queryByText('Fresh tokens')).not.toBeInTheDocument();
   });
 
+  test('omits the Fresh tokens row when the rollup has ONLY another thread — never borrows a different thread’s figure', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupDetail('THR-206', ['dev_agent'], [
+      mkMessage(1, 'dev_agent', 'message', 'Hello'),
+    ]);
+    // The rollup is non-empty but carries NO row for the active thread — only a
+    // DIFFERENT thread's usage. The hook must NOT fall back to that other row
+    // (the old `?? rollup[0]` fabrication); with no matching thread_id it
+    // returns null and the row is OMITTED (real-or-omit data honesty).
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
+        HttpResponse.json({
+          rollup: [
+            {
+              thread_id: 'THR-999-OTHER',
+              sessions: 5,
+              input_tokens: 888_000,
+              output_tokens: 20_000,
+              cache_read_tokens: 3_000_000,
+              cache_creation_tokens: 6_000,
+              reasoning_tokens: 0,
+              total_tokens: 908_000,
+            },
+          ],
+        }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads/THR-206`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Rail thread/i })).toBeInTheDocument();
+    });
+    const rail = screen.getByLabelText('Thread properties');
+    // No Fresh tokens row at all, and crucially the other thread's 888K figure
+    // is never displayed under this thread.
+    expect(within(rail).queryByText('Fresh tokens')).not.toBeInTheDocument();
+    expect(within(rail).queryByText('888.0K')).not.toBeInTheDocument();
+    expect(within(rail).getByText('not metered')).toBeInTheDocument();
+  });
+
   // Thread-scoped attachments carry thread_attachment_id (non-null) and an
   // EMPTY artifact_name. Before the TASK-2011 fix the dedup key was
   // artifact_name alone, causing all thread-scoped attachments to collide
