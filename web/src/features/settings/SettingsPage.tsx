@@ -144,6 +144,7 @@ import { SystemSection } from './sections/SystemSection';
 import { OrganizationSection } from './sections/OrganizationSection';
 import { AgentsSection } from './sections/AgentsSection';
 import { ExecutorsSection } from './sections/ExecutorsSection';
+import { ExecutorBinariesSection } from './sections/ExecutorBinariesSection';
 import type { SystemSettings, OrgSettings } from '@/lib/api/types';
 
 function AssistantPanel(): JSX.Element {
@@ -192,9 +193,15 @@ function AgentsPanel(): JSX.Element {
 
 function ExecutorsPanel(): JSX.Element {
   return (
-    <div className="max-w-2xl p-6">
-      <h2 className="font-display mb-4 text-lg font-semibold">Executors</h2>
-      <ExecutorsSection />
+    <div className="max-w-2xl space-y-8 p-6">
+      <section>
+        <h2 className="font-display mb-3 text-lg font-semibold">CLI binary paths</h2>
+        <ExecutorBinariesSection />
+      </section>
+      <section className="border-border-default border-t pt-8">
+        <h2 className="font-display mb-3 text-lg font-semibold">Custom executor profiles</h2>
+        <ExecutorsSection />
+      </section>
     </div>
   );
 }
