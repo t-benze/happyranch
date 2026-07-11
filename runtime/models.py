@@ -111,6 +111,11 @@ class TaskRecord(BaseModel):
     # `cancelled_at` presence rather than the status label for backward compat.
     cancelled_at: datetime | None = None
     last_heartbeat: datetime | None = None
+    # OS pid of the executor subprocess, persisted at session start for
+    # daemon-restart liveness probe (THR-079). NULL for tasks that predate
+    # the column or that haven't reached _on_started yet. Internal signal —
+    # not serialized to API responses.
+    executor_pid: int | None = None
 
 
 class ChainLeg(BaseModel):

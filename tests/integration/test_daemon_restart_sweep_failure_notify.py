@@ -64,12 +64,9 @@ def test_sweep_writes_daemon_restart_failure_not_escalation(tmp_path: Path):
     )
 
 
-def test_sweep_uses_unknown_for_missing_assigned_agent(tmp_path: Path):
-    """If task.assigned_agent is None, the auto-revisit payload records
-    agent='(unknown)' rather than crashing on the None.
-
-    THR-064: uses a genuine worker root (no parent, no parked ancestor) so
-    the auto-revisit IS spawned (guardrail-1 path)."""
+def test_sweep_null_assigned_agent_fails_with_liveness_note(tmp_path: Path):
+    """THR-079: if task.assigned_agent is None, the sweep still fails the
+    task with a liveness-undeterminable note. No crash, no auto-revisit."""
     db, orch, queue = _real_orch(tmp_path)
     # A worker root with no parent and no block_kind — genuine root-level death.
     db.insert_task(TaskRecord(
@@ -80,13 +77,14 @@ def test_sweep_uses_unknown_for_missing_assigned_agent(tmp_path: Path):
 
     _sweep_on_startup(db, queue, "acme", orch)
 
-    # Auto-revisit row's failed_agent reflects the (unknown) substitute.
+    t = db.get_task("TASK-2")
+    assert t.status == TaskStatus.FAILED
+    assert t.note is not None and "liveness undeterminable" in t.note
+
+    # THR-079: NO auto-revisit twin.
     revisits = [
         t for t in (db.get_task(tid)
                     for tid in db.get_nonterminal_task_ids())
         if t is not None and t.revisit_of_task_id == "TASK-2"
     ]
-    assert len(revisits) == 1
-    ar_rows = db.get_audit_logs(revisits[0].id)
-    auto_row = next(r for r in ar_rows if r["action"] == "auto_revisit_of")
-    assert auto_row["payload"]["failed_agent"] == "(unknown)"
+    assert len(revisits) == 0

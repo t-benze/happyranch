@@ -632,6 +632,8 @@ class Orchestrator:
         def _on_started(pid: int) -> None:
             if self._sessions is not None:
                 self._sessions.set_pid(task_id, agent_name, pid)
+            # THR-079: persist executor OS pid for daemon-restart liveness probe.
+            self._db.update_task(task_id, executor_pid=pid)
 
         # Layer-1 throttle audit surfacing (issue #85): the per-provider throttle
         # in executors._run_command calls this on a slot wait or a 429 backoff.
