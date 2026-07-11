@@ -3,7 +3,7 @@
  * F-Step1 + F-Step2 + F-Prereqs).
  *
  * A presentational two-step onboarding shell:
- *   Step 1 — Connect your agent runtime (ConnectRuntimeStep, THR-088 Slice A).
+ *   Step 1 — Connect your agentic CLI (ConnectRuntimeStep, THR-088 Slice A).
  *   Step 2 — Welcome → Create org → Creating → Success — plus a read-only
  *            broken-org list and an executor-prereq readiness panel.
  * This surface is GLOBAL (not org-scoped). It drives only EXISTING routes:
@@ -136,7 +136,7 @@ function WelcomeStep({
     <section className="pt-6 sm:pt-10">
       <RanchLogo className="text-accent h-14 w-14" />
       <p className="text-accent-text mt-5 text-xs font-semibold tracking-wider uppercase">
-        {firstRun ? 'Fresh runtime' : 'New workspace'}
+        {firstRun ? 'Fresh start' : 'New workspace'}
       </p>
       <h1 className="font-display text-display text-text-primary mt-3 font-medium">
         {firstRun ? (
@@ -172,7 +172,7 @@ function WelcomeStep({
         <p className="text-text-secondary text-xs leading-relaxed">
           Creating an org sets up the workspace only. It does{' '}
           <span className="text-text-primary font-semibold">not</span> install
-          agent runtimes or CLIs (<span className="font-mono">claude</span>,{' '}
+          agentic CLIs (<span className="font-mono">claude</span>,{' '}
           <span className="font-mono">codex</span>,{' '}
           <span className="font-mono">node</span>…) — you&rsquo;ll wire those up
           separately from Settings once the org exists.
@@ -445,7 +445,7 @@ function SuccessStep({
         Org <span className="text-accent-text font-mono">{slug}</span> is ready.
       </h1>
       <p className="text-text-secondary mt-2 text-sm leading-relaxed">
-        Your workspace is live. Next: wire up an agent runtime from Settings,
+        Your workspace is live. Next: wire up an agentic CLI from Settings,
         then dispatch your first task.
       </p>
       <div className="mt-6 flex items-center gap-2">
@@ -484,7 +484,7 @@ function BrokenOrgList({
       </div>
       <p className="text-text-muted mt-1 text-xs">
         These workspaces are on disk but the daemon could not open them. The raw
-        error is shown as reported — fix it on the runtime.
+        error is shown as reported — fix it on the host.
       </p>
       <ul className="mt-3 space-y-2">
         {broken.map((b) => (
