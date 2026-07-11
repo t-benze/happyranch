@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { OnboardingPage } from './OnboardingPage';
 import {
+  executorBinaries,
   health as healthApi,
   orgs as orgsApi,
   settings as settingsApi,
@@ -22,17 +23,25 @@ function renderPage() {
   );
 }
 
-/** First-run onboarding leads with Step 1 (connect runtime). Org-flow tests
- *  skip past it to reach Step 2. */
+/** First-run onboarding leads with Step 1 (connect a built-in agentic CLI).
+ *  Org-flow tests skip past it to reach Step 2. */
 async function skipConnect(user: UserEvent): Promise<void> {
   await user.click(await screen.findByRole('button', { name: /skip/i }));
+}
+
+/** Step 1 leads with the built-in dropdown; the custom copy-paste flow is a
+ *  secondary affordance. Custom-flow tests switch into it first. */
+async function goCustom(user: UserEvent): Promise<void> {
+  await user.click(
+    await screen.findByRole('button', { name: /connect a custom cli instead/i }),
+  );
 }
 
 beforeEach(() => {
   vi.restoreAllMocks();
   // Default: a healthy, empty container (no orgs, none broken).
   vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
-  // Default prereqs: all present (compact success line).
+  // Default prereqs: all built-ins present with a resolved path.
   vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
     prereqs: [
       { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Install Claude Code' },
@@ -43,19 +52,145 @@ beforeEach(() => {
   });
 });
 
-describe('OnboardingPage — Step 1 (connect runtime)', () => {
-  test('first run leads with the connect-runtime step', async () => {
+describe('OnboardingPage — Step 1 (connect a built-in agentic CLI)', () => {
+  test('first run leads with the built-in connect step (dropdown)', async () => {
     renderPage();
     expect(
-      await screen.findByRole('heading', { name: /connect your agent runtime/i }),
+      await screen.findByRole('heading', { name: /connect your agentic cli/i }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText(/name this runtime/i)).toBeInTheDocument();
+    // The primary affordance is a dropdown of built-in agentic CLIs.
+    expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
   });
 
+  test('present built-in: pick claude → detected path → Confirm registers and connects (no false-positive)', async () => {
+    const user = userEvent.setup();
+    const regSpy = vi
+      .spyOn(executorBinaries, 'registerExecutorBinary')
+      .mockResolvedValue({ kind: 'claude', path: '/usr/bin/claude', valid: true });
+    renderPage();
+
+    const select = await screen.findByLabelText(/pick your agentic cli/i);
+    // Nothing is connected before the user picks + confirms.
+    expect(
+      screen.queryByRole('heading', { name: /connected/i }),
+    ).not.toBeInTheDocument();
+
+    await user.selectOptions(select, 'claude');
+
+    // The resolved path is pre-filled from prereqs, shown for confirmation.
+    expect(await screen.findByText('/usr/bin/claude')).toBeInTheDocument();
+    // CRITICAL: a present built-in does NOT auto-connect just because it is in
+    // prereqs — registration is the connect signal, and it hasn't happened yet.
+    expect(regSpy).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole('heading', { name: /claude connected/i }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /confirm & connect/i }));
+
+    // Register is called with the picked kind + the detected path.
+    await waitFor(() =>
+      expect(regSpy).toHaveBeenCalledWith({ kind: 'claude', path: '/usr/bin/claude' }),
+    );
+    // Synchronous register success flips to connected.
+    expect(
+      await screen.findByRole('heading', { name: /claude connected/i }),
+    ).toBeInTheDocument();
+
+    // Continue advances to Step 2 (org create).
+    await user.click(screen.getByRole('button', { name: /continue/i }));
+    expect(
+      await screen.findByRole('heading', { name: /welcome to happyranch/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('not-present built-in: pick pi → enter path → Register connects', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Install Claude Code' },
+        { tool: 'pi', present: false, path: null, hint: 'Install Pi' },
+      ],
+    });
+    const regSpy = vi
+      .spyOn(executorBinaries, 'registerExecutorBinary')
+      .mockResolvedValue({ kind: 'pi', path: '/opt/homebrew/bin/pi', valid: true });
+    renderPage();
+
+    const select = await screen.findByLabelText(/pick your agentic cli/i);
+    await user.selectOptions(select, 'pi');
+
+    // Not on PATH → the manual absolute-path entry appears (no fake detection).
+    const pathInput = await screen.findByLabelText(/binary path/i);
+    await user.type(pathInput, '/opt/homebrew/bin/pi');
+    await user.click(screen.getByRole('button', { name: /register & connect/i }));
+
+    await waitFor(() =>
+      expect(regSpy).toHaveBeenCalledWith({ kind: 'pi', path: '/opt/homebrew/bin/pi' }),
+    );
+    expect(
+      await screen.findByRole('heading', { name: /pi connected/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('/opt/homebrew/bin/pi')).toBeInTheDocument();
+  });
+
+  test('not-present built-in: Validate gives inline feedback without registering', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [{ tool: 'pi', present: false, path: null, hint: 'Install Pi' }],
+    });
+    const valSpy = vi
+      .spyOn(executorBinaries, 'validateExecutorBinary')
+      .mockResolvedValue({ path: '/bad/pi', valid: false, error: 'Path is not executable.' });
+    const regSpy = vi.spyOn(executorBinaries, 'registerExecutorBinary');
+    renderPage();
+
+    await user.selectOptions(
+      await screen.findByLabelText(/pick your agentic cli/i),
+      'pi',
+    );
+    await user.type(await screen.findByLabelText(/binary path/i), '/bad/pi');
+    await user.click(screen.getByRole('button', { name: /^validate$/i }));
+
+    await waitFor(() =>
+      expect(valSpy).toHaveBeenCalledWith({ path: '/bad/pi' }),
+    );
+    expect(await screen.findByText(/path is not executable/i)).toBeInTheDocument();
+    // Validate never registers.
+    expect(regSpy).not.toHaveBeenCalled();
+  });
+
+  test('Skip advances straight to Step 2', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await skipConnect(user);
+    expect(
+      await screen.findByRole('heading', { name: /welcome to happyranch/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('a returning user (org already exists) starts at Step 2', async () => {
+    vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({
+      orgs: [{ slug: 'existing-org' }] as never,
+      broken: [],
+    });
+    renderPage();
+    // Lands on Step 2 (add-another copy), never showing Step 1.
+    expect(
+      await screen.findByRole('heading', { name: /create another org/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: /connect your agentic cli/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('OnboardingPage — Step 1 (custom CLI flow, preserved)', () => {
   test('Generate is disabled until the name is valid and rejects built-ins', async () => {
     const user = userEvent.setup();
     renderPage();
-    const input = await screen.findByLabelText(/name this runtime/i);
+    await goCustom(user);
+    const input = await screen.findByLabelText(/name this cli/i);
     const gen = screen.getByRole('button', { name: /generate connect prompt/i });
     expect(gen).toBeDisabled();
 
@@ -65,7 +200,7 @@ describe('OnboardingPage — Step 1 (connect runtime)', () => {
     expect(screen.getByText(/isn.t a built-in/i)).toBeInTheDocument();
 
     await user.clear(input);
-    await user.type(input, 'my-runtime');
+    await user.type(input, 'my-cli');
     expect(gen).not.toBeDisabled();
   });
 
@@ -80,11 +215,12 @@ describe('OnboardingPage — Step 1 (connect runtime)', () => {
       .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
       .mockResolvedValue({ token: 'hr_tok_ABC123', expires_at: Date.now() / 1000 + 600 });
     renderPage();
+    await goCustom(user);
 
-    await user.type(await screen.findByLabelText(/name this runtime/i), 'my-runtime');
+    await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-    await waitFor(() => expect(mintSpy).toHaveBeenCalledWith({ name: 'my-runtime' }));
+    await waitFor(() => expect(mintSpy).toHaveBeenCalledWith({ name: 'my-cli' }));
 
     // The prompt block carries the minted token and the EXISTING loopback
     // register route — no `/connect` one-click URL.
@@ -108,52 +244,29 @@ describe('OnboardingPage — Step 1 (connect runtime)', () => {
     // prereqs now includes the freshly-registered runtime name.
     vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
       prereqs: [
-        { tool: 'my-runtime', present: true, path: '/opt/bin/my-runtime', hint: '' },
+        { tool: 'my-cli', present: true, path: '/opt/bin/my-cli', hint: '' },
       ],
     });
     renderPage();
+    await goCustom(user);
 
-    await user.type(await screen.findByLabelText(/name this runtime/i), 'my-runtime');
+    await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
     // Detect strip → connected card.
     await waitFor(() =>
       expect(
-        screen.getByRole('heading', { name: /my-runtime connected/i }),
+        screen.getByRole('heading', { name: /my-cli connected/i }),
       ).toBeInTheDocument(),
     );
     // Resolved path from prereqs is shown (real, not fabricated).
-    expect(screen.getByText('/opt/bin/my-runtime')).toBeInTheDocument();
+    expect(screen.getByText('/opt/bin/my-cli')).toBeInTheDocument();
 
     // Continue advances to Step 2 (org create).
     await user.click(screen.getByRole('button', { name: /continue/i }));
     expect(
       await screen.findByRole('heading', { name: /welcome to happyranch/i }),
     ).toBeInTheDocument();
-  });
-
-  test('Skip advances straight to Step 2', async () => {
-    const user = userEvent.setup();
-    renderPage();
-    await skipConnect(user);
-    expect(
-      await screen.findByRole('heading', { name: /welcome to happyranch/i }),
-    ).toBeInTheDocument();
-  });
-
-  test('a returning user (org already exists) starts at Step 2', async () => {
-    vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({
-      orgs: [{ slug: 'existing-org' }] as never,
-      broken: [],
-    });
-    renderPage();
-    // Lands on Step 2 (add-another copy), never showing Step 1.
-    expect(
-      await screen.findByRole('heading', { name: /create another org/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole('heading', { name: /connect your agent runtime/i }),
-    ).not.toBeInTheDocument();
   });
 });
 
