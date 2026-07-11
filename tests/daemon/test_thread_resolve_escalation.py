@@ -345,6 +345,56 @@ async def test_thread_resolve_escalation_derives_actor_from_dispatcher(
     assert resolved_logs[0]["agent"] == "engineering_head"
 
 
+# ── Token lifecycle: replay prevention (THR-080 review R2) ────────
+
+@pytest.mark.asyncio
+async def test_thread_resolve_escalation_rejects_replayed_token(
+    client_with_runtime,
+):
+    """A single invocation token can resolve at most once — a second
+    call with the same token must be rejected (mirrors reply/decline
+    lifecycle)."""
+    client, org = client_with_runtime
+
+    org.db.insert_thread(ThreadRecord(
+        id="THR-REPLAY", subject="Test", composed_by="engineering_manager",
+        status=ThreadStatus.OPEN,
+    ))
+    org.db.insert_task(TaskRecord(
+        id="T-REPLAY", brief="test", dispatched_from_thread_id="THR-REPLAY",
+    ))
+    org.db.update_task("T-REPLAY", status=TaskStatus.ESCALATED, block_kind=None)
+
+    token = _mint_authorized_invocation(org, "THR-REPLAY", "engineering_head")
+
+    payload = {
+        "task_id": "T-REPLAY",
+        "decision": "continue",
+        "rationale": "first call",
+        "invocation_token": token,
+        "dispatcher": "engineering_head",
+    }
+
+    # First call: succeeds.
+    r1 = client.post(
+        "/api/v1/orgs/alpha/threads/THR-REPLAY/resolve-escalation",
+        json=payload,
+    )
+    assert r1.status_code == 200, f"first call: got {r1.status_code} {r1.text}"
+
+    # Reset task back to escalated so a replay would mutate again if not guarded.
+    org.db.update_task("T-REPLAY", status=TaskStatus.ESCALATED, block_kind=None)
+
+    # Second call with the SAME token: must reject.
+    r2 = client.post(
+        "/api/v1/orgs/alpha/threads/THR-REPLAY/resolve-escalation",
+        json={**payload, "rationale": "replay attempt"},
+    )
+    assert r2.status_code == 409, f"replay: got {r2.status_code} {r2.text}"
+    detail = r2.json()["detail"]
+    assert detail["code"] == "invocation_token_consumed"
+
+
 # ── Thread followup test (THR-080 #3) ──────────────────────────────
 
 @pytest.mark.asyncio

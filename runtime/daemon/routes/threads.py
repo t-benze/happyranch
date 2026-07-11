@@ -1781,6 +1781,10 @@ async def resolve_escalation_from_thread(
         actor=actor,
         thread_id=thread_id,
     )
+    # Consume the invocation token to prevent replay — mirrors the reply
+    # route's token lifecycle. A single invocation can perform at most one
+    # state-changing resolution.
+    org.db.consume_invocation(body.invocation_token)
     return {"ok": True, "task_id": body.task_id, "new_status": new_status}
 
 
