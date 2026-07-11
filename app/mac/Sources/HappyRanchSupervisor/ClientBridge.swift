@@ -100,6 +100,19 @@ public final class ClientBridge: @unchecked Sendable {
     /// The session-scoped credential prefix.
     private static let sessionCredentialPrefix = "hr_session_"
 
+    /// TCP parameters that bypass the system proxy.
+    ///
+    /// NWConnection honours system-level SOCKS/HTTP proxies by default.
+    /// The home connector lives on the tailnet (100.x.x.x) and must be
+    /// reached directly — routing through a local proxy causes hangs or
+    /// timeouts when the proxy doesn't relay the response correctly.
+    private static var directTCP: NWParameters {
+        let tcp = NWProtocolTCP.Options()
+        let params = NWParameters(tls: nil, tcp: tcp)
+        params.preferNoProxies = true
+        return params
+    }
+
     // MARK: - Init
 
     /// - Parameters:
@@ -217,7 +230,7 @@ public final class ClientBridge: @unchecked Sendable {
                 host: NWEndpoint.Host(homeHost),
                 port: NWEndpoint.Port(integerLiteral: homePort)
             )
-            let connection = NWConnection(to: endpoint, using: .tcp)
+            let connection = NWConnection(to: endpoint, using: Self.directTCP)
 
             DiagnosticsCollector.shared?.recordConnectPathLog(
                 stage: "redeemPairing-connection-created",
@@ -545,16 +558,16 @@ public final class ClientBridge: @unchecked Sendable {
         _ credential: String,
         into request: String
     ) -> String {
-        let credHeader = "X-HappyRanch-Device-Credential: \(credential)\r\n"
+        let credHeader = "\r\nX-HappyRanch-Device-Credential: \(credential)"
 
-        // Insert the credential header on its own line before the \r\n\r\n
-        // header/body separator.  We insert at lowerBound + 2 (past the first
-        // \r\n of the separator, which is the end of the last header line)
-        // to avoid merging into the preceding header.
+        // Insert the credential header before the \r\n\r\n header/body
+        // separator.  We insert at lowerBound (before the separator).
+        // Swift treats \r\n as a single Character, so the old offsetBy:2
+        // actually landed past the entire \r\n\r\n separator, placing the
+        // header in the body.
         if let headerEndRange = request.range(of: "\r\n\r\n") {
             var modified = request
-            let insertPos = request.index(headerEndRange.lowerBound, offsetBy: 2)
-            modified.insert(contentsOf: credHeader, at: insertPos)
+            modified.insert(contentsOf: credHeader, at: headerEndRange.lowerBound)
             return modified
         }
 
@@ -609,7 +622,7 @@ public final class ClientBridge: @unchecked Sendable {
             host: NWEndpoint.Host(homeConnectorHost),
             port: NWEndpoint.Port(integerLiteral: homeConnectorPort)
         )
-        let homeConnection = NWConnection(to: homeEndpoint, using: .tcp)
+        let homeConnection = NWConnection(to: homeEndpoint, using: Self.directTCP)
 
         homeConnection.stateUpdateHandler = { [weak self, weak clientConnection] state in
             guard let self, let clientConnection else { return }
