@@ -184,6 +184,10 @@ class OrgConfig:
     # THR-032 P3b/P4a: memory search and compaction config
     memory_search: MemorySearchConfig = field(default_factory=MemorySearchConfig)
     memory_compaction: MemoryCompactionConfig = field(default_factory=MemoryCompactionConfig)
+    # THR-026 seq33: per-slice revise-round budget. When > 0, caps the number
+    # of genuine revise cycles (worker-of-record re-delegations) before a
+    # deliberate stop-with-best. 0 = disabled (today's behavior unchanged).
+    max_revise_rounds: int = 0
     # THR-052: per-org custom executor profiles. Each entry maps a profile name
     # to {command, argv_template, adapter?}. Parsed but NOT validated for PATH
     # resolution at parse time (that happens during registration).
@@ -847,6 +851,18 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
             f"{path}: memory_digest_budget must be >= 0, got {digest_budget}"
         )
 
+    # THR-026 seq33: max_revise_rounds — per-slice revise-round budget.
+    # Default 0 (disabled, today's behavior unchanged).
+    max_revise = data.get("max_revise_rounds", 0)
+    if not isinstance(max_revise, int) or isinstance(max_revise, bool):
+        raise OrgConfigError(
+            f"{path}: max_revise_rounds must be an integer, got {max_revise!r}"
+        )
+    if max_revise < 0:
+        raise OrgConfigError(
+            f"{path}: max_revise_rounds must be >= 0, got {max_revise}"
+        )
+
     # THR-032 P4a: memory search config
     search_cfg = MemorySearchConfig()
     search_block = data.get("memory_search")
@@ -917,6 +933,7 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
         dreaming=dreaming_cfg,
         working_hours=working_hours_cfg,
         memory_digest_budget=digest_budget,
+        max_revise_rounds=max_revise,
         memory_search=search_cfg,
         memory_compaction=comp_cfg,
         executor_profiles=executor_profiles,
