@@ -469,7 +469,8 @@ class Database:
                 completed_at TEXT,
                 parent_task_id TEXT,
                 final_output_summary TEXT,
-                final_output_dir TEXT
+                final_output_dir TEXT,
+                executor_pid INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -923,6 +924,15 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass
+        # THR-079: executor OS pid for daemon-restart liveness probe.
+        # Persisted at _on_started (orchestrator.py); read by _sweep_on_startup.
+        # NULL for pre-migration rows (fail-closed on first post-deploy restart).
+        try:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN executor_pid INTEGER"
+            )
+        except sqlite3.OperationalError:
+            pass
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_dispatched_from_thread_id "
             "ON tasks(dispatched_from_thread_id) "
@@ -1230,6 +1240,7 @@ class Database:
             last_heartbeat=row["last_heartbeat"],
             session_timeout_seconds=row["session_timeout_seconds"],
             task_type=row["task_type"],
+            executor_pid=row["executor_pid"],
         )
 
     @_synchronized
@@ -1319,6 +1330,7 @@ class Database:
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
                 task_type=row["task_type"],
+                executor_pid=row["executor_pid"],
             )
             for row in cursor.fetchall()
         ]
@@ -1475,6 +1487,7 @@ class Database:
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
                 task_type=row["task_type"],
+                executor_pid=row["executor_pid"],
             )
             child_statuses = self.get_subtree_statuses(task.id)
             object.__setattr__(
@@ -1670,6 +1683,7 @@ class Database:
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
                 task_type=row["task_type"],
+                executor_pid=row["executor_pid"],
             )
             for row in cursor.fetchall()
         ]
@@ -1680,6 +1694,7 @@ class Database:
             "status", "assigned_agent", "revision_count", "completed_at",
             "block_kind", "blocked_on_job_ids", "note", "orchestration_step_count",
             "final_output_dir", "cancelled_at", "last_heartbeat",
+            "executor_pid",
         }
         # NOTE: filter on membership, not on None-ness — block_kind must be
         # resettable to NULL when a task unblocks.

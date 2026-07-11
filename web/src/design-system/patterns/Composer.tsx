@@ -1,7 +1,14 @@
 /**
- * Composer — sticky-bottom textarea + helper line + Send button. Per
- * DESIGN.md `components.textarea` + `components.button.primary`. Used at
- * the foot of the threads detail pane.
+ * Composer — compact single-line rounded input with an INLINE attach icon and
+ * a circular send button (THR-061 a-thread-detail). Per DESIGN.md
+ * `components.textarea` + `components.button.primary`. Used at the foot of the
+ * threads detail pane.
+ *
+ * The broadcast helper copy lives in the PLACEHOLDER ("Message the thread —
+ * all participants see it"), so there is no separate helper line under the
+ * input; only a send-error surfaces below the pill. The attach affordance is a
+ * small inline paperclip icon (still labelled "Attach files") — the capability
+ * is preserved, only the chrome is compacted.
  *
  * Draft persistence: useThreadDraft stores partial messages in localStorage
  * keyed by (orgSlug, threadId) with a 300ms debounce. Drafts survive
@@ -9,11 +16,11 @@
  *
  * Auto-grow, @-mention autocomplete, Enter-to-send (Shift+Enter for new
  * line) live in MentionTextarea so the same typing experience is reused
- * by other surfaces (e.g. NewThreadDialog).
+ * by other surfaces (e.g. NewThreadDialog). Abort-reply moved OUT of the
+ * composer to sit inline by the transcript replying indicator (a-thread-detail).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Paperclip, X } from 'lucide-react';
-import { Button } from '@/design-system/primitives/Button';
+import { ArrowRight, Paperclip, X } from 'lucide-react';
 import { MAX_THREAD_ATTACHMENTS, REMOVE_ATTACHMENT_LABEL } from '@/lib/threadAttachments';
 import { MentionTextarea } from './MentionTextarea';
 import type { AgentSummary } from '@/lib/api/agents';
@@ -104,14 +111,6 @@ interface ComposerProps {
    * must not call @/lib/orgSlug directly).
    */
   orgSlug: string;
-
-  // Optional abort-replies control — rendered next to Send; threads-only surface.
-  /** When true, the Abort replies button is visible (queued/working responders exist). */
-  hasInFlightResponders?: boolean;
-  /** When true, the abort mutation is in-flight; button shows "Aborting…" and is disabled. */
-  isAborting?: boolean;
-  /** Called when the Abort replies button is clicked. */
-  onAbortReplies?: () => void;
 }
 
 export function Composer({
@@ -127,9 +126,6 @@ export function Composer({
   agents = [],
   threadId = '',
   orgSlug,
-  hasInFlightResponders = false,
-  isAborting = false,
-  onAbortReplies,
 }: ComposerProps): JSX.Element {
   const { draft, setDraft, clearDraft } = useThreadDraft(orgSlug, threadId);
   const canSend = Boolean(draft.trim() || attachments.length);
@@ -149,24 +145,47 @@ export function Composer({
     }
   };
 
+  // Broadcast copy rides in the placeholder (a-thread-detail): the helper prop
+  // is used as the placeholder when the caller gave no explicit one, so the
+  // compact input carries the broadcast semantics without a separate line.
+  const composerPlaceholder =
+    placeholder ??
+    (disabled ? 'Thread is closed.' : (helper ?? 'Write a message…'));
+
   return (
     <div className="flex flex-col gap-2">
-      <MentionTextarea
-        value={draft}
-        onChange={setDraft}
-        agents={agents}
-        onSubmit={() => { submit(); }}
-        disabled={disabled || pending}
-        placeholder={
-          placeholder ?? (disabled ? 'Thread is closed.' : 'Write a message… Enter to send, Shift+Enter for new line.')
-        }
-        ariaLabel="Compose follow-up"
-        registerFocus={registerFocus}
-      />
-      <div className="flex flex-col gap-2">
-        <label className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex w-fit cursor-pointer items-center gap-2 rounded-md border px-2 py-1">
-          <Paperclip className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>Attach files</span>
+      {/* Pending attachment chips — above the pill so the input stays compact. */}
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {attachments.map((item) => (
+            <span
+              key={item.id}
+              className="border-border-subtle bg-surface-raised text-caption inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1"
+            >
+              <span className="max-w-64 truncate">{item.file.name}</span>
+              <button
+                type="button"
+                className="text-text-muted hover:text-text"
+                aria-label={REMOVE_ATTACHMENT_LABEL}
+                onClick={() => removeAttachment(item.id)}
+                disabled={disabled || pending}
+              >
+                <X className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Compact rounded input: inline attach icon + textarea + circular send.
+          Full-stadium pill (a-thread-detail) — reads as a single-line input and
+          grows gracefully for the rare Shift+Enter multi-line draft. */}
+      <div className="border-border-default bg-surface-raised focus-within:border-accent-default flex items-end gap-1 rounded-3xl border py-1 pr-1 pl-2 transition-colors">
+        <label
+          className="text-text-muted hover:text-text-secondary hover:bg-surface-hover mb-0.5 inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors"
+          title="Attach files"
+        >
+          <Paperclip className="h-4 w-4" aria-hidden="true" />
           <input
             aria-label="Attach files"
             type="file"
@@ -189,51 +208,34 @@ export function Composer({
             }}
           />
         </label>
-        {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {attachments.map((item) => (
-              <span
-                key={item.id}
-                className="border-border-subtle bg-surface-raised text-caption inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1"
-              >
-                <span className="max-w-64 truncate">{item.file.name}</span>
-                <button
-                  type="button"
-                  className="text-text-muted hover:text-text"
-                  aria-label={REMOVE_ATTACHMENT_LABEL}
-                  onClick={() => removeAttachment(item.id)}
-                  disabled={disabled || pending}
-                >
-                  <X className="h-3.5 w-3.5" aria-hidden="true" />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+        <MentionTextarea
+          value={draft}
+          onChange={setDraft}
+          agents={agents}
+          onSubmit={() => { submit(); }}
+          disabled={disabled || pending}
+          rows={1}
+          placeholder={composerPlaceholder}
+          ariaLabel="Compose follow-up"
+          registerFocus={registerFocus}
+          className="text-body text-text-primary placeholder:text-text-muted w-full resize-none bg-transparent py-1.5 focus:outline-none disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={submit}
+          disabled={disabled || !canSend || pending}
+          aria-label="Send"
+          title="Send (Enter)"
+          className="bg-accent text-accent-fg hover:bg-accent-hover disabled:bg-surface-hover disabled:text-text-muted mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors"
+        >
+          <ArrowRight className="h-4 w-4" aria-hidden="true" />
+        </button>
       </div>
-      <div className="flex items-center justify-between gap-2">
-        {errorMessage ? (
-          <span className="text-caption text-feedback-danger">{errorMessage}</span>
-        ) : (
-          <span className="text-caption text-text-muted">{helper ?? ''}</span>
-        )}
-        <div className="flex items-center gap-2">
-          {onAbortReplies ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onAbortReplies}
-              disabled={disabled || !hasInFlightResponders || isAborting}
-              title="Abort pending replies"
-            >
-              {isAborting ? 'Aborting…' : 'Abort replies'}
-            </Button>
-          ) : null}
-          <Button onClick={submit} disabled={disabled || !canSend || pending}>
-            {pending ? 'Sending…' : 'Send'}
-          </Button>
-        </div>
-      </div>
+
+      {/* Send error surfaces below the pill; the broadcast copy is the placeholder. */}
+      {errorMessage && (
+        <span className="text-caption text-feedback-danger">{errorMessage}</span>
+      )}
     </div>
   );
 }

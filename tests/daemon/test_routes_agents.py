@@ -1914,3 +1914,135 @@ def test_manage_agent_enroll_with_model_persists(
 
     # Cleanup: delete pending file
     (paths.agents_dir / "new_worker.pending.md").unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# THR-055: switch-time skill materialization
+# ---------------------------------------------------------------------------
+
+
+def _system_contract_ids_for_context(context: str, workspace) -> set[str]:
+    """Resolve expected system-contract IDs for a session context."""
+    from runtime.skills.system_contracts import (
+        SessionContext,
+        resolve_system_contracts_for_session,
+    )
+    ctx = SessionContext(context)
+    contracts = resolve_system_contracts_for_session(ctx, workspace=workspace)
+    return {sc.id for sc in contracts}
+
+
+def test_set_executor_claude_to_codex_materializes_skills(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Claude→Codex switch leaves .agents/skills/<id>/SKILL.md for all
+    contracts any future session context could need (union across all 4
+    contexts). Files exist BEFORE any new session starts."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    # Simulate repos so make-worktree contract is injected
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "codex"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["materialization_errors"] == []
+
+    # Union of all 4 contexts: start-task(task,wake), jobs(all),
+    # make-worktree(all,requires_repos), thread(task,thread,wake), dream(dream)
+    all_contracts: set[str] = set()
+    for ctx in ("task", "thread", "wake", "dream"):
+        all_contracts |= _system_contract_ids_for_context(ctx, workspace)
+
+    assert len(all_contracts) >= 1, "at least one contract should be materialized"
+    for sid in all_contracts:
+        marker = workspace / ".agents" / "skills" / sid / "SKILL.md"
+        assert marker.is_file(), (
+            f"Expected {marker} to exist after claude→codex switch"
+        )
+
+
+def test_set_executor_codex_to_claude_materializes_skills(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Codex→Claude switch leaves .claude/skills/<id>/SKILL.md for all
+    contracts any future session context could need (union across all 4
+    contexts). Files exist BEFORE any new session starts."""
+    _seed_active_agent(org_state, "dev_agent", executor="codex")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: codex\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "claude"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["materialization_errors"] == []
+
+    all_contracts: set[str] = set()
+    for ctx in ("task", "thread", "wake", "dream"):
+        all_contracts |= _system_contract_ids_for_context(ctx, workspace)
+
+    assert len(all_contracts) >= 1, "at least one contract should be materialized"
+    for sid in all_contracts:
+        marker = workspace / ".claude" / "skills" / sid / "SKILL.md"
+        assert marker.is_file(), (
+            f"Expected {marker} to exist after codex→claude switch"
+        )
+
+
+def test_set_executor_materialization_failure_non_fatal(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """When ensure_system_contracts_materialized raises, the switch still
+    succeeds (steps 1-3 have already mutated state). The error is surfaced
+    in the response body, not as a 500."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError,
+    )
+
+    with patch(
+        "runtime.daemon.routes.agents.ContextBuilder"
+    ) as MockCB, patch(
+        "runtime.daemon.routes.agents.ensure_system_contracts_materialized"
+    ) as mock_mat:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        mock_mat.side_effect = SystemContractMaterializationError(
+            missing_contracts=["start-task"],
+            workspace=workspace,
+            provider="codex",
+        )
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "codex"},
+            headers=auth_headers,
+        )
+
+    # Switch still succeeds — step 1-3 mutations are already applied
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["before"]["org_executor"] == "claude"
+    assert body["after"]["org_executor"] == "codex"
+    # Materialization failure is surfaced non-fatally
+    assert len(body["materialization_errors"]) == 4, (
+        f"Expected 4 materialization errors (one per context), got {body['materialization_errors']}"
+    )

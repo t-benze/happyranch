@@ -88,7 +88,10 @@
     "GET /api/v1/orgs/{slug}/kb/stats",
     "GET /api/v1/orgs/{slug}/settings",
     "PUT /api/v1/orgs/{slug}/settings/org",
-    "PUT /api/v1/orgs/{slug}/settings/teams"
+    "PUT /api/v1/orgs/{slug}/settings/teams",
+    "GET /api/v1/executor-binaries",
+    "POST /api/v1/executor-binaries/register",
+    "POST /api/v1/executor-binaries/validate"
   ],
   "excluded": {
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion": "agent callback",
@@ -121,9 +124,6 @@
     "POST /api/v1/orgs/{slug}/executors/register": "conformance-gated executor registration (THR-052 PR-2)",
     "GET /api/v1/metrics": "operational metrics — agent/CLI facing; web dashboard panel deferred (THR-066 follow-up)",
     "GET /api/v1/metrics/history": "operational metrics history — agent/CLI facing (THR-066 PR-2)",
-    "GET /api/v1/executor-binaries": "executor binary-path registry — machine-local operator/daemon config surface; browser TS client wrappers land in THR-085 PR-2 web slice",
-    "POST /api/v1/executor-binaries/register": "executor binary-path registry — machine-local operator/daemon config surface; browser TS client wrappers land in THR-085 PR-2 web slice",
-    "POST /api/v1/executor-binaries/validate": "executor binary-path registry — machine-local operator/daemon config surface; browser TS client wrappers land in THR-085 PR-2 web slice",
     "POST /api/v1/auth/registration-token/runtime": "founder-only runtime-level registration-token mint (THR-088)",
     "POST /api/v1/executors/runtime/conformance-checkin": "cli-only runtime-level conformance check-in (THR-088)",
     "POST /api/v1/executors/runtime/register": "conformance-gated runtime-level executor registration (THR-088)"

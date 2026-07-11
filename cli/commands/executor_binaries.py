@@ -10,12 +10,15 @@ kinds/capabilities exist, org-portable). This group writes into the
 machine-local binary registry, NOT org/config.yaml.
 
 Commands:
-  register <kind> --path <ABS_PATH>  — validate-then-register a binary path
-  list                                — list registered binary paths
+  register <kind> [--path <ABS_PATH>]  — validate-then-register a binary path.
+      When --path is omitted the CLI resolves the binary from the invoking
+      shell's PATH via ``shutil.which(<kind>)``.
+  list                                  — list registered binary paths
 """
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 
 from cli.client.client import OpcClient
@@ -25,20 +28,42 @@ def cmd_executor_binaries_register(args: argparse.Namespace) -> None:
     """Register a binary path for an executor kind.
 
     Calls POST /api/v1/executor-binaries/register (validate-then-store).
+
+    When ``--path`` is supplied it is used as an explicit absolute-path
+    override (today's behavior).  When ``--path`` is omitted the binary is
+    resolved from the invoking shell's PATH via ``shutil.which(args.kind)``
+    so the user no longer needs to hand-type the full path.
     """
-    if not args.path.startswith("/"):
-        print(
-            f"error: --path must be an absolute path (got {args.path!r})",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    kind: str = args.kind
+
+    if args.path is not None:
+        # ── explicit --path override ──────────────────────────────────
+        if not args.path.startswith("/"):
+            print(
+                f"error: --path must be an absolute path (got {args.path!r})",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        resolved = args.path
+    else:
+        # ── resolve from shell PATH ───────────────────────────────────
+        resolved = shutil.which(kind)
+        if resolved is None:
+            print(
+                f"error: '{kind}' was not found on your PATH — "
+                f"run `which {kind}` to confirm it's installed, "
+                f"or pass --path <absolute-path>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"  resolved {kind} from PATH -> {resolved}")
 
     client = OpcClient.from_env()
 
     try:
         r = client.post(
             "/api/v1/executor-binaries/register",
-            json={"kind": args.kind, "path": args.path},
+            json={"kind": kind, "path": resolved},
         )
     except Exception as exc:
         print(f"error: failed to reach daemon — {exc}", file=sys.stderr)
@@ -110,8 +135,7 @@ def register(sub) -> None:
     p_reg.add_argument("kind", help="Executor kind, e.g. 'claude', 'codex', 'pi'")
     p_reg.add_argument(
         "--path",
-        required=True,
-        help="Absolute path to the executor binary",
+        help="Absolute path to the executor binary (omit to resolve from PATH)",
     )
     p_reg.set_defaults(func=cmd_executor_binaries_register)
 

@@ -80,6 +80,7 @@ class FakeOrgState:
     def __init__(self, db, teams=None):
         self.db = db
         self.teams = teams
+        self.slug = 'test-org'
 
 
 class FakeTeams:
@@ -366,6 +367,7 @@ def _make_org_state_with_teams(db, root, manager_name: str = "engineering_head")
     os = _OS()
     os.db = db
     os.root = root
+    os.slug = 'test-org'
     os.teams = FakeTeams({manager_name})
     return os
 

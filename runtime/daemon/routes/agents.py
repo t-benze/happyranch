@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import logging
 import os
 import re
 import shutil
@@ -48,6 +49,10 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
 from runtime.orchestrator.context_builder import ContextBuilder
+from runtime.orchestrator.workspace_adapters import (
+    SystemContractMaterializationError,
+    ensure_system_contracts_materialized,
+)
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -835,6 +840,7 @@ async def set_agent_executor(
     stale_files: list[str] = []
     removed: list[str] = []
     cleaned = False
+    materialization_errors: list[str] = []
 
     if has_workspace:
         # 2. workspace agent.yaml.
@@ -849,6 +855,45 @@ async def set_agent_executor(
             existing.system_prompt,
             provider=body.executor,
         )
+        # 5. Materialize system contracts for ALL 4 session contexts so
+        #    skills are present the INSTANT the switch completes (not one
+        #    session later).  Complements #378's spawn precondition.
+        #
+        #    Decision (1): No single context is a strict superset — 'task'
+        #    misses 'dream'; 'dream' misses 'start-task' and 'thread'.
+        #    Loop over all 4 to guarantee every contract any future session
+        #    could need is on disk.
+        #
+        #    Decision (2): Failure is NON-FATAL — steps 1-3 have already
+        #    mutated org .md + agent.yaml irreversibly; #378 guarantees
+        #    correctness at next spawn regardless.  Surface errors in the
+        #    response body + warning log.
+        #
+        #    Decision (3): provider=body.executor matches existing step-3
+        #    convention.  Standard claude/codex/opencode/pi names route to
+        #    the correct .claude/ or .agents/ skills root.  A custom profile
+        #    on the claude adapter with a non-"claude" name would mis-route
+        #    the verify path — flagged, out of scope for this change.
+        materialization_errors = []
+        _logger = logging.getLogger(__name__)
+        for ctx in ("task", "thread", "wake", "dream"):
+            try:
+                await asyncio.to_thread(
+                    ensure_system_contracts_materialized,
+                    workspace,
+                    org.settings,
+                    slug=org.slug,
+                    context=ctx,
+                    provider=body.executor,
+                )
+            except SystemContractMaterializationError as e:
+                materialization_errors.append(str(e))
+                _logger.warning(
+                    "Executor switch: system contract materialization "
+                    "failed for context=%s provider=%s agent=%s: %s",
+                    ctx, body.executor, agent_name, e,
+                )
+
         # 4. stale Claude-only files when switching AWAY from a Claude
         #    adapter. Check the profile's adapter_id, not the name — a
         #    custom profile might use the pi adapter but not be named "pi".
@@ -884,6 +929,7 @@ async def set_agent_executor(
         "stale_files": stale_files,
         "cleaned": cleaned,
         "removed": removed,
+        "materialization_errors": materialization_errors,
     }
 
 

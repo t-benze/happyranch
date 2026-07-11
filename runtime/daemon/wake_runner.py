@@ -33,6 +33,7 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
+    ensure_system_contracts_materialized,
     inject_managed_skills,
     inject_system_contracts,
     refresh_session_skills,
@@ -161,9 +162,17 @@ async def run_wake(
     # Refresh on-disk skill bodies on EVERY session (THR-070).
     refresh_session_skills(workspace, settings, slug=org_state.slug)
 
-    # Explicit context-aware system-contract injection (THR-055 Phase 1).
-    inject_system_contracts(
+    # TASK-2511: resolve executor name early so we can pass provider to the
+    # materialization guard before spawn.
+    _prov = _executor_name(workspace)
+    if not get_registry().is_registered(_prov):
+        _prov = "claude"
+
+    # Explicit context-aware system-contract injection with on-disk verification
+    # (THR-055 Phase 1 + TASK-2511 hardening).
+    ensure_system_contracts_materialized(
         workspace, settings, slug=org_state.slug, context="wake",
+        provider=_prov,
     )
 
     # Managed-catalog skill injection (THR-055 Phase 4).
@@ -198,9 +207,7 @@ async def run_wake(
         protocol_doc_manifest=protocol_doc_manifest,
     )
 
-    executor_name = _executor_name(workspace)
-    if not get_registry().is_registered(executor_name):
-        executor_name = "claude"
+    executor_name = _prov  # already resolved above (TASK-2511)
     executor = (
         executor_factory(executor_name, settings, paths) if executor_factory
         else _build_executor_for_provider(executor_name, settings, paths)

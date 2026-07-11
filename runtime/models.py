@@ -111,6 +111,11 @@ class TaskRecord(BaseModel):
     # `cancelled_at` presence rather than the status label for backward compat.
     cancelled_at: datetime | None = None
     last_heartbeat: datetime | None = None
+    # OS pid of the executor subprocess, persisted at session start for
+    # daemon-restart liveness probe (THR-079). NULL for tasks that predate
+    # the column or that haven't reached _on_started yet. Internal signal —
+    # not serialized to API responses.
+    executor_pid: int | None = None
 
 
 class ChainLeg(BaseModel):
@@ -144,6 +149,10 @@ class NextStep(BaseModel):
     then: list[ChainLeg] = Field(default_factory=list)
     children: list[FanoutChild] = Field(default_factory=list)
     width_cap_ack: int | None = None
+    # THR-078: when a fan-out owner re-delegates a failed slice, this field
+    # carries the failed child's task id so the orchestrator can track
+    # per-slice retry count from existing DB lineage (no schema migration).
+    revisit_of_task_id: str | None = None
 
     @field_validator('action')
     @classmethod

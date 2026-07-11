@@ -42,17 +42,18 @@ def _sweep_on_startup(
     task on each restart (silent cascade corruption). The discriminant is what
     saves it:
 
-      - Branch 1 — in_progress + block_kind IS NULL → failed (we killed the
-        subprocess). Before spawning an auto-revisit, the sweep checks whether
-        any STRICT ancestor (exclude self) is a parked, non-terminal,
-        recoverable manager (in_progress + block_kind in {DELEGATED,
-        BLOCKED_ON_JOB}). If one exists (THR-064), the sweep skips the
-        auto-revisit entirely — the parked ancestor's bounded-wake will
-        recover the child via Branch 2/3, and spawning a root-level twin
-        alongside it is the duplicate-root bug this guard eliminates.
-        A genuine root-level subprocess death (no parked ancestor) still
-        auto-revisits as before. The cascade propagates upward; founder
-        notification is suppressed when an auto-revisit covers the work.
+      - Branch 1 — in_progress + block_kind IS NULL → pid-liveness probe
+        (THR-079). Instead of assuming the subprocess died, the sweep reads
+        the persisted ``executor_pid`` and probes with ``os.kill(pid, 0)``:
+        * pid ALIVE → leave alone (session survived the daemon restart).
+        * pid DEAD (ProcessLookupError) → ``FAILED`` with reason
+          "session died on daemon restart — executor pid not alive".
+        * pid NULL/undeterminable (PermissionError, etc.) → ``FAILED``
+          with reason "session liveness undeterminable on daemon restart".
+        No auto-revisit is spawned — the founder receives a
+        ``daemon_restart_failure`` audit row and decides whether to
+        re-dispatch. NOTE: a recycled pid could read as falsely-alive;
+        the probe is the ratified THR-079 approach.
       - Branch 2 — in_progress + block_kind=DELEGATED with all children terminal
         → re-enqueue parent (orphaned wake-up: the daemon died after a child
         terminated but before the parent saw the signal). Else leave (children
@@ -69,25 +70,16 @@ def _sweep_on_startup(
     flips any legacy blocked(...) rows before the sweep runs.
 
     When ``orchestrator`` is None (test harnesses that don't construct one),
-    Branch 1 degrades to mark-failed-and-audit only; no auto-revisit, no
-    cascade, no notify. Production always passes an orchestrator.
+    Branch 1 degrades to liveness-probe-and-mark-failed only; no cascade
+    notification to parent. Production always passes an orchestrator.
     """
     # Imported lazily to avoid a startup-time cycle (run_step → daemon types).
     from runtime.orchestrator.run_step import (
         TERMINAL_STATES,
         _enqueue_parent_if_waiting,
-        _maybe_spawn_auto_revisit,
     )
 
     audit = AuditLogger(db)
-    # Per-restart dedup: a single daemon restart can force-fail multiple
-    # in-flight tasks across one lineage. Each would otherwise spawn an
-    # independent auto-revisit pointing at the same predecessor root, burning
-    # the per-kind cap and producing parallel retry trees. Spawn at most one
-    # auto-revisit per unique root per sweep; subsequent same-root failures
-    # still propagate their cascade with auto_revisit_spawned=True so the
-    # founder isn't pinged multiple times.
-    revisited_roots: set[str] = set()
 
     import json as _json
     # Path B: parked carriers are in_progress(...) with block_kind set.
@@ -102,46 +94,55 @@ def _sweep_on_startup(
 
         # Branch 1 — genuinely running, killed by the restart.
         if t.status == TaskStatus.IN_PROGRESS and t.block_kind is None:
-            db.update_task(task_id, status=TaskStatus.FAILED,
-                           note="daemon_restart -- infra fault, not a code "
-                                "failure; status-assess the branch/PR/CI and "
-                                "adopt already-pushed work before re-dispatching")
-            audit.log_daemon_restart_failure(task_id, t.assigned_agent or "daemon")
-            if orchestrator is None:
-                continue
-            chain = db.walk_ancestors(task_id)
-            # THR-064: if any STRICT ancestor (exclude self) is a parked,
-            # non-terminal, recoverable manager, skip auto-revisit. The
-            # parked ancestor's bounded-wake will recover the work — spawning
-            # a root-level twin alongside it is the duplicate-root bug.
-            _RECOVERABLE_BLOCK_KINDS = {BlockKind.DELEGATED, BlockKind.BLOCKED_ON_JOB}
-            has_parked_ancestor = any(
-                a.id != task_id
-                and a.status == TaskStatus.IN_PROGRESS
-                and a.block_kind in _RECOVERABLE_BLOCK_KINDS
-                for a in chain
-            )
-            if has_parked_ancestor:
-                spawned = False
-            else:
-                root_id = chain[-1].id if chain else task_id
-                if root_id in revisited_roots:
-                    # Earlier iteration already auto-revisited this lineage.
-                    spawned = True
+            # THR-079: use the persisted executor OS pid as the liveness
+            # signal instead of assuming the subprocess is dead. A running
+            # session survives a daemon restart; only genuinely dead pids
+            # (or undeterminable ones, per fail-closed default) are failed.
+            # NOTE: os.kill(pid, 0) carries a pid-recycle caveat — a recycled
+            # pid could read as falsely-alive. The probe is the ratified
+            # THR-079 approach; a falsely-alive false-positive is acceptable
+            # relative to the risk of duplicate runs from false-negative.
+            pid = t.executor_pid
+            alive = False
+            if pid is not None:
+                try:
+                    os.kill(pid, 0)  # signal 0 = existence check, no signal sent
+                except ProcessLookupError:
+                    alive = False
+                except Exception:
+                    # PermissionError, recycled-pid uncertainty, any
+                    # non-clean answer → founder fail-closed default.
+                    # Do NOT leave-alone and do NOT auto-resume on ambiguity.
+                    pid = None  # treat as undeterminable
                 else:
-                    revisit_id = _maybe_spawn_auto_revisit(
-                        orchestrator, task_id,
-                        t.assigned_agent or "(unknown)",
-                        failure_kind="daemon_restart",
-                        error_context={"reason": "daemon restarted mid-task"},
-                    )
-                    spawned = revisit_id is not None
-                    if spawned:
-                        revisited_roots.add(root_id)
-            _enqueue_parent_if_waiting(
-                orchestrator, task_id,
-                root_auto_revisit_spawned=spawned,
-            )
+                    alive = True
+
+            if alive:
+                # Session still running — leave alone. No reconcile, no
+                # re-enqueue, no auto-revisit. The live session will complete
+                # its work and report back normally.
+                continue
+
+            # Dead or undeterminable: fail-closed. No auto-revisit spawn —
+            # the THR-079 ruling supersedes the earlier heartbeat/revisit
+            # approach. The founder receives a daemon_restart_failure audit
+            # row and decides whether to re-dispatch.
+            if pid is None:
+                reason = (
+                    "session liveness undeterminable on daemon restart -- "
+                    "executor pid null or probe inconclusive"
+                )
+            else:
+                reason = (
+                    "session died on daemon restart -- executor pid not alive"
+                )
+            db.update_task(task_id, status=TaskStatus.FAILED, note=reason)
+            audit.log_daemon_restart_failure(task_id, t.assigned_agent or "daemon")
+            if orchestrator is not None:
+                _enqueue_parent_if_waiting(
+                    orchestrator, task_id,
+                    root_auto_revisit_spawned=False,
+                )
 
         # Branch 2 — parked on children (delegated). Re-enqueue only when all
         # children are terminal (orphaned wake-up); else leave it parked.
