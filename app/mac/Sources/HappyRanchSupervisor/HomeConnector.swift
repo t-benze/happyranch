@@ -567,18 +567,18 @@ public final class HomeConnector: @unchecked Sendable {
     /// Adds an `Authorization: Bearer <credential>` header before the
     /// first `\r\n\r\n` (end of headers).
     private func injectCredential(into request: String, credential: String) -> String {
-        let authHeader = "Authorization: Bearer \(credential)\r\n"
+        let authHeader = "\r\nAuthorization: Bearer \(credential)"
 
         // Find the end of headers (first \r\n\r\n).
-        // Insert at lowerBound + 2 (past the first \r\n of the separator,
-        // which terminates the last header line) so the new header lands on
-        // its own line, not merged into the preceding header.
+        // Insert at lowerBound (before the separator) so the new header
+        // lands after the last existing header line.  Swift treats \r\n as
+        // a single Character, so the old offsetBy:2 actually landed past
+        // the entire \r\n\r\n separator, placing the header in the body.
         if let headerEndRange = request.range(of: "\r\n\r\n") {
             var modified = request
-            let insertPos = request.index(headerEndRange.lowerBound, offsetBy: 2)
             modified.insert(
                 contentsOf: authHeader,
-                at: insertPos
+                at: headerEndRange.lowerBound
             )
             return modified
         }
