@@ -1,4 +1,4 @@
-import type { ResponderStatus, ResponderStatusEntry } from '@/lib/api/types';
+import type { ResponderStatusEntry } from '@/lib/api/types';
 import { formatElapsed } from '@/lib/elapsed';
 
 export function ResponderStatusStrip({
@@ -24,16 +24,27 @@ export function ResponderStatusStrip({
     <div className="text-caption mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
       {terminal.map((s) => (
         <span key={s.agent_name} className="inline-flex items-center gap-1.5">
-          <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(s.status)}`} />
+          <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(s)}`} />
           <span className="text-text-secondary font-mono">{s.agent_name}</span>
-          <span className={stateClass(s.status)}>{statusLabel(s, now)}</span>
+          <span className={stateClass(s)}>{statusLabel(s, now)}</span>
         </span>
       ))}
     </div>
   );
 }
 
+// A founder-initiated abort is persisted as a `failed` invocation with
+// decline_reason='founder_aborted' (the backend reap marker) — categorized
+// as 'infra_fail'. But an abort is a deliberate cancellation, NOT an infra
+// failure, so it must read as a NEUTRAL 'aborted' state, never red "reply
+// failed…". Branch on this marker BEFORE the category/status switch. Genuine
+// failures (any other decline_reason) keep their danger styling untouched.
+function isAborted(s: ResponderStatusEntry): boolean {
+  return s.decline_reason === 'founder_aborted';
+}
+
 function statusLabel(s: ResponderStatusEntry, nowMs: number): string {
+  if (isAborted(s)) return 'aborted';
   switch (s.status) {
     case 'queued':
       return 'queued';
@@ -77,8 +88,9 @@ function terminalLabel(s: ResponderStatusEntry): string | null {
 // Colored state LABEL token per terminal state (a-thread-detail). The replied
 // (accent) and failed (danger) tokens are asserted by ResponderStatusStrip
 // tests, so keep those class names stable.
-function stateClass(s: ResponderStatus): string {
-  switch (s) {
+function stateClass(s: ResponderStatusEntry): string {
+  if (isAborted(s)) return 'text-text-muted';
+  switch (s.status) {
     case 'queued':
       return 'text-text-muted';
     case 'working':
@@ -93,8 +105,9 @@ function stateClass(s: ResponderStatus): string {
 }
 
 // Small leading dot color per terminal state (background token).
-function dotClass(s: ResponderStatus): string {
-  switch (s) {
+function dotClass(s: ResponderStatusEntry): string {
+  if (isAborted(s)) return 'bg-border-default';
+  switch (s.status) {
     case 'queued':
       return 'bg-border-default';
     case 'working':

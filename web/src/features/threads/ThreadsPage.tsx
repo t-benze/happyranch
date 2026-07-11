@@ -1128,29 +1128,36 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, onAb
         );
       })}
       {inFlight.map((s) => (
-        <TypingBubble
-          key={`typing-${s.agent_name}`}
-          agentName={s.agent_name}
-          status={s.status as 'queued' | 'working'}
-          startedAt={s.started_at}
-          nowMs={nowMs}
-          // "Abort reply" sits inline on the in-flight row (a-thread-detail);
-          // a single click aborts EVERY in-flight reply on the thread (the
-          // mutation is thread-level, covering both working and queued).
-          trailing={
-            onAbortReplies ? (
-              <button
-                type="button"
-                onClick={onAbortReplies}
-                disabled={isAborting}
-                title="Abort pending replies"
-                className="text-text-muted hover:text-feedback-danger disabled:text-text-disabled ml-1 shrink-0 rounded transition-colors disabled:cursor-default"
-              >
-                {isAborting ? 'Aborting…' : 'Abort reply'}
-              </button>
-            ) : undefined
-          }
-        />
+        // Same avatar-indented turn structure as real messages above so the
+        // in-flight bubble's left edge lines up with the message bubbles
+        // (avatar + gap), instead of sitting flush-left / full-width.
+        <div key={`typing-${s.agent_name}`} className="flex gap-3">
+          <TurnAvatar name={s.agent_name} />
+          <div className="min-w-0 flex-1">
+            <TypingBubble
+              agentName={s.agent_name}
+              status={s.status as 'queued' | 'working'}
+              startedAt={s.started_at}
+              nowMs={nowMs}
+              // "Abort reply" sits inline on the in-flight row (a-thread-detail);
+              // a single click aborts EVERY in-flight reply on the thread (the
+              // mutation is thread-level, covering both working and queued).
+              trailing={
+                onAbortReplies ? (
+                  <button
+                    type="button"
+                    onClick={onAbortReplies}
+                    disabled={isAborting}
+                    title="Abort pending replies"
+                    className="text-text-muted hover:text-feedback-danger disabled:text-text-disabled ml-1 shrink-0 rounded transition-colors disabled:cursor-default"
+                  >
+                    {isAborting ? 'Aborting…' : 'Abort reply'}
+                  </button>
+                ) : undefined
+              }
+            />
+          </div>
+        </div>
       ))}
       <div ref={endRef} />
     </div>
