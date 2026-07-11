@@ -386,7 +386,7 @@ class AuditLogger:
         thread_id: str | None = None,
     ) -> None:
         """Record that an escalated or in_progress(delegated) task was auto-resolved to
-        RESOLVED_SUPERSEDED because a human-authorized continuation
+        SUPERSEDED because a human-authorized continuation
         (`successor_root`) superseded it.
 
         The `successor_root` citation IS the maker-checker evidence: this

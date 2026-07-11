@@ -126,7 +126,7 @@ export interface ChildStatusCounts {
   running: number;
   /** pending + any non-terminal, non-running status. */
   queued: number;
-  /** completed + failed + cancelled + resolved_superseded. */
+  /** completed + failed + cancelled + superseded. */
   terminal: number;
 }
 
@@ -134,7 +134,7 @@ const TERMINAL: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   'completed',
   'failed',
   'cancelled',
-  'resolved_superseded',
+  'superseded',
 ]);
 
 /** Summarize the direct children's statuses. When `restrictIds` is provided
@@ -162,7 +162,7 @@ export function summarizeChildStatuses(
     counts.total += 1;
     switch (c.status) {
       case 'completed':
-      case 'resolved_superseded':
+      case 'superseded':
         counts.completed += 1;
         break;
       case 'failed':

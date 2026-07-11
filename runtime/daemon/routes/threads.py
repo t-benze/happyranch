@@ -1682,14 +1682,14 @@ async def dispatch_from_thread_endpoint(
         _enqueue_parent_if_waiting(org.orchestrator, predecessor.id)
         _maybe_post_thread_followup(
             org.orchestrator, predecessor.id,
-            status=TaskStatus.RESOLVED_SUPERSEDED, auto_revisit_spawned=False,
+            status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
         )
         # Same tail for each family sibling closed.
         for family_task_id in family_closed:
             _enqueue_parent_if_waiting(org.orchestrator, family_task_id)
             _maybe_post_thread_followup(
                 org.orchestrator, family_task_id,
-                status=TaskStatus.RESOLVED_SUPERSEDED, auto_revisit_spawned=False,
+                status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
             )
 
     await _publish_thread_event(

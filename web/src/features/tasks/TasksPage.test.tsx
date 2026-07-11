@@ -428,7 +428,7 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
       name: /Cancelled/,
     });
     // Muted/terminal dot — the SAME token StatusBadge uses for cancelled
-    // (mirrors resolved_superseded).
+    // (mirrors superseded).
     const dot = cancelledHeading.querySelector('span[aria-hidden="true"]');
     expect(dot).not.toBeNull();
     expect(dot).toHaveClass('text-status-archived');
@@ -1726,7 +1726,7 @@ describe('TaskDetailPage — escalation reason', () => {
 describe('TaskDetailPage — superseded by link', () => {
   const SUPERSEDED_TASK = {
     ...TASK,
-    status: 'resolved_superseded',
+    status: 'superseded',
     block_kind: null,
     note: 'Resolved: superseded by continuation TASK-SUCC',
   } as TaskRecord;

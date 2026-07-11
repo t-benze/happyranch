@@ -913,7 +913,7 @@ def register(sub) -> None:
     p_tasks.add_argument(
         "--status", default=None,
         help="Filter by task status (e.g. in_progress, escalated, completed, "
-             "failed, pending, cancelled, resolved_superseded)",
+             "failed, pending, cancelled, superseded)",
     )
     p_tasks.add_argument(
         "--block-kind", dest="block_kind", default=None,

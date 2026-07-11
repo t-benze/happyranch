@@ -47,7 +47,7 @@ type GroupDot =
   | 'completed'
   | 'failed'
   | 'cancelled'
-  | 'resolved_superseded'
+  | 'superseded'
   | 'neutral';
 
 const DOT_COLOR: Record<GroupDot, string> = {
@@ -57,7 +57,7 @@ const DOT_COLOR: Record<GroupDot, string> = {
   completed: 'text-status-open',
   failed: 'text-status-abandoned',
   cancelled: 'text-status-archived',
-  resolved_superseded: 'text-status-archived',
+  superseded: 'text-status-archived',
   neutral: 'text-text-muted',
 };
 
@@ -68,7 +68,7 @@ const STATUS_DOT_KEYS = new Set<string>([
   'completed',
   'failed',
   'cancelled',
-  'resolved_superseded',
+  'superseded',
 ]);
 
 function groupDot(key: string, by: GroupBy): GroupDot {
@@ -136,7 +136,7 @@ function groupLabel(key: string, by: GroupBy): string {
       completed: 'Completed',
       failed: 'Failed',
       cancelled: 'Cancelled',
-      resolved_superseded: 'Resolved',
+      superseded: 'Resolved',
     };
     return map[key] ?? key;
   }
@@ -151,7 +151,7 @@ function isResolvedGroup(key: string, by: GroupBy): boolean {
       key === 'completed' ||
       key === 'failed' ||
       key === 'cancelled' ||
-      key === 'resolved_superseded'
+      key === 'superseded'
     );
   }
   return false;
@@ -164,7 +164,7 @@ const GROUP_ORDER_STATUS: Record<string, number> = {
   completed: 3,
   failed: 4,
   cancelled: 5,
-  resolved_superseded: 6,
+  superseded: 6,
 };
 
 export function TasksPage(): JSX.Element {

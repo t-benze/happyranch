@@ -1456,6 +1456,42 @@ def test_path_b_migration_flips_live_blocked_rows(tmp_path):
     db2.close()
 
 
+def test_thr080_slice_a_migration_rewrites_resolved_superseded_to_superseded(tmp_path):
+    """THR-080 Slice A: the idempotent boot migration rewrites
+    status='resolved_superseded' -> 'superseded' on next startup.
+    One-way, no dual-read (founder-ratified)."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord, TaskStatus
+    dbp = tmp_path / "happyranch.db"
+    db = Database(dbp)
+    db.insert_task(TaskRecord(id="T-OLD", brief="old status name"))
+    # Seed the old status name via raw SQL (bypass enum write path).
+    db._conn.execute(
+        "UPDATE tasks SET status='resolved_superseded' WHERE id='T-OLD'"
+    )
+    db._conn.commit()
+    # Pre-migration assert: the raw SQL value is stored as-is.
+    row = db._conn.execute(
+        "SELECT status FROM tasks WHERE id='T-OLD'"
+    ).fetchone()
+    assert row is not None
+    assert row["status"] == "resolved_superseded"
+    db.close()
+
+    # Re-open -> the startup ALTER-ladder + THR-080 UPDATE runs.
+    db2 = Database(dbp)
+    t = db2.get_task("T-OLD")
+    assert t is not None
+    assert t.status == TaskStatus.SUPERSEDED
+    # Verify the raw DB value also reads the new name.
+    row2 = db2._conn.execute(
+        "SELECT status FROM tasks WHERE id='T-OLD'"
+    ).fetchone()
+    assert row2 is not None
+    assert row2["status"] == "superseded"
+    db2.close()
+
+
 def test_try_delegate_rejects_cancelled_parent_and_inserts_no_child(db):
     """Atomic CAS: a cancelled parent must not be transitioned back to
     in_progress(delegated), AND the child must not be created. This is the
@@ -1706,11 +1742,11 @@ def test_get_subtree_statuses_multiple_branches(db):
     ))
     db.insert_task(TaskRecord(
         id="GRAND-C", brief="gc", parent_task_id="CHILD-C",
-        status=TaskStatus.RESOLVED_SUPERSEDED,
+        status=TaskStatus.SUPERSEDED,
     ))
     result = db.get_subtree_statuses("ROOT-1")
     assert sorted(result) == sorted([
-        "completed", "failed", "in_progress", "resolved_superseded", "escalated",
+        "completed", "failed", "in_progress", "superseded", "escalated",
     ])
 
 
@@ -1804,7 +1840,7 @@ def test_list_roots_severity_rollup_failed_wins_over_completed(db):
 
 def test_list_roots_severity_rollup_escalated_wins_over_failed(db):
     """Escalated is the worst severity (Path B) — escalated > failed >
-    in_progress > pending > completed > cancelled > resolved_superseded."""
+    in_progress > pending > completed > cancelled > superseded."""
     db.insert_task(TaskRecord(id="ROOT-1", brief="ok", status=TaskStatus.COMPLETED))
     db.insert_task(TaskRecord(
         id="CHILD-1", brief="c1", parent_task_id="ROOT-1",

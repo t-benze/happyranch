@@ -46,8 +46,8 @@ describe('StatusBadge — Path B task vocabulary', () => {
     expect(screen.getByText('· waiting on jobs')).toBeInTheDocument();
   });
 
-  test('resolved_superseded renders its prose label', () => {
-    render(<StatusBadge status="resolved_superseded" />);
-    expect(screen.getByText('resolved (superseded)')).toBeInTheDocument();
+  test('superseded renders its prose label', () => {
+    render(<StatusBadge status="superseded" />);
+    expect(screen.getByText('superseded')).toBeInTheDocument();
   });
 });

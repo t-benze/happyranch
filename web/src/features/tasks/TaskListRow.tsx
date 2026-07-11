@@ -86,12 +86,12 @@ const ROLLUP_COLOR: Record<TaskStatus, string> = {
   completed: 'text-status-open',
   failed: 'text-status-abandoned',
   cancelled: 'text-status-archived',
-  resolved_superseded: 'text-status-archived',
+  superseded: 'text-status-archived',
 };
 
 /** Human label for the worst-child status (spaces, no underscores). */
 function rollupLabel(status: TaskStatus): string {
-  return status === 'resolved_superseded' ? 'superseded' : status.replace(/_/g, ' ');
+  return status === 'superseded' ? 'superseded' : status.replace(/_/g, ' ');
 }
 
 /**

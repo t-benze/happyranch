@@ -527,9 +527,9 @@ def test_no_dispatched_from_thread_no_op(orch_with_db):
 
 
 def test_superseded_thread_dispatched_task_fires_followup(orch_with_db):
-    """THR-018 §3a: RESOLVED_SUPERSEDED is a terminal (completion-class) status.
+    """THR-018 §3a: SUPERSEDED is a terminal (completion-class) status.
 
-    A thread-dispatched task auto-resolved to RESOLVED_SUPERSEDED by a
+    A thread-dispatched task auto-resolved to SUPERSEDED by a
     continuation must emit its task-followup so the thread-visible lifecycle
     doesn't silently drop the new terminal state. Regression for the HIGH#2
     missed-terminal-consumer gap.
@@ -537,9 +537,9 @@ def test_superseded_thread_dispatched_task_fires_followup(orch_with_db):
     from runtime.orchestrator.run_step import _maybe_post_thread_followup
     orch = orch_with_db
     _seed_dispatched_root(orch)
-    orch._db.update_task("TASK-1", status=TaskStatus.RESOLVED_SUPERSEDED)
+    orch._db.update_task("TASK-1", status=TaskStatus.SUPERSEDED)
     _maybe_post_thread_followup(orch, "TASK-1",
-                                status=TaskStatus.RESOLVED_SUPERSEDED,
+                                status=TaskStatus.SUPERSEDED,
                                 auto_revisit_spawned=False)
     invs = orch._db.list_thread_invocations("THR-1")
     followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
@@ -550,7 +550,7 @@ def test_superseded_thread_dispatched_task_fires_followup(orch_with_db):
         if m.kind == ThreadMessageKind.SYSTEM
     ]
     assert sys_msgs[-1].system_payload["kind_tag"] == "task_completed"
-    assert sys_msgs[-1].system_payload["status"] == "resolved_superseded"
+    assert sys_msgs[-1].system_payload["status"] == "superseded"
 
 
 # ---------------------------------------------------------------------------

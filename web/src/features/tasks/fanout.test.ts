@@ -98,17 +98,17 @@ describe('summarizeChildStatuses', () => {
     child('TASK-2', 'failed'),
     child('TASK-3', 'in_progress'),
     child('TASK-4', 'pending'),
-    child('TASK-5', 'resolved_superseded'),
+    child('TASK-5', 'superseded'),
   ];
 
   test('counts across all direct children when unrestricted', () => {
     const c = summarizeChildStatuses(kids);
     expect(c.total).toBe(5);
-    expect(c.completed).toBe(2); // completed + resolved_superseded
+    expect(c.completed).toBe(2); // completed + superseded
     expect(c.failed).toBe(1);
     expect(c.running).toBe(1);
     expect(c.queued).toBe(1);
-    expect(c.terminal).toBe(3); // completed + failed + resolved_superseded
+    expect(c.terminal).toBe(3); // completed + failed + superseded
   });
 
   test('restricts to the given children_ids set', () => {

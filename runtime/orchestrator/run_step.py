@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TERMINAL_STATES = frozenset({
-    TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+    TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SUPERSEDED,
     TaskStatus.CANCELLED,  # Path B: founder-initiated terminal stop.
 })
 
@@ -2256,7 +2256,7 @@ def _maybe_post_thread_followup(
 
     Fire predicate (spec §4, §4.1 — revised THR-046 msg99):
       - status == COMPLETED                                → always fire
-      - status == RESOLVED_SUPERSEDED                      → always fire (terminal,
+      - status == SUPERSEDED                      → always fire (terminal,
                                                              completion-class — a
                                                              thread-originated task
                                                              auto-resolved by a
@@ -2287,7 +2287,7 @@ def _maybe_post_thread_followup(
     # render 'revisiting as <SUCCESSOR>', but the dispatcher re-invocation is
     # suppressed (performed conditionally at the end).
     if status not in (
-        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SUPERSEDED,
         TaskStatus.CANCELLED,
     ):
         return
@@ -2308,7 +2308,7 @@ def _maybe_post_thread_followup(
     # not the caller's claim.
     actual_status = terminal_task.status
     if actual_status not in (
-        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SUPERSEDED,
         TaskStatus.CANCELLED,
     ):
         # Row isn't terminal yet — caller raced ahead of the DB write.
@@ -2375,7 +2375,7 @@ def _maybe_post_thread_followup(
 
     # Build system payload using DB-actual status (not the caller's claim) so
     # a cancel race at Site D doesn't emit task_completed for a FAILED row.
-    # Completion-class terminals (COMPLETED, RESOLVED_SUPERSEDED) → task_completed;
+    # Completion-class terminals (COMPLETED, SUPERSEDED) → task_completed;
     # failure-class terminals (FAILED, and the Path B stored CANCELLED) → task_failed.
     # The payload's status field carries the precise label (status='cancelled' +
     # cancelled=true for a CANCELLED row), mirroring org_state._TERMINAL_STATUS_TO_EVENT.

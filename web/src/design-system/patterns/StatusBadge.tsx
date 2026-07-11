@@ -21,7 +21,7 @@ export type TaskStatus =
   | 'completed'
   | 'failed'
   | 'cancelled'
-  | 'resolved_superseded'
+  | 'superseded'
   // DEPRECATED (Path B transition). Retained so legacy status='blocked'
   // rows paired with block_kind='escalated' still render a badge. Remove
   // in a later cleanup phase.
@@ -37,7 +37,7 @@ interface StatusBadgeProps {
 // .tag.ok = green (open/in_progress/completed)
 // .tag.warn = amber (pending)
 // .tag.bad = red (failed/escalated)
-// .tag.mute = grey (cancelled/resolved_superseded/archived)
+// .tag.mute = grey (cancelled/superseded/archived)
 const STATUS_STYLE: Record<ThreadStatus | TaskStatus, string> = {
   open: 'text-status-open bg-tier-green-tint',
   archived: 'text-status-archived border border-border-default bg-transparent',
@@ -48,7 +48,7 @@ const STATUS_STYLE: Record<ThreadStatus | TaskStatus, string> = {
   completed: 'text-status-open bg-tier-green-tint',
   failed: 'text-status-abandoned bg-tier-red-tint',
   cancelled: 'text-status-archived border border-border-default bg-transparent',
-  resolved_superseded: 'text-status-archived border border-border-default bg-transparent',
+  superseded: 'text-status-archived border border-border-default bg-transparent',
 };
 
 /**
@@ -67,7 +67,6 @@ function waitingQualifier(
 }
 
 function label(status: ThreadStatus | TaskStatus): string {
-  if (status === 'resolved_superseded') return 'resolved (superseded)';
   return status;
 }
 
@@ -106,7 +105,7 @@ export const meta = {
       "completed",
       "failed",
       "cancelled",
-      "resolved_superseded",
+      "superseded",
       "blocked",
     ],
   },

@@ -52,10 +52,10 @@ class OrgState:
         TaskStatus.FAILED: "task_failed",
         # A superseded-resolution is a non-failure terminal, so it replays as a
         # completion-class event; `_synthesize_terminal_event` carries the
-        # precise label in `outcome` ("resolved_superseded").
-        TaskStatus.RESOLVED_SUPERSEDED: "task_complete",
+        # precise label in `outcome` ("superseded").
+        TaskStatus.SUPERSEDED: "task_complete",
         # Path B: cancellation is a non-success terminal, so it replays as a
-        # failure-class event — mirroring how RESOLVED_SUPERSEDED rides the
+        # failure-class event — mirroring how SUPERSEDED rides the
         # completion class — with the precise label in `outcome` ("cancelled").
         # Avoids inventing a new EventBus event type. (The founder-facing record
         # is the distinct `log_task_cancelled` audit row; this map only governs

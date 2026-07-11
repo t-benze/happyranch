@@ -529,7 +529,7 @@ interface ChainWithBlock {
   /** THR-037 §G: derived escalated flavor from the latest escalation audit. */
   escalationFlavor: string | null;
   /** DERIVE from escalation_superseded audit: successor task_id when this
-   *  task was auto-resolved to RESOLVED_SUPERSEDED. Null otherwise. */
+   *  task was auto-resolved to SUPERSEDED. Null otherwise. */
   superseded_by_task_id: string | null;
   /** DERIVE from the latest `fanout_join` audit row: joined fan-out context.
    *  Null when the task never joined a fan-out. `active_fanout` is cleared
@@ -706,7 +706,7 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   'failed',
   'completed',
   'cancelled',
-  'resolved_superseded',
+  'superseded',
 ]);
 
 export function TaskDetailPage(): JSX.Element {
