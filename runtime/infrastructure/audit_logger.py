@@ -470,6 +470,38 @@ class AuditLogger:
             },
         )
 
+    def log_executor_registered(
+        self,
+        *,
+        profile_name: str,
+        command: str,
+        argv_template: list[str],
+        adapter: str,
+        actor: str = "founder",
+    ) -> None:
+        """Record a successful runtime-level executor registration.
+
+        THR-088 Slice B: runtime-level registration is org-agnostic, so it writes
+        to a dedicated runtime audit database (not a per-org db). Uses the
+        scope-prefix convention for ``task_id`` analogous to ``config:<section>``
+        (THR-035 / TASK-967).
+
+        Row shape:
+          task_id = "executor:<profile_name>"
+          action  = "executor_registered"
+          payload = {command, argv_template, adapter}
+        """
+        self._db.insert_audit_log(
+            task_id=f"executor:{profile_name}",
+            agent=actor,
+            action="executor_registered",
+            payload={
+                "command": command,
+                "argv_template": [str(e) for e in argv_template],
+                "adapter": adapter,
+            },
+        )
+
     def log_learning_added(
         self,
         *,
