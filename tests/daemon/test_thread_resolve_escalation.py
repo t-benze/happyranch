@@ -8,6 +8,7 @@ from runtime.models import (
     TaskRecord,
     TaskStatus,
     ThreadInvocationPurpose,
+    ThreadInvocationStatus,
     ThreadRecord,
     ThreadStatus,
 )
@@ -381,6 +382,16 @@ async def test_thread_resolve_escalation_rejects_replayed_token(
         json=payload,
     )
     assert r1.status_code == 200, f"first call: got {r1.status_code} {r1.text}"
+
+    # First turn must consume the token (not be classified no_callback).
+    inv = org.db.get_invocation_any_status(token)
+    assert inv is not None
+    assert inv.status == ThreadInvocationStatus.CONSUMED, (
+        f"first turn must consume the token (not no_callback), got {inv.status}"
+    )
+    assert inv.decline_reason is None, (
+        f"consumed callback must have no decline_reason, got {inv.decline_reason}"
+    )
 
     # Reset task back to escalated so a replay would mutate again if not guarded.
     org.db.update_task("T-REPLAY", status=TaskStatus.ESCALATED, block_kind=None)
