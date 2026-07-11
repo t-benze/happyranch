@@ -100,6 +100,19 @@ public final class ClientBridge: @unchecked Sendable {
     /// The session-scoped credential prefix.
     private static let sessionCredentialPrefix = "hr_session_"
 
+    /// TCP parameters that bypass the system proxy.
+    ///
+    /// NWConnection honours system-level SOCKS/HTTP proxies by default.
+    /// The home connector lives on the tailnet (100.x.x.x) and must be
+    /// reached directly — routing through a local proxy causes hangs or
+    /// timeouts when the proxy doesn't relay the response correctly.
+    private static var directTCP: NWParameters {
+        let tcp = NWProtocolTCP.Options()
+        let params = NWParameters(tls: nil, tcp: tcp)
+        params.preferNoProxies = true
+        return params
+    }
+
     // MARK: - Init
 
     /// - Parameters:
@@ -217,7 +230,7 @@ public final class ClientBridge: @unchecked Sendable {
                 host: NWEndpoint.Host(homeHost),
                 port: NWEndpoint.Port(integerLiteral: homePort)
             )
-            let connection = NWConnection(to: endpoint, using: .tcp)
+            let connection = NWConnection(to: endpoint, using: Self.directTCP)
 
             DiagnosticsCollector.shared?.recordConnectPathLog(
                 stage: "redeemPairing-connection-created",
@@ -609,7 +622,7 @@ public final class ClientBridge: @unchecked Sendable {
             host: NWEndpoint.Host(homeConnectorHost),
             port: NWEndpoint.Port(integerLiteral: homeConnectorPort)
         )
-        let homeConnection = NWConnection(to: homeEndpoint, using: .tcp)
+        let homeConnection = NWConnection(to: homeEndpoint, using: Self.directTCP)
 
         homeConnection.stateUpdateHandler = { [weak self, weak clientConnection] state in
             guard let self, let clientConnection else { return }
