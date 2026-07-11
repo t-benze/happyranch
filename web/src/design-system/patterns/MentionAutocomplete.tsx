@@ -11,7 +11,7 @@
  * Filtering: done by the caller (Composer.mentionMatches). This component
  * is a pure renderer of a pre-filtered list.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { AgentSummary } from '@/lib/api/agents';
 
@@ -29,8 +29,23 @@ export function MentionAutocomplete({
   onDismiss,
 }: MentionAutocompleteProps): JSX.Element | null {
   const [active, setActive] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  // Prefer opening UPWARD: the composer (and RecipientsInput) sit near the
+  // bottom of the viewport, so a downward list clips off the bottom edge.
+  // Flip to downward only when the input is near the TOP of the viewport
+  // (no room above but room below) so the list never clips off the top.
+  const [openUp, setOpenUp] = useState(true);
   // Reset active index when the matches list changes.
   useEffect(() => { setActive(0); }, [matches.length]);
+
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const height = el.offsetHeight;
+    const roomAbove = anchor.y;
+    const roomBelow = window.innerHeight - (anchor.y + anchor.height);
+    setOpenUp(!(roomAbove < height + 4 && roomBelow > roomAbove));
+  }, [anchor.x, anchor.y, anchor.height, matches.length]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -52,7 +67,12 @@ export function MentionAutocomplete({
   const style: React.CSSProperties = {
     position: 'fixed',
     left: anchor.x,
-    top: anchor.y + anchor.height + 4,
+    // Anchor the popup's BOTTOM edge just above the input when opening
+    // upward (grows upward, no height measurement needed); otherwise pin
+    // its TOP just below the input.
+    ...(openUp
+      ? { bottom: window.innerHeight - anchor.y + 4 }
+      : { top: anchor.y + anchor.height + 4 }),
     minWidth: 200,
     maxWidth: 320,
     zIndex: 1000,
@@ -65,6 +85,7 @@ export function MentionAutocomplete({
   // transformed ancestor and restores viewport-relative coords.
   return createPortal(
     <div
+      ref={listRef}
       role="listbox"
       aria-label="Mention agents"
       // eslint-disable-next-line react/forbid-dom-props -- runtime pixel coordinates (anchor-derived left/top, min/maxWidth, zIndex) computed at render time; no static utility class can express a viewport-relative portal position

@@ -922,7 +922,7 @@ function DetailColumn({
             ) : threadTasks.isError ? (
               <p className="text-feedback-danger text-xs">Couldn’t load tasks</p>
             ) : threadTasks.data && threadTasks.data.length > 0 ? (
-              <ul className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1">
+              <ul className="flex max-h-24 flex-col gap-1.5 overflow-y-auto pr-1">
                 {[...threadTasks.data]
                   .sort(
                     (a, b) =>
@@ -932,21 +932,23 @@ function DetailColumn({
                   .map((t) => (
                     <li
                       key={t.id}
-                      className={`text-mono-sm inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 ${taskChipClass(t.status)}`}
+                      className={`text-mono-sm flex w-full items-center justify-between gap-1.5 rounded-full px-2 py-0.5 ${taskChipClass(t.status)}`}
                     >
-                      {isActiveTaskStatus(t.status) && (
-                        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden />
-                      )}
-                      <span className="font-semibold">{taskStatusLabel(t.status)}</span>
+                      <span className="inline-flex min-w-0 items-center gap-1.5">
+                        {isActiveTaskStatus(t.status) && (
+                          <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden />
+                        )}
+                        <span className="truncate font-semibold">{taskStatusLabel(t.status)}</span>
+                      </span>
                       {slug ? (
                         <Link
                           to={`/orgs/${slug}/tasks/${t.id}`}
-                          className="font-mono opacity-80 hover:underline"
+                          className="shrink-0 font-mono opacity-80 hover:underline"
                         >
                           {t.id}
                         </Link>
                       ) : (
-                        <span className="font-mono opacity-80">{t.id}</span>
+                        <span className="shrink-0 font-mono opacity-80">{t.id}</span>
                       )}
                     </li>
                   ))}
