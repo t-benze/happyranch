@@ -351,7 +351,7 @@ it would double-spawn).
 
 Budget: each `run_step` call increments `orchestration_step_count` persisted
 on the task. When the count exceeds `max_orchestration_steps` the task parks
-in `escalated` for founder review (root tasks only; a non-root over-budget task fails and hands back to its parent). A second budget — `max_revise_rounds` (org_config, 0 = disabled) — caps the number of genuine revise cycles (worker-of-record re-delegations) per slice. Each revise increments `revision_count`; when `revision_count >= max_revise_rounds` the next genuine revise trips a DELIBERATE stop-with-best (best-effort partial preserved) that mirrors the step-budget terminal: non-root fails back to parent, root escalates. The stop is explicitly NOT auto-revisited.
+in `escalated` for founder review (root tasks only; a non-root over-budget task fails and hands back to its parent). A second budget — `max_revise_rounds` (org_config, 0 = disabled) — caps the number of genuine revise cycles (worker-of-record re-delegations) per slice — i.e. a slice runs its initial attempt plus up to `max_revise_rounds` revises. Each revise increments `revision_count`; when `revision_count >= max_revise_rounds` the next genuine revise trips a DELIBERATE stop-with-best (best-effort partial preserved) that mirrors the step-budget terminal: non-root fails back to parent, root escalates. The stop is explicitly NOT auto-revisited.
 
 #### External waits
 
