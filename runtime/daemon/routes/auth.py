@@ -54,6 +54,11 @@ class RegistrationTokenMintResponse(BaseModel):
     expires_at: float
 
 
+class RuntimeRegistrationTokenMintRequest(BaseModel):
+    """Runtime-level mint: no org — the profile is machine-global."""
+    name: str = Field(..., min_length=1, description="Executor profile name")
+
+
 @router.post("/auth/registration-token")
 def mint_registration_token(
     request: Request,
@@ -74,4 +79,31 @@ def mint_registration_token(
 
     store = request.app.state.daemon.registration_token_store
     token, expires_at = store.mint(body.org, body.name)
+    return RegistrationTokenMintResponse(token=token, expires_at=expires_at)
+
+
+# ── Runtime-level registration token mint (THR-088) ────────────────────
+
+
+@router.post("/auth/registration-token/runtime")
+def mint_runtime_registration_token(
+    request: Request,
+    body: RuntimeRegistrationTokenMintRequest,
+    _token_valid: None = require_token(),
+) -> RegistrationTokenMintResponse:
+    """Mint a runtime-level (org-agnostic) registration token.
+
+    Loopback-only AND master-bearer-authed. Same auth gating as the
+    org-scoped mint, but omits org — the resulting token is valid for
+    the runtime-level registration routes.
+    """
+    peer = request.client.host if request.client else None
+    if peer not in _LOCAL_HOSTS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "not_localhost", "peer": peer},
+        )
+
+    store = request.app.state.daemon.registration_token_store
+    token, expires_at = store.mint_runtime(body.name)
     return RegistrationTokenMintResponse(token=token, expires_at=expires_at)

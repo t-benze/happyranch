@@ -123,6 +123,9 @@
     "GET /api/v1/metrics/history": "operational metrics history — agent/CLI facing (THR-066 PR-2)",
     "GET /api/v1/executor-binaries": "executor binary-path registry — machine-local operator/daemon config surface; browser TS client wrappers land in THR-085 PR-2 web slice",
     "POST /api/v1/executor-binaries/register": "executor binary-path registry — machine-local operator/daemon config surface; browser TS client wrappers land in THR-085 PR-2 web slice",
-    "POST /api/v1/executor-binaries/validate": "executor binary-path registry — machine-local operator/daemon config surface; browser TS client wrappers land in THR-085 PR-2 web slice"
+    "POST /api/v1/executor-binaries/validate": "executor binary-path registry — machine-local operator/daemon config surface; browser TS client wrappers land in THR-085 PR-2 web slice",
+    "POST /api/v1/auth/registration-token/runtime": "founder-only runtime-level registration-token mint (THR-088)",
+    "POST /api/v1/executors/runtime/conformance-checkin": "cli-only runtime-level conformance check-in (THR-088)",
+    "POST /api/v1/executors/runtime/register": "conformance-gated runtime-level executor registration (THR-088)"
   }
 }

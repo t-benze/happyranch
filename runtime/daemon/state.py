@@ -69,6 +69,21 @@ class DaemonState:
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings) -> "DaemonState":
         state = cls(runtime=runtime, settings=settings)
         # __post_init__ constructs metrics_store at runtime.root/metrics.db
+
+        # Load runtime-level executor profiles into the process-wide registry
+        # so every org can resolve them (machine-global, visible to all orgs).
+        try:
+            from runtime.orchestrator.runtime_executor_store import (
+                load_runtime_profiles,
+            )
+            from runtime.orchestrator.executor_registry import get_registry
+            runtime_profiles = load_runtime_profiles()
+            if runtime_profiles:
+                registry = get_registry()
+                registry.register_custom_from_config(runtime_profiles)
+        except Exception:
+            pass  # Malformed store → skip, daemon still boots.
+
         for slug, root in runtime.iter_org_roots():
             try:
                 org = OrgState.load(slug=slug, root=root, settings=settings)
