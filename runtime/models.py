@@ -46,7 +46,7 @@ class TaskStatus(StrEnum):
     # after the transition soak. No live row carries 'blocked' after the
     # idempotent boot migration. See
     # docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md §I.
-    RESOLVED_SUPERSEDED = "resolved_superseded"
+    SUPERSEDED = "superseded"
 
 
 

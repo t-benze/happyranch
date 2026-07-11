@@ -1041,6 +1041,13 @@ class Database:
                 "UPDATE tasks SET status='in_progress' "
                 "WHERE status='blocked' AND block_kind='blocked_on_job'"
             )
+            # --- THR-080 Slice A: rename resolved_superseded -> superseded ---
+            # One-way DB row rewrite (founder-ratified). No dual-read; code
+            # reads only 'superseded' after this. Idempotent across restarts.
+            self._conn.execute(
+                "UPDATE tasks SET status='superseded' "
+                "WHERE status='resolved_superseded'"
+            )
             self._conn.commit()
 
     def _migrate_session_token_usage_scope_columns(self) -> None:
@@ -1361,7 +1368,7 @@ class Database:
 
     # Severity ranking for subtree rollup: lower = worse.
     # escalated is the attention-grabbing worst (genuine founder attention);
-    # resolved_superseded is the calmest. Under the Path-B stored model
+    # superseded is the calmest. Under the Path-B stored model
     # (THR-037 Change B) a delegating/parked parent is in_progress (rank 2),
     # so a healthy delegating parent NO LONGER dominates its subtree to amber —
     # only a real escalated (0) or failed (1) descendant pulls the rollup up.
@@ -1375,7 +1382,7 @@ class Database:
         "pending": 3,
         "completed": 4,
         "cancelled": 5,
-        "resolved_superseded": 6,
+        "superseded": 6,
     }
 
     @_synchronized
@@ -1765,7 +1772,7 @@ class Database:
         if row is None:
             return False
         if row["cancelled_at"] is not None or row["status"] in (
-            "completed", "failed", "resolved_superseded", "cancelled",
+            "completed", "failed", "superseded", "cancelled",
         ):
             return False
         now = datetime.now(timezone.utc).isoformat()
@@ -1881,7 +1888,7 @@ class Database:
                SET status = ?, block_kind = NULL, note = ?, updated_at = ?
                WHERE id = ?
                  AND cancelled_at IS NULL
-                 AND status NOT IN ('completed', 'failed', 'resolved_superseded', 'cancelled')""",
+                 AND status NOT IN ('completed', 'failed', 'superseded', 'cancelled')""",
             (TaskStatus.ESCALATED.value, reason, now, task_id),
         )
         self._conn.commit()
@@ -2008,7 +2015,7 @@ class Database:
         if row is None:
             return False
         if row["cancelled_at"] is not None or row["status"] in (
-            "completed", "failed", "resolved_superseded",
+            "completed", "failed", "superseded",
         ):
             return False
         # Both writes under same RLock — atomic vs cancel route.

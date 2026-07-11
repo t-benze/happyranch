@@ -167,16 +167,15 @@ function taskChipClass(status: string): string {
       return 'bg-tier-red-tint text-status-escalated';
     case 'failed':
       return 'bg-tier-red-tint text-status-abandoned';
-    default: // cancelled, resolved_superseded, archived, unknown
+    default: // cancelled, superseded, archived, unknown
       return 'border-border-default text-status-archived border';
   }
 }
 
-// Chip status word — matches the StatusBadge label vocabulary (only
-// resolved_superseded is humanized); every other status renders verbatim so
-// the founder sees the REAL stored status, not a paraphrase.
+// Chip status word — renders the stored status verbatim so the
+// founder sees the REAL stored status, not a paraphrase.
 function taskStatusLabel(status: string): string {
-  return status === 'resolved_superseded' ? 'resolved (superseded)' : status;
+  return status;
 }
 
 /**

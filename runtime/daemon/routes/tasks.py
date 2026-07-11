@@ -28,7 +28,7 @@ router = APIRouter(dependencies=[require_token()])
 # route (l.~700) and the agent-callback routes (submit_completion, submit_progress)
 # so it lives at module scope rather than next to its first use.
 _TERMINAL_TASK_STATUSES = frozenset({
-    TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+    TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SUPERSEDED,
     TaskStatus.CANCELLED,  # Path B: founder-initiated terminal stop.
 })
 
@@ -247,7 +247,7 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         except _json.JSONDecodeError:
             active_chain = None  # defensive — never 500 on malformed on-disk state
 
-    # DERIVE: a resolved_superseded predecessor is cited by the
+    # DERIVE: a superseded predecessor is cited by the
     # escalation_superseded audit row whose structured successor_root
     # payload names the continuation task that superseded it.
     superseded_by_task_id: str | None = None
@@ -714,7 +714,7 @@ def _delegated_children_all_terminal(org, predecessor_id: str) -> bool:
 
 def _eligible_supersede_block_kind(org, predecessor: TaskRecord) -> str | None:
     """Return 'escalated'/'delegated' if `predecessor` is a blocked task that a
-    human-authorized continuation may auto-resolve to RESOLVED_SUPERSEDED, else
+    human-authorized continuation may auto-resolve to SUPERSEDED, else
     None.
 
     Delegated requires all children terminal (Gap-B safety gate). Used by the
@@ -749,7 +749,7 @@ def _supersede_predecessor_locked(
     thread_id: str | None = None,
 ) -> None:
     """Transition an escalated or in_progress(delegated) predecessor to the terminal
-    RESOLVED_SUPERSEDED status — block_kind cleared, audit citing the concrete
+    SUPERSEDED status — block_kind cleared, audit citing the concrete
     successor root (the maker-checker evidence) and, on the thread path, the
     dispatching thread ruling.
 
@@ -765,7 +765,7 @@ def _supersede_predecessor_locked(
         note += f" — {note_suffix}"
     org.db.update_task(
         predecessor_id,
-        status=TaskStatus.RESOLVED_SUPERSEDED,
+        status=TaskStatus.SUPERSEDED,
         block_kind=None,
         note=note,
         completed_at=datetime.now(timezone.utc).isoformat(),
@@ -800,7 +800,7 @@ def _collect_eligible_revisit_family(
     in the same family tree. Each collected task is filtered through
     ``_eligible_supersede_block_kind`` — escalated and in_progress(delegated)
     with all-terminal children are eligible; completed, failed, cancelled,
-    pending, in_progress(non-delegated), and already resolved_superseded tasks
+    pending, in_progress(non-delegated), and already superseded tasks
     are skipped. The explicit predecessor and the new successor root are also
     excluded.
 
@@ -961,7 +961,7 @@ async def revisit_from_notification(
             predecessor_task_id=predecessor.id, new_root=new_id,
         )
         # §3(a) forcing function: an escalated or in_progress(delegated) predecessor is
-        # auto-resolved to the terminal RESOLVED_SUPERSEDED — block_kind
+        # auto-resolved to the terminal SUPERSEDED — block_kind
         # cleared, audit citing the new continuation root (the maker-checker
         # evidence). It is NOT re-enqueued (that would spawn a wasted manager
         # session); parent-wake is preserved below. Distinct from the founder's
@@ -1019,7 +1019,7 @@ async def revisit_from_notification(
         _enqueue_parent_if_waiting(org.orchestrator, predecessor.id)
         _maybe_post_thread_followup(
             org.orchestrator, predecessor.id,
-            status=TaskStatus.RESOLVED_SUPERSEDED, auto_revisit_spawned=False,
+            status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
         )
         # Same tail for each family sibling closed — parent-wake and
         # thread-followup where applicable (thread-dispatch path pattern).
@@ -1027,7 +1027,7 @@ async def revisit_from_notification(
             _enqueue_parent_if_waiting(org.orchestrator, family_task_id)
             _maybe_post_thread_followup(
                 org.orchestrator, family_task_id,
-                status=TaskStatus.RESOLVED_SUPERSEDED, auto_revisit_spawned=False,
+                status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
             )
 
     return RevisitResult(

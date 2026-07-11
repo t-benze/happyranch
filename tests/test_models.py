@@ -143,21 +143,21 @@ def test_task_status_values():
     # (terminal). Phase 3: `blocked` was fully retired.
     assert {s.value for s in TaskStatus} == {
         "pending", "in_progress", "escalated", "completed", "failed",
-        "cancelled", "resolved_superseded",
+        "cancelled", "superseded",
     }
 
 
-def test_resolved_superseded_joins_every_terminal_predicate():
-    """A missed terminal consumer that treats RESOLVED_SUPERSEDED as
+def test_superseded_joins_every_terminal_predicate():
+    """A missed terminal consumer that treats SUPERSEDED as
     non-terminal (or crashes on it) is the main risk of this additive status,
     so lock the wiring across all three predicates."""
     from runtime.models import TaskStatus
     from runtime.orchestrator.run_step import TERMINAL_STATES
     from runtime.daemon.routes.tasks import _TERMINAL_TASK_STATUSES
     from runtime.daemon.org_state import OrgState
-    assert TaskStatus.RESOLVED_SUPERSEDED in TERMINAL_STATES
-    assert TaskStatus.RESOLVED_SUPERSEDED in _TERMINAL_TASK_STATUSES
-    assert TaskStatus.RESOLVED_SUPERSEDED in OrgState._TERMINAL_STATUS_TO_EVENT
+    assert TaskStatus.SUPERSEDED in TERMINAL_STATES
+    assert TaskStatus.SUPERSEDED in _TERMINAL_TASK_STATUSES
+    assert TaskStatus.SUPERSEDED in OrgState._TERMINAL_STATUS_TO_EVENT
 
 
 def test_path_b_lockstep_terminal_predicates():

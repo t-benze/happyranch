@@ -60,7 +60,7 @@ scripts/happyranch tail TASK-001
 # Snapshot: status, block_kind, note, results, last event, audit summary
 scripts/happyranch details TASK-001
 scripts/happyranch details TASK-001 --full   # untruncated per-step output summaries
-# Live task statuses are {pending, in_progress, escalated, completed, failed, cancelled, resolved_superseded}.
+# Live task statuses are {pending, in_progress, escalated, completed, failed, cancelled, superseded}.
 # Parked states are in_progress(delegated) (waiting on child tasks) and
 # in_progress(blocked_on_job) (waiting on job approval/completion). Top-level
 # escalated signals founder attention. `note` carries the human-readable

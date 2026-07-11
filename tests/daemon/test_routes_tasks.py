@@ -1312,9 +1312,9 @@ def test_revisit_handles_escalated_predecessor(
     assert body["predecessor_status"] == "blocked-escalated"
     # THR-018 tier #3 §3a: revisit now auto-resolves an escalated
     # predecessor (legacy response label "blocked-escalated") to the terminal
-    # RESOLVED_SUPERSEDED, citing the continuation.
+    # SUPERSEDED, citing the continuation.
     pre = db.get_task("TASK-052")
-    assert pre.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pre.status == TaskStatus.SUPERSEDED
     assert pre.block_kind is None
     payload = next(
         e["payload"] for e in db.get_audit_logs("TASK-052")
@@ -1875,7 +1875,7 @@ def test_task_detail_active_chain_is_null_when_no_chain(
 def test_get_task_superseded_by_task_id_when_superseded(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    """A resolved_superseded task with an escalation_superseded audit entry
+    """A superseded task with an escalation_superseded audit entry
     returns superseded_by_task_id from the audit row's successor_root."""
     from runtime.infrastructure.audit_logger import AuditLogger
     from runtime.models import TaskRecord, TaskStatus
@@ -1884,7 +1884,7 @@ def test_get_task_superseded_by_task_id_when_superseded(
     db.insert_task(TaskRecord(id="TASK-PRE", brief="predecessor"))
     db.update_task(
         "TASK-PRE",
-        status=TaskStatus.RESOLVED_SUPERSEDED,
+        status=TaskStatus.SUPERSEDED,
         block_kind=None,
         note="Resolved: superseded by continuation TASK-SUCC",
         completed_at="2026-06-30T01:00:00+00:00",

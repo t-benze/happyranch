@@ -32,7 +32,7 @@ export type TaskStatus =
   | 'cancelled'
   // Terminal: task closed because its follow-up moved to a human-authorized
   // continuation (revisit / thread-dispatch).
-  | 'resolved_superseded'
+  | 'superseded'
   // DEPRECATED (Path B transition). Retained so legacy rows that still carry
   // status='blocked' + block_kind='escalated' don't cause type errors in
   // dual-read transition sites. Remove in a later cleanup phase.
@@ -119,7 +119,7 @@ export interface TaskDetailResponse {
   predecessor_prior_status: string | null;
   active_chain: ActiveChainResponse | null;
   /** DERIVE from escalation_superseded audit: successor task_id when this
-   *  task was auto-resolved to RESOLVED_SUPERSEDED. Null otherwise. */
+   *  task was auto-resolved to SUPERSEDED. Null otherwise. */
   superseded_by_task_id: string | null;
   [extra: string]: unknown;
 }

@@ -2,7 +2,7 @@
 
 A founder `revisit` (or Feishu-reply revisit) of an escalated or in_progress(delegated)
 predecessor auto-transitions that predecessor to the terminal
-RESOLVED_SUPERSEDED status — block_kind cleared, audit citing the new
+SUPERSEDED status — block_kind cleared, audit citing the new
 continuation root (the maker-checker evidence) — without re-enqueuing it.
 The delegated close is gated on all children being terminal.
 """
@@ -63,7 +63,7 @@ async def test_revisit_supersedes_blocked_escalated_predecessor(tmp_path: Path):
     )
 
     pred = db.get_task("TASK-1")
-    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.status == TaskStatus.SUPERSEDED
     assert pred.block_kind is None
     assert pred.completed_at is not None
     # Maker-checker evidence: the audit cites the concrete successor task_id.
@@ -99,7 +99,7 @@ async def test_revisit_supersedes_blocked_delegated_when_all_children_terminal(
     )
 
     pred = db.get_task("TASK-1")
-    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.status == TaskStatus.SUPERSEDED
     assert pred.block_kind is None
     payload = _audit_payload(db, "TASK-1", "escalation_superseded")
     assert payload["successor_root"] == result.new_root_id
@@ -165,7 +165,7 @@ async def test_revisit_completed_predecessor_is_not_superseded(tmp_path: Path):
 async def test_manual_resolve_escalation_approve_does_not_supersede(tmp_path: Path):
     """Maker-checker negative: the founder's manual `resolve-escalation continue`
     is a DISTINCT path that re-runs the work (→ PENDING). It must never produce
-    RESOLVED_SUPERSEDED — only a human-authorized continuation does that."""
+    SUPERSEDED — only a human-authorized continuation does that."""
     from runtime.daemon.routes.tasks import resolve_escalation_in_process
 
     org, state, db = _build_org(tmp_path)
@@ -226,7 +226,7 @@ async def test_revisit_supersedes_escalated_sibling_in_family(tmp_path: Path):
 
     # Explicit predecessor superseded.
     pred = db.get_task("TASK-1")
-    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.status == TaskStatus.SUPERSEDED
     assert pred.block_kind is None
     pred_payload = _audit_payload(db, "TASK-1", "escalation_superseded")
     assert pred_payload["successor_root"] == result.new_root_id
@@ -234,7 +234,7 @@ async def test_revisit_supersedes_escalated_sibling_in_family(tmp_path: Path):
 
     # Escalated sibling superseded.
     sib = db.get_task("TASK-2")
-    assert sib.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert sib.status == TaskStatus.SUPERSEDED
     assert sib.block_kind is None
     sib_payload = _audit_payload(db, "TASK-2", "escalation_superseded")
     assert sib_payload["successor_root"] == result.new_root_id
@@ -306,7 +306,7 @@ async def test_revisit_supersedes_ancestor_in_revisit_chain(tmp_path: Path):
 
     # B (explicit predecessor) superseded.
     pred_b = db.get_task("TASK-2")
-    assert pred_b.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred_b.status == TaskStatus.SUPERSEDED
     assert pred_b.block_kind is None
     pb_payload = _audit_payload(db, "TASK-2", "escalation_superseded")
     assert pb_payload["successor_root"] == result.new_root_id
@@ -314,7 +314,7 @@ async def test_revisit_supersedes_ancestor_in_revisit_chain(tmp_path: Path):
 
     # A (ancestor root) must also be superseded.
     pred_a = db.get_task("TASK-1")
-    assert pred_a.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred_a.status == TaskStatus.SUPERSEDED
     assert pred_a.block_kind is None
     pa_payload = _audit_payload(db, "TASK-1", "escalation_superseded")
     assert pa_payload["successor_root"] == result.new_root_id
@@ -349,7 +349,7 @@ async def test_revisit_family_sibling_gets_parent_wake(tmp_path: Path):
         parent_task_id="TASK-P",
     ))
     # Delegated parent: in_progress with all-terminal children (just TASK-2,
-    # which will become terminal RESOLVED_SUPERSEDED).
+    # which will become terminal SUPERSEDED).
     db.insert_task(TaskRecord(
         id="TASK-P", brief="delegated parent", team="engineering",
         assigned_agent="engineering_head",
@@ -362,7 +362,7 @@ async def test_revisit_family_sibling_gets_parent_wake(tmp_path: Path):
 
     # Family sibling TASK-2 is closed.
     sib = db.get_task("TASK-2")
-    assert sib.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert sib.status == TaskStatus.SUPERSEDED
     assert sib.block_kind is None
 
     # Parent-wake: the delegated parent TASK-P must be enqueued because
@@ -424,9 +424,9 @@ async def test_revisit_family_sibling_thread_originated_gets_thread_followup(
     )
 
     # Both TASK-A (explicit) and TASK-B (sibling) are superseded.
-    assert db.get_task("TASK-1").status == TaskStatus.RESOLVED_SUPERSEDED
+    assert db.get_task("TASK-1").status == TaskStatus.SUPERSEDED
     sib = db.get_task("TASK-2")
-    assert sib.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert sib.status == TaskStatus.SUPERSEDED
     assert sib.block_kind is None
 
     # Task-followup: a system message must have been posted to the thread

@@ -57,7 +57,7 @@ interface DirtyState {
 function useAccountabilityMetrics(agentName: string) {
   const tasksQuery = useAgentTasks(agentName);
   const tasks = tasksQuery.data?.tasks ?? [];
-  const done = tasks.filter((t) => t.status === 'completed' || t.status === 'resolved_superseded').length;
+  const done = tasks.filter((t) => t.status === 'completed' || t.status === 'superseded').length;
   const total = tasks.length;
   // Acceptance rate = (APPROVE+PASS verdicts) / reviewed tasks.
   // review_verdict is not a first-class TaskRecord field (it's on the audit log);

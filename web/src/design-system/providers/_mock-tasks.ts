@@ -117,7 +117,7 @@ const ROOT_FIXTURES: TaskRecord[] = [
     task_id: 'TASK-0088',
     team: 'content',
     brief: 'Write Thailand guide\u00a0\u2192 supersedes TASK-0091',
-    status: 'resolved_superseded',
+    status: 'superseded',
     block_kind: null,
     assigned_agent: 'content_writer',
     parent_task_id: null,
@@ -127,7 +127,7 @@ const ROOT_FIXTURES: TaskRecord[] = [
     closed_at: null,
     cancelled_at: null,
     session_timeout_seconds: null,
-    severity_rollup: 'resolved_superseded',
+    severity_rollup: 'superseded',
   },
 ] as TaskRecord[];
 

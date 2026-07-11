@@ -473,7 +473,7 @@ def test_manager_dispatch_supersedes_escalated_predecessor(
     tmp_home, app, org_state, auth_headers,
 ):
     """A manager-authorized thread-dispatch naming an escalated
-    predecessor auto-resolves it to RESOLVED_SUPERSEDED, citing the new root +
+    predecessor auto-resolves it to SUPERSEDED, citing the new root +
     the thread ruling in the audit (the maker-checker evidence)."""
     client = TestClient(app)
     _seed_agent(org_state, "engineering_head", role="manager")
@@ -496,7 +496,7 @@ def test_manager_dispatch_supersedes_escalated_predecessor(
     assert data["superseded_task_id"] == "TASK-900"
 
     pred = org_state.db.get_task("TASK-900")
-    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.status == TaskStatus.SUPERSEDED
     assert pred.block_kind is None
     assert pred.completed_at is not None
     payload = _audit_payload(org_state, "TASK-900", "escalation_superseded")
@@ -534,7 +534,7 @@ def test_manager_dispatch_supersedes_delegated_when_children_terminal(
     )
     assert resp.status_code == 200, resp.text
     pred = org_state.db.get_task("TASK-900")
-    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.status == TaskStatus.SUPERSEDED
     assert pred.block_kind is None
     payload = _audit_payload(org_state, "TASK-900", "escalation_superseded")
     assert payload["prior_block_kind"] == "delegated"
@@ -662,7 +662,7 @@ def test_manager_dispatch_supersedes_escalated_sibling_revisits(
 
     # Explicit predecessor superseded.
     pred = org_state.db.get_task("TASK-900")
-    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.status == TaskStatus.SUPERSEDED
     assert pred.block_kind is None
     pred_payload = _audit_payload(org_state, "TASK-900", "escalation_superseded")
     assert pred_payload["successor_root"] == new_task_id
@@ -671,7 +671,7 @@ def test_manager_dispatch_supersedes_escalated_sibling_revisits(
 
     # Escalated sibling superseded.
     sib = org_state.db.get_task("TASK-901")
-    assert sib.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert sib.status == TaskStatus.SUPERSEDED
     assert sib.block_kind is None
     sib_payload = _audit_payload(org_state, "TASK-901", "escalation_superseded")
     assert sib_payload["successor_root"] == new_task_id
@@ -734,7 +734,7 @@ def test_manager_dispatch_supersedes_ancestor_revisit_chain(
 
     # B (explicit predecessor) superseded.
     pred_b = org_state.db.get_task("TASK-901")
-    assert pred_b.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred_b.status == TaskStatus.SUPERSEDED
     assert pred_b.block_kind is None
     pb_payload = _audit_payload(org_state, "TASK-901", "escalation_superseded")
     assert pb_payload["successor_root"] == new_task_id
@@ -742,7 +742,7 @@ def test_manager_dispatch_supersedes_ancestor_revisit_chain(
 
     # A (ancestor root in the family) must also be superseded.
     pred_a = org_state.db.get_task("TASK-900")
-    assert pred_a.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred_a.status == TaskStatus.SUPERSEDED
     assert pred_a.block_kind is None
     pa_payload = _audit_payload(org_state, "TASK-900", "escalation_superseded")
     assert pa_payload["successor_root"] == new_task_id
@@ -761,7 +761,7 @@ def test_manager_dispatch_family_closure_leaves_non_supersedable_siblings(
     tmp_home, app, org_state, auth_headers,
 ):
     """Negative: completed, cancelled, pending, in_progress(non-delegated),
-    and already resolved_superseded family members are NOT rewritten."""
+    and already superseded family members are NOT rewritten."""
     client = TestClient(app)
     _seed_agent(org_state, "engineering_head", role="manager")
     tid, token = _start_thread(
@@ -780,7 +780,7 @@ def test_manager_dispatch_family_closure_leaves_non_supersedable_siblings(
         ("TASK-902", TaskStatus.CANCELLED, None),
         ("TASK-903", TaskStatus.PENDING, None),
         ("TASK-904", TaskStatus.IN_PROGRESS, None),
-        ("TASK-905", TaskStatus.RESOLVED_SUPERSEDED, None),
+        ("TASK-905", TaskStatus.SUPERSEDED, None),
     ]:
         org_state.db.insert_task(TaskRecord(
             id=sid, brief="sibling", team="engineering",
@@ -799,13 +799,13 @@ def test_manager_dispatch_family_closure_leaves_non_supersedable_siblings(
     assert resp.status_code == 200, resp.text
 
     # Explicit predecessor superseded.
-    assert org_state.db.get_task("TASK-900").status == TaskStatus.RESOLVED_SUPERSEDED
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.SUPERSEDED
     # All non-supersedable siblings unchanged.
     assert org_state.db.get_task("TASK-901").status == TaskStatus.COMPLETED
     assert org_state.db.get_task("TASK-902").status == TaskStatus.CANCELLED
     assert org_state.db.get_task("TASK-903").status == TaskStatus.PENDING
     assert org_state.db.get_task("TASK-904").status == TaskStatus.IN_PROGRESS
-    assert org_state.db.get_task("TASK-905").status == TaskStatus.RESOLVED_SUPERSEDED
+    assert org_state.db.get_task("TASK-905").status == TaskStatus.SUPERSEDED
     for sid in ["TASK-901", "TASK-902", "TASK-903", "TASK-904", "TASK-905"]:
         assert "escalation_superseded" not in [
             e["action"] for e in org_state.db.get_audit_logs(sid)
@@ -866,7 +866,7 @@ def test_manager_dispatch_family_closure_delegated_safety(
     new_task_id = resp.json()["task_id"]
 
     # Explicit predecessor superseded.
-    assert org_state.db.get_task("TASK-900").status == TaskStatus.RESOLVED_SUPERSEDED
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.SUPERSEDED
 
     # Delegated sibling with live child NOT closed.
     assert org_state.db.get_task("TASK-910").status == TaskStatus.IN_PROGRESS
@@ -878,7 +878,7 @@ def test_manager_dispatch_family_closure_delegated_safety(
 
     # Delegated sibling with all terminal children IS closed.
     sib = org_state.db.get_task("TASK-920")
-    assert sib.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert sib.status == TaskStatus.SUPERSEDED
     assert sib.block_kind is None
     sib_payload = _audit_payload(org_state, "TASK-920", "escalation_superseded")
     assert sib_payload["successor_root"] == new_task_id

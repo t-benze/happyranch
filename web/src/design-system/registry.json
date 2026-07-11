@@ -378,7 +378,7 @@
           "completed",
           "failed",
           "cancelled",
-          "resolved_superseded",
+          "superseded",
           "blocked"
         ]
       },
