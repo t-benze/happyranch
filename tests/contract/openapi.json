@@ -170,6 +170,20 @@
         ]
       }
     },
+    "/api/v1/auth/registration-token/runtime": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/executor-binaries": {
       "GET": {
         "params": [
@@ -199,6 +213,34 @@
       }
     },
     "/api/v1/executor-binaries/validate": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/executors/runtime/conformance-checkin": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/executors/runtime/register": {
       "POST": {
         "params": [
           [

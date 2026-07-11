@@ -33,6 +33,10 @@ from runtime.orchestrator.executor_registry import (
     ExecutorProfileCollisionError,
     ExecutorProfile,
 )
+from runtime.orchestrator.runtime_executor_store import (
+    save_runtime_profile,
+    load_runtime_profiles,
+)
 
 router = APIRouter()
 
@@ -396,6 +400,216 @@ def register_executor(
     else:
         # COMMIT (permanent consume) ONLY on clean success.
         store.commit(token_value, slug)
+    finally:
+        profile_lock.release()
+
+    return ExecutorRegisterResponse(
+        name=profile_name,
+        kind="custom",
+        adapter_id=body.adapter,
+        command=body.command,
+        argv_template=[str(e) for e in body.argv_template],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Runtime-level routes (THR-088) — org-agnostic, machine-global
+# ---------------------------------------------------------------------------
+
+runtime_router = APIRouter()
+
+
+@runtime_router.post(
+    "/executors/runtime/conformance-checkin",
+    dependencies=[require_registration_token()],
+)
+def runtime_conformance_checkin(
+    request: Request,
+    body: ConformanceCheckinRequest,
+) -> ConformanceCheckinResponse:
+    """Record a conformance step arrival for a pending RUNTIME registration token.
+
+    Same conformance model as the org-scoped route, but operates on runtime
+    tokens (no org). The candidate CLI calls this for each required check-in
+    step before attempting registration.
+    """
+    token_value = _extract_token(request)
+    store = request.app.state.daemon.registration_token_store
+
+    # Validate runtime token
+    record = store.validate_runtime(token_value)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "token_not_valid_runtime"},
+        )
+
+    # Validate step_id is known
+    challenge = store.get_challenge_runtime(token_value)
+    if challenge is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No conformance challenge for this token",
+        )
+    valid_step_ids = {s.step_id for s in challenge.steps}
+    if body.step_id not in valid_step_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown step {body.step_id!r}. Valid: {sorted(valid_step_ids)}",
+        )
+
+    # Record arrival
+    arrived = store.record_step_arrival_runtime(token_value, body.step_id)
+
+    # Return current state
+    pending = store.get_pending_steps_runtime(token_value) or []
+    all_complete = store.is_challenge_complete_runtime(token_value)
+
+    return ConformanceCheckinResponse(
+        step_id=body.step_id,
+        arrived=arrived,
+        pending=pending,
+        all_complete=all_complete,
+    )
+
+
+@runtime_router.post(
+    "/executors/runtime/register",
+    dependencies=[require_registration_token()],
+)
+def runtime_register_executor(
+    request: Request,
+    body: ExecutorRegisterRequest,
+) -> ExecutorRegisterResponse:
+    """Register a runtime-level (org-agnostic) executor profile.
+
+    Requirements (ALL must pass):
+    1. Token is valid, unexpired, unconsumed, loopback (checked by
+       ``require_registration_token``).
+    2. Conformance challenge is fully complete.
+    3. Static validation passes (valid adapter, command on PATH, valid
+       argv_template, no builtin collision).
+    4. Token is atomically reserved before any side effects. Commit on
+       success, release on failure.
+    5. On successful reserve: write durable runtime store first, then
+       register the in-memory profile.
+    """
+    token_value = _extract_token(request)
+    store = request.app.state.daemon.registration_token_store
+
+    # 1. Validate runtime token
+    record = store.validate_runtime(token_value)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Registration token is invalid, expired, consumed, or not a runtime token",
+        )
+
+    profile_name = record.name
+
+    # 2. Conformance must be complete
+    if not store.is_challenge_complete_runtime(token_value):
+        pending = store.get_pending_steps_runtime(token_value) or []
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Conformance incomplete. Pending steps: {pending}",
+        )
+
+    # 3. Static validation
+    config_cfg = {
+        "command": body.command,
+        "argv_template": body.argv_template,
+        "adapter": body.adapter,
+    }
+    try:
+        candidate = ExecutorRegistry.validate_custom_profile_config(
+            profile_name, config_cfg
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    # 4. Preflight collision check
+    registry = get_registry()
+    if registry.is_registered(profile_name):
+        existing = registry.get_profile(profile_name)
+        if existing is not None:
+            if existing.kind == "builtin":
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "code": "builtin_collision",
+                        "name": profile_name,
+                        "detail": f"Cannot override built-in executor {profile_name!r}.",
+                    },
+                )
+            if existing != candidate:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Custom executor profile {profile_name!r} is already "
+                    f"registered with a different definition.",
+                )
+
+    # 5. Reserve the token (atomic gate)
+    reserved = store.reserve_runtime(token_value)
+    if reserved is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Registration token is invalid, expired, consumed, or not a runtime token",
+        )
+
+    # 6. Acquire per-profile-name lock
+    profile_lock = _acquire_profile_lock(profile_name)
+    try:
+        # Double-check inside lock
+        if registry.is_registered(profile_name):
+            existing_inside = registry.get_profile(profile_name)
+            if existing_inside is not None and existing_inside != candidate:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Custom executor profile {profile_name!r} is already "
+                    f"registered with a different definition.",
+                )
+
+        # 7. Durable: write runtime store
+        config_entry = {
+            "command": body.command,
+            "argv_template": [str(e) for e in body.argv_template],
+            "adapter": body.adapter,
+        }
+        try:
+            save_runtime_profile(profile_name, config_entry)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Runtime profile write error: {exc}",
+            )
+
+        # 8. In-memory: register the profile
+        try:
+            registry.register_custom_profile(candidate)
+        except ExecutorProfileCollisionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Profile collision: {exc}",
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
+    except BaseException:
+        store.release_runtime(token_value)
+        raise
+    else:
+        # NOTE: The org-scoped register path audits writes via
+        # AuditLogger.log_org_config_write (org.db). There is no
+        # runtime-level audit_log surface today (only metrics.db at
+        # runtime.root). Runtime-level audit surfacing is intentionally
+        # deferred pending a THR-088 follow-up design decision.
+        store.commit_runtime(token_value)
     finally:
         profile_lock.release()
 
