@@ -397,6 +397,8 @@ def classify_escalation_flavor(reason: str | None) -> str | None:
         return "exhausted"
     if "max steps" in low and "exceeded" in low:
         return "over-budget"
+    if "iteration_budget_exhausted" in low:
+        return "budget-stopped"
     return "needs-decision"
 
 
