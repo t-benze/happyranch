@@ -40,7 +40,7 @@ export function ThreadHeader({
       : 'bg-surface-sunken border border-border-default text-text-muted';
 
   return (
-    <header className="border-border-default bg-surface-sunken border-b px-4 py-3">
+    <header className="border-border-default bg-surface-sunken border-b px-4 py-2">
       <PageHeader
         title={
           <span className="inline-flex items-center gap-2">
@@ -58,8 +58,6 @@ export function ThreadHeader({
             <IdBadge id={threadId} kind="thread" />
             <span aria-hidden="true">·</span>
             <span>{participants.join(', ') || 'no participants'}</span>
-            <span aria-hidden="true">·</span>
-
           </div>
         }
         actions={actions}

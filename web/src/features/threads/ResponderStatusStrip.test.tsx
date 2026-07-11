@@ -164,6 +164,53 @@ describe('ResponderStatusStrip', () => {
     expect(screen.getByText('failed')).toBeInTheDocument();
   });
 
+  it('renders a founder-aborted reply as a NEUTRAL "aborted" state, not red "reply failed"', () => {
+    // Backend reap persists an abort as status=failed / category=infra_fail with
+    // decline_reason='founder_aborted'. That marker must divert to a neutral
+    // 'aborted' label — NOT the red "reply failed (infra)" wording/danger token.
+    const { container } = render(
+      <ResponderStatusStrip
+        statuses={[
+          {
+            agent_name: 'aborted-agent',
+            status: 'failed',
+            responded_at: null,
+            started_at: null,
+            decline_reason: 'founder_aborted',
+            category: 'infra_fail',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText('aborted')).toBeInTheDocument();
+    // Neutral, not danger — no reply-failed wording, no danger token.
+    expect(screen.queryByText(/reply failed/i)).toBeNull();
+    expect(container.querySelector('.text-danger')).toBeNull();
+    expect(container.querySelector('.text-text-muted')).not.toBeNull();
+  });
+
+  it('keeps the danger token for a GENUINE infra failure (not founder_aborted)', () => {
+    // Regression fence: only decline_reason==='founder_aborted' diverts; a real
+    // infra failure must still render red "reply failed (infra…)" with danger.
+    const { container } = render(
+      <ResponderStatusStrip
+        statuses={[
+          {
+            agent_name: 'crashed-agent',
+            status: 'failed',
+            responded_at: null,
+            started_at: null,
+            decline_reason: 'runner_crash rc=143',
+            category: 'infra_fail',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText('reply failed (infra: rc=143)')).toBeInTheDocument();
+    expect(screen.queryByText('aborted')).toBeNull();
+    expect(container.querySelector('.text-danger')).not.toBeNull();
+  });
+
   it('renders a replied entry with the accent pill token — no regression', () => {
     const { container } = render(
       <ResponderStatusStrip
