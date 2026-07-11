@@ -1,7 +1,7 @@
 """Integration tests for runtime-level (org-agnostic) registration routes.
 
 Tests:
-- POST /api/v1/auth/registration-token/runtime (mint) 
+- POST /api/v1/auth/registration-token/runtime (mint)
 - POST /api/v1/executors/runtime/conformance-checkin
 - POST /api/v1/executors/runtime/register
 """

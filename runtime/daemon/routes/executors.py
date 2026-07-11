@@ -604,6 +604,11 @@ def runtime_register_executor(
         store.release_runtime(token_value)
         raise
     else:
+        # NOTE: The org-scoped register path audits writes via
+        # AuditLogger.log_org_config_write (org.db). There is no
+        # runtime-level audit_log surface today (only metrics.db at
+        # runtime.root). Runtime-level audit surfacing is intentionally
+        # deferred pending a THR-088 follow-up design decision.
         store.commit_runtime(token_value)
     finally:
         profile_lock.release()

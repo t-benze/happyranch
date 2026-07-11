@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import os
+
 import pytest
 import yaml
 
@@ -10,6 +12,10 @@ from runtime.config import Settings
 from runtime.daemon.state import DaemonState
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator.executor_registry import (
+    get_registry,
+    reset_registry,
+)
 from runtime.orchestrator.org_validation import OrgConsistencyError
 from runtime.runtime import RuntimeDir
 
@@ -113,3 +119,54 @@ async def test_add_org_clears_broken_on_success(tmp_path: Path) -> None:
     assert org.slug == "broken"
     assert "broken" not in state.broken_orgs
     assert "broken" in state.orgs
+
+
+def test_from_runtime_loads_good_profile_after_bad_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A bad persisted profile must not prevent a valid later one from
+    loading at daemon startup. This is the durable-store read/write-
+    symmetry invariant: a profile that registered successfully at
+    write time must not silently disappear because of an unrelated
+    sibling."""
+    # Seed daemon home with a bad-then-good executor_profiles.yaml
+    daemon_home = tmp_path / ".happyranch"
+    daemon_home.mkdir(parents=True)
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+
+    store_path = daemon_home / "executor_profiles.yaml"
+    # Bad profile first (command never on PATH), good profile second
+    store_path.write_text(yaml.safe_dump({
+        "bad-profile": {
+            "command": "no-such-command-on-any-machine-xyzzy",
+            "argv_template": ["{prompt}"],
+            "adapter": "pi",
+        },
+        "good-profile": {
+            "command": "python3",
+            "argv_template": ["{prompt}"],
+            "adapter": "pi",
+        },
+    }))
+
+    # Ensure clean registry state
+    reset_registry()
+    try:
+        rt = RuntimeDir.init(tmp_path / "rt")
+        _seed_org(rt.orgs_dir / "alpha")
+        state = DaemonState.from_runtime(rt, Settings())
+
+        # Org loaded normally
+        assert "alpha" in state.orgs
+
+        # Good profile is registered — the bad earlier profile did NOT
+        # prevent it from loading.
+        registry = get_registry()
+        assert registry.is_registered("good-profile"), (
+            "valid profile after a bad one must still be registered"
+        )
+        assert not registry.is_registered("bad-profile"), (
+            "bad profile must not be registered"
+        )
+    finally:
+        reset_registry()
