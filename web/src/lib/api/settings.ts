@@ -21,6 +21,25 @@ export const mintRegistrationToken = (
     body,
   });
 
+// ── Runtime-level registration token mint (THR-088 F-Step1) ──
+// Machine-global mint: no org — the resulting executor profile is registered
+// on the runtime (not scoped to an org). The daemon binds the minted `name`
+// to that profile (`profile_name = record.name`), so the FE fixes the name up
+// front and later polls GET /health/prereqs for it. Route is already shipped +
+// classified (founder-only, loopback + master-bearer, like the org mint above).
+
+export interface RuntimeRegistrationTokenMintRequest {
+  name: string;
+}
+
+export const mintRuntimeRegistrationToken = (
+  body: RuntimeRegistrationTokenMintRequest,
+): Promise<RegistrationTokenMintResponse> =>
+  request('/auth/registration-token/runtime', {
+    method: 'POST',
+    body,
+  });
+
 export const getSettings = (slug: string): Promise<SettingsSnapshot> =>
   request(`/orgs/${slug}/settings`);
 

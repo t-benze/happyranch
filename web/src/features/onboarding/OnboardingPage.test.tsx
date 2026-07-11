@@ -1,10 +1,15 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { UserEvent } from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { OnboardingPage } from './OnboardingPage';
-import { health as healthApi, orgs as orgsApi } from '@/lib/api';
+import {
+  health as healthApi,
+  orgs as orgsApi,
+  settings as settingsApi,
+} from '@/lib/api';
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -15,6 +20,12 @@ function renderPage() {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+}
+
+/** First-run onboarding leads with Step 1 (connect runtime). Org-flow tests
+ *  skip past it to reach Step 2. */
+async function skipConnect(user: UserEvent): Promise<void> {
+  await user.click(await screen.findByRole('button', { name: /skip/i }));
 }
 
 beforeEach(() => {
@@ -32,10 +43,125 @@ beforeEach(() => {
   });
 });
 
-describe('OnboardingPage', () => {
+describe('OnboardingPage — Step 1 (connect runtime)', () => {
+  test('first run leads with the connect-runtime step', async () => {
+    renderPage();
+    expect(
+      await screen.findByRole('heading', { name: /connect your agent runtime/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/name this runtime/i)).toBeInTheDocument();
+  });
+
+  test('Generate is disabled until the name is valid and rejects built-ins', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const input = await screen.findByLabelText(/name this runtime/i);
+    const gen = screen.getByRole('button', { name: /generate connect prompt/i });
+    expect(gen).toBeDisabled();
+
+    // A built-in name is refused (would 422 on register / false-positive detect).
+    await user.type(input, 'claude');
+    expect(gen).toBeDisabled();
+    expect(screen.getByText(/isn.t a built-in/i)).toBeInTheDocument();
+
+    await user.clear(input);
+    await user.type(input, 'my-runtime');
+    expect(gen).not.toBeDisabled();
+  });
+
+  test('Generate mints a runtime token and shows the copy-paste prompt', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+    const mintSpy = vi
+      .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_ABC123', expires_at: Date.now() / 1000 + 600 });
+    renderPage();
+
+    await user.type(await screen.findByLabelText(/name this runtime/i), 'my-runtime');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await waitFor(() => expect(mintSpy).toHaveBeenCalledWith({ name: 'my-runtime' }));
+
+    // The prompt block carries the minted token and the EXISTING loopback
+    // register route — no `/connect` one-click URL.
+    const pre = await screen.findByText(/You're being connected to HappyRanch/i);
+    expect(pre).toHaveTextContent('hr_tok_ABC123');
+    expect(pre).toHaveTextContent('/executors/runtime/register');
+    expect(pre).toHaveTextContent('/executors/runtime/conformance-checkin');
+    expect(pre).not.toHaveTextContent('/connect/');
+
+    // Copy writes the prompt to the clipboard.
+    await user.click(screen.getByRole('button', { name: /^copy prompt$/i }));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('hr_tok_ABC123'));
+  });
+
+  test('poll flips detecting → connected when the name appears in prereqs, then Continue advances', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken').mockResolvedValue({
+      token: 'hr_tok_XYZ',
+      expires_at: Date.now() / 1000 + 600,
+    });
+    // prereqs now includes the freshly-registered runtime name.
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'my-runtime', present: true, path: '/opt/bin/my-runtime', hint: '' },
+      ],
+    });
+    renderPage();
+
+    await user.type(await screen.findByLabelText(/name this runtime/i), 'my-runtime');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // Detect strip → connected card.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: /my-runtime connected/i }),
+      ).toBeInTheDocument(),
+    );
+    // Resolved path from prereqs is shown (real, not fabricated).
+    expect(screen.getByText('/opt/bin/my-runtime')).toBeInTheDocument();
+
+    // Continue advances to Step 2 (org create).
+    await user.click(screen.getByRole('button', { name: /continue/i }));
+    expect(
+      await screen.findByRole('heading', { name: /welcome to happyranch/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('Skip advances straight to Step 2', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await skipConnect(user);
+    expect(
+      await screen.findByRole('heading', { name: /welcome to happyranch/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('a returning user (org already exists) starts at Step 2', async () => {
+    vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({
+      orgs: [{ slug: 'existing-org' }] as never,
+      broken: [],
+    });
+    renderPage();
+    // Lands on Step 2 (add-another copy), never showing Step 1.
+    expect(
+      await screen.findByRole('heading', { name: /create another org/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: /connect your agent runtime/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('OnboardingPage — Step 2 (create org)', () => {
   test('welcome step advances to the create form', async () => {
     const user = userEvent.setup();
     renderPage();
+    await skipConnect(user);
 
     expect(
       screen.getByRole('heading', { name: /welcome to happyranch/i }),
@@ -52,6 +178,7 @@ describe('OnboardingPage', () => {
   test('Create org disabled until slug matches ^[a-z0-9-]{1,40}$', async () => {
     const user = userEvent.setup();
     renderPage();
+    await skipConnect(user);
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     const input = screen.getByLabelText(/slug/i);
@@ -76,6 +203,7 @@ describe('OnboardingPage', () => {
       }),
     );
     renderPage();
+    await skipConnect(user);
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     await user.type(screen.getByLabelText(/slug/i), 'good-slug');
@@ -104,6 +232,7 @@ describe('OnboardingPage', () => {
       .spyOn(orgsApi, 'createOrg')
       .mockResolvedValue({ slug: 'good-slug' });
     renderPage();
+    await skipConnect(user);
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     await user.type(screen.getByLabelText(/slug/i), 'good-slug');
@@ -120,6 +249,7 @@ describe('OnboardingPage', () => {
       Object.assign(new Error('exists'), { status: 409, code: 'org_exists' }),
     );
     renderPage();
+    await skipConnect(user);
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     await user.type(screen.getByLabelText(/slug/i), 'taken');
@@ -146,6 +276,7 @@ describe('OnboardingPage', () => {
       broken: [{ slug: 'busted-org', error: 'agents/ dir missing' }],
     });
     renderPage();
+    await skipConnect(user);
 
     await waitFor(() =>
       expect(screen.getByText('busted-org')).toBeInTheDocument(),
@@ -170,6 +301,7 @@ describe('OnboardingPage', () => {
     // Never resolves — the panel stays in its checking state.
     vi.spyOn(healthApi, 'getPrereqs').mockReturnValue(new Promise(() => {}));
     renderPage();
+    await skipConnect(user);
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     expect(
@@ -180,6 +312,7 @@ describe('OnboardingPage', () => {
   test('executor prereqs — all present shows the X-of-Y summary and resolved paths', async () => {
     const user = userEvent.setup();
     renderPage();
+    await skipConnect(user);
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     await waitFor(() =>
@@ -201,6 +334,7 @@ describe('OnboardingPage', () => {
       ],
     });
     renderPage();
+    await skipConnect(user);
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     await waitFor(() =>
@@ -220,6 +354,7 @@ describe('OnboardingPage', () => {
     const user = userEvent.setup();
     vi.spyOn(healthApi, 'getPrereqs').mockRejectedValue(new Error('network'));
     renderPage();
+    await skipConnect(user);
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     // The panel is absent once the query settles into error — a silent
