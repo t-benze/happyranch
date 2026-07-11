@@ -310,28 +310,36 @@ def test_revise_cap_trips_deliberate_stop_non_root(
     assert task.status == TaskStatus.FAILED, (
         f"expected FAILED (revise budget stop), got {task.status}"
     )
-    assert "revise budget" in (task.note or ""), (
-        f"note should mention revise budget, got {task.note!r}"
+    assert "iteration_budget_exhausted" in (task.note or ""), (
+        f"note should contain iteration_budget_exhausted token, got {task.note!r}"
     )
     assert task.revision_count == 1, (
         f"revision_count should still be 1 (increment was skipped), got {task.revision_count}"
     )
 
-    # CRITICAL: no auto_revisit_of audit row was written
-    audit_rows = db.get_audit_logs(tid)
-    for row in audit_rows:
-        assert row["action"] != "auto_revisit_of", (
-            f"auto_revisit_of should NOT be written on deliberate budget stop, "
-            f"got action={row['action']!r}"
-        )
+    # CRITICAL: no auto_revisit_of audit row was written ANYWHERE in the DB.
+    # get_audit_logs(tid) is scoped to the capped task only, but
+    # _maybe_spawn_auto_revisit logs auto_revisit_of on the NEW successor
+    # root — so a row-scoped check is false-green. Use global queries.
+    auto_revisit_audit_rows = db.fetch_all_readonly(
+        "SELECT 1 FROM audit_log WHERE action = 'auto_revisit_of'"
+    )
+    assert len(auto_revisit_audit_rows) == 0, (
+        f"auto_revisit_of audit row should NOT exist on deliberate budget stop; "
+        f"found {len(auto_revisit_audit_rows)} row(s)"
+    )
 
-    # No new revisit root task spawned (the task's children are writer/QA subtasks only)
-    children = db.get_children(tid)
-    for cid in children:
-        child = db.get_task(cid)
-        assert child is not None
-        assert child.task_type == "subtask", (
-            f"expected only subtask children, got task_type={child.task_type!r}"
+    # No task row has revisit_of_task_id pointing to the capped task or its root.
+    # Auto-revisit roots are inserted with parent_task_id=None, so a
+    # child-of-the-capped-task scan is false-green.
+    auto_revisit_task_rows = db.fetch_all_readonly(
+        "SELECT id, revisit_of_task_id FROM tasks "
+        "WHERE revisit_of_task_id IS NOT NULL",
+    )
+    for row in auto_revisit_task_rows:
+        assert row["revisit_of_task_id"] not in (tid, "TASK-PARENT"), (
+            f"no task should have revisit_of_task_id pointing to capped task "
+            f"{tid!r} or its root; found row {dict(row)}"
         )
 
 
@@ -538,6 +546,9 @@ def test_revise_cap_off_by_one_k1_exactly_one_revise(
     assert task.status == TaskStatus.FAILED, (
         f"expected FAILED (cap=1 exhausted on 2nd revise), got {task.status}"
     )
+    assert "iteration_budget_exhausted" in (task.note or ""), (
+        f"note should contain iteration_budget_exhausted token, got {task.note!r}"
+    )
     # Exactly 1 revise counted; the 2nd was rejected before increment
     assert task.revision_count == 1, (
         f"expected revision_count == 1 (one revise allowed), got {task.revision_count}"
@@ -572,7 +583,12 @@ def test_revise_cap_off_by_one_k2_exactly_two_revises(
     )
 
     scripted = ScriptedRunAgent()
-    # Three REVISE cycles should be queued; the 3rd should trip.
+    # Three REVISE cycles should be queued; the 3rd delegate (round 3 CM) bumps
+    # count 1→2 (allowed), and the 4th CM re-entry would trip the cap.
+    # The 4th-entry cap-stop assertion lives in
+    # test_revise_cap_trips_deliberate_stop_non_root; this test verifies the
+    # off-by-one boundary: exactly 2 revises are counted and the 3rd bump
+    # succeeds at the delegation level (revision_count reaches 2).
     for round_num in (1, 2, 3):
         scripted.enqueue(
             "content_manager",
@@ -671,8 +687,8 @@ def test_revise_cap_root_escalates(
     assert task.status == TaskStatus.ESCALATED, (
         f"expected ESCALATED (root revise budget exhaust), got {task.status}"
     )
-    assert "revise budget" in (task.note or ""), (
-        f"note should mention revise budget, got {task.note!r}"
+    assert "iteration_budget_exhausted" in (task.note or ""), (
+        f"note should contain iteration_budget_exhausted token, got {task.note!r}"
     )
     assert task.revision_count == 1, (
         f"revision_count should still be 1, got {task.revision_count}"
@@ -683,9 +699,160 @@ def test_revise_cap_root_escalates(
     assert notified[0][0] == tid
     assert notified[0][1] == "orchestrator"
 
-    # No auto_revisit_of audit
-    audit_rows = db.get_audit_logs(tid)
-    for row in audit_rows:
-        assert row["action"] != "auto_revisit_of", (
-            f"auto_revisit_of should NOT be written on deliberate budget stop"
+    # No auto_revisit_of audit anywhere in the DB (global check, not scoped
+    # to the capped task id which would be false-green)
+    auto_revisit_audit_rows = db.fetch_all_readonly(
+        "SELECT 1 FROM audit_log WHERE action = 'auto_revisit_of'"
+    )
+    assert len(auto_revisit_audit_rows) == 0, (
+        f"auto_revisit_of audit row should NOT exist on deliberate budget stop; "
+        f"found {len(auto_revisit_audit_rows)} row(s)"
+    )
+
+
+def test_revise_cap_preserves_best_attempt_no_teardown(
+    paths: OrgPaths, db: Database, monkeypatch,
+) -> None:
+    """THR-026 seq33 / ITEM 3: On revise-budget stop, the capped slice ends in its
+    terminal state with note intact, is NOT auto-revisited (no successor root
+    re-running the slice), and the stop path performs no branch/worktree
+    teardown side effect. _fail and try_escalate write DB state + audit + notify
+    + kill in-flight jobs — they do NOT touch git, worktrees, or branches."""
+    _seed_workspaces(paths)
+    orch = _make_orch(paths, db)
+
+    # Non-root task so the cap stop fails instead of escalating.
+    parent_task = TaskRecord(
+        id="TASK-PARENT-T3", brief="parent", team="content",
+        assigned_agent="content_manager", task_type="task",
+    )
+    db.insert_task(parent_task)
+    child_task = TaskRecord(
+        id="TASK-T3", brief="Write guide (t3)", team="content",
+        assigned_agent="content_manager", parent_task_id="TASK-PARENT-T3",
+    )
+    db.insert_task(child_task)
+    tid = child_task.id
+
+    cfg = load_org_config(paths)
+    cfg = dataclasses.replace(cfg, max_revise_rounds=1)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step.load_org_config", lambda p: cfg,
+    )
+
+    # Spy on _fail to prove the budget-stop note reached _fail.
+    fail_calls_for_tid: list = []
+    _orig_fail = getattr(
+        __import__("runtime.orchestrator.run_step", fromlist=["_fail"]),
+        "_fail",
+    )
+    def _spy_fail(orch_, task_id_, *, note):
+        if task_id_ == tid:
+            fail_calls_for_tid.append(note)
+        return _orig_fail(orch_, task_id_, note=note)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._fail", _spy_fail,
+    )
+
+    # Spy on _kill_jobs_for_terminating_task to confirm it fires for this
+    # task (it's the only non-DB-write side effect in _fail).
+    kill_calls_for_tid: list = []
+    _orig_kill = getattr(
+        __import__("runtime.orchestrator.run_step", fromlist=["_kill_jobs_for_terminating_task"]),
+        "_kill_jobs_for_terminating_task",
+    )
+    def _spy_kill(orch_, task_id_):
+        if task_id_ == tid:
+            kill_calls_for_tid.append(task_id_)
+        return _orig_kill(orch_, task_id_)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._kill_jobs_for_terminating_task", _spy_kill,
+    )
+
+    scripted = ScriptedRunAgent()
+    # First delegate → QA REVISE → CM re-delegates (REVISE #1, count 0→1, cap=1, proceed)
+    scripted.enqueue(
+        "content_manager",
+        decision=NextStep(action="delegate", agent="content_writer", prompt="write v1"),
+        summary="delegating to writer",
+    )
+    scripted.enqueue("content_writer", summary="v1 draft")
+    scripted.enqueue(
+        "content_manager",
+        decision=NextStep(action="delegate", agent="content_qa", prompt="review v1"),
+        summary="delegating to QA",
+    )
+    scripted.enqueue("content_qa", summary="VERDICT: REVISE — fix it")
+    # CM re-delegate: REVISE #1, count 0→1, 0 < 1 → proceed
+    scripted.enqueue(
+        "content_manager",
+        decision=NextStep(action="delegate", agent="content_writer", prompt="revise v1"),
+        summary="requesting revision",
+    )
+    scripted.enqueue("content_writer", summary="v2 draft")
+    scripted.enqueue(
+        "content_manager",
+        decision=NextStep(action="delegate", agent="content_qa", prompt="review v2"),
+        summary="delegating to QA for v2",
+    )
+    # QA: REVISE again → CM tries REVISE #2, trips cap
+    scripted.enqueue("content_qa", summary="VERDICT: REVISE — still bad")
+    scripted.enqueue(
+        "content_manager",
+        decision=NextStep(action="delegate", agent="content_writer", prompt="revise v2"),
+        summary="requesting second revision",
+    )
+    monkeypatch.setattr(orch, "_run_agent", scripted)
+
+    run_task_to_completion(orch, tid, max_steps=20)
+
+    # ── Assert 1: capped slice ends in terminal state with note intact ──
+    task = db.get_task(tid)
+    assert task is not None
+    assert task.status == TaskStatus.FAILED, (
+        f"expected FAILED (budget stop), got {task.status}"
+    )
+    assert "iteration_budget_exhausted" in (task.note or ""), (
+        f"note should contain iteration_budget_exhausted, got {task.note!r}"
+    )
+    assert task.revision_count == 1  # not incremented past cap
+
+    # ── Assert 2: NOT auto-revisited (global checks) ──
+    auto_revisit_audit_rows = db.fetch_all_readonly(
+        "SELECT 1 FROM audit_log WHERE action = 'auto_revisit_of'"
+    )
+    assert len(auto_revisit_audit_rows) == 0, (
+        f"auto_revisit_of audit row should NOT exist; found "
+        f"{len(auto_revisit_audit_rows)}"
+    )
+    auto_revisit_task_rows = db.fetch_all_readonly(
+        "SELECT id FROM tasks WHERE revisit_of_task_id IS NOT NULL",
+    )
+    assert len(auto_revisit_task_rows) == 0, (
+        f"no task should have revisit_of_task_id set; found "
+        f"{len(auto_revisit_task_rows)}"
+    )
+
+    # ── Assert 3: stop path performs no branch/worktree teardown ──
+    # _fail was called for this task with the budget-stop note.
+    assert len(fail_calls_for_tid) >= 1, (
+        f"expected at least one _fail call for {tid}, got {len(fail_calls_for_tid)}"
+    )
+    assert "iteration_budget_exhausted" in fail_calls_for_tid[0]
+
+    # _fail's only non-DB-write side effect is _kill_jobs_for_terminating_task.
+    # It fires for this task, confirming the kill path — NOT git, worktree,
+    # or branch cleanup.
+    assert len(kill_calls_for_tid) >= 1, (
+        f"expected at least one _kill_jobs call for {tid}, got "
+        f"{len(kill_calls_for_tid)}"
+    )
+
+    # No audit row indicates any teardown activity (only orchestration steps
+    # and delegation events, no branch/worktree cleanup).
+    all_audit = db.fetch_all_readonly("SELECT action FROM audit_log")
+    teardown_actions = {"branch_cleanup", "worktree_removed", "cleanup"}
+    for row in all_audit:
+        assert row["action"] not in teardown_actions, (
+            f"no teardown audit action should exist; found {row['action']!r}"
         )

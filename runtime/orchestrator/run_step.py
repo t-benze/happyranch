@@ -661,7 +661,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                     # DELIBERATE stop-with-best — do NOT increment, do NOT
                     # delegate, do NOT auto-revisit. Mirror the section-2
                     # step-budget terminal's root/non-root split.
-                    reason = f"revise budget ({cap} rounds) exhausted"
+                    reason = f"iteration_budget_exhausted: revise budget ({cap} rounds) exhausted"
                     if not is_root(task):
                         _fail(orch, task_id, note=reason)
                         _enqueue_parent_if_waiting(orch, task_id)

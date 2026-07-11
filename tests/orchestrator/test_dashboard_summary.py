@@ -426,6 +426,7 @@ def test_escalations_flavor_derived_from_reason(db: Database) -> None:
     cases = [
         ("TASK-EX", "failure-round bound (2) exhausted: 3 failed subtasks", "exhausted"),
         ("TASK-OB", "max steps (40) exceeded", "over-budget"),
+        ("TASK-BS", "iteration_budget_exhausted: revise budget (3 rounds) exhausted", "budget-stopped"),
         ("TASK-ND", "Need founder ruling on refund policy", "needs-decision"),
     ]
     for tid, reason, _ in cases:
@@ -443,6 +444,15 @@ def test_escalations_flavor_derived_from_reason(db: Database) -> None:
     by_id = {r.task_id: r for r in compute_escalations_open(db, now=now)}
     for tid, _, expected in cases:
         assert by_id[tid].flavor == expected
+
+
+def test_classify_escalation_flavor_budget_stopped() -> None:
+    """THR-026 seq33: iteration_budget_exhausted → 'budget-stopped' flavor."""
+    assert classify_escalation_flavor(
+        "iteration_budget_exhausted: revise budget (3 rounds) exhausted"
+    ) == "budget-stopped"
+    # Plain agent escalate still returns needs-decision
+    assert classify_escalation_flavor("Need founder ruling on refund policy") == "needs-decision"
 
 
 def test_classify_escalation_flavor_graceful_fallback() -> None:
