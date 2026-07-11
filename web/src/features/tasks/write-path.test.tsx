@@ -244,32 +244,26 @@ describe('Tasks write path', () => {
     expect(screen.queryByRole('button', { name: /Resolve…/ })).toBeNull();
   });
 
-  test('escalated Cancel routes to resolve-escalation cancel, NOT generic /cancel', async () => {
-    // LOAD-BEARING (THR-075 ruling): escalated Cancel MUST hit
-    // POST /resolve-escalation {decision:'cancel'} — the generic /cancel would
-    // leave the Feishu escalation notification dangling and write the wrong
-    // audit row.
+  test('escalated Cancel routes to generic /cancel, NOT resolve-escalation', async () => {
+    // THR-080: cancel is removed from resolve-escalation vocabulary.
+    // Cancelling an escalated task uses normal POST /cancel.
     sessionStorage.setItem('happyranch.token', 'tok');
     stubEscalatedHandlers();
 
-    let resolveBody: unknown = null;
-    let genericCancelCalled = false;
+    let cancelBody: unknown = null;
+    let resolveCalled = false;
     server.use(
+      http.post(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/cancel`, async ({ request }) => {
+        cancelBody = await request.json();
+        return HttpResponse.json({ ok: true });
+      }),
       http.post(
         `/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/resolve-escalation`,
-        async ({ request }) => {
-          resolveBody = await request.json();
-          return HttpResponse.json({
-            ok: true,
-            task_id: TASK.task_id,
-            new_status: 'cancelled',
-          });
+        () => {
+          resolveCalled = true;
+          return HttpResponse.json({});
         },
       ),
-      http.post(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/cancel`, () => {
-        genericCancelCalled = true;
-        return HttpResponse.json({});
-      }),
     );
 
     const user = userEvent.setup();
@@ -288,8 +282,9 @@ describe('Tasks write path', () => {
       expect(screen.queryByRole('button', { name: /^Cancel task$/ })).toBeNull();
     });
 
-    expect(resolveBody).toEqual({ decision: 'cancel', rationale: '' });
-    expect(genericCancelCalled).toBe(false);
+    // Verify cancel hit /cancel, not resolve-escalation.
+    expect(cancelBody).not.toBeNull();
+    expect(resolveCalled).toBe(false);
   });
 
   test('escalated Continue routes to resolve-escalation continue with required rationale', async () => {
@@ -336,7 +331,7 @@ describe('Tasks write path', () => {
       ).toBeNull();
     });
 
-    expect(resolveBody).toEqual({ decision: 'continue', rationale: 'go ahead' });
+    expect(resolveBody).toEqual({ decision: 'continue', rationale: 'go ahead', brief: '' });
   });
 
   test('revisits a failed task with a note', async () => {

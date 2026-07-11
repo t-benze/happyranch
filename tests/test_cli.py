@@ -1177,6 +1177,102 @@ def test_resolve_escalation_rationale_is_optional():
     assert ns.rationale == ""
 
 
+def test_resolve_escalation_supersede_accepts_brief_and_brief_file():
+    """THR-080 #1: supersede accepts --brief and --brief-file."""
+    from cli.main import build_parser
+    parser = build_parser()
+    # --brief (inline)
+    ns = parser.parse_args([
+        "resolve-escalation", "--task-id", "TASK-001",
+        "--decision", "supersede", "--brief", "successor brief here",
+    ])
+    assert ns.brief == "successor brief here"
+    assert ns.decision == "supersede"
+    # --brief-file
+    ns2 = parser.parse_args([
+        "resolve-escalation", "--task-id", "TASK-002",
+        "--decision", "supersede", "--brief-file", "/tmp/some-file.txt",
+    ])
+    assert ns2.brief_file == "/tmp/some-file.txt"
+
+
+def test_resolve_escalation_continue_does_not_require_brief():
+    """THR-080 #1: continue does NOT require a brief."""
+    from cli.main import build_parser
+    parser = build_parser()
+    ns = parser.parse_args([
+        "resolve-escalation", "--task-id", "TASK-001",
+        "--decision", "continue",
+    ])
+    assert ns.brief is None
+    assert ns.brief_file is None
+
+
+def test_cmd_resolve_escalation_supersede_emits_brief_in_payload(tmp_path):
+    """THR-080 #1: cmd_resolve_escalation emits `brief` in the JSON payload
+    for --decision supersede. Exercises the documented CLI path via
+    --brief-file (MEM-124)."""
+    import json as _json
+    from unittest.mock import MagicMock, patch
+    from cli.commands.tasks import cmd_resolve_escalation
+
+    # Write a brief file
+    brief_path = tmp_path / "successor-brief.txt"
+    brief_path.write_text("Build the successor feature.\n")
+
+    ns = MagicMock()
+    ns.decision = "supersede"
+    ns.rationale = "reroute"
+    ns.brief_file = str(brief_path)
+    ns.brief = None
+    ns.org = None
+    ns.task_id = "TASK-001"
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"new_status": "superseded"}
+
+    with patch("cli.commands.tasks.OpcClient") as mock_client_cls:
+        mock_client = mock_client_cls.from_env.return_value
+        mock_client.post.return_value = mock_response
+        with patch("cli.commands.tasks.resolve_org_slug", return_value="alpha"):
+            cmd_resolve_escalation(ns)
+
+    # Verify the emitted payload carries `brief`.
+    call_args = mock_client.post.call_args
+    _, kwargs = call_args
+    payload = kwargs["json"] if "json" in kwargs else call_args[1]["json"]
+    assert payload["decision"] == "supersede"
+    assert payload["brief"] == "Build the successor feature."
+
+
+def test_cmd_resolve_escalation_supersede_no_brief_exits_with_error(tmp_path, capsys):
+    """THR-080 #1: supersede with no brief -> actionable error that names
+    --brief-file as the fix (not an opaque 422 from the daemon)."""
+    from unittest.mock import MagicMock, patch
+    from cli.commands.tasks import cmd_resolve_escalation
+
+    ns = MagicMock()
+    ns.decision = "supersede"
+    ns.rationale = "reroute"
+    ns.brief_file = None
+    ns.brief = None
+    ns.org = None
+    ns.task_id = "TASK-002"
+
+    with patch("cli.commands.tasks.resolve_org_slug", return_value="alpha"):
+        with patch("cli.commands.tasks.OpcClient") as mock_client_cls:
+            mock_client = mock_client_cls.from_env.return_value
+            try:
+                cmd_resolve_escalation(ns)
+            except SystemExit as exc:
+                assert exc.code == 1
+
+    captured = capsys.readouterr()
+    assert "supersede requires a successor brief" in captured.out
+    assert "--brief-file" in captured.out
+
+
 def test_kb_add_requires_from_file():
     from cli.main import build_parser
     parser = build_parser()

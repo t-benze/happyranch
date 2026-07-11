@@ -589,7 +589,7 @@ describe('DashboardPage', () => {
       expect(resolveBody).not.toBeNull();
     });
 
-    expect(resolveBody).toEqual({ decision: 'continue', rationale: '' });
+    expect(resolveBody).toEqual({ decision: 'continue', rationale: '', brief: '' });
   });
 
   test('renders org pulse table when teams exist', async () => {

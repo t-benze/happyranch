@@ -522,8 +522,13 @@ async def submit_progress(task_id: str, body: ProgressBody, org: OrgDep) -> dict
 
 
 class ResolveEscalationBody(BaseModel):
-    decision: str  # "continue" | "cancel"
+    decision: str  # "supersede" | "continue"
     rationale: str = ""
+    # For supersede: the brief for the successor task.
+    brief: str = ""
+    # Caller-declared actor for attribution. Advisory only — founder and agents
+    # share one bearer token. Omitted/blank → "founder".
+    actor: str | None = None
 
 
 async def resolve_escalation_in_process(
@@ -533,13 +538,20 @@ async def resolve_escalation_in_process(
     task_id: str,
     decision: str,
     rationale: str,
+    brief: str = "",
+    actor: str = "founder",
+    thread_id: str | None = None,
 ) -> str:
     """Same DB transition / audit / queue re-enqueue as the HTTP handler at
     POST /tasks/{task_id}/resolve-escalation.
 
-    Returns the new task status value (e.g. "pending" or "cancelled").
+    Returns the new task status value (e.g. "pending" or "superseded").
     Raises HTTPException for the same validation failures the route raises so
     the HTTP wrapper can re-raise as-is.
+
+    THR-080: unified resolution verb — decisions are "supersede" and
+    "continue" only. Cancel is removed from the resolution vocabulary;
+    cancelling an escalated task now uses the normal POST /cancel route.
     """
     from runtime.infrastructure.audit_logger import AuditLogger
     from runtime.models import BlockKind, TaskStatus
@@ -548,7 +560,7 @@ async def resolve_escalation_in_process(
         _kill_jobs_for_terminating_task,
     )
 
-    if decision not in ("continue", "cancel"):
+    if decision not in ("supersede", "continue"):
         raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
     task = org.db.get_task(task_id)
     if task is None:
@@ -560,23 +572,96 @@ async def resolve_escalation_in_process(
             status_code=409,
             detail={"code": "task_not_escalated", "current_status": task.status.value},
         )
-    # continue resumes the work itself; cancel terminates it. Continue sends
-    # the task back to PENDING with the rationale on `note`, and the team
-    # manager picks it up on the next step with a one-shot prompt header
-    # (see `_resolved_escalation_header_if_applicable` in run_step.py).
-    # Cancel is a deliberate founder stop — status CANCELLED (not FAILED),
-    # with parent notification and job cleanup preserved.
     trimmed = rationale.strip()
-    verb = "continued" if decision == "continue" else "cancelled"
-    resolved_note = f"Founder {verb}: {trimmed}" if trimmed else f"Founder {verb}"
+
+    if decision == "supersede":
+        # Mint a successor task from the provided brief and close the
+        # predecessor as SUPERSEDED. Reuses the proven _eligible_supersede_block_kind
+        # + _supersede_predecessor_locked path (THR-018 tier #3).
+        successor_brief = brief.strip()
+        if not successor_brief:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "supersede_requires_brief"},
+            )
+        pred_block_kind = _eligible_supersede_block_kind(org, task)
+        if pred_block_kind is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "task_not_supersedable",
+                    "task_id": task_id,
+                    "status": task.status.value,
+                },
+            )
+        async with org.db_lock:
+            audit = AuditLogger(org.db)
+            successor_id = org.db.next_task_id()
+            org.db.insert_task(TaskRecord(
+                id=successor_id,
+                brief=successor_brief,
+                team=task.team,
+                assigned_agent=task.assigned_agent,
+                parent_task_id=task.parent_task_id,
+                dispatched_from_thread_id=thread_id or task.dispatched_from_thread_id,
+            ))
+            note_suffix = f"resolved by {actor}" + (f" via thread {thread_id}" if thread_id else "")
+            if trimmed:
+                note_suffix += f" — {trimmed}"
+            # Canonical supersede tail: closes predecessor + revisit family,
+            # wakes parents, emits thread followups (THR-080 #4).
+            # Replaces the old manual _supersede_predecessor_locked + tail.
+            _close_predecessor_family_and_run_tail(
+                org, audit,
+                predecessor=task,
+                successor_root=successor_id,
+                pred_block_kind=pred_block_kind,
+                actor=actor,
+                note_suffix=note_suffix,
+                thread_id=thread_id,
+                close_revisit_family=True,
+            )
+            # Also log escalation_resolved for the audit trail.
+            audit.log_escalation_resolved(
+                task_id=task_id,
+                decision=decision,
+                rationale=rationale,
+                actor=actor,
+                thread_id=thread_id,
+            )
+            # Best-effort: consume any open notification rows not already
+            # consumed by _supersede_predecessor_locked inside the helper.
+            for nrow in org.db.list_open_notifications_for_task(task_id):
+                org.db.consume_escalation_notification(
+                    nrow["feishu_message_id"], consumed_by="superseded",
+                )
+        # Post-tail specifics: kill jobs and enqueue the successor.
+        _kill_jobs_for_terminating_task(org.orchestrator, task_id)
+        if state.queue is not None:
+            state.queue.put_nowait(org.slug, successor_id)
+        return TaskStatus.SUPERSEDED.value
+
+    # --- continue ---
+    # Fail-closed gating (THR-080 memo §3): NEVER continue a task with
+    # live children or terminal status.
+    if _has_live_children(org, task_id):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "cannot_continue_live_children",
+                "remedy": "Use supersede to mint a successor task instead.",
+            },
+        )
+
+    # continue sends the task back to PENDING with the rationale on `note`.
+    verb = "continued"
+    resolved_note = f"{actor} {verb}: {trimmed}" if trimmed else f"{actor} {verb}"
     async with org.db_lock:
-        new_status = TaskStatus.PENDING if decision == "continue" else TaskStatus.CANCELLED
-        update_kwargs: dict = dict(status=new_status, block_kind=None, note=resolved_note)
-        if decision == "cancel":
-            update_kwargs["cancelled_at"] = datetime.now(timezone.utc)
-        org.db.update_task(task_id, **update_kwargs)
+        new_status = TaskStatus.PENDING
+        org.db.update_task(task_id, status=new_status, block_kind=None, note=resolved_note)
         AuditLogger(org.db).log_escalation_resolved(
             task_id=task_id, decision=decision, rationale=rationale,
+            actor=actor, thread_id=thread_id,
         )
         # Best-effort: mark any open notification rows for this task
         # consumed, so they don't dangle.
@@ -584,20 +669,23 @@ async def resolve_escalation_in_process(
             org.db.consume_escalation_notification(
                 nrow["feishu_message_id"], consumed_by="cli-fallback",
             )
-    if decision == "continue":
-        # Re-enqueue self. The manager's next step sees the rationale via the
-        # escalation-resolved prompt header (see
-        # ``_resolved_escalation_header_if_applicable`` in run_step.py).
-        # Parent (if any) stays in_progress (delegated) and will be woken when
-        # this task next reaches a true terminal — no immediate wake here.
-        if state.queue is not None:
-            state.queue.put_nowait(org.slug, task_id)
-    else:
-        # Cancel is terminal — notify parent (parity with old cancel path)
-        # and kill persistent jobs this task owns.
-        _enqueue_parent_if_waiting(org.orchestrator, task_id)
-        _kill_jobs_for_terminating_task(org.orchestrator, task_id)
+    # Re-enqueue self. The manager's next step sees the rationale via the
+    # escalation-resolved prompt header.
+    if state.queue is not None:
+        state.queue.put_nowait(org.slug, task_id)
     return new_status.value
+
+
+def _has_live_children(org, task_id: str) -> bool:
+    """True if the task has at least one child that is NOT terminal."""
+    from runtime.models import TaskStatus
+    from runtime.orchestrator.run_step import TERMINAL_STATES
+    children = org.db.get_children(task_id)
+    for cid in children:
+        child = org.db.get_task(cid)
+        if child is not None and child.status not in TERMINAL_STATES:
+            return True
+    return False
 
 
 @router.post("/tasks/{task_id}/resolve-escalation")
@@ -605,9 +693,11 @@ async def resolve_escalation(
     task_id: str, body: ResolveEscalationBody, org: OrgDep, request: Request,
 ) -> dict:
     state: DaemonState = request.app.state.daemon
+    actor = (body.actor or "").strip() or "founder"
     new_status = await resolve_escalation_in_process(
         org, state,
         task_id=task_id, decision=body.decision, rationale=body.rationale,
+        brief=body.brief, actor=actor,
     )
     return {"ok": True, "task_id": task_id, "new_status": new_status}
 
@@ -784,6 +874,83 @@ def _supersede_predecessor_locked(
         org.db.consume_escalation_notification(
             nrow["feishu_message_id"], consumed_by="superseded",
         )
+
+
+def _close_predecessor_family_and_run_tail(
+    org,
+    audit,
+    *,
+    predecessor: TaskRecord,
+    successor_root: str,
+    pred_block_kind: str,
+    actor: str,
+    note_suffix: str | None = None,
+    thread_id: str | None = None,
+    close_revisit_family: bool = True,
+) -> list[str]:
+    """Close predecessor (+ optionally revisit family), wake parents, emit
+    thread followups.
+
+    Canonical supersede tail shared by resolve_escalation_in_process and the
+    thread-dispatch {resolves:} path so the two surfaces cannot drift
+    (THR-080 #4).  Caller MUST hold ``org.db_lock`` for the
+    ``_supersede_predecessor_locked`` calls.  The tail operations
+    (``_enqueue_parent_if_waiting``, ``_maybe_post_thread_followup``) are
+    safe under or outside the lock.
+
+    Returns the list of revisit-family task ids that were also closed.
+    """
+    from runtime.orchestrator.run_step import (
+        _enqueue_parent_if_waiting,
+        _maybe_post_thread_followup,
+    )
+
+    # Close predecessor.
+    _supersede_predecessor_locked(
+        org, audit,
+        predecessor_id=predecessor.id,
+        successor_root=successor_root,
+        prior_block_kind=pred_block_kind,
+        actor=actor,
+        note_suffix=note_suffix,
+        thread_id=thread_id,
+    )
+
+    # Optionally close the revisit family.
+    family_closed: list[str] = []
+    if close_revisit_family:
+        for family_task in _collect_eligible_revisit_family(
+            org,
+            explicit_predecessor_id=predecessor.id,
+            successor_root=successor_root,
+        ):
+            family_block_kind = _eligible_supersede_block_kind(org, family_task)
+            _supersede_predecessor_locked(
+                org, audit,
+                predecessor_id=family_task.id,
+                successor_root=successor_root,
+                prior_block_kind=family_block_kind,
+                actor=actor,
+                note_suffix=note_suffix,
+                thread_id=thread_id,
+            )
+            family_closed.append(family_task.id)
+
+    # Tail: wake parents and emit thread followups for thread-originated
+    # predecessors (the missing followup in THR-080 #3).
+    _enqueue_parent_if_waiting(org.orchestrator, predecessor.id)
+    _maybe_post_thread_followup(
+        org.orchestrator, predecessor.id,
+        status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
+    )
+    for family_task_id in family_closed:
+        _enqueue_parent_if_waiting(org.orchestrator, family_task_id)
+        _maybe_post_thread_followup(
+            org.orchestrator, family_task_id,
+            status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
+        )
+
+    return family_closed
 
 
 def _collect_eligible_revisit_family(

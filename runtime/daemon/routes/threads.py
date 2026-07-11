@@ -1630,67 +1630,26 @@ async def dispatch_from_thread_endpoint(
             thread_id, task_id=task_id, dispatcher=dispatcher,
             target_agent=effective_target, team=effective_team,
         )
-        # Reuse the proven revisit-path supersede logic (Gap-A no-reenqueue +
-        # successor citation). Parent-wake + followup run after the lock.
+        # Canonical supersede tail shared with resolve_escalation_in_process
+        # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
+        # and emits thread followups.
         family_closed: list[str] = []
         if resolves and predecessor is not None:
             from runtime.daemon.routes.tasks import (
-                _collect_eligible_revisit_family,
-                _eligible_supersede_block_kind,
-                _supersede_predecessor_locked,
+                _close_predecessor_family_and_run_tail,
             )
-            _supersede_predecessor_locked(
+            family_closed = _close_predecessor_family_and_run_tail(
                 org, audit,
-                predecessor_id=predecessor.id,
+                predecessor=predecessor,
                 successor_root=task_id,
-                prior_block_kind=pred_block_kind,
+                pred_block_kind=pred_block_kind,
                 actor="thread-dispatch",
                 note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
                 thread_id=thread_id,
+                close_revisit_family=True,
             )
-            # THR-046 msg127: broader revisit-family closure — also supersede
-            # eligible sibling/ancestor revisits in the same revisit family.
-            for family_task in _collect_eligible_revisit_family(
-                org,
-                explicit_predecessor_id=predecessor.id,
-                successor_root=task_id,
-            ):
-                family_block_kind = _eligible_supersede_block_kind(org, family_task)
-                _supersede_predecessor_locked(
-                    org, audit,
-                    predecessor_id=family_task.id,
-                    successor_root=task_id,
-                    prior_block_kind=family_block_kind,
-                    actor="thread-dispatch",
-                    note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
-                    thread_id=thread_id,
-                )
-                family_closed.append(family_task.id)
 
     enqueue_task(state, slug, task_id)
-
-    # Supersede tail (outside the lock, mirroring revisit_from_notification):
-    # the superseded predecessor reached a terminal, so a delegated parent must
-    # learn its branch is done, and a thread-originated predecessor must emit its
-    # task-followup. The predecessor itself is NEVER re-enqueued (Gap-A).
-    if resolves and predecessor is not None:
-        from runtime.models import TaskStatus
-        from runtime.orchestrator.run_step import (
-            _enqueue_parent_if_waiting,
-            _maybe_post_thread_followup,
-        )
-        _enqueue_parent_if_waiting(org.orchestrator, predecessor.id)
-        _maybe_post_thread_followup(
-            org.orchestrator, predecessor.id,
-            status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
-        )
-        # Same tail for each family sibling closed.
-        for family_task_id in family_closed:
-            _enqueue_parent_if_waiting(org.orchestrator, family_task_id)
-            _maybe_post_thread_followup(
-                org.orchestrator, family_task_id,
-                status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
-            )
 
     await _publish_thread_event(
         org, slug,
@@ -1706,6 +1665,148 @@ async def dispatch_from_thread_endpoint(
         "system_message_seq": sys_seq,
         "superseded_task_id": resolves if (resolves and predecessor is not None) else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# THR-080 — POST /threads/{id}/resolve-escalation (thread-reachable resolution)
+# ---------------------------------------------------------------------------
+
+
+class ThreadResolveEscalationBody(BaseModel):
+    task_id: str
+    decision: str  # "supersede" | "continue"
+    rationale: str = ""
+    # For supersede: the brief for the successor task.
+    brief: str = ""
+    # THR-080 #2: authority is validated via invocation token, not
+    # client-supplied actor. The dispatcher field names the agent whose
+    # invocation token is being presented.
+    invocation_token: str = ""
+    dispatcher: str = ""
+
+
+@router.post("/threads/{thread_id}/resolve-escalation")
+async def resolve_escalation_from_thread(
+    slug: str, thread_id: str, body: ThreadResolveEscalationBody,
+    org: OrgDep, request: Request,
+) -> dict:
+    """Resolve an escalated task from the thread surface.
+
+    Delegates to the shared resolve_escalation_in_process primitive.
+    Makes `continue` reachable from the thread surface (THR-080 Option A).
+    Supersede from the thread surface is now the canonical path; the
+    dispatch {resolves:} supersede is a legacy shorthand that still works.
+
+    Fail-closed gating (memo §3): the task must be in THIS thread's lineage.
+    Manager/founder authority is validated via invocation token — the actor
+    is DERIVED from the validated dispatcher, never client-supplied (THR-080 #2).
+    """
+    state: DaemonState = request.app.state.daemon
+
+    # Load thread and validate it's open.
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "thread_not_found"})
+
+    if body.decision not in ("supersede", "continue"):
+        raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
+
+    # THR-080 #2: Validate authority via invocation token, mirroring
+    # the dispatch route pattern. Derive actor from the validated
+    # dispatcher — never from a client-supplied body field.
+    if not body.invocation_token.strip() or not body.dispatcher.strip():
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "missing_invocation_token"},
+        )
+    _validate_invocation_token(
+        org,
+        token=body.invocation_token,
+        expected_agent=body.dispatcher,
+        expected_thread_id=thread_id,
+        require_purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+    )
+    if not org.db.is_thread_participant(thread_id, body.dispatcher):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "not_participant"},
+        )
+
+    # Manager/founder authority required for resolution (mirrors dispatch
+    # {resolves:} authority gate).
+    dispatcher = body.dispatcher
+    if org.teams is None:
+        raise HTTPException(status_code=403, detail={"code": "teams_registry_unavailable"})
+    async with org.teams_lock:
+        is_manager = org.teams.is_team_manager(dispatcher)
+    if not is_manager:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "resolve_escalation_not_authorized",
+                "dispatcher": dispatcher,
+                "remedy": "Manager or founder authority required. "
+                          "Use supersede via a manager thread-dispatch, "
+                          "or ask a manager to continue this escalation.",
+            },
+        )
+    # Actor derived from the validated dispatcher, not client-supplied.
+    actor = dispatcher
+
+    # Validate the target task exists and is in this thread's lineage.
+    from runtime.daemon.routes.tasks import resolve_escalation_in_process
+    task = org.db.get_task(body.task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail={"code": "task_not_found"})
+
+    # Thread-lineage check: the task must either be dispatched from this
+    # thread or have an ancestor dispatched from this thread.
+    in_lineage = _task_in_thread_lineage(org, body.task_id, thread_id)
+    if not in_lineage:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "task_not_in_thread_lineage",
+                "task_id": body.task_id,
+                "thread_id": thread_id,
+            },
+        )
+
+    new_status = await resolve_escalation_in_process(
+        org, state,
+        task_id=body.task_id,
+        decision=body.decision,
+        rationale=body.rationale,
+        brief=body.brief,
+        actor=actor,
+        thread_id=thread_id,
+    )
+    # Consume the invocation token to prevent replay — mirrors the reply
+    # route's token lifecycle. A single invocation can perform at most one
+    # state-changing resolution.
+    org.db.consume_invocation(body.invocation_token)
+    return {"ok": True, "task_id": body.task_id, "new_status": new_status}
+
+
+def _task_in_thread_lineage(org, task_id: str, thread_id: str) -> bool:
+    """True if task_id is dispatched from thread_id, or has an ancestor
+    that was dispatched from thread_id."""
+    # Direct match.
+    task = org.db.get_task(task_id)
+    if task is None:
+        return False
+    if task.dispatched_from_thread_id == thread_id:
+        return True
+    # Walk up the parent chain.
+    current_id = task.parent_task_id
+    while current_id:
+        current = org.db.get_task(current_id)
+        if current is None:
+            break
+        if current.dispatched_from_thread_id == thread_id:
+            return True
+        current_id = current.parent_task_id
+    return False
 
 
 # ---------------------------------------------------------------------------

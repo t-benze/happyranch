@@ -728,9 +728,30 @@ def cmd_resolve_escalation(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    # THR-080: supersede requires a brief for the successor task.
+    # Read from --brief-file (preferred, single-line callback pattern) or
+    # --brief (inline).
+    brief = ""
+    if args.decision == "supersede":
+        if args.brief_file:
+            try:
+                # File-system reads are in-bounds for the CLI; the
+                # callback payload is single-line per MEM-124.
+                brief = open(args.brief_file).read().strip()
+            except OSError as exc:
+                print(f"Error: cannot read brief file '{args.brief_file}': {exc}")
+                sys.exit(1)
+        elif args.brief:
+            brief = args.brief.strip()
+        if not brief:
+            print(
+                "Error: --decision supersede requires a successor brief. "
+                "Pass --brief-file <path> (preferred) or --brief '<text>'."
+            )
+            sys.exit(1)
     r = client.post(
         f"/api/v1/orgs/{slug}/tasks/{args.task_id}/resolve-escalation",
-        json={"decision": args.decision, "rationale": args.rationale},
+        json={"decision": args.decision, "rationale": args.rationale, "brief": brief},
     )
     if not _ok(r):
         return
@@ -1029,8 +1050,18 @@ def register(sub) -> None:
     p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task (founder only)")
     p_resolve.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_resolve.add_argument("--task-id", required=True)
-    p_resolve.add_argument("--decision", required=True, choices=["continue", "cancel"])
+    p_resolve.add_argument("--decision", required=True, choices=["supersede", "continue"])
     p_resolve.add_argument("--rationale", default="")
+    p_resolve.add_argument(
+        "--brief-file", default=None,
+        help="Path to file containing the successor brief (required for --decision supersede). "
+             "Preferred over --brief for the single-line callback pattern.",
+    )
+    p_resolve.add_argument(
+        "--brief", default=None,
+        help="Inline successor brief text (required for --decision supersede). "
+             "Prefer --brief-file for multi-line briefs.",
+    )
     p_resolve.set_defaults(func=cmd_resolve_escalation)
 
     p_cancel = sub.add_parser(

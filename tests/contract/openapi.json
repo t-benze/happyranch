@@ -2368,6 +2368,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/threads/{thread_id}/resolve-escalation": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "thread_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/threads/{thread_id}/resume": {
       "POST": {
         "params": [

@@ -88,13 +88,29 @@ class AuditLogger:
         )
 
     def log_escalation_resolved(
-        self, task_id: str, decision: str, rationale: str
+        self,
+        task_id: str,
+        decision: str,
+        rationale: str,
+        *,
+        actor: str = "founder",
+        thread_id: str | None = None,
     ) -> None:
+        """Record that an escalated task was resolved.
+
+        THR-080: `actor` records the real agent who resolved (manager/thread-
+        originated continue, or founder). `thread_id` cites the dispatching
+        thread when the resolution came from the thread surface. Back-compat:
+        both params are keyword-only with founder/None defaults.
+        """
+        payload: dict = {"decision": decision, "rationale": rationale}
+        if thread_id is not None:
+            payload["thread_id"] = thread_id
         self._db.insert_audit_log(
             task_id=task_id,
-            agent="founder",
+            agent=actor,
             action="escalation_resolved",
-            payload={"decision": decision, "rationale": rationale},
+            payload=payload,
         )
 
     def log_task_cancelled(
