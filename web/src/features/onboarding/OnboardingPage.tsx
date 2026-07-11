@@ -1,28 +1,32 @@
 /**
- * OnboardingPage — first-run / add-org shell (THR-061 Slice 11).
+ * OnboardingPage — first-run / add-org shell (THR-061 Slice 11; THR-088 F-Step2 + F-Prereqs).
  *
- * A presentational onboarding shell composed of three steps — Welcome →
- * Create org → Success — plus a read-only broken-org list. This surface is
- * GLOBAL (not org-scoped): it drives the two EXISTING non-org routes only:
- *   - GET  /api/v1/orgs   (listOrgs → { orgs, broken })
- *   - POST /api/v1/orgs   (createOrg → { slug })
+ * A presentational onboarding shell composed of the steps — Welcome →
+ * Create org → Creating → Success — plus a read-only broken-org list and an
+ * executor-prereq readiness panel. This surface is GLOBAL (not org-scoped):
+ * it drives the two EXISTING non-org routes only:
+ *   - GET  /api/v1/orgs           (listOrgs → { orgs, broken })
+ *   - POST /api/v1/orgs           (createOrg → { slug })
+ *   - GET  /api/v1/health/prereqs (getPrereqs → { prereqs: {tool,present,path,hint}[] })
  * No new backend route is added; the create flow reuses the same slug
  * contract + inline error mapping as the Sidebar's AddOrgDialog.
  *
- * Honesty fence (THR-061 §D): no invented metric/badge/role/$; Pasture tokens
- * only, zero raw hex; no Baloo 2. Gated/deferred surfaces are OMITTED, never
- * fabricated:
+ * Honesty fence (THR-061 §D; THR-088): no invented metric/badge/role/$/version;
+ * Pasture tokens only, zero raw hex; no Baloo 2. Gated/deferred surfaces are
+ * OMITTED, never fabricated:
  *   - template picker (createOrg `from_example`) — G12 #312, founder-gated.
- *   - broken-org Retry action — gated; broken orgs render read-only.
- *   - executor-prereq readiness messaging — backend #314, shipped later as a
- *     separate PR; a clean seam is noted below, nothing is invented here.
+ *   - broken-org Retry action — gated (needs a reload route that does not
+ *     exist; GET /orgs is cached, never re-scans). Broken orgs render
+ *     read-only + Copy-error only.
+ *   - executor `version` — the backend ExecutorPrereq model returns only
+ *     {tool, present, path, hint}; no version field exists, so none is shown.
  */
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, ArrowRight, Check, Info, Plus } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Check, Info } from 'lucide-react';
 import { health as healthApi, orgs as orgsApi } from '@/lib/api';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
+import type { ExecutorPrereq } from '@/lib/api/types';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
@@ -33,7 +37,7 @@ const SLUG_RE = /^[a-z0-9-]{1,40}$/;
 type Step = 'welcome' | 'create' | 'success';
 
 /* ------------------------------------------------------------------ */
-/*  Shell — three steps + broken-org list                              */
+/*  Shell — steps + broken-org list                                    */
 /* ------------------------------------------------------------------ */
 
 export function OnboardingPage(): JSX.Element {
@@ -75,7 +79,7 @@ export function OnboardingPage(): JSX.Element {
         )}
 
         {/* Broken orgs are surfaced on the entry screens so they are never
-            silently swallowed. Read-only: the Retry action is gated. */}
+            silently swallowed. Read-only: Copy-error only, Retry is gated. */}
         {step !== 'success' && broken.length > 0 && (
           <div className="mt-8">
             <BrokenOrgList broken={broken} />
@@ -124,7 +128,7 @@ function WelcomeStep({
       </p>
       <div className="mt-7 flex flex-wrap items-center gap-4">
         <Button onClick={onStart}>
-          <Plus aria-hidden="true" />
+          <Plus />
           {firstRun ? 'Create your first org' : 'Create another org'}
         </Button>
         <span className="text-text-muted text-xs">Takes a few seconds.</span>
@@ -178,7 +182,77 @@ function RanchLogo({ className }: { className?: string }): JSX.Element {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Small inline glyphs (hand-rolled; keep lucide surface minimal)     */
+/* ------------------------------------------------------------------ */
+
+/** Plus glyph for the primary CTA (kept local to avoid icon churn). */
+function Plus(): JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      className="h-4 w-4"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+/** Copy glyph for the broken-org Copy-error affordance. */
+function CopyGlyph(): JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.9}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+    >
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+      <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+/** Small red ✕ used for a missing executor tool. */
+function XGlyph(): JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+    >
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+/** Ring spinner (creating + prereq-checking affordances). */
+function Spinner({ className }: { className?: string }): JSX.Element {
+  return (
+    <span
+      role="status"
+      aria-label="Loading"
+      className={`inline-block animate-spin rounded-full border-2 border-current border-t-transparent ${className ?? ''}`}
+    />
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Step 2 — Create org (slug-only; reuses createOrg contract)         */
+/*  Includes the distinct `creating` progress state (THR-088 F-Step2). */
 /* ------------------------------------------------------------------ */
 
 function CreateStep({
@@ -216,12 +290,19 @@ function CreateStep({
     if (valid && !create.isPending) create.mutate({ slug });
   };
 
+  // Distinct `creating` progress state — the workspace is being provisioned.
+  if (create.isPending) {
+    return <CreatingState slug={slug} />;
+  }
+
   return (
     <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-8">
-      <PageHeader
-        title="Create your organization"
-        meta="Choose a slug — this becomes the workspace's stable id."
-      />
+      <p className="text-accent-text text-xs font-semibold tracking-wider uppercase">
+        New org
+      </p>
+      <h1 className="font-display text-h1 text-text-primary mt-1.5 font-medium">
+        Name your org
+      </h1>
 
       <form
         className="mt-6 space-y-2"
@@ -230,7 +311,11 @@ function CreateStep({
           submit();
         }}
       >
-        <Label htmlFor="onboarding-slug">Slug</Label>
+        <Label htmlFor="onboarding-slug">Org slug</Label>
+        <p className="text-text-muted -mt-1 text-xs">
+          This is the org&rsquo;s permanent identifier. It can&rsquo;t be changed
+          later.
+        </p>
         <Input
           id="onboarding-slug"
           value={slug}
@@ -244,8 +329,20 @@ function CreateStep({
           spellCheck={false}
           aria-invalid={serverError ? true : undefined}
         />
-        <p className="text-text-muted text-xs">
-          Lowercase letters, digits, and hyphens. 1–40 characters.
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+          {valid ? (
+            <span className="text-feedback-success inline-flex items-center gap-1 font-medium">
+              <Check aria-hidden="true" size={13} />
+              Lowercase letters, numbers and hyphens
+            </span>
+          ) : (
+            <span className="text-text-muted">
+              Lowercase letters, numbers and hyphens
+            </span>
+          )}
+          <span className="text-text-muted font-mono">
+            · ^[a-z0-9-]&#123;1,40&#125;$
+          </span>
         </p>
         {serverError && (
           <p className="text-feedback-danger text-sm" role="alert">
@@ -260,7 +357,7 @@ function CreateStep({
 
         <div className="flex items-center gap-2 pt-4">
           <Button type="submit" disabled={!valid || create.isPending}>
-            {create.isPending ? 'Creating…' : 'Create org'}
+            Create org
           </Button>
           <Button
             type="button"
@@ -268,10 +365,28 @@ function CreateStep({
             onClick={onBack}
             disabled={create.isPending}
           >
-            Back
+            Cancel
           </Button>
         </div>
       </form>
+    </section>
+  );
+}
+
+/** Centered progress card shown while POST /orgs is in flight. */
+function CreatingState({ slug }: { slug: string }): JSX.Element {
+  return (
+    <section
+      aria-label="Creating org"
+      className="bg-surface border-border-default shadow-pasture-sm flex flex-col items-center rounded-lg border px-8 py-16 text-center"
+    >
+      <Spinner className="text-accent h-8 w-8" />
+      <h1 className="font-display text-h2 text-text-primary mt-5 font-medium">
+        Creating <span className="text-accent-text font-mono">{slug}</span>…
+      </h1>
+      <p className="text-text-secondary mt-2 text-sm">
+        Setting up the workspace.
+      </p>
     </section>
   );
 }
@@ -297,11 +412,11 @@ function SuccessStep({
         <Check size={22} />
       </span>
       <h1 className="font-display text-h2 text-text-primary mt-4 font-medium">
-        Organization created
+        Org <span className="text-accent-text font-mono">{slug}</span> is ready.
       </h1>
-      <p className="text-text-secondary mt-2 text-sm">
-        <span className="text-text-primary font-medium">{slug}</span> is ready.
-        Head to its dashboard to enrol agents and dispatch the first task.
+      <p className="text-text-secondary mt-2 text-sm leading-relaxed">
+        Your workspace is live. Next: wire up an agent runtime from Settings,
+        then dispatch your first task.
       </p>
       <div className="mt-6 flex items-center gap-2">
         <Button onClick={() => navigate(`/orgs/${slug}/dashboard`)}>
@@ -317,7 +432,7 @@ function SuccessStep({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Broken-org list — read-only diagnostics (Retry is gated)           */
+/*  Broken-org list — read-only diagnostics + Copy-error (Retry gated) */
 /* ------------------------------------------------------------------ */
 
 function BrokenOrgList({
@@ -338,28 +453,75 @@ function BrokenOrgList({
         </h2>
       </div>
       <p className="text-text-muted mt-1 text-xs">
-        These workspaces are on disk but the daemon could not load them. Resolve
-        the error below from the CLI.
+        These workspaces are on disk but the daemon could not open them. The raw
+        error is shown as reported — fix it on the runtime.
       </p>
       <ul className="mt-3 space-y-2">
         {broken.map((b) => (
-          <li
-            key={b.slug}
-            className="bg-surface border-border-default rounded-md border p-3"
-          >
-            <p className="text-text-primary font-mono text-sm">{b.slug}</p>
-            <p className="text-text-secondary mt-1 font-mono text-xs break-words">
-              {b.error}
-            </p>
-          </li>
+          <BrokenOrgCard key={b.slug} slug={b.slug} error={b.error} />
         ))}
       </ul>
+      <p className="text-text-muted mt-3 text-xs">
+        Broken orgs don&rsquo;t block you — you can still{' '}
+        <span className="text-text-primary font-medium">create a new org</span>{' '}
+        while these stay parked.
+      </p>
     </section>
   );
 }
 
+/** One broken-org card: slug + raw error + Copy-error (no Retry — gated). */
+function BrokenOrgCard({
+  slug,
+  error,
+}: {
+  slug: string;
+  error: string;
+}): JSX.Element {
+  const [copied, setCopied] = useState(false);
+
+  const copy = (): void => {
+    void navigator.clipboard?.writeText(error);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  return (
+    <li className="bg-surface border-border-default rounded-md border p-3">
+      <p className="text-text-primary font-mono text-sm">{slug}</p>
+      <p className="text-feedback-danger mt-1 font-mono text-xs break-words">
+        {error}
+      </p>
+      <div className="mt-2">
+        <button
+          type="button"
+          onClick={copy}
+          className="text-text-secondary hover:text-text-primary hover:border-border-strong border-border-default inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors"
+        >
+          {copied ? (
+            <>
+              <Check
+                aria-hidden="true"
+                size={13}
+                className="text-feedback-success"
+              />
+              Copied
+            </>
+          ) : (
+            <>
+              <CopyGlyph />
+              Copy error
+            </>
+          )}
+        </button>
+      </div>
+    </li>
+  );
+}
+
 /* ------------------------------------------------------------------ */
-/*  Executor prereq readiness (THR-061 backend #314)                    */
+/*  Executor prereq readiness (THR-088 F-Prereqs)                       */
+/*  GET /health/prereqs → {tool, present, path, hint}[] (no version).   */
 /* ------------------------------------------------------------------ */
 
 function ExecutorPrereqPanel(): JSX.Element | null {
@@ -370,69 +532,108 @@ function ExecutorPrereqPanel(): JSX.Element | null {
     retry: 1,
   });
 
-  // While loading or on error, show nothing — this is informational only.
-  if (prereqsQuery.isPending || prereqsQuery.isError) return null;
+  // Checking affordance while the query is in flight.
+  if (prereqsQuery.isPending) {
+    return (
+      <section
+        aria-label="Executor readiness"
+        className="border-border-default bg-surface mt-4 rounded-md border px-3 py-2.5"
+      >
+        <p className="text-text-muted flex items-center gap-2 text-xs">
+          <Spinner className="text-text-muted h-3.5 w-3.5" />
+          Checking host tools…
+        </p>
+      </section>
+    );
+  }
+
+  // On error, degrade silently — this panel is informational only.
+  if (prereqsQuery.isError) return null;
 
   const prereqs = prereqsQuery.data?.prereqs ?? [];
   if (prereqs.length === 0) return null;
 
-  const absent = prereqs.filter((p) => !p.present);
-  // If every executor is present, show a compact success line.
-  if (absent.length === 0) {
-    return (
-      <div
-        aria-label="Executor readiness"
-        className="border-border-default bg-surface mt-4 rounded-md border px-3 py-2"
-      >
-        <p className="text-text-muted flex items-center gap-1.5 text-xs">
-          <Check aria-hidden="true" size={14} className="text-feedback-success shrink-0" />
-          All executor CLIs found on PATH.
-        </p>
-      </div>
-    );
-  }
+  const presentCount = prereqs.filter((p) => p.present).length;
+  const total = prereqs.length;
+  const allPresent = presentCount === total;
 
-  // At least one executor is absent — show a diagnostically useful panel.
   return (
     <section
       aria-label="Executor readiness"
-      className="border-feedback-warning/25 bg-feedback-warning/5 mt-4 rounded-md border p-3"
+      className="border-border-default bg-surface mt-4 rounded-md border p-3"
     >
-      <div className="flex items-center gap-1.5">
-        <Info aria-hidden="true" size={14} className="text-feedback-warning shrink-0" />
-        <p className="text-text-primary text-xs font-medium">
-          Executor readiness — {absent.length} missing
-        </p>
+      {/* FE-computed 'X of Y tools present' summary — real data, no fabrication. */}
+      <div
+        className={`flex items-center gap-1.5 rounded-md px-2.5 py-2 text-xs ${
+          allPresent
+            ? 'text-feedback-success bg-feedback-success/10'
+            : 'text-text-secondary bg-surface-sunken'
+        }`}
+      >
+        {allPresent ? (
+          <Check
+            aria-hidden="true"
+            size={14}
+            className="text-feedback-success shrink-0"
+          />
+        ) : (
+          <Info aria-hidden="true" size={14} className="text-text-muted shrink-0" />
+        )}
+        <span>
+          <span className="text-text-primary font-medium">
+            {presentCount} of {total}
+          </span>{' '}
+          tools present
+        </span>
       </div>
+
       <ul className="mt-2 space-y-1.5">
         {prereqs.map((p) => (
-          <li key={p.tool} className="flex items-start gap-1.5">
-            {p.present ? (
-              <Check
-                aria-hidden="true"
-                size={13}
-                className="text-feedback-success mt-px shrink-0"
-              />
-            ) : (
-              <AlertTriangle
-                aria-hidden="true"
-                size={13}
-                className="text-feedback-warning mt-px shrink-0"
-              />
-            )}
-            <span className="text-text-secondary text-xs">
-              <span
-                className={
-                  p.present ? 'text-text-primary font-medium' : 'text-text-primary'
-                }
-              >
-                {p.tool}
-              </span>
-              {p.present ? ' — ready' : ` — not found. ${p.hint}`}
-            </span>
-          </li>
+          <PrereqRow key={p.tool} prereq={p} />
         ))}
       </ul>
     </section>
+  );
+}
+
+/** One executor row: icon + name + path/hint + present/missing pill. */
+function PrereqRow({ prereq }: { prereq: ExecutorPrereq }): JSX.Element {
+  const { tool, present, path, hint } = prereq;
+  return (
+    <li className="border-border-default bg-surface-sunken/40 flex items-center gap-2.5 rounded-md border px-2.5 py-2">
+      <span
+        aria-hidden="true"
+        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
+          present
+            ? 'bg-feedback-success/15 text-feedback-success'
+            : 'bg-feedback-danger/12 text-feedback-danger'
+        }`}
+      >
+        {present ? <Check size={14} /> : <XGlyph />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-text-primary font-mono text-xs font-medium">{tool}</p>
+        {/* Render the resolved path when present; the install hint when not.
+            No `version` — the backend model does not return one. */}
+        {present ? (
+          <p className="text-text-muted text-caption truncate font-mono">
+            {path ?? 'on PATH'}
+          </p>
+        ) : (
+          <p className="text-text-secondary text-caption leading-snug">
+            Not found on PATH. {hint}
+          </p>
+        )}
+      </div>
+      <span
+        className={`text-caption shrink-0 rounded-full px-2 py-0.5 font-semibold ${
+          present
+            ? 'text-status-open bg-tier-green-tint'
+            : 'text-feedback-danger bg-tier-red-tint'
+        }`}
+      >
+        {present ? 'present' : 'missing'}
+      </span>
+    </li>
   );
 }

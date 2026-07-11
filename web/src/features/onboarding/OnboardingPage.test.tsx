@@ -44,6 +44,9 @@ describe('OnboardingPage', () => {
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     expect(screen.getByLabelText(/slug/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /name your org/i }),
+    ).toBeInTheDocument();
   });
 
   test('Create org disabled until slug matches ^[a-z0-9-]{1,40}$', async () => {
@@ -63,7 +66,39 @@ describe('OnboardingPage', () => {
     expect(submit).not.toBeDisabled();
   });
 
-  test('creating an org posts the slug and shows the success step', async () => {
+  test('creating an org shows the distinct creating state, then the success step', async () => {
+    const user = userEvent.setup();
+    // Controllable promise so we can observe the interim `creating` state.
+    let resolveCreate: (v: { slug: string }) => void = () => {};
+    vi.spyOn(orgsApi, 'createOrg').mockReturnValue(
+      new Promise((res) => {
+        resolveCreate = res;
+      }),
+    );
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /create your first org/i }));
+
+    await user.type(screen.getByLabelText(/slug/i), 'good-slug');
+    await user.click(screen.getByRole('button', { name: /^create org$/i }));
+
+    // Distinct creating progress state — not just a relabeled button.
+    expect(await screen.findByLabelText('Creating org')).toBeInTheDocument();
+    expect(screen.getByText(/creating/i)).toBeInTheDocument();
+    expect(screen.getByText(/setting up the workspace/i)).toBeInTheDocument();
+
+    resolveCreate({ slug: 'good-slug' });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: /good-slug.*is ready/i }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole('button', { name: /enter good-slug/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('createOrg posts the exact slug from the contract', async () => {
     const user = userEvent.setup();
     const spy = vi
       .spyOn(orgsApi, 'createOrg')
@@ -77,14 +112,6 @@ describe('OnboardingPage', () => {
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith({ slug: 'good-slug' }),
     );
-    await waitFor(() =>
-      expect(
-        screen.getByRole('heading', { name: /organization created/i }),
-      ).toBeInTheDocument(),
-    );
-    expect(
-      screen.getByRole('button', { name: /enter good-slug/i }),
-    ).toBeInTheDocument();
   });
 
   test('surfaces 409 org_exists inline without leaving the create step', async () => {
@@ -103,11 +130,17 @@ describe('OnboardingPage', () => {
     );
     // Still on the create step (success heading never rendered).
     expect(
-      screen.queryByRole('heading', { name: /organization created/i }),
+      screen.queryByRole('heading', { name: /is ready/i }),
     ).not.toBeInTheDocument();
   });
 
-  test('broken orgs render read-only with their error and NO retry action', async () => {
+  test('broken orgs render read-only with their error, Copy-error, and NO retry', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
     vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({
       orgs: [],
       broken: [{ slug: 'busted-org', error: 'agents/ dir missing' }],
@@ -118,28 +151,48 @@ describe('OnboardingPage', () => {
       expect(screen.getByText('busted-org')).toBeInTheDocument(),
     );
     expect(screen.getByText(/agents\/ dir missing/i)).toBeInTheDocument();
+    // The reassuring framing is preserved.
+    expect(screen.getByText(/don.t block you/i)).toBeInTheDocument();
     // Retry is founder-gated (G12) — it must not be fabricated here.
     expect(
       screen.queryByRole('button', { name: /retry/i }),
     ).not.toBeInTheDocument();
+
+    // Copy-error copies the raw error string and confirms.
+    const copyBtn = screen.getByRole('button', { name: /copy error/i });
+    await user.click(copyBtn);
+    expect(writeText).toHaveBeenCalledWith('agents/ dir missing');
+    expect(await screen.findByText(/copied/i)).toBeInTheDocument();
   });
 
-  test('executor prereqs — all present shows compact success line', async () => {
+  test('executor prereqs — checking affordance while the query is pending', async () => {
+    const user = userEvent.setup();
+    // Never resolves — the panel stays in its checking state.
+    vi.spyOn(healthApi, 'getPrereqs').mockReturnValue(new Promise(() => {}));
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /create your first org/i }));
+
+    expect(
+      await screen.findByText(/checking host tools/i),
+    ).toBeInTheDocument();
+  });
+
+  test('executor prereqs — all present shows the X-of-Y summary and resolved paths', async () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     await waitFor(() =>
-      expect(
-        screen.getByLabelText('Executor readiness'),
-      ).toBeInTheDocument(),
+      expect(screen.getByLabelText('Executor readiness')).toBeInTheDocument(),
     );
-    expect(
-      screen.getByText(/all executor clis found on path/i),
-    ).toBeInTheDocument();
+    // FE-computed summary from the real array.
+    expect(screen.getByText(/4 of 4/)).toBeInTheDocument();
+    expect(screen.getByText(/tools present/)).toBeInTheDocument();
+    // Resolved path is rendered (backend-real, previously unrendered).
+    expect(screen.getByText('/usr/bin/claude')).toBeInTheDocument();
   });
 
-  test('executor prereqs — missing executors show warning panel with hint', async () => {
+  test('executor prereqs — missing executors show the hint and a missing pill', async () => {
     const user = userEvent.setup();
     vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
       prereqs: [
@@ -151,16 +204,16 @@ describe('OnboardingPage', () => {
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
     await waitFor(() =>
-      expect(
-        screen.getByLabelText('Executor readiness'),
-      ).toBeInTheDocument(),
+      expect(screen.getByLabelText('Executor readiness')).toBeInTheDocument(),
     );
-    // Absence surfaced with the hint.
+    // Summary reflects the partial count.
+    expect(screen.getByText(/1 of 2/)).toBeInTheDocument();
+    // Absence surfaced with the hint + a missing pill.
     expect(screen.getByText(/Install Pi/)).toBeInTheDocument();
-    // Panel header shows missing count.
-    expect(screen.getByText(/1 missing/)).toBeInTheDocument();
-    // The present executor still shows.
-    expect(screen.getByText(/claude/)).toBeInTheDocument();
+    expect(screen.getByText('missing')).toBeInTheDocument();
+    // The present executor still shows, with its pill.
+    expect(screen.getByText('claude')).toBeInTheDocument();
+    expect(screen.getByText('present')).toBeInTheDocument();
   });
 
   test('executor prereqs — query error is silent (no panel rendered)', async () => {
@@ -169,11 +222,16 @@ describe('OnboardingPage', () => {
     renderPage();
     await user.click(screen.getByRole('button', { name: /create your first org/i }));
 
-    // The panel is absent — this is a silent degradation.
-    await waitFor(() => {
-      expect(
-        screen.queryByLabelText('Executor readiness'),
-      ).not.toBeInTheDocument();
-    });
+    // The panel is absent once the query settles into error — a silent
+    // degradation. The interim `checking` affordance clears after the
+    // panel's single retry (~1s retryDelay), so allow for that window.
+    await waitFor(
+      () => {
+        expect(
+          screen.queryByLabelText('Executor readiness'),
+        ).not.toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
   });
 });
