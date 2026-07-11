@@ -608,14 +608,18 @@ async def resolve_escalation_in_process(
             note_suffix = f"resolved by {actor}" + (f" via thread {thread_id}" if thread_id else "")
             if trimmed:
                 note_suffix += f" — {trimmed}"
-            _supersede_predecessor_locked(
+            # Canonical supersede tail: closes predecessor + revisit family,
+            # wakes parents, emits thread followups (THR-080 #4).
+            # Replaces the old manual _supersede_predecessor_locked + tail.
+            _close_predecessor_family_and_run_tail(
                 org, audit,
-                predecessor_id=task_id,
+                predecessor=task,
                 successor_root=successor_id,
-                prior_block_kind=pred_block_kind,
+                pred_block_kind=pred_block_kind,
                 actor=actor,
                 note_suffix=note_suffix,
                 thread_id=thread_id,
+                close_revisit_family=True,
             )
             # Also log escalation_resolved for the audit trail.
             audit.log_escalation_resolved(
@@ -625,15 +629,14 @@ async def resolve_escalation_in_process(
                 actor=actor,
                 thread_id=thread_id,
             )
-            # Best-effort: consume open notification rows.
+            # Best-effort: consume any open notification rows not already
+            # consumed by _supersede_predecessor_locked inside the helper.
             for nrow in org.db.list_open_notifications_for_task(task_id):
                 org.db.consume_escalation_notification(
                     nrow["feishu_message_id"], consumed_by="superseded",
                 )
-        # Supersede tail (outside the lock): predecessor is terminal.
-        _enqueue_parent_if_waiting(org.orchestrator, task_id)
+        # Post-tail specifics: kill jobs and enqueue the successor.
         _kill_jobs_for_terminating_task(org.orchestrator, task_id)
-        # Enqueue the successor.
         if state.queue is not None:
             state.queue.put_nowait(org.slug, successor_id)
         return TaskStatus.SUPERSEDED.value
@@ -871,6 +874,83 @@ def _supersede_predecessor_locked(
         org.db.consume_escalation_notification(
             nrow["feishu_message_id"], consumed_by="superseded",
         )
+
+
+def _close_predecessor_family_and_run_tail(
+    org,
+    audit,
+    *,
+    predecessor: TaskRecord,
+    successor_root: str,
+    pred_block_kind: str,
+    actor: str,
+    note_suffix: str | None = None,
+    thread_id: str | None = None,
+    close_revisit_family: bool = True,
+) -> list[str]:
+    """Close predecessor (+ optionally revisit family), wake parents, emit
+    thread followups.
+
+    Canonical supersede tail shared by resolve_escalation_in_process and the
+    thread-dispatch {resolves:} path so the two surfaces cannot drift
+    (THR-080 #4).  Caller MUST hold ``org.db_lock`` for the
+    ``_supersede_predecessor_locked`` calls.  The tail operations
+    (``_enqueue_parent_if_waiting``, ``_maybe_post_thread_followup``) are
+    safe under or outside the lock.
+
+    Returns the list of revisit-family task ids that were also closed.
+    """
+    from runtime.orchestrator.run_step import (
+        _enqueue_parent_if_waiting,
+        _maybe_post_thread_followup,
+    )
+
+    # Close predecessor.
+    _supersede_predecessor_locked(
+        org, audit,
+        predecessor_id=predecessor.id,
+        successor_root=successor_root,
+        prior_block_kind=pred_block_kind,
+        actor=actor,
+        note_suffix=note_suffix,
+        thread_id=thread_id,
+    )
+
+    # Optionally close the revisit family.
+    family_closed: list[str] = []
+    if close_revisit_family:
+        for family_task in _collect_eligible_revisit_family(
+            org,
+            explicit_predecessor_id=predecessor.id,
+            successor_root=successor_root,
+        ):
+            family_block_kind = _eligible_supersede_block_kind(org, family_task)
+            _supersede_predecessor_locked(
+                org, audit,
+                predecessor_id=family_task.id,
+                successor_root=successor_root,
+                prior_block_kind=family_block_kind,
+                actor=actor,
+                note_suffix=note_suffix,
+                thread_id=thread_id,
+            )
+            family_closed.append(family_task.id)
+
+    # Tail: wake parents and emit thread followups for thread-originated
+    # predecessors (the missing followup in THR-080 #3).
+    _enqueue_parent_if_waiting(org.orchestrator, predecessor.id)
+    _maybe_post_thread_followup(
+        org.orchestrator, predecessor.id,
+        status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
+    )
+    for family_task_id in family_closed:
+        _enqueue_parent_if_waiting(org.orchestrator, family_task_id)
+        _maybe_post_thread_followup(
+            org.orchestrator, family_task_id,
+            status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
+        )
+
+    return family_closed
 
 
 def _collect_eligible_revisit_family(

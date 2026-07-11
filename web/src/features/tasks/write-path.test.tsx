@@ -331,7 +331,7 @@ describe('Tasks write path', () => {
       ).toBeNull();
     });
 
-    expect(resolveBody).toEqual({ decision: 'continue', rationale: 'go ahead' });
+    expect(resolveBody).toEqual({ decision: 'continue', rationale: 'go ahead', brief: '' });
   });
 
   test('revisits a failed task with a note', async () => {

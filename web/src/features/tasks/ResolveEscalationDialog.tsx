@@ -38,8 +38,8 @@ export function ResolveEscalationDialog({
   const onSubmit = async () => {
     setError(null);
     try {
-      const body: { decision: string; rationale: string; brief?: string } = {
-        decision: intent,
+      const body: { decision: 'supersede' | 'continue'; rationale: string; brief?: string } = {
+        decision: intent as 'supersede' | 'continue',
         rationale,
       };
       // For supersede, the rationale textarea content is the brief.
