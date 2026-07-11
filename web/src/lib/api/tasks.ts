@@ -51,11 +51,11 @@ export const recallTask = (
 export const resolveEscalation = (
   slug: string,
   taskId: string,
-  body: { decision: 'continue' | 'cancel'; rationale?: string },
+  body: { decision: 'supersede' | 'continue'; rationale?: string; brief?: string },
 ): Promise<Record<string, unknown>> =>
   request(`/orgs/${slug}/tasks/${taskId}/resolve-escalation`, {
     method: 'POST',
-    body: { ...body, rationale: body.rationale ?? '' },
+    body: { ...body, rationale: body.rationale ?? '', brief: body.brief ?? '' },
   });
 
 export const revisitTask = (

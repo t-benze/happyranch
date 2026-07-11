@@ -1709,6 +1709,99 @@ async def dispatch_from_thread_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# THR-080 — POST /threads/{id}/resolve-escalation (thread-reachable resolution)
+# ---------------------------------------------------------------------------
+
+
+class ThreadResolveEscalationBody(BaseModel):
+    task_id: str
+    decision: str  # "supersede" | "continue"
+    rationale: str = ""
+    # For supersede: the brief for the successor task.
+    brief: str = ""
+    # Caller-declared actor for attribution.
+    actor: str | None = None
+
+
+@router.post("/threads/{thread_id}/resolve-escalation")
+async def resolve_escalation_from_thread(
+    slug: str, thread_id: str, body: ThreadResolveEscalationBody,
+    org: OrgDep, request: Request,
+) -> dict:
+    """Resolve an escalated task from the thread surface.
+
+    Delegates to the shared resolve_escalation_in_process primitive.
+    Makes `continue` reachable from the thread surface (THR-080 Option A).
+    Supersede from the thread surface is now the canonical path; the
+    dispatch {resolves:} supersede is a legacy shorthand that still works.
+
+    Fail-closed gating (memo §3): the task must be in THIS thread's lineage.
+    Manager/founder authority is required.
+    """
+    state: DaemonState = request.app.state.daemon
+    actor = (body.actor or "").strip() or "founder"
+
+    # Load thread and validate it's open.
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "thread_not_found"})
+
+    if body.decision not in ("supersede", "continue"):
+        raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
+
+    # Validate the target task exists and is in this thread's lineage.
+    from runtime.daemon.routes.tasks import resolve_escalation_in_process
+    task = org.db.get_task(body.task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail={"code": "task_not_found"})
+
+    # Thread-lineage check: the task must either be dispatched from this
+    # thread or have an ancestor dispatched from this thread.
+    in_lineage = _task_in_thread_lineage(org, body.task_id, thread_id)
+    if not in_lineage:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "task_not_in_thread_lineage",
+                "task_id": body.task_id,
+                "thread_id": thread_id,
+            },
+        )
+
+    new_status = await resolve_escalation_in_process(
+        org, state,
+        task_id=body.task_id,
+        decision=body.decision,
+        rationale=body.rationale,
+        brief=body.brief,
+        actor=actor,
+        thread_id=thread_id,
+    )
+    return {"ok": True, "task_id": body.task_id, "new_status": new_status}
+
+
+def _task_in_thread_lineage(org, task_id: str, thread_id: str) -> bool:
+    """True if task_id is dispatched from thread_id, or has an ancestor
+    that was dispatched from thread_id."""
+    # Direct match.
+    task = org.db.get_task(task_id)
+    if task is None:
+        return False
+    if task.dispatched_from_thread_id == thread_id:
+        return True
+    # Walk up the parent chain.
+    current_id = task.parent_task_id
+    while current_id:
+        current = org.db.get_task(current_id)
+        if current is None:
+            break
+        if current.dispatched_from_thread_id == thread_id:
+            return True
+        current_id = current.parent_task_id
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Task 24 — POST /threads/{id}/send (founder follow-up)
 # ---------------------------------------------------------------------------
 

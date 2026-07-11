@@ -147,7 +147,17 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="novel", severity="medium", summary="...")` with its best assessment and a recommendation.
 **Task state**: Moves to `waiting_for_guidance`.
 **Orchestrator action**: Routes to founder. The agent's recommendation is included so the founder can often just approve/deny rather than research from scratch.
-**Resolution**: Founder runs `happyranch resolve-escalation --decision continue` (to resume the work) or `--decision cancel` (to terminate it) to clear the task and — when the ruling should bind future occurrences — writes a KB entry via `happyranch kb add` (with `source_task: <task-id>` in frontmatter) so the next agent finds the answer without re-escalating.
+**Resolution**: The unified `resolve-escalation` verb offers two decisions:
+`supersede` (mint a successor task from a provided brief, close the
+predecessor as `superseded`) or `continue` (re-enqueue the same task to
+pending). Continue is reachable from both the task surface
+(`POST /tasks/{id}/resolve-escalation`) and the thread surface
+(`POST /threads/{id}/resolve-escalation`). Cancel is NOT part of the
+resolution vocabulary — cancelling an escalated task uses the normal
+`POST /tasks/{id}/cancel` route. When the ruling should bind future
+occurrences, the founder writes a KB entry via `happyranch kb add` (with
+`source_task: <task-id>` in frontmatter) so the next agent finds the
+answer without re-escalating.
 
 ### Task state machine
 
@@ -332,10 +342,11 @@ pending → (run_step pickup) → in_progress → { completed | failed | cancell
 
 in_progress(delegated) → (all children terminal) → in_progress (re-entry, block_kind cleared on claim)
 in_progress(blocked_on_job) → (all blocking jobs reach terminal state; _maybe_resume_blocked_task enqueues while the row stays in_progress) → in_progress (run_step CAS admits exactly one on pickup, clearing block_kind)
-escalated → (POST /resolve-escalation continue) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
-escalated → (POST /resolve-escalation cancel)  → cancelled (deliberate founder stop; notifies parent and kills owned jobs — parity with old reject path, but terminal status is CANCELLED not FAILED)
-escalated | in_progress(delegated) → (revisit / thread-dispatch names it in lineage) → resolved_superseded (terminal; block_kind cleared, audit cites the continuation root task_id; NO re-enqueue. The delegated close is gated on all children being terminal and never cascade-SIGTERMs live siblings)
+escalated → (POST /resolve-escalation continue) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the rationale; also reachable from the thread surface via POST /threads/{id}/resolve-escalation)
+escalated → (POST /resolve-escalation supersede) → superseded (mints a successor task from the provided brief; closes the predecessor as terminal; audit cites the successor root; NO re-enqueue of predecessor)
+escalated | in_progress(delegated) → (revisit / thread-dispatch names it in lineage) → superseded (terminal; block_kind cleared, audit cites the continuation root task_id; NO re-enqueue. The delegated close is gated on all children being terminal and never cascade-SIGTERMs live siblings)
 escalated → (POST /resolve-escalation continue on exhaustion escalation) → pending (re-enqueued; parent carries the exhaustion context + failure reason from the failed subtask — manager can re-ground and re-delegate)
+escalated → (POST /cancel) → cancelled (cancel is NOT part of the resolve-escalation vocabulary; cancelling an escalated task uses the normal cancel route — parity preserved with job-cleanup + parent-notify)
 (any non-terminal) → (founder cancel) → cancelled
 ```
 

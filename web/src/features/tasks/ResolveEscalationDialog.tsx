@@ -15,14 +15,14 @@ interface Props {
   taskId: string;
   onClose: () => void;
   /**
-   * Which escalation-resolution decision this dialog drives. BOTH decisions
-   * POST to /tasks/{id}/resolve-escalation via useResolveEscalation (THR-075),
-   * NOT the generic /cancel route: 'continue' resumes the task → pending and
-   * REQUIRES a rationale; 'cancel' terminates the escalated task → cancelled
-   * with an OPTIONAL rationale (consumes the Feishu escalation notification and
-   * writes the escalation-resolved audit row). Defaults to 'continue'.
+   * Which escalation-resolution decision this dialog drives.
+   * 'continue' resumes the task → pending and REQUIRES a rationale.
+   * 'supersede' mints a successor task with a brief and closes the
+   * predecessor as superseded (THR-080). Cancel is NOT part of the
+   * resolution vocabulary — use the generic /cancel route for that.
+   * Defaults to 'continue'.
    */
-  intent?: 'continue' | 'cancel';
+  intent?: 'supersede' | 'continue';
 }
 
 export function ResolveEscalationDialog({
@@ -38,7 +38,15 @@ export function ResolveEscalationDialog({
   const onSubmit = async () => {
     setError(null);
     try {
-      await resolve.mutateAsync({ decision: intent, rationale });
+      const body: { decision: string; rationale: string; brief?: string } = {
+        decision: intent,
+        rationale,
+      };
+      // For supersede, the rationale textarea content is the brief.
+      if (!isContinue) {
+        body.brief = rationale;
+      }
+      await resolve.mutateAsync(body);
       onClose();
     } catch (e: unknown) {
       const code = (e as { code?: string }).code;
@@ -46,16 +54,16 @@ export function ResolveEscalationDialog({
     }
   };
 
-  const rationaleEmpty = rationale.trim() === '';
-  // Continue requires a rationale; cancel does not.
-  const submitDisabled = (isContinue && rationaleEmpty) || resolve.isPending;
+  const textEmpty = rationale.trim() === '';
+  // Both continue and supersede require the textarea content.
+  const submitDisabled = textEmpty || resolve.isPending;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {isContinue ? 'Continue task' : 'Cancel escalated task'}
+            {isContinue ? 'Continue task' : 'Supersede task'}
           </DialogTitle>
         </DialogHeader>
         <Textarea
@@ -63,7 +71,7 @@ export function ResolveEscalationDialog({
           onChange={(e) => setRationale(e.target.value)}
           rows={4}
           placeholder={
-            isContinue ? 'Rationale (required)' : 'Rationale (optional)'
+            isContinue ? 'Rationale (required)' : 'Successor task brief (required)'
           }
         />
         {error && <p className="text-danger text-sm">{error}</p>}
@@ -77,8 +85,8 @@ export function ResolveEscalationDialog({
                 ? 'Continuing…'
                 : 'Continue task'
               : resolve.isPending
-                ? 'Cancelling…'
-                : 'Cancel task'}
+                ? 'Superseding…'
+                : 'Supersede task'}
           </Button>
         </DialogFooter>
       </DialogContent>

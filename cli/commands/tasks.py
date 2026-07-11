@@ -1029,7 +1029,7 @@ def register(sub) -> None:
     p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task (founder only)")
     p_resolve.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_resolve.add_argument("--task-id", required=True)
-    p_resolve.add_argument("--decision", required=True, choices=["continue", "cancel"])
+    p_resolve.add_argument("--decision", required=True, choices=["supersede", "continue"])
     p_resolve.add_argument("--rationale", default="")
     p_resolve.set_defaults(func=cmd_resolve_escalation)
 
