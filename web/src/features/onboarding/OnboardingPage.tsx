@@ -555,22 +555,23 @@ function ExecutorPrereqPanel(): JSX.Element | null {
 
   const presentCount = prereqs.filter((p) => p.present).length;
   const total = prereqs.length;
-  const allPresent = presentCount === total;
+  // Fresh runtime with zero registered is expected — not a blocking state.
+  const hasAnyRegistered = presentCount > 0;
 
   return (
     <section
       aria-label="Executor readiness"
       className="border-border-default bg-surface mt-4 rounded-md border p-3"
     >
-      {/* FE-computed 'X of Y tools present' summary — real data, no fabrication. */}
+      {/* FE-computed 'X of Y tools registered' summary — real data, no fabrication. */}
       <div
         className={`flex items-center gap-1.5 rounded-md px-2.5 py-2 text-xs ${
-          allPresent
+          hasAnyRegistered
             ? 'text-feedback-success bg-feedback-success/10'
             : 'text-text-secondary bg-surface-sunken'
         }`}
       >
-        {allPresent ? (
+        {hasAnyRegistered ? (
           <Check
             aria-hidden="true"
             size={14}
@@ -583,7 +584,7 @@ function ExecutorPrereqPanel(): JSX.Element | null {
           <span className="text-text-primary font-medium">
             {presentCount} of {total}
           </span>{' '}
-          tools present
+          tools registered
         </span>
       </div>
 
@@ -596,7 +597,7 @@ function ExecutorPrereqPanel(): JSX.Element | null {
   );
 }
 
-/** One executor row: icon + name + path/hint + present/missing pill. */
+/** One executor row: icon + name + path/hint + registered/not-registered pill. */
 function PrereqRow({ prereq }: { prereq: ExecutorPrereq }): JSX.Element {
   const { tool, present, path, hint } = prereq;
   return (
@@ -613,15 +614,15 @@ function PrereqRow({ prereq }: { prereq: ExecutorPrereq }): JSX.Element {
       </span>
       <div className="min-w-0 flex-1">
         <p className="text-text-primary font-mono text-xs font-medium">{tool}</p>
-        {/* Render the resolved path when present; the install hint when not.
+        {/* Render the registered path when connected; the hint when not.
             No `version` — the backend model does not return one. */}
         {present ? (
           <p className="text-text-muted text-caption truncate font-mono">
-            {path ?? 'on PATH'}
+            {path ?? 'connected'}
           </p>
         ) : (
           <p className="text-text-secondary text-caption leading-snug">
-            Not found on PATH. {hint}
+            Not registered. {hint}
           </p>
         )}
       </div>
@@ -632,7 +633,7 @@ function PrereqRow({ prereq }: { prereq: ExecutorPrereq }): JSX.Element {
             : 'text-feedback-danger bg-tier-red-tint'
         }`}
       >
-        {present ? 'present' : 'missing'}
+        {present ? 'registered' : 'not registered'}
       </span>
     </li>
   );
