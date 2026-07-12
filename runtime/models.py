@@ -123,6 +123,12 @@ class TaskRecord(BaseModel):
     # match. NULL for tasks that predate the column or that haven't reached
     # _on_started yet. Internal signal — not serialized to API responses.
     current_session_id: str | None = None
+    # Timestamp of the FIRST zombie detection for the ongoing zombie reaper
+    # (THR-090 Track B). Set when a zombie predicate matches; used for
+    # flag-then-cancel-on-TTL. Cleared (set to NULL) if the task recovers
+    # before the TTL expires. NULL default — never been flagged. Internal
+    # signal — not serialized to API responses.
+    zombie_flagged_at: datetime | None = None
 
 
 class ChainLeg(BaseModel):

@@ -364,6 +364,68 @@ NOTE: `os.kill(pid, 0)` carries a pid-recycle caveat — a recycled pid could
 read as falsely-alive. A falsely-alive false-positive is acceptable relative
 to the risk of duplicate runs from a false-negative.
 
+#### Ongoing zombie reaper (THR-090 Track B)
+
+The daemon runs a periodic zombie reaper loop (``zombie_reaper_loop``,
+registered in ``runtime/daemon/app.py``'s lifespan alongside the dream and
+work-hours scheduler tasks) that sweeps ``in_progress`` tasks while the daemon
+stays alive. It catches a session that silently dies mid-flight (dead process,
+no completion callback) and leaves its task stranded ``in_progress``. This is
+the complement to the one-shot boot sweep (§Daemon restart recovery): the boot
+sweep handles restart-time recovery; the ongoing reaper handles the mid-flight
+death case.
+
+**Predicate (AND-gate, founder-approved — THR-090 seq12).** ALL of the
+following must hold for a task to even be considered:
+
+1. ``status == in_progress`` **and** ``block_kind IS NULL`` — state allowlist
+   (requirement 3). Never touch a healthy ``in_progress`` (fresh heartbeat),
+   nor any blocked/terminal task. Allowlist, not blocklist.
+2. ``last_heartbeat`` is stale — older than ``2 × HEARTBEAT_INTERVAL_SECONDS``
+   (60s, i.e. ≥2 missed heartbeat intervals).
+3. ``executor_pid`` probes DEAD via ``os.kill(pid, 0)`` →
+   ``ProcessLookupError``. Alive or indeterminate (``PermissionError``, ``None``
+   pid) → not a zombie.
+
+**Warm-up grace (requirement 1).** The reaper does NOT trust staleness until
+the daemon has been up ≥ ``HEARTBEAT_INTERVAL_SECONDS`` (30s post-boot). This
+prevents false-reaping freshly-spawned sessions whose heartbeat hasn't been
+stamped yet after a boot.
+
+**Fingerprint-tiered confidence (requirement 2).** The reaper checks for an
+unconsumed ``task_result`` row from the current session via
+``get_latest_task_result(task_id, agent, current_session_id)``:
+
+| Fingerprint | Confidence | TTL after flag | Action on expiry |
+|---|---|---|---|
+| **Present** — task_result row found | HIGH — the agent definitely completed | 1 × HEARTBEAT_INTERVAL (30s) | **Consume/honor** the result via ``_consume_completion_report`` (do NOT cancel). This is the Track A consume case; the ongoing reaper applies the same consumption path for mid-flight discoveries. |
+| **Absent** — no task_result row | LOW — cancel-on-TTL is an inference | 5 × HEARTBEAT_INTERVAL (150s) | **Cancel** via the existing ``cancelled`` status transition. |
+
+**Action = flag-then-cancel-on-TTL.** On first detection the reaper FLAGS
+the task by persisting ``zombie_flagged_at`` (an additive ``TEXT`` column with
+NULL default) and emits a ``zombie_flagged`` audit row. It does NOT cancel.
+On a later sweep, only if the task is STILL a zombie AND ``flagged_at ≥ TTL``
+ago, the reaper takes action (per the fingerprint-tiered table above).
+
+**No auto-revisit (THR-079 ruling).** Neither the cancel path nor the
+consumption path spawns an auto-revisit. The founder receives an audit row
+and decides whether to re-dispatch.
+
+**Recovery.** If a flagged task recovers before TTL expiry (heartbeat
+refreshes, pid becomes alive, or a result appears), the flag is CLEARED
+(``zombie_flagged_at`` set to NULL) and a ``zombie_cleared`` audit row is
+emitted. No cancel occurs.
+
+**Loss function (requirement 4).** Err toward a MISS, NEVER a false-reap.
+When uncertain — indeterminate pid probe, missing heartbeat, no executor_pid —
+the reaper leaves the task alone. It extends the TTL and re-flags rather than
+cancelling on ambiguity.
+
+**Schema (additive-only).** One new nullable column: ``tasks.zombie_flagged_at
+TEXT`` (NULL default). No new ``TaskStatus``, ``block_kind``, or overload of
+any existing column — all founder-gated. Flagged via ``zombie_flagged_at``;
+cancel = the existing ``cancelled`` transition.
+
 #### Transitions
 
 ```

@@ -165,6 +165,9 @@ async def _lifespan(app: FastAPI):
     ]
     work_hours_scheduler_task = asyncio.create_task(work_hours_scheduler_loop(state))
 
+    from runtime.daemon.zombie_reaper import zombie_reaper_loop
+    zombie_reaper_task = asyncio.create_task(zombie_reaper_loop(state))
+
     try:
         yield
     finally:
@@ -176,6 +179,7 @@ async def _lifespan(app: FastAPI):
         work_hours_scheduler_task.cancel()
         for t in wake_worker_tasks:
             t.cancel()
+        zombie_reaper_task.cancel()
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
         await state.queue.stop()
