@@ -116,6 +116,13 @@ class TaskRecord(BaseModel):
     # the column or that haven't reached _on_started yet. Internal signal —
     # not serialized to API responses.
     executor_pid: int | None = None
+    # Session id of the CURRENT live subprocess, persisted at session start
+    # alongside executor_pid. Used by the daemon-restart sweep (THR-090 Track A)
+    # to scope orphaned-result detection to the current session only — a
+    # prior-step result row carries a different session uuid and must never
+    # match. NULL for tasks that predate the column or that haven't reached
+    # _on_started yet. Internal signal — not serialized to API responses.
+    current_session_id: str | None = None
 
 
 class ChainLeg(BaseModel):
