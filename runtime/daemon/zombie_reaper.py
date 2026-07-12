@@ -156,7 +156,26 @@ def _sweep_org_zombies(
             db.update_task(task_id, zombie_flagged_at=now.isoformat())
             audit.log_zombie_flagged(task_id, agent)
         else:
-            # ── ALREADY FLAGGED: check TTL ──
+            # ── ALREADY FLAGGED ──
+            # If a task_result fingerprint appears on an already-flagged zombie,
+            # treat it as recovery IMMEDIATELY (protocol/05c recovery clause).
+            # A real result is never a false-reap — honoring it immediately is
+            # the safe direction (founder-approved loss function, THR-090 seq12).
+            # Design note: merely clearing zombie_flagged_at without consuming
+            # would re-flag next tick (task still in_progress + stale-hb +
+            # dead-pid), so clear MUST be paired with consumption.
+            if fingerprint is not None:
+                if orchestrator is not None:
+                    _consume_zombie_fingerprint(
+                        db, task_id, fingerprint, t, orchestrator,
+                    )
+                    # Consumption moves the task terminal; clear the flag.
+                    db.update_task(task_id, zombie_flagged_at=None)
+                    audit.log_zombie_cleared(task_id, agent)
+                # No orchestrator (unit-test context): leave flagged, retry
+                # next sweep when orchestrator is present.
+                continue
+            # No fingerprint — check TTL for cancel.
             # zombie_flagged_at is parsed from TEXT column by Pydantic.
             # It may be a datetime object or a string.
             flag_time: datetime
@@ -165,39 +184,23 @@ def _sweep_org_zombies(
             else:
                 flag_time = datetime.fromisoformat(t.zombie_flagged_at)
             if (now - flag_time).total_seconds() >= ttl:
-                # TTL expired — take action
-                if fingerprint is not None:
-                    # Tier 1: task_result fingerprint present.
-                    # The agent DID complete → honor the result (do NOT cancel).
-                    # Err toward honoring — never cancel a task that produced
-                    # a result (seq10 loss-function principle).
-                    if orchestrator is not None:
-                        _consume_zombie_fingerprint(
-                            db, task_id, fingerprint, t, orchestrator,
-                        )
-                    else:
-                        # No orchestrator available (unit test context):
-                        # leave flagged, do NOT cancel. The daemon loop will
-                        # catch it next tick with an orchestrator.
-                        pass
-                else:
-                    # Tier 2: no fingerprint — cancel.
-                    # THR-079 ruling: no auto-revisit. Cancel via the existing
-                    # cancelled status transition, routed through shared
-                    # terminal side-effects so a delegated parent parked on
-                    # this child is woken (code_reviewer FIX 1).
-                    db.update_task(
-                        task_id,
-                        status=TaskStatus.CANCELLED,
-                        cancelled_at=now.isoformat(),
-                        completed_at=now.isoformat(),
-                        block_kind=None,
-                        note="zombie reaped: session died without completing",
-                    )
-                    audit.log_zombie_cancelled(task_id, agent)
-                    if orchestrator is not None:
-                        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
-                        _enqueue_parent_if_waiting(orchestrator, task_id)
+                # TTL expired — cancel.
+                # THR-079 ruling: no auto-revisit. Cancel via the existing
+                # cancelled status transition, routed through shared
+                # terminal side-effects so a delegated parent parked on
+                # this child is woken (code_reviewer FIX 2).
+                db.update_task(
+                    task_id,
+                    status=TaskStatus.CANCELLED,
+                    cancelled_at=now.isoformat(),
+                    completed_at=now.isoformat(),
+                    block_kind=None,
+                    note="zombie reaped: session died without completing",
+                )
+                audit.log_zombie_cancelled(task_id, agent)
+                if orchestrator is not None:
+                    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+                    _enqueue_parent_if_waiting(orchestrator, task_id)
 
 
 # ---------------------------------------------------------------------------

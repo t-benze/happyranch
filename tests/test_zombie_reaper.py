@@ -363,7 +363,62 @@ def test_permission_error_pid_probe_not_flagged(db: Database):
 
 
 # ---------------------------------------------------------------------------
-# FIX 1: parent-wake on Tier-2 zombie cancel
+# FIX 1 (Finding 1 HIGH): flagged zombie + fingerprint before TTL → cleared immediately
+# ---------------------------------------------------------------------------
+
+def test_flagged_zombie_with_fingerprint_cleared_immediately_before_ttl(db: Database):
+    """Finding 1 (HIGH): flagged task + fingerprint appearing before TTL →
+    consumed immediately (no TTL wait), flag cleared, zombie_cleared audit emitted.
+
+    Per protocol/05c recovery clause: 'or a result appears' triggers immediate
+    flag clearing. Merely NULL-ing zombie_flagged_at without consuming would
+    re-flag next tick, so the clear is paired with fingerprint consumption.
+    """
+    task_id = "T-FP-IMMEDIATE"
+    agent = "dev_agent"
+    session_id = "sess-fp-imm"
+
+    # Flag the zombie RECENTLY — well within the 30s fingerprint TTL.
+    flag_time = _ago(10)
+    _insert_zombie_candidate(
+        db, task_id, last_heartbeat=_stale_hb(),
+        executor_pid=ZOMBIE_PID,
+        zombie_flagged_at=flag_time,
+        current_session_id=session_id,
+        assigned_agent=agent,
+    )
+    # Insert a task_result fingerprint.
+    _insert_task_result(db, task_id, agent, session_id, status="completed")
+
+    # Mock orchestrator with real db.
+    mock_orch = MagicMock()
+    mock_orch._db = db
+
+    with patch(
+        "runtime.orchestrator.run_step._consume_completion_report"
+    ) as mock_consume:
+        _sweep_org_zombies(
+            db, now=_now(), uptime=999, warm_up_seconds=30,
+            orchestrator=mock_orch,
+        )
+        # The fingerprint should be consumed immediately (no TTL wait).
+        mock_consume.assert_called_once()
+
+    # Flag must be cleared.
+    t = db.get_task(task_id)
+    assert t.zombie_flagged_at is None, (
+        "flag should be cleared on fingerprint recovery"
+    )
+
+    # zombie_cleared audit must be emitted.
+    actions = [r["action"] for r in db.get_audit_logs(task_id)]
+    assert "zombie_cleared" in actions, (
+        "zombie_cleared audit row must be present"
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 (was FIX 1): parent-wake on Tier-2 zombie cancel
 # ---------------------------------------------------------------------------
 
 def test_parent_woken_when_zombie_child_cancelled(db: Database):

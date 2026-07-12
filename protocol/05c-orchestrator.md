@@ -398,14 +398,17 @@ unconsumed ``task_result`` row from the current session via
 
 | Fingerprint | Confidence | TTL after flag | Action on expiry |
 |---|---|---|---|
-| **Present** — task_result row found | HIGH — the agent definitely completed | 1 × HEARTBEAT_INTERVAL (30s) | **Consume/honor** the result via ``_consume_completion_report`` (do NOT cancel). This is the Track A consume case; the ongoing reaper applies the same consumption path for mid-flight discoveries. |
+| **Present** — task_result row found | HIGH — the agent definitely completed | None — consumed/honored immediately on the next sweep (no TTL wait). A real result is never a false-reap. | **Consume/honor** the result via ``_consume_completion_report`` (do NOT cancel). This is the Track A consume case; the ongoing reaper applies the same consumption path for mid-flight discoveries. |
 | **Absent** — no task_result row | LOW — cancel-on-TTL is an inference | 5 × HEARTBEAT_INTERVAL (150s) | **Cancel** via the existing ``cancelled`` status transition. |
 
 **Action = flag-then-cancel-on-TTL.** On first detection the reaper FLAGS
 the task by persisting ``zombie_flagged_at`` (an additive ``TEXT`` column with
 NULL default) and emits a ``zombie_flagged`` audit row. It does NOT cancel.
-On a later sweep, only if the task is STILL a zombie AND ``flagged_at ≥ TTL``
-ago, the reaper takes action (per the fingerprint-tiered table above).
+For the absent-fingerprint tier, on a later sweep, only if the task is STILL
+a zombie AND ``flagged_at ≥ TTL`` (150s) ago, the reaper cancels the task.
+For the present-fingerprint tier, there is no TTL wait — the result is
+consumed/honored immediately on the next sweep after flagging, the flag is
+cleared, and a ``zombie_cleared`` audit row is emitted.
 
 **No auto-revisit (THR-079 ruling).** Neither the cancel path nor the
 consumption path spawns an auto-revisit. The founder receives an audit row
