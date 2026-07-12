@@ -304,8 +304,13 @@ function CreateStep({
     },
     onError: (err: unknown) => {
       const e = err as { code?: string; status?: number; message?: string };
-      if (e.code === 'org_exists' || e.status === 409) {
+      if (e.code === 'org_exists') {
         setServerError(`An org with slug "${slug}" already exists.`);
+      } else if (e.code === 'org_dir_has_data') {
+        setServerError(
+          `A directory for "${slug}" already exists and contains data. ` +
+            'It may be listed under broken orgs. Manual cleanup is required.',
+        );
       } else if (e.code === 'invalid_slug') {
         setServerError('Slug must match ^[a-z0-9-]{1,40}$.');
       } else {

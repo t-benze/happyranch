@@ -1,8 +1,10 @@
 """Cross-org endpoints: list, init, unload."""
 from __future__ import annotations
 
+import logging
 import re
 import shutil
+import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -12,6 +14,8 @@ from runtime.daemon.auth import require_token
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.state import DaemonState
 from runtime.orchestrator._paths import OrgPaths
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -69,6 +73,58 @@ async def list_orgs(request: Request) -> dict:
     }
 
 
+def _is_reclaimable_partial(org_root: Path) -> bool:
+    """Return True ONLY when `org_root` is a pristine runtime-seeded skeleton
+    with zero real org data — safe to `rmtree` without dataloss risk.
+
+    DEFAULT TO FALSE ON ANY DOUBT.
+    """
+    if not org_root.is_dir():
+        return False
+    # 1) No tasks in happyranch.db (or no DB at all).
+    db_path = org_root / "happyranch.db"
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            # The tasks table may not exist if the DB is an empty file or
+            # from a pre-tasks-schema runtime version.
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type='table' AND name='tasks'"
+            )
+            has_tasks_table = cursor.fetchone()[0] == 1
+            if has_tasks_table:
+                cursor = conn.execute("SELECT COUNT(*) FROM tasks")
+                if cursor.fetchone()[0] > 0:
+                    conn.close()
+                    return False
+            conn.close()
+        except Exception:
+            # Can't read the DB — assume it holds data, do NOT touch.
+            return False
+    # 2) agents/ dir holds nothing beyond the seeded _pending skeleton.
+    agents_dir = org_root / "org" / "agents"
+    if agents_dir.is_dir():
+        entries = {p.name for p in agents_dir.iterdir()}
+        extra = entries - {"_pending", ".DS_Store"}
+        if extra:
+            return False
+    # 3) kb/ and artifacts/ are empty (no user content).
+    for sub in ["kb", "artifacts"]:
+        p = org_root / sub
+        if p.is_dir():
+            entries = [e for e in p.iterdir() if e.name != ".DS_Store"]
+            if entries:
+                return False
+    # 4) workspaces/ is empty (no agent workspace data).
+    wsp = org_root / "workspaces"
+    if wsp.is_dir():
+        entries = [e for e in wsp.iterdir() if e.name != ".DS_Store"]
+        if entries:
+            return False
+    return True
+
+
 @router.post("/orgs")
 async def init_org(body: InitOrgBody, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
@@ -78,6 +134,7 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
             status_code=400,
             detail={"code": "invalid_slug", "slug": body.slug},
         )
+    # Healthy loaded org → org_exists (fast path, no dir probe).
     if body.slug in state.orgs:
         raise HTTPException(
             status_code=409,
@@ -85,13 +142,49 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
         )
     org_root = state.runtime.orgs_dir / body.slug
     if org_root.exists():
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "org_dir_exists", "slug": body.slug, "path": str(org_root)},
-        )
+        # The org is not loaded. Two paths:
+        #  a) Pristine skeleton (no real data) → reclaim silently.
+        #  b) Data-bearing dir → protective 409, do NOT touch.
+        if _is_reclaimable_partial(org_root):
+            logger.warning(
+                "init_org: reclaiming stale pristine skeleton for slug %r",
+                body.slug,
+            )
+            shutil.rmtree(org_root)
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "org_dir_has_data",
+                    "slug": body.slug,
+                    "path": str(org_root),
+                    "message": (
+                        "A directory already exists for slug '%s' and contains "
+                        "data that cannot be safely removed. The org may be "
+                        "listed under 'broken' on GET /orgs. Remove the "
+                        "directory manually or fix the org configuration "
+                        "before recreating." % body.slug
+                    ),
+                },
+            )
     from_example = Path(body.from_example).expanduser() if body.from_example else None
-    _seed_skeleton(org_root, from_example=from_example)
-    org = await state.add_org(body.slug)
+    try:
+        _seed_skeleton(org_root, from_example=from_example)
+    except Exception:
+        # _seed_skeleton uses exist_ok=False, so the dir didn't exist before
+        # this call. rollback anything we just created.
+        if org_root.exists():
+            shutil.rmtree(org_root)
+        raise
+    try:
+        org = await state.add_org(body.slug)
+    except Exception:
+        # add_org failed AFTER we seeded the skeleton. Roll back the skeleton
+        # (it was fresh — we 409'd on org_root.exists() above and mkdir uses
+        # exist_ok=False, so we are only removing what THIS call created).
+        if org_root.exists():
+            shutil.rmtree(org_root)
+        raise
     return {"slug": org.slug, "root": str(org.root)}
 
 
