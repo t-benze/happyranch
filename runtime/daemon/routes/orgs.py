@@ -81,20 +81,25 @@ def _is_reclaimable_partial(org_root: Path) -> bool:
     """
     if not org_root.is_dir():
         return False
-    # 1) No tasks in happyranch.db (or no DB at all).
+    # 1) happyranch.db must be empty across ALL durable data tables.
+    #    A single row in any table (audit_log, task_results, jobs, threads,
+    #    kb_views, dreams, memory, etc.) means the dir has real data and
+    #    must NEVER be auto-removed. Default-to-protect: any read error or
+    #    any non-zero row count -> non-reclaimable.
     db_path = org_root / "happyranch.db"
     if db_path.exists():
         try:
             conn = sqlite3.connect(str(db_path))
-            # The tasks table may not exist if the DB is an empty file or
-            # from a pre-tasks-schema runtime version.
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM sqlite_master "
-                "WHERE type='table' AND name='tasks'"
-            )
-            has_tasks_table = cursor.fetchone()[0] == 1
-            if has_tasks_table:
-                cursor = conn.execute("SELECT COUNT(*) FROM tasks")
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+            for (table_name,) in tables:
+                # sqlite_master returns only user-defined tables; internal
+                # tables (sqlite_sequence, etc.) are excluded automatically.
+                # Every durable-data table must have zero rows.
+                cursor = conn.execute(
+                    f'SELECT COUNT(*) FROM "{table_name}"'
+                )
                 if cursor.fetchone()[0] > 0:
                     conn.close()
                     return False

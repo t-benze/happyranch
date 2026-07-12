@@ -323,6 +323,90 @@ async def test_init_org_dir_with_tasks_db_returns_protective_409(
     assert "db-org" not in state.orgs
 
 
+# PART 2b-extra — dir with audit_log row (zero tasks) is protected
+@pytest.mark.asyncio
+async def test_init_org_dir_with_audit_log_row_returns_protective_409(
+    tmp_path: Path, auth
+) -> None:
+    """A dir whose happyranch.db has an audit_log row (and zero task rows)
+    must return the protective 409 'org_dir_has_data' AND the directory
+    REMAINS on disk. This is the regression test for the code_reviewer
+    CRITICAL: _is_reclaimable_partial previously only checked the tasks
+    table, missing other durable non-task tables."""
+    import sqlite3
+    rt = RuntimeDir.init(tmp_path / "rt")
+    state = DaemonState.from_runtime(rt, Settings())
+
+    org_root = rt.orgs_dir / "audit-org"
+    _seed_pristine_skeleton(org_root)
+    db_path = org_root / "happyranch.db"
+    conn = sqlite3.connect(str(db_path))
+    # Create both tables — tasks (empty) + audit_log (populated).
+    conn.execute("CREATE TABLE IF NOT EXISTS tasks (id TEXT, brief TEXT, status TEXT)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS audit_log "
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, agent TEXT, "
+        "action TEXT, payload TEXT, timestamp TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES ('TASK-001', 'dev_agent', 'create', '{}', '2026-07-12T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+    assert org_root.exists()
+    assert "audit-org" not in state.orgs
+
+    client = TestClient(create_app(state))
+    r = client.post("/api/v1/orgs", headers=auth, json={"slug": "audit-org"})
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "org_dir_has_data"
+    # Dir is NOT removed — protect the data.
+    assert org_root.exists()
+    assert "audit-org" not in state.orgs
+
+
+# PART 2b-extra — dir with jobs row (zero tasks) is protected
+@pytest.mark.asyncio
+async def test_init_org_dir_with_jobs_row_returns_protective_409(
+    tmp_path: Path, auth
+) -> None:
+    """A dir whose happyranch.db has a jobs row (and zero task rows)
+    must return the protective 409 'org_dir_has_data'."""
+    import sqlite3
+    rt = RuntimeDir.init(tmp_path / "rt")
+    state = DaemonState.from_runtime(rt, Settings())
+
+    org_root = rt.orgs_dir / "jobs-org"
+    _seed_pristine_skeleton(org_root)
+    db_path = org_root / "happyranch.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE IF NOT EXISTS tasks (id TEXT, brief TEXT, status TEXT)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS jobs "
+        "(id TEXT PRIMARY KEY, task_id TEXT, agent_name TEXT, title TEXT, "
+        "rationale TEXT, script_text TEXT, interpreter TEXT, status TEXT, "
+        "review_required INTEGER, persistent INTEGER, created_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO jobs (id, task_id, agent_name, title, script_text, "
+        "interpreter, status, review_required, persistent, created_at) "
+        "VALUES ('JOB-001', 'TASK-002', 'dev_agent', 'test job', 'echo hi', "
+        "'bash', 'pending', 0, 0, '2026-07-12T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+    assert org_root.exists()
+    assert "jobs-org" not in state.orgs
+
+    client = TestClient(create_app(state))
+    r = client.post("/api/v1/orgs", headers=auth, json={"slug": "jobs-org"})
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "org_dir_has_data"
+    assert org_root.exists()
+    assert "jobs-org" not in state.orgs
+
+
 # PART 2b-extra — dir with empty DB (no tasks) is reclaimable
 @pytest.mark.asyncio
 async def test_init_org_dir_with_empty_db_is_reclaimable(
