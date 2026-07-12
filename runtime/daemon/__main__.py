@@ -123,10 +123,51 @@ def _sweep_on_startup(
                 # its work and report back normally.
                 continue
 
-            # Dead or undeterminable: fail-closed. No auto-revisit spawn —
-            # the THR-079 ruling supersedes the earlier heartbeat/revisit
-            # approach. The founder receives a daemon_restart_failure audit
-            # row and decides whether to re-dispatch.
+            # THR-090 Track A: before failing a dead-pid task, check for an
+            # unconsumed task_result row (the definitive TASK-2625 fingerprint:
+            # a completion callback that landed after the daemon died). If one
+            # exists, consume it by re-entering the existing report-processing
+            # tail — the transition the agent already reported is honored via
+            # the same machinery the inline consumption uses.  No new
+            # TaskStatus, no new transition edge.
+            orphaned_result_row = db.get_latest_task_result_any_session(task_id)
+            if orphaned_result_row is not None and orchestrator is not None:
+                from runtime.models import CompletionReport, NextStep
+                import json as _json
+                _raw_decision = orphaned_result_row.get("decision_json")
+                _decision: NextStep | None = None
+                if _raw_decision:
+                    try:
+                        _parsed = _json.loads(_raw_decision)
+                        if isinstance(_parsed, dict):
+                            _decision = NextStep(**_parsed)
+                    except Exception:
+                        _decision = None
+                orphaned_report = CompletionReport(
+                    task_id=task_id,
+                    agent=orphaned_result_row.get("agent") or (t.assigned_agent or "unknown"),
+                    status=orphaned_result_row.get("status") or "completed",
+                    confidence=orphaned_result_row.get("confidence_score") or 0,
+                    output_summary=orphaned_result_row.get("output_summary") or "",
+                    verdict=orphaned_result_row.get("verdict"),
+                    decision=_decision,
+                    risks_flagged=orphaned_result_row.get("risks_flagged") or [],
+                    output_dir=orphaned_result_row.get("output_dir"),
+                    waiting_on_job_ids=orphaned_result_row.get("waiting_on_job_ids") or [],
+                )
+                # Audit: log the completion report so the consumed result is
+                # visible — the original session's log_completion_report call
+                # never ran (the daemon died before that point).
+                orchestrator._audit.log_completion_report(report=orphaned_report)
+                from runtime.orchestrator.run_step import _consume_completion_report
+                _consume_completion_report(orchestrator, task_id, orphaned_report)
+                continue
+
+            # Dead or undeterminable (no orphaned result to consume):
+            # fail-closed. No auto-revisit spawn — the THR-079 ruling
+            # supersedes the earlier heartbeat/revisit approach. The founder
+            # receives a daemon_restart_failure audit row and decides whether
+            # to re-dispatch.
             if pid is None:
                 reason = (
                     "session liveness undeterminable on daemon restart -- "

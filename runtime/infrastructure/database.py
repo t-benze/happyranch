@@ -2391,6 +2391,30 @@ class Database:
         return d
 
     @_synchronized
+    def get_latest_task_result_any_session(self, task_id: str) -> dict | None:
+        """Return the most-recent task_results row for ``task_id``
+        regardless of agent or session, or None if no row exists.
+
+        Used by the boot sweep to detect orphaned (unconsumed) task_result
+        rows — a completion callback that landed after the daemon died.
+        Additive read; no schema change.
+        """
+        cursor = self._conn.execute(
+            "SELECT * FROM task_results WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        if d.get("risks_flagged"):
+            d["risks_flagged"] = json.loads(d["risks_flagged"])
+        if d.get("waiting_on_job_ids"):
+            d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
+        return d
+
+    @_synchronized
     def get_latest_completion_report(self, task_id: str):
         """Return the most-recent task_results row for the given task as a
         CompletionReport, or None if no row exists.

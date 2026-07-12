@@ -323,8 +323,19 @@ orchestrator's `_on_started` closure) and probes the OS with `os.kill(pid, 0)`:
 | Probe result | Action |
 |---|---|
 | pid ALIVE | **Leave alone** — session survived the restart; no reconcile. |
-| pid DEAD (`ProcessLookupError`) | **FAILED** with reason "session died on daemon restart — executor pid not alive". |
-| pid NULL or probe inconclusive (`PermissionError`, etc.) | **FAILED** with reason "session liveness undeterminable on daemon restart" (fail-closed default). |
+| pid DEAD (`ProcessLookupError`) | See orphaned-result check below; if no orphaned result exists → **FAILED** with reason "session died on daemon restart — executor pid not alive". |
+| pid NULL or probe inconclusive (`PermissionError`, etc.) | See orphaned-result check below; if no orphaned result exists → **FAILED** with reason "session liveness undeterminable on daemon restart" (fail-closed default). |
+
+**Orphaned task_result consumption (THR-090).** Before failing a dead-pid
+task, the sweep checks for an unconsumed `task_result` row (the definitive
+TASK-2625 fingerprint: a completion callback that landed after the daemon
+died). If a row is present the sweep **consumes** it by re-entering the
+existing report‑processing tail of `run_step_impl` — the transition the agent
+already reported is honoured via the same machinery the inline consumption
+uses (`_log_step_result`, decision dispatch, `_complete`/`_fail`/
+delegate/fan‑out, `_enqueue_parent_if_waiting`, thread‑followup). No new
+`TaskStatus` value and no new transition edge is added; the sweep is merely
+closing the loop that the daemon crash opened.
 
 No auto-revisit is spawned for any of these outcomes — the founder receives
 a `daemon_restart_failure` audit row and decides whether to re-dispatch.

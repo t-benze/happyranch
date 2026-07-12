@@ -308,6 +308,30 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     orch._log_step_result(task_id, result, report)
+    _consume_completion_report(orch, task_id, report)
+
+
+def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> None:
+    """Consume a persisted CompletionReport and apply its transition.
+
+    Used both inline in ``run_step_impl`` (after ``_log_step_result``) and
+    from the boot sweep when an orphaned (unconsumed) ``task_result`` row is
+    discovered for a task whose executor process died mid-turn.
+
+    Re-fetches the task from the DB so it works from any call site (the
+    inline ``run_step_impl`` call site already has the task in scope, but
+    the sweep does not). Semantic zero-delta extract — the body of this
+    function was formerly the tail of ``run_step_impl``.
+    """
+    db = orch._db
+    task = db.get_task(task_id)
+    if task is None:
+        return
+    agent = task.assigned_agent or "unknown"
+    # ``orchestration_step_count`` was already incremented by
+    # ``try_claim_for_step`` at the top of ``run_step_impl``; use its
+    # current value (not +1) for audit-log keying.
+    next_count = task.orchestration_step_count
 
     if report.status == "blocked":
         if report.waiting_on_job_ids:
