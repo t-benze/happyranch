@@ -345,7 +345,7 @@ delegate/fanout results from earlier orchestration steps.
 
 | Condition | Action |
 |---|---|
-| ``current_session_id`` is None | Fall through to dead-pid FAIL path (no session-scoping possible — pre-migration row). |
+| ``current_session_id`` is None | Fall through to dead-pid FAIL path (no session-scoping possible — TRANSITIONAL: pre-migration/backfill row from the rollout window only, NOT permanent designed behavior). |
 | Row found under current session | **Consume** the report via ``_consume_completion_report`` — honor the agent's reported transition. |
 | No row under current session | Fall through to dead-pid FAIL path (no unconsumed result exists). |
 
