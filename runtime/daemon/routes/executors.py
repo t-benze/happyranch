@@ -22,6 +22,7 @@ from runtime.daemon.auth import require_registration_token
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
     OrgConfigError,
@@ -64,6 +65,48 @@ def _acquire_profile_lock(name: str) -> threading.Lock:
             _profile_locks[key] = lock
     lock.acquire()
     return lock
+
+
+# ── Runtime audit helper (THR-088 Slice B) ─────────────────────────────
+
+
+def _audit_runtime_registration(
+    *,
+    profile_name: str,
+    command: str,
+    argv_template: list[str],
+    adapter: str,
+    actor: str = "founder",
+) -> None:
+    """Write a runtime-level executor registration audit row.
+
+    Opens (creating if needed) a dedicated runtime-audit.db under
+    daemon_home(), then writes a single audit_log row via the
+    existing AuditLogger + Database machinery.  Each call opens a
+    fresh ``Database`` handle and closes it; registration is
+    infrequent and serialized by ``_profile_locks``, so the overhead
+    is negligible.
+
+    Row shape (THR-088 Slice B):
+      task_id = "executor:<profile_name>"
+      action  = "executor_registered"
+      payload = {command, argv_template, adapter}
+    """
+    from runtime.runtime import daemon_home
+
+    audit_db_path = daemon_home() / "runtime-audit.db"
+    db = Database(audit_db_path)
+    try:
+        logger = AuditLogger(db)
+        logger.log_executor_registered(
+            profile_name=profile_name,
+            command=command,
+            argv_template=argv_template,
+            adapter=adapter,
+            actor=actor,
+        )
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -604,11 +647,17 @@ def runtime_register_executor(
         store.release_runtime(token_value)
         raise
     else:
-        # NOTE: The org-scoped register path audits writes via
-        # AuditLogger.log_org_config_write (org.db). There is no
-        # runtime-level audit_log surface today (only metrics.db at
-        # runtime.root). Runtime-level audit surfacing is intentionally
-        # deferred pending a THR-088 follow-up design decision.
+        # 9. Audit the successful runtime-level registration.
+        #    Runtime-level registration is org-agnostic, so audit
+        #    rows go to a dedicated runtime-audit.db (co-located
+        #    with metrics.db under daemon_home()), NOT a per-org db.
+        #    Uses the scope-prefix convention: task_id='executor:<name>'.
+        _audit_runtime_registration(
+            profile_name=profile_name,
+            command=body.command,
+            argv_template=body.argv_template,
+            adapter=body.adapter,
+        )
         store.commit_runtime(token_value)
     finally:
         profile_lock.release()

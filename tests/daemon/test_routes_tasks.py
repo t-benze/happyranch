@@ -748,16 +748,15 @@ def test_resolve_escalation_accepts_blank_rationale(tmp_home, app, org_state, au
     )
     assert r.status_code == 200
     t = org_state.db.get_task("TASK-045")
-    assert t.note == "Founder continued"
+    assert t.note == "founder continued"
     entries = org_state.db.get_audit_logs("TASK-045")
     resolved = [e for e in entries if e["action"] == "escalation_resolved"]
     assert len(resolved) == 1
     assert resolved[0]["payload"]["rationale"] == ""
 
 
-def test_resolve_escalation_reject_without_rationale(tmp_home, app, org_state, auth_headers):
-    """THR-046: cancel without rationale transitions to cancelled with note
-    'Founder cancelled' and empty audit rationale."""
+def test_resolve_escalation_cancel_removed_returns_400(tmp_home, app, org_state, auth_headers):
+    """THR-080: 'cancel' is no longer a valid decision for resolve-escalation."""
     from runtime.models import TaskRecord, TaskStatus
     org_state.db.insert_task(TaskRecord(
         id="TASK-046", brief="x",
@@ -771,14 +770,8 @@ def test_resolve_escalation_reject_without_rationale(tmp_home, app, org_state, a
         json={"decision": "cancel"},
         headers=auth_headers,
     )
-    assert r.status_code == 200
-    t = org_state.db.get_task("TASK-046")
-    assert t.status == TaskStatus.CANCELLED
-    assert t.note == "Founder cancelled"
-    entries = org_state.db.get_audit_logs("TASK-046")
-    resolved = [e for e in entries if e["action"] == "escalation_resolved"]
-    assert len(resolved) == 1
-    assert resolved[0]["payload"]["rationale"] == ""
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "invalid_decision"
 
 
 def test_events_stream_yields_completion(tmp_home, app, daemon_state, org_state, auth_headers) -> None:
@@ -936,15 +929,17 @@ def test_resolve_escalation_continue_target_is_root(client_with_runtime):
     assert daemon.queue._queue.get_nowait() == ("alpha", "T-ROOT", None)
 
 
-def test_resolve_escalation_cancel_transitions_to_cancelled(client_with_runtime):
+def test_cancel_escalated_task_via_normal_cancel_route(client_with_runtime):
+    """THR-080: cancelling an escalated task via normal POST /cancel.
+    Verify parity with old resolve-escalation cancel path."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
     state.db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None, note="halted")
 
     r = client.post(
-        "/api/v1/orgs/alpha/tasks/T-1/resolve-escalation",
-        json={"decision": "cancel", "rationale": "nope"},
+        "/api/v1/orgs/alpha/tasks/T-1/cancel",
+        json={"rationale": "nope"},
     )
     assert r.status_code == 200
     t = state.db.get_task("T-1")
@@ -1007,10 +1002,10 @@ def test_resolve_escalation_continue_reenqueues_child_not_parent(client_with_run
     assert par.block_kind == BlockKind.DELEGATED
 
 
-def test_resolve_escalation_cancel_cascades_to_parent(client_with_runtime):
-    """Cancel on a child cancels it and wakes the parent via bounded
-    failure-recovery (TASK-573) — parent stays in_progress(delegated) for
-    a bounded-wake decision step, NOT cascade-failed."""
+def test_cancel_escalated_task_cascades_to_parent(client_with_runtime):
+    """THR-080: Cancel on an escalated child via normal POST /cancel
+    wakes the parent via bounded failure-recovery (TASK-573).
+    Parity with the removed resolve-escalation cancel path."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-PAR", brief="p", task_type="task"))
@@ -1024,8 +1019,8 @@ def test_resolve_escalation_cancel_cascades_to_parent(client_with_runtime):
         daemon.queue._queue.get_nowait()
 
     r = client.post(
-        "/api/v1/orgs/alpha/tasks/T-CHD/resolve-escalation",
-        json={"decision": "cancel", "rationale": "no"},
+        "/api/v1/orgs/alpha/tasks/T-CHD/cancel",
+        json={"rationale": "no"},
     )
     assert r.status_code == 200
     chd = state.db.get_task("T-CHD")

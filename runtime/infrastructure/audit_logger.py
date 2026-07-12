@@ -88,13 +88,29 @@ class AuditLogger:
         )
 
     def log_escalation_resolved(
-        self, task_id: str, decision: str, rationale: str
+        self,
+        task_id: str,
+        decision: str,
+        rationale: str,
+        *,
+        actor: str = "founder",
+        thread_id: str | None = None,
     ) -> None:
+        """Record that an escalated task was resolved.
+
+        THR-080: `actor` records the real agent who resolved (manager/thread-
+        originated continue, or founder). `thread_id` cites the dispatching
+        thread when the resolution came from the thread surface. Back-compat:
+        both params are keyword-only with founder/None defaults.
+        """
+        payload: dict = {"decision": decision, "rationale": rationale}
+        if thread_id is not None:
+            payload["thread_id"] = thread_id
         self._db.insert_audit_log(
             task_id=task_id,
-            agent="founder",
+            agent=actor,
             action="escalation_resolved",
-            payload={"decision": decision, "rationale": rationale},
+            payload=payload,
         )
 
     def log_task_cancelled(
@@ -451,6 +467,38 @@ class AuditLogger:
                 "action": action,
                 "name": name,
                 "source": source,
+            },
+        )
+
+    def log_executor_registered(
+        self,
+        *,
+        profile_name: str,
+        command: str,
+        argv_template: list[str],
+        adapter: str,
+        actor: str = "founder",
+    ) -> None:
+        """Record a successful runtime-level executor registration.
+
+        THR-088 Slice B: runtime-level registration is org-agnostic, so it writes
+        to a dedicated runtime audit database (not a per-org db). Uses the
+        scope-prefix convention for ``task_id`` analogous to ``config:<section>``
+        (THR-035 / TASK-967).
+
+        Row shape:
+          task_id = "executor:<profile_name>"
+          action  = "executor_registered"
+          payload = {command, argv_template, adapter}
+        """
+        self._db.insert_audit_log(
+            task_id=f"executor:{profile_name}",
+            agent=actor,
+            action="executor_registered",
+            payload={
+                "command": command,
+                "argv_template": [str(e) for e in argv_template],
+                "adapter": adapter,
             },
         )
 

@@ -655,6 +655,36 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             # NOT a revise cycle — only bump when re-delegating to a DIFFERENT
             # worker-of-record. `agent` is this task's owner.
             if worker_of_record == decision.agent and decision.agent != agent:
+                cap = load_org_config(orch._paths).max_revise_rounds
+                if cap > 0 and task.revision_count >= cap:
+                    # THR-026 seq33: revise-round budget exhausted.
+                    # DELIBERATE stop-with-best — do NOT increment, do NOT
+                    # delegate, do NOT auto-revisit. Mirror the section-2
+                    # step-budget terminal's root/non-root split.
+                    reason = f"iteration_budget_exhausted: revise budget ({cap} rounds) exhausted"
+                    if not is_root(task):
+                        _fail(orch, task_id, note=reason)
+                        _enqueue_parent_if_waiting(orch, task_id)
+                        _maybe_post_thread_followup(
+                            orch, task_id,
+                            status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                        )
+                        return
+                    # Root: park in escalated for the founder (CAS-free —
+                    # we are past the atomic claim in section 3, so there is
+                    # no duplicate-delivery race).
+                    if not db.try_escalate(task_id, reason=reason):
+                        logger.debug(
+                            "run_step %s: cancelled between re-check and "
+                            "revise-budget escalate, dropping", task_id,
+                        )
+                        return
+                    orch._audit.log_escalation(task_id, "orchestrator", reason)
+                    orch.notify_escalated(
+                        task_id=task_id, agent="orchestrator", reason=reason,
+                    )
+                    _maybe_post_thread_escalation(orch, task_id, reason=reason)
+                    return
                 db.increment_revision_count(task_id)
         child_id = db.next_task_id()
         child = TaskRecord(

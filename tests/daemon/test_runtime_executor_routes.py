@@ -393,6 +393,114 @@ class TestRuntimeRegisterRoute:
 # ── Startup Profile Loading ─────────────────────────────────────────────
 
 
+# ── Runtime Registration Audit (THR-088 Slice B) ────────────────────
+
+
+class TestRuntimeRegisterAudit:
+    """Runtime-level registration writes an audit row to runtime-audit.db."""
+
+    def test_register_audits_on_success(self, client, store, monkeypatch, tmp_path):
+        """A successful runtime register writes an audit_log row with
+        the expected scope-prefix task_id, action, and payload."""
+        from runtime.infrastructure.database import Database
+
+        daemon_home_path = tmp_path / ".happyranch"
+        daemon_home_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home_path))
+
+        # Seed the daemon home for paths_mod.ensure_daemon_home / paths_mod.ensure_token
+        from runtime.daemon import paths as paths_mod
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+
+        reset_registry()
+        token, _ = store.mint_runtime("my-executor")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Complete conformance
+        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json={"step_id": step_id},
+                headers=headers,
+            )
+            assert r.status_code == 200
+
+        # Perform register
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["{prompt}"],
+                "adapter": "pi",
+            },
+            headers=headers,
+        )
+        assert r.status_code == 200
+
+        # Verify audit row in runtime-audit.db
+        audit_db_path = daemon_home_path / "runtime-audit.db"
+        assert audit_db_path.exists(), (
+            f"runtime-audit.db should have been created at {audit_db_path}"
+        )
+
+        audit_db = Database(audit_db_path)
+        try:
+            rows = audit_db.get_audit_logs("executor:my-executor")
+            assert len(rows) == 1, f"Expected 1 audit row, got {len(rows)}"
+
+            row = rows[0]
+            assert row["task_id"] == "executor:my-executor"
+            assert row["action"] == "executor_registered"
+            assert row["agent"] == "founder"
+
+            payload = row["payload"]
+            assert payload["command"] == "echo"
+            assert payload["argv_template"] == ["{prompt}"]
+            assert payload["adapter"] == "pi"
+        finally:
+            audit_db.close()
+
+    def test_register_failure_produces_no_audit_row(self, client, store, monkeypatch, tmp_path):
+        """A FAILED runtime register (token released) produces NO audit row."""
+        from runtime.infrastructure.database import Database
+
+        daemon_home_path = tmp_path / ".happyranch"
+        daemon_home_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home_path))
+
+        from runtime.daemon import paths as paths_mod
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+
+        reset_registry()
+        token, _ = store.mint_runtime("bad-executor")
+
+        # Do NOT complete conformance — register should fail
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["{prompt}"],
+                "adapter": "pi",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 400  # conformance incomplete
+
+        # No audit db should exist (or no row if db was created)
+        audit_db_path = daemon_home_path / "runtime-audit.db"
+        if audit_db_path.exists():
+            audit_db = Database(audit_db_path)
+            try:
+                rows = audit_db.get_audit_logs("executor:bad-executor")
+                assert len(rows) == 0, (
+                    f"Expected 0 audit rows for failed register, got {len(rows)}"
+                )
+            finally:
+                audit_db.close()
+
+
 class TestStartupProfileLoading:
     """Runtime profiles are loaded into the registry at daemon startup."""
 

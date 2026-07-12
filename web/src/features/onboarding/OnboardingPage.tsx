@@ -1,15 +1,19 @@
 /**
- * OnboardingPage — first-run / add-org shell (THR-061 Slice 11; THR-088 F-Step2 + F-Prereqs).
+ * OnboardingPage — first-run / add-org shell (THR-061 Slice 11; THR-088
+ * F-Step1 + F-Step2 + F-Prereqs).
  *
- * A presentational onboarding shell composed of the steps — Welcome →
- * Create org → Creating → Success — plus a read-only broken-org list and an
- * executor-prereq readiness panel. This surface is GLOBAL (not org-scoped):
- * it drives the two EXISTING non-org routes only:
- *   - GET  /api/v1/orgs           (listOrgs → { orgs, broken })
- *   - POST /api/v1/orgs           (createOrg → { slug })
- *   - GET  /api/v1/health/prereqs (getPrereqs → { prereqs: {tool,present,path,hint}[] })
+ * A presentational two-step onboarding shell:
+ *   Step 1 — Connect your agentic CLI (ConnectRuntimeStep, THR-088 Slice A).
+ *   Step 2 — Welcome → Create org → Creating → Success — plus a read-only
+ *            broken-org list and an executor-prereq readiness panel.
+ * This surface is GLOBAL (not org-scoped). It drives only EXISTING routes:
+ *   - GET  /api/v1/orgs                         (listOrgs → { orgs, broken })
+ *   - POST /api/v1/orgs                         (createOrg → { slug })
+ *   - GET  /api/v1/health/prereqs               (getPrereqs → prereqs[])
+ *   - POST /api/v1/auth/registration-token/runtime (Step-1 token mint)
  * No new backend route is added; the create flow reuses the same slug
- * contract + inline error mapping as the Sidebar's AddOrgDialog.
+ * contract + inline error mapping as the Sidebar's AddOrgDialog. Step 1 leads
+ * first-run onboarding; a returning user adding another org starts at Step 2.
  *
  * Honesty fence (THR-061 §D; THR-088): no invented metric/badge/role/$/version;
  * Pasture tokens only, zero raw hex; no Baloo 2. Gated/deferred surfaces are
@@ -30,10 +34,13 @@ import type { ExecutorPrereq } from '@/lib/api/types';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
+import { ConnectRuntimeStep } from './ConnectRuntimeStep';
 
 /** Same slug contract the daemon enforces (mirror of AddOrgDialog). */
 const SLUG_RE = /^[a-z0-9-]{1,40}$/;
 
+/** Step 1 = connect runtime, Step 2 = create org (welcome/create/success). */
+type Phase = 'connect' | 'org';
 type Step = 'welcome' | 'create' | 'success';
 
 /* ------------------------------------------------------------------ */
@@ -41,6 +48,7 @@ type Step = 'welcome' | 'create' | 'success';
 /* ------------------------------------------------------------------ */
 
 export function OnboardingPage(): JSX.Element {
+  const [phase, setPhase] = useState<Phase | null>(null);
   const [step, setStep] = useState<Step>('welcome');
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
 
@@ -49,6 +57,28 @@ export function OnboardingPage(): JSX.Element {
   const orgsQuery = useQuery({ queryKey: ['orgs'], queryFn: orgsApi.listOrgs });
   const broken = orgsQuery.data?.broken ?? [];
   const existingCount = orgsQuery.data?.orgs.length ?? 0;
+
+  // Step 1 (connect runtime) leads first-run onboarding; a returning user
+  // adding another org already has a runtime, so they land on Step 2. Once
+  // the user acts (Continue/Skip), `phase` is set and sticks. Hold the render
+  // until orgs load so the first-run vs returning choice doesn't flash.
+  if (orgsQuery.isPending) {
+    return <div className="bg-surface-canvas h-full" />;
+  }
+  const effectivePhase: Phase = phase ?? (existingCount === 0 ? 'connect' : 'org');
+
+  if (effectivePhase === 'connect') {
+    return (
+      <div className="bg-surface-canvas h-full overflow-y-auto">
+        <div className="mx-auto max-w-2xl p-6 sm:p-8">
+          <ConnectRuntimeStep
+            onContinue={() => setPhase('org')}
+            onSkip={() => setPhase('org')}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
@@ -106,7 +136,7 @@ function WelcomeStep({
     <section className="pt-6 sm:pt-10">
       <RanchLogo className="text-accent h-14 w-14" />
       <p className="text-accent-text mt-5 text-xs font-semibold tracking-wider uppercase">
-        {firstRun ? 'Fresh runtime' : 'New workspace'}
+        {firstRun ? 'Fresh start' : 'New workspace'}
       </p>
       <h1 className="font-display text-display text-text-primary mt-3 font-medium">
         {firstRun ? (
@@ -142,7 +172,7 @@ function WelcomeStep({
         <p className="text-text-secondary text-xs leading-relaxed">
           Creating an org sets up the workspace only. It does{' '}
           <span className="text-text-primary font-semibold">not</span> install
-          agent runtimes or CLIs (<span className="font-mono">claude</span>,{' '}
+          agentic CLIs (<span className="font-mono">claude</span>,{' '}
           <span className="font-mono">codex</span>,{' '}
           <span className="font-mono">node</span>…) — you&rsquo;ll wire those up
           separately from Settings once the org exists.
@@ -415,7 +445,7 @@ function SuccessStep({
         Org <span className="text-accent-text font-mono">{slug}</span> is ready.
       </h1>
       <p className="text-text-secondary mt-2 text-sm leading-relaxed">
-        Your workspace is live. Next: wire up an agent runtime from Settings,
+        Your workspace is live. Next: wire up an agentic CLI from Settings,
         then dispatch your first task.
       </p>
       <div className="mt-6 flex items-center gap-2">
@@ -454,7 +484,7 @@ function BrokenOrgList({
       </div>
       <p className="text-text-muted mt-1 text-xs">
         These workspaces are on disk but the daemon could not open them. The raw
-        error is shown as reported — fix it on the runtime.
+        error is shown as reported — fix it on the host.
       </p>
       <ul className="mt-3 space-y-2">
         {broken.map((b) => (

@@ -109,6 +109,7 @@
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/reply": "agent invocation token only",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/decline": "agent invocation token only",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/dispatch": "agent invocation token only",
+    "POST /api/v1/orgs/{slug}/threads/{thread_id}/resolve-escalation": "agent invocation token only",
     "POST /api/v1/orgs/{slug}/threads/compose-as-agent": "agent callback — not exercised from the Web UI",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/post-as-agent": "agent callback — not exercised from the Web UI",
     "GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments": "thread-scoped attachments — agent/CLI facing",

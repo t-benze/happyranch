@@ -718,7 +718,7 @@ export function TaskDetailPage(): JSX.Element {
   const jobsQuery = useJobsList({ task_id: taskId, status: 'all', limit: 100 });
   const chainQuery = useChainWithBlock(slug, taskId);
   const [dialog, setDialog] = useState<
-    null | 'cancel' | 'revisit' | 'resolve-continue' | 'resolve-cancel'
+    null | 'cancel' | 'revisit' | 'resolve-continue'
   >(null);
 
   // THR-037 Change B dual-read: Path B top-level `escalated` status OR
@@ -885,17 +885,15 @@ export function TaskDetailPage(): JSX.Element {
             <div className="mt-3 flex gap-2">
               {isEscalated ? (
                 <>
-                  {/* THR-069 msg74: an escalated task offers exactly Continue +
-                      Cancel, BOTH routed through resolve-escalation (THR-075) —
-                      Continue resumes → pending, Cancel terminates → cancelled.
-                      No Resolve… / Revisit here. */}
+                  {/* THR-080: Continue via resolve-escalation; Cancel via
+                      generic /cancel route (removed from resolve vocabulary). */}
                   <Button size="sm" onClick={() => setDialog('resolve-continue')}>
                     Continue
                   </Button>
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() => setDialog('resolve-cancel')}
+                    onClick={() => setDialog('cancel')}
                   >
                     Cancel
                   </Button>
@@ -1030,13 +1028,6 @@ export function TaskDetailPage(): JSX.Element {
       {dialog === 'resolve-continue' && (
         <ResolveEscalationDialog
           intent="continue"
-          taskId={taskId}
-          onClose={() => setDialog(null)}
-        />
-      )}
-      {dialog === 'resolve-cancel' && (
-        <ResolveEscalationDialog
-          intent="cancel"
           taskId={taskId}
           onClose={() => setDialog(null)}
         />
