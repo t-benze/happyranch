@@ -46,7 +46,10 @@ def test_prereqs_all_registered_when_all_valid(tmp_path: Path) -> None:
         r = client.get("/api/v1/health/prereqs")
         assert r.status_code == 200
         body = r.json()
-        for entry in body["prereqs"]:
+        # The 4 built-in profiles must all be present.
+        builtins = [e for e in body["prereqs"] if e["tool"] in {"claude", "codex", "opencode", "pi"}]
+        assert len(builtins) == 4, f"Expected 4 built-in prereqs, got {len(builtins)}"
+        for entry in builtins:
             assert entry["present"] is True, f"{entry['tool']} should be present"
             assert entry["path"] is not None
             assert entry["path"].startswith(str(tmp_path))
