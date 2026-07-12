@@ -29,11 +29,23 @@ test('root with orgs renders the Sidebar org dropdown after navigate', async () 
   });
 });
 
-test('root with no orgs renders the empty-state message', async () => {
+test('root with no orgs redirects to the get-started onboarding surface', async () => {
   sessionStorage.setItem('happyranch.token', 'tok');
-  server.use(http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [] })));
+  server.use(
+    http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [] })),
+    // ConnectRuntimeStep reads prereqs on mount to pre-fill a detected
+    // built-in's resolved path; stub it so the surface renders cleanly.
+    http.get('/api/v1/health/prereqs', () =>
+      HttpResponse.json({ prereqs: [] }),
+    ),
+  );
   renderWithProviders(<AppRoutes />, { route: '/' });
+  // No interstitial: RootRedirect navigates straight to /onboarding, which
+  // with existingCount===0 lands on ConnectRuntimeStep (the get-started
+  // Connect-runtime surface).
   await waitFor(() =>
-    expect(screen.getByText(/No orgs loaded/i)).toBeInTheDocument(),
+    expect(
+      screen.getByRole('heading', { name: /Connect your agentic CLI/i }),
+    ).toBeInTheDocument(),
   );
 });

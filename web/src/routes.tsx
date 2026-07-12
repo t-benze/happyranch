@@ -1,5 +1,4 @@
 import {
-  Link,
   Navigate,
   Outlet,
   Route,
@@ -44,12 +43,7 @@ function RootRedirect(): JSX.Element {
   }
   const first = orgsQuery.data?.orgs[0]?.slug;
   if (!first) {
-    return (
-      <div className="text-fg-muted p-6">
-        No orgs loaded. Run <code className="text-fg">happyranch orgs init &lt;slug&gt;</code> from the CLI, or{' '}
-        <Link to="/onboarding" className="text-accent hover:underline">get started</Link>.
-      </div>
-    );
+    return <Navigate to="/onboarding" replace />;
   }
   return <Navigate to={`/orgs/${first}/dashboard`} replace />;
 }
