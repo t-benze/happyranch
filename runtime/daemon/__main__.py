@@ -124,13 +124,20 @@ def _sweep_on_startup(
                 continue
 
             # THR-090 Track A: before failing a dead-pid task, check for an
-            # unconsumed task_result row (the definitive TASK-2625 fingerprint:
-            # a completion callback that landed after the daemon died). If one
-            # exists, consume it by re-entering the existing report-processing
-            # tail — the transition the agent already reported is honored via
-            # the same machinery the inline consumption uses.  No new
-            # TaskStatus, no new transition edge.
-            orphaned_result_row = db.get_latest_task_result_any_session(task_id)
+            # unconsumed task_result row from the CURRENT session (the
+            # definitive TASK-2625 fingerprint: a completion callback that
+            # landed after the daemon died). Session-scoping is mandatory:
+            # a prior-step result row carries a different session uuid and
+            # must never match — the task falls through to the dead-pid FAIL
+            # path instead. Governing invariant: err toward a MISS
+            # (fail-closed), NEVER replay an already-consumed decision.
+            # Only act if current_session_id is not None AND the row is found;
+            # otherwise fall through unchanged to the dead-pid FAIL path.
+            orphaned_result_row = None
+            if t.current_session_id is not None and t.assigned_agent is not None:
+                orphaned_result_row = db.get_latest_task_result(
+                    task_id, t.assigned_agent, t.current_session_id,
+                )
             if orphaned_result_row is not None and orchestrator is not None:
                 from runtime.models import CompletionReport, NextStep
                 import json as _json

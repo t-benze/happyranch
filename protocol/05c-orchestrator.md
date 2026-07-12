@@ -326,20 +326,38 @@ orchestrator's `_on_started` closure) and probes the OS with `os.kill(pid, 0)`:
 | pid DEAD (`ProcessLookupError`) | See orphaned-result check below; if no orphaned result exists → **FAILED** with reason "session died on daemon restart — executor pid not alive". |
 | pid NULL or probe inconclusive (`PermissionError`, etc.) | See orphaned-result check below; if no orphaned result exists → **FAILED** with reason "session liveness undeterminable on daemon restart" (fail-closed default). |
 
-**Orphaned task_result consumption (THR-090).** Before failing a dead-pid
-task, the sweep checks for an unconsumed `task_result` row (the definitive
-TASK-2625 fingerprint: a completion callback that landed after the daemon
-died). If a row is present the sweep **consumes** it by re-entering the
-existing report‑processing tail of `run_step_impl` — the transition the agent
-already reported is honoured via the same machinery the inline consumption
-uses (`_log_step_result`, decision dispatch, `_complete`/`_fail`/
-delegate/fan‑out, `_enqueue_parent_if_waiting`, thread‑followup). No new
-`TaskStatus` value and no new transition edge is added; the sweep is merely
+**Orphaned task_result consumption (THR-090 Track A).** Before failing a
+dead-pid task in Branch 1, the sweep checks for an unconsumed ``task_result``
+row from the CURRENT session (the definitive TASK-2625 fingerprint: a
+completion callback that landed after the daemon died). If one exists, the
+sweep honors the completion by consuming the report via
+``_consume_completion_report`` — the transition the agent already reported is
+preserved via the same machinery used in inline consumption. No new
+``TaskStatus`` value and no new transition edge is added; the sweep is merely
 closing the loop that the daemon crash opened.
+
+**Session-scoping is mandatory.** The sweep reads the persisted
+``current_session_id`` (set at session start alongside ``executor_pid`` in
+``_on_started``) and calls ``get_latest_task_result(task_id, agent,
+current_session_id)``. A prior-step result row carries a different session
+uuid and is never matched. This prevents replay of already-consumed
+delegate/fanout results from earlier orchestration steps.
+
+| Condition | Action |
+|---|---|
+| ``current_session_id`` is None | Fall through to dead-pid FAIL path (no session-scoping possible — pre-migration row). |
+| Row found under current session | **Consume** the report via ``_consume_completion_report`` — honor the agent's reported transition. |
+| No row under current session | Fall through to dead-pid FAIL path (no unconsumed result exists). |
+
+Governing invariant: err toward a MISS (fail-closed), NEVER replay an
+already-consumed decision. Within Branch 1 (in_progress + block_kind NULL +
+dead pid), a result row from the CURRENT session is definitionally UNCONSUMED
+— a consumed manager result would have set block_kind (delegate/fanout) or
+terminalized the task, moving it OUT of this branch.
 
 No auto-revisit is spawned for any of these outcomes — the founder receives
 a `daemon_restart_failure` audit row and decides whether to re-dispatch.
-Pre-migration rows (NULL `executor_pid`) are fail-closed on the first
+Pre-migration rows (NULL ``executor_pid``) are fail-closed on the first
 post-deploy restart (intended and acceptable).
 
 NOTE: `os.kill(pid, 0)` carries a pid-recycle caveat — a recycled pid could
