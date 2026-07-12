@@ -11,15 +11,17 @@ import time as _time
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from unittest.mock import MagicMock, patch
 
 from runtime.daemon.zombie_reaper import (
     FLAG_TTL_FINGERPRINT_SECONDS,
     FLAG_TTL_NO_FINGERPRINT_SECONDS,
     STALE_HEARTBEAT_SECONDS,
+    _consume_zombie_fingerprint,
     _sweep_org_zombies,
 )
 from runtime.infrastructure.database import Database
-from runtime.models import TaskRecord, TaskStatus
+from runtime.models import BlockKind, TaskRecord, TaskStatus
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -358,3 +360,105 @@ def test_permission_error_pid_probe_not_flagged(db: Database):
     assert t.status != TaskStatus.CANCELLED, (
         "PermissionError on pid probe → indeterminate, should not cancel"
     )
+
+
+# ---------------------------------------------------------------------------
+# FIX 1: parent-wake on Tier-2 zombie cancel
+# ---------------------------------------------------------------------------
+
+def test_parent_woken_when_zombie_child_cancelled(db: Database):
+    """A delegated parent parked on a zombie child is enqueued/woken when the
+    reaper cancels the child (FIX 1 — code_reviewer HIGH)."""
+    parent_id = "T-PARENT"
+    child_id = "T-CHILD"
+
+    # Create parent in in_progress(delegated), waiting on child.
+    db.insert_task(TaskRecord(
+        id=parent_id, brief="parent", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
+    ))
+    db.update_task(parent_id, block_kind=BlockKind.DELEGATED)
+
+    # Create zombie child with parent_task_id at insert time.
+    flag_time = _ago(FLAG_TTL_NO_FINGERPRINT_SECONDS + 5)
+    db.insert_task(TaskRecord(
+        id=child_id, brief="zombie child", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
+        parent_task_id=parent_id,
+    ))
+    db.update_task(
+        child_id,
+        current_session_id="sess-dead",
+        last_heartbeat=_stale_hb().isoformat(),
+        executor_pid=ZOMBIE_PID,
+    )
+    db.update_task(child_id, zombie_flagged_at=flag_time.isoformat())
+
+    # Create a mock orchestrator with access to the real DB.
+    mock_orch = MagicMock()
+    mock_orch._db = db
+
+    with patch(
+        "runtime.orchestrator.run_step._enqueue_parent_if_waiting"
+    ) as mock_enqueue:
+        _sweep_org_zombies(db, now=_now(), uptime=999, warm_up_seconds=30,
+                           orchestrator=mock_orch)
+        # _enqueue_parent_if_waiting should have been called for the child.
+        mock_enqueue.assert_called_once_with(mock_orch, child_id)
+
+    # Child should be cancelled.
+    t = db.get_task(child_id)
+    assert t.status == TaskStatus.CANCELLED
+    assert t.cancelled_at is not None
+    assert t.completed_at is not None
+    assert t.block_kind is None
+    assert t.note == "zombie reaped: session died without completing"
+
+
+# ---------------------------------------------------------------------------
+# FIX 2: double-deserialize of waiting_on_job_ids
+# ---------------------------------------------------------------------------
+
+def test_fingerprint_with_waiting_on_job_ids_no_typeerror(db: Database):
+    """A fingerprinted report with non-empty waiting_on_job_ids is consumed
+    via _consume_completion_report without raising TypeError (FIX 2 —
+    code_reviewer MEDIUM: get_latest_task_result already deserializes)."""
+    task_id = "T-FP"
+    agent = "dev_agent"
+    session_id = "sess-fp"
+    job_ids = ["job-1", "job-2"]
+
+    # Insert a zombie candidate.
+    _insert_zombie_candidate(db, task_id,
+                             last_heartbeat=_stale_hb(),
+                             executor_pid=ZOMBIE_PID,
+                             current_session_id=session_id,
+                             assigned_agent=agent)
+
+    # Insert a task_result with non-empty waiting_on_job_ids.
+    db.insert_task_result(
+        task_id=task_id, agent=agent, session_id=session_id,
+        status="blocked", confidence_score=90,
+        output_summary="waiting on jobs",
+        waiting_on_job_ids=job_ids,
+    )
+
+    # Fetch the fingerprint — get_latest_task_result already deserializes.
+    fingerprint = db.get_latest_task_result(task_id, agent, session_id)
+    assert fingerprint is not None
+    assert fingerprint["waiting_on_job_ids"] == job_ids  # already a list
+
+    # Create a mock orchestrator and mock _consume_completion_report.
+    mock_orch = MagicMock()
+    mock_orch._db = db
+    task = db.get_task(task_id)
+
+    with patch(
+        "runtime.orchestrator.run_step._consume_completion_report"
+    ) as mock_consume:
+        # This must NOT raise TypeError.
+        _consume_zombie_fingerprint(db, task_id, fingerprint, task, mock_orch)
+        mock_consume.assert_called_once()
+        # Verify the CompletionReport has the correct waiting_on_job_ids.
+        called_report = mock_consume.call_args[0][2]
+        assert called_report.waiting_on_job_ids == job_ids

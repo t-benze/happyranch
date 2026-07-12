@@ -183,13 +183,21 @@ def _sweep_org_zombies(
                 else:
                     # Tier 2: no fingerprint — cancel.
                     # THR-079 ruling: no auto-revisit. Cancel via the existing
-                    # cancelled status transition.
+                    # cancelled status transition, routed through shared
+                    # terminal side-effects so a delegated parent parked on
+                    # this child is woken (code_reviewer FIX 1).
                     db.update_task(
                         task_id,
                         status=TaskStatus.CANCELLED,
                         cancelled_at=now.isoformat(),
+                        completed_at=now.isoformat(),
+                        block_kind=None,
+                        note="zombie reaped: session died without completing",
                     )
                     audit.log_zombie_cancelled(task_id, agent)
+                    if orchestrator is not None:
+                        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+                        _enqueue_parent_if_waiting(orchestrator, task_id)
 
 
 # ---------------------------------------------------------------------------
@@ -239,10 +247,7 @@ def _consume_zombie_fingerprint(
         verdict=fingerprint.get("verdict"),
         decision=_decision,
         risks_flagged=_risks or [],
-        waiting_on_job_ids=(
-            _json.loads(fingerprint["waiting_on_job_ids"])
-            if fingerprint.get("waiting_on_job_ids") else []
-        ),
+        waiting_on_job_ids=fingerprint.get("waiting_on_job_ids") or [],
         output_dir=fingerprint.get("output_dir"),
     )
     from runtime.orchestrator.run_step import _consume_completion_report
