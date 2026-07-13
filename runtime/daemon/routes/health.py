@@ -8,6 +8,10 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from runtime.config import Settings, settings as _settings
+from runtime.orchestrator.executor_binary_registry import (
+    get_binary,
+    is_binary_valid,
+)
 from runtime.orchestrator.executor_registry import get_registry
 
 router = APIRouter()
@@ -54,14 +58,23 @@ def _get_cli_binary(profile_name: str, settings: Settings) -> str:
 
 
 def _hint_for(profile_name: str) -> str:
-    """Return a short install/fix hint for a known executor."""
+    """Return a short registration hint for a known executor.
+
+    The machine-local registry (executor_binary_registry) is the source of
+    truth for whether an executor is 'registered' on this machine.
+    Registration happens via the onboarding prompt flow (copy-paste), not
+    by being on PATH.
+    """
     hints: dict[str, str] = {
-        "claude": "Install Claude Code: npm install -g @anthropic-ai/claude-code",
-        "codex": "Install OpenAI Codex: see https://github.com/openai/codex",
-        "opencode": "Install opencode: see https://github.com/opencode-ai/opencode",
-        "pi": "Install Pi: npm install -g @earendil-works/pi-coding-agent",
+        "claude": "Register Claude Code via the onboarding prompt flow",
+        "codex": "Register OpenAI Codex via the onboarding prompt flow",
+        "opencode": "Register opencode via the onboarding prompt flow",
+        "pi": "Register Pi via the onboarding prompt flow",
     }
-    return hints.get(profile_name, f"Install the '{profile_name}' CLI and ensure it is on PATH.")
+    return hints.get(
+        profile_name,
+        f"Register the '{profile_name}' CLI via the onboarding prompt flow.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -95,15 +108,20 @@ def health(request: Request) -> dict:
 
 @router.get("/health/prereqs", response_model=PrereqsResponse)
 def health_prereqs(request: Request) -> PrereqsResponse:
-    """Return per-executor CLI readiness.
+    """Return per-executor CLI registration status.
 
     Enumerates the exact executors the registry knows (built-in +
-    org-registered custom profiles).  ``present`` = CLI binary found on
-    PATH; ``path`` = resolved absolute path or None; ``hint`` = short
-    install/fix instruction.
+    org-registered custom profiles).  ``present`` = executor is registered
+    in the machine-local binary registry with a valid stored path;
+    ``path`` = the registered stored path or None; ``hint`` = short
+    instruction for registering the CLI.
+
+    A CLI counts as 'connected/registered' ONLY after the user explicitly
+    registers it via the onboarding copy-paste prompt flow — being on PATH
+    is NOT sufficient.
 
     Honesty fence: invents no badges, metrics, or fake status — just
-    present/absent + hint.
+    registered/not-registered + hint.
     """
     state = request.app.state.daemon
     registry = get_registry()
@@ -113,11 +131,15 @@ def health_prereqs(request: Request) -> PrereqsResponse:
         cli = _get_cli_binary(name, state.settings)
         if not cli:
             continue
-        resolved = _presence_checker(cli)
+        # Check the machine-local executor binary registry, not PATH.
+        # A built-in is 'connected' only after the user registers it
+        # via the onboarding prompt flow.
+        stored = get_binary(name)
+        registered = stored is not None and is_binary_valid(stored)
         results.append(ExecutorPrereq(
             tool=name,
-            present=resolved is not None,
-            path=resolved,
+            present=registered,
+            path=stored if registered else None,
             hint=_hint_for(name),
         ))
     return PrereqsResponse(prereqs=results)

@@ -41,13 +41,13 @@ beforeEach(() => {
   vi.restoreAllMocks();
   // Default: a healthy, empty container (no orgs, none broken).
   vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
-  // Default prereqs: all built-ins present with a resolved path.
+  // Default prereqs: all registered (compact success line).
   vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
     prereqs: [
-      { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Install Claude Code' },
-      { tool: 'codex', present: true, path: '/usr/bin/codex', hint: 'Install Codex' },
-      { tool: 'opencode', present: true, path: '/usr/bin/opencode', hint: 'Install opencode' },
-      { tool: 'pi', present: true, path: '/usr/bin/pi', hint: 'Install Pi' },
+      { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Register Claude Code' },
+      { tool: 'codex', present: true, path: '/usr/bin/codex', hint: 'Register Codex' },
+      { tool: 'opencode', present: true, path: '/usr/bin/opencode', hint: 'Register opencode' },
+      { tool: 'pi', present: true, path: '/usr/bin/pi', hint: 'Register Pi' },
     ],
   });
 });
@@ -466,7 +466,7 @@ describe('OnboardingPage — Step 2 (create org)', () => {
     ).toBeInTheDocument();
   });
 
-  test('executor prereqs — all present shows the X-of-Y summary and resolved paths', async () => {
+  test('executor prereqs — all registered shows the X-of-Y summary and resolved paths', async () => {
     const user = userEvent.setup();
     renderPage();
     await skipConnect(user);
@@ -477,17 +477,17 @@ describe('OnboardingPage — Step 2 (create org)', () => {
     );
     // FE-computed summary from the real array.
     expect(screen.getByText(/4 of 4/)).toBeInTheDocument();
-    expect(screen.getByText(/tools present/)).toBeInTheDocument();
-    // Resolved path is rendered (backend-real, previously unrendered).
+    expect(screen.getByText(/tools registered/)).toBeInTheDocument();
+    // Registered path is rendered.
     expect(screen.getByText('/usr/bin/claude')).toBeInTheDocument();
   });
 
-  test('executor prereqs — missing executors show the hint and a missing pill', async () => {
+  test('executor prereqs — not-registered executors show the hint and a not-registered pill', async () => {
     const user = userEvent.setup();
     vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
       prereqs: [
-        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Install Claude Code' },
-        { tool: 'pi', present: false, path: null, hint: 'Install Pi' },
+        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Register Claude Code' },
+        { tool: 'pi', present: false, path: null, hint: 'Register Pi' },
       ],
     });
     renderPage();
@@ -499,12 +499,12 @@ describe('OnboardingPage — Step 2 (create org)', () => {
     );
     // Summary reflects the partial count.
     expect(screen.getByText(/1 of 2/)).toBeInTheDocument();
-    // Absence surfaced with the hint + a missing pill.
-    expect(screen.getByText(/Install Pi/)).toBeInTheDocument();
-    expect(screen.getByText('missing')).toBeInTheDocument();
-    // The present executor still shows, with its pill.
+    // Absence surfaced with the hint + a not-registered pill.
+    expect(screen.getByText(/Register Pi/)).toBeInTheDocument();
+    expect(screen.getByText('not registered')).toBeInTheDocument();
+    // The registered executor still shows, with its pill.
     expect(screen.getByText('claude')).toBeInTheDocument();
-    expect(screen.getByText('present')).toBeInTheDocument();
+    expect(screen.getByText('registered')).toBeInTheDocument();
   });
 
   test('executor prereqs — query error is silent (no panel rendered)', async () => {
