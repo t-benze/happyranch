@@ -29,21 +29,29 @@ uv run pyinstaller packaging/daemon.spec --clean --noconfirm 2>&1
 # ---- 3. Verify output ----
 echo ""
 echo "[3/3] Verifying output..."
-BIN="dist/happyranch-daemon/happyranch-daemon"
-if [ -x "$BIN" ] || [ -f "$BIN" ]; then
-    echo "  Binary: $BIN"
-    if [ -x "$BIN" ]; then
-        echo "  Perms:  executable"
+BIN_DAEMON="dist/happyranch-daemon/happyranch-daemon"
+BIN_CLI="dist/happyranch-daemon/happyranch"
+rc=0
+for BIN in "$BIN_DAEMON" "$BIN_CLI"; do
+    if [ -x "$BIN" ] || [ -f "$BIN" ]; then
+        echo "  Binary: $BIN"
+        if [ -x "$BIN" ]; then
+            echo "  Perms:  executable"
+        else
+            echo "  Perms:  NOT executable — applying chmod +x"
+            chmod +x "$BIN"
+        fi
     else
-        echo "  Perms:  NOT executable — applying chmod +x"
-        chmod +x "$BIN"
+        echo "ERROR: Binary not found at $BIN"
+        rc=1
     fi
-    SIZE=$(du -sh "dist/happyranch-daemon" | cut -f1)
-    echo "  Size:   $SIZE"
-    echo ""
-    echo "=== Build complete ==="
-    echo "Run:  dist/happyranch-daemon/happyranch-daemon"
-else
-    echo "ERROR: Binary not found at $BIN"
+done
+if [ $rc -ne 0 ]; then
     exit 1
 fi
+SIZE=$(du -sh "dist/happyranch-daemon" | cut -f1)
+echo "  Size:   $SIZE"
+echo ""
+echo "=== Build complete ==="
+echo "Run:  dist/happyranch-daemon/happyranch-daemon"
+echo "      dist/happyranch-daemon/happyranch"
