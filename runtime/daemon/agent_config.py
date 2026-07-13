@@ -122,9 +122,21 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
     preserve a stale .md.model the live spawn never used.
     Copy executor verbatim (default 'claude' if absent), repos verbatim.
 
+    CONSUMPTION: after copying values into .md (or confirming they already
+    match), the agent.yaml is DELETED and a ``.agent_yaml_consumed``
+    sentinel file is written in the workspace.  The sentinel is the
+    DURABLE one-shot gate — even if agent.yaml is later recreated, the
+    next daemon startup skips the agent entirely.  This closes the
+    reviewer-proven breach where a stale/edited agent.yaml could re-win
+    on subsequent startups.
+
+    FENCE: system_assistant writes its own agent.yaml directly and is NOT
+    an org agent — it is always skipped.
+
     Returns a dict of agent_name -> outcome for logging.
 
-    Idempotent: safe to run every daemon startup.
+    Safe to run every daemon startup (sentinel makes it a no-op after
+    first run).
     """
     import logging
     import os
@@ -149,10 +161,27 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
         workspace = workspace_entry
 
         yaml_path = workspace / "agent.yaml"
+        consumed_sentinel = workspace / ".agent_yaml_consumed"
+
+        # Sentinel check: if this workspace was already consumed by a
+        # prior migration run, skip even if agent.yaml reappears.  The
+        # sentinel is the durable proof that .md is now the single
+        # authoritative store.
+        if consumed_sentinel.exists():
+            results[agent_name] = "skipped (already migrated)"
+            continue
+
         if not yaml_path.exists():
             continue
 
         try:
+            # FENCE system_assistant: it writes its own agent.yaml directly
+            # and is NOT an org agent in the migration scope.  Leave its
+            # agent.yaml completely untouched.
+            if agent_name == "system_assistant":
+                results[agent_name] = "skipped (system_assistant)"
+                continue
+
             agent_def = load_agent(paths, agent_name)
             if agent_def is None:
                 _logger.warning(
@@ -170,11 +199,19 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
             # Check if migration is needed (idempotency guard)
             executor_changed = agent_def.executor != yaml_executor
             repos_changed = agent_def.repos != yaml_repos
-            # Model: agent_def.model may be None, yaml_model may be None
             model_changed = agent_def.model != yaml_model
 
             if not (executor_changed or repos_changed or model_changed):
-                results[agent_name] = "unchanged"
+                # Already in sync — consume agent.yaml so a later stale/
+                # edited agent.yaml can NEVER re-win on a subsequent startup.
+                try:
+                    yaml_path.unlink()
+                except FileNotFoundError:
+                    pass
+                # Write durable sentinel so even if agent.yaml is recreated
+                # the next startup skips this agent entirely.
+                consumed_sentinel.write_text("")
+                results[agent_name] = "unchanged (consumed)"
                 continue
 
             # Build the reconciled AgentDef
@@ -216,6 +253,15 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
                 changes.append("repos updated")
             if model_changed:
                 changes.append(f"model: {agent_def.model!r} -> {yaml_model!r}")
+
+            # Consume agent.yaml: delete it AND write a durable sentinel.
+            # The sentinel prevents a later stale/edited agent.yaml from
+            # regaining authority on a subsequent daemon startup.
+            try:
+                yaml_path.unlink()
+            except FileNotFoundError:
+                pass
+            consumed_sentinel.write_text("")
 
             outcome = "migrated (" + "; ".join(changes) + ")"
             results[agent_name] = outcome

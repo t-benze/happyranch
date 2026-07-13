@@ -203,8 +203,9 @@ def test_migrate_repairs_engineering_manager_repos_drift(
 def test_migrate_idempotent_second_run_noop(
     tmp_path: Path,
 ) -> None:
-    """(c) Idempotency: a second migration run is a no-op (stable content,
-    no rewrite churn)."""
+    """(c) One-shot consumption: after migration deletes agent.yaml
+    and writes the .agent_yaml_consumed sentinel, a second run skips
+    with "already migrated" — .md stays unchanged and authoritative."""
     from runtime.orchestrator._paths import OrgPaths
     from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
 
@@ -215,13 +216,14 @@ def test_migrate_idempotent_second_run_noop(
     _write_agent_yaml(workspace, executor="codex", model="gpt-5",
                       repos={"docs": "https://github.com/t-benze/docs.git"})
 
-    # First run: migrates
+    # First run: migrates AND deletes agent.yaml
     results1 = migrate_agent_yaml_to_frontmatter(paths)
     assert results1["dev_agent"].startswith("migrated")
+    assert not (workspace / "agent.yaml").exists()  # consumed
 
-    # Second run: unchanged
+    # Second run: sentinel exists → agent skipped with "already migrated"
     results2 = migrate_agent_yaml_to_frontmatter(paths)
-    assert results2["dev_agent"] == "unchanged"
+    assert results2["dev_agent"] == "skipped (already migrated)"
 
 
 def test_migrate_empty_model_normalizes_to_none(
@@ -244,7 +246,7 @@ def test_migrate_empty_model_normalizes_to_none(
 
     results = migrate_agent_yaml_to_frontmatter(paths)
     # model unchanged: .md was None, agent.yaml '' → None (same)
-    assert results["dev_agent"] == "unchanged"
+    assert "consumed" in results["dev_agent"]
 
     # Verify agent still loads after migration
     agent_def = load_agent(paths, "dev_agent")
@@ -252,8 +254,13 @@ def test_migrate_empty_model_normalizes_to_none(
     assert agent_def.model is None
 
     # Now test the case where .md has a stale model but agent.yaml has ''
-    # -> migration should clear .md.model to None
+    # -> migration should clear .md.model to None.
+    #
+    # First remove the sentinel so the migration runs again, then rewrite
+    # both .md and agent.yaml to simulate a first-run scenario.
+    (workspace / ".agent_yaml_consumed").unlink()
     _write_agent_md(paths, "dev_agent", model="old-model")
+    _write_agent_yaml(workspace, executor="claude", repos={}, model="")
     results2 = migrate_agent_yaml_to_frontmatter(paths)
     assert "migrated" in results2["dev_agent"]
     assert "model" in results2["dev_agent"]
@@ -266,45 +273,68 @@ def test_migrate_empty_model_normalizes_to_none(
 def test_migrate_divergent_agent_yaml_is_ignored_after_cutover(
     tmp_path: Path,
 ) -> None:
-    """(d) RED single-source proof: after migration cutover, a divergent
-    agent.yaml executor/repos/model can NO LONGER override .md.
-    Resolvers read .md only; agent.yaml is not consulted."""
+    """RED-proof (reviewer gap closed): after migration cutover CONSUMED
+    agent.yaml and wrote the .agent_yaml_consumed sentinel, a later
+    stale/edited agent.yaml CANNOT re-win on a subsequent daemon startup.
+
+    Steps:
+      1. Run migrate once — .md now holds the values, agent.yaml is
+         deleted, sentinel is written.
+      2. Rewrite agent.yaml with DIVERGENT executor/repos/model.
+      3. RE-RUN migrate_agent_yaml_to_frontmatter (the startup path —
+         NOT just load_agent; this is the gap).
+      4. Assert .md/AgentDef is unchanged (divergent agent.yaml ignored
+         because sentinel exists).
+    """
     from runtime.orchestrator._paths import OrgPaths
     from runtime.orchestrator.prompt_loader import load_agent
-    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter, load_agent_config
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
 
     paths = OrgPaths(root=tmp_path)
     workspace = tmp_path / "workspaces" / "dev_agent"
 
-    # Step 1: .md and agent.yaml are in sync (post-migration state)
+    # Step 1: .md and agent.yaml start in sync
     _write_agent_md(paths, "dev_agent", executor="codex", model="gpt-5",
                     repos={"docs": "https://github.com/t-benze/docs.git"})
     _write_agent_yaml(workspace, executor="codex", model="gpt-5",
                       repos={"docs": "https://github.com/t-benze/docs.git"})
 
-    # Migration confirms they're in sync
+    # Migration confirms they're in sync AND deletes agent.yaml + writes sentinel
     results = migrate_agent_yaml_to_frontmatter(paths)
-    assert results["dev_agent"] == "unchanged"
+    assert "consumed" in results["dev_agent"]
+    assert not (workspace / "agent.yaml").exists(), "agent.yaml must be deleted"
+    assert (workspace / ".agent_yaml_consumed").exists(), "sentinel must be written"
 
-    # Step 2: NOW someone mutates agent.yaml to divergent values
-    # (simulating stealth agent.yaml edit bypassing the .md).
-    _write_agent_yaml(workspace, executor="pi", model="claude-sonnet-4-5",
-                      repos={"evil": "https://evil.git"})
-
-    # Step 3: RED proof — the resolver reads .md ONLY.
-    # agent.yaml's divergent values are IGNORED.
+    # Verify .md is intact
     agent_def = load_agent(paths, "dev_agent")
     assert agent_def is not None
-    # .md values prevail
     assert agent_def.executor == "codex"
     assert agent_def.repos == {"docs": "https://github.com/t-benze/docs.git"}
     assert agent_def.model == "gpt-5"
 
-    # agent.yaml still has the divergent values, but they're invisible to resolvers
-    yaml_cfg = load_agent_config(workspace)
-    assert yaml_cfg["executor"] == "pi"
-    assert yaml_cfg["repos"] == {"evil": "https://evil.git"}
-    assert yaml_cfg["model"] == "claude-sonnet-4-5"
+    # Step 2: stealth edit — someone writes a divergent agent.yaml
+    _write_agent_yaml(workspace, executor="pi", model="claude-sonnet-4-5",
+                      repos={"evil": "https://evil.git"})
+
+    # Step 3: RE-RUN migration (the startup path — the reviewer's gap:
+    # prior test only called load_agent and missed the startup path).
+    results2 = migrate_agent_yaml_to_frontmatter(paths)
+    # Sentinel exists → migration skips entirely, even though agent.yaml
+    # has been recreated with divergent values.
+    assert "skipped (already migrated)" in results2.get("dev_agent", "")
+
+    # Step 4: .md/AgentDef remains authoritative
+    agent_def2 = load_agent(paths, "dev_agent")
+    assert agent_def2 is not None
+    assert agent_def2.executor == "codex", ".md executor must still be codex"
+    assert agent_def2.repos == {"docs": "https://github.com/t-benze/docs.git"}, \
+        ".md repos must still be docs"
+    assert agent_def2.model == "gpt-5", ".md model must still be gpt-5"
+
+    # Confirm agent.yaml divergent values exist but were ignored
+    assert (workspace / "agent.yaml").exists(), (
+        "agent.yaml should still exist (divergent values ignored, not deleted)"
+    )
 
 
 def test_migrate_skips_workspace_without_yaml(
