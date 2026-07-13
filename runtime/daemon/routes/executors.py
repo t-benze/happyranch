@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from runtime.daemon.auth import require_registration_token
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX
+from runtime.orchestrator.executor_binary_registry import set_binary, validate_binary
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
@@ -548,6 +549,17 @@ def runtime_register_executor(
             detail="Registration token is invalid, expired, consumed, or not a runtime token",
         )
 
+    # 1b. Assert purpose is 'profile' (binary-purpose tokens NOT allowed here)
+    if record.purpose != "profile":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "token_purpose_mismatch",
+                "expected": "profile",
+                "actual": record.purpose,
+            },
+        )
+
     profile_name = record.name
 
     # 2. Conformance must be complete
@@ -668,4 +680,117 @@ def runtime_register_executor(
         adapter_id=body.adapter,
         command=body.command,
         argv_template=[str(e) for e in body.argv_template],
+    )
+
+
+# ── Register-Binary request/response models (THR-088) ──────────────────
+
+
+class RegisterBinaryRequest(BaseModel):
+    """Register a binary path for an executor kind.
+
+    The kind is determined from the registration token's ``name`` — there
+    is NO ``kind`` field in the body. This ensures a token scoped to
+    ``claude`` can only write the ``claude`` binary path.
+    """
+    path: str = Field(..., min_length=1, description="Absolute path to the executor binary")
+
+
+class RegisterBinaryResponse(BaseModel):
+    kind: str
+    path: str
+    valid: bool
+
+
+# ── POST /executors/runtime/register-binary (THR-088) ──────────────────
+
+
+@runtime_router.post(
+    "/executors/runtime/register-binary",
+    dependencies=[require_registration_token()],
+)
+def runtime_register_binary(
+    request: Request,
+    body: RegisterBinaryRequest,
+) -> RegisterBinaryResponse:
+    """Register a binary path for a built-in executor kind.
+
+    Security model (FOUNDER-APPROVED Option B, THR-088):
+    - Loopback-only + scoped-token (same ``require_registration_token`` gate
+      as the sibling runtime routes).
+    - Token MUST have ``purpose='binary'`` — profile-purpose tokens are rejected.
+    - Kind comes from the token record's ``name``, NOT the request body.
+      This guarantees one token = one kind (no cross-kind writes).
+    - Reuses the same conformance-challenge model as ``runtime_register_executor``:
+      the CLI must complete all check-in steps before calling this route.
+    - ``validate_binary(path)`` is called before any registry write.
+    - Token is atomically reserve→commit (release on failure) — same pattern as
+      ``runtime_register_executor``.
+
+    On any validation or conformance failure the token is NOT consumed and
+    remains retryable within its TTL.
+    """
+    token_value = _extract_token(request)
+    store = request.app.state.daemon.registration_token_store
+
+    # 1. Validate runtime token
+    record = store.validate_runtime(token_value)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Registration token is invalid, expired, consumed, or not a runtime token",
+        )
+
+    # 2. Assert purpose == 'binary'
+    if record.purpose != "binary":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "token_purpose_mismatch",
+                "expected": "binary",
+                "actual": record.purpose,
+            },
+        )
+
+    kind = record.name  # The token's name IS the executor kind
+
+    # 3. Conformance must be complete (SAME model as runtime_register_executor)
+    if not store.is_challenge_complete_runtime(token_value):
+        pending = store.get_pending_steps_runtime(token_value) or []
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Conformance incomplete. Pending steps: {pending}",
+        )
+
+    # 4. Validate the binary path BEFORE any side effects
+    try:
+        resolved = validate_binary(body.path)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    # 5. RESERVE the token (atomic gate)
+    reserved = store.reserve_runtime(token_value)
+    if reserved is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Registration token is invalid, expired, consumed, or not a runtime token",
+        )
+
+    try:
+        # 6. Write the binary path to the machine-local registry
+        set_binary(kind, resolved)
+    except BaseException:
+        store.release_runtime(token_value)
+        raise
+    else:
+        # 7. COMMIT (permanent consume) ONLY on clean success
+        store.commit_runtime(token_value)
+
+    return RegisterBinaryResponse(
+        kind=kind,
+        path=resolved,
+        valid=True,
     )

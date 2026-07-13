@@ -57,6 +57,11 @@ class RegistrationTokenMintResponse(BaseModel):
 class RuntimeRegistrationTokenMintRequest(BaseModel):
     """Runtime-level mint: no org — the profile is machine-global."""
     name: str = Field(..., min_length=1, description="Executor profile name")
+    purpose: str = Field(
+        'profile',
+        pattern=r'^(profile|binary)$',
+        description="'profile' for executor profile registration, 'binary' for binary-path registration"
+    )
 
 
 @router.post("/auth/registration-token")
@@ -105,5 +110,5 @@ def mint_runtime_registration_token(
         )
 
     store = request.app.state.daemon.registration_token_store
-    token, expires_at = store.mint_runtime(body.name)
+    token, expires_at = store.mint_runtime(body.name, purpose=body.purpose)
     return RegistrationTokenMintResponse(token=token, expires_at=expires_at)
