@@ -391,6 +391,70 @@ def test_parse_defaults_new_fields_when_absent(store: LearningsStore):
     assert parsed.salience == 50
 
 
+# ── THR-091 last_verified ──
+
+def test_parse_defaults_last_verified_when_absent(store: LearningsStore):
+    parsed = store._parse(GOLDEN_RAW_ENTRY)
+    assert parsed.last_verified is None
+
+
+def test_round_trip_last_verified_set_and_unset(store: LearningsStore):
+    """parse(serialize(x)) == x for last_verified unset AND set."""
+    # Unset
+    entry_unset = _make_entry(id="LRN-010", slug="a", last_verified=None)
+    serialized = store._serialize(entry_unset)
+    parsed = store._parse(serialized)
+    assert parsed.last_verified is None
+    assert parsed.title == entry_unset.title
+    # Set
+    ts = "2026-07-10T08:00:00Z"
+    entry_set = _make_entry(id="LRN-011", slug="b", last_verified=ts)
+    serialized2 = store._serialize(entry_set)
+    parsed2 = store._parse(serialized2)
+    assert parsed2.last_verified == ts
+    assert parsed2.title == entry_set.title
+
+
+def test_last_verified_omitted_from_serialization_when_none(store: LearningsStore):
+    """When last_verified is None, the key must NOT appear in serialized output."""
+    entry = _make_entry(id="LRN-012", slug="c", last_verified=None)
+    serialized = store._serialize(entry)
+    assert "last_verified" not in serialized
+
+
+def test_last_verified_not_in_golden_serialization(store: LearningsStore):
+    """Extend golden entry test: last_verified must not leak into serialization."""
+    canonical = store._serialize(store._parse(GOLDEN_RAW_ENTRY))
+    assert "last_verified" not in canonical
+    # Fixpoint still holds
+    assert store._serialize(store._parse(canonical)) == canonical
+
+
+def test_entry_age_summary_from_updated_at(store: LearningsStore):
+    """age_summary() returns entry age days computed from updated_at."""
+    from datetime import datetime, timezone, timedelta
+    entry = _make_entry(
+        id="LRN-020", slug="d",
+        updated_at=(datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    summary = entry.age_summary()
+    assert summary["age_days"] == 3
+    assert "last_verified_age_days" not in summary  # only when last_verified is set
+
+
+def test_entry_age_summary_with_last_verified(store: LearningsStore):
+    """When last_verified is set, age_summary includes both ages."""
+    from datetime import datetime, timezone, timedelta
+    entry = _make_entry(
+        id="LRN-021", slug="e",
+        updated_at=(datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        last_verified=(datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    summary = entry.age_summary()
+    assert summary["age_days"] == 10
+    assert summary["last_verified_age_days"] == 2
+
+
 def test_validate_rejects_bad_provenance(store: LearningsStore):
     with pytest.raises(InvalidLearningEntry) as exc:
         store._validate_entry_structure(_make_entry(provenance="bogus"))

@@ -101,6 +101,13 @@ def cmd_learning_get(args: argparse.Namespace) -> None:
         print(f"tags: {', '.join(entry['tags'])}")
     if entry.get("promoted_to"):
         print(f"promoted_to: {entry['promoted_to']}")
+    # THR-091: surface entry age at recall
+    age_days = entry.get("age_days")
+    if age_days is not None:
+        print(f"age: {age_days} days since last update")
+    lv_age = entry.get("last_verified_age_days")
+    if lv_age is not None:
+        print(f"last verified: {lv_age} days ago")
     print()
     print(entry["body"])
 

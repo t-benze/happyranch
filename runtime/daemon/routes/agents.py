@@ -1233,7 +1233,7 @@ def _workspace_memory_store(org: OrgState, agent_name: str) -> MemoryStore:
 
 
 def _entry_to_dict(entry: MemoryItem) -> dict:
-    return {
+    result = {
         "id": entry.id,
         "slug": entry.slug,
         "title": entry.title,
@@ -1251,7 +1251,11 @@ def _entry_to_dict(entry: MemoryItem) -> dict:
         "lifecycle": entry.lifecycle,
         "provenance": entry.provenance,
         "salience": entry.salience,
+        "last_verified": entry.last_verified,
     }
+    # THR-091: surface entry age at recall
+    result.update(entry.age_summary())
+    return result
 
 
 @router.get("/agents/{agent_name}/memory/entries/")

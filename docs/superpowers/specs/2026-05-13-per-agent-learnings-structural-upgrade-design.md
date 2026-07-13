@@ -16,6 +16,8 @@
 >
 > **THR-032 P4a (improved memory search ranking).** `MemoryStore.search()` uses multi-term scoring with lifecycle/provenance/salience weighting. Evicted and superseded excluded by default with explicit include flags. Additive hit fields: `source`, `lifecycle`, `provenance`, `salience`, `updated_at`.
 >
+> **THR-091 (last_verified frontmatter + age at recall).** `MemoryItem` gains an optional `last_verified` frontmatter field (ISO-8601 string, default `None`). When `None`, the key is omitted from serialization so existing entries round-trip byte-identically (same pattern as `provenance`/`scope`/`lifecycle`/`salience`). `MemoryItem.age_summary()` computes `age_days` (now - `updated_at`) and, only when `last_verified` is set, `last_verified_age_days`. The `GET /memory/entries/{id}` response and `happyranch memory get` CLI output surface both ages at recall time. No schema change — `.md` frontmatter only.
+>
 > **THR-032 P4b (opt-in read-only KB federation).** Memory search supports `include_kb`/`--include-kb` flag (default false). KB hits are merged at read time with source labels without altering KB write governance. KB failure returns memory hits with a warning.
 
 ## 1. Goal
@@ -85,6 +87,7 @@ source_task: TASK-235                    # optional; the task that produced the 
 related_to: [LRN-020, LRN-028]           # optional; validated at write time (unknown ID = 400)
 supersedes: null                         # optional LRN-NNN of an earlier learning being replaced
 promoted_to: null                        # optional KB slug if this learning was promoted to a KB precedent
+last_verified: null                      # optional ISO-8601 timestamp of last human verification
 ---
 
 # Cross-team dispatch forbidden even under founder verbal authorization

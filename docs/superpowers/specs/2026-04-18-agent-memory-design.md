@@ -15,6 +15,8 @@
 >
 > **THR-032 P4a (improved memory search ranking).** `MemoryStore.search()` now uses additive multi-term scoring over title, tags/topic, body (capped), provenance, lifecycle penalty (superseded -20), and effective salience contribution. Evicted and superseded entries are excluded by default with explicit `include_evicted`/`include_superseded` flags. Additive hit fields include `source`, `lifecycle`, `provenance`, `salience`, and `updated_at`. Malformed files are skipped without fatal error. Empty query returns no hits (exit 0).
 >
+> **THR-091 (last_verified frontmatter + age at recall).** `MemoryItem` gains an optional `last_verified` frontmatter field (ISO-8601 string, default `None`). When `None`, the key is omitted from serialization so existing entries round-trip byte-identically. `MemoryItem.age_summary()` computes `age_days` (now - `updated_at`) and, only when `last_verified` is set, `last_verified_age_days`. The `GET /memory/entries/{id}` response and `happyranch memory get` CLI output surface both ages at recall time. No schema change — pure `.md` frontmatter.
+>
 > **THR-032 P4b (opt-in read-only KB federation).** Memory search supports an explicit `include_kb` / `--include-kb` flag (default false). When enabled, KB search results are merged at read time with source labels (`memory` vs `kb`) and source-specific identifiers. No storage merge, no KB write governance change, no alteration of promotion semantics. KB search failure during federated read returns memory hits with a warning rather than failing the whole query.
 
 ## Problem
