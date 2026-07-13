@@ -1205,7 +1205,8 @@ def _workspace_memory_store(org: OrgState, agent_name: str) -> MemoryStore:
             status_code=412,
             detail={"error": "workspace_not_migrated", "migrate_first": True},
         )
-    return MemoryStore(memory_dir)
+    org_cfg = load_org_config(OrgPaths(root=org.root))
+    return MemoryStore(memory_dir, compaction_config=org_cfg.memory_compaction)
 
 
 def _entry_to_dict(entry: MemoryItem) -> dict:

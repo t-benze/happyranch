@@ -207,9 +207,10 @@ def _lrn_numeric_suffix(s: "LearningSummary") -> int:
 
 
 class MemoryStore:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, compaction_config: "MemoryCompactionConfig | None" = None) -> None:
         self._root = root
         self._root.mkdir(parents=True, exist_ok=True)
+        self._compaction_config: "MemoryCompactionConfig | None" = compaction_config
 
     @property
     def root(self) -> Path:
@@ -355,6 +356,25 @@ class MemoryStore:
             _superseded_prior = self._mark_superseded_by(entry.supersedes, stamped.id, agent)
         # Store on the stamped item for route handler audit
         stamped._superseded_target_id = entry.supersedes if _superseded_prior else None
+
+        # THR-091 WS-D: auto-trigger compaction after successful write.
+        # Inline check — no new route/OpenAPI/TaskStatus needed.
+        if (
+            self._compaction_config is not None
+            and self._compaction_config.enabled
+            and self._compaction_config.auto_trigger_entry_count > 0
+        ):
+            entry_count = len(self._entry_paths())
+            if entry_count >= self._compaction_config.auto_trigger_entry_count:
+                cc = self._compaction_config
+                policy = MemoryCompactionPolicy(
+                    salience_floor=cc.salience_floor,
+                    stale_days=cc.stale_days,
+                    superseded_grace_days=cc.superseded_grace_days,
+                    max_evictions_per_run=cc.max_evictions_per_run,
+                )
+                self.compact(dry_run=False, policy=policy)
+
         return stamped
 
     def update_entry(

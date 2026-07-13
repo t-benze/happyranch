@@ -165,6 +165,19 @@ def _assignments_for_skill(policy: dict, skill_id: str) -> list[dict]:
     return result
 
 
+def _get_validation_state(org: OrgState, skill_id: str, version: str) -> str:
+    """Determine validation state for a user-authored skill from the store.
+
+    Returns 'validated' if the latest validation event for this version is ok,
+    'failed_validation' if the latest for this version failed,
+    'in_catalog' if no validation event exists.
+    """
+    latest = org.db.get_latest_skill_validation(skill_id, version=version)
+    if latest is None:
+        return "in_catalog"
+    return "validated" if latest["ok"] else "failed_validation"
+
+
 # ── Route: GET /skills/catalog ────────────────────────────────────────────
 
 @router.get("/skills/catalog")
@@ -200,8 +213,8 @@ def skills_catalog(
 
         # Validation state
         if source_type == "user_authored":
-            # P1: no validation store → always in_catalog
-            validation_state = "in_catalog"
+            # P2: check validation store for latest result
+            validation_state = _get_validation_state(org, entry.id, entry.version)
         else:
             validation_state = "validated"
 
@@ -260,7 +273,7 @@ def skills_catalog_detail(
             visibility_category = "read_only" if is_system_contract else "toggleable"
 
             if source_type == "user_authored":
-                validation_state = "in_catalog"  # P1
+                validation_state = _get_validation_state(org, entry.id, entry.version)
             else:
                 validation_state = "validated"
 
@@ -448,3 +461,643 @@ def _build_registry_from_entries(entries: list[SkillEntry]) -> SkillRegistry:
     for entry in entries:
         registry._entries[entry.id] = entry
     return registry
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE 2 — Write endpoints + validation guard
+# ══════════════════════════════════════════════════════════════════════════════
+
+import json
+import shutil
+import tempfile
+import uuid as _uuid
+from datetime import datetime, timezone
+
+from pydantic import BaseModel, Field
+
+from runtime.skills.system_contracts import SYSTEM_CONTRACTS as _SYSTEM_CONTRACTS
+
+
+# ── Request models ──────────────────────────────────────────────────────
+
+class CreateSkillRequest(BaseModel):
+    slug: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    version: str = Field(default="0.1.0")
+    policy_class: str = Field(default="standard_operational")
+    summary: str = Field(default="")
+    skill_md: str = Field(..., min_length=1)
+    references: dict[str, str] = Field(default_factory=dict)
+    assets: dict[str, str] = Field(default_factory=dict)
+
+
+class EditSkillRequest(BaseModel):
+    name: str | None = None
+    summary: str | None = None
+    version: str | None = None
+    skill_md: str | None = None
+    references: dict[str, str] | None = None
+    assets: dict[str, str] | None = None
+
+
+class ValidateRequest(BaseModel):
+    pass  # no body needed — validates current store content
+
+
+class AssignSkillRequest(BaseModel):
+    action: str = Field(..., pattern="^(allow|remove)$")
+
+
+# ── Validation guard ────────────────────────────────────────────────────
+
+def _collect_protected_slugs(org: OrgState) -> set[str]:
+    """Collect all slugs that a user-authored skill cannot shadow."""
+    slugs: set[str] = set()
+    try:
+        release = _release_registry(org)
+        slugs.update(entry.slug for entry in release.list_all())
+    except Exception:
+        pass
+    slugs.update(sc.id for sc in _SYSTEM_CONTRACTS)
+    return slugs
+
+
+def _validate_artifact_filename(fname: str) -> None:
+    """Validate a references/assets filename for path-traversal safety.
+
+    Raises ValueError for:
+    - Empty filenames
+    - Absolute paths (starts with '/')
+    - '..' traversal segments
+    - Directory targets (contains '/')
+    """
+    if not fname or not fname.strip():
+        raise ValueError("Artifact filename is empty")
+    if fname.startswith("/"):
+        raise ValueError(f"Artifact filename '{fname}' is absolute; must be a relative filename")
+    if "/" in fname:
+        raise ValueError(f"Artifact filename '{fname}' is a directory path; must be a plain filename")
+    if ".." in Path(fname).parts:
+        raise ValueError(f"Artifact filename '{fname}' contains '..' traversal segment")
+
+
+def _validate_skill_package(
+    org: OrgState,
+    slug: str,
+    skill_id: str,
+    name: str,
+    version: str,
+    policy_class: str,
+    skill_md: str,
+    references: dict[str, str] | None = None,
+    assets: dict[str, str] | None = None,
+) -> dict:
+    """Run the technical validate guard on a user-authored skill package.
+
+    Checks (v3 §8.3):
+    (a) parses / well-formed — skill_md is non-empty string
+    (b) required metadata present — id, slug, name, version must all be
+        non-empty strings
+    (c) SKILL.md present — skill_md is not empty/just-whitespace
+    (d) references + assets resolve — if provided, must be dicts of
+        string→string
+    (e) NO bundled-slug collision — custom slug must not collide with
+        release-shipped or system_contract slugs
+    (f) custom cannot mint system_contract
+    (g) dry-materialization assemble-check — assemble into a TEMP dir,
+        assert clean materialization; never write to a live workspace
+
+    Returns dict with keys: ok, errors (list[str]), reason_codes (list[str])
+    """
+    references = references or {}
+    assets = assets or {}
+    errors: list[str] = []
+    reason_codes: list[str] = []
+
+    # (a) well-formed — skill_md must be a non-empty string
+    if not isinstance(skill_md, str) or not skill_md.strip():
+        errors.append("SKILL.md content is empty or missing")
+        reason_codes.append("skill_md_empty")
+
+    # (b) required metadata: id, slug, name, version
+    if not skill_id or not isinstance(skill_id, str) or not skill_id.strip():
+        errors.append("Required metadata 'id' is missing")
+        reason_codes.append("missing_id")
+    if not slug or not isinstance(slug, str) or not slug.strip():
+        errors.append("Required metadata 'slug' is missing")
+        reason_codes.append("missing_slug")
+    if not name or not isinstance(name, str) or not name.strip():
+        errors.append("Required metadata 'name' is missing")
+        reason_codes.append("missing_name")
+    if not version or not isinstance(version, str) or not version.strip():
+        errors.append("Required metadata 'version' is missing")
+        reason_codes.append("missing_version")
+
+    # (c) SKILL.md present — already covered by (a) plus heading check
+    if skill_md.strip() and not skill_md.strip().startswith("#"):
+        errors.append("SKILL.md must start with a heading")
+        reason_codes.append("skill_md_no_heading")
+
+    # (d) references + assets resolve
+    if not isinstance(references, dict):
+        errors.append("'references' must be a map of filename→content")
+        reason_codes.append("invalid_references_type")
+    else:
+        for k, v in references.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                errors.append(f"Reference '{k}' has an invalid value type")
+                reason_codes.append("invalid_reference_value")
+                break
+            try:
+                _validate_artifact_filename(k)
+            except ValueError as exc:
+                errors.append(f"Invalid reference filename: {exc}")
+                reason_codes.append("invalid_reference_filename")
+                break
+    if not isinstance(assets, dict):
+        errors.append("'assets' must be a map of filename→content")
+        reason_codes.append("invalid_assets_type")
+    else:
+        for k, v in assets.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                errors.append(f"Asset '{k}' has an invalid value type")
+                reason_codes.append("invalid_asset_value")
+                break
+            try:
+                _validate_artifact_filename(k)
+            except ValueError as exc:
+                errors.append(f"Invalid asset filename: {exc}")
+                reason_codes.append("invalid_asset_filename")
+                break
+
+    # (e) NO bundled-slug collision
+    protected_slugs = _collect_protected_slugs(org)
+    if slug in protected_slugs:
+        errors.append(f"Slug '{slug}' collides with a release-shipped or system-contract skill")
+        reason_codes.append("slug_collision")
+
+    # (f) custom cannot mint system_contract
+    if policy_class == "system_contract":
+        errors.append("User-authored skills cannot use policy_class 'system_contract'")
+        reason_codes.append("system_contract_forbidden")
+
+    # (g) dry-materialization assemble-check
+    try:
+        _dry_materialize(slug, skill_md, references, assets)
+    except Exception as exc:
+        errors.append(f"Dry materialization failed: {exc}")
+        reason_codes.append("materialization_error")
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "reason_codes": reason_codes,
+    }
+
+
+def _dry_materialize(
+    slug: str,
+    skill_md: str,
+    references: dict[str, str],
+    assets: dict[str, str],
+) -> None:
+    """Dry-run materialization: assemble into a temp dir, verify it's clean.
+
+    Never writes to a live workspace — operates entirely in a temp dir.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="skill_dry_mat_"))
+    try:
+        pkg_dir = tmp / slug
+        pkg_dir.mkdir(parents=True)
+        # Write SKILL.md
+        (pkg_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        # Write skill.yaml
+        (pkg_dir / "skill.yaml").write_text(
+            yaml.dump({
+                "id": f"hr:{slug}",
+                "slug": slug,
+                "name": slug.replace("-", " ").title(),
+                "version": "0.1.0",
+                "description": "",
+                "when_to_use": "",
+                "owner": "operator",
+                "source": "user_authored",
+                "policy_class": "standard_operational",
+                "status": "enabled",
+            }),
+            encoding="utf-8",
+        )
+        # Write references
+        if references:
+            ref_dir = pkg_dir / "references"
+            ref_dir.mkdir()
+            for fname, content in references.items():
+                _validate_artifact_filename(fname)
+                (ref_dir / fname).write_text(content, encoding="utf-8")
+        # Write assets
+        if assets:
+            assets_dir = pkg_dir / "assets"
+            assets_dir.mkdir()
+            for fname, content in assets.items():
+                _validate_artifact_filename(fname)
+                (assets_dir / fname).write_text(content, encoding="utf-8")
+        # Verify SKILL.md is present on disk
+        if not (pkg_dir / "SKILL.md").is_file():
+            raise FileNotFoundError("SKILL.md missing after materialization")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── Store write helpers ─────────────────────────────────────────────────
+
+def _write_user_skill_to_store(
+    org: OrgState,
+    slug: str,
+    skill_id: str,
+    name: str,
+    version: str,
+    summary: str,
+    policy_class: str,
+    skill_md: str,
+    references: dict[str, str] | None = None,
+    assets: dict[str, str] | None = None,
+) -> None:
+    """Persist a user-authored skill to the per-org store (§6).
+
+    Store directory: <org.root>/skills/<slug>/
+    """
+    references = references or {}
+    assets = assets or {}
+    pkg_dir = org.root / "skills" / slug
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write SKILL.md
+    (pkg_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+
+    # Write skill.yaml
+    skill_yaml = {
+        "id": skill_id,
+        "slug": slug,
+        "name": name,
+        "version": version,
+        "description": summary,
+        "when_to_use": "",
+        "owner": "operator",
+        "source": "user_authored",
+        "policy_class": policy_class,
+        "status": "enabled",
+    }
+    (pkg_dir / "skill.yaml").write_text(yaml.dump(skill_yaml), encoding="utf-8")
+
+    # Write references
+    if references:
+        ref_dir = pkg_dir / "references"
+        ref_dir.mkdir(exist_ok=True)
+        for fname, content in references.items():
+            try:
+                _validate_artifact_filename(fname)
+            except ValueError:
+                # Belt-and-suspenders: skip unsafe filenames — do NOT write
+                # them.  The validation guard has already recorded the error
+                # so the skill stays in draft state.
+                continue
+            (ref_dir / fname).write_text(content, encoding="utf-8")
+
+    # Write assets
+    if assets:
+        assets_dir = pkg_dir / "assets"
+        assets_dir.mkdir(exist_ok=True)
+        for fname, content in assets.items():
+            try:
+                _validate_artifact_filename(fname)
+            except ValueError:
+                continue
+            (assets_dir / fname).write_text(content, encoding="utf-8")
+
+
+def _record_validation_event(
+    org: OrgState,
+    skill_id: str,
+    slug: str,
+    agent: str | None,
+    version: str,
+    validation_result: dict,
+) -> None:
+    """Record a validation event in the skill_validation_events store."""
+    severity = "pass" if validation_result["ok"] else "error"
+    org.db.insert_skill_validation_event(
+        skill_id=skill_id,
+        slug=slug,
+        agent=agent,
+        source="user_authored",
+        severity=severity,
+        ok=validation_result["ok"],
+        version=version,
+        findings=validation_result["errors"],
+        reason_codes=validation_result["reason_codes"],
+    )
+
+
+def _is_editable(entry: SkillEntry) -> tuple[bool, int, str]:
+    """Check if a skill is editable (v3 §9.5).
+
+    Returns (editable, status_code, error_code).
+    - user_authored → editable
+    - first_party/runtime → 409 skill_not_editable
+    - system_contract → 403 system_contract_read_only
+    """
+    if entry.policy_class == PolicyClass.SYSTEM_CONTRACT:
+        return False, 403, "system_contract_read_only"
+    if entry.source == "user_authored":
+        return True, 200, ""
+    return False, 409, "skill_not_editable"
+
+
+# ── Route: POST /skills (create/import) ──────────────────────────────────
+
+@router.post("/skills", status_code=201)
+def create_skill(
+    slug: str,
+    org: OrgDep,
+    body: CreateSkillRequest,
+) -> dict:
+    """Create/import a user-authored skill.
+
+    Runs the technical validate guard synchronously.
+    - Content-validation failure → 201 with validation.ok=false (draft saved)
+    - Malformed request → 422 (nothing persisted)
+    """
+    skill_id = f"hr:{body.slug}"
+
+    # Validate
+    result = _validate_skill_package(
+        org=org,
+        slug=body.slug,
+        skill_id=skill_id,
+        name=body.name,
+        version=body.version,
+        policy_class=body.policy_class,
+        skill_md=body.skill_md,
+        references=body.references,
+        assets=body.assets,
+    )
+
+    # Always persist (even on content-validation failure — v3 §9.1)
+    _write_user_skill_to_store(
+        org=org,
+        slug=body.slug,
+        skill_id=skill_id,
+        name=body.name,
+        version=body.version,
+        summary=body.summary,
+        policy_class=body.policy_class,
+        skill_md=body.skill_md,
+        references=body.references,
+        assets=body.assets,
+    )
+
+    # Record validation event
+    _record_validation_event(
+        org=org,
+        skill_id=skill_id,
+        slug=body.slug,
+        agent=None,
+        version=body.version,
+        validation_result=result,
+    )
+
+    validation_state = "validated" if result["ok"] else "in_catalog"
+    return {
+        "skill_id": skill_id,
+        "source": "user_authored",
+        "validation_state": validation_state,
+        "validation": {"ok": result["ok"], "errors": result["errors"]},
+    }
+
+
+# ── Route: POST /skills/{skill_id}/validate ──────────────────────────────
+
+@router.post("/skills/{skill_id}/validate")
+def validate_skill(
+    slug: str,
+    skill_id: str,
+    org: OrgDep,
+) -> dict:
+    """Re-run the technical validate guard on an existing user-authored skill.
+
+    Reads the skill from the per-org store and re-validates.
+    Never mutates content.
+    """
+    # Find the skill in the union catalog
+    union = _union_catalog(org)
+    for entry, source_type in union:
+        if entry.id == skill_id:
+            if source_type != "user_authored":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "skill_not_user_authored"},
+                )
+            # Read the skill_md from the store
+            pkg_dir = org.root / "skills" / entry.slug
+            skill_md_path = pkg_dir / "SKILL.md"
+            if not skill_md_path.is_file():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"code": "skill_content_missing", "skill_id": skill_id},
+                )
+            skill_md = skill_md_path.read_text(encoding="utf-8")
+
+            # Load stored references and assets RECURSIVELY for re-validation.
+            # Nested entries (e.g. references/subdir/evil.md) must not be
+            # silently skipped — their relative name includes '/' which
+            # _validate_artifact_filename rejects, yielding validation.ok=false.
+            stored_refs: dict[str, str] = {}
+            ref_dir = pkg_dir / "references"
+            if ref_dir.is_dir():
+                for fpath in sorted(ref_dir.rglob("*"), key=lambda p: str(p)):
+                    if fpath.is_file():
+                        rel_name = str(fpath.relative_to(ref_dir))
+                        stored_refs[rel_name] = fpath.read_text(encoding="utf-8")
+
+            stored_assets: dict[str, str] = {}
+            assets_dir = pkg_dir / "assets"
+            if assets_dir.is_dir():
+                for fpath in sorted(assets_dir.rglob("*"), key=lambda p: str(p)):
+                    if fpath.is_file():
+                        rel_name = str(fpath.relative_to(assets_dir))
+                        stored_assets[rel_name] = fpath.read_text(encoding="utf-8")
+
+            result = _validate_skill_package(
+                org=org,
+                slug=entry.slug,
+                skill_id=skill_id,
+                name=entry.name,
+                version=entry.version,
+                policy_class=(entry.policy_class.value
+                              if isinstance(entry.policy_class, PolicyClass)
+                              else str(entry.policy_class)),
+                skill_md=skill_md,
+                references=stored_refs,
+                assets=stored_assets,
+            )
+
+            _record_validation_event(
+                org=org,
+                skill_id=skill_id,
+                slug=entry.slug,
+                agent=None,
+                version=entry.version,
+                validation_result=result,
+            )
+
+            validation_state = "validated" if result["ok"] else "in_catalog"
+            return {
+                "skill_id": skill_id,
+                "validation_state": validation_state,
+                "validation": {"ok": result["ok"], "errors": result["errors"]},
+            }
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={"code": "not_found", "skill_id": skill_id},
+    )
+
+
+# ── Route: PATCH /skills/{skill_id} (edit) ───────────────────────────────
+
+@router.patch("/skills/{skill_id}")
+def edit_skill(
+    slug: str,
+    skill_id: str,
+    org: OrgDep,
+    body: EditSkillRequest,
+) -> dict:
+    """Edit a user-authored skill (v3 §9.5).
+
+    Only user_authored skills are editable.
+    managed/system_contract → 409/403.
+
+    DRAFT-PERSIST-ON-CONTENT-FAILURE (v3 §9.5 + MEM-288):
+    - Well-formed request but content fails validation → 200 with
+      validation.ok=false (draft IS saved)
+    - Malformed request (no editable fields supplied) → 422 (nothing saved)
+    """
+    # Check if any editable field is present
+    if (body.name is None and body.summary is None and body.version is None
+            and body.skill_md is None and body.references is None
+            and body.assets is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "malformed_request",
+                "errors": ["no editable fields supplied"],
+            },
+        )
+
+    # Find the skill in the union catalog
+    union = _union_catalog(org)
+    for entry, source_type in union:
+        if entry.id == skill_id:
+            # Editability gate
+            editable, gate_status, gate_code = _is_editable(entry)
+            if not editable:
+                raise HTTPException(
+                    status_code=gate_status,
+                    detail={"code": gate_code},
+                )
+
+            # Determine the effective new values (merge with existing)
+            pkg_dir = org.root / "skills" / entry.slug
+            existing_skill_md = ""
+            skill_md_path = pkg_dir / "SKILL.md"
+            if skill_md_path.is_file():
+                existing_skill_md = skill_md_path.read_text(encoding="utf-8")
+
+            new_name = body.name if body.name is not None else entry.name
+            new_version = body.version if body.version is not None else entry.version
+            new_summary = body.summary if body.summary is not None else entry.description
+            new_skill_md = body.skill_md if body.skill_md is not None else existing_skill_md
+            new_references = body.references if body.references is not None else {}
+            new_assets = body.assets if body.assets is not None else {}
+            policy_class_val = (entry.policy_class.value
+                                if isinstance(entry.policy_class, PolicyClass)
+                                else str(entry.policy_class))
+
+            # Run validation
+            result = _validate_skill_package(
+                org=org,
+                slug=entry.slug,
+                skill_id=skill_id,
+                name=new_name,
+                version=new_version,
+                policy_class=policy_class_val,
+                skill_md=new_skill_md,
+                references=new_references,
+                assets=new_assets,
+            )
+
+            # Always persist even on content-validation failure
+            _write_user_skill_to_store(
+                org=org,
+                slug=entry.slug,
+                skill_id=skill_id,
+                name=new_name,
+                version=new_version,
+                summary=new_summary,
+                policy_class=policy_class_val,
+                skill_md=new_skill_md,
+                references=new_references,
+                assets=new_assets,
+            )
+
+            _record_validation_event(
+                org=org,
+                skill_id=skill_id,
+                slug=entry.slug,
+                agent=None,
+                version=new_version,
+                validation_result=result,
+            )
+
+            validation_state = "validated" if result["ok"] else "in_catalog"
+            return {
+                "skill_id": skill_id,
+                "source": "user_authored",
+                "validation_state": validation_state,
+                "validation": {"ok": result["ok"], "errors": result["errors"]},
+                "version": new_version,
+            }
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={"code": "not_found", "skill_id": skill_id},
+    )
+
+
+# ── Route: GET /skills/validation (Runtime Validation) ───────────────────
+
+@router.get("/skills/validation")
+def skills_validation(
+    slug: str,
+    org: OrgDep,
+    skill: str | None = Query(None, description="Filter by skill_id"),
+    agent: str | None = Query(None, description="Filter by agent"),
+    source: str | None = Query(None, description="Filter by source"),
+    since: str | None = Query(None, description="ISO timestamp filter (>=)"),
+    severity: str | None = Query(None, description="Filter by severity"),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    """Runtime Validation read surface.
+
+    Filterable by skill, agent, source, time, severity.
+    Label: 'Runtime Validation', NOT 'Audit'.
+    """
+    events = org.db.list_skill_validation_events(
+        skill_id=skill,
+        agent=agent,
+        source=source,
+        since=since,
+        severity=severity,
+        limit=limit,
+    )
+    return {"events": events, "label": "Runtime Validation"}
