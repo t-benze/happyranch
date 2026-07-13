@@ -41,13 +41,13 @@ beforeEach(() => {
   vi.restoreAllMocks();
   // Default: a healthy, empty container (no orgs, none broken).
   vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
-  // Default prereqs: all built-ins present with a resolved path.
+  // Default prereqs: all registered (compact success line).
   vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
     prereqs: [
-      { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Install Claude Code' },
-      { tool: 'codex', present: true, path: '/usr/bin/codex', hint: 'Install Codex' },
-      { tool: 'opencode', present: true, path: '/usr/bin/opencode', hint: 'Install opencode' },
-      { tool: 'pi', present: true, path: '/usr/bin/pi', hint: 'Install Pi' },
+      { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Register Claude Code' },
+      { tool: 'codex', present: true, path: '/usr/bin/codex', hint: 'Register Codex' },
+      { tool: 'opencode', present: true, path: '/usr/bin/opencode', hint: 'Register opencode' },
+      { tool: 'pi', present: true, path: '/usr/bin/pi', hint: 'Register Pi' },
     ],
   });
 });
@@ -377,6 +377,50 @@ describe('OnboardingPage — Step 2 (create org)', () => {
     ).not.toBeInTheDocument();
   });
 
+  test('a bare 409 with no recognized code renders the already-exists message', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(
+      Object.assign(new Error('conflict'), { status: 409 }),
+    );
+    renderPage();
+    await skipConnect(user);
+    await user.click(screen.getByRole('button', { name: /create your first org/i }));
+
+    await user.type(screen.getByLabelText(/slug/i), 'collision');
+    await user.click(screen.getByRole('button', { name: /^create org$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(/already exists/i),
+    );
+  });
+
+  test('surfaces 409 no_active_runtime with its own message, NOT already exists', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(
+      Object.assign(new Error('no runtime'), { status: 409, code: 'no_active_runtime' }),
+    );
+    vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
+    renderPage();
+    await skipConnect(user);
+    await user.click(screen.getByRole('button', { name: /create your first org/i }));
+
+    await user.type(screen.getByLabelText(/slug/i), 'my-org');
+    await user.click(screen.getByRole('button', { name: /^create org$/i }));
+
+    await waitFor(() => {
+      const alert = screen.getByRole('alert');
+      expect(alert).toBeInTheDocument();
+      // Must NOT say "already exists"
+      expect(alert.textContent).not.toMatch(/already exists/i);
+      // Must mention runtime / starting up / not ready
+      expect(alert.textContent).toMatch(/runtime|start|ready|moment/i);
+    });
+    // Still on the create step (success heading never rendered).
+    expect(
+      screen.queryByRole('heading', { name: /is ready/i }),
+    ).not.toBeInTheDocument();
+  });
+
   test('broken orgs render read-only with their error, Copy-error, and NO retry', async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -422,7 +466,7 @@ describe('OnboardingPage — Step 2 (create org)', () => {
     ).toBeInTheDocument();
   });
 
-  test('executor prereqs — all present shows the X-of-Y summary and resolved paths', async () => {
+  test('executor prereqs — all registered shows the X-of-Y summary and resolved paths', async () => {
     const user = userEvent.setup();
     renderPage();
     await skipConnect(user);
@@ -433,17 +477,17 @@ describe('OnboardingPage — Step 2 (create org)', () => {
     );
     // FE-computed summary from the real array.
     expect(screen.getByText(/4 of 4/)).toBeInTheDocument();
-    expect(screen.getByText(/tools present/)).toBeInTheDocument();
-    // Resolved path is rendered (backend-real, previously unrendered).
+    expect(screen.getByText(/tools registered/)).toBeInTheDocument();
+    // Registered path is rendered.
     expect(screen.getByText('/usr/bin/claude')).toBeInTheDocument();
   });
 
-  test('executor prereqs — missing executors show the hint and a missing pill', async () => {
+  test('executor prereqs — not-registered executors show the hint and a not-registered pill', async () => {
     const user = userEvent.setup();
     vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
       prereqs: [
-        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Install Claude Code' },
-        { tool: 'pi', present: false, path: null, hint: 'Install Pi' },
+        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Register Claude Code' },
+        { tool: 'pi', present: false, path: null, hint: 'Register Pi' },
       ],
     });
     renderPage();
@@ -455,12 +499,12 @@ describe('OnboardingPage — Step 2 (create org)', () => {
     );
     // Summary reflects the partial count.
     expect(screen.getByText(/1 of 2/)).toBeInTheDocument();
-    // Absence surfaced with the hint + a missing pill.
-    expect(screen.getByText(/Install Pi/)).toBeInTheDocument();
-    expect(screen.getByText('missing')).toBeInTheDocument();
-    // The present executor still shows, with its pill.
+    // Absence surfaced with the hint + a not-registered pill.
+    expect(screen.getByText(/Register Pi/)).toBeInTheDocument();
+    expect(screen.getByText('not registered')).toBeInTheDocument();
+    // The registered executor still shows, with its pill.
     expect(screen.getByText('claude')).toBeInTheDocument();
-    expect(screen.getByText('present')).toBeInTheDocument();
+    expect(screen.getByText('registered')).toBeInTheDocument();
   });
 
   test('executor prereqs — query error is silent (no panel rendered)', async () => {

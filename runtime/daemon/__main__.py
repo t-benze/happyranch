@@ -123,10 +123,58 @@ def _sweep_on_startup(
                 # its work and report back normally.
                 continue
 
-            # Dead or undeterminable: fail-closed. No auto-revisit spawn —
-            # the THR-079 ruling supersedes the earlier heartbeat/revisit
-            # approach. The founder receives a daemon_restart_failure audit
-            # row and decides whether to re-dispatch.
+            # THR-090 Track A: before failing a dead-pid task, check for an
+            # unconsumed task_result row from the CURRENT session (the
+            # definitive TASK-2625 fingerprint: a completion callback that
+            # landed after the daemon died). Session-scoping is mandatory:
+            # a prior-step result row carries a different session uuid and
+            # must never match — the task falls through to the dead-pid FAIL
+            # path instead. Governing invariant: err toward a MISS
+            # (fail-closed), NEVER replay an already-consumed decision.
+            # Only act if current_session_id is not None AND the row is found;
+            # otherwise fall through unchanged to the dead-pid FAIL path.
+            orphaned_result_row = None
+            if t.current_session_id is not None and t.assigned_agent is not None:
+                orphaned_result_row = db.get_latest_task_result(
+                    task_id, t.assigned_agent, t.current_session_id,
+                )
+            if orphaned_result_row is not None and orchestrator is not None:
+                from runtime.models import CompletionReport, NextStep
+                import json as _json
+                _raw_decision = orphaned_result_row.get("decision_json")
+                _decision: NextStep | None = None
+                if _raw_decision:
+                    try:
+                        _parsed = _json.loads(_raw_decision)
+                        if isinstance(_parsed, dict):
+                            _decision = NextStep(**_parsed)
+                    except Exception:
+                        _decision = None
+                orphaned_report = CompletionReport(
+                    task_id=task_id,
+                    agent=orphaned_result_row.get("agent") or (t.assigned_agent or "unknown"),
+                    status=orphaned_result_row.get("status") or "completed",
+                    confidence=orphaned_result_row.get("confidence_score") or 0,
+                    output_summary=orphaned_result_row.get("output_summary") or "",
+                    verdict=orphaned_result_row.get("verdict"),
+                    decision=_decision,
+                    risks_flagged=orphaned_result_row.get("risks_flagged") or [],
+                    output_dir=orphaned_result_row.get("output_dir"),
+                    waiting_on_job_ids=orphaned_result_row.get("waiting_on_job_ids") or [],
+                )
+                # Audit: log the completion report so the consumed result is
+                # visible — the original session's log_completion_report call
+                # never ran (the daemon died before that point).
+                orchestrator._audit.log_completion_report(report=orphaned_report)
+                from runtime.orchestrator.run_step import _consume_completion_report
+                _consume_completion_report(orchestrator, task_id, orphaned_report)
+                continue
+
+            # Dead or undeterminable (no orphaned result to consume):
+            # fail-closed. No auto-revisit spawn — the THR-079 ruling
+            # supersedes the earlier heartbeat/revisit approach. The founder
+            # receives a daemon_restart_failure audit row and decides whether
+            # to re-dispatch.
             if pid is None:
                 reason = (
                     "session liveness undeterminable on daemon restart -- "
@@ -207,8 +255,27 @@ def _sweep_on_startup(
 def _build_state(settings: Settings) -> DaemonState:
     reg = runtimes.load()
     if reg.active is None:
-        logger.warning("no active runtime — starting in idle mode")
-        return DaemonState.idle(settings)
+        # Auto-provision a default runtime on first launch so the daemon
+        # never starts idle unless the provisioning itself fails.
+        # Precedence:
+        #   1. Registered runtimes exist but none active → activate the first.
+        #   2. Registry empty → create a default runtime at daemon_home/runtime.
+        if reg.registered:
+            target = reg.registered[0]
+            logger.info("no active runtime — activating existing registered runtime: %s", target)
+            runtimes.activate(target)
+        else:
+            default_path = paths.daemon_home() / "runtime"
+            logger.info("no active runtime — auto-provisioning default runtime at %s", default_path)
+            RuntimeDir.init(default_path)
+            runtimes.register(default_path)
+        reg = runtimes.load()
+        if reg.active is None:
+            # Defensive: if provisioning still yields no active runtime,
+            # fall back to idle rather than raising. This path should be
+            # unreachable in practice.
+            logger.error("runtime auto-provision failed — starting in idle mode")
+            return DaemonState.idle(settings)
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings)
     for org in state.orgs.values():

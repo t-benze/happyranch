@@ -611,6 +611,166 @@ def test_normalize_path_does_not_duplicate_existing_entries(monkeypatch):
     assert pathenv.split(":").count("/opt/homebrew/bin") == 1
 
 
+# ── bundled CLI PATH resolution (THR-085) ──────────────────────────────────
+
+
+class TestBundledCliPathFrozen:
+    """When ``sys.frozen`` is True (PyInstaller-bundled Mac app), the bundled
+    CLI directory (``os.path.dirname(sys.executable)``) is prepended at the
+    very front of PATH so bare-name ``happyranch`` resolves to the bundled
+    binary, beating a stale ``~/.local/bin/happyranch``.
+
+    The ``sys.frozen`` gate is the ONLY frozen-detection signal available —
+    the Swift-side ``PACKAGING_MODE=bundled`` env var is stripped by
+    EnvironmentSanitizer before the daemon child launches (THR-085).
+    """
+
+    def test_frozen_prepends_bundled_cli_dir_to_path(self, monkeypatch, tmp_path):
+        """FROZEN: after _normalize_path, PATH starts with the bundled CLI dir."""
+        from runtime.orchestrator.executors import _normalize_path
+
+        bundled_dir = tmp_path / "Contents" / "Resources" / "daemon"
+        bundled_dir.mkdir(parents=True)
+        (bundled_dir / "happyranch").touch(mode=0o755)
+
+        monkeypatch.setattr("sys.frozen", True, raising=False)
+        monkeypatch.setattr("sys.executable", str(bundled_dir / "happyranch-daemon"), raising=False)
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        _normalize_path()
+
+        pathenv = os.environ["PATH"]
+        entries = pathenv.split(":")
+        # Bundled CLI dir must be first — beats ~/.local/bin.
+        assert entries[0] == str(bundled_dir), (
+            f"Expected bundled dir {bundled_dir!s} first, got {entries[0]}"
+        )
+
+    def test_frozen_callee_env_carries_bundled_dir(self, monkeypatch, tmp_path):
+        """FROZEN: _callee_env()['PATH'] includes the bundled dir ahead of
+        ~/.local/bin so child processes resolve bare-name happyranch correctly."""
+        from runtime.orchestrator.executors import _callee_env, _normalize_path
+
+        bundled_dir = tmp_path / "Contents" / "Resources" / "daemon"
+        bundled_dir.mkdir(parents=True)
+        (bundled_dir / "happyranch").touch(mode=0o755)
+
+        monkeypatch.setattr("sys.frozen", True, raising=False)
+        monkeypatch.setattr("sys.executable", str(bundled_dir / "happyranch-daemon"), raising=False)
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        _normalize_path()
+
+        callee = _callee_env()
+        entries = callee["PATH"].split(":")
+        assert entries[0] == str(bundled_dir), (
+            f"Expected bundled dir {bundled_dir!s} first in callee env, got {entries[0]}"
+        )
+        # ~/.local/bin (from _STANDARD_TOOL_DIRS) must appear AFTER the bundled dir.
+        local_bin = os.path.expanduser("~/.local/bin")
+        bundled_idx = entries.index(str(bundled_dir))
+        local_idx = entries.index(local_bin)
+        assert bundled_idx < local_idx, (
+            f"Bundled dir (idx {bundled_idx}) must precede ~/.local/bin (idx {local_idx})"
+        )
+
+    def test_frozen_idempotent_does_not_duplicate_bundled_dir(self, monkeypatch, tmp_path):
+        """FROZEN: calling _normalize_path twice does not duplicate the bundled dir."""
+        from runtime.orchestrator.executors import _normalize_path
+
+        bundled_dir = tmp_path / "Contents" / "Resources" / "daemon"
+        bundled_dir.mkdir(parents=True)
+        (bundled_dir / "happyranch").touch(mode=0o755)
+
+        monkeypatch.setattr("sys.frozen", True, raising=False)
+        monkeypatch.setattr("sys.executable", str(bundled_dir / "happyranch-daemon"), raising=False)
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        _normalize_path()
+        _normalize_path()
+
+        pathenv = os.environ["PATH"]
+        assert pathenv.split(":").count(str(bundled_dir)) == 1, (
+            "Bundled dir must not be duplicated after second _normalize_path()"
+        )
+
+    def test_frozen_unconditional_front_when_bundled_dir_already_in_path(
+        self, monkeypatch, tmp_path
+    ):
+        """FROZEN: when the bundled dir already appears later in PATH (e.g.
+        behind ~/.local/bin from a stale editable install), the bundled dir
+        still lands at index 0 exactly once — it must NOT be left behind the
+        stale entry."""
+        from runtime.orchestrator.executors import _normalize_path
+
+        bundled_dir = tmp_path / "Contents" / "Resources" / "daemon"
+        bundled_dir.mkdir(parents=True)
+        (bundled_dir / "happyranch").touch(mode=0o755)
+
+        local_bin = os.path.expanduser("~/.local/bin")
+        # Seed PATH so the bundled dir is already present AFTER ~/.local/bin —
+        # this is the exact scenario the old "if not in entries" guard mishandled.
+        monkeypatch.setattr("sys.frozen", True, raising=False)
+        monkeypatch.setattr("sys.executable", str(bundled_dir / "happyranch-daemon"), raising=False)
+        monkeypatch.setenv(
+            "PATH",
+            f"{local_bin}:/usr/bin:/bin:{bundled_dir}",
+        )
+
+        _normalize_path()
+
+        pathenv = os.environ["PATH"]
+        entries = pathenv.split(":")
+        # Bundled dir must be at index 0 — beats ~/.local/bin.
+        assert entries[0] == str(bundled_dir), (
+            f"Expected bundled dir {bundled_dir!s} at index 0, got {entries[0]}"
+        )
+        # Bundled dir must appear exactly once.
+        assert entries.count(str(bundled_dir)) == 1, (
+            f"Bundled dir must appear exactly once, got {entries.count(str(bundled_dir))}"
+        )
+        # Original entries still present (minux the old bundled copy).
+        assert local_bin in entries
+        assert "/usr/bin" in entries
+        assert "/bin" in entries
+
+
+class TestBundledCliPathDev:
+    """When ``sys.frozen`` is absent or False (dev/headless/CI daemon), PATH
+    resolution stays exactly as today — no bundled dir is injected."""
+
+    def test_dev_path_unchanged_when_not_frozen(self, monkeypatch):
+        """DEV: _normalize_path does NOT inject a bundled dir when not frozen."""
+        from runtime.orchestrator.executors import _normalize_path
+
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        # sys.frozen is absent (no setattr) — dev/headless/CI baseline.
+
+        _normalize_path()
+
+        pathenv = os.environ["PATH"]
+        entries = pathenv.split(":")
+        # Standard tool dirs are prepended, but NO bundled dir.
+        assert "/opt/homebrew/bin" in entries
+        assert "/usr/local/bin" in entries
+        assert "happyranch-daemon" not in pathenv
+
+    def test_dev_path_unchanged_when_frozen_false(self, monkeypatch):
+        """DEV: sys.frozen=False behaves identically to absent."""
+        from runtime.orchestrator.executors import _normalize_path
+
+        monkeypatch.setattr("sys.frozen", False, raising=False)
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        _normalize_path()
+
+        pathenv = os.environ["PATH"]
+        entries = pathenv.split(":")
+        assert "/opt/homebrew/bin" in entries
+        assert "/usr/local/bin" in entries
+        assert "happyranch-daemon" not in pathenv
+
+
 def test_resolve_binary_absolute_path_passthrough():
     """An absolute cli_path is returned unchanged — the founder configured it
     explicitly."""

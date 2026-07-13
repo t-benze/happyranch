@@ -109,6 +109,41 @@ version control or shared across hosts). This is distinct from the THR-052
 executor profile registry (`org/config.yaml`), which describes *which*
 executor kinds and capabilities exist and is org-portable.
 
+### Bundled CLI PATH resolution (THR-085)
+
+When the daemon is running as a PyInstaller-frozen bundle inside the Mac app,
+the bundled `happyranch` CLI binary sits alongside `happyranch-daemon` inside
+`Contents/Resources/daemon/`. The daemon MUST ensure that bare-name
+`happyranch` invocations by agentic executors resolve to this bundled binary
+— not to a stale `~/.local/bin/happyranch` left over from a previous install.
+
+**Detection mechanism.** The ONLY signal available to the Python daemon is
+PyInstaller's canonical frozen-detection flag: `getattr(sys, 'frozen', False)`
+is `True` when running as the frozen bundle. (The Swift-side
+`PACKAGING_MODE=bundled` environment variable is deliberately stripped by
+`EnvironmentSanitizer` before the daemon child process launches, so the
+Python daemon never sees it.) When frozen, `sys.executable` is the bundled
+`happyranch-daemon` at `Contents/Resources/daemon/happyranch-daemon`, so
+`os.path.dirname(sys.executable)` is the directory that also contains the
+bundled `happyranch` CLI.
+
+**Resolution rule.** At daemon startup, during PATH normalization:
+
+- **Frozen (bundled Mac app):** Prepend `os.path.dirname(sys.executable)`
+  (the bundled CLI directory) at the very front of the executor child's PATH,
+  *before* the standard tool directories (`/opt/homebrew/bin`,
+  `/usr/local/bin`, `~/.local/bin`). This ensures bare-name `happyranch`
+  resolves to the bundled binary and beats any stale `~/.local/bin/happyranch`.
+  The prepend is idempotent — repeated normalization does not duplicate the
+  directory.
+- **Not frozen (dev/headless/CI):** No change. The bundled CLI directory is
+  NOT injected. PATH resolution stays exactly as today — the existing PATH
+  `happyranch` (e.g. from `~/.local/bin` in `_STANDARD_TOOL_DIRS`) wins.
+
+Because `_callee_env()` copies `os.environ` for child subprocesses, every
+executor spawn inherits the normalized PATH with the bundled directory
+leading when frozen.
+
 ---
 
 ## 2. Agent Memory Architecture
