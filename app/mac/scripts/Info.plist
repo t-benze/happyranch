@@ -5,7 +5,9 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>HappyRanchApp</string>
+	<string>HappyRanch</string>
+	<key>CFBundleDisplayName</key>
+	<string>HappyRanch</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIconName</key>
