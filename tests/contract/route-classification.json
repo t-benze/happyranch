@@ -71,6 +71,7 @@
     "GET /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/",
     "GET /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id_or_slug}",
     "POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/search",
+    "GET /api/v1/orgs/{slug}/agents/{agent_id}/skills/effective",
     "PUT /api/v1/orgs/{slug}/agents/{agent_name}/model",
     "GET /api/v1/orgs/{slug}/teams",
     "GET /api/v1/assistant/status",
@@ -89,6 +90,8 @@
     "GET /api/v1/orgs/{slug}/settings",
     "PUT /api/v1/orgs/{slug}/settings/org",
     "PUT /api/v1/orgs/{slug}/settings/teams",
+    "GET /api/v1/orgs/{slug}/skills/catalog",
+    "GET /api/v1/orgs/{slug}/skills/catalog/{skill_id}",
     "GET /api/v1/executor-binaries",
     "POST /api/v1/executor-binaries/register",
     "POST /api/v1/executor-binaries/validate"
