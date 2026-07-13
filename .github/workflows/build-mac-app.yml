@@ -1,0 +1,53 @@
+name: Build macOS App
+
+# Build an UNSIGNED HappyRanchApp.app bundle for Apple Silicon (arm64) macOS
+# and publish it as a downloadable CI artifact.
+#
+# MIRRORS: app/mac/scripts/build-app.sh stages 1-5 — CI and local stay in sync.
+# DOWNLOAD: After downloading the .app, run `xattr -cr HappyRanchApp.app` to
+#           bypass Gatekeeper (the app is unsigned — code signing is founder-gated).
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    name: Build HappyRanchApp.app (macOS arm64, unsigned)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app 2>/dev/null || echo "Xcode 16 already selected"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: '3.12'
+
+      - name: Sync Python dependencies
+        run: uv sync --frozen
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build .app bundle (build-app.sh stages 1-5)
+        run: bash app/mac/scripts/build-app.sh
+
+      - name: Zip .app bundle
+        run: ditto -c -k --keepParent app/mac/HappyRanchApp.app HappyRanchApp.app.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: HappyRanchApp-macos-arm64
+          path: HappyRanchApp.app.zip
+
