@@ -98,7 +98,14 @@ def _normalize_path() -> None:
     # Dev/headless/CI daemons are NOT frozen, so PATH is unchanged.
     if getattr(sys, 'frozen', False):
         bundled_cli_dir = os.path.dirname(sys.executable)
-        if bundled_cli_dir and bundled_cli_dir not in entries:
+        if bundled_cli_dir:
+            # Remove ALL existing copies of the bundled dir from entries —
+            # if it's already present later in PATH (e.g. behind ~/.local/bin),
+            # a simple "if absent" guard would skip prepending and leave the
+            # stale entry ahead of ours (THR-085 msg72). Strip duplicates, then
+            # prepend exactly ONE copy at index 0 so bare-name happyranch
+            # always resolves to the bundled binary.
+            entries = [e for e in entries if e != bundled_cli_dir]
             prepends.append(bundled_cli_dir)
 
     # Standard tool dirs: prepend only those not already present.

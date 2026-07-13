@@ -694,6 +694,46 @@ class TestBundledCliPathFrozen:
             "Bundled dir must not be duplicated after second _normalize_path()"
         )
 
+    def test_frozen_unconditional_front_when_bundled_dir_already_in_path(
+        self, monkeypatch, tmp_path
+    ):
+        """FROZEN: when the bundled dir already appears later in PATH (e.g.
+        behind ~/.local/bin from a stale editable install), the bundled dir
+        still lands at index 0 exactly once — it must NOT be left behind the
+        stale entry."""
+        from runtime.orchestrator.executors import _normalize_path
+
+        bundled_dir = tmp_path / "Contents" / "Resources" / "daemon"
+        bundled_dir.mkdir(parents=True)
+        (bundled_dir / "happyranch").touch(mode=0o755)
+
+        local_bin = os.path.expanduser("~/.local/bin")
+        # Seed PATH so the bundled dir is already present AFTER ~/.local/bin —
+        # this is the exact scenario the old "if not in entries" guard mishandled.
+        monkeypatch.setattr("sys.frozen", True, raising=False)
+        monkeypatch.setattr("sys.executable", str(bundled_dir / "happyranch-daemon"), raising=False)
+        monkeypatch.setenv(
+            "PATH",
+            f"{local_bin}:/usr/bin:/bin:{bundled_dir}",
+        )
+
+        _normalize_path()
+
+        pathenv = os.environ["PATH"]
+        entries = pathenv.split(":")
+        # Bundled dir must be at index 0 — beats ~/.local/bin.
+        assert entries[0] == str(bundled_dir), (
+            f"Expected bundled dir {bundled_dir!s} at index 0, got {entries[0]}"
+        )
+        # Bundled dir must appear exactly once.
+        assert entries.count(str(bundled_dir)) == 1, (
+            f"Bundled dir must appear exactly once, got {entries.count(str(bundled_dir))}"
+        )
+        # Original entries still present (minux the old bundled copy).
+        assert local_bin in entries
+        assert "/usr/bin" in entries
+        assert "/bin" in entries
+
 
 class TestBundledCliPathDev:
     """When ``sys.frozen`` is absent or False (dev/headless/CI daemon), PATH
