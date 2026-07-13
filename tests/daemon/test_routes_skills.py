@@ -548,3 +548,1022 @@ class TestSkillsCatalogAuth:
         client = TestClient(app)
         r = client.get("/api/v1/orgs/alpha/agents/dev_agent/skills/effective")
         assert r.status_code == 401
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PHASE 2 — Write endpoints + validation guard
+# ══════════════════════════════════════════════════════════════════════════
+
+VALID_SKILL_MD = """# Test Skill
+
+A test skill for unit testing.
+
+## Instructions
+
+Do the thing.
+"""
+
+
+def _make_create_body(**overrides) -> dict:
+    """Build a create-skill request body with defaults."""
+    body = {
+        "slug": "test-skill",
+        "name": "Test Skill",
+        "version": "0.1.0",
+        "policy_class": "standard_operational",
+        "summary": "A test skill",
+        "skill_md": VALID_SKILL_MD,
+    }
+    body.update(overrides)
+    return body
+
+
+class TestCreateSkill:
+    """POST /api/v1/orgs/{slug}/skills"""
+
+    def test_create_valid_skill_returns_201(self, tmp_home, app, org_state, auth_headers):
+        """Creating a valid user-authored skill returns 201."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["skill_id"] == "hr:test-skill"
+        assert body["source"] == "user_authored"
+        assert body["validation_state"] == "validated"
+        assert body["validation"]["ok"] is True
+        assert body["validation"]["errors"] == []
+
+    def test_create_writes_skill_to_store(self, tmp_home, app, org_state, auth_headers):
+        """A created skill is persisted to the per-org store."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+
+        # Verify on-disk
+        pkg_dir = org_state.root / "skills" / "test-skill"
+        assert pkg_dir.is_dir()
+        assert (pkg_dir / "SKILL.md").is_file()
+        assert (pkg_dir / "skill.yaml").is_file()
+        content = (pkg_dir / "SKILL.md").read_text()
+        assert "# Test Skill" in content
+
+    def test_create_skill_appears_in_catalog(self, tmp_home, app, org_state, auth_headers):
+        """After creation, the skill appears in the catalog with Custom filter."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+
+        r = client.get(
+            "/api/v1/orgs/alpha/skills/catalog?filter=Custom",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) == 1
+        assert items[0]["skill_id"] == "hr:test-skill"
+        assert items[0]["validation_state"] == "validated"
+
+    def test_create_skill_with_slug_collision_drafts(self, tmp_home, app, org_state, auth_headers):
+        """When slug collides with a release skill, draft is still persisted (validation ok=false)."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(slug="standard-skill"),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201  # Still persists draft (v3 §9.1)
+        body = r.json()
+        assert body["validation"]["ok"] is False
+        assert body["validation_state"] == "in_catalog"
+        # Verify draft exists on disk
+        pkg_dir = org_state.root / "skills" / "standard-skill"
+        assert pkg_dir.is_dir()
+        assert (pkg_dir / "SKILL.md").is_file()
+
+    def test_create_skill_with_empty_skill_md_drafts(self, tmp_home, app, org_state, auth_headers):
+        """Content validation failure (empty skill_md) still persists draft."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(skill_md=" "),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201  # Draft saved, NOT 422
+        body = r.json()
+        assert body["validation"]["ok"] is False
+        assert "SKILL.md content is empty" in str(body["validation"]["errors"])
+
+    def test_create_skill_without_heading_drafts_with_error(self, tmp_home, app, org_state, auth_headers):
+        """Skill without markdown heading fails validation but persists draft."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(skill_md="no heading here"),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["validation"]["ok"] is False
+        assert "SKILL.md must start with a heading" in str(body["validation"]["errors"])
+
+    def test_create_skill_system_contract_rejected(self, tmp_home, app, org_state, auth_headers):
+        """User-authored skills cannot mint system_contract."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(policy_class="system_contract"),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201  # Draft saved
+        body = r.json()
+        assert body["validation"]["ok"] is False
+        assert "system_contract" in str(body["validation"]["errors"]).lower()
+
+    def test_create_skill_malformed_returns_422(self, tmp_home, app, org_state, auth_headers):
+        """422 ONLY for malformed request — bad JSON / missing required fields."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+
+        # Missing required field 'skill_md'
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json={"slug": "bad", "name": "Bad"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+
+    def test_create_requires_auth(self, tmp_home, app, org_state):
+        """401 without bearer token."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+        )
+        assert r.status_code == 401
+
+    def test_create_records_validation_event(self, tmp_home, app, org_state, auth_headers):
+        """Creating a skill records a validation event with severity."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+
+        # Check validation events
+        events = org_state.db.list_skill_validation_events(
+            skill_id="hr:test-skill",
+        )
+        assert len(events) == 1
+        assert events[0]["skill_id"] == "hr:test-skill"
+        assert events[0]["ok"] is True
+        assert events[0]["severity"] == "pass"
+        assert events[0]["version"] == "0.1.0"
+
+    def test_create_with_traversal_reference_returns_validation_false_no_escape(
+        self, tmp_home, app, org_state, auth_headers
+    ):
+        """FIX-1: Create with '..' traversal reference filename → validation.ok=false,
+        and no file written outside the package directory."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(
+                slug="traversal-test",
+                references={"../escape.txt": "should-not-be-written"},
+            ),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["validation"]["ok"] is False
+        assert body["validation_state"] == "in_catalog"
+        assert any("Invalid reference filename" in e for e in body["validation"]["errors"]), (
+            f"Expected reference filename error, got {body['validation']['errors']}"
+        )
+
+        # Assert no file escaped outside the package directory
+        pkg_dir = org_state.root / "skills" / "traversal-test"
+        escape_path = org_state.root / "skills" / "escape.txt"
+        assert not escape_path.exists(), (
+            f"Path traversal write escaped: {escape_path} exists"
+        )
+        # The package directory itself may still be created (draft persisted)
+        # but the escape file must not exist
+        assert not (org_state.root / "escape.txt").exists(), (
+            "Path traversal wrote to org root"
+        )
+
+
+class TestValidateSkill:
+    """POST /api/v1/orgs/{slug}/skills/{skill_id}/validate"""
+
+    def test_validate_existing_skill(self, tmp_home, app, org_state, auth_headers):
+        """Re-validating an existing user-authored skill returns result."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create first
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        # Validate
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:test-skill/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["skill_id"] == "hr:test-skill"
+        assert body["validation_state"] == "validated"
+        assert body["validation"]["ok"] is True
+
+    def test_validate_nonexistent_skill_404(self, tmp_home, app, org_state, auth_headers):
+        """Validating non-existent skill returns 404."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:nonexistent/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 404
+
+    def test_validate_managed_skill_409(self, tmp_home, app, org_state, auth_headers):
+        """Validating a managed skill returns 409."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:standard-skill/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 409
+
+    def test_validate_requires_auth(self, tmp_home, app, org_state):
+        """401 without bearer token."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post("/api/v1/orgs/alpha/skills/hr:test-skill/validate")
+        assert r.status_code == 401
+
+    def test_validate_records_validation_event(self, tmp_home, app, org_state, auth_headers):
+        """Validate records a validation event."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        # Validate (should record another event)
+        client.post(
+            "/api/v1/orgs/alpha/skills/hr:test-skill/validate",
+            headers=auth_headers,
+        )
+        events = org_state.db.list_skill_validation_events(
+            skill_id="hr:test-skill",
+        )
+        assert len(events) >= 2  # create already records one
+
+    def test_validate_with_stored_refs_and_assets_passes(self, tmp_home, app, org_state, auth_headers):
+        """FIX-2: Re-validation loads stored refs/assets and passes for a safe set."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create a skill with references and assets
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(
+                slug="refs-assets-test",
+                references={"doc.md": "# Reference doc"},
+                assets={"logo.png": "fake-png"},
+            ),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        assert r.json()["validation"]["ok"] is True
+
+        # Re-validate — should load stored refs/assets and pass
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:refs-assets-test/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["validation"]["ok"] is True
+        assert body["validation_state"] == "validated"
+
+    def test_validate_fails_with_broken_artifact_set(self, tmp_home, app, org_state, auth_headers):
+        """FIX-2: Re-validation correctly passes stored refs/assets through the
+        same filename safety checks used by create/edit.
+
+        Standard filesystems resolve '..' and '/' at the VFS layer, so a
+        filename like '../evil.txt' cannot exist as a literal directory
+        entry.  We verify the code path directly: create a skill, load its
+        stored SKILL.md, pair it with a references dict containing a
+        traversal name, and call _validate_skill_package — the same check
+        the validate route now performs (FIX-2).
+        """
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+        client = TestClient(app)
+        # Create a skill with safe refs
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(
+                slug="failing-reval",
+                references={"safe.md": "safe content"},
+            ),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        assert r.json()["validation"]["ok"] is True
+
+        # Simulate a tampered store: load stored skill_md and pair it with
+        # a references dict containing a traversal filename.
+        pkg_dir = org_state.root / "skills" / "failing-reval"
+        skill_md = (pkg_dir / "SKILL.md").read_text(encoding="utf-8")
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="failing-reval",
+            skill_id="hr:failing-reval",
+            name="Failing Reval",
+            version="0.1.0",
+            policy_class="standard_operational",
+            skill_md=skill_md,
+            references={"../evil.txt": "tampered"},
+            assets={},
+        )
+        assert result["ok"] is False
+        assert "invalid_reference_filename" in result["reason_codes"]
+
+    def test_validate_rejects_nested_reference_entry(self, tmp_home, app, org_state, auth_headers):
+        """ROUTE-LEVEL: POST /skills/{id}/validate rejects a stored skill whose
+        references/ directory contains a NESTED entry (e.g. subdir/evil.md).
+
+        The validate loader must walk recursively and feed relative names
+        through _validate_artifact_filename — which rejects directory-target
+        names (contain '/'). A nested reference must NOT be silently skipped.
+        """
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create a skill with safe refs
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(
+                slug="nested-refs-test",
+                references={"safe.md": "safe content"},
+            ),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        assert r.json()["validation"]["ok"] is True
+
+        # Manually seed a NESTED reference entry on disk
+        pkg_dir = org_state.root / "skills" / "nested-refs-test"
+        nested_dir = pkg_dir / "references" / "subdir"
+        nested_dir.mkdir(parents=True, exist_ok=True)
+        (nested_dir / "evil.md").write_text("nested content", encoding="utf-8")
+
+        # Validate through the ROUTE
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:nested-refs-test/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["validation"]["ok"] is False, (
+            f"Expected validation.ok=false for nested ref, got: {body}"
+        )
+        assert any("Invalid reference filename" in e for e in body["validation"]["errors"]), (
+            f"Expected 'Invalid reference filename' in errors, got: {body['validation']['errors']}"
+        )
+        assert body["validation_state"] == "in_catalog"
+
+        # Verify a validation event was recorded with ok=false
+        events = org_state.db.list_skill_validation_events(
+            skill_id="hr:nested-refs-test",
+        )
+        assert any(not e["ok"] for e in events), (
+            f"Expected at least one validation event with ok=false, got events: "
+            f"{[e['ok'] for e in events]}"
+        )
+
+    def test_validate_rejects_nested_asset_entry(self, tmp_home, app, org_state, auth_headers):
+        """ROUTE-LEVEL: POST /skills/{id}/validate rejects a stored skill whose
+        assets/ directory contains a NESTED entry (e.g. subdir/evil.png).
+
+        Same as the nested reference test but for assets — the recursive walk
+        must not silently skip nested asset entries.
+        """
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create a skill with safe assets
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(
+                slug="nested-assets-test",
+                assets={"safe.png": "fake-png"},
+            ),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        assert r.json()["validation"]["ok"] is True
+
+        # Manually seed a NESTED asset entry on disk
+        pkg_dir = org_state.root / "skills" / "nested-assets-test"
+        nested_dir = pkg_dir / "assets" / "subdir"
+        nested_dir.mkdir(parents=True, exist_ok=True)
+        (nested_dir / "evil.png").write_text("nested content", encoding="utf-8")
+
+        # Validate through the ROUTE
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:nested-assets-test/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["validation"]["ok"] is False, (
+            f"Expected validation.ok=false for nested asset, got: {body}"
+        )
+        assert any("Invalid asset filename" in e for e in body["validation"]["errors"]), (
+            f"Expected 'Invalid asset filename' in errors, got: {body['validation']['errors']}"
+        )
+        assert body["validation_state"] == "in_catalog"
+
+        # Verify a validation event was recorded with ok=false
+        events = org_state.db.list_skill_validation_events(
+            skill_id="hr:nested-assets-test",
+        )
+        assert any(not e["ok"] for e in events), (
+            f"Expected at least one validation event with ok=false, got events: "
+            f"{[e['ok'] for e in events]}"
+        )
+
+
+class TestEditSkill:
+    """PATCH /api/v1/orgs/{slug}/skills/{skill_id}"""
+
+    def test_edit_valid_skill_succeeds(self, tmp_home, app, org_state, auth_headers):
+        """Editing a valid user-authored skill returns 200 with updated data."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        # Edit
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:test-skill",
+            json={"name": "Updated Name", "version": "0.2.0"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["skill_id"] == "hr:test-skill"
+        assert body["validation"]["ok"] is True
+        assert body["version"] == "0.2.0"
+
+        # Verify on disk
+        yaml_path = org_state.root / "skills" / "test-skill" / "skill.yaml"
+        data = _yaml.safe_load(yaml_path.read_text())
+        assert data["name"] == "Updated Name"
+        assert data["version"] == "0.2.0"
+
+    def test_edit_content_validation_failure_persists_draft(self, tmp_home, app, org_state, auth_headers):
+        """DRAFT-PERSIST-ON-CONTENT-FAILURE: content fails but draft IS saved (200, not 422)."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        # Edit with empty skill_md (content validation failure)
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:test-skill",
+            json={"skill_md": "  ", "name": "Broken Draft"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200  # Draft saved, NOT 422
+        body = r.json()
+        assert body["validation"]["ok"] is False
+        assert body["validation_state"] == "in_catalog"
+
+        # Verify draft IS persisted with the new name
+        yaml_path = org_state.root / "skills" / "test-skill" / "skill.yaml"
+        data = _yaml.safe_load(yaml_path.read_text())
+        assert data["name"] == "Broken Draft"
+
+    def test_edit_no_fields_returns_422(self, tmp_home, app, org_state, auth_headers):
+        """422 for a malformed request with no editable fields (nothing saved)."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:test-skill",
+            json={},
+            headers=auth_headers,
+        )
+        assert r.status_code == 422
+        body = r.json()
+        assert "no editable fields supplied" in str(body["detail"])
+
+    def test_edit_managed_skill_returns_409(self, tmp_home, app, org_state, auth_headers):
+        """Editing a managed/first_party skill returns 409 skill_not_editable."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:standard-skill",
+            json={"name": "Hacked"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 409
+        body = r.json()
+        assert body["detail"]["code"] == "skill_not_editable"
+
+    def test_edit_system_contract_returns_403(self, tmp_home, app, org_state, auth_headers):
+        """Editing a system_contract returns 403 system_contract_read_only."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:start-task",
+            json={"name": "Hacked"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 403
+        body = r.json()
+        assert body["detail"]["code"] == "system_contract_read_only"
+
+    def test_edit_nonexistent_skill_404(self, tmp_home, app, org_state, auth_headers):
+        """Editing non-existent skill returns 404."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:nonexistent",
+            json={"name": "Hacked"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 404
+
+    def test_edit_requires_auth(self, tmp_home, app, org_state):
+        """401 without bearer token."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:test-skill",
+            json={"name": "Hacked"},
+        )
+        assert r.status_code == 401
+
+    def test_edit_records_validation_event(self, tmp_home, app, org_state, auth_headers):
+        """Editing a skill records a validation event."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        client.patch(
+            "/api/v1/orgs/alpha/skills/hr:test-skill",
+            json={"name": "V2"},
+            headers=auth_headers,
+        )
+        events = org_state.db.list_skill_validation_events(
+            skill_id="hr:test-skill",
+        )
+        assert len(events) >= 2
+
+
+class TestSkillsValidation:
+    """GET /api/v1/orgs/{slug}/skills/validation"""
+
+    def test_validation_returns_events(self, tmp_home, app, org_state, auth_headers):
+        """Validation endpoint returns events with correct label."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+
+        r = client.get(
+            "/api/v1/orgs/alpha/skills/validation",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["label"] == "Runtime Validation"
+        assert len(body["events"]) > 0
+        event = body["events"][0]
+        assert event["skill_id"] == "hr:test-skill"
+        assert event["severity"] == "pass"
+        assert event["ok"] is True
+
+    def test_validation_filter_by_skill(self, tmp_home, app, org_state, auth_headers):
+        """Filter validation events by skill_id."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(slug="skill-a"),
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(slug="skill-b"),
+            headers=auth_headers,
+        )
+
+        r = client.get(
+            "/api/v1/orgs/alpha/skills/validation?skill=hr:skill-a",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        events = r.json()["events"]
+        assert all(e["skill_id"] == "hr:skill-a" for e in events)
+
+    def test_validation_filter_by_severity(self, tmp_home, app, org_state, auth_headers):
+        """Filter validation events by severity."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create one valid and one invalid
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(slug="ok-skill"),
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(slug="bad-skill", skill_md=" "),
+            headers=auth_headers,
+        )
+
+        r = client.get(
+            "/api/v1/orgs/alpha/skills/validation?severity=error",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        events = r.json()["events"]
+        assert all(e["severity"] == "error" for e in events)
+        assert all(e["ok"] is False for e in events)
+
+    def test_validation_requires_auth(self, tmp_home, app, org_state):
+        """401 without bearer token."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.get("/api/v1/orgs/alpha/skills/validation")
+        assert r.status_code == 401
+
+    def test_validation_empty_when_no_events(self, tmp_home, app, org_state, auth_headers):
+        """Validation endpoint returns empty list when no events exist."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.get(
+            "/api/v1/orgs/alpha/skills/validation",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["events"] == []
+
+
+class TestValidationGuard:
+    """Unit tests for the _validate_skill_package function (business logic)."""
+
+    def test_valid_skill_passes_all_checks(self, tmp_home, app, org_state):
+        """A well-formed skill with all required fields passes validation."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# My Skill\n\nA test skill.\n",
+        )
+        assert result["ok"] is True
+        assert result["errors"] == []
+
+    def test_empty_skill_md_fails(self, tmp_home, app, org_state):
+        """Empty skill_md fails validation."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="",
+        )
+        assert result["ok"] is False
+        assert "skill_md_empty" in result["reason_codes"]
+
+    def test_missing_metadata_fails(self, tmp_home, app, org_state):
+        """Missing required metadata fields fail validation."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="",
+            skill_id="",
+            name="",
+            version="",
+            policy_class="standard_operational",
+            skill_md="# Test",
+        )
+        assert result["ok"] is False
+        assert "missing_slug" in result["reason_codes"]
+        assert "missing_name" in result["reason_codes"]
+        assert "missing_version" in result["reason_codes"]
+
+    def test_slug_collision_with_release_fails(self, tmp_home, app, org_state):
+        """Slug collision with a release-shipped skill fails validation."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="standard-skill",  # release fixture
+            skill_id="hr:standard-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# Test",
+        )
+        assert result["ok"] is False
+        assert "slug_collision" in result["reason_codes"]
+
+    def test_system_contract_policy_class_fails(self, tmp_home, app, org_state):
+        """Using system_contract as policy_class fails validation."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="system_contract",
+            skill_md="# Test",
+        )
+        assert result["ok"] is False
+        assert "system_contract_forbidden" in result["reason_codes"]
+
+    def test_no_heading_fails(self, tmp_home, app, org_state):
+        """Skill without markdown heading fails validation."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="just some text without a heading",
+        )
+        assert result["ok"] is False
+        assert "skill_md_no_heading" in result["reason_codes"]
+
+    def test_dry_materialize_succeeds(self, tmp_home, app, org_state):
+        """Dry materialization succeeds for a valid skill."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _dry_materialize
+
+        # This should not raise
+        _dry_materialize(
+            slug="test-skill",
+            skill_md="# Test Skill\n\nContent.\n",
+            references={},
+            assets={},
+        )
+
+    # ── FIX 1: path-traversal regression tests ──────────────────────────
+
+    def test_validate_rejects_reference_absolute_path(self, tmp_home, app, org_state):
+        """FIX-1: Absolute-path reference filename → validation.ok=false."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# Test Skill\n",
+            references={"/etc/passwd": "bad"},
+        )
+        assert result["ok"] is False
+        assert "invalid_reference_filename" in result["reason_codes"]
+
+    def test_validate_rejects_reference_dotdot_traversal(self, tmp_home, app, org_state):
+        """FIX-1: '..' traversal reference filename → validation.ok=false."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# Test Skill\n",
+            references={"../escape.txt": "bad"},
+        )
+        assert result["ok"] is False
+        assert "invalid_reference_filename" in result["reason_codes"]
+
+    def test_validate_rejects_asset_empty_name(self, tmp_home, app, org_state):
+        """FIX-1: Empty asset filename → validation.ok=false."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# Test Skill\n",
+            assets={"": "bad"},
+        )
+        assert result["ok"] is False
+        assert "invalid_asset_filename" in result["reason_codes"]
+
+    def test_validate_rejects_asset_directory_target(self, tmp_home, app, org_state):
+        """FIX-1: Directory-target asset filename → validation.ok=false."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# Test Skill\n",
+            assets={"subdir/evil.txt": "bad"},
+        )
+        assert result["ok"] is False
+        assert "invalid_asset_filename" in result["reason_codes"]
+
+    def test_dry_materialize_belt_and_suspenders_rejects_traversal(self, tmp_home, app, org_state):
+        """FIX-1: _dry_materialize belt-and-suspenders rejects traversal filenames."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _dry_materialize
+        import pytest
+
+        # directory-path variant (contains '/' — also catches ../ patterns)
+        with pytest.raises(ValueError, match="directory path"):
+            _dry_materialize(
+                slug="my-skill",
+                skill_md="# Test\n",
+                references={"../evil.txt": "bad"},
+                assets={},
+            )
+        # bare '..' variant (caught by the '..' traversal segment check)
+        with pytest.raises(ValueError, match="traversal"):
+            _dry_materialize(
+                slug="my-skill-2",
+                skill_md="# Test\n",
+                references={"..": "bad"},
+                assets={},
+            )
+
+
+class TestPhase2FullFlow:
+    """End-to-end Phase 2 lifecycle: create → validate → edit → re-validate."""
+
+    def test_full_create_edit_revalidate_flow(self, tmp_home, app, org_state, auth_headers):
+        """Complete lifecycle: create → validate → edit → validate → check events."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+
+        # 1. Create
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        assert r.json()["validation"]["ok"] is True
+
+        # 2. Validate
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:test-skill/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        assert r.json()["validation"]["ok"] is True
+
+        # 3. Edit
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:test-skill",
+            json={"name": "Edited Name", "version": "0.2.0"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        assert r.json()["validation"]["ok"] is True
+        assert r.json()["version"] == "0.2.0"
+
+        # 4. Check validation events
+        r = client.get(
+            "/api/v1/orgs/alpha/skills/validation?skill=hr:test-skill",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        events = r.json()["events"]
+        assert len(events) >= 3  # create + validate + edit
+
+    def test_create_failed_draft_then_edit_fixes(self, tmp_home, app, org_state, auth_headers):
+        """Create a failing draft, then edit to fix it → passes validation."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+
+        # 1. Create with bad content (fails validation but drafts)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(skill_md="no heading", slug="my-draft-skill"),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        assert r.json()["validation"]["ok"] is False
+        assert r.json()["validation_state"] == "in_catalog"
+
+        # 2. Edit to fix
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:my-draft-skill",
+            json={"skill_md": "# Fixed Skill\n\nNow with a heading.\n"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        assert r.json()["validation"]["ok"] is True
+        assert r.json()["validation_state"] == "validated"
+
+    def test_edit_does_not_change_eligibility(self, tmp_home, app, org_state, auth_headers):
+        """Editing a skill does not change eligibility rules (v3 §9.5)."""
+        _seed_skills_and_config(org_state.root, allow=["hr:test-skill"])
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+
+        # Edit
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:test-skill",
+            json={"name": "New Name", "version": "0.2.0"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+
+        # Check catalog — assignment count unchanged
+        r = client.get(
+            "/api/v1/orgs/alpha/skills/catalog?filter=Custom",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        item = r.json()["items"][0]
+        assert item["assigned_agent_count"] == 1  # unchanged by edit

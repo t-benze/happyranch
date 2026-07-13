@@ -755,7 +755,25 @@ class Database:
                 view_count     INTEGER NOT NULL DEFAULT 0,
                 last_viewed_at TEXT
             );
-        """)
+
+            CREATE TABLE IF NOT EXISTS skill_validation_events (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id       TEXT NOT NULL,
+                slug           TEXT NOT NULL,
+                agent          TEXT,
+                source         TEXT NOT NULL DEFAULT 'user_authored',
+                severity       TEXT NOT NULL DEFAULT 'info',
+                ok             INTEGER NOT NULL DEFAULT 1,
+                version        TEXT,
+                findings       TEXT,
+                reason_codes   TEXT,
+                created_at     TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sve_skill_id
+                ON skill_validation_events(skill_id);
+            CREATE INDEX IF NOT EXISTS idx_sve_agent
+                ON skill_validation_events(agent);
+            """)
         self._migrate_session_token_usage_scope_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
@@ -2906,6 +2924,126 @@ class Database:
                ORDER BY view_count DESC, last_viewed_at DESC"""
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- Skill validation events ---
+
+    @_synchronized
+    def insert_skill_validation_event(
+        self,
+        *,
+        skill_id: str,
+        slug: str,
+        agent: str | None = None,
+        source: str = "user_authored",
+        severity: str = "info",
+        ok: bool = True,
+        version: str | None = None,
+        findings: list[str] | None = None,
+        reason_codes: list[str] | None = None,
+    ) -> int:
+        """Insert a skill validation event and return the row id."""
+        now = _now().isoformat()
+        findings_json = json.dumps(findings or [])
+        codes_json = json.dumps(reason_codes or [])
+        cursor = self._conn.execute(
+            """INSERT INTO skill_validation_events
+               (skill_id, slug, agent, source, severity, ok, version,
+                findings, reason_codes, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                skill_id,
+                slug,
+                agent,
+                source,
+                severity,
+                1 if ok else 0,
+                version,
+                findings_json,
+                codes_json,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid
+
+    @_synchronized
+    def list_skill_validation_events(
+        self,
+        *,
+        skill_id: str | None = None,
+        agent: str | None = None,
+        source: str | None = None,
+        since: str | None = None,
+        severity: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """List skill validation events with optional filters."""
+        clauses = ["1=1"]
+        params: list = []
+        if skill_id is not None:
+            clauses.append("skill_id = ?")
+            params.append(skill_id)
+        if agent is not None:
+            clauses.append("agent = ?")
+            params.append(agent)
+        if source is not None:
+            clauses.append("source = ?")
+            params.append(source)
+        if since is not None:
+            clauses.append("created_at >= ?")
+            params.append(since)
+        if severity is not None:
+            clauses.append("severity = ?")
+            params.append(severity)
+        params.append(limit)
+        rows = self._conn.execute(
+            f"""SELECT id, skill_id, slug, agent, source, severity, ok, version,
+                       findings, reason_codes, created_at
+                FROM skill_validation_events
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        result: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            d["ok"] = bool(d["ok"])
+            d["findings"] = json.loads(d["findings"] or "[]")
+            d["reason_codes"] = json.loads(d["reason_codes"] or "[]")
+            result.append(d)
+        return result
+
+    @_synchronized
+    def get_latest_skill_validation(
+        self, skill_id: str, version: str | None = None
+    ) -> dict | None:
+        """Return the latest validation event for a skill, optionally for a specific version."""
+        if version is not None:
+            row = self._conn.execute(
+                """SELECT id, skill_id, slug, agent, source, severity, ok, version,
+                           findings, reason_codes, created_at
+                    FROM skill_validation_events
+                    WHERE skill_id = ? AND version = ?
+                    ORDER BY created_at DESC LIMIT 1""",
+                (skill_id, version),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                """SELECT id, skill_id, slug, agent, source, severity, ok, version,
+                           findings, reason_codes, created_at
+                    FROM skill_validation_events
+                    WHERE skill_id = ?
+                    ORDER BY created_at DESC LIMIT 1""",
+                (skill_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["ok"] = bool(d["ok"])
+        d["findings"] = json.loads(d["findings"] or "[]")
+        d["reason_codes"] = json.loads(d["reason_codes"] or "[]")
+        return d
 
     # --- Thread IDs ---
 
