@@ -53,10 +53,11 @@ def _release_registry(org: OrgState) -> SkillRegistry:
 def _user_registry(org: OrgState) -> SkillRegistry:
     """Return the per-org user-skill store registry.
 
-    Store directory: <org_root>/org/skills/
-    Missing / empty dir → empty SkillRegistry (graceful).
+    Store directory: <org_root>/skills/ — a SIBLING of the org/ definition
+    directory, NOT inside it (v3 s6.2). Missing / empty dir → empty
+    SkillRegistry (graceful).
     """
-    user_dir = org.root / "org" / "skills"
+    user_dir = org.root / "skills"
     return SkillRegistry(skills_root=user_dir)
 
 
@@ -75,11 +76,23 @@ def _union_catalog(org: OrgState) -> list[tuple[SkillEntry, str]]:
 
     union: dict[str, tuple[SkillEntry, str]] = {}
 
-    # User-authored entries first (release overwrites if collision)
-    for entry in user.list_all():
-        union[entry.id] = (entry, "user_authored")
+    # Release entries are authoritative — collect their slugs so user-authored
+    # entries with a colliding slug are discarded (release-wins on SLUG, not id;
+    # v3 s6.3: a user package cannot shadow a shipped skill by reusing its slug
+    # under a different id).
+    release_slugs: set[str] = {entry.slug for entry in release.list_all()}
+    sc_slugs: set[str] = {sc.id for sc in SYSTEM_CONTRACTS}
+    protected_slugs = release_slugs | sc_slugs
 
-    # Release entries overwrite any user collision (release-wins)
+    # User-authored entries — discard any whose slug collides with a release
+    # or system-contract slug (release-wins on slug collision, v3 s6.3).
+    for entry in user.list_all():
+        if entry.slug not in protected_slugs:
+            union[entry.id] = (entry, "user_authored")
+
+    # Release entries added after users so any residual id collision resolves
+    # to release (id-based backup — slug-based gate already handles the
+    # canonical case).
     for entry in release.list_all():
         union[entry.id] = (entry, "managed")
 
@@ -325,10 +338,12 @@ def agent_skills_effective(
     except Exception:
         pass
 
-    # Union catalog for resolution
+    # Union catalog for resolution — release-wins on SLUG collision (v3 s6.3)
+    release_slugs: set[str] = {entry.slug for entry in release.list_all()}
     union: dict[str, tuple[SkillEntry, str]] = {}
     for entry in user.list_all():
-        union[entry.id] = (entry, "user_authored")
+        if entry.slug not in release_slugs:
+            union[entry.id] = (entry, "user_authored")
     for entry in release.list_all():
         union[entry.id] = (entry, "managed")
 
@@ -367,7 +382,12 @@ def agent_skills_effective(
         is_denied = skill_id in agent_deny_ids
 
         # Determine provenance reason
-        if is_exposed:
+        if is_exposed and source_type == "user_authored":
+            # P1: no current-version materialization signal to prove effectiveness.
+            # An assigned+eligible user_authored skill surfaces as
+            # assigned_not_yet_effective, NOT effective/catalog_and_eligible.
+            provenance = "assigned_not_yet_effective"
+        elif is_exposed:
             provenance = "catalog_and_eligible"
         elif is_disabled:
             provenance = "hidden_because:disabled"

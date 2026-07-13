@@ -60,10 +60,14 @@ def _seed_skills_and_config(
 
 
 def _seed_user_skill(root: Path, slug: str, skill_id: str = None, version: str = "0.1.0") -> None:
-    """Seed a user-authored skill in the org skills store."""
+    """Seed a user-authored skill in the org skills store.
+
+    Store directory: <root>/skills/<slug>/ — sibling of org/ definition dir
+    (v3 s6.2).
+    """
     if skill_id is None:
         skill_id = f"hr:{slug}"
-    user_dir = root / "org" / "skills" / slug
+    user_dir = root / "skills" / slug
     user_dir.mkdir(parents=True, exist_ok=True)
     (user_dir / "skill.yaml").write_text(_yaml.dump({
         "id": skill_id,
@@ -214,6 +218,77 @@ class TestSkillsCatalogList:
         items = r.json()["items"]
         sys_contracts = [item for item in items if item["type"] == "system_contract"]
         assert len(sys_contracts) > 0
+
+    def test_catalog_user_store_at_org_root_skills_is_recognized(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Regression FIX 1: user-authored store at org.root/skills/ IS recognized.
+
+        The store directory is `<org_root>/skills/<slug>/`, a SIBLING of
+        the org/ definition directory (v3 s6.2), NOT inside it.
+        """
+        _seed_skills_and_config(org_state.root)
+        _seed_user_skill(org_state.root, "my-skill")
+
+        client = TestClient(app)
+        r = client.get("/api/v1/orgs/alpha/skills/catalog?filter=Custom", headers=auth_headers)
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) == 1
+        assert items[0]["skill_id"] == "hr:my-skill"
+        assert items[0]["type"] == "user_authored"
+
+    def test_catalog_empty_user_store_graceful(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Regression FIX 1: missing/empty user store still unions gracefully."""
+        _seed_skills_and_config(org_state.root)
+        # Do NOT seed any user skill — the skills/ directory will be missing
+        # or empty, and the catalog must still return managed + system_contract
+        # without error.
+        client = TestClient(app)
+        r = client.get("/api/v1/orgs/alpha/skills/catalog", headers=auth_headers)
+        assert r.status_code == 200
+        items = r.json()["items"]
+        types = {item["type"] for item in items}
+        assert "managed" in types
+        assert "system_contract" in types
+        # No user_authored entries
+        user_items = [item for item in items if item["type"] == "user_authored"]
+        assert len(user_items) == 0
+
+    def test_catalog_release_wins_on_slug_collision_different_id(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Regression FIX 3: release-wins on SLUG collision, not just id.
+
+        A user skill whose slug collides with a release skill but whose id
+        differs MUST be dropped (v3 s6.3: a user package cannot shadow a
+        shipped skill by reusing its slug under a different id).
+        """
+        _seed_skills_and_config(org_state.root)
+        # Create user skill with same slug as release 'standard-skill' but
+        # different id.
+        _seed_user_skill(org_state.root, "standard-skill", "hr:custom-standard-skill", "99.0.0")
+
+        client = TestClient(app)
+        r = client.get("/api/v1/orgs/alpha/skills/catalog", headers=auth_headers)
+        assert r.status_code == 200
+
+        # The release entry (hr:standard-skill, managed) MUST be present
+        std_items = [
+            item for item in r.json()["items"]
+            if item["skill_id"] in ("hr:standard-skill", "hr:custom-standard-skill")
+        ]
+        # There must be exactly one standard-skill entry — the release one
+        assert len(std_items) == 1
+        assert std_items[0]["skill_id"] == "hr:standard-skill"
+        assert std_items[0]["type"] == "managed"
+        assert std_items[0]["version"] == "1.0.0"  # release version, not 99.0.0
+
+        # The custom-standard-skill must NOT appear (slug-collision dropped)
+        custom_ids = [item["skill_id"] for item in r.json()["items"]]
+        assert "hr:custom-standard-skill" not in custom_ids
 
 
 class TestSkillsCatalogDetail:
@@ -405,6 +480,49 @@ class TestAgentSkillsEffective:
         client = TestClient(app)
         r = client.get("/api/v1/orgs/alpha/agents/dev_agent/skills/effective")
         assert r.status_code == 401
+
+    def test_effective_user_authored_reports_assigned_not_yet_effective(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Regression FIX 2: assigned+eligible user_authored skill reports
+        assigned_not_yet_effective, NOT effective/catalog_and_eligible.
+
+        P1 has NO current-version materialization signal to prove
+        effectiveness, so user-authored skills must surface the
+        assigned_not_yet_effective provenance code per the catalog honesty
+        posture (effective_agent_count:0 for all skills).
+        """
+        _seed_skills_and_config(org_state.root, allow=["hr:my-custom-skill"])
+        _seed_user_skill(org_state.root, "my-custom-skill")
+
+        client = TestClient(app)
+        r = client.get(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/effective",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+
+        # Find the user-authored skill
+        custom = next(
+            (s for s in body["skills"] if s["skill_id"] == "hr:my-custom-skill"),
+            None,
+        )
+        assert custom is not None, (
+            f"Expected hr:my-custom-skill in effective list, got "
+            f"{[s['skill_id'] for s in body['skills']]}"
+        )
+        # It MUST NOT be catalog_and_eligible (effective)
+        assert custom["provenance"] != "catalog_and_eligible", (
+            f"user_authored skill must not have provenance 'catalog_and_eligible', "
+            f"got '{custom['provenance']}'"
+        )
+        # It MUST be assigned_not_yet_effective
+        assert custom["provenance"] == "assigned_not_yet_effective", (
+            f"Expected 'assigned_not_yet_effective', got '{custom['provenance']}'"
+        )
+        # It should be visible (not hidden) — surfaced as assigned
+        assert custom["hidden"] is False
 
 
 class TestSkillsCatalogAuth:
