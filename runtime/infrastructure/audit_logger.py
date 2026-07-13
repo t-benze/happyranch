@@ -113,6 +113,33 @@ class AuditLogger:
             payload=payload,
         )
 
+    def log_zombie_flagged(self, task_id: str, agent: str) -> None:
+        """Recorded by the ongoing zombie reaper when a zombie task is first
+        flagged (THR-090 Track B)."""
+        self._db.insert_audit_log(
+            task_id=task_id, agent=agent,
+            action="zombie_flagged",
+            payload={"reason": "zombie detected — dead pid + stale heartbeat"},
+        )
+
+    def log_zombie_cancelled(self, task_id: str, agent: str) -> None:
+        """Recorded by the ongoing zombie reaper when a flagged zombie is
+        cancelled after TTL expiry (THR-090 Track B)."""
+        self._db.insert_audit_log(
+            task_id=task_id, agent=agent,
+            action="zombie_cancelled",
+            payload={"reason": "zombie cancelled after TTL expiry"},
+        )
+
+    def log_zombie_cleared(self, task_id: str, agent: str) -> None:
+        """Recorded by the ongoing zombie reaper when a flagged zombie recovers
+        before TTL expiry (THR-090 Track B)."""
+        self._db.insert_audit_log(
+            task_id=task_id, agent=agent,
+            action="zombie_cleared",
+            payload={"reason": "zombie recovered — flag cleared"},
+        )
+
     def log_task_cancelled(
         self, task_id: str, rationale: str, cascade: bool, actor: str = "founder",
     ) -> None:

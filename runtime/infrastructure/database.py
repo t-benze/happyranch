@@ -945,6 +945,16 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass
+        # THR-090 Track B: timestamp of first zombie detection for the
+        # ongoing zombie reaper. Set on first flag; cleared (NULL) on
+        # recovery; used for flag-then-cancel-on-TTL. NULL default —
+        # never been flagged. Additive-only.
+        try:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN zombie_flagged_at TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_dispatched_from_thread_id "
             "ON tasks(dispatched_from_thread_id) "
@@ -1218,6 +1228,7 @@ class Database:
             task.task_type,
             task.active_fanout,
             task.current_session_id,
+            task.zombie_flagged_at.isoformat() if task.zombie_flagged_at else None,
         )
         self._conn.execute(
             """INSERT INTO tasks (id, status, assigned_agent, team, brief,
@@ -1225,8 +1236,8 @@ class Database:
                revisit_of_task_id, dispatched_from_thread_id,
                block_kind, note,
                orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
-               current_session_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               current_session_id, zombie_flagged_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             params,
         )
         self._conn.commit()
@@ -1263,6 +1274,7 @@ class Database:
             task_type=row["task_type"],
             executor_pid=row["executor_pid"],
             current_session_id=row["current_session_id"],
+            zombie_flagged_at=row["zombie_flagged_at"],
         )
 
     @_synchronized
@@ -1353,6 +1365,8 @@ class Database:
                 session_timeout_seconds=row["session_timeout_seconds"],
                 task_type=row["task_type"],
                 executor_pid=row["executor_pid"],
+                current_session_id=row["current_session_id"],
+                zombie_flagged_at=row["zombie_flagged_at"],
             )
             for row in cursor.fetchall()
         ]
@@ -1510,6 +1524,8 @@ class Database:
                 session_timeout_seconds=row["session_timeout_seconds"],
                 task_type=row["task_type"],
                 executor_pid=row["executor_pid"],
+                current_session_id=row["current_session_id"],
+                zombie_flagged_at=row["zombie_flagged_at"],
             )
             child_statuses = self.get_subtree_statuses(task.id)
             object.__setattr__(
@@ -1706,6 +1722,8 @@ class Database:
                 session_timeout_seconds=row["session_timeout_seconds"],
                 task_type=row["task_type"],
                 executor_pid=row["executor_pid"],
+                current_session_id=row["current_session_id"],
+                zombie_flagged_at=row["zombie_flagged_at"],
             )
             for row in cursor.fetchall()
         ]
@@ -1716,7 +1734,7 @@ class Database:
             "status", "assigned_agent", "revision_count", "completed_at",
             "block_kind", "blocked_on_job_ids", "note", "orchestration_step_count",
             "final_output_dir", "cancelled_at", "last_heartbeat",
-            "executor_pid", "current_session_id",
+            "executor_pid", "current_session_id", "zombie_flagged_at",
         }
         # NOTE: filter on membership, not on None-ness — block_kind must be
         # resettable to NULL when a task unblocks.
