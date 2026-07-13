@@ -624,6 +624,20 @@ class AuditLogger:
             payload={"id": id, "kb_slug": kb_slug},
         )
 
+    def log_memory_read(
+        self,
+        *,
+        agent: str,
+        id: str,
+        slug: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=f"AGENT-{agent}",
+            agent=agent,
+            action="memory_read",
+            payload={"id": id, "slug": slug},
+        )
+
     def log_memory_lifecycle_changed(
         self,
         *,
@@ -652,6 +666,58 @@ class AuditLogger:
                 "source": source,
             },
         )
+
+    # THR-091 WS-C: pull-through telemetry — of the memory pointers pushed in a
+    # session's digest, how many were fetched via memory get. Built from the
+    # memory_read audit event + digest pointer primitives.
+    def compute_memory_pull_through(
+        self,
+        *,
+        agent: str,
+        digest_ids: set[str],
+    ) -> dict:
+        """Compute pull-through: of digest pointers, how many were read.
+
+        Returns a dict with:
+        - digest_count: total pointers in the digest
+        - read_count: how many were read at least once
+        - pull_through: fraction read (0.0–1.0)
+        - read_ids: sorted list of ids that were read
+        - unread_ids: sorted list of ids in digest but never read
+        """
+        if not digest_ids:
+            return {
+                "digest_count": 0,
+                "read_count": 0,
+                "pull_through": 0.0,
+                "read_ids": [],
+                "unread_ids": [],
+            }
+        # Query memory_read events for this agent and extract payload.id
+        rows = self._db.fetch_all_readonly(
+            "SELECT payload FROM audit_log WHERE agent = ? AND action = 'memory_read'",
+            (agent,),
+        )
+        import json
+        read_set: set[str] = set()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            mid = payload.get("id")
+            if mid and mid in digest_ids:
+                read_set.add(mid)
+        digest_count = len(digest_ids)
+        read_count = len(read_set)
+        pull_through = read_count / digest_count if digest_count > 0 else 0.0
+        return {
+            "digest_count": digest_count,
+            "read_count": read_count,
+            "pull_through": pull_through,
+            "read_ids": sorted(read_set),
+            "unread_ids": sorted(digest_ids - read_set),
+        }
 
     # NOTE: audit_log.task_id doubles as a generic scope id. Thread events store
     # the thread id (THR-NNN) in that column, matching the talk_* pattern above.

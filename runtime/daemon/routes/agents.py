@@ -1301,6 +1301,9 @@ async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep)
             status_code=404,
             detail={"error": "id_not_found", "id_or_slug": id_or_slug},
         )
+    AuditLogger(org.db).log_memory_read(
+        agent=agent_name, id=entry.id, slug=entry.slug,
+    )
     return _entry_to_dict(entry)
 
 
