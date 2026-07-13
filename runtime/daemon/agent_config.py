@@ -172,6 +172,14 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
             continue
 
         if not yaml_path.exists():
+            # Org-agent workspace with no agent.yaml on first post-cutover startup:
+            # lock .md as authoritative one-shot by writing the sentinel NOW.
+            # Otherwise a later agent.yaml could re-win on a subsequent startup.
+            if agent_name != "system_assistant":
+                agent_def = load_agent(paths, agent_name)
+                if agent_def is not None:
+                    consumed_sentinel.write_text("")
+                    results[agent_name] = "locked (no agent.yaml, org agent)"
             continue
 
         try:

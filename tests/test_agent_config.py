@@ -369,6 +369,102 @@ def test_migrate_skips_workspace_without_md(
     assert results["orphan_agent"] == "skipped (no .md)"
 
 
+# ── THR-095 REVISE round 3: no-yaml entry states ──────────────────────
+
+
+def test_migrate_no_yaml_org_agent_locks_md_with_sentinel(
+    tmp_path: Path,
+) -> None:
+    """RED regression test (reviewer gap): org agent .md present
+    (executor=codex/repos=docs/model=gpt-5), workspace with NO agent.yaml
+    -> first migrate writes sentinel, locking .md as authoritative one-shot.
+    A later DIVERGENT agent.yaml must NEVER re-win."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.prompt_loader import load_agent
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+
+    paths = OrgPaths(root=tmp_path)
+    workspace = tmp_path / "workspaces" / "dev_agent"
+
+    # .md is the authoritative store: codex / docs / gpt-5
+    _write_agent_md(paths, "dev_agent", executor="codex", model="gpt-5",
+                    repos={"docs": "https://github.com/t-benze/docs.git"})
+    # Workspace dir exists but NO agent.yaml
+    workspace.mkdir(parents=True)
+
+    # First migration: agent.yaml absent, but this IS an org agent
+    results1 = migrate_agent_yaml_to_frontmatter(paths)
+    assert results1["dev_agent"] == "locked (no agent.yaml, org agent)"
+
+    # Sentinel must exist after first migration
+    sentinel = workspace / ".agent_yaml_consumed"
+    assert sentinel.exists(), (
+        "Sentinel must be written even though agent.yaml was absent — "
+        "the .md is now the single authoritative store and must be locked"
+    )
+
+    # .md must be unchanged
+    agent_def = load_agent(paths, "dev_agent")
+    assert agent_def is not None
+    assert agent_def.executor == "codex"
+    assert agent_def.model == "gpt-5"
+    assert agent_def.repos == {"docs": "https://github.com/t-benze/docs.git"}
+
+    # ── Stealth edit: someone creates a DIVERGENT agent.yaml ──
+    _write_agent_yaml(workspace, executor="pi", model="claude-sonnet-4-5",
+                      repos={"evil": "https://evil.git"})
+
+    # RE-RUN migration via the STARTUP path (the reviewer's exact gap)
+    results2 = migrate_agent_yaml_to_frontmatter(paths)
+    assert results2["dev_agent"] == "skipped (already migrated)"
+
+    # .md is STILL authoritative — divergent agent.yaml must NEVER win
+    agent_def2 = load_agent(paths, "dev_agent")
+    assert agent_def2 is not None
+    assert agent_def2.executor == "codex", ".md executor must still be codex"
+    assert agent_def2.model == "gpt-5", ".md model must still be gpt-5"
+    assert agent_def2.repos == {"docs": "https://github.com/t-benze/docs.git"}, \
+        ".md repos must still be docs"
+
+    # agent.yaml divergent values exist but were ignored
+    assert (workspace / "agent.yaml").exists(), (
+        "agent.yaml should still exist (divergent values ignored, not deleted)"
+    )
+
+
+def test_migrate_no_yaml_non_org_and_system_assistant_untouched(
+    tmp_path: Path,
+) -> None:
+    """No-agent.yaml entry states (d):
+    - system_assistant workspace with no agent.yaml → untouched, no sentinel
+    - non-org workspace (no .md) with no agent.yaml → untouched, no sentinel
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+
+    paths = OrgPaths(root=tmp_path)
+
+    # ── system_assistant: workspace exists, no agent.yaml ──
+    sa_ws = tmp_path / "workspaces" / "system_assistant"
+    sa_ws.mkdir(parents=True)
+    # system_assistant does NOT have an org-agent .md
+
+    results = migrate_agent_yaml_to_frontmatter(paths)
+    # Must not appear in results (no sentinel written, no action taken)
+    assert "system_assistant" not in results
+    sentinel = sa_ws / ".agent_yaml_consumed"
+    assert not sentinel.exists(), "system_assistant with no yaml must NOT get a sentinel"
+
+    # ── non-org workspace: directory exists but no .md and no agent.yaml ──
+    other_ws = tmp_path / "workspaces" / "some_stranger"
+    other_ws.mkdir(parents=True)
+    # Re-run — stranger must not appear in results and must have no sentinel
+    results = migrate_agent_yaml_to_frontmatter(paths)
+    assert "some_stranger" not in results
+    sentinel2 = other_ws / ".agent_yaml_consumed"
+    assert not sentinel2.exists(), "non-org workspace with no yaml must NOT get a sentinel"
+
+
 def test_migrate_preserves_allow_rules_and_other_metadata(
     tmp_path: Path,
 ) -> None:
