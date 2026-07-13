@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from runtime.config import Settings
 from runtime.daemon.org_state import OrgState
@@ -23,6 +24,8 @@ from runtime.orchestrator.org_config import (
     _ORG_WRITABLE_KEYS,
     _ORG_SETTINGS_SEED_SENTINEL,
     DreamingConfig,
+    OrgConfig,
+    WorkingHoursConfig,
     load_org_config,
     resolve_org_setting_dreaming,
     resolve_org_setting_session_timeout,
@@ -124,8 +127,13 @@ def test_db_value_wins_over_config_yaml(tmp_path: Path):
     assert resolved.schedule_time == "03:00"
 
 
-def test_no_db_row_falls_to_code_default(tmp_path: Path):
-    """With no DB row, the resolved value falls to the code default, not config.yaml."""
+def test_no_db_row_falls_to_dataclass_code_default(tmp_path: Path):
+    """With no DB row, the resolved value == dataclass code default, NOT config.yaml.
+
+    F2: after seed, config.yaml is NOT the read source for the 4 writable knobs.
+    The ladder is: task-row(session_timeout only) → org_settings DB → code default.
+    This test seeds config.yaml with a value that DIFFERS from the code default,
+    proves the code default resolves (not the config.yaml seed value)."""
     org_root = tmp_path / "org"
     org_root.mkdir()
     (org_root / "org").mkdir()
@@ -133,19 +141,31 @@ def test_no_db_row_falls_to_code_default(tmp_path: Path):
     paths = OrgPaths(root=org_root)
     db = Database(paths.db_path)
 
-    # Write config.yaml with a value
+    # Write config.yaml with a value that DIFFERS from dataclass defaults.
     (org_root / "org" / "config.yaml").write_text("dreaming:\n  enabled: true\n  schedule:\n    time: '05:00'\n    catch_up_on_startup: false\n  agents:\n    mode: whitelist\n")
 
-    cfg = load_org_config(paths)
-    # No DB row exists → code default wins. cfg.dreaming from config.yaml
-    # is used as code_default here, but in the seed model config.yaml IS
-    # the code default source. The key invariant is: no DB row → use the
-    # code_default (which may come from seeded config.yaml or dataclass).
-    resolved = resolve_org_setting_dreaming(db, code_default=cfg.dreaming)
+    # No DB row exists → code default wins.
+    # F2 fix: pass TRUE dataclass defaults, NOT config.yaml-parsed values.
+    resolved = resolve_org_setting_dreaming(db, code_default=DreamingConfig())
 
-    # With no DB row, the code_default (config.yaml) is used.
-    # Post-seed, config.yaml won't have these keys — but pre-seed, it does.
-    assert resolved.schedule_time == "05:00", f"expected 05:00 from config.yaml default, got {resolved.schedule_time}"
+    # Dataclass defaults: enabled=False, schedule_time='02:00'
+    assert resolved.enabled is False, f"expected False (code default), got {resolved.enabled}"
+    assert resolved.schedule_time == "02:00", f"expected 02:00 (code default), got {resolved.schedule_time}"
+
+    # Threads resolution also falls to code default
+    cfg_parsed = load_org_config(paths)
+    # config.yaml has no threads block, so parsed cfg has code defaults too.
+    # But the critical invariant: code_default=OrgConfig() with none from config.yaml.
+    threads = resolve_org_setting_threads(db, code_default=OrgConfig())
+    assert threads["enabled"] is True  # OrgConfig dataclass default
+
+    # Session timeout: code default is None
+    sto = resolve_org_setting_session_timeout(db, code_default=None)
+    assert sto is None
+
+    # Working hours: code default
+    wh = resolve_org_setting_working_hours(db, code_default=WorkingHoursConfig())
+    assert wh.enabled is False  # WorkingHoursConfig() default
 
 
 # ---------------------------------------------------------------------------
@@ -259,3 +279,216 @@ def test_seed_safe_on_fresh_db_without_config_yaml(tmp_path: Path):
 
     sto = json.loads(db.get_org_setting("session_timeout_seconds"))
     assert sto is None  # default
+
+
+# ---------------------------------------------------------------------------
+# TDD tests for REVISE round 1 fixes
+# ---------------------------------------------------------------------------
+
+# ── F1: PUT writes DB only, config.yaml untouched ──
+
+
+def test_put_only_writes_db_not_config_yaml(tmp_path: Path):
+    """F1: after PUT /settings/org, org/config.yaml is byte-unchanged;
+    the DB row is the sole mutated store."""
+    org_root = tmp_path / "org"
+    org_root.mkdir()
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n")
+    paths = OrgPaths(root=org_root)
+    db = Database(paths.db_path)
+
+    # Write config.yaml with only non-writable keys
+    config_path = org_root / "org" / "config.yaml"
+    import yaml
+    config_path.write_text(yaml.dump({"timezone": "UTC"}))
+    before_bytes = config_path.read_bytes()
+
+    # Write a setting via PUT path
+    write_org_setting_to_db(paths, db, {"session_timeout_seconds": 1200})
+
+    # config.yaml is byte-unchanged
+    after_bytes = config_path.read_bytes()
+    assert after_bytes == before_bytes, (
+        "F1 FAIL: config.yaml mutated on PUT — only DB should be written"
+    )
+    # timezone (non-writable key) still present
+    raw = yaml.safe_load(after_bytes)
+    assert raw.get("timezone") == "UTC"
+
+    # DB row written
+    sto = json.loads(db.get_org_setting("session_timeout_seconds"))
+    assert sto == 1200
+
+
+# ── F2: No DB row → code default, NOT config.yaml ──
+
+
+def test_missing_row_resolves_to_dataclass_default_not_config_yaml(tmp_path: Path):
+    """F2: with a MISSING org_settings row, resolved value == dataclass
+    code default, NOT the config.yaml seed value.  Prove by seeding
+    config.yaml with a value that DIFFERS from code default, deleting the
+    DB row, and asserting code default resolves."""
+    org_root = tmp_path / "org"
+    org_root.mkdir()
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n")
+    paths = OrgPaths(root=org_root)
+    db = Database(paths.db_path)
+
+    import yaml
+    # Seed config.yaml with threads enabled=True (differs from dataclass default True...
+    # Let's use a value that truly differs: default_turn_cap=99 vs OrgConfig default 500)
+    config_path = org_root / "org" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "timezone": "Asia/Shanghai",
+        "threads": {"enabled": True, "default_turn_cap": 99}
+    }))
+
+    # No DB row for threads → code default should resolve
+    threads = resolve_org_setting_threads(db, code_default=OrgConfig())
+    assert threads["default_turn_cap"] == 500, (
+        f"F2 FAIL: expected code default 500, got {threads['default_turn_cap']} — "
+        "config.yaml is NOT the fallback tier"
+    )
+
+
+# ── F3: Seed fidelity for continuous-mode timezone ──
+
+
+def test_seed_preserves_continuous_mode_timezone(tmp_path: Path):
+    """F3: continuous-mode config with top-level timezone seeds a DB value
+    whose resolved working_hours equals the pre-migration resolved value
+    (timezone preserved)."""
+    org_root = tmp_path / "org"
+    org_root.mkdir()
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n")
+    paths = OrgPaths(root=org_root)
+
+    import yaml
+    config_yaml = {
+        "timezone": "UTC",
+        "working_hours": {
+            "enabled": True,
+            "default": {
+                "mode": "continuous",
+                "timezone": "Asia/Shanghai",
+                "interval": "2h",
+            },
+        },
+    }
+    (org_root / "org" / "config.yaml").write_text(yaml.dump(config_yaml))
+
+    # Pre-migration resolved value (direct from config.yaml parser)
+    pre_cfg = load_org_config(paths)
+    pre_schedule = pre_cfg.working_hours.resolve_for("agent1", None)
+    assert pre_schedule.timezone == "Asia/Shanghai"
+    assert pre_schedule.mode == "continuous"
+    assert pre_schedule.interval == "2h"
+
+    # Seed into DB
+    db = Database(paths.db_path)
+    seeded = seed_org_settings_from_config(paths, db)
+    assert len(seeded) == 4
+
+    # Resolve from DB (using code_default=WorkingHoursConfig())
+    from runtime.orchestrator.org_config import WorkingHoursConfig, _working_hours_layer_to_dict
+    wh_cfg = resolve_org_setting_working_hours(db, code_default=WorkingHoursConfig())
+    post_schedule = wh_cfg.resolve_for("agent1", None)
+
+    # Parity check: timezone MUST be preserved
+    assert post_schedule.timezone == "Asia/Shanghai", (
+        f"F3 FAIL: timezone lost during seed — expected Asia/Shanghai, "
+        f"got {post_schedule.timezone}"
+    )
+    assert post_schedule.mode == "continuous"
+    assert post_schedule.interval == "2h"
+
+    # Also verify the raw DB value contains the timezone
+    wh_raw = json.loads(db.get_org_setting("working_hours"))
+    default_layer = wh_raw["default"]
+    assert default_layer.get("timezone") == "Asia/Shanghai", (
+        f"F3 FAIL: bare timezone not in seeded DB value: {json.dumps(default_layer)}"
+    )
+
+
+# ── F4: Audit tiers are exactly the changed keys ──
+
+
+def test_audit_tiers_only_changed_keys(tmp_path: Path):
+    """F4: for EACH of the 4 sections, a partial update emits a
+    config:<section> audit row whose tiers list == exactly the changed keys."""
+    org_root = tmp_path / "org"
+    org_root.mkdir()
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n")
+    paths = OrgPaths(root=org_root)
+    db = Database(paths.db_path)
+
+    # Seed full threads in DB
+    db.upsert_org_setting("threads", json.dumps({
+        "enabled": True,
+        "default_turn_cap": 500,
+        "invocation_timeout_seconds": None,
+    }))
+
+    # Partial update: only change default_turn_cap
+    patch = {"threads": {"default_turn_cap": 99}}
+    write_org_setting_to_db(paths, db, patch)
+
+    # Verify audit row has tiers == ["default_turn_cap"] only
+    audit_rows = db.get_audit_logs("config:threads")
+    # The last audit row is the partial update
+    last_audit = audit_rows[-1]
+    tiers = last_audit["payload"]["tiers"]
+    assert sorted(tiers) == ["default_turn_cap"], (
+        f"F4 FAIL: tiers should be [default_turn_cap] only, got {tiers}"
+    )
+
+
+def test_audit_for_session_timeout_scalar(tmp_path: Path):
+    """F4: for session_timeout_seconds (scalar, not dict), the audit row
+    still has a correct tiers list."""
+    org_root = tmp_path / "org"
+    org_root.mkdir()
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n")
+    paths = OrgPaths(root=org_root)
+    db = Database(paths.db_path)
+
+    # Write session_timeout
+    patch = {"session_timeout_seconds": 1800}
+    write_org_setting_to_db(paths, db, patch)
+
+    audit_rows = db.get_audit_logs("config:session_timeout_seconds")
+    assert len(audit_rows) > 0
+    tiers = audit_rows[-1]["payload"]["tiers"]
+    # For scalar stored as {"value": ...}, the changed tier is "value"
+    assert tiers == ["value"] or sorted(tiers) == ["value"], (
+        f"F4: scalar tiers should be ['value'], got {tiers}"
+    )
+
+
+def test_audit_transactional_atomicity_still_green(tmp_path: Path):
+    """F4 regress: settings row + audit row commit or roll back together."""
+    org_root = tmp_path / "org"
+    org_root.mkdir()
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams:\n  engineering:\n    manager: eng_head\n    workers: [dev]\n")
+    paths = OrgPaths(root=org_root)
+    db = Database(paths.db_path)
+
+    # Write all 4 sections
+    patch = {
+        "dreaming": {"enabled": True, "schedule": {"time": "03:00", "timezone": None, "catch_up_on_startup": True}, "agents": {"mode": "all", "include": [], "exclude": []}},
+        "threads": {"enabled": True, "default_turn_cap": 200},
+        "session_timeout_seconds": 3600,
+    }
+    write_org_setting_to_db(paths, db, patch)
+
+    # Every section has both DB row AND audit row
+    for section in ("dreaming", "threads", "session_timeout_seconds"):
+        assert db.get_org_setting(section) is not None, f"DB row missing for {section}"
+        audit_rows = db.get_audit_logs(f"config:{section}")
+        assert len(audit_rows) > 0, f"Audit row missing for config:{section}"

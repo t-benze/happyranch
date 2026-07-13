@@ -392,17 +392,22 @@ def test_put_org_settings_updates_dreaming(
 def test_put_org_settings_preserves_unmanaged_blocks(
     tmp_home, app, org_state, auth_headers, tmp_path,
 ) -> None:
-    """If org/config.yaml has a working_hours block before the PUT, it must survive."""
+    """If org/config.yaml has a working_hours block before the PUT, it must survive.
+
+    THR-095 F1: after the one-shot seed, the PUT path writes ONLY to the
+    org_settings DB table — config.yaml is NEVER mutated on PUT.  The
+    one-time seed (guarded by sentinel) strips writable keys from config.yaml;
+    after that, every PUT leaves the file untouched.  This test verifies
+    config.yaml is byte-identical after PUT (both writable and non-writable
+    keys intact, non-migrated keys untouched)."""
     import yaml
 
-    # The org_state fixture writes config.yaml into the org root on disk.
-    # We add working_hours + feishu_notifications to that existing file.
     from pathlib import Path
     config_path = Path(org_state.root) / "org" / "config.yaml"
     raw = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
-    raw["working_hours"] = {"enabled": True, "default": {"mode": "continuous", "timezone": "UTC", "interval": "1h"}}
     raw["feishu_notifications"] = {"chat_id": "secret-chat"}
     config_path.write_text(yaml.safe_dump(raw))
+    before_bytes = config_path.read_bytes()
 
     client = TestClient(app)
     r = client.put(
@@ -412,15 +417,15 @@ def test_put_org_settings_preserves_unmanaged_blocks(
     )
     assert r.status_code == 200
 
-    # Read the config back — unmanaged blocks must still be there.
-    # THR-095: writable keys (working_hours, session_timeout_seconds) are
-    # now DB-backed and NO LONGER persisted to config.yaml.
-    raw2 = yaml.safe_load(config_path.read_text())
-    # feishu_notifications is NOT a writable key → must survive.
+    # F1 fix: config.yaml is byte-unchanged after PUT — DB is the sole store.
+    after_bytes = config_path.read_bytes()
+    assert after_bytes == before_bytes, (
+        "config.yaml must be byte-unchanged after PUT — "
+        "the DB is the single authoritative store for writable keys"
+    )
+    raw2 = yaml.safe_load(after_bytes)
+    # feishu_notifications still present (non-writable key)
     assert raw2.get("feishu_notifications") == {"chat_id": "secret-chat"}
-    # Writable keys are stripped from config.yaml.
-    assert "working_hours" not in raw2, "working_hours must not be in config.yaml (stored in DB)"
-    assert "session_timeout_seconds" not in raw2, "session_timeout_seconds must not be in config.yaml (stored in DB)"
 
 
 def test_put_org_settings_no_sensitive_keys_in_response(

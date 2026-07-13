@@ -126,8 +126,8 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
     The steady-state loop (``startup=False``) always enqueues due dreams.
     """
     org_cfg = load_org_config(OrgPaths(root=org.root))
-    # THR-095: resolve dreaming from DB (override) → config.yaml (default).
-    cfg = resolve_org_setting_dreaming(org.db, code_default=org_cfg.dreaming)
+    # THR-095 F2: resolve dreaming from DB (override) → dataclass defaults.
+    cfg = resolve_org_setting_dreaming(org.db, code_default=DreamingConfig())
     # Resolve the effective timezone: dreaming.timezone (from DB-resolved cfg)
     # → org.timezone (from config.yaml, non-writable) → machine-local → UTC.
     tz = _resolve_timezone(cfg.timezone or org_cfg.timezone)[0]

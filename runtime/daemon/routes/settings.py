@@ -21,7 +21,6 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
     OrgConfigError,
-    load_org_config,
     write_org_setting_to_db,
 )
 from runtime.orchestrator.org_validation import (
@@ -289,21 +288,24 @@ class SettingsResponse(BaseModel):
 def get_settings(slug: str, org: OrgDep) -> SettingsResponse:
     """Return read-only system + org settings for the given org.
 
-    THR-095: the 4 web-writable knobs are resolved from the DB with config.yaml
-    as the fallback default."""
+    THR-095: the 4 web-writable knobs are resolved from the DB with
+    the DATACLASS code defaults as the fallback tier (NOT config.yaml —
+    after the one-shot seed, config.yaml is no longer the read source
+    for these keys)."""
     from runtime.orchestrator.org_config import (
-        load_org_config,
+        DreamingConfig,
+        OrgConfig,
+        WorkingHoursConfig,
         resolve_org_setting_dreaming,
         resolve_org_setting_threads,
         resolve_org_setting_session_timeout,
         resolve_org_setting_working_hours,
     )
-    cfg = load_org_config(OrgPaths(root=org.root))
-    # Resolve the 4 writable knobs from DB.
-    dreaming_cfg = resolve_org_setting_dreaming(org.db, code_default=cfg.dreaming)
-    threads_kwargs = resolve_org_setting_threads(org.db, code_default=cfg)
-    sto = resolve_org_setting_session_timeout(org.db, code_default=cfg.session_timeout_seconds)
-    wh_cfg = resolve_org_setting_working_hours(org.db, code_default=cfg.working_hours)
+    # F2 fix: pass TRUE dataclass code defaults as the fallback tier.
+    dreaming_cfg = resolve_org_setting_dreaming(org.db, code_default=DreamingConfig())
+    threads_kwargs = resolve_org_setting_threads(org.db, code_default=OrgConfig())
+    sto = resolve_org_setting_session_timeout(org.db, code_default=None)
+    wh_cfg = resolve_org_setting_working_hours(org.db, code_default=WorkingHoursConfig())
     return SettingsResponse(
         system=SystemSettingsView.from_settings(global_settings),
         org=_org_config_to_view_from_resolved(

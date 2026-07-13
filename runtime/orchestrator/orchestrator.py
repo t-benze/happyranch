@@ -296,9 +296,8 @@ class Orchestrator:
                 return task.session_timeout_seconds
         # THR-095: DB-backed org setting tier (replaces config.yaml read).
         from runtime.orchestrator.org_config import resolve_org_setting_session_timeout
-        org_cfg = load_org_config(self._paths)
         db_value = resolve_org_setting_session_timeout(
-            self._db, code_default=org_cfg.session_timeout_seconds,
+            self._db, code_default=None,
         )
         if db_value is not None:
             return db_value

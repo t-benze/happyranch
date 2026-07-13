@@ -2192,9 +2192,19 @@ class Database:
 
         A crash/failure before commit rolls BOTH back — no split-brain."""
         now = datetime.now(timezone.utc).isoformat()
+        # F4 fix: emit only the actually-changed tiers, not the full before dict.
+        if isinstance(before, dict) and isinstance(after, dict):
+            _tiers = sorted(
+                k for k in set(before) | set(after)
+                if before.get(k) != after.get(k)
+            )
+        elif before is not None:
+            _tiers = list(before) if isinstance(before, dict) else [section]
+        else:
+            _tiers = [section]
         audit_payload = json.dumps({
             "section": section,
-            "tiers": list(before or {} if isinstance(before, dict) else {}) if before is not None else [section],
+            "tiers": _tiers,
             "before": before or {},
             "after": after or {},
         })

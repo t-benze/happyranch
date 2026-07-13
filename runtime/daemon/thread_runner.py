@@ -583,8 +583,8 @@ async def run_invocation(
     except Exception:
         protocol_doc_manifest = ""
 
-    # THR-095: resolve threads settings from DB (override) → config.yaml (default).
-    threads_cfg = resolve_org_setting_threads(org_state.db, code_default=org_config)
+    # THR-095 F2: resolve threads settings from DB (override) → dataclass defaults.
+    threads_cfg = resolve_org_setting_threads(org_state.db, code_default=OrgConfig())
     timeout: int = settings.session_timeout_seconds
     if threads_cfg["invocation_timeout_seconds"] is not None:
         timeout = threads_cfg["invocation_timeout_seconds"]

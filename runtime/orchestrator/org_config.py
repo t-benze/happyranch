@@ -1127,6 +1127,10 @@ def seed_org_settings_from_config(
     db.upsert_org_setting("working_hours", wh_json)
     seeded["working_hours"] = wh_json
 
+    # One-time strip the 4 writable keys from config.yaml so the
+    # git-tracked seed file no longer carries stale values.
+    _strip_writable_keys_from_config(paths)
+
     # Write the sentinel so this never runs again.
     sentinel.write_text("")
     return seeded
@@ -1144,8 +1148,14 @@ def _working_hours_layer_to_dict(layer) -> dict:
         window["start"] = layer.window_start
     if layer.window_end is not None:
         window["end"] = layer.window_end
-    if layer.timezone is not None and (layer.window_start is not None or layer.window_end is not None):
-        window["timezone"] = layer.timezone
+    # windowed mode: timezone lives inside the window dict.
+    # continuous mode: preserve the bare timezone leaf so the seed
+    # round-trips today's effective working_hours.
+    if layer.timezone is not None:
+        if layer.window_start is not None or layer.window_end is not None:
+            window["timezone"] = layer.timezone
+        else:
+            d["timezone"] = layer.timezone
     if window:
         d["window"] = window
     if layer.interval is not None:
@@ -1155,6 +1165,44 @@ def _working_hours_layer_to_dict(layer) -> dict:
     if layer.catch_up_on_startup is not None:
         d["catch_up_on_startup"] = layer.catch_up_on_startup
     return d
+
+
+def _strip_writable_keys_from_config(paths: OrgPaths) -> None:
+    """One-time: remove the 4 web-writable keys from org/config.yaml.
+
+    Called ONLY from seed_org_settings_from_config (guarded by sentinel).
+    After this, the file retains only non-migrated fields (timezone,
+    executor_profiles, memory_*, max_revise_rounds).
+    """
+    config_path = paths.org_config_path
+    if not config_path.exists():
+        return
+    try:
+        raw = yaml.safe_load(config_path.read_text()) or {}
+    except yaml.YAMLError:
+        return
+    if not isinstance(raw, dict):
+        return
+    changed = False
+    for key in _ORG_WRITABLE_KEYS:
+        if key in raw:
+            del raw[key]
+            changed = True
+    if not changed:
+        return
+    fd, tmp = tempfile.mkstemp(
+        prefix=".org-config.", suffix=".yaml", dir=str(config_path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            yaml.safe_dump(raw, fh, sort_keys=False)
+        os.replace(tmp, config_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 # ── Resolution helpers (THR-095) ──────────────────────────────────────
@@ -1241,11 +1289,15 @@ def _dict_to_working_hours_layer(d: dict | None):
     if not d:
         return WorkHoursScheduleLayer()
     window = d.get("window", {}) or {}
+    # F3 fix: timezone may be bare (continuous-mode) or inside window (windowed).
+    timezone = window.get("timezone")
+    if timezone is None:
+        timezone = d.get("timezone")
     return WorkHoursScheduleLayer(
         mode=d.get("mode"),
         window_start=window.get("start"),
         window_end=window.get("end"),
-        timezone=window.get("timezone"),
+        timezone=timezone,
         interval=d.get("interval"),
         days=tuple(d["days"]) if "days" in d else None,
         catch_up_on_startup=d.get("catch_up_on_startup"),
@@ -1358,11 +1410,10 @@ def write_org_setting_to_db(
             actor=actor,
         )
 
-    # Also run save_org_config to strip writable keys from config.yaml.
-    try:
-        save_org_config(paths, patch)
-    except OrgConfigError:
-        raise
+    # THR-095 F1 fix: no longer mutate config.yaml on every PUT.
+    # Validation happens in-memory above; the DB is the single authoritative
+    # store for the 4 web-writable knobs.  Non-migrated fields (timezone,
+    # executor profiles) stay untouched in config.yaml.
 
 
 def _current_raw_dict_from_config(paths: OrgPaths) -> dict:
