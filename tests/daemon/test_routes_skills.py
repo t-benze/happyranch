@@ -920,6 +920,109 @@ class TestValidateSkill:
         assert result["ok"] is False
         assert "invalid_reference_filename" in result["reason_codes"]
 
+    def test_validate_rejects_nested_reference_entry(self, tmp_home, app, org_state, auth_headers):
+        """ROUTE-LEVEL: POST /skills/{id}/validate rejects a stored skill whose
+        references/ directory contains a NESTED entry (e.g. subdir/evil.md).
+
+        The validate loader must walk recursively and feed relative names
+        through _validate_artifact_filename — which rejects directory-target
+        names (contain '/'). A nested reference must NOT be silently skipped.
+        """
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create a skill with safe refs
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(
+                slug="nested-refs-test",
+                references={"safe.md": "safe content"},
+            ),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        assert r.json()["validation"]["ok"] is True
+
+        # Manually seed a NESTED reference entry on disk
+        pkg_dir = org_state.root / "skills" / "nested-refs-test"
+        nested_dir = pkg_dir / "references" / "subdir"
+        nested_dir.mkdir(parents=True, exist_ok=True)
+        (nested_dir / "evil.md").write_text("nested content", encoding="utf-8")
+
+        # Validate through the ROUTE
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:nested-refs-test/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["validation"]["ok"] is False, (
+            f"Expected validation.ok=false for nested ref, got: {body}"
+        )
+        assert any("Invalid reference filename" in e for e in body["validation"]["errors"]), (
+            f"Expected 'Invalid reference filename' in errors, got: {body['validation']['errors']}"
+        )
+        assert body["validation_state"] == "in_catalog"
+
+        # Verify a validation event was recorded with ok=false
+        events = org_state.db.list_skill_validation_events(
+            skill_id="hr:nested-refs-test",
+        )
+        assert any(not e["ok"] for e in events), (
+            f"Expected at least one validation event with ok=false, got events: "
+            f"{[e['ok'] for e in events]}"
+        )
+
+    def test_validate_rejects_nested_asset_entry(self, tmp_home, app, org_state, auth_headers):
+        """ROUTE-LEVEL: POST /skills/{id}/validate rejects a stored skill whose
+        assets/ directory contains a NESTED entry (e.g. subdir/evil.png).
+
+        Same as the nested reference test but for assets — the recursive walk
+        must not silently skip nested asset entries.
+        """
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create a skill with safe assets
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(
+                slug="nested-assets-test",
+                assets={"safe.png": "fake-png"},
+            ),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        assert r.json()["validation"]["ok"] is True
+
+        # Manually seed a NESTED asset entry on disk
+        pkg_dir = org_state.root / "skills" / "nested-assets-test"
+        nested_dir = pkg_dir / "assets" / "subdir"
+        nested_dir.mkdir(parents=True, exist_ok=True)
+        (nested_dir / "evil.png").write_text("nested content", encoding="utf-8")
+
+        # Validate through the ROUTE
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:nested-assets-test/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["validation"]["ok"] is False, (
+            f"Expected validation.ok=false for nested asset, got: {body}"
+        )
+        assert any("Invalid asset filename" in e for e in body["validation"]["errors"]), (
+            f"Expected 'Invalid asset filename' in errors, got: {body['validation']['errors']}"
+        )
+        assert body["validation_state"] == "in_catalog"
+
+        # Verify a validation event was recorded with ok=false
+        events = org_state.db.list_skill_validation_events(
+            skill_id="hr:nested-assets-test",
+        )
+        assert any(not e["ok"] for e in events), (
+            f"Expected at least one validation event with ok=false, got events: "
+            f"{[e['ok'] for e in events]}"
+        )
+
 
 class TestEditSkill:
     """PATCH /api/v1/orgs/{slug}/skills/{skill_id}"""

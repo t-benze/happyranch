@@ -907,20 +907,25 @@ def validate_skill(
                 )
             skill_md = skill_md_path.read_text(encoding="utf-8")
 
-            # Load stored references and assets for re-validation
+            # Load stored references and assets RECURSIVELY for re-validation.
+            # Nested entries (e.g. references/subdir/evil.md) must not be
+            # silently skipped — their relative name includes '/' which
+            # _validate_artifact_filename rejects, yielding validation.ok=false.
             stored_refs: dict[str, str] = {}
             ref_dir = pkg_dir / "references"
             if ref_dir.is_dir():
-                for fpath in sorted(ref_dir.iterdir()):
+                for fpath in sorted(ref_dir.rglob("*"), key=lambda p: str(p)):
                     if fpath.is_file():
-                        stored_refs[fpath.name] = fpath.read_text(encoding="utf-8")
+                        rel_name = str(fpath.relative_to(ref_dir))
+                        stored_refs[rel_name] = fpath.read_text(encoding="utf-8")
 
             stored_assets: dict[str, str] = {}
             assets_dir = pkg_dir / "assets"
             if assets_dir.is_dir():
-                for fpath in sorted(assets_dir.iterdir()):
+                for fpath in sorted(assets_dir.rglob("*"), key=lambda p: str(p)):
                     if fpath.is_file():
-                        stored_assets[fpath.name] = fpath.read_text(encoding="utf-8")
+                        rel_name = str(fpath.relative_to(assets_dir))
+                        stored_assets[rel_name] = fpath.read_text(encoding="utf-8")
 
             result = _validate_skill_package(
                 org=org,
