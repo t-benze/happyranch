@@ -101,6 +101,19 @@ async def _lifespan(app: FastAPI):
         # per-workspace artifacts/ → output/ before any mkdir.
         migrate_artifacts_layout(org.root)
         OrgPaths(org.root).artifacts_dir.mkdir(exist_ok=True)
+        # THR-095: one-shot reconcile agent.yaml executor/repos/model → .md
+        try:
+            from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+            migration_results = migrate_agent_yaml_to_frontmatter(OrgPaths(root=org.root))
+            if migration_results:
+                changed = {k: v for k, v in migration_results.items() if v != "unchanged"}
+                if changed:
+                    _logger.info(
+                        "THR-095 agent.yaml->frontmatter migration for org %s: %s",
+                        org.slug, changed,
+                    )
+        except Exception as exc:
+            _logger.warning("THR-095 migration error for org %s: %s", org.slug, exc)
         recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
         if recovered:
             _logger.warning(

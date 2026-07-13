@@ -1,9 +1,12 @@
 # Agent Executors And Permissions
 
-Each workspace declares an `executor` in `agent.yaml`. The executor is resolved
-against the **executor registry** — capability-registered, not name-listed
-(THR-052). Four **built-in** profiles ship with the runtime; custom CLI profiles
-can be registered in org config.
+**THR-095 (founder ruling option B):** The executor is declared in the
+**org/agents/<name>.md frontmatter** (``AgentDef.executor``) — the single
+authoritative store. The workspace ``agent.yaml`` is no longer read or
+written for executor resolution. The executor is resolved against the
+**executor registry** — capability-registered, not name-listed (THR-052).
+Four **built-in** profiles ship with the runtime; custom CLI profiles can
+be registered in org config.
 
 **Built-in profiles:**
 
@@ -25,7 +28,10 @@ can be registered in org config.
 
 When `model` is **unset** (the default for all existing agents), the executor launches with no model flag — each CLI uses its own default model. When `model` is **set** (via `happyranch set-model` or the agents route), the profile's `model_arg` template is substituted and injected as additive cmd elements after the binary, before permission flags. The model args never modify or reorder existing permission-bearing argv lines.
 
-Model lives in two surfaces: the org agent `.md` frontmatter (`model:` field) and the workspace `agent.yaml` (`model:` key). At dispatch time the orchestrator reads the `agent.yaml` key first (runtime override), falling back to the durable frontmatter when `agent.yaml` lacks a model (survives workspace re-bootstrap). The `happyranch set-model` command reconciles both surfaces end-to-end.
+**THR-095:** Model is declared in the **org/agents/<name>.md frontmatter**
+(``AgentDef.model``) — the single authoritative store. The workspace
+``agent.yaml`` is no longer read or written for model resolution. The
+``happyranch set-model`` command writes exclusively to the ``.md`` frontmatter.
 
 Custom/self-registered profiles do not currently support `model_arg` (separate founder-gated track).
 
@@ -192,7 +198,9 @@ Pi: `PiExecutor.run` invokes `pi -p ... --mode json` from the agent workspace. U
 
 Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in org `config.yaml`). Founder approval bootstraps the right workspace surface. See `protocol/skills/manage-agent/SKILL.md`.
 
-Repos are configured per agent in `agent.yaml`:
+**THR-095:** Repos are configured in the **org/agents/<name>.md frontmatter**
+(``AgentDef.repos``) — the single authoritative store. The workspace
+``agent.yaml`` is no longer read or written for repos.
 
 ```yaml
 repos:
@@ -200,19 +208,23 @@ repos:
   docs: https://github.com/t-benze/docs.git
 ```
 
-`happyranch init-agent` creates a default `agent.yaml` with empty repos if missing.
+**THR-095:** `happyranch init-agent` no longer creates or touches `agent.yaml`.
 
 ## Switching an Existing Agent's Executor
 
-An agent's executor lives in two places that must stay in sync: the org agent `.md` frontmatter (`executor:`) and the workspace `agent.yaml`. The orchestrator resolves the executor at dispatch time from `agent.yaml` (`_resolve_executor_name`), so hand-editing only the frontmatter has no runtime effect.
+**THR-095:** The executor lives in the **org/agents/<name>.md frontmatter**
+(``AgentDef.executor``) — the single authoritative store. The workspace
+``agent.yaml`` is no longer read or written for executor resolution.
 
-Switch an existing agent end-to-end with the founder command:
+Switch an existing agent with the founder command:
 
 ```bash
 happyranch set-executor --org <org> <agent> --executor <profile-name>
 ```
 
-It reconciles all three surfaces in one call — the `.md` frontmatter (atomic rewrite), `agent.yaml` (`set_executor`), and the executor bootstrap (`ensure_workspace_ready` with the new provider) — then prints before/after state for both the frontmatter and `agent.yaml`. An unregistered executor is rejected with the list of registered profiles.
+It reconciles the `.md` frontmatter (atomic rewrite) and the executor
+bootstrap (``ensure_workspace_ready`` with the new provider). An unregistered
+executor is rejected with the list of registered profiles.
 
 Switching **away from Claude** leaves the Claude-only files (`CLAUDE.md`, `.claude/`) behind, because the new adapter writes `AGENTS.md`/`.agents/` and never deletes them. By default the command **warns** that these files are stale and names them; it never auto-deletes. Pass `--clean` to delete them:
 
@@ -222,7 +234,9 @@ happyranch set-executor --org <org> <agent> --executor pi --clean
 
 (The symmetric case — switching *to* Claude leaves `AGENTS.md`/`.agents/`/`opencode.json` stale — is not yet handled.)
 
-`happyranch init-agent` does **not** auto-reconcile this drift. For an existing workspace whose frontmatter and `agent.yaml` disagree, init emits an `executor_drift` warning event (with the `set-executor` command to run) and changes nothing — a broad init must not silently mass-switch executors.
+**THR-095:** ``happyranch init-agent`` no longer emits ``executor_drift``
+warnings — the .md frontmatter is the single source of truth so there is
+no dual-surface drift to detect.
 
 ## Permission Model
 

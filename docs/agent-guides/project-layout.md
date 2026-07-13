@@ -90,7 +90,7 @@ Runtime container shape:
     |-- org/                           # editable org content
     |   |-- charter.md, escalation-rules.md, teams.yaml, config.yaml
     |   `-- agents/                    # active `<name>.md` + `_pending/<name>.md`
-    |-- workspaces/<agent>/            # agent.yaml, CLAUDE.md|AGENTS.md, .claude|.agents, repos, learnings, task_history.md
+    |-- workspaces/<agent>/            # agent.yaml (legacy, THR-095), CLAUDE.md|AGENTS.md, .claude|.agents, repos, memory/, task_history.md
     |-- kb/                            # per-org KB
     |-- threads/                       # THR-NNN.md
     |-- jobs/                          # JOB-NNN.{out,err,script}

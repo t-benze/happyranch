@@ -234,9 +234,8 @@ async def test_init_agents_uses_enrollment_executor_for_workspace_bootstrap(
         )
 
     assert response.status_code == 200
-    workspace = paths.workspaces_dir / "content_writer"
-    cfg = load_agent_config(workspace)
-    assert cfg["executor"] == "codex"
+    # THR-095: init no longer writes executor to agent.yaml.
+    # The provider comes from AgentDef.executor (.md frontmatter).
     assert mock_ctx.ensure_workspace_ready.call_args.kwargs["provider"] == "codex"
 
 
@@ -285,7 +284,6 @@ async def test_approve_agent_uses_provider_specific_workspace_bootstrap(
         )
 
     assert response.status_code == 200
-    workspace = paths.workspaces_dir / "content_writer"
-    cfg = load_agent_config(workspace)
-    assert cfg["executor"] == "codex"
+    # THR-095: approve_agent no longer writes executor to agent.yaml.
+    # The provider comes from AgentDef.executor (.md frontmatter).
     assert mock_ctx.ensure_workspace_ready.call_args.kwargs["provider"] == "codex"
