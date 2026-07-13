@@ -346,6 +346,50 @@ def test_update_writes_memory_updated_audit_row(client_with_migrated_workspace):
     assert any(r["action"] == "memory_updated" for r in rows)
 
 
+def test_update_preserves_last_verified(client_with_migrated_workspace):
+    """THR-091 WS-A: normal PUT update must NOT clear a previously-set last_verified."""
+    client, token, slug, agent, ws = client_with_migrated_workspace
+    # Seed an entry with last_verified set (write directly so we control the field)
+    mem_dir = ws / "memory"
+    content = """---
+id: MEM-001
+slug: preserve-verify-test
+title: Verified Entry
+topic: workflow
+provenance: experiential
+scope: agent
+lifecycle: valid
+salience: 50
+last_verified: 2026-07-13T08:00:00Z
+---
+body
+"""
+    (mem_dir / "MEM-001-preserve-verify-test.md").write_text(content)
+    # Rebuild index so the entry is findable
+    from runtime.infrastructure.learnings_store import MemoryStore
+    store = MemoryStore(mem_dir)
+    store.regenerate_index()
+    # Normal PUT update — body does NOT carry last_verified
+    r = client.put(
+        f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"slug": "preserve-verify-test", "title": "Updated Title", "topic": "workflow", "body": "updated body\n"},
+    )
+    assert r.status_code == 200
+    got = r.json()["last_verified"]
+    # YAML unquoted ISO-8601 is parsed as datetime; coercion normalizes Z→+00:00.
+    # Both are valid ISO-8601; the key invariants are the field is NOT None.
+    assert got is not None, "last_verified must survive a normal content update"
+    assert "2026-07-13T08:00:00" in got, f"unexpected last_verified={got}"
+    # Also GET the entry to independently re-read from disk
+    r2 = client.get(
+        f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["last_verified"] is not None
+
+
 def test_promote_writes_memory_promoted_audit_row(client_with_migrated_workspace):
     client, token, slug, agent, _ = client_with_migrated_workspace
     # Seed a KB entry
