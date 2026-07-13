@@ -255,8 +255,27 @@ def _sweep_on_startup(
 def _build_state(settings: Settings) -> DaemonState:
     reg = runtimes.load()
     if reg.active is None:
-        logger.warning("no active runtime — starting in idle mode")
-        return DaemonState.idle(settings)
+        # Auto-provision a default runtime on first launch so the daemon
+        # never starts idle unless the provisioning itself fails.
+        # Precedence:
+        #   1. Registered runtimes exist but none active → activate the first.
+        #   2. Registry empty → create a default runtime at daemon_home/runtime.
+        if reg.registered:
+            target = reg.registered[0]
+            logger.info("no active runtime — activating existing registered runtime: %s", target)
+            runtimes.activate(target)
+        else:
+            default_path = paths.daemon_home() / "runtime"
+            logger.info("no active runtime — auto-provisioning default runtime at %s", default_path)
+            RuntimeDir.init(default_path)
+            runtimes.register(default_path)
+        reg = runtimes.load()
+        if reg.active is None:
+            # Defensive: if provisioning still yields no active runtime,
+            # fall back to idle rather than raising. This path should be
+            # unreachable in practice.
+            logger.error("runtime auto-provision failed — starting in idle mode")
+            return DaemonState.idle(settings)
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings)
     for org in state.orgs.values():

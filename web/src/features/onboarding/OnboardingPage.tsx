@@ -304,7 +304,9 @@ function CreateStep({
     },
     onError: (err: unknown) => {
       const e = err as { code?: string; status?: number; message?: string };
-      if (e.code === 'org_exists' || e.status === 409) {
+      if (e.code === 'no_active_runtime') {
+        setServerError('No runtime is active yet — the daemon is still starting up. Try again in a moment.');
+      } else if (e.code === 'org_exists' || e.code === 'org_dir_exists' || e.status === 409) {
         setServerError(`An org with slug "${slug}" already exists.`);
       } else if (e.code === 'invalid_slug') {
         setServerError('Slug must match ^[a-z0-9-]{1,40}$.');
