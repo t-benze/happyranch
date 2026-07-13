@@ -374,6 +374,7 @@ async def manage_repo(
 
     await asyncio.to_thread(
         ctx.ensure_workspace_ready, workspace, agent_name, agent_prompt,
+        provider=agent_def.executor,
     )
     return {"ok": True}
 

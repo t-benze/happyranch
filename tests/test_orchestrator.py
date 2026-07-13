@@ -65,6 +65,17 @@ def _setup_codex_workspace(runtime, agent: str) -> None:
     write_default_agent_config(ws)
     set_executor(ws, "codex")
     (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    # THR-095: executor is now read from org/agents/<name>.md (single source),
+    # not agent.yaml. Write the .md with the matching executor.
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    ad = AgentDef(
+        name=agent, team="engineering", role="manager",
+        executor="codex", allow_rules=(), repos={},
+        enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt=f"You are {agent}.", description="", model=None,
+    )
+    runtime.agents_dir.mkdir(parents=True, exist_ok=True)
+    (runtime.agents_dir / f"{agent}.md").write_text(render_agent_text(ad))
 
 
 def _setup_opencode_workspace(runtime, agent: str) -> None:
@@ -74,6 +85,16 @@ def _setup_opencode_workspace(runtime, agent: str) -> None:
     write_default_agent_config(ws)
     set_executor(ws, "opencode")
     (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    # THR-095: executor is now read from org/agents/<name>.md (single source)
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    ad = AgentDef(
+        name=agent, team="engineering", role="manager",
+        executor="opencode", allow_rules=(), repos={},
+        enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt=f"You are {agent}.", description="", model=None,
+    )
+    runtime.agents_dir.mkdir(parents=True, exist_ok=True)
+    (runtime.agents_dir / f"{agent}.md").write_text(render_agent_text(ad))
 
 
 def _setup_pi_workspace(runtime, agent: str) -> None:
@@ -83,6 +104,16 @@ def _setup_pi_workspace(runtime, agent: str) -> None:
     write_default_agent_config(ws)
     set_executor(ws, "pi")
     (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    # THR-095: executor is now read from org/agents/<name>.md (single source)
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    ad = AgentDef(
+        name=agent, team="engineering", role="manager",
+        executor="pi", allow_rules=(), repos={},
+        enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt=f"You are {agent}.", description="", model=None,
+    )
+    runtime.agents_dir.mkdir(parents=True, exist_ok=True)
+    (runtime.agents_dir / f"{agent}.md").write_text(render_agent_text(ad))
 
 
 def test_orchestrator_no_longer_has_run_task():

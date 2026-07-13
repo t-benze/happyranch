@@ -111,3 +111,274 @@ def test_load_agent_config_no_model_key_when_absent(tmp_path: Path) -> None:
     cfg = load_agent_config(tmp_path)
     assert "model" not in cfg
     assert "executor" in cfg  # still injects default executor
+
+
+# ---- migrate_agent_yaml_to_frontmatter ----
+
+
+def _write_agent_md(paths, agent_name: str, **overrides) -> None:
+    """Write a minimal AgentDef to the agents_dir."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    defaults = dict(
+        name=agent_name, team="engineering", role="worker", executor="claude",
+        allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
+        enrolled_at=None, system_prompt="system prompt", description="desc",
+        model=None,
+    )
+    defaults.update(overrides)
+    agent = AgentDef(**defaults)
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / f"{agent_name}.md").write_text(render_agent_text(agent))
+
+
+def _write_agent_yaml(workspace: Path, **kwargs) -> None:
+    """Write an agent.yaml to the workspace dir."""
+    import yaml as _yaml
+    workspace.mkdir(parents=True, exist_ok=True)
+    data = dict(kwargs)
+    (workspace / "agent.yaml").write_text(_yaml.dump(data, default_flow_style=False))
+
+
+def test_migrate_copies_executor_repos_model_from_yaml_to_md(
+    tmp_path: Path,
+) -> None:
+    """(a) When .md lacks executor/repos/model, migration copies them from
+    agent.yaml into .md frontmatter."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.prompt_loader import load_agent
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+
+    paths = OrgPaths(root=tmp_path)
+    workspace = tmp_path / "workspaces" / "dev_agent"
+
+    # .md has default executor=claude, repos={}, model=None
+    _write_agent_md(paths, "dev_agent")
+    # agent.yaml has codex, repos, and a model
+    _write_agent_yaml(workspace, executor="codex", model="gpt-5",
+                      repos={"happyranch": "https://github.com/t-benze/happyranch.git"})
+
+    results = migrate_agent_yaml_to_frontmatter(paths)
+    assert results["dev_agent"].startswith("migrated")
+
+    # After migration, .md reflects agent.yaml values
+    agent_def = load_agent(paths, "dev_agent")
+    assert agent_def is not None
+    assert agent_def.executor == "codex"
+    assert agent_def.model == "gpt-5"
+    assert agent_def.repos == {"happyranch": "https://github.com/t-benze/happyranch.git"}
+
+
+def test_migrate_repairs_engineering_manager_repos_drift(
+    tmp_path: Path,
+) -> None:
+    """(b) engineering_manager drift-repair: .md has repos:{} while
+    agent.yaml has happyranch -> after migration .md declares happyranch."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.prompt_loader import load_agent
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+
+    paths = OrgPaths(root=tmp_path)
+    workspace = tmp_path / "workspaces" / "engineering_manager"
+
+    # .md has repos={} (the known drift state)
+    _write_agent_md(paths, "engineering_manager", executor="claude",
+                    repos={}, model="claude-sonnet-4-5")
+    # agent.yaml has the real repos AND the same model (to avoid model-clearing)
+    _write_agent_yaml(workspace, executor="claude", model="claude-sonnet-4-5",
+                      repos={"happyranch": "https://github.com/t-benze/happyranch.git"})
+
+    results = migrate_agent_yaml_to_frontmatter(paths)
+    assert results["engineering_manager"].startswith("migrated")
+    assert "repos updated" in results["engineering_manager"]
+
+    # After migration, .md repos now carries happyranch from agent.yaml
+    agent_def = load_agent(paths, "engineering_manager")
+    assert agent_def is not None
+    assert agent_def.repos == {"happyranch": "https://github.com/t-benze/happyranch.git"}
+    # executor and model unchanged (already matched)
+    assert agent_def.executor == "claude"
+    assert agent_def.model == "claude-sonnet-4-5"
+
+
+def test_migrate_idempotent_second_run_noop(
+    tmp_path: Path,
+) -> None:
+    """(c) Idempotency: a second migration run is a no-op (stable content,
+    no rewrite churn)."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+
+    paths = OrgPaths(root=tmp_path)
+    workspace = tmp_path / "workspaces" / "dev_agent"
+
+    _write_agent_md(paths, "dev_agent")
+    _write_agent_yaml(workspace, executor="codex", model="gpt-5",
+                      repos={"docs": "https://github.com/t-benze/docs.git"})
+
+    # First run: migrates
+    results1 = migrate_agent_yaml_to_frontmatter(paths)
+    assert results1["dev_agent"].startswith("migrated")
+
+    # Second run: unchanged
+    results2 = migrate_agent_yaml_to_frontmatter(paths)
+    assert results2["dev_agent"] == "unchanged"
+
+
+def test_migrate_empty_model_normalizes_to_none(
+    tmp_path: Path,
+) -> None:
+    """FIX 2: agent.yaml with model:'' -> frontmatter model unset (None).
+    The old live resolver treated empty string as unset, and AgentDef
+    parsing rejects empty models. After migration, the agent still loads."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.prompt_loader import load_agent
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+
+    paths = OrgPaths(root=tmp_path)
+    workspace = tmp_path / "workspaces" / "dev_agent"
+
+    # .md starts with model=None (no model)
+    _write_agent_md(paths, "dev_agent", model=None)
+    # agent.yaml has model: "" (empty string — legacy state)
+    _write_agent_yaml(workspace, executor="claude", repos={}, model="")
+
+    results = migrate_agent_yaml_to_frontmatter(paths)
+    # model unchanged: .md was None, agent.yaml '' → None (same)
+    assert results["dev_agent"] == "unchanged"
+
+    # Verify agent still loads after migration
+    agent_def = load_agent(paths, "dev_agent")
+    assert agent_def is not None
+    assert agent_def.model is None
+
+    # Now test the case where .md has a stale model but agent.yaml has ''
+    # -> migration should clear .md.model to None
+    _write_agent_md(paths, "dev_agent", model="old-model")
+    results2 = migrate_agent_yaml_to_frontmatter(paths)
+    assert "migrated" in results2["dev_agent"]
+    assert "model" in results2["dev_agent"]
+
+    agent_def2 = load_agent(paths, "dev_agent")
+    assert agent_def2 is not None
+    assert agent_def2.model is None
+
+
+def test_migrate_divergent_agent_yaml_is_ignored_after_cutover(
+    tmp_path: Path,
+) -> None:
+    """(d) RED single-source proof: after migration cutover, a divergent
+    agent.yaml executor/repos/model can NO LONGER override .md.
+    Resolvers read .md only; agent.yaml is not consulted."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.prompt_loader import load_agent
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter, load_agent_config
+
+    paths = OrgPaths(root=tmp_path)
+    workspace = tmp_path / "workspaces" / "dev_agent"
+
+    # Step 1: .md and agent.yaml are in sync (post-migration state)
+    _write_agent_md(paths, "dev_agent", executor="codex", model="gpt-5",
+                    repos={"docs": "https://github.com/t-benze/docs.git"})
+    _write_agent_yaml(workspace, executor="codex", model="gpt-5",
+                      repos={"docs": "https://github.com/t-benze/docs.git"})
+
+    # Migration confirms they're in sync
+    results = migrate_agent_yaml_to_frontmatter(paths)
+    assert results["dev_agent"] == "unchanged"
+
+    # Step 2: NOW someone mutates agent.yaml to divergent values
+    # (simulating stealth agent.yaml edit bypassing the .md).
+    _write_agent_yaml(workspace, executor="pi", model="claude-sonnet-4-5",
+                      repos={"evil": "https://evil.git"})
+
+    # Step 3: RED proof — the resolver reads .md ONLY.
+    # agent.yaml's divergent values are IGNORED.
+    agent_def = load_agent(paths, "dev_agent")
+    assert agent_def is not None
+    # .md values prevail
+    assert agent_def.executor == "codex"
+    assert agent_def.repos == {"docs": "https://github.com/t-benze/docs.git"}
+    assert agent_def.model == "gpt-5"
+
+    # agent.yaml still has the divergent values, but they're invisible to resolvers
+    yaml_cfg = load_agent_config(workspace)
+    assert yaml_cfg["executor"] == "pi"
+    assert yaml_cfg["repos"] == {"evil": "https://evil.git"}
+    assert yaml_cfg["model"] == "claude-sonnet-4-5"
+
+
+def test_migrate_skips_workspace_without_yaml(
+    tmp_path: Path,
+) -> None:
+    """Workspace dir exists but no agent.yaml -> skipped (not in results)."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+
+    paths = OrgPaths(root=tmp_path)
+    workspace = tmp_path / "workspaces" / "no_yaml_agent"
+    workspace.mkdir(parents=True)
+    # no agent.yaml written
+
+    results = migrate_agent_yaml_to_frontmatter(paths)
+    assert "no_yaml_agent" not in results
+
+
+def test_migrate_skips_workspace_without_md(
+    tmp_path: Path,
+) -> None:
+    """Workspace has agent.yaml but no .md -> skipped with reason."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+
+    paths = OrgPaths(root=tmp_path)
+    workspace = tmp_path / "workspaces" / "orphan_agent"
+    _write_agent_yaml(workspace, executor="claude")
+    # no .md written
+
+    results = migrate_agent_yaml_to_frontmatter(paths)
+    assert results["orphan_agent"] == "skipped (no .md)"
+
+
+def test_migrate_preserves_allow_rules_and_other_metadata(
+    tmp_path: Path,
+) -> None:
+    """Migration must NOT alter allow_rules, system_prompt, description,
+    enrolled_by, enrolled_at_task, or role — only executor/repos/model."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.prompt_loader import load_agent
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+
+    paths = OrgPaths(root=tmp_path)
+    workspace = tmp_path / "workspaces" / "dev_agent"
+
+    _write_agent_md(paths, "dev_agent",
+                    executor="claude",
+                    allow_rules=("Bash(git:*)", "Bash(npm:*)"),
+                    system_prompt="You are a dev agent.",
+                    description="Writes code.",
+                    role="worker",
+                    team="engineering",
+                    enrolled_by="engineering_head",
+                    enrolled_at_task="TASK-100",
+                    model=None,
+                    repos={})
+    _write_agent_yaml(workspace, executor="codex",
+                      repos={"docs": "https://github.com/t-benze/docs.git"})
+
+    results = migrate_agent_yaml_to_frontmatter(paths)
+    assert results["dev_agent"].startswith("migrated")
+
+    agent_def = load_agent(paths, "dev_agent")
+    assert agent_def is not None
+    # Changed fields
+    assert agent_def.executor == "codex"
+    assert agent_def.repos == {"docs": "https://github.com/t-benze/docs.git"}
+    # Preserved fields (system_prompt may have trailing newline from render_agent_text)
+    assert agent_def.allow_rules == ("Bash(git:*)", "Bash(npm:*)")
+    assert agent_def.system_prompt.rstrip("\n") == "You are a dev agent."
+    assert agent_def.description == "Writes code."
+    assert agent_def.role == "worker"
+    assert agent_def.team == "engineering"
+    assert agent_def.enrolled_by == "engineering_head"
+    assert agent_def.enrolled_at_task == "TASK-100"
+    assert agent_def.model is None

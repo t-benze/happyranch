@@ -165,7 +165,7 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
             cfg = load_agent_config(workspace)
             yaml_executor = cfg.get("executor") or "claude"
             yaml_repos = dict(cfg.get("repos") or {})
-            yaml_model = cfg.get("model")  # None if absent
+            yaml_model = cfg.get("model") or None  # empty string → None (old resolver semantics)
 
             # Check if migration is needed (idempotency guard)
             executor_changed = agent_def.executor != yaml_executor

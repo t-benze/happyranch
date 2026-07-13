@@ -416,6 +416,38 @@ def test_manage_repo_add_creates_entry_and_clones(
     assert agent_def.repos["docs"] == "https://github.com/t-benze/docs.git"
 
 
+def test_manage_repo_add_passes_provider_from_agent_def(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """FIX: ensure_workspace_ready receives provider=agent_def.executor,
+    not the default 'claude'. A codex agent must get the codex adapter
+    refreshed after a repo mutation."""
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    paths = _paths(org_state)
+    _write_agent_md(paths, _make_agent("dev_agent", executor="codex"))
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/dev_agent/repos",
+            json={"action": "add", "repo_name": "docs", "url": "https://github.com/t-benze/docs.git"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    # The critical assertion: ensure_workspace_ready must receive the actual
+    # provider, not the default 'claude'.
+    mock_ctx.ensure_workspace_ready.assert_called_once()
+    _, kwargs = mock_ctx.ensure_workspace_ready.call_args
+    assert kwargs.get("provider") == "codex", (
+        f"expected provider='codex', got {kwargs}"
+    )
+
+
 def test_manage_repo_add_duplicate_returns_409(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
