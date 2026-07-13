@@ -255,9 +255,8 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
 def cmd_set_model(args: argparse.Namespace) -> None:
     """Founder action: set or clear an existing agent's model.
 
-    Reconciles the org .md frontmatter and the workspace agent.yaml in one
-    call, then prints before/after state. Omit --model to clear (revert to
-    CLI default).
+    THR-095: writes to org/agents/<name>.md frontmatter ONLY
+    (single source of truth). Omit --model to clear (revert to CLI default).
     """
     try:
         client = OpcClient.from_env()
@@ -284,12 +283,12 @@ def cmd_set_model(args: argparse.Namespace) -> None:
 
 
 def cmd_set_executor(args: argparse.Namespace) -> None:
-    """Founder action: switch an existing agent's executor end-to-end.
+    """Founder action: switch an existing agent's executor.
 
-    Reconciles the org .md frontmatter, the workspace agent.yaml, and the
-    executor bootstrap in one call, then prints before/after state. Warns
-    about stale Claude-only files when switching away from Claude; pass
-    ``--clean`` to delete them.
+    THR-095: writes to org/agents/<name>.md frontmatter ONLY
+    (single source of truth).  The executor bootstrap is regenerated.
+    Warns about stale Claude-only files when switching away from Claude;
+    pass ``--clean`` to delete them.
     """
     try:
         client = OpcClient.from_env()
@@ -314,11 +313,7 @@ def cmd_set_executor(args: argparse.Namespace) -> None:
         return str(val) if val is not None else "(no workspace)"
 
     print(f"Executor switch for {result['agent']}:")
-    print(f"  org frontmatter:      {before['org_executor']} -> {after['org_executor']}")
-    print(
-        f"  workspace agent.yaml: {_fmt(before['workspace_executor'])} -> "
-        f"{_fmt(after['workspace_executor'])}"
-    )
+    print(f"  org .md frontmatter:  {before['org_executor']} -> {after['org_executor']}")
     stale = result.get("stale_files") or []
     if stale:
         if result.get("cleaned"):
@@ -380,7 +375,7 @@ def register(sub) -> None:
 
     p_setexec = sub.add_parser(
         "set-executor",
-        help="Switch an existing agent's executor (org frontmatter + workspace agent.yaml + bootstrap)",
+        help="Switch an existing agent's executor (org .md frontmatter + bootstrap)",
     )
     p_setexec.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_setexec.add_argument("agent", help="Agent name to switch")
@@ -396,7 +391,7 @@ def register(sub) -> None:
 
     p_setmodel = sub.add_parser(
         "set-model",
-        help="Set or clear an existing agent's model (agent.yaml + org frontmatter)",
+        help="Set or clear an existing agent's model (org .md frontmatter)",
     )
     p_setmodel.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_setmodel.add_argument("agent", help="Agent name")

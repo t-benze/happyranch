@@ -37,7 +37,7 @@ The frontend surface lives in `web/src/features/settings/SettingsDialog.tsx` wit
 
 The Agents page (`web/src/features/agents/`) shows the active agent roster plus pending enrollments. Each agent detail drawer now includes (Phase 2):
 
-- **Repositories** — `repos` map from agent.yaml, shown as badge chips in the detail header.
+- **Repositories** — `repos` map from org/agents/<name>.md frontmatter (THR-095), shown as badge chips in the detail header.
 - **System prompt** — read-only, collapsible. Sourced from the `system_prompt` field on the existing `GET /agents` response (additive Phase 2 field).
 - **Model** — per-agent model string (`model` field in `GET /agents`, additive THR-067 field). Web UI field is PR-2 (separate follow-up).
 
@@ -127,7 +127,7 @@ happyranch set-model --org <org> dev_agent
 
 The backend route is `PUT /api/v1/orgs/{slug}/agents/{agent_name}/model` with payload
 `{"model": "<id>" | null}`. It reconciles the org `.md` frontmatter (`model:` field) and
-the workspace `agent.yaml` (`model:` key) in one call.
+the org/agents/<name>.md frontmatter in one call (THR-095).
 
 When a model is set AND the executor profile has a `model_arg` template (all four built-in
 profiles do — verified per CLI), the executor injects the substituted model flags into the

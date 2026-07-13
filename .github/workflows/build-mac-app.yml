@@ -1,10 +1,10 @@
 name: Build macOS App
 
-# Build an UNSIGNED HappyRanchApp.app bundle for Apple Silicon (arm64) macOS
+# Build an UNSIGNED HappyRanch.app bundle for Apple Silicon (arm64) macOS
 # and publish it as a downloadable CI artifact.
 #
 # MIRRORS: app/mac/scripts/build-app.sh stages 1-5 — CI and local stay in sync.
-# DOWNLOAD: After downloading the .app, run `xattr -cr HappyRanchApp.app` to
+# DOWNLOAD: After downloading the .app, run `xattr -cr HappyRanch.app` to
 #           bypass Gatekeeper (the app is unsigned — code signing is founder-gated).
 
 on:
@@ -14,7 +14,7 @@ on:
 
 jobs:
   build:
-    name: Build HappyRanchApp.app (macOS arm64, unsigned)
+    name: Build HappyRanch.app (macOS arm64, unsigned)
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -35,7 +35,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -43,11 +43,11 @@ jobs:
         run: bash app/mac/scripts/build-app.sh
 
       - name: Zip .app bundle
-        run: ditto -c -k --keepParent app/mac/HappyRanchApp.app HappyRanchApp.app.zip
+        run: ditto -c -k --keepParent app/mac/HappyRanch.app HappyRanch.app.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
-          name: HappyRanchApp-macos-arm64
-          path: HappyRanchApp.app.zip
+          name: HappyRanch-macos-arm64
+          path: HappyRanch.app.zip
 

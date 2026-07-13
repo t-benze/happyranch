@@ -17,7 +17,12 @@ When starting a feature, read the relevant design doc first and follow existing 
 
 `AgentDef` in `runtime/orchestrator/agent_def.py` represents an agent file: markdown with YAML frontmatter parsed/rendered by `parse_agent_text` and `render_agent_text`.
 
-Fields: `name`, `team`, `role`, `executor`, `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, and `system_prompt`. There is no `session_timeout_seconds` field.
+Fields: `name`, `team`, `role`, `executor`, `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `model`, and `system_prompt`. There is no `session_timeout_seconds` field.
+
+**THR-095 single-source-of-truth:** `executor`, `repos`, and `model` are read
+exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
+``agent.yaml`` is no longer read or written by any org-agent path. See
+`docs/agent-guides/runtime-and-configuration.md#agent-configuration-single-source-of-truth-thr-095`.
 
 `runtime/orchestrator/prompt_loader.py` is the API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, and `reject_agent`. Routes and orchestrator code should read through this module against the per-org root.
 

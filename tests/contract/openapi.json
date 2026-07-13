@@ -450,6 +450,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_id}/skills/effective": {
+      "GET": {
+        "params": [
+          [
+            "agent_id",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/approve": {
       "POST": {
         "params": [
@@ -1642,6 +1664,154 @@
           [
             "authorization",
             "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skills": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "201",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skills/catalog": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "filter",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skills/catalog/{skill_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "skill_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skills/validation": {
+      "GET": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "severity",
+            "query"
+          ],
+          [
+            "since",
+            "query"
+          ],
+          [
+            "skill",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "source",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skills/{skill_id}": {
+      "PATCH": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "skill_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skills/{skill_id}/validate": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "skill_id",
+            "path"
           ],
           [
             "slug",

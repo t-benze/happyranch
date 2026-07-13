@@ -84,14 +84,16 @@ def test_list_agents_returns_full_shape(
 def test_list_agents_returns_model(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """GET /agents returns model — both set and null — resolved from agent.yaml."""
+    """GET /agents returns model — both set and null — from .md frontmatter.
+
+    THR-095: model is read from AgentDef.model (org/agents/<name>.md),
+    NOT from agent.yaml.
+    """
     from datetime import datetime, timezone
-    from runtime.orchestrator.agent_def import AgentDef
-    from runtime.daemon.agent_config import set_model
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
     ws = org_state.root / "workspaces" / "engineering_head"
     ws.mkdir(parents=True, exist_ok=True)
-    (ws / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
 
     paths = _paths(org_state)
     agent = AgentDef(
@@ -108,10 +110,11 @@ def test_list_agents_returns_model(
         description="Owns the engineering team.",
     )
     paths.agents_dir.mkdir(parents=True, exist_ok=True)
-    (paths.agents_dir / "engineering_head.md").write_text(
-        __import__("runtime.orchestrator.agent_def", fromlist=["render_agent_text"])
-            .render_agent_text(agent),
-    )
+
+    def _write_agent(agent: AgentDef) -> None:
+        (paths.agents_dir / "engineering_head.md").write_text(render_agent_text(agent))
+
+    _write_agent(agent)
 
     # No model set → null
     r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
@@ -120,8 +123,22 @@ def test_list_agents_returns_model(
     eh = rows["engineering_head"]
     assert eh["model"] is None
 
-    # Set a model → returned
-    set_model(ws, "claude-sonnet-4-20250514")
+    # Set a model → returned (write to .md frontmatter, not agent.yaml)
+    agent_with_model = AgentDef(
+        name="engineering_head",
+        team="engineering",
+        role="manager",
+        executor="claude",
+        allow_rules=tuple(),
+        repos={},
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="manage the engineering team",
+        description="Owns the engineering team.",
+        model="claude-sonnet-4-20250514",
+    )
+    _write_agent(agent_with_model)
     r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
     assert r.status_code == 200
     rows = {a["name"]: a for a in r.json()["agents"]}
@@ -129,7 +146,21 @@ def test_list_agents_returns_model(
     assert eh["model"] == "claude-sonnet-4-20250514"
 
     # Clear the model → null
-    set_model(ws, None)
+    agent_no_model = AgentDef(
+        name="engineering_head",
+        team="engineering",
+        role="manager",
+        executor="claude",
+        allow_rules=tuple(),
+        repos={},
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="manage the engineering team",
+        description="Owns the engineering team.",
+        model=None,
+    )
+    _write_agent(agent_no_model)
     r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
     assert r.status_code == 200
     rows = {a["name"]: a for a in r.json()["agents"]}
@@ -296,11 +327,12 @@ def test_learnings_unknown_session_409(
     assert "should not land" not in learnings.read_text()
 
 
-def test_init_writes_default_agent_yaml_and_creates_dirs(
+def test_init_bootstraps_workspace_dirs(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """init-agent must leave the workspace bootstrapped: agent.yaml present,
-    agent-specific folders created (e.g. specs/ for product_manager)."""
+    """init-agent must leave the workspace bootstrapped with agent-specific
+    folders (e.g. specs/ for product_manager).  THR-095: agent.yaml is no
+    longer created by init."""
     client = TestClient(app)
     with client.stream(
         "POST", "/api/v1/orgs/alpha/agents/init",
@@ -313,12 +345,12 @@ def test_init_writes_default_agent_yaml_and_creates_dirs(
             pass
 
     ws = org_state.root / "workspaces" / "product_manager"
-    assert (ws / "agent.yaml").exists(), "agent.yaml was not created"
     assert (ws / "specs").is_dir(), "product_manager specs/ dir missing"
 
 
 def test_init_creates_workspace_for_any_name(tmp_home, app, org_state, auth_headers) -> None:
-    """init-agent accepts any valid agent name, no longer validates against enum."""
+    """init-agent accepts any valid agent name.  THR-095: agent.yaml is no
+    longer created by init — we verify workspace dir exists."""
     client = TestClient(app)
     with client.stream(
         "POST", "/api/v1/orgs/alpha/agents/init",
@@ -329,7 +361,29 @@ def test_init_creates_workspace_for_any_name(tmp_home, app, org_state, auth_head
         for _ in r.iter_lines():
             pass
     ws = org_state.root / "workspaces" / "new_custom_agent"
-    assert (ws / "agent.yaml").exists()
+    assert ws.is_dir()
+
+
+def _write_agent_md(paths, agent: "AgentDef") -> None:
+    """Helper: write AgentDef to .md frontmatter for tests."""
+    from runtime.orchestrator.agent_def import render_agent_text
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / f"{agent.name}.md").write_text(render_agent_text(agent))
+
+
+def _make_agent(name: str, **overrides) -> "AgentDef":
+    """Helper: build a minimal AgentDef for tests."""
+    from datetime import datetime, timezone
+    from runtime.orchestrator.agent_def import AgentDef
+    defaults = dict(
+        name=name, team="engineering", role="worker", executor="claude",
+        allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt=f"system prompt for {name}", description=f"desc for {name}",
+        model=None,
+    )
+    defaults.update(overrides)
+    return AgentDef(**defaults)
 
 
 def test_manage_repo_add_creates_entry_and_clones(
@@ -337,7 +391,8 @@ def test_manage_repo_add_creates_entry_and_clones(
 ) -> None:
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("repos: {}\n")
+    paths = _paths(org_state)
+    _write_agent_md(paths, _make_agent("dev_agent"))
 
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
@@ -354,9 +409,43 @@ def test_manage_repo_add_creates_entry_and_clones(
     mock_ctx.clone_repo.assert_called_once()
     mock_ctx.ensure_workspace_ready.assert_called_once()
 
-    from runtime.daemon.agent_config import load_agent_config
-    cfg = load_agent_config(workspace)
-    assert cfg["repos"]["docs"] == "https://github.com/t-benze/docs.git"
+    # THR-095: repos now live in .md frontmatter, not agent.yaml
+    from runtime.orchestrator.prompt_loader import load_agent
+    agent_def = load_agent(paths, "dev_agent")
+    assert agent_def is not None
+    assert agent_def.repos["docs"] == "https://github.com/t-benze/docs.git"
+
+
+def test_manage_repo_add_passes_provider_from_agent_def(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """FIX: ensure_workspace_ready receives provider=agent_def.executor,
+    not the default 'claude'. A codex agent must get the codex adapter
+    refreshed after a repo mutation."""
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    paths = _paths(org_state)
+    _write_agent_md(paths, _make_agent("dev_agent", executor="codex"))
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/dev_agent/repos",
+            json={"action": "add", "repo_name": "docs", "url": "https://github.com/t-benze/docs.git"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    # The critical assertion: ensure_workspace_ready must receive the actual
+    # provider, not the default 'claude'.
+    mock_ctx.ensure_workspace_ready.assert_called_once()
+    _, kwargs = mock_ctx.ensure_workspace_ready.call_args
+    assert kwargs.get("provider") == "codex", (
+        f"expected provider='codex', got {kwargs}"
+    )
 
 
 def test_manage_repo_add_duplicate_returns_409(
@@ -364,7 +453,8 @@ def test_manage_repo_add_duplicate_returns_409(
 ) -> None:
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("repos:\n  docs: https://old.git\n")
+    paths = _paths(org_state)
+    _write_agent_md(paths, _make_agent("dev_agent", repos={"docs": "https://old.git"}))
 
     r = TestClient(app).post(
         "/api/v1/orgs/alpha/agents/dev_agent/repos",
@@ -379,7 +469,8 @@ def test_manage_repo_remove_deletes_entry_and_dir(
 ) -> None:
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("repos:\n  docs: https://old.git\n")
+    paths = _paths(org_state)
+    _write_agent_md(paths, _make_agent("dev_agent", repos={"docs": "https://old.git"}))
     repo_dir = workspace / "repos" / "docs"
     repo_dir.mkdir(parents=True)
     (repo_dir / ".git").mkdir()  # fake git dir
@@ -396,9 +487,11 @@ def test_manage_repo_remove_deletes_entry_and_dir(
     assert r.status_code == 200
     assert not repo_dir.exists()
 
-    from runtime.daemon.agent_config import load_agent_config
-    cfg = load_agent_config(workspace)
-    assert "docs" not in cfg.get("repos", {})
+    # THR-095: repos now live in .md frontmatter, not agent.yaml
+    from runtime.orchestrator.prompt_loader import load_agent
+    agent_def = load_agent(paths, "dev_agent")
+    assert agent_def is not None
+    assert "docs" not in agent_def.repos
 
 
 def test_manage_repo_remove_nonexistent_returns_404(
@@ -406,7 +499,8 @@ def test_manage_repo_remove_nonexistent_returns_404(
 ) -> None:
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("repos: {}\n")
+    paths = _paths(org_state)
+    _write_agent_md(paths, _make_agent("dev_agent"))
 
     r = TestClient(app).post(
         "/api/v1/orgs/alpha/agents/dev_agent/repos",
@@ -421,7 +515,8 @@ def test_manage_repo_update_reclones(
 ) -> None:
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("repos:\n  docs: https://old.git\n")
+    paths = _paths(org_state)
+    _write_agent_md(paths, _make_agent("dev_agent", repos={"docs": "https://old.git"}))
     repo_dir = workspace / "repos" / "docs"
     repo_dir.mkdir(parents=True)
     (repo_dir / ".git").mkdir()
@@ -439,9 +534,11 @@ def test_manage_repo_update_reclones(
     assert r.status_code == 200
     mock_ctx.clone_repo.assert_called_once()
 
-    from runtime.daemon.agent_config import load_agent_config
-    cfg = load_agent_config(workspace)
-    assert cfg["repos"]["docs"] == "https://new.git"
+    # THR-095: repos now live in .md frontmatter, not agent.yaml
+    from runtime.orchestrator.prompt_loader import load_agent
+    agent_def = load_agent(paths, "dev_agent")
+    assert agent_def is not None
+    assert agent_def.repos["docs"] == "https://new.git"
 
 
 def test_manage_repo_add_missing_url_returns_422(
@@ -741,7 +838,6 @@ def test_manage_agent_update_persists_executor_to_workspace(
     _seed_active_agent(org_state, "dev_agent")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("repos: {}\n")
 
     r = TestClient(app).post(
         "/api/v1/orgs/alpha/agents/manage",
@@ -756,10 +852,11 @@ def test_manage_agent_update_persists_executor_to_workspace(
     )
     assert r.status_code == 200
 
-    from runtime.daemon.agent_config import load_agent_config
-
-    cfg = load_agent_config(workspace)
-    assert cfg["executor"] == "codex"
+    # THR-095: executor now lives in .md frontmatter, not agent.yaml
+    from runtime.orchestrator import prompt_loader
+    updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert updated is not None
+    assert updated.executor == "codex"
 
 
 def test_manage_agent_update_executor_regenerates_bootstrap(
@@ -776,7 +873,6 @@ def test_manage_agent_update_executor_regenerates_bootstrap(
     _seed_active_agent(org_state, "dev_agent", executor="claude", system_prompt="sys prompt")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
 
     # Register a custom profile so the registry accepts the new name.
     get_registry().register_custom_profile(
@@ -816,10 +912,11 @@ def test_manage_agent_update_executor_regenerates_bootstrap(
         assert call_args[0][2].strip() == "sys prompt", \
             f"expected system prompt 'sys prompt', got {call_args[0][2]!r}"
 
-    # Agent.yaml must reflect the new executor.
-    from runtime.daemon.agent_config import load_agent_config
-    cfg = load_agent_config(workspace)
-    assert cfg["executor"] == "testcustom"
+    # THR-095: executor now lives in .md frontmatter, not agent.yaml
+    from runtime.orchestrator import prompt_loader
+    updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert updated is not None
+    assert updated.executor == "testcustom"
 
 
 def test_manage_agent_terminate_removes_workspace(
@@ -935,10 +1032,8 @@ def test_approve_agent_bootstraps_workspace(
     workspace = org_state.root / "workspaces" / "content_writer"
     assert workspace.exists()
 
-    from runtime.daemon.agent_config import load_agent_config
-
-    cfg = load_agent_config(workspace)
-    assert cfg["executor"] == "codex"
+    # THR-095: agent.yaml is no longer created by approve_agent.
+    # The .md frontmatter is the single source of truth.
 
 
 def test_approve_non_pending_returns_409(
@@ -1481,8 +1576,9 @@ def test_validate_executor_helper_accepts_and_rejects() -> None:
 def test_set_executor_switches_org_and_workspace(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """Happy path: org frontmatter + workspace agent.yaml both flip, bootstrap
-    is regenerated with the NEW provider, before/after state is reported."""
+    """Happy path: org frontmatter flips, bootstrap
+    is regenerated with the NEW provider, before/after state is reported.
+    THR-095: agent.yaml is no longer synced."""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -1500,18 +1596,16 @@ def test_set_executor_switches_org_and_workspace(
     body = r.json()
     assert body["before"]["org_executor"] == "claude"
     assert body["after"]["org_executor"] == "pi"
-    assert body["before"]["workspace_executor"] == "claude"
-    assert body["after"]["workspace_executor"] == "pi"
 
     # org .md frontmatter updated
     from runtime.orchestrator import prompt_loader
     reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert reloaded is not None and reloaded.executor == "pi"
-    # workspace agent.yaml updated
-    from runtime.daemon.agent_config import load_agent_config
-    assert load_agent_config(workspace)["executor"] == "pi"
     # bootstrap regenerated with the NEW provider
     assert mock_ctx.ensure_workspace_ready.call_args.kwargs.get("provider") == "pi"
+
+    # THR-095: agent.yaml is NOT updated — the response still shows
+    # the old workspace_executor value for display purposes only.
 
 
 def test_set_executor_invalid_returns_422_and_no_mutation(
@@ -1655,12 +1749,14 @@ def _stream_init_events(app, auth_headers, agent: str) -> list[dict]:
 def test_init_emits_executor_drift_and_does_not_reconcile(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """When org frontmatter != workspace agent.yaml on an EXISTING workspace,
-    init emits an executor_drift event and changes nothing."""
-    _seed_active_agent(org_state, "dev_agent", executor="pi")  # org wants pi
+    """THR-095: init no longer emits executor_drift events.
+    The .md frontmatter is the single source of truth, so there is no
+    agent.yaml drift to detect.  init reads executor/repos from
+    AgentDef (.md) and ignores agent.yaml entirely."""
+    _seed_active_agent(org_state, "dev_agent", executor="pi")  # org says pi
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")  # ws still claude
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")  # agent.yaml says claude
 
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
@@ -1669,15 +1765,11 @@ def test_init_emits_executor_drift_and_does_not_reconcile(
         mock_ctx.create_agent_dirs.return_value = None
         events = _stream_init_events(app, auth_headers, "dev_agent")
 
+    # THR-095: no more executor_drift events — .md is the sole source
     drift = [e for e in events if e.get("phase") == "executor_drift"]
-    assert len(drift) == 1, events
-    assert drift[0]["agent"] == "dev_agent"
-    assert drift[0]["org_executor"] == "pi"
-    assert drift[0]["workspace_executor"] == "claude"
-    assert "set-executor" in drift[0]["hint"]
-    assert "--executor pi" in drift[0]["hint"]
+    assert drift == [], f"unexpected executor_drift events: {drift}"
 
-    # No silent auto-reconcile on either surface.
+    # Agent.yaml is unchanged (no reconciliation)
     from runtime.daemon.agent_config import load_agent_config
     assert load_agent_config(workspace)["executor"] == "claude"
     from runtime.orchestrator import prompt_loader
@@ -1687,7 +1779,7 @@ def test_init_emits_executor_drift_and_does_not_reconcile(
 def test_init_no_drift_event_when_aligned(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """No executor_drift event when org frontmatter and agent.yaml agree."""
+    """THR-095: no executor_drift event regardless of agent.yaml state."""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -1711,10 +1803,9 @@ def test_init_no_drift_event_when_aligned(
 def test_set_executor_preserves_model_on_both_surfaces(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """After set-model, switching executor must preserve the model on both
-    org frontmatter and workspace agent.yaml."""
+    """After set-model, switching executor must preserve the model on the
+    org .md frontmatter.  THR-095: agent.yaml is no longer synced."""
     from runtime.orchestrator import prompt_loader
-    from runtime.daemon.agent_config import load_agent_config
 
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
@@ -1741,14 +1832,14 @@ def test_set_executor_preserves_model_on_both_surfaces(
         )
     assert r.status_code == 200, r.text
 
-    # Verify model preserved on org frontmatter
+    # Verify model preserved on .md frontmatter
     reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert reloaded is not None
     assert reloaded.model == "claude-sonnet-4-20250514"
 
-    # Verify model preserved in workspace agent.yaml
-    ws_cfg = load_agent_config(workspace)
-    assert ws_cfg.get("model") == "claude-sonnet-4-20250514"
+    # THR-095: agent.yaml is NOT touched by set-executor.
+    # model may still be there from the old set-model call, but set-executor
+    # no longer syncs agent.yaml at all.
 
 
 # ---------------------------------------------------------------------------
@@ -1759,15 +1850,14 @@ def test_set_executor_preserves_model_on_both_surfaces(
 def test_manage_agent_update_set_model(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """Update with explicit non-null model sets it on both surfaces."""
+    """Update with explicit non-null model sets it on .md frontmatter.
+    THR-095: agent.yaml is no longer synced."""
     from runtime.orchestrator import prompt_loader
-    from runtime.daemon.agent_config import load_agent_config
 
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
 
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         MockCB.return_value.ensure_workspace_ready.return_value = None
@@ -1784,30 +1874,25 @@ def test_manage_agent_update_set_model(
         )
     assert r.status_code == 200, r.text
 
-    # org frontmatter has model
+    # .md frontmatter has model
     reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert reloaded is not None
     assert reloaded.model == "claude-sonnet-4-20250514"
 
-    # workspace agent.yaml has model
-    ws_cfg = load_agent_config(workspace)
-    assert ws_cfg.get("model") == "claude-sonnet-4-20250514"
+    # THR-095: agent.yaml is NOT synced
 
 
 def test_manage_agent_update_clear_model_explicit_null(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """Update with explicit null model clears it on both surfaces."""
+    """Update with explicit null model clears it on .md frontmatter.
+    THR-095: agent.yaml is no longer synced."""
     from runtime.orchestrator import prompt_loader
-    from runtime.daemon.agent_config import load_agent_config
 
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text(
-        "repos: {}\nexecutor: claude\nmodel: claude-sonnet-4-20250514\n"
-    )
 
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         MockCB.return_value.ensure_workspace_ready.return_value = None
@@ -1824,30 +1909,27 @@ def test_manage_agent_update_clear_model_explicit_null(
         )
     assert r.status_code == 200, r.text
 
-    # org frontmatter cleared
+    # .md frontmatter cleared
     reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert reloaded is not None
     assert reloaded.model is None
 
-    # workspace agent.yaml cleared
-    ws_cfg = load_agent_config(workspace)
-    assert "model" not in ws_cfg, f"model key should be absent, got {ws_cfg}"
+    # THR-095: agent.yaml is NOT synced
 
 
 def test_manage_agent_update_omit_model_preserves(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """Update without model field preserves existing model on both surfaces."""
+    """Update without model field preserves existing model on .md frontmatter.
+    THR-095: agent.yaml is no longer synced."""
     from runtime.orchestrator import prompt_loader
-    from runtime.daemon.agent_config import load_agent_config
 
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
-    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
 
-    # Set model on both surfaces first via the set-model endpoint
+    # Set model on .md frontmatter via the set-model endpoint
     r = TestClient(app).put(
         "/api/v1/orgs/alpha/agents/dev_agent/model",
         json={"model": "claude-sonnet-4-20250514"},
@@ -1871,14 +1953,12 @@ def test_manage_agent_update_omit_model_preserves(
         )
     assert r.status_code == 200, r.text
 
-    # org frontmatter preserves model
+    # .md frontmatter preserves model
     reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert reloaded is not None
     assert reloaded.model == "claude-sonnet-4-20250514"
 
-    # workspace agent.yaml preserves model (set_executor doesn't clobber model)
-    ws_cfg = load_agent_config(workspace)
-    assert ws_cfg.get("model") == "claude-sonnet-4-20250514"
+    # THR-095: agent.yaml is NOT synced by manage-agent update
 
 
 def test_manage_agent_enroll_with_model_persists(

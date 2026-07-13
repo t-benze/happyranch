@@ -93,13 +93,14 @@ def _load_task_history(workspace: Path) -> str:
     return path.read_text(encoding="utf-8")[-20000:]
 
 
-def _executor_name(workspace: Path) -> str:
+def _executor_name(paths: OrgPaths, agent_name: str) -> str:
+    """THR-095: resolve executor from org/agents/<name>.md (single source)."""
     try:
-        from runtime.daemon.agent_config import load_agent_config
-        agent_yaml = load_agent_config(workspace) or {}
+        from runtime.orchestrator.prompt_loader import load_agent
+        agent_def = load_agent(paths, agent_name)
+        return (agent_def.executor if agent_def else "claude").lower()
     except Exception:
-        agent_yaml = {}
-    return (agent_yaml.get("executor") or "claude").lower()
+        return "claude"
 
 
 async def run_dream(
@@ -145,7 +146,7 @@ async def run_dream(
         pass
 
     # TASK-2511: resolve executor name early for the materialization guard.
-    _prov = _executor_name(workspace)
+    _prov = _executor_name(paths, dream.agent_name)
     if not get_registry().is_registered(_prov):
         _prov = "claude"
 

@@ -207,9 +207,10 @@ def _lrn_numeric_suffix(s: "LearningSummary") -> int:
 
 
 class MemoryStore:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, compaction_config: "MemoryCompactionConfig | None" = None) -> None:
         self._root = root
         self._root.mkdir(parents=True, exist_ok=True)
+        self._compaction_config: "MemoryCompactionConfig | None" = compaction_config
 
     @property
     def root(self) -> Path:
@@ -355,6 +356,25 @@ class MemoryStore:
             _superseded_prior = self._mark_superseded_by(entry.supersedes, stamped.id, agent)
         # Store on the stamped item for route handler audit
         stamped._superseded_target_id = entry.supersedes if _superseded_prior else None
+
+        # THR-091 WS-D: auto-trigger compaction after successful write.
+        # Inline check — no new route/OpenAPI/TaskStatus needed.
+        if (
+            self._compaction_config is not None
+            and self._compaction_config.enabled
+            and self._compaction_config.auto_trigger_entry_count > 0
+        ):
+            entry_count = len(self._entry_paths())
+            if entry_count >= self._compaction_config.auto_trigger_entry_count:
+                cc = self._compaction_config
+                policy = MemoryCompactionPolicy(
+                    salience_floor=cc.salience_floor,
+                    stale_days=cc.stale_days,
+                    superseded_grace_days=cc.superseded_grace_days,
+                    max_evictions_per_run=cc.max_evictions_per_run,
+                )
+                self.compact(dry_run=False, policy=policy)
+
         return stamped
 
     def update_entry(
@@ -724,7 +744,7 @@ class MemoryStore:
         ancestor_task_ids: set[str] | None = None,
         scope: str = "agent",
     ) -> str | None:
-        """Build a salience-ranked, pointer-only, budgeted push digest.
+        """Build a salience-ranked, budgeted push digest.
 
         Returns the ``=== MEMORY-DIGEST (system) ===`` block as a string,
         or ``None`` when no candidate memories exist or the budget is too
@@ -736,8 +756,15 @@ class MemoryStore:
         Budget: char-capped (default ~1500); includes header + nudge when
                 the candidate set overflows. For budgets too small to fit
                 even the header + intro, returns None cleanly.
-        Pointer-only: id, title, provenance, effective salience — NEVER body.
+        In-scope directives (``provenance == 'directive' AND scope == scope``)
+        render as FULL BODY blocks FIRST, before pointer lines. When a
+        directive's full body doesn't fit the remaining budget, it falls
+        back to a normal pointer line (no body truncation, no silent drop).
+        All other entries (experiential, reflective, out-of-scope directives)
+        remain pointer-only: id, title, provenance, effective salience.
         Read-only: no files are written, no mtimes/timestamps are churned.
+
+        Founder-ratified: THR-091 seq7.
         """
         if budget is None:
             budget = self._DEFAULT_BUDGET
@@ -782,12 +809,43 @@ class MemoryStore:
         nudge_line = f"{self._DIGEST_NUDGE}\n"
         nudge_len = len(nudge_line)
 
-        # Build the digest: add pointer lines and nudge, tracking exact length.
+        # Split candidates: in-scope directives first (full body), then
+        # everything else (pointer lines).
+        directives: list[tuple[int, str, MemoryItem]] = []
+        others: list[tuple[int, str, MemoryItem]] = []
+        for score, title_lower, entry in candidates:
+            if entry.provenance == "directive" and entry.scope == scope:
+                directives.append((score, title_lower, entry))
+            else:
+                others.append((score, title_lower, entry))
+
+        # Build the digest: directive full-body blocks first, then pointer
+        # lines, then nudge. Track exact length.
         result_parts: list[str] = [header]
         used = header_len
         nudged = False
 
-        for i, (score, _title_lower, entry) in enumerate(candidates):
+        # Phase 1: render in-scope directives as full body.
+        for score, _title_lower, entry in directives:
+            full_block = (
+                f"**Directive:** `{entry.id}` — {entry.title}"
+                f"  ({entry.provenance}, salience {score})\n"
+                f"{entry.body}\n\n"
+            )
+            full_len = len(full_block)
+            if used + full_len <= budget:
+                result_parts.append(full_block)
+                used += full_len
+            else:
+                # Full body doesn't fit — fall back to pointer line.
+                others.append((score, _title_lower, entry))
+
+        # Re-sort others (including fallen-back directives) by salience
+        # descending, then title ascending.
+        others.sort(key=lambda c: (-c[0], c[2].title))
+
+        # Phase 2: pointer lines for all non-directive entries (existing logic).
+        for i, (score, _title_lower, entry) in enumerate(others):
             line = self._DIGEST_LINE_FMT.format(
                 id=entry.id,
                 title=entry.title,
@@ -795,7 +853,7 @@ class MemoryStore:
                 salience=score,
             ) + "\n"
             line_len = len(line)
-            remaining = len(candidates) - i - 1
+            remaining = len(others) - i - 1
 
             if remaining == 0 or nudged:
                 # Last item or nudge already emitted — just check line fit.
@@ -825,9 +883,12 @@ class MemoryStore:
                     # Nothing fits — stop.
                     break
 
-        # If we didn't emit a nudge but there ARE remaining items and the
-        # last added line left room, emit nudge now.
-        if not nudged and len(result_parts) - 1 < len(candidates):
+        # If we didn't emit a nudge but there ARE remaining items (in the
+        # others group) and the last added line left room, emit nudge now.
+        total_rendered = len(result_parts) - 1  # minus header
+        # Count all rendered items (directive blocks + pointer lines).
+        # Directives rendered as full body are already in result_parts.
+        if not nudged and total_rendered < len(directives) + len(others):
             if used + nudge_len <= budget:
                 result_parts.append(nudge_line)
 

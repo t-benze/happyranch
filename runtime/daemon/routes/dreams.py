@@ -19,7 +19,7 @@ from runtime.infrastructure.learnings_store import MemoryItem, MemoryStore
 from runtime.infrastructure.memory_migration import migrate_workspace
 from runtime.models import DreamKbCandidate, DreamStatus
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import OrgConfig, resolve_org_setting_threads
+from runtime.orchestrator.org_config import OrgConfig, load_org_config, resolve_org_setting_threads
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -162,7 +162,7 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
         migrate_workspace(workspace)
         memory_dir = workspace / "memory"
         memory_dir.mkdir(parents=True, exist_ok=True)
-        store = MemoryStore(memory_dir)
+        store = MemoryStore(memory_dir, compaction_config=load_org_config(OrgPaths(root=org.root)).memory_compaction)
         for learning in body.learnings:
             store.write_entry(MemoryItem(
                 id=store.next_id(),

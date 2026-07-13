@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from runtime.daemon.sessions import SessionTracker
 
 from runtime.config import Settings
-from runtime.daemon.agent_config import load_agent_config
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.orchestrator.executor_registry import build_executor, get_registry
@@ -259,20 +258,25 @@ class Orchestrator:
         return f"sess-{uuid.uuid4().hex}"
 
     def _resolve_executor_name(self, agent_name: str) -> str:
-        workspace = self._paths.workspaces_dir / agent_name
-        cfg = load_agent_config(workspace)
-        return cfg.get("executor") or "claude"
+        """Resolve the per-agent executor from org/agents/<name>.md frontmatter.
+
+        THR-095: AgentDef.executor is the SINGLE authoritative store.
+        agent.yaml is no longer read for executor resolution.
+        """
+        from runtime.orchestrator.prompt_loader import load_agent
+        agent_def = load_agent(self._paths, agent_name)
+        return agent_def.executor if agent_def else "claude"
 
     def _resolve_model_name(self, agent_name: str) -> str | None:
-        """Resolve the per-agent model from agent.yaml.
+        """Resolve the per-agent model from org/agents/<name>.md frontmatter.
 
-        Returns the model string if set, or None when the key is absent/empty
-        (CLI default model). Mirrors _resolve_executor_name.
+        THR-095: AgentDef.model is the SINGLE authoritative store.
+        agent.yaml is no longer read for model resolution.
+        Returns the model string if set, or None when absent.
         """
-        workspace = self._paths.workspaces_dir / agent_name
-        cfg = load_agent_config(workspace)
-        model = cfg.get("model")
-        return model if model else None
+        from runtime.orchestrator.prompt_loader import load_agent
+        agent_def = load_agent(self._paths, agent_name)
+        return agent_def.model if agent_def else None
 
     def _resolve_session_timeout(self, agent_name: str, task_id: str | None = None) -> int:
         """Resolve the per-session timeout, walking task -> org_settings DB ->

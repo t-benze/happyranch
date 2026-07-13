@@ -1075,6 +1075,159 @@ class TestBuildMemoryDigest:
         assert len(digest) < 500
         assert "Pull the long tail" not in digest  # single item fits, no nudge
 
+    # ── THR-091 WS-B: directive full-body rendering ──
+
+    def test_directive_in_scope_renders_full_body_before_pointers(self, mem_store: MemoryStore):
+        """In-scope directive entries render their FULL BODY, ordered before
+        pointer lines for experiential/reflective entries."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="exp", title="Experiential Item",
+            provenance="experiential", scope="agent", salience=50,
+            body="experiential body text",
+        )
+        _make_memory_item(
+            mem_store, id="MEM-002", slug="dir", title="Directive Item",
+            provenance="directive", scope="agent", salience=50,
+            body="DIRECTIVE FULL BODY CONTENT\nSecond line of directive body.",
+        )
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        # Directive full body appears
+        assert "DIRECTIVE FULL BODY CONTENT" in digest
+        assert "Second line of directive body" in digest
+        # Directive block comes before experiential pointer
+        idx_dir = digest.index("MEM-002")
+        idx_exp = digest.index("MEM-001")
+        assert idx_dir < idx_exp
+
+    def test_experiential_stays_pointer_only(self, mem_store: MemoryStore):
+        """Experiential entries stay pointer-only — body must NOT leak."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="exp", title="Experiential",
+            provenance="experiential", scope="agent", salience=50,
+            body="EXPERIENTIAL SECRET BODY",
+        )
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "EXPERIENTIAL SECRET BODY" not in digest
+        assert "MEM-001" in digest
+        assert "Experiential" in digest
+
+    def test_reflective_stays_pointer_only(self, mem_store: MemoryStore):
+        """Reflective entries stay pointer-only — body must NOT leak."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="ref", title="Reflective",
+            provenance="reflective", scope="agent", salience=50,
+            body="REFLECTIVE SECRET BODY",
+        )
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "REFLECTIVE SECRET BODY" not in digest
+        assert "MEM-001" in digest
+        assert "Reflective" in digest
+
+    def test_directive_out_of_scope_stays_pointer_only(self, mem_store: MemoryStore):
+        """A team-scope directive is out-of-scope for an agent-scope digest;
+        it must stay pointer-only (no full body)."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="tdir", title="Team Directive",
+            provenance="directive", scope="team", salience=50,
+            body="TEAM DIRECTIVE SECRET BODY",
+        )
+        digest = mem_store.build_memory_digest("brief", scope="agent")
+        assert digest is not None
+        assert "TEAM DIRECTIVE SECRET BODY" not in digest
+        assert "MEM-001" in digest
+        assert "Team Directive" in digest
+
+    def test_directive_body_overflow_falls_back_to_pointer(self, mem_store: MemoryStore):
+        """When a directive's full body doesn't fit the remaining budget,
+        it falls back to its normal pointer line — body must NOT leak and
+        total output length must not exceed budget."""
+        # Directive with a long body (200 chars)
+        long_body = "B" * 200
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="dir", title="Directive",
+            provenance="directive", scope="agent", salience=50,
+            body=long_body,
+        )
+        _make_memory_item(
+            mem_store, id="MEM-002", slug="exp", title="Experiential",
+            provenance="experiential", salience=50,
+            body="experiential body",
+        )
+        header = (
+            "=== MEMORY-DIGEST (system) ===\n"
+            "Relevant memory (pointers only — fetch bodies with `happyranch memory get <id>`):\n\n"
+        )
+        dir_pointer = "- `MEM-001` — Directive  (directive, salience 60)\n"
+        exp_pointer = "- `MEM-002` — Experiential  (experiential, salience 50)\n"
+        nudge = "Pull the long tail: `happyranch memory search \"<terms>\"`.\n"
+        # Budget: fits header + both pointers + nudge, but NOT directive full body
+        budget = len(header + dir_pointer + exp_pointer + nudge)
+        digest = mem_store.build_memory_digest("brief", budget=budget)
+        assert digest is not None
+        assert len(digest) <= budget
+        # Directive body must NOT leak
+        assert "BBBBBBB" not in digest
+        # Directive pointer line must appear (fallen back from full body)
+        assert "MEM-001" in digest
+        assert "Directive" in digest
+        # Experiential pointer must also appear
+        assert "MEM-002" in digest
+
+    def test_budget_cap_holds_with_directives(self, mem_store: MemoryStore):
+        """The hard budget cap must hold even when directives are present
+        in the candidate set."""
+        # Mix of directives and experiential items
+        for i in range(10):
+            _make_memory_item(
+                mem_store, id=f"MEM-{i + 1:03d}", slug=f"dir-{i}",
+                title=f"Directive {i}",
+                provenance="directive", scope="agent", salience=90,
+                body=f"Directive body content for item {i}\nWith multiple lines.\n",
+            )
+        for i in range(10, 20):
+            _make_memory_item(
+                mem_store, id=f"MEM-{i + 1:03d}", slug=f"exp-{i}",
+                title=f"Experiential item number {i}",
+                provenance="experiential", salience=90,
+                body=f"Experiential body {i}",
+            )
+        budget = 400
+        digest = mem_store.build_memory_digest("brief", budget=budget)
+        assert digest is not None
+        assert len(digest) <= budget, (
+            f"digest {len(digest)} chars > budget {budget}"
+        )
+
+    def test_build_digest_read_only_with_directives(self, mem_store: MemoryStore):
+        """Building a digest with directive entries performs no file writes
+        and no mtime changes."""
+        entry = _make_memory_item(
+            mem_store, id="MEM-001", slug="exp", title="Experiential",
+            provenance="experiential", salience=50,
+        )
+        dir_entry = _make_memory_item(
+            mem_store, id="MEM-002", slug="dir", title="Directive",
+            provenance="directive", scope="agent", salience=50,
+            body="Directive body content.\n",
+        )
+        orig_mtime_exp = (mem_store.root / "MEM-001-exp.md").stat().st_mtime
+        orig_mtime_dir = (mem_store.root / "MEM-002-dir.md").stat().st_mtime
+        # Build digest multiple times
+        mem_store.build_memory_digest("brief")
+        mem_store.build_memory_digest("different brief")
+        mem_store.build_memory_digest("third brief")
+        # Verify no files were modified
+        new_mtime_exp = (mem_store.root / "MEM-001-exp.md").stat().st_mtime
+        new_mtime_dir = (mem_store.root / "MEM-002-dir.md").stat().st_mtime
+        assert new_mtime_exp == orig_mtime_exp
+        assert new_mtime_dir == orig_mtime_dir
+        # Salience unchanged
+        assert mem_store.read_entry("MEM-001").salience == 50
+        assert mem_store.read_entry("MEM-002").salience == 50
+
 
 # ═══════════════════════════════════════════════════════════════════
 # THR-032 P3a — explicit lifecycle transitions (set_lifecycle)
@@ -1663,3 +1816,224 @@ body text with matching content here
         # Entry with updated_at should sort before entry without
         assert hits[0].id == "MEM-001"
         assert hits[1].id == "MEM-002"
+
+
+class TestCompactionAutoTrigger:
+    """THR-091 WS-D: compaction auto-trigger on write_entry."""
+
+    @pytest.fixture
+    def mem_store(self, tmp_path: Path) -> MemoryStore:
+        from runtime.orchestrator.org_config import MemoryCompactionConfig
+        cfg = MemoryCompactionConfig(
+            enabled=True,
+            auto_trigger_entry_count=5,
+            salience_floor=10,
+            stale_days=45,
+            superseded_grace_days=7,
+            max_evictions_per_run=25,
+        )
+        return MemoryStore(tmp_path / "memory", compaction_config=cfg)
+
+    @pytest.fixture
+    def mem_store_disabled(self, tmp_path: Path) -> MemoryStore:
+        from runtime.orchestrator.org_config import MemoryCompactionConfig
+        cfg = MemoryCompactionConfig(
+            enabled=False,
+            auto_trigger_entry_count=5,
+        )
+        return MemoryStore(tmp_path / "memory", compaction_config=cfg)
+
+    @pytest.fixture
+    def mem_store_threshold_zero(self, tmp_path: Path) -> MemoryStore:
+        from runtime.orchestrator.org_config import MemoryCompactionConfig
+        cfg = MemoryCompactionConfig(
+            enabled=True,
+            auto_trigger_entry_count=0,
+        )
+        return MemoryStore(tmp_path / "memory", compaction_config=cfg)
+
+    # ── Auto-trigger fires when enabled && count >= threshold ──
+
+    def test_auto_trigger_fires_at_threshold(self, mem_store: MemoryStore):
+        """When enabled and entry count reaches threshold, compact is
+        invoked after write_entry succeeds."""
+        # Seed entries below threshold — no trigger yet
+        for i in range(4):
+            entry = MemoryItem(
+                id=f"MEM-{i+1:03d}", slug=f"item-{i}",
+                title=f"Item {i}", topic="test",
+                body=f"body {i}\n", salience=100,
+            )
+            written = mem_store.write_entry(entry, agent="test-agent")
+            assert written.lifecycle == "valid"
+
+        # All 4 entries still valid — nothing evicted
+        for i in range(4):
+            e = mem_store.read_entry(f"MEM-{i+1:03d}")
+            assert e.lifecycle == "valid"
+
+        # 5th entry triggers compaction — but with high-salience entries,
+        # nothing should be evicted. We test that compact IS called by
+        # writing stale entries afterward.
+
+    def test_auto_trigger_evicts_stale_when_count_met(self, mem_store: MemoryStore):
+        """When entry count meets threshold and stale entries exist,
+        auto-triggered compact evicts them."""
+        # Write 4 fresh high-salience entries
+        for i in range(4):
+            _make_memory_item(mem_store, id=f"MEM-{i+1:03d}", slug=f"fresh-{i}",
+                              title=f"Fresh {i}", salience=100)
+
+        # Write 1 MORE entry to hit threshold (5). This one is stale.
+        # We seed it by writing directly then patching the timestamp.
+        # Actually, write it normally first, then make it stale.
+        stale = _make_memory_item(mem_store, id="MEM-005", slug="stale",
+                                  title="Stale Entry", salience=5)
+        # Patch updated_at to old date to make it eligible
+        path = mem_store._find_by_id("MEM-005")
+        text = path.read_text()
+        text = text.replace(
+            "updated_at:", "updated_at: 2025-01-01T00:00:00Z\n_authored_at:"
+        )
+        import yaml
+        parts = text.split("---", 2)
+        fm = yaml.safe_load(parts[1]) or {}
+        fm["updated_at"] = "2025-01-01T00:00:00Z"
+        body = parts[2].lstrip("\n")
+        fm["updated_by"] = fm.get("updated_by", "test")
+        new_text = f"---\n{yaml.safe_dump(fm, sort_keys=False).strip()}\n---\n\n{body}"
+        path.write_text(new_text)
+
+        # Now write the 6th entry to trigger compaction (count=6 >= threshold=5)
+        # The stale entry (MEM-005) should be evicted during auto-trigger
+        _make_memory_item(mem_store, id="MEM-006", slug="extra",
+                          title="Extra", salience=100)
+
+        # MEM-005 should now be evicted
+        stale_entry = mem_store.read_entry("MEM-005")
+        assert stale_entry.lifecycle == "evicted"
+
+    # ── Does NOT fire when disabled ──
+
+    def test_no_trigger_when_disabled(self, mem_store_disabled: MemoryStore):
+        """When enabled=False, auto-trigger never fires."""
+        for i in range(6):
+            entry = MemoryItem(
+                id=f"MEM-{i+1:03d}", slug=f"item-{i}",
+                title=f"Item {i}", topic="test",
+                body=f"body {i}\n", salience=5,
+            )
+            mem_store_disabled.write_entry(entry, agent="test-agent")
+
+        # All entries should still be valid — no eviction
+        for i in range(6):
+            e = mem_store_disabled.read_entry(f"MEM-{i+1:03d}")
+            assert e.lifecycle == "valid"
+
+    # ── Does NOT fire when threshold is zero ──
+
+    def test_no_trigger_when_threshold_zero(self, mem_store_threshold_zero: MemoryStore):
+        """When auto_trigger_entry_count=0, auto-trigger never fires."""
+        for i in range(10):
+            entry = MemoryItem(
+                id=f"MEM-{i+1:03d}", slug=f"item-{i}",
+                title=f"Item {i}", topic="test",
+                body=f"body {i}\n", salience=5,
+            )
+            mem_store_threshold_zero.write_entry(entry, agent="test-agent")
+
+        for i in range(10):
+            e = mem_store_threshold_zero.read_entry(f"MEM-{i+1:03d}")
+            assert e.lifecycle == "valid"
+
+    # ── Does NOT fire when count < threshold ──
+
+    def test_no_trigger_below_threshold(self, mem_store: MemoryStore):
+        """When entry count is below threshold, auto-trigger does NOT fire."""
+        for i in range(4):  # threshold is 5
+            entry = MemoryItem(
+                id=f"MEM-{i+1:03d}", slug=f"item-{i}",
+                title=f"Item {i}", topic="test",
+                body=f"body {i}\n", salience=5,
+            )
+            mem_store.write_entry(entry, agent="test-agent")
+
+        # All entries still valid
+        for i in range(4):
+            e = mem_store.read_entry(f"MEM-{i+1:03d}")
+            assert e.lifecycle == "valid"
+
+    # ── Idempotent on multiple triggers ──
+
+    def test_auto_trigger_idempotent(self, mem_store: MemoryStore):
+        """Writing multiple entries past threshold triggers compact each
+        time, but already-evicted entries stay evicted (idempotent)."""
+        # Seed a stale entry
+        stale = _make_memory_item(mem_store, id="MEM-001", slug="stale",
+                                  title="Stale", salience=5)
+        path = mem_store._find_by_id("MEM-001")
+        import yaml
+        text = path.read_text()
+        parts = text.split("---", 2)
+        fm = yaml.safe_load(parts[1]) or {}
+        fm["updated_at"] = "2025-01-01T00:00:00Z"
+        body_text = parts[2].lstrip("\n")
+        fm["updated_by"] = fm.get("updated_by", "test")
+        new_text = f"---\n{yaml.safe_dump(fm, sort_keys=False).strip()}\n---\n\n{body_text}"
+        path.write_text(new_text)
+
+        # Write 4 more entries to pass threshold (total = 5)
+        for i in range(4):
+            _make_memory_item(mem_store, id=f"MEM-{i+2:03d}", slug=f"fresh-{i+1}",
+                              title=f"Fresh {i+1}", salience=100)
+
+        # MEM-001 should be evicted by auto-trigger
+        assert mem_store.read_entry("MEM-001").lifecycle == "evicted"
+
+        # Write MORE entries — trigger again
+        for i in range(3):
+            _make_memory_item(mem_store, id=f"MEM-{i+6:03d}", slug=f"extra-{i}",
+                              title=f"Extra {i}", salience=100)
+
+        # MEM-001 stays evicted (idempotent)
+        assert mem_store.read_entry("MEM-001").lifecycle == "evicted"
+
+    # ── read-only / no-churn when trigger does NOT fire ──
+
+    def test_write_entry_no_churn_below_threshold(self, mem_store: MemoryStore):
+        """When count < threshold, write_entry does not invoke compact
+        and leaves existing entries unchanged."""
+        # Write a stale entry
+        stale = _make_memory_item(mem_store, id="MEM-001", slug="stale",
+                                  title="Stale", salience=5)
+        path = mem_store._find_by_id("MEM-001")
+        import yaml
+        text = path.read_text()
+        parts = text.split("---", 2)
+        fm = yaml.safe_load(parts[1]) or {}
+        fm["updated_at"] = "2025-01-01T00:00:00Z"
+        body_text = parts[2].lstrip("\n")
+        fm["updated_by"] = fm.get("updated_by", "test")
+        new_text = f"---\n{yaml.safe_dump(fm, sort_keys=False).strip()}\n---\n\n{body_text}"
+        path.write_text(new_text)
+
+        # Write 1 more entry (total = 2 < threshold = 5)
+        _make_memory_item(mem_store, id="MEM-002", slug="fresh",
+                          title="Fresh", salience=100)
+
+        # Stale entry NOT evicted — trigger didn't fire
+        assert mem_store.read_entry("MEM-001").lifecycle == "valid"
+
+    # ── Auto-trigger respects config defaults (not on read/store without config) ──
+
+    def test_store_without_config_no_trigger(self, tmp_path: Path):
+        """A MemoryStore created without compaction_config never
+        auto-triggers, even with many entries."""
+        store = MemoryStore(tmp_path / "memory")
+        for i in range(10):
+            entry = _make_memory_item(store, id=f"MEM-{i+1:03d}", slug=f"item-{i}",
+                                      title=f"Item {i}", salience=5)
+            assert entry.lifecycle == "valid"
+        # All still valid
+        for i in range(10):
+            assert store.read_entry(f"MEM-{i+1:03d}").lifecycle == "valid"

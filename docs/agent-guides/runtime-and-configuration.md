@@ -185,6 +185,36 @@ before any `ZoneInfo()` call. (Pre-TASK-976 an omitted value defaulted to the
 literal `UTC`; orgs relying on that implicit default now schedule on
 machine-local time — host-local night, as intended.)
 
+## Agent Configuration: Single Source of Truth (THR-095)
+
+**Founder-ratified invariant (THR-095 option B):** Every piece of agent
+configuration has **exactly one authoritative store**. Two surfaces for the
+same value is a breach. There is no precedence ladder — the founder explicitly
+rejected resolution-order ladders as a design pattern.
+
+For org agents, the single authoritative store is the **org frontmatter**
+(`orgs/<slug>/org/agents/<name>.md`, parsed as ``AgentDef``). The three fields
+that were previously dual-surfaced — ``executor``, ``repos``, and ``model`` —
+are now read and written **exclusively** through ``AgentDef``:
+
+| Field | Authority | Consumer |
+| --- | --- | --- |
+| ``executor`` | ``AgentDef.executor`` | ``_resolve_executor_name``, ``thread_runner``, ``dream_runner``, ``wake_runner`` |
+| ``repos`` | ``AgentDef.repos`` | ``list_agents``, ``init_agents`` clone loop |
+| ``model`` | ``AgentDef.model`` | ``_resolve_model_name``, ``_resolve_agent_model`` |
+| ``allow_rules`` | ``AgentDef.allow_rules`` | (already .md-only before THR-095) |
+
+The workspace ``agent.yaml`` file is **no longer read or written** by any
+org-agent path. A one-shot startup migration (``migrate_agent_yaml_to_frontmatter``,
+idempotent, runs on every daemon start) copies any residual ``agent.yaml``
+values into their owning ``.md`` exactly once, then the ``agent.yaml`` is
+left untouched. The system assistant (``runtime/system_assistant.py``) is a
+**separate subsystem** and writes its own ``agent.yaml`` directly — it has no
+``org/agents/`` file and is unaffected.
+
+See also: `docs/agent-guides/orchestrator-contracts.md` (resolver contract),
+`docs/agent-guides/agent-executors-and-permissions.md` (executor surface).
+
 ## Session Timeout Resolution
 
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers:

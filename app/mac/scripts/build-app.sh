@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# build-app.sh — assemble a self-contained HappyRanchApp.app bundle.
+# build-app.sh — assemble a self-contained HappyRanch.app bundle.
 #
 # Stages:
 #   1. Build the frozen daemon (PyInstaller) via packaging/build_daemon.sh
 #   2. Build the web frontend (web/dist)
 #   3. Build the SwiftPM executable
 #   4. Assemble the .app bundle with daemon + web/dist in Resources
-#   5. Place the final .app at ~/Desktop/HappyRanchApp.app
+#   5. Place the final .app at ~/Desktop/HappyRanch.app
 #
 # Prerequisites: Xcode 16+ (macOS 15+) with Swift 6 toolchain,
 #                 Python 3.12–3.14, uv, Node.js + npm.
 #
 # Run from:      app/mac/  (the directory containing Package.swift).
-# Output:        ~/Desktop/HappyRanchApp.app  (unsigned local build)
+# Output:        ~/Desktop/HappyRanch.app  (unsigned local build)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd)"
-BUNDLE_NAME="HappyRanchApp"
+BUNDLE_NAME="HappyRanch"
 DESKTOP_APP="$HOME/Desktop/${BUNDLE_NAME}.app"
 
 echo "=== HappyRanch self-contained .app build ==="
@@ -56,12 +56,13 @@ mkdir -p "${BUNDLE_NAME}.app/Contents/MacOS"
 mkdir -p "${BUNDLE_NAME}.app/Contents/Resources/daemon"
 mkdir -p "${BUNDLE_NAME}.app/Contents/Resources/web"
 
-# Copy Swift binary
-BINARY="$PROJECT_DIR/.build/release/${BUNDLE_NAME}"
+# Copy Swift binary (source uses SwiftPM product name HappyRanchApp,
+# destination uses BUNDLE_NAME for the user-visible .app naming)
+BINARY="$PROJECT_DIR/.build/release/HappyRanchApp"
 if [ -x "$BINARY" ]; then
     cp "$BINARY" "${BUNDLE_NAME}.app/Contents/MacOS/${BUNDLE_NAME}"
 else
-    BINARY="$PROJECT_DIR/.build/debug/${BUNDLE_NAME}"
+    BINARY="$PROJECT_DIR/.build/debug/HappyRanchApp"
     cp "$BINARY" "${BUNDLE_NAME}.app/Contents/MacOS/${BUNDLE_NAME}"
 fi
 echo "  Binary copied."

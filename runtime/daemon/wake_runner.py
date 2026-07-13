@@ -164,7 +164,7 @@ async def run_wake(
 
     # TASK-2511: resolve executor name early so we can pass provider to the
     # materialization guard before spawn.
-    _prov = _executor_name(workspace)
+    _prov = _executor_name(paths, record.agent_name)
     if not get_registry().is_registered(_prov):
         _prov = "claude"
 

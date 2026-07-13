@@ -18,13 +18,7 @@ from pydantic import BaseModel, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from runtime.daemon.agent_config import (
-    add_repo,
     load_agent_config,
-    remove_repo,
-    set_executor,
-    set_model,
-    update_repo_url,
-    write_default_agent_config,
 )
 from runtime.daemon.auth import require_token
 from runtime.daemon.org_state import OrgState
@@ -202,22 +196,11 @@ def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) 
 
 
 def _resolve_agent_model(paths: OrgPaths, agent_name: str) -> str | None:
-    """Resolve the per-agent model.
+    """Resolve the per-agent model from org/agents/<name>.md frontmatter.
 
-    agent.yaml is a regenerable workspace-local cache.  The durable source
-    of truth is the AgentDef.model field in org/agents/<name>.md frontmatter.
-
-    Resolution order:
-    1. agent.yaml `model` key when present and non-empty (runtime override).
-    2. Fallback to AgentDef.model from the durable frontmatter.
+    THR-095: AgentDef.model is the SINGLE authoritative store.
+    The agent.yaml ladder has been REMOVED per founder ruling (option B).
     """
-    workspace = paths.workspaces_dir / agent_name
-    if workspace.exists():
-        cfg = load_agent_config(workspace)
-        model = cfg.get("model")
-        if model:
-            return model
-    # Fallback to the durable frontmatter — survives agent.yaml regeneration.
     agent_def = prompt_loader.load_agent(paths, agent_name)
     return agent_def.model if agent_def else None
 
@@ -233,17 +216,9 @@ def list_agents(slug: str, org: OrgDep) -> dict:
     rows = []
     for name in agent_names:
         agent_def = prompt_loader.load_agent(paths, name)
-        # Read repos from agent.yaml (the same store POST /agents/{agent}/repos
-        # mutates), falling back to the org frontmatter when the workspace
-        # doesn't exist yet. This fixes the read/write model mismatch where
-        # repo-add/remove/update persisted to agent.yaml but GET /agents
-        # read from AgentDef.repos (frontmatter).
-        workspace = paths.workspaces_dir / name
-        if workspace.exists():
-            ws_config = load_agent_config(workspace)
-            repos = dict(ws_config.get("repos", {}))
-        else:
-            repos = dict(agent_def.repos) if agent_def else {}
+        # THR-095: repos are read from AgentDef.repos (org/agents/<name>.md).
+        # agent.yaml is no longer the source for repos.
+        repos = dict(agent_def.repos) if agent_def else {}
         rows.append({
             "name": name,
             "team": agent_def.team if agent_def else None,
@@ -281,36 +256,11 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
             workspace.mkdir(parents=True, exist_ok=True)
             yield {"data": _json.dumps({"agent": agent_name, "phase": "starting"})}
             try:
-                had_agent_config = (workspace / "agent.yaml").exists()
-                write_default_agent_config(workspace)
                 agent_def = prompt_loader.load_agent(paths, agent_name)
-                if not had_agent_config and agent_def is not None:
-                    set_executor(workspace, agent_def.executor)
-                cfg = load_agent_config(workspace)
-                # Drift WARN (additive, non-mutating): for an EXISTING workspace,
-                # the org .md frontmatter (agent_def.executor) is the intended
-                # executor while agent.yaml (cfg["executor"]) is what the runtime
-                # actually uses (_resolve_executor_name reads agent.yaml). When
-                # they disagree, surface it — but do NOT auto-reconcile here.
-                # init runs broadly; a silent mass-switch would be surprising and
-                # destructive. The founder reconciles explicitly via set-executor.
-                if (
-                    had_agent_config
-                    and agent_def is not None
-                    and agent_def.executor != cfg.get("executor")
-                ):
-                    yield {"data": _json.dumps({
-                        "agent": agent_name,
-                        "phase": "executor_drift",
-                        "org_executor": agent_def.executor,
-                        "workspace_executor": cfg.get("executor"),
-                        "hint": (
-                            f"run: happyranch set-executor --org {slug} "
-                            f"{agent_name} --executor {agent_def.executor}"
-                        ),
-                    })}
-                provider = cfg.get("executor") or "claude"
-                repos = cfg.get("repos") or {}
+                # THR-095: agent.yaml is no longer the source for
+                # executor/repos.  Read both from AgentDef (.md frontmatter).
+                provider = agent_def.executor if agent_def else "claude"
+                repos = dict(agent_def.repos) if agent_def else {}
                 for repo_name, url in repos.items():
                     yield {"data": _json.dumps({
                         "agent": agent_name, "phase": "repo_cloning",
@@ -357,29 +307,66 @@ async def manage_repo(
 
     ctx = ContextBuilder(org.settings, paths, slug=org.slug)
     agent_def = prompt_loader.load_agent(paths, agent_name)
-    agent_prompt = agent_def.system_prompt if agent_def else ""
+    if agent_def is None:
+        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+    agent_prompt = agent_def.system_prompt
+
+    # THR-095: persist repos to org/agents/<name>.md frontmatter ONLY
+    # (single source of truth).  agent.yaml is no longer the repo store.
+    from runtime.orchestrator.agent_def import render_agent_text
+    new_repos = dict(agent_def.repos)
 
     if body.action == RepoAction.add:
-        try:
-            add_repo(workspace, body.repo_name, body.url)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
-        await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
-
+        if body.repo_name in new_repos:
+            raise HTTPException(status_code=409, detail=f"repo {body.repo_name!r} already exists")
+        new_repos[body.repo_name] = body.url
     elif body.action == RepoAction.remove:
-        try:
-            remove_repo(workspace, body.repo_name)
-        except KeyError:
+        if body.repo_name not in new_repos:
             raise HTTPException(status_code=404, detail=f"repo {body.repo_name!r} not found")
+        del new_repos[body.repo_name]
+    elif body.action == RepoAction.update:
+        if body.repo_name not in new_repos:
+            raise HTTPException(status_code=404, detail=f"repo {body.repo_name!r} not found")
+        new_repos[body.repo_name] = body.url
+
+    # Atomic write the updated .md
+    updated = AgentDef(
+        name=agent_def.name,
+        team=agent_def.team,
+        role=agent_def.role,
+        executor=agent_def.executor,
+        allow_rules=agent_def.allow_rules,
+        repos=new_repos,
+        enrolled_by=agent_def.enrolled_by,
+        enrolled_at_task=agent_def.enrolled_at_task,
+        enrolled_at=agent_def.enrolled_at,
+        system_prompt=agent_def.system_prompt,
+        description=agent_def.description,
+        model=agent_def.model,
+    )
+    active_path = paths.agents_dir / f"{agent_name}.md"
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(render_agent_text(updated))
+        os.replace(tmp, active_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+    # Clone/remove repo dir as before
+    if body.action == RepoAction.add:
+        await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
+    elif body.action == RepoAction.remove:
         repo_dir = workspace / "repos" / body.repo_name
         if repo_dir.exists():
             shutil.rmtree(repo_dir)
-
     elif body.action == RepoAction.update:
-        try:
-            update_repo_url(workspace, body.repo_name, body.url)
-        except KeyError:
-            raise HTTPException(status_code=404, detail=f"repo {body.repo_name!r} not found")
         repo_dir = workspace / "repos" / body.repo_name
         if repo_dir.exists():
             shutil.rmtree(repo_dir)
@@ -387,6 +374,7 @@ async def manage_repo(
 
     await asyncio.to_thread(
         ctx.ensure_workspace_ready, workspace, agent_name, agent_prompt,
+        provider=agent_def.executor,
     )
     return {"ok": True}
 
@@ -523,12 +511,8 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                 updated.system_prompt,
                 provider=updated.executor,
             )
-        if body.executor is not None and workspace.exists():
-            # Also update agent.yaml so the workspace file stays in sync.
-            await asyncio.to_thread(set_executor, workspace, body.executor)
-        if model_is_set and workspace.exists():
-            # Persist per-agent model to agent.yaml (set or clear).
-            await asyncio.to_thread(set_model, workspace, resolved_model)
+        # THR-095: agent.yaml executor/model sync REMOVED.
+        # The .md frontmatter is the single source of truth.
         audit.log_agent_managed(
             scope_id=scope_id,
             action="update",
@@ -693,16 +677,13 @@ async def founder_create_agent(
                 org.teams.remove_team(team_name)
             raise
 
-    # ---- workspace bootstrap (mirrors approve_agent) ----
+    # ---- workspace bootstrap (THR-095: no agent.yaml writes) ----
     workspace = paths.workspaces_dir / body.name
     workspace.mkdir(parents=True, exist_ok=True)
-    write_default_agent_config(workspace)
-    set_executor(workspace, agent_def.executor)
-    if agent_def.model:
-        set_model(workspace, agent_def.model)
+
+    # THR-095: agent.yaml is no longer the source for executor/repos.
+    # The .md frontmatter (AgentDef) is the single source of truth.
     repos = agent_def.repos or {}
-    for repo_name, url in repos.items():
-        add_repo(workspace, repo_name, url)
     ctx = ContextBuilder(org.settings, paths, slug=org.slug)
     for repo_name, url in repos.items():
         await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
@@ -711,7 +692,7 @@ async def founder_create_agent(
         workspace,
         body.name,
         agent_def.system_prompt,
-        provider=load_agent_config(workspace).get("executor") or "claude",
+        provider=agent_def.executor,
     )
     await asyncio.to_thread(ctx.create_agent_dirs, workspace, body.name)
 
@@ -843,10 +824,11 @@ async def set_agent_executor(
     materialization_errors: list[str] = []
 
     if has_workspace:
-        # 2. workspace agent.yaml.
-        set_executor(workspace, body.executor)
-        after_ws = load_agent_config(workspace).get("executor")
-        # 3. regenerate the executor bootstrap with the NEW provider.
+        # THR-095: agent.yaml is no longer the source — skip the
+        # agent.yaml reconcile.  The .md frontmatter is the single
+        # source of truth.
+        after_ws = before_ws
+        # regenerate the executor bootstrap with the NEW provider.
         ctx = ContextBuilder(org.settings, paths, slug=org.slug)
         await asyncio.to_thread(
             ctx.ensure_workspace_ready,
@@ -865,7 +847,7 @@ async def set_agent_executor(
         #    could need is on disk.
         #
         #    Decision (2): Failure is NON-FATAL — steps 1-3 have already
-        #    mutated org .md + agent.yaml irreversibly; #378 guarantees
+        #    mutated org .md irreversibly; #378 guarantees
         #    correctness at next spawn regardless.  Surface errors in the
         #    response body + warning log.
         #
@@ -948,10 +930,9 @@ async def set_agent_model(
 ) -> dict:
     """Founder action: set or clear an existing agent's model.
 
-    Reconciles the org agent .md frontmatter and the workspace agent.yaml.
-    When model is set, the executor will inject the profile's model_arg
-    flags into the CLI argv at launch time. When unset/cleared (None),
-    the CLI's default model is used.
+    THR-095: writes to org/agents/<name>.md frontmatter ONLY.
+    agent.yaml is no longer the source — the .md is the single
+    source of truth.
     """
     paths = OrgPaths(root=org.root)
 
@@ -998,10 +979,7 @@ async def set_agent_model(
             pass
         raise
 
-    after_model = before_model
-    if has_workspace:
-        set_model(workspace, body.model if body.model else None)
-        after_model = _resolve_agent_model(paths, agent_name)
+    after_model = _resolve_agent_model(paths, agent_name)
 
     AuditLogger(org.db).log_agent_managed(
         scope_id="founder",
@@ -1112,13 +1090,11 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
 
     workspace = paths.workspaces_dir / agent_name
     workspace.mkdir(parents=True, exist_ok=True)
-    write_default_agent_config(workspace)
-    set_executor(workspace, agent_def.executor)
 
+    # THR-095: agent.yaml is no longer the source for executor/repos.
+    # The .md frontmatter (AgentDef) is the single source of truth.
+    # Repos from AgentDef.repos; executor from AgentDef.executor.
     repos = agent_def.repos or {}
-    if repos:
-        for repo_name, url in repos.items():
-            add_repo(workspace, repo_name, url)
 
     ctx = ContextBuilder(org.settings, paths, slug=org.slug)
     for repo_name, url in repos.items():
@@ -1129,7 +1105,7 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
         workspace,
         agent_name,
         agent_def.system_prompt,
-        provider=load_agent_config(workspace).get("executor") or "claude",
+        provider=agent_def.executor,
     )
     await asyncio.to_thread(ctx.create_agent_dirs, workspace, agent_name)
 
@@ -1229,7 +1205,8 @@ def _workspace_memory_store(org: OrgState, agent_name: str) -> MemoryStore:
             status_code=412,
             detail={"error": "workspace_not_migrated", "migrate_first": True},
         )
-    return MemoryStore(memory_dir)
+    org_cfg = load_org_config(OrgPaths(root=org.root))
+    return MemoryStore(memory_dir, compaction_config=org_cfg.memory_compaction)
 
 
 def _entry_to_dict(entry: MemoryItem) -> dict:
