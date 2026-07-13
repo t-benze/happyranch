@@ -19,6 +19,7 @@ from runtime.config import settings
 from runtime.daemon.auth import require_token
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
+from runtime.orchestrator.org_config import OrgConfigError
 from runtime.skills.exposure import catalog_gate, resolve_exposed_skills
 from runtime.skills.models import PolicyClass, SkillEntry, SkillStatus
 from runtime.skills.registry import SkillRegistry
@@ -1101,3 +1102,126 @@ def skills_validation(
         limit=limit,
     )
     return {"events": events, "label": "Runtime Validation"}
+
+
+# ── Route: POST /agents/{agent_id}/skills/{skill_id}/assign ──────────────
+
+@router.post("/agents/{agent_id}/skills/{skill_id}/assign")
+def assign_skill(
+    slug: str,
+    agent_id: str,
+    skill_id: str,
+    org: OrgDep,
+    body: AssignSkillRequest,
+) -> dict:
+    """Assign or unassign a skill to a single agent (v3 §9.3).
+
+    Scoped eligibility write: single agent + single skill.
+    - Precondition: the skill's current store version must be validated
+      (a skill whose current version failed the technical guard cannot be
+      assigned — retained correctness gate, ruling 2).
+    - Assign = append an allow rule; remove = the inverse.
+    - Writes through the scoped eligibility writer ONLY.
+    - On success the assignment is durable + audited.
+    - The skill stays assigned_not_yet_effective (Phase 3b materialization
+      is NOT in this slice).
+    """
+    # Validate agent exists
+    agent_def_path = org.root / "org" / "agents" / f"{agent_id}.md"
+    if not agent_def_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "agent_not_found", "agent_id": agent_id},
+        )
+
+    # Find the skill in the union catalog
+    union = _union_catalog(org)
+    skill_entry = None
+    skill_source_type = None
+    for entry, source_type in union:
+        if entry.id == skill_id:
+            skill_entry = entry
+            skill_source_type = source_type
+            break
+
+    if skill_entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "skill_id": skill_id},
+        )
+
+    # Only user_authored skills can be assigned (v1 constraint)
+    if skill_source_type != "user_authored":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "skill_not_assignable",
+                    "reason": "Only user-authored skills can be assigned via this endpoint"},
+        )
+
+    # Precondition: current store version must be validated
+    validation_state = _get_validation_state(org, skill_id, skill_entry.version)
+    if validation_state != "validated":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "skill_not_validated",
+                "validation_state": validation_state,
+            },
+        )
+
+    # Read before state for audit
+    policy_before = _read_eligibility_policy(org)
+    agent_before = {}
+    agents_before = policy_before.get("agents", {})
+    if isinstance(agents_before, dict):
+        agent_before = agents_before.get(agent_id, {})
+
+    # Write through the scoped eligibility writer
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.org_config import write_skill_eligibility_entry
+
+    try:
+        write_skill_eligibility_entry(
+            OrgPaths(root=org.root),
+            agent=agent_id,
+            skill_id=skill_id,
+            action=body.action,
+        )
+    except OrgConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "config_validation_failed", "error": str(exc)},
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "invalid_action", "error": str(exc)},
+        )
+
+    # Read after state for audit
+    policy_after = _read_eligibility_policy(org)
+    agent_after = {}
+    agents_after = policy_after.get("agents", {})
+    if isinstance(agents_after, dict):
+        agent_after = agents_after.get(agent_id, {})
+
+    # Emit audit row under config:skills:eligibility scope
+    from runtime.infrastructure.audit_logger import AuditLogger
+    AuditLogger(org.db).log_skills_config_write(
+        subsection="eligibility",
+        tiers=[agent_id],
+        before=agent_before,
+        after=agent_after,
+        actor="operator",
+    )
+
+    # Determine new assignment state
+    assigned = skill_id in (agent_after.get("allow") or [])
+
+    return {
+        "agent_id": agent_id,
+        "skill_id": skill_id,
+        "state": "assigned" if assigned else "unassigned",
+        "effective_hint": "assigned_not_yet_effective" if assigned else None,
+        "materializes_on": "next_session_spawn" if assigned else None,
+    }

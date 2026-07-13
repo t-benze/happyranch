@@ -314,3 +314,191 @@ def test_memory_digest_budget_rejects_invalid(
     _write_config(runtime, bad_value)
     with pytest.raises(OrgConfigError, match=err_fragment):
         load_org_config(runtime)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# write_skill_eligibility_entry unit tests (THR-092 Phase 3a)
+# ══════════════════════════════════════════════════════════════════════════════
+
+import yaml
+
+from runtime.orchestrator.org_config import (
+    write_skill_eligibility_entry,
+)
+
+
+def _write_config_yaml(paths: OrgPaths, content: str) -> None:
+    paths.org_config_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.org_config_path.write_text(content.rstrip() + "\n")
+
+
+def test_skills_not_in_org_writable_keys() -> None:
+    """'skills' is NOT in _ORG_WRITABLE_KEYS — scoped writer is the sole path."""
+    from runtime.orchestrator.org_config import _ORG_WRITABLE_KEYS
+    assert "skills" not in _ORG_WRITABLE_KEYS
+    assert "executor_profiles" not in _ORG_WRITABLE_KEYS  # sanity: mirror pattern
+
+
+def test_write_eligibility_allow_roundtrips(tmp_path: Path) -> None:
+    """Allow writes the rule, and it survives round-trip through _build_org_config."""
+    paths = _runtime(tmp_path)
+    _write_config_yaml(paths, "timezone: Asia/Shanghai\n")
+
+    write_skill_eligibility_entry(
+        paths, agent="dev_agent", skill_id="hr:my-skill", action="allow",
+    )
+
+    raw = yaml.safe_load(paths.org_config_path.read_text())
+    allow_list = raw["skills"]["agents"]["dev_agent"]["allow"]
+    assert "hr:my-skill" in allow_list
+    assert "timezone" in raw  # other keys survive
+
+
+def test_write_eligibility_remove(tmp_path: Path) -> None:
+    """Remove retracts the allow rule."""
+    paths = _runtime(tmp_path)
+    _write_config_yaml(paths, "timezone: Asia/Shanghai\n")
+
+    write_skill_eligibility_entry(
+        paths, agent="dev_agent", skill_id="hr:my-skill", action="allow",
+    )
+    write_skill_eligibility_entry(
+        paths, agent="dev_agent", skill_id="hr:my-skill", action="remove",
+    )
+
+    raw = yaml.safe_load(paths.org_config_path.read_text())
+    agents = raw.get("skills", {}).get("agents", {})
+    dev_rules = agents.get("dev_agent", {})
+    # After remove, allow list is empty → key should be absent
+    assert "hr:my-skill" not in dev_rules.get("allow", [])
+
+
+def test_write_eligibility_preserves_sibling_agents(tmp_path: Path) -> None:
+    """Deep-merge preserves sibling agents' existing eligibility."""
+    paths = _runtime(tmp_path)
+    _write_config_yaml(paths, """
+timezone: Asia/Shanghai
+skills:
+  agents:
+    qa_engineer:
+      allow:
+      - hr:existing-skill
+""")
+
+    write_skill_eligibility_entry(
+        paths, agent="dev_agent", skill_id="hr:my-skill", action="allow",
+    )
+
+    raw = yaml.safe_load(paths.org_config_path.read_text())
+    agents = raw["skills"]["agents"]
+    assert "hr:existing-skill" in agents["qa_engineer"]["allow"]
+    assert "hr:my-skill" in agents["dev_agent"]["allow"]
+    assert "timezone" in raw
+
+
+def test_write_eligibility_preserves_sibling_skills(tmp_path: Path) -> None:
+    """Deep-merge preserves sibling skills in the same agent's allow list."""
+    paths = _runtime(tmp_path)
+    _write_config_yaml(paths, """
+timezone: Asia/Shanghai
+skills:
+  agents:
+    dev_agent:
+      allow:
+      - hr:skill-a
+""")
+
+    write_skill_eligibility_entry(
+        paths, agent="dev_agent", skill_id="hr:skill-b", action="allow",
+    )
+
+    raw = yaml.safe_load(paths.org_config_path.read_text())
+    dev_allow = raw["skills"]["agents"]["dev_agent"]["allow"]
+    assert "hr:skill-a" in dev_allow
+    assert "hr:skill-b" in dev_allow
+
+
+def test_write_eligibility_idempotent(tmp_path: Path) -> None:
+    """Allowing the same skill twice does not create duplicates."""
+    paths = _runtime(tmp_path)
+    _write_config_yaml(paths, "timezone: Asia/Shanghai\n")
+
+    write_skill_eligibility_entry(
+        paths, agent="dev_agent", skill_id="hr:my-skill", action="allow",
+    )
+    write_skill_eligibility_entry(
+        paths, agent="dev_agent", skill_id="hr:my-skill", action="allow",
+    )
+
+    raw = yaml.safe_load(paths.org_config_path.read_text())
+    dev_allow = raw["skills"]["agents"]["dev_agent"]["allow"]
+    assert dev_allow.count("hr:my-skill") == 1
+
+
+def test_write_eligibility_missing_config_creates(tmp_path: Path) -> None:
+    """Writer creates config from scratch when config.yaml doesn't exist."""
+    paths = _runtime(tmp_path)
+    # Ensure no existing config
+    if paths.org_config_path.exists():
+        paths.org_config_path.unlink()
+
+    write_skill_eligibility_entry(
+        paths, agent="dev_agent", skill_id="hr:my-skill", action="allow",
+    )
+
+    raw = yaml.safe_load(paths.org_config_path.read_text())
+    assert "hr:my-skill" in raw["skills"]["agents"]["dev_agent"]["allow"]
+
+
+def test_write_eligibility_invalid_action_raises(tmp_path: Path) -> None:
+    """Invalid action raises ValueError."""
+    paths = _runtime(tmp_path)
+    _write_config_yaml(paths, "timezone: Asia/Shanghai\n")
+
+    with pytest.raises(ValueError, match="action must be"):
+        write_skill_eligibility_entry(
+            paths, agent="dev_agent", skill_id="hr:my-skill", action="invalid",
+        )
+
+
+def test_write_eligibility_atomic_no_partial_write(tmp_path: Path) -> None:
+    """Writer is atomic — invalid config does not persist."""
+    paths = _runtime(tmp_path)
+    _write_config_yaml(paths, "timezone: Asia/Shanghai\n")
+    original = paths.org_config_path.read_text()
+
+    # Write invalid config (session_timeout_seconds: -1 via manipulating raw)
+    # Since _build_org_config validates, an invalid raw would raise.
+    # Actually, our writer validates via _build_org_config which validates
+    # known fields; the skills block is passthrough. So invalid data in
+    # known fields would block. Let's test by manipulating timezone.
+    # The writer validates — if _build_org_config raises, the original
+    # file should be unchanged.
+    # We simulate by using a bad value for a validated field after write
+    # Actually we need to craft a case where _build_org_config would reject.
+    # The easiest: write a config with a bad session_timeout_seconds.
+    _write_config_yaml(paths, "session_timeout_seconds: -1\n")
+    bad = paths.org_config_path.read_text()
+
+    with pytest.raises(OrgConfigError):
+        write_skill_eligibility_entry(
+            paths, agent="dev_agent", skill_id="hr:my-skill", action="allow",
+        )
+
+    # Original (bad) content should be unchanged
+    assert paths.org_config_path.read_text() == bad
+
+
+def test_write_eligibility_other_top_level_keys_survive(tmp_path: Path) -> None:
+    """Non-skills top-level keys survive the write."""
+    paths = _runtime(tmp_path)
+    _write_config_yaml(paths, "timezone: Asia/Shanghai\n" + "dreaming:\n  enabled: true\n")
+
+    write_skill_eligibility_entry(
+        paths, agent="dev_agent", skill_id="hr:my-skill", action="allow",
+    )
+
+    raw = yaml.safe_load(paths.org_config_path.read_text())
+    assert raw["timezone"] == "Asia/Shanghai"
+    assert raw["dreaming"]["enabled"] is True
+    assert "hr:my-skill" in raw["skills"]["agents"]["dev_agent"]["allow"]

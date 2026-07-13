@@ -1567,3 +1567,325 @@ class TestPhase2FullFlow:
         assert r.status_code == 200
         item = r.json()["items"][0]
         assert item["assigned_agent_count"] == 1  # unchanged by edit
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE 3a — Scoped eligibility write + POST assign
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestAssignSkill:
+    """POST /api/v1/orgs/{slug}/agents/{agent_id}/skills/{skill_id}/assign"""
+
+    def test_assign_validated_skill_succeeds(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Assigning a validated user-authored skill returns 200."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        r = client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["agent_id"] == "dev_agent"
+        assert body["skill_id"] == "hr:test-skill"
+        assert body["state"] == "assigned"
+        assert body["effective_hint"] == "assigned_not_yet_effective"
+        assert body["materializes_on"] == "next_session_spawn"
+
+    def test_assign_writes_eligibility_to_config(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Assign writes the allow rule to org/config.yaml."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        # Re-read config from disk
+        config_path = org_state.root / "org" / "config.yaml"
+        raw = _yaml.safe_load(config_path.read_text())
+        skills = raw.get("skills", {})
+        agents = skills.get("agents", {})
+        dev_allow = agents.get("dev_agent", {}).get("allow", [])
+        assert "hr:test-skill" in dev_allow
+
+    def test_assign_creates_audit_row(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Assign emits an audit row under config:skills:eligibility scope."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        rows = org_state.db.get_audit_logs(task_id="config:skills:eligibility")
+        assert len(rows) >= 1
+        row = rows[-1]
+        assert row["action"] == "skills_config_write"
+        assert row["agent"] == "operator"
+        payload = row["payload"]
+        assert payload["subsection"] == "eligibility"
+        assert "dev_agent" in payload["tiers"]
+
+    def test_assign_preserves_sibling_agents_eligibility(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Deep-merge preserves other agents' eligibility rules."""
+        # Seed with both agents: dev_agent (default) + qa_engineer config
+        _seed_skills_and_config(org_state.root, allow=["hr:existing-skill"])
+        client = TestClient(app)
+
+        # Pre-seed qa_engineer with its own allow rule in the config
+        config_path = org_state.root / "org" / "config.yaml"
+        raw = _yaml.safe_load(config_path.read_text())
+        raw["skills"]["agents"]["qa_engineer"] = {"allow": ["hr:existing-skill"]}
+        config_path.write_text(_yaml.dump(raw))
+
+        # Also seed qa_engineer agent def
+        agents_dir = org_state.root / "org" / "agents"
+        (agents_dir / "qa_engineer.md").write_text(
+            "---\nname: qa_engineer\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\n# qa_engineer\n"
+        )
+
+        # Create and assign a skill to dev_agent
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        # Verify qa_engineer's existing rule is untouched
+        raw = _yaml.safe_load(config_path.read_text())
+        agents = raw.get("skills", {}).get("agents", {})
+        qa_allow = agents.get("qa_engineer", {}).get("allow", [])
+        assert "hr:existing-skill" in qa_allow
+        # And dev_agent has the new rule
+        dev_allow = agents.get("dev_agent", {}).get("allow", [])
+        assert "hr:test-skill" in dev_allow
+
+    def test_assign_preserves_sibling_skills_eligibility(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Deep-merge preserves other skills in the same agent's allow list."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create two skills
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(slug="skill-a"),
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(slug="skill-b"),
+            headers=auth_headers,
+        )
+        # Assign skill-a
+        client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:skill-a/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        # Assign skill-b — must not clobber skill-a
+        client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:skill-b/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        config_path = org_state.root / "org" / "config.yaml"
+        raw = _yaml.safe_load(config_path.read_text())
+        dev_allow = raw.get("skills", {}).get("agents", {}).get("dev_agent", {}).get("allow", [])
+        assert "hr:skill-a" in dev_allow
+        assert "hr:skill-b" in dev_allow
+
+    def test_assign_unvalidated_skill_returns_409(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """A skill whose current version failed validation cannot be assigned."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create a skill that fails validation (empty skill_md)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(skill_md=" "),
+            headers=auth_headers,
+        )
+        r = client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 409
+        assert r.json()["detail"]["code"] == "skill_not_validated"
+
+    def test_assign_nonexistent_skill_404(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Assigning a nonexistent skill returns 404."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:nonexistent/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 404
+
+    def test_assign_nonexistent_agent_404(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Assigning to a nonexistent agent returns 404."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        r = client.post(
+            "/api/v1/orgs/alpha/agents/nonexistent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 404
+
+    def test_assign_remove_action(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Remove action retracts the allow rule."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        # Assign
+        client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        # Remove
+        r = client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "remove"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["state"] == "unassigned"
+        assert body["effective_hint"] is None
+        # Verify rule is gone from config
+        config_path = org_state.root / "org" / "config.yaml"
+        raw = _yaml.safe_load(config_path.read_text())
+        dev_allow = raw.get("skills", {}).get("agents", {}).get("dev_agent", {}).get("allow", [])
+        assert "hr:test-skill" not in dev_allow
+
+    def test_assign_managed_skill_409(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Managed (release-shipped) skills cannot be assigned via this endpoint."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:standard-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 409
+        assert r.json()["detail"]["code"] == "skill_not_assignable"
+
+    def test_assign_idempotent_allow(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Assigning the same skill twice does not create duplicates."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        config_path = org_state.root / "org" / "config.yaml"
+        raw = _yaml.safe_load(config_path.read_text())
+        dev_allow = raw.get("skills", {}).get("agents", {}).get("dev_agent", {}).get("allow", [])
+        assert dev_allow.count("hr:test-skill") == 1
+
+    def test_assign_requires_auth(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Assign endpoint requires bearer auth."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        r = client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+        )
+        assert r.status_code == 401
+
+    def test_assign_returns_assigned_in_catalog_rollups(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """After assignment, the catalog reflects the assigned_agent_count."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(),
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        r = client.get(
+            "/api/v1/orgs/alpha/skills/catalog?filter=Custom",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        item = r.json()["items"][0]
+        assert item["assigned_agent_count"] == 1
+        assert item["has_assigned_not_yet_effective"] is True
