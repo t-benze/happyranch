@@ -87,7 +87,6 @@ source_task: TASK-235                    # optional; the task that produced the 
 related_to: [LRN-020, LRN-028]           # optional; validated at write time (unknown ID = 400)
 supersedes: null                         # optional LRN-NNN of an earlier learning being replaced
 promoted_to: null                        # optional KB slug if this learning was promoted to a KB precedent
-last_verified: null                      # optional ISO-8601 timestamp of last human verification
 ---
 
 # Cross-team dispatch forbidden even under founder verbal authorization
@@ -104,6 +103,13 @@ last_verified: null                      # optional ISO-8601 timestamp of last h
 **Agent-supplied required fields:** `slug`, `title`, `topic`.
 **Agent-supplied optional:** `tags`, `source_task`, `related_to`, `supersedes`.
 **Server-only field:** `promoted_to` — written by the `promote` route, never accepted from agent payload.
+
+**`last_verified` (optional):** an ISO-8601 timestamp set by the verification workflow. Omitted from the frontmatter when unset (the key is suppressed in serialization — byte-identical round-trip when `None`). On normal `PUT` update the field is *preserved* (read-modify-write) so a content update never silently clears verification state.
+
+When verified, the frontmatter carries the timestamp:
+```yaml
+last_verified: 2026-07-13T08:00:00Z       # ISO-8601 timestamp of last human verification
+```
 
 **Note on `id`:** the agent does NOT supply `id` on `add`. The daemon allocates `LRN-NNN` and stamps it. The agent supplies `id` only on `update` (to identify the target) and `promote`.
 

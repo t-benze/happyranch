@@ -451,6 +451,11 @@ class MemoryStore:
             raise InvalidLearningEntry("missing_frontmatter", "malformed frontmatter")
         fm = yaml.safe_load(parts[1]) or {}
         body = parts[2].lstrip("\n")
+        # YAML safe_load parses ISO-8601 timestamps as datetime objects.
+        # Coerce back to string so age_summary / round-trip stay type-safe.
+        from datetime import datetime as _dt
+        lv = fm.get("last_verified")
+        lv_str = lv.replace(microsecond=0).isoformat() if isinstance(lv, _dt) else lv
         return MemoryItem(
             id=fm.get("id", ""),
             slug=fm.get("slug", ""),
@@ -469,7 +474,7 @@ class MemoryStore:
             scope=fm.get("scope", "agent"),
             lifecycle=fm.get("lifecycle", "valid"),
             salience=_clamp_salience(fm.get("salience", 50)),
-            last_verified=fm.get("last_verified"),
+            last_verified=lv_str,
             body=body,
         )
 
