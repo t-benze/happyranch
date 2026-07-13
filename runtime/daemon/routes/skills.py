@@ -522,6 +522,25 @@ def _collect_protected_slugs(org: OrgState) -> set[str]:
     return slugs
 
 
+def _validate_artifact_filename(fname: str) -> None:
+    """Validate a references/assets filename for path-traversal safety.
+
+    Raises ValueError for:
+    - Empty filenames
+    - Absolute paths (starts with '/')
+    - '..' traversal segments
+    - Directory targets (contains '/')
+    """
+    if not fname or not fname.strip():
+        raise ValueError("Artifact filename is empty")
+    if fname.startswith("/"):
+        raise ValueError(f"Artifact filename '{fname}' is absolute; must be a relative filename")
+    if "/" in fname:
+        raise ValueError(f"Artifact filename '{fname}' is a directory path; must be a plain filename")
+    if ".." in Path(fname).parts:
+        raise ValueError(f"Artifact filename '{fname}' contains '..' traversal segment")
+
+
 def _validate_skill_package(
     org: OrgState,
     slug: str,
@@ -589,6 +608,12 @@ def _validate_skill_package(
                 errors.append(f"Reference '{k}' has an invalid value type")
                 reason_codes.append("invalid_reference_value")
                 break
+            try:
+                _validate_artifact_filename(k)
+            except ValueError as exc:
+                errors.append(f"Invalid reference filename: {exc}")
+                reason_codes.append("invalid_reference_filename")
+                break
     if not isinstance(assets, dict):
         errors.append("'assets' must be a map of filename→content")
         reason_codes.append("invalid_assets_type")
@@ -597,6 +622,12 @@ def _validate_skill_package(
             if not isinstance(k, str) or not isinstance(v, str):
                 errors.append(f"Asset '{k}' has an invalid value type")
                 reason_codes.append("invalid_asset_value")
+                break
+            try:
+                _validate_artifact_filename(k)
+            except ValueError as exc:
+                errors.append(f"Invalid asset filename: {exc}")
+                reason_codes.append("invalid_asset_filename")
                 break
 
     # (e) NO bundled-slug collision
@@ -661,12 +692,14 @@ def _dry_materialize(
             ref_dir = pkg_dir / "references"
             ref_dir.mkdir()
             for fname, content in references.items():
+                _validate_artifact_filename(fname)
                 (ref_dir / fname).write_text(content, encoding="utf-8")
         # Write assets
         if assets:
             assets_dir = pkg_dir / "assets"
             assets_dir.mkdir()
             for fname, content in assets.items():
+                _validate_artifact_filename(fname)
                 (assets_dir / fname).write_text(content, encoding="utf-8")
         # Verify SKILL.md is present on disk
         if not (pkg_dir / "SKILL.md").is_file():
@@ -721,6 +754,13 @@ def _write_user_skill_to_store(
         ref_dir = pkg_dir / "references"
         ref_dir.mkdir(exist_ok=True)
         for fname, content in references.items():
+            try:
+                _validate_artifact_filename(fname)
+            except ValueError:
+                # Belt-and-suspenders: skip unsafe filenames — do NOT write
+                # them.  The validation guard has already recorded the error
+                # so the skill stays in draft state.
+                continue
             (ref_dir / fname).write_text(content, encoding="utf-8")
 
     # Write assets
@@ -728,6 +768,10 @@ def _write_user_skill_to_store(
         assets_dir = pkg_dir / "assets"
         assets_dir.mkdir(exist_ok=True)
         for fname, content in assets.items():
+            try:
+                _validate_artifact_filename(fname)
+            except ValueError:
+                continue
             (assets_dir / fname).write_text(content, encoding="utf-8")
 
 
@@ -863,6 +907,21 @@ def validate_skill(
                 )
             skill_md = skill_md_path.read_text(encoding="utf-8")
 
+            # Load stored references and assets for re-validation
+            stored_refs: dict[str, str] = {}
+            ref_dir = pkg_dir / "references"
+            if ref_dir.is_dir():
+                for fpath in sorted(ref_dir.iterdir()):
+                    if fpath.is_file():
+                        stored_refs[fpath.name] = fpath.read_text(encoding="utf-8")
+
+            stored_assets: dict[str, str] = {}
+            assets_dir = pkg_dir / "assets"
+            if assets_dir.is_dir():
+                for fpath in sorted(assets_dir.iterdir()):
+                    if fpath.is_file():
+                        stored_assets[fpath.name] = fpath.read_text(encoding="utf-8")
+
             result = _validate_skill_package(
                 org=org,
                 slug=entry.slug,
@@ -873,6 +932,8 @@ def validate_skill(
                               if isinstance(entry.policy_class, PolicyClass)
                               else str(entry.policy_class)),
                 skill_md=skill_md,
+                references=stored_refs,
+                assets=stored_assets,
             )
 
             _record_validation_event(

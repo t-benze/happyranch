@@ -741,6 +741,42 @@ class TestCreateSkill:
         assert events[0]["severity"] == "pass"
         assert events[0]["version"] == "0.1.0"
 
+    def test_create_with_traversal_reference_returns_validation_false_no_escape(
+        self, tmp_home, app, org_state, auth_headers
+    ):
+        """FIX-1: Create with '..' traversal reference filename → validation.ok=false,
+        and no file written outside the package directory."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(
+                slug="traversal-test",
+                references={"../escape.txt": "should-not-be-written"},
+            ),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["validation"]["ok"] is False
+        assert body["validation_state"] == "in_catalog"
+        assert any("Invalid reference filename" in e for e in body["validation"]["errors"]), (
+            f"Expected reference filename error, got {body['validation']['errors']}"
+        )
+
+        # Assert no file escaped outside the package directory
+        pkg_dir = org_state.root / "skills" / "traversal-test"
+        escape_path = org_state.root / "skills" / "escape.txt"
+        assert not escape_path.exists(), (
+            f"Path traversal write escaped: {escape_path} exists"
+        )
+        # The package directory itself may still be created (draft persisted)
+        # but the escape file must not exist
+        assert not (org_state.root / "escape.txt").exists(), (
+            "Path traversal wrote to org root"
+        )
+
 
 class TestValidateSkill:
     """POST /api/v1/orgs/{slug}/skills/{skill_id}/validate"""
@@ -811,6 +847,78 @@ class TestValidateSkill:
             skill_id="hr:test-skill",
         )
         assert len(events) >= 2  # create already records one
+
+    def test_validate_with_stored_refs_and_assets_passes(self, tmp_home, app, org_state, auth_headers):
+        """FIX-2: Re-validation loads stored refs/assets and passes for a safe set."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        # Create a skill with references and assets
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(
+                slug="refs-assets-test",
+                references={"doc.md": "# Reference doc"},
+                assets={"logo.png": "fake-png"},
+            ),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        assert r.json()["validation"]["ok"] is True
+
+        # Re-validate — should load stored refs/assets and pass
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:refs-assets-test/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["validation"]["ok"] is True
+        assert body["validation_state"] == "validated"
+
+    def test_validate_fails_with_broken_artifact_set(self, tmp_home, app, org_state, auth_headers):
+        """FIX-2: Re-validation correctly passes stored refs/assets through the
+        same filename safety checks used by create/edit.
+
+        Standard filesystems resolve '..' and '/' at the VFS layer, so a
+        filename like '../evil.txt' cannot exist as a literal directory
+        entry.  We verify the code path directly: create a skill, load its
+        stored SKILL.md, pair it with a references dict containing a
+        traversal name, and call _validate_skill_package — the same check
+        the validate route now performs (FIX-2).
+        """
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+        client = TestClient(app)
+        # Create a skill with safe refs
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json=_make_create_body(
+                slug="failing-reval",
+                references={"safe.md": "safe content"},
+            ),
+            headers=auth_headers,
+        )
+        assert r.status_code == 201
+        assert r.json()["validation"]["ok"] is True
+
+        # Simulate a tampered store: load stored skill_md and pair it with
+        # a references dict containing a traversal filename.
+        pkg_dir = org_state.root / "skills" / "failing-reval"
+        skill_md = (pkg_dir / "SKILL.md").read_text(encoding="utf-8")
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="failing-reval",
+            skill_id="hr:failing-reval",
+            name="Failing Reval",
+            version="0.1.0",
+            policy_class="standard_operational",
+            skill_md=skill_md,
+            references={"../evil.txt": "tampered"},
+            assets={},
+        )
+        assert result["ok"] is False
+        assert "invalid_reference_filename" in result["reason_codes"]
 
 
 class TestEditSkill:
@@ -1162,6 +1270,103 @@ class TestValidationGuard:
             references={},
             assets={},
         )
+
+    # ── FIX 1: path-traversal regression tests ──────────────────────────
+
+    def test_validate_rejects_reference_absolute_path(self, tmp_home, app, org_state):
+        """FIX-1: Absolute-path reference filename → validation.ok=false."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# Test Skill\n",
+            references={"/etc/passwd": "bad"},
+        )
+        assert result["ok"] is False
+        assert "invalid_reference_filename" in result["reason_codes"]
+
+    def test_validate_rejects_reference_dotdot_traversal(self, tmp_home, app, org_state):
+        """FIX-1: '..' traversal reference filename → validation.ok=false."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# Test Skill\n",
+            references={"../escape.txt": "bad"},
+        )
+        assert result["ok"] is False
+        assert "invalid_reference_filename" in result["reason_codes"]
+
+    def test_validate_rejects_asset_empty_name(self, tmp_home, app, org_state):
+        """FIX-1: Empty asset filename → validation.ok=false."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# Test Skill\n",
+            assets={"": "bad"},
+        )
+        assert result["ok"] is False
+        assert "invalid_asset_filename" in result["reason_codes"]
+
+    def test_validate_rejects_asset_directory_target(self, tmp_home, app, org_state):
+        """FIX-1: Directory-target asset filename → validation.ok=false."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# Test Skill\n",
+            assets={"subdir/evil.txt": "bad"},
+        )
+        assert result["ok"] is False
+        assert "invalid_asset_filename" in result["reason_codes"]
+
+    def test_dry_materialize_belt_and_suspenders_rejects_traversal(self, tmp_home, app, org_state):
+        """FIX-1: _dry_materialize belt-and-suspenders rejects traversal filenames."""
+        _seed_skills_and_config(org_state.root)
+        from runtime.daemon.routes.skills import _dry_materialize
+        import pytest
+
+        # directory-path variant (contains '/' — also catches ../ patterns)
+        with pytest.raises(ValueError, match="directory path"):
+            _dry_materialize(
+                slug="my-skill",
+                skill_md="# Test\n",
+                references={"../evil.txt": "bad"},
+                assets={},
+            )
+        # bare '..' variant (caught by the '..' traversal segment check)
+        with pytest.raises(ValueError, match="traversal"):
+            _dry_materialize(
+                slug="my-skill-2",
+                skill_md="# Test\n",
+                references={"..": "bad"},
+                assets={},
+            )
 
 
 class TestPhase2FullFlow:
