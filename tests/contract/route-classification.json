@@ -92,6 +92,10 @@
     "PUT /api/v1/orgs/{slug}/settings/teams",
     "GET /api/v1/orgs/{slug}/skills/catalog",
     "GET /api/v1/orgs/{slug}/skills/catalog/{skill_id}",
+    "POST /api/v1/orgs/{slug}/skills",
+    "POST /api/v1/orgs/{slug}/skills/{skill_id}/validate",
+    "PATCH /api/v1/orgs/{slug}/skills/{skill_id}",
+    "GET /api/v1/orgs/{slug}/skills/validation",
     "GET /api/v1/executor-binaries",
     "POST /api/v1/executor-binaries/register",
     "POST /api/v1/executor-binaries/validate"

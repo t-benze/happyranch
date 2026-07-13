@@ -1,4 +1,4 @@
-/** Mirror of src/daemon/routes/skills.py — PHASE 1 read endpoints */
+/** Mirror of src/daemon/routes/skills.py — PHASE 1 read + PHASE 2 write endpoints */
 import { request } from './client';
 
 export interface CatalogSkillItem {
@@ -71,3 +71,95 @@ export const getAgentSkillsEffective = (
   agentId: string,
 ): Promise<{ skills: AgentSkillEffective[]; agent_id: string }> =>
   request(`/orgs/${slug}/agents/${agentId}/skills/effective`);
+
+// ── PHASE 2 write endpoints ─────────────────────────────────────────────
+
+export interface CreateSkillRequest {
+  slug: string;
+  name: string;
+  version?: string;
+  policy_class?: string;
+  summary?: string;
+  skill_md: string;
+  references?: Record<string, string>;
+  assets?: Record<string, string>;
+}
+
+export interface EditSkillRequest {
+  name?: string;
+  summary?: string;
+  version?: string;
+  skill_md?: string;
+  references?: Record<string, string>;
+  assets?: Record<string, string>;
+}
+
+export interface CreateSkillResponse {
+  skill_id: string;
+  source: string;
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
+  validation: { ok: boolean; errors: string[] };
+}
+
+export interface ValidateSkillResponse {
+  skill_id: string;
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
+  validation: { ok: boolean; errors: string[] };
+}
+
+export interface EditSkillResponse {
+  skill_id: string;
+  source: string;
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
+  validation: { ok: boolean; errors: string[] };
+  version: string;
+}
+
+export interface ValidationEvent {
+  id: number;
+  skill_id: string;
+  slug: string;
+  agent: string | null;
+  source: string;
+  severity: string;
+  ok: boolean;
+  version: string;
+  findings: string[];
+  reason_codes: string[];
+  created_at: string;
+}
+
+export const createSkill = (
+  slug: string,
+  body: CreateSkillRequest,
+): Promise<CreateSkillResponse> =>
+  request(`/orgs/${slug}/skills`, { method: 'POST', body: JSON.stringify(body) });
+
+export const validateSkill = (
+  slug: string,
+  skillId: string,
+): Promise<ValidateSkillResponse> =>
+  request(`/orgs/${slug}/skills/${skillId}/validate`, { method: 'POST' });
+
+export const editSkill = (
+  slug: string,
+  skillId: string,
+  body: EditSkillRequest,
+): Promise<EditSkillResponse> =>
+  request(`/orgs/${slug}/skills/${skillId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const listSkillValidation = (
+  slug: string,
+  params?: {
+    skill?: string;
+    agent?: string;
+    source?: string;
+    since?: string;
+    severity?: string;
+    limit?: number;
+  },
+): Promise<{ events: ValidationEvent[]; label: string }> =>
+  request(`/orgs/${slug}/skills/validation`, { params });
