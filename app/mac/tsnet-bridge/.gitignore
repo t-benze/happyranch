@@ -1,0 +1,3 @@
+.build/
+libtsnet.a
+libtsnet.h
