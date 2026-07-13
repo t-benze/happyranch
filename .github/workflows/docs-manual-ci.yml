@@ -1,0 +1,37 @@
+name: Docs Manual CI
+
+# Standalone build check for the HappyRanch End-User Manual (Nextra docs site).
+# Non-publishing: it installs docs/manual deps and runs the Nextra/Next build only.
+# Path-filtered so it does not run on — and is fully independent of — the web/ app CI.
+
+on:
+  pull_request:
+    paths:
+      - 'docs/manual/**'
+      - '.github/workflows/docs-manual-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/manual/**'
+      - '.github/workflows/docs-manual-ci.yml'
+
+jobs:
+  build:
+    name: Docs Manual build (Node 24)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs/manual
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/manual/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build docs site
+        run: npm run build

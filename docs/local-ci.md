@@ -9,7 +9,7 @@ feedforward signal, not a substitute.
 ## Prerequisites
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
-- Node.js 20+ and npm (for the `web` target)
+- Node.js 24+ and npm (for the `web` target)
 - An up-to-date `uv.lock` file (run `uv lock` if you've changed
   `pyproject.toml`; `uv sync --frozen` rejects a stale lock)
 - The `integration` target spawns an isolated daemon per test (tmp
@@ -37,7 +37,7 @@ scripts/local_ci.sh help         # List targets and caveats
 |--------|-------------------|----------|
 | `all` (default) | `python-unit` (3.x) + `web` | `uv sync --frozen; uv run pytest tests/ -v` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
 | `python` | `python-unit` (single Python) | `uv sync --frozen; uv run pytest tests/ -v` |
-| `web` | `web` (Node 20) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
+| `web` | `web` (Node 24) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
 | `integration` | `nightly-integration` | `uv sync --frozen; uv run pytest tests/ -v -m integration` |
 
 ### `all` (default)
@@ -87,7 +87,7 @@ does **not** touch `.git/hooks` automatically. To disable it, remove
 ## Caveats
 
 - **GitHub CI is authoritative.** The local wrapper gives fast feedback on
-  your machine; the full CI matrix (Python 3.12, 3.13, 3.14; Node 20;
+  your machine; the full CI matrix (Python 3.12, 3.13, 3.14; Node 24;
   separate `nightly-integration` job) runs on clean Ubuntu runners in
   GitHub Actions.
 - **Single Python version.** `python` and `integration` targets use the
@@ -105,7 +105,7 @@ does **not** touch `.git/hooks` automatically. To disable it, remove
   bare `vitest` which enters interactive watch mode.
 - **npm ci, not npm install.** The web target uses `npm ci` to enforce
   lockfile parity. Node version is whatever is installed locally, not the
-  GHA Node 20 image.
+  GHA Node 24 image.
 - **Clean vs. dirty repo.** The script does not check for uncommitted
   changes. The GitHub CI always runs on a clean checkout of the pushed
   commit.

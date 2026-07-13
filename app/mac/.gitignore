@@ -8,4 +8,4 @@ DerivedData/
 .netrc
 
 # Generated .app bundle (built by scripts/build-app.sh)
-/HappyRanchApp.app
+/HappyRanch.app
