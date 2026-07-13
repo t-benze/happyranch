@@ -1225,6 +1225,3 @@ def assign_skill(
         "effective_hint": "assigned_not_yet_effective" if assigned else None,
         "materializes_on": "next_session_spawn" if assigned else None,
     }
-
-
-
