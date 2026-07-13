@@ -163,3 +163,28 @@ export const listSkillValidation = (
   },
 ): Promise<{ events: ValidationEvent[]; label: string }> =>
   request(`/orgs/${slug}/skills/validation`, { params });
+
+// ── PHASE 3a assign endpoint ───────────────────────────────────────────
+
+export interface AssignSkillRequest {
+  action: 'allow' | 'remove';
+}
+
+export interface AssignSkillResponse {
+  agent_id: string;
+  skill_id: string;
+  state: 'assigned' | 'unassigned';
+  effective_hint: string | null;
+  materializes_on: string | null;
+}
+
+export const assignSkill = (
+  slug: string,
+  agentId: string,
+  skillId: string,
+  body: AssignSkillRequest,
+): Promise<AssignSkillResponse> =>
+  request(`/orgs/${slug}/agents/${agentId}/skills/${skillId}/assign`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });

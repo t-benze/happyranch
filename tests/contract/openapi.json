@@ -472,6 +472,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_id}/skills/{skill_id}/assign": {
+      "POST": {
+        "params": [
+          [
+            "agent_id",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "skill_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/approve": {
       "POST": {
         "params": [

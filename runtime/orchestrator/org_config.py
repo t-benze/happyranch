@@ -1136,3 +1136,100 @@ def write_executor_profile_entry(
         raise
 
 
+# ── Skills eligibility config write (THR-092 Phase 3a) ──────────────────
+#
+# A dedicated helper for adding/removing a single skills eligibility rule
+# for a SINGLE agent + SINGLE skill. This is deliberately separate from
+# save_org_config (the master-bearer settings PATCH path) so the skills
+# eligibility section is NOT writable through the generic settings surface.
+# Only the scoped POST /agents/{agent_id}/skills/{skill_id}/assign route
+# calls this.
+
+
+def write_skill_eligibility_entry(
+    paths: OrgPaths,
+    *,
+    agent: str,
+    skill_id: str,
+    action: str,
+) -> None:
+    """Atomically add or remove a single skills eligibility rule
+    for ``agent`` / ``skill_id`` in org/config.yaml.
+
+    ``action`` must be one of ``"allow"`` or ``"remove"``.
+
+    1. Read the current raw dict from disk.
+    2. Deep-merge the single rule into
+       ``raw["skills"]["agents"][agent]["allow"]``, appending ``skill_id``
+       to the list (idempotent — no duplicate). For ``remove``, remove
+       ``skill_id`` from the allow list. All other keys (org/teams/other
+       agents/other skills) are carried through verbatim.
+    3. Validate the candidate via ``_build_org_config``.
+       If invalid, raise ``OrgConfigError``.
+    4. Atomic write via temp file + ``os.replace``.
+
+    This function never adds ``skills`` to ``_ORG_WRITABLE_KEYS`` —
+    it is the ONLY write path for skills eligibility.
+    """
+    if action not in ("allow", "remove"):
+        raise ValueError(f"action must be 'allow' or 'remove', got {action!r}")
+
+    config_path = paths.org_config_path
+
+    # 1. Read current raw dict
+    if config_path.exists():
+        try:
+            raw = yaml.safe_load(config_path.read_text()) or {}
+        except yaml.YAMLError as exc:
+            raise OrgConfigError(f"malformed YAML in {config_path}: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise OrgConfigError(f"{config_path}: top-level must be a mapping")
+    else:
+        raw = {}
+
+    # 2. Deep-merge the single rule
+    raw = dict(raw)
+    skills = dict(raw.get("skills", {}))
+    agents = dict(skills.get("agents", {}))
+    agent_rules = dict(agents.get(agent, {}))
+
+    if action == "allow":
+        # Append skill_id to the allow list (idempotent)
+        allow_list = list(agent_rules.get("allow", []))
+        if skill_id not in allow_list:
+            allow_list.append(skill_id)
+        agent_rules["allow"] = allow_list
+    else:
+        # Remove skill_id from the allow list
+        allow_list = [x for x in agent_rules.get("allow", []) if x != skill_id]
+        if allow_list:
+            agent_rules["allow"] = allow_list
+        else:
+            agent_rules.pop("allow", None)
+
+    agents[agent] = agent_rules
+    skills["agents"] = agents
+    raw["skills"] = skills
+
+    # 3. Validate candidate via the authoritative validator
+    try:
+        _build_org_config(raw, str(config_path))
+    except OrgConfigError:
+        raise  # re-raise so the route can return 422
+
+    # 4. Atomic write
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=".org-config.", suffix=".yaml", dir=str(config_path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            yaml.safe_dump(raw, fh, sort_keys=False)
+        os.replace(tmp, config_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
