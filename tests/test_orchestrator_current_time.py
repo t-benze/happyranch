@@ -357,12 +357,15 @@ class TestRunAgentMemoryDigest:
     def test_ancestor_boost_visible_in_full_prompt(self, orch, test_runtime, monkeypatch):
         """MEM-003 has source_task=TASK-100 and salience 60. When the current
         task's ancestor chain contains TASK-100, MEM-003 gets +20 ancestor
-        boost (effective 80), ranking above MEM-002 (effective 80 via directive
-        boost, alphabetical tie-break: 'C...' < 'Z...', so MEM-003 first).
+        boost (effective 80), ranking above MEM-002 (base salience 80,
+        provenance='reflective' — no directive boost — so both land in the
+        pointer group; alphabetical tie-break: 'C...' < 'Z...', so MEM-003
+        first).  MEM-002 is intentionally NOT a directive so it doesn't get
+        pulled into the directive-first full-body group (WS-B THR-091 seq7).
         """
         self._setup_ws(test_runtime)
-        # Only seed MEM-002 (salience 70, directive, agent scope) and
-        # MEM-003 (salience 60, source_task=TASK-100). No MEM-001.
+        # Only seed MEM-002 (salience 80, reflective, agent scope — no boost)
+        # and MEM-003 (salience 60, source_task=TASK-100). No MEM-001.
         from runtime.infrastructure.learnings_store import MemoryStore, MemoryItem
         ws = test_runtime.workspaces_dir / "dev_agent"
         mem_dir = ws / "memory"
@@ -371,8 +374,8 @@ class TestRunAgentMemoryDigest:
         store.write_entry(MemoryItem(
             id="MEM-002", slug="dir", title="Zebra habit",
             topic="workflow",
-            provenance="directive", scope="agent", salience=70,
-            body="A directive rule.",
+            provenance="reflective", scope="agent", salience=80,
+            body="A reflective observation.",
         ), agent="dev_agent")
         store.write_entry(MemoryItem(
             id="MEM-003", slug="ci", title="CI lockfile frozen constraint",
@@ -416,8 +419,8 @@ class TestRunAgentMemoryDigest:
 
         assert "=== MEMORY-DIGEST (system) ===" in prompt
         # MEM-003 (60 + 20 ancestor boost = 80) should rank above
-        # MEM-002 (70 + 10 directive boost = 80, alphabetical tie-break:
-        # 'CI lockfile...' < 'Zebra habit', so MEM-003 first)
+        # MEM-002 (base 80, no boost — both in pointer group,
+        # alphabetical tie-break: 'CI lockfile...' < 'Zebra habit')
         idx_003 = prompt.index("MEM-003")
         idx_002 = prompt.index("MEM-002")
         assert idx_003 < idx_002, (

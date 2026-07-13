@@ -1075,6 +1075,159 @@ class TestBuildMemoryDigest:
         assert len(digest) < 500
         assert "Pull the long tail" not in digest  # single item fits, no nudge
 
+    # ── THR-091 WS-B: directive full-body rendering ──
+
+    def test_directive_in_scope_renders_full_body_before_pointers(self, mem_store: MemoryStore):
+        """In-scope directive entries render their FULL BODY, ordered before
+        pointer lines for experiential/reflective entries."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="exp", title="Experiential Item",
+            provenance="experiential", scope="agent", salience=50,
+            body="experiential body text",
+        )
+        _make_memory_item(
+            mem_store, id="MEM-002", slug="dir", title="Directive Item",
+            provenance="directive", scope="agent", salience=50,
+            body="DIRECTIVE FULL BODY CONTENT\nSecond line of directive body.",
+        )
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        # Directive full body appears
+        assert "DIRECTIVE FULL BODY CONTENT" in digest
+        assert "Second line of directive body" in digest
+        # Directive block comes before experiential pointer
+        idx_dir = digest.index("MEM-002")
+        idx_exp = digest.index("MEM-001")
+        assert idx_dir < idx_exp
+
+    def test_experiential_stays_pointer_only(self, mem_store: MemoryStore):
+        """Experiential entries stay pointer-only — body must NOT leak."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="exp", title="Experiential",
+            provenance="experiential", scope="agent", salience=50,
+            body="EXPERIENTIAL SECRET BODY",
+        )
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "EXPERIENTIAL SECRET BODY" not in digest
+        assert "MEM-001" in digest
+        assert "Experiential" in digest
+
+    def test_reflective_stays_pointer_only(self, mem_store: MemoryStore):
+        """Reflective entries stay pointer-only — body must NOT leak."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="ref", title="Reflective",
+            provenance="reflective", scope="agent", salience=50,
+            body="REFLECTIVE SECRET BODY",
+        )
+        digest = mem_store.build_memory_digest("brief")
+        assert digest is not None
+        assert "REFLECTIVE SECRET BODY" not in digest
+        assert "MEM-001" in digest
+        assert "Reflective" in digest
+
+    def test_directive_out_of_scope_stays_pointer_only(self, mem_store: MemoryStore):
+        """A team-scope directive is out-of-scope for an agent-scope digest;
+        it must stay pointer-only (no full body)."""
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="tdir", title="Team Directive",
+            provenance="directive", scope="team", salience=50,
+            body="TEAM DIRECTIVE SECRET BODY",
+        )
+        digest = mem_store.build_memory_digest("brief", scope="agent")
+        assert digest is not None
+        assert "TEAM DIRECTIVE SECRET BODY" not in digest
+        assert "MEM-001" in digest
+        assert "Team Directive" in digest
+
+    def test_directive_body_overflow_falls_back_to_pointer(self, mem_store: MemoryStore):
+        """When a directive's full body doesn't fit the remaining budget,
+        it falls back to its normal pointer line — body must NOT leak and
+        total output length must not exceed budget."""
+        # Directive with a long body (200 chars)
+        long_body = "B" * 200
+        _make_memory_item(
+            mem_store, id="MEM-001", slug="dir", title="Directive",
+            provenance="directive", scope="agent", salience=50,
+            body=long_body,
+        )
+        _make_memory_item(
+            mem_store, id="MEM-002", slug="exp", title="Experiential",
+            provenance="experiential", salience=50,
+            body="experiential body",
+        )
+        header = (
+            "=== MEMORY-DIGEST (system) ===\n"
+            "Relevant memory (pointers only — fetch bodies with `happyranch memory get <id>`):\n\n"
+        )
+        dir_pointer = "- `MEM-001` — Directive  (directive, salience 60)\n"
+        exp_pointer = "- `MEM-002` — Experiential  (experiential, salience 50)\n"
+        nudge = "Pull the long tail: `happyranch memory search \"<terms>\"`.\n"
+        # Budget: fits header + both pointers + nudge, but NOT directive full body
+        budget = len(header + dir_pointer + exp_pointer + nudge)
+        digest = mem_store.build_memory_digest("brief", budget=budget)
+        assert digest is not None
+        assert len(digest) <= budget
+        # Directive body must NOT leak
+        assert "BBBBBBB" not in digest
+        # Directive pointer line must appear (fallen back from full body)
+        assert "MEM-001" in digest
+        assert "Directive" in digest
+        # Experiential pointer must also appear
+        assert "MEM-002" in digest
+
+    def test_budget_cap_holds_with_directives(self, mem_store: MemoryStore):
+        """The hard budget cap must hold even when directives are present
+        in the candidate set."""
+        # Mix of directives and experiential items
+        for i in range(10):
+            _make_memory_item(
+                mem_store, id=f"MEM-{i + 1:03d}", slug=f"dir-{i}",
+                title=f"Directive {i}",
+                provenance="directive", scope="agent", salience=90,
+                body=f"Directive body content for item {i}\nWith multiple lines.\n",
+            )
+        for i in range(10, 20):
+            _make_memory_item(
+                mem_store, id=f"MEM-{i + 1:03d}", slug=f"exp-{i}",
+                title=f"Experiential item number {i}",
+                provenance="experiential", salience=90,
+                body=f"Experiential body {i}",
+            )
+        budget = 400
+        digest = mem_store.build_memory_digest("brief", budget=budget)
+        assert digest is not None
+        assert len(digest) <= budget, (
+            f"digest {len(digest)} chars > budget {budget}"
+        )
+
+    def test_build_digest_read_only_with_directives(self, mem_store: MemoryStore):
+        """Building a digest with directive entries performs no file writes
+        and no mtime changes."""
+        entry = _make_memory_item(
+            mem_store, id="MEM-001", slug="exp", title="Experiential",
+            provenance="experiential", salience=50,
+        )
+        dir_entry = _make_memory_item(
+            mem_store, id="MEM-002", slug="dir", title="Directive",
+            provenance="directive", scope="agent", salience=50,
+            body="Directive body content.\n",
+        )
+        orig_mtime_exp = (mem_store.root / "MEM-001-exp.md").stat().st_mtime
+        orig_mtime_dir = (mem_store.root / "MEM-002-dir.md").stat().st_mtime
+        # Build digest multiple times
+        mem_store.build_memory_digest("brief")
+        mem_store.build_memory_digest("different brief")
+        mem_store.build_memory_digest("third brief")
+        # Verify no files were modified
+        new_mtime_exp = (mem_store.root / "MEM-001-exp.md").stat().st_mtime
+        new_mtime_dir = (mem_store.root / "MEM-002-dir.md").stat().st_mtime
+        assert new_mtime_exp == orig_mtime_exp
+        assert new_mtime_dir == orig_mtime_dir
+        # Salience unchanged
+        assert mem_store.read_entry("MEM-001").salience == 50
+        assert mem_store.read_entry("MEM-002").salience == 50
+
 
 # ═══════════════════════════════════════════════════════════════════
 # THR-032 P3a — explicit lifecycle transitions (set_lifecycle)
