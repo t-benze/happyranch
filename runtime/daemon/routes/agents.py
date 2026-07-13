@@ -1233,7 +1233,7 @@ def _workspace_memory_store(org: OrgState, agent_name: str) -> MemoryStore:
 
 
 def _entry_to_dict(entry: MemoryItem) -> dict:
-    return {
+    result = {
         "id": entry.id,
         "slug": entry.slug,
         "title": entry.title,
@@ -1251,7 +1251,11 @@ def _entry_to_dict(entry: MemoryItem) -> dict:
         "lifecycle": entry.lifecycle,
         "provenance": entry.provenance,
         "salience": entry.salience,
+        "last_verified": entry.last_verified,
     }
+    # THR-091: surface entry age at recall
+    result.update(entry.age_summary())
+    return result
 
 
 @router.get("/agents/{agent_name}/memory/entries/")
@@ -1465,6 +1469,13 @@ async def update_learning(
     slug: str, agent_name: str, id: str, body: LearningUpdateBody, org: OrgDep,
 ) -> dict:
     store = _workspace_memory_store(org, agent_name)
+    # THR-091 WS-A: preserve last_verified on normal update (read-modify-write).
+    # The PUT body deliberately does NOT carry last_verified — we carry forward
+    # the existing value so a content update never silently clears verification state.
+    try:
+        prior_last_verified = store.read_entry(id).last_verified
+    except LearningNotFound:
+        prior_last_verified = None
     entry = MemoryItem(
         id=id,
         slug=body.slug,
@@ -1475,6 +1486,7 @@ async def update_learning(
         source_task=body.source_task,
         related_to=list(body.related_to),
         supersedes=body.supersedes,
+        last_verified=prior_last_verified,
     )
     async with org.db_lock:
         try:

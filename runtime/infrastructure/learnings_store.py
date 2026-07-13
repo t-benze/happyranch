@@ -163,6 +163,39 @@ class MemoryItem:
     scope: str = "agent"
     lifecycle: str = "valid"
     salience: int = 50
+    # THR-091: optional last-verified timestamp (ISO-8601). None = never verified.
+    last_verified: str | None = None
+
+    def age_summary(self, now: datetime | None = None) -> dict:
+        """Compute entry age + optional last_verified age for display.
+
+        Returns a dict with ``age_days`` (now - updated_at) and,
+        ONLY when ``last_verified`` is set, ``last_verified_age_days``.
+        """
+        if now is None:
+            now = datetime.now(timezone.utc)
+
+        def _days_since(ts: str | None) -> int | None:
+            if not ts:
+                return None
+            try:
+                s = ts
+                if s.endswith("Z"):
+                    s = s[:-1] + "+00:00"
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                delta = now - dt
+                return max(0, delta.days)
+            except (ValueError, TypeError):
+                return None
+
+        result: dict = {"age_days": _days_since(self.updated_at)}
+        if self.last_verified:
+            lv_days = _days_since(self.last_verified)
+            if lv_days is not None:
+                result["last_verified_age_days"] = lv_days
+        return result
 
 
 def _lrn_numeric_suffix(s: "LearningSummary") -> int:
@@ -403,6 +436,9 @@ class MemoryStore:
             fm["lifecycle"] = entry.lifecycle
         if entry.salience != 50:
             fm["salience"] = entry.salience
+        # THR-091: omit last_verified when None (byte-identical round-trip)
+        if entry.last_verified is not None:
+            fm["last_verified"] = entry.last_verified
         fm_text = yaml.safe_dump(fm, sort_keys=False).strip()
         body = entry.body if entry.body.endswith("\n") else entry.body + "\n"
         return f"---\n{fm_text}\n---\n\n{body}"
@@ -415,6 +451,11 @@ class MemoryStore:
             raise InvalidLearningEntry("missing_frontmatter", "malformed frontmatter")
         fm = yaml.safe_load(parts[1]) or {}
         body = parts[2].lstrip("\n")
+        # YAML safe_load parses ISO-8601 timestamps as datetime objects.
+        # Coerce back to string so age_summary / round-trip stay type-safe.
+        from datetime import datetime as _dt
+        lv = fm.get("last_verified")
+        lv_str = lv.replace(microsecond=0).isoformat() if isinstance(lv, _dt) else lv
         return MemoryItem(
             id=fm.get("id", ""),
             slug=fm.get("slug", ""),
@@ -433,6 +474,7 @@ class MemoryStore:
             scope=fm.get("scope", "agent"),
             lifecycle=fm.get("lifecycle", "valid"),
             salience=_clamp_salience(fm.get("salience", 50)),
+            last_verified=lv_str,
             body=body,
         )
 
@@ -580,7 +622,6 @@ class MemoryStore:
     _DIRECTIVE_BOOST = 10          # provenance == directive
     _DEFAULT_BUDGET = 1500
 
-    # ── THR-032 P3a: allowed lifecycle transitions ──
     _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         "valid": {"superseded", "evicted"},
         "superseded": {"evicted", "valid"},
