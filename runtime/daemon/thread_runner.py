@@ -492,22 +492,22 @@ async def run_invocation(
 
     workspace = org_state.root / "workspaces" / inv.agent_name
 
-    # Read agent.yaml to pick the executor.
-    try:
-        from runtime.daemon.agent_config import load_agent_config
-        agent_yaml = load_agent_config(Path(workspace)) or {}
-    except Exception:
-        agent_yaml = {}
-    executor_name = (agent_yaml.get("executor") or "claude").lower()
-    if not _is_registered_executor(executor_name):
-        executor_name = "claude"
-
-    # Build OrgPaths so ClaudeExecutor can resolve allow rules.
+    # Build OrgPaths for executor resolution + allow rules.
     try:
         from runtime.orchestrator._paths import OrgPaths
         paths = OrgPaths(root=org_state.root)
     except Exception:
         paths = None
+
+    # THR-095: read executor from org/agents/<name>.md (single source of truth).
+    try:
+        from runtime.orchestrator.prompt_loader import load_agent
+        agent_def = load_agent(paths, inv.agent_name) if paths else None
+        executor_name = (agent_def.executor if agent_def else "claude").lower()
+    except Exception:
+        executor_name = "claude"
+    if not _is_registered_executor(executor_name):
+        executor_name = "claude"
 
     executor = _build_executor_for_provider(executor_name, settings, paths)
 
