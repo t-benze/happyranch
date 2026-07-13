@@ -79,6 +79,21 @@ describe('AddOrgDialog', () => {
     );
   });
 
+  test('a bare 409 with no recognized code renders the already-exists message', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(
+      Object.assign(new Error('conflict'), { status: 409 }),
+    );
+    renderDialog();
+
+    await user.type(screen.getByLabelText(/slug/i), 'collision');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/already exists|org_exists/i)).toBeInTheDocument(),
+    );
+  });
+
   test('surfaces 409 no_active_runtime with its own message, NOT already exists', async () => {
     const user = userEvent.setup();
     vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(

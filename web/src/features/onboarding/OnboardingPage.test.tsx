@@ -377,6 +377,23 @@ describe('OnboardingPage — Step 2 (create org)', () => {
     ).not.toBeInTheDocument();
   });
 
+  test('a bare 409 with no recognized code renders the already-exists message', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(
+      Object.assign(new Error('conflict'), { status: 409 }),
+    );
+    renderPage();
+    await skipConnect(user);
+    await user.click(screen.getByRole('button', { name: /create your first org/i }));
+
+    await user.type(screen.getByLabelText(/slug/i), 'collision');
+    await user.click(screen.getByRole('button', { name: /^create org$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(/already exists/i),
+    );
+  });
+
   test('surfaces 409 no_active_runtime with its own message, NOT already exists', async () => {
     const user = userEvent.setup();
     vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(
