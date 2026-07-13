@@ -694,10 +694,10 @@ class AuditLogger:
                 "unread_ids": [],
             }
         # Query memory_read events for this agent and extract payload.id
-        rows = self._db._conn.execute(
+        rows = self._db.fetch_all_readonly(
             "SELECT payload FROM audit_log WHERE agent = ? AND action = 'memory_read'",
             (agent,),
-        ).fetchall()
+        )
         import json
         read_set: set[str] = set()
         for row in rows:
