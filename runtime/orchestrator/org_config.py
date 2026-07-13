@@ -163,6 +163,10 @@ class MemoryCompactionConfig:
     stale_days: int = 45
     superseded_grace_days: int = 7
     max_evictions_per_run: int = 25
+    # THR-091 WS-D: auto-trigger threshold. 0 = disabled (default).
+    # When enabled=True and auto_trigger_entry_count > 0, write_entry
+    # invokes compact() inline once entry count >= this threshold.
+    auto_trigger_entry_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -902,6 +906,10 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
             max_evictions_per_run=_validate_positive_int(
                 comp_block.get("max_evictions_per_run", 25), "memory_compaction.max_evictions_per_run",
                 min_v=1, max_v=10000, path=path,
+            ),
+            auto_trigger_entry_count=_validate_positive_int(
+                comp_block.get("auto_trigger_entry_count", 0), "memory_compaction.auto_trigger_entry_count",
+                min_v=0, max_v=100000, path=path,
             ),
         )
 

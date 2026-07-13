@@ -162,7 +162,7 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
         migrate_workspace(workspace)
         memory_dir = workspace / "memory"
         memory_dir.mkdir(parents=True, exist_ok=True)
-        store = MemoryStore(memory_dir)
+        store = MemoryStore(memory_dir, compaction_config=load_org_config(OrgPaths(root=org.root)).memory_compaction)
         for learning in body.learnings:
             store.write_entry(MemoryItem(
                 id=store.next_id(),
