@@ -377,6 +377,33 @@ describe('OnboardingPage — Step 2 (create org)', () => {
     ).not.toBeInTheDocument();
   });
 
+  test('surfaces 409 no_active_runtime with its own message, NOT already exists', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(
+      Object.assign(new Error('no runtime'), { status: 409, code: 'no_active_runtime' }),
+    );
+    vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
+    renderPage();
+    await skipConnect(user);
+    await user.click(screen.getByRole('button', { name: /create your first org/i }));
+
+    await user.type(screen.getByLabelText(/slug/i), 'my-org');
+    await user.click(screen.getByRole('button', { name: /^create org$/i }));
+
+    await waitFor(() => {
+      const alert = screen.getByRole('alert');
+      expect(alert).toBeInTheDocument();
+      // Must NOT say "already exists"
+      expect(alert.textContent).not.toMatch(/already exists/i);
+      // Must mention runtime / starting up / not ready
+      expect(alert.textContent).toMatch(/runtime|start|ready|moment/i);
+    });
+    // Still on the create step (success heading never rendered).
+    expect(
+      screen.queryByRole('heading', { name: /is ready/i }),
+    ).not.toBeInTheDocument();
+  });
+
   test('broken orgs render read-only with their error, Copy-error, and NO retry', async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
