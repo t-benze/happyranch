@@ -136,4 +136,58 @@ describe('request', () => {
     expect(queryURL).toMatch(/status=open/);
     expect(queryURL).toMatch(/limit=50/);
   });
+
+  test('sends scoped token when auth is provided, not master bearer', async () => {
+    // Seed a DIFFERENT master bearer so we can prove it is NOT sent
+    seedToken('master-bearer');
+    let seenToken: string | null = null;
+    server.use(
+      http.post('/api/v1/executors/runtime/register-binary', ({ request: req }) => {
+        seenToken = req.headers.get('authorization');
+        return HttpResponse.json({ kind: 'claude', path: '/usr/local/bin/claude', valid: true });
+      }),
+    );
+    await request('/executors/runtime/register-binary', {
+      method: 'POST',
+      body: { path: '/usr/local/bin/claude' },
+      auth: { token: 'registration-token-abc' },
+    });
+    // Must send the scoped registration token, NOT the master bearer
+    expect(seenToken).toBe('Bearer registration-token-abc');
+  });
+
+  test('does NOT retry on 401 when auth is provided (scoped tokens are single-use)', async () => {
+    let attempts = 0;
+    server.use(
+      http.post('/api/v1/executors/runtime/register-binary', () => {
+        attempts += 1;
+        return HttpResponse.json({ detail: 'expired' }, { status: 401 });
+      }),
+    );
+    await expect(
+      request('/executors/runtime/register-binary', {
+        method: 'POST',
+        body: { path: '/usr/local/bin/claude' },
+        auth: { token: 'expired-token' },
+      }),
+    ).rejects.toBeInstanceOf(ApiError);
+    // Single attempt — no master-bearer retry for scoped tokens
+    expect(attempts).toBe(1);
+  });
+
+  test('still sends master bearer when auth is NOT provided (regression guard)', async () => {
+    seedToken('master-bearer');
+    let seenToken: string | null = null;
+    server.use(
+      http.post('/api/v1/orgs/alpha/tasks', ({ request: req }) => {
+        seenToken = req.headers.get('authorization');
+        return HttpResponse.json({ task_id: 'TASK-001' });
+      }),
+    );
+    await request('/orgs/alpha/tasks', {
+      method: 'POST',
+      body: { brief: 'test' },
+    });
+    expect(seenToken).toBe('Bearer master-bearer');
+  });
 });

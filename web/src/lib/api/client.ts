@@ -13,6 +13,12 @@ export interface RequestOptions {
   body?: unknown;
   params?: Record<string, string | number | boolean | undefined | null>;
   signal?: AbortSignal;
+  /**
+   * When set, overrides the default master daemon bearer with a scoped token.
+   * Used by loopback-only, scoped-token-gated routes (e.g. register-binary).
+   * Sends ``Authorization: Bearer <token>`` instead of the cached bearer.
+   */
+  auth?: { token: string };
 }
 
 export class ApiError extends Error {
@@ -90,12 +96,17 @@ export async function request<T = unknown>(
     init.body = JSON.stringify(opts.body);
   }
 
-  let token = await getToken();
+  let token: string;
+  if (opts.auth) {
+    // Scoped-token path: use the caller-supplied token.
+    token = opts.auth.token;
+  } else {
+    token = await getToken();
+  }
   let res = await doFetch(url, init, token);
 
-  if (res.status === 401) {
-    // The cached token may be stale (daemon restart, token rotated). Drop and
-    // re-bootstrap exactly once before giving up.
+  if (res.status === 401 && !opts.auth) {
+    // Master-bearer retry (scoped tokens are single-use, so skip).
     clearToken();
     token = await getToken();
     res = await doFetch(url, init, token);

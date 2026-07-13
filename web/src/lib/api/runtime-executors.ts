@@ -48,5 +48,5 @@ export const registerBinaryScoped = (
   request('/executors/runtime/register-binary', {
     method: 'POST',
     body,
-    headers: { Authorization: `Bearer ${token}` },
+    auth: { token },
   });
