@@ -190,10 +190,56 @@ machine-local time — host-local night, as intended.)
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers:
 
 1. Task override: `tasks.session_timeout_seconds`, set via `happyranch revisit ... --session-timeout-seconds N` and inherited by children.
-2. Org override: `session_timeout_seconds:` in `<runtime>/orgs/<slug>/org/config.yaml`.
+2. **Org override**: `org_settings` DB table, section `session_timeout_seconds` (THR-095 single-store).
 3. Code default: `Settings.session_timeout_seconds`.
 
 Positive integers only. `<= 0` or non-int raises at parse time. The `agent_name` argument is unused but kept for call-site symmetry. Legacy `session_timeout_seconds` in agent frontmatter is silently ignored.
+
+## Org Settings Storage (THR-095)
+
+The 4 web-writable operational knobs — `dreaming`, `threads`, `session_timeout_seconds`,
+`working_hours` — are stored in the **`org_settings`** SQLite table (same per-org DB
+as `tasks` / `audit_log`). `org/config.yaml` is a **git-tracked seed file only**;
+the daemon no longer reads or writes these keys from the file once the one-shot
+seed migration has run (first daemon startup after upgrade).
+
+### Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS org_settings (
+    section     TEXT NOT NULL PRIMARY KEY,  -- dreaming | threads | session_timeout_seconds | working_hours
+    value_json  TEXT NOT NULL,             -- JSON blob for that section's subtree
+    updated_at  TEXT NOT NULL,             -- ISO-8601 Z
+    updated_by  TEXT DEFAULT 'founder'
+);
+```
+
+### Resolution ladder
+
+Every consumer site resolves through a **single documented precedence ladder**:
+
+| Knob | Resolution order |
+| --- | --- |
+| `session_timeout_seconds` | `tasks.session_timeout_seconds` (per-task override) → `org_settings` DB row → `Settings.session_timeout_seconds` |
+| `dreaming` / `threads` / `working_hours` | `org_settings` DB row → code default |
+
+No site special-cases storage; every reader uses the appropriate
+`resolve_org_setting_*` helper from `runtime/orchestrator/org_config.py`.
+
+### Write path
+
+`PUT /api/v1/settings/org` writes each patched section to the `org_settings`
+table, with its `config:<section>` audit row **in a single SQLite transaction**
+(atomic upsert + audit insert — a crash before commit rolls BOTH back).
+The daemon no longer mutates the git-tracked `org/config.yaml` for these keys.
+
+### Seed migration
+
+A **one-shot, idempotent** seed runs on the first daemon startup after upgrade
+(`org/.org_settings_seeded` sentinel). It copies the current `config.yaml`
+values for the 4 writable keys into `org_settings`, then writes the sentinel.
+On subsequent startups the sentinel makes the seed a no-op. After seeding,
+`config.yaml` values are ignored — the DB is the single authoritative store.
 
 ## Bounded Failure-Recovery (TASK-573)
 

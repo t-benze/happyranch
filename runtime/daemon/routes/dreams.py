@@ -19,7 +19,7 @@ from runtime.infrastructure.learnings_store import MemoryItem, MemoryStore
 from runtime.infrastructure.memory_migration import migrate_workspace
 from runtime.models import DreamKbCandidate, DreamStatus
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import load_org_config
+from runtime.orchestrator.org_config import load_org_config, resolve_org_setting_threads
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -144,7 +144,8 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
             # accounting, and thread_started/thread_message_sent audit rows as an
             # agent-initiated compose. Recipients are @founder only: the dream
             # agent is the sole participant; no other agent is looped in.
-            turn_cap = load_org_config(OrgPaths(root=org.root)).threads_default_turn_cap
+            org_cfg = load_org_config(OrgPaths(root=org.root))
+            turn_cap = resolve_org_setting_threads(org.db, code_default=org_cfg)["default_turn_cap"]
             founder_thread_preview = body.founder_thread.body_markdown.strip()
             founder_thread_id, founder_thread_seq, _tokens, _addressed = _create_agent_thread_locked(
                 org,

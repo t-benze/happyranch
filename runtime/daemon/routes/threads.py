@@ -32,7 +32,7 @@ from runtime.models import (
 )
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import load_org_config
+from runtime.orchestrator.org_config import load_org_config, resolve_org_setting_threads
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -450,7 +450,7 @@ async def _compose_thread_multipart(
             )
 
     org_cfg = load_org_config(org_paths)
-    turn_cap = org_cfg.threads_default_turn_cap
+    turn_cap = resolve_org_setting_threads(org.db, code_default=org_cfg)["default_turn_cap"]
     addressed_agents = list(body.recipients)
 
     total_file_count = len(file_fields) + len(shared_attachments)
@@ -626,7 +626,7 @@ async def compose_thread(
 
     # Turn cap from org config (default 500).
     org_cfg = load_org_config(org_paths)
-    turn_cap = org_cfg.threads_default_turn_cap
+    turn_cap = resolve_org_setting_threads(org.db, code_default=org_cfg)["default_turn_cap"]
 
     # Broadcast model: every recipient (== future participant) gets a REPLY
     # invocation. The founder is not a participant; no founder mint.
@@ -791,7 +791,7 @@ async def _compose_agent_thread_multipart(
         raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
 
     org_cfg = load_org_config(org_paths)
-    turn_cap = org_cfg.threads_default_turn_cap
+    turn_cap = resolve_org_setting_threads(org.db, code_default=org_cfg)["default_turn_cap"]
 
     # Validate shared artifact refs (if any).
     shared_attachments = _normalize_attachments(
@@ -1009,7 +1009,7 @@ async def compose_thread_as_agent(
         raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
 
     org_cfg = load_org_config(org_paths)
-    turn_cap = org_cfg.threads_default_turn_cap
+    turn_cap = resolve_org_setting_threads(org.db, code_default=org_cfg)["default_turn_cap"]
 
     composed_from_task_id = body.task_id
 

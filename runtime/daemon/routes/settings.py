@@ -17,13 +17,12 @@ from fastapi import APIRouter, HTTPException
 from runtime.config import settings as global_settings
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
-from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
     OrgConfigError,
     load_org_config,
-    save_org_config,
+    write_org_setting_to_db,
 )
 from runtime.orchestrator.org_validation import (
     OrgConsistencyError,
@@ -189,8 +188,53 @@ class OrgSettingsView(BaseModel):
     working_hours: WorkingHoursSettingsView
 
 
+def _org_config_to_view_from_resolved(
+    *,
+    session_timeout_seconds: int | None,
+    dreaming_cfg,
+    threads_kwargs: dict,
+    wh_cfg,
+) -> OrgSettingsView:
+    """Build OrgSettingsView from DB-resolved values (THR-095 single-store)."""
+    return OrgSettingsView(
+        session_timeout_seconds=session_timeout_seconds,
+        dreaming=DreamingSettingsView(
+            enabled=dreaming_cfg.enabled,
+            schedule=DreamingScheduleView(
+                time=dreaming_cfg.schedule_time,
+                timezone=dreaming_cfg.timezone,
+            ),
+            catch_up_on_startup=dreaming_cfg.catch_up_on_startup,
+            agents=DreamingAgentsView(
+                mode=dreaming_cfg.agent_mode,
+                include=list(dreaming_cfg.include_agents),
+                exclude=list(dreaming_cfg.exclude_agents),
+            ),
+        ),
+        threads=ThreadsSettingsView(
+            enabled=threads_kwargs["enabled"],
+            default_turn_cap=threads_kwargs["default_turn_cap"],
+            invocation_timeout_seconds=threads_kwargs["invocation_timeout_seconds"],
+        ),
+        working_hours=WorkingHoursSettingsView(
+            enabled=wh_cfg.enabled,
+            agents=WorkHoursAgentsView(
+                mode=wh_cfg.agent_mode,
+                include=list(wh_cfg.include_agents),
+                exclude=list(wh_cfg.exclude_agents),
+            ),
+            default=_layer_to_view(wh_cfg.default),
+            teams={name: _layer_to_view(layer) for name, layer in wh_cfg.teams.items()},
+            overrides={name: _layer_to_view(layer) for name, layer in wh_cfg.overrides.items()},
+        ),
+    )
+
+
 def _org_config_to_view(cfg) -> OrgSettingsView:
-    """Pure function: map OrgConfig → OrgSettingsView (allow-list)."""
+    """Pure function: map OrgConfig → OrgSettingsView (allow-list).
+
+    DEPRECATED for the 4 web-writable knobs — use _org_config_to_view_from_resolved
+    instead (THR-095).  Kept for backward-compat reference."""
     wh = cfg.working_hours
     return OrgSettingsView(
         session_timeout_seconds=cfg.session_timeout_seconds,
@@ -243,11 +287,31 @@ class SettingsResponse(BaseModel):
 
 @router.get("/settings", response_model=SettingsResponse)
 def get_settings(slug: str, org: OrgDep) -> SettingsResponse:
-    """Return read-only system + org settings for the given org."""
+    """Return read-only system + org settings for the given org.
+
+    THR-095: the 4 web-writable knobs are resolved from the DB with config.yaml
+    as the fallback default."""
+    from runtime.orchestrator.org_config import (
+        load_org_config,
+        resolve_org_setting_dreaming,
+        resolve_org_setting_threads,
+        resolve_org_setting_session_timeout,
+        resolve_org_setting_working_hours,
+    )
     cfg = load_org_config(OrgPaths(root=org.root))
+    # Resolve the 4 writable knobs from DB.
+    dreaming_cfg = resolve_org_setting_dreaming(org.db, code_default=cfg.dreaming)
+    threads_kwargs = resolve_org_setting_threads(org.db, code_default=cfg)
+    sto = resolve_org_setting_session_timeout(org.db, code_default=cfg.session_timeout_seconds)
+    wh_cfg = resolve_org_setting_working_hours(org.db, code_default=cfg.working_hours)
     return SettingsResponse(
         system=SystemSettingsView.from_settings(global_settings),
-        org=_org_config_to_view(cfg),
+        org=_org_config_to_view_from_resolved(
+            session_timeout_seconds=sto,
+            dreaming_cfg=dreaming_cfg,
+            threads_kwargs=threads_kwargs,
+            wh_cfg=wh_cfg,
+        ),
     )
 
 
@@ -631,8 +695,9 @@ def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> Setting
     """Partial-update editable org settings.
 
     Only allow-listed keys (dreaming, threads, session_timeout_seconds,
-    working_hours) are written — ``feishu_notifications`` and any other unknown
-    key are carried through verbatim.
+    working_hours) are written to the org_settings DB table (THR-095
+    single-store). Each section write is transactional with its
+    ``config:<section>`` audit row.
 
     Returns the updated settings snapshot so the client can invalidate
     and re-render in a single round-trip.
@@ -664,32 +729,14 @@ def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> Setting
         if wh_errors:
             raise HTTPException(status_code=422, detail={"errors": wh_errors})
 
-    # Snapshot working_hours before the write so the audit row records before→after.
-    wh_before = _read_raw_working_hours(paths) if "working_hours" in patch_raw else None
-
+    # THR-095: write to DB (transactional per section: upsert + audit row).
     try:
-        save_org_config(paths, patch_raw)
+        write_org_setting_to_db(paths, org.db, patch_raw)
     except OrgConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # Audit the working_hours config write (who/when/before→after/tiers). Scoped
-    # to a dedicated ``config:working_hours`` scope value — no audit_log.task_id
-    # overload of a real TASK id, no schema change.
-    if wh_before is not None:
-        wh_after = _read_raw_working_hours(paths)
-        AuditLogger(org.db).log_org_config_write(
-            section="working_hours",
-            tiers=sorted(patch_raw["working_hours"].keys()),
-            before=wh_before,
-            after=wh_after,
-        )
-
-    # Return updated snapshot
-    cfg = load_org_config(paths)
-    return SettingsResponse(
-        system=SystemSettingsView.from_settings(global_settings),
-        org=_org_config_to_view(cfg),
-    )
+    # Return updated snapshot from DB-resolved values.
+    return get_settings(slug, org)
 
 
 # ----------------------------------------------------------------

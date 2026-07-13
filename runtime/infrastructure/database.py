@@ -755,6 +755,13 @@ class Database:
                 view_count     INTEGER NOT NULL DEFAULT 0,
                 last_viewed_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS org_settings (
+                section     TEXT NOT NULL PRIMARY KEY,
+                value_json  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                updated_by  TEXT DEFAULT 'founder'
+            );
         """)
         self._migrate_session_token_usage_scope_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite
@@ -2167,6 +2174,67 @@ class Database:
                 d["payload"] = json.loads(d["payload"])
             result.append(d)
         return result
+
+    # --- Org Settings (THR-095) ---
+
+    @_synchronized
+    def upsert_org_setting(
+        self,
+        section: str,
+        value_json: str,
+        *,
+        before: dict | None = None,
+        after: dict | None = None,
+        actor: str = "founder",
+    ) -> None:
+        """Upsert an org_settings row AND insert its config:<section> audit
+        row in one atomic transaction (same connection, single commit).
+
+        A crash/failure before commit rolls BOTH back — no split-brain."""
+        now = datetime.now(timezone.utc).isoformat()
+        audit_payload = json.dumps({
+            "section": section,
+            "tiers": list(before or {} if isinstance(before, dict) else {}) if before is not None else [section],
+            "before": before or {},
+            "after": after or {},
+        })
+        self._conn.execute("BEGIN")
+        try:
+            self._conn.execute(
+                "INSERT INTO org_settings (section, value_json, updated_at, updated_by) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(section) DO UPDATE SET "
+                "value_json = excluded.value_json, "
+                "updated_at = excluded.updated_at, "
+                "updated_by = excluded.updated_by",
+                (section, value_json, now, actor),
+            )
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, 'org_config_write', ?, ?)",
+                (f"config:{section}", actor, audit_payload, now),
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def get_org_setting(self, section: str) -> str | None:
+        """Return the value_json for *section* or None if no row exists."""
+        row = self._conn.execute(
+            "SELECT value_json FROM org_settings WHERE section = ?",
+            (section,),
+        ).fetchone()
+        return row["value_json"] if row else None
+
+    @_synchronized
+    def get_all_org_settings(self) -> dict[str, str]:
+        """Return {section: value_json} for every row in org_settings."""
+        rows = self._conn.execute(
+            "SELECT section, value_json FROM org_settings"
+        ).fetchall()
+        return {row["section"]: row["value_json"] for row in rows}
 
     @_synchronized
     def fetch_one_readonly(

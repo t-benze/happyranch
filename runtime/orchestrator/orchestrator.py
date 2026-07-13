@@ -275,14 +275,16 @@ class Orchestrator:
         return model if model else None
 
     def _resolve_session_timeout(self, agent_name: str, task_id: str | None = None) -> int:
-        """Resolve the per-session timeout, walking task -> org -> settings.
+        """Resolve the per-session timeout, walking task -> org_settings DB ->
+        code default.
 
         Per-task override lives on the `tasks` row's `session_timeout_seconds`
         column — set by `happyranch revisit --session-timeout-seconds` and inherited
-        from parent on delegate / from predecessor root on revisit. Org
-        override lives in `<runtime>/org/config.yaml`. Either being absent
-        (or NULL) falls through to the next layer; the global Settings default
-        is the final floor and is itself overridable via HAPPYRANCH_SESSION_TIMEOUT_SECONDS.
+        from parent on delegate / from predecessor root on revisit.  The org-level
+        override lives in the `org_settings` DB table (THR-095 single-store).
+        Either being absent (or NULL) falls through to the next layer; the global
+        Settings default is the final floor and is itself overridable via
+        HAPPYRANCH_SESSION_TIMEOUT_SECONDS.
 
         ``agent_name`` is unused today but kept on the signature for callers
         and future per-agent overrides we don't have a mechanism for yet.
@@ -292,9 +294,14 @@ class Orchestrator:
             task = self._db.get_task(task_id)
             if task is not None and task.session_timeout_seconds is not None:
                 return task.session_timeout_seconds
-        org = load_org_config(self._paths)
-        if org.session_timeout_seconds is not None:
-            return org.session_timeout_seconds
+        # THR-095: DB-backed org setting tier (replaces config.yaml read).
+        from runtime.orchestrator.org_config import resolve_org_setting_session_timeout
+        org_cfg = load_org_config(self._paths)
+        db_value = resolve_org_setting_session_timeout(
+            self._db, code_default=org_cfg.session_timeout_seconds,
+        )
+        if db_value is not None:
+            return db_value
         return self._settings.session_timeout_seconds
 
     def _readiness_marker(self, workspace: Path, provider: str) -> Path:

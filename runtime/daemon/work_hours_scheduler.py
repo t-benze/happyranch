@@ -25,6 +25,7 @@ from runtime.orchestrator.org_config import (
     WorkHoursSchedule,
     WorkingHoursConfig,
     load_org_config,
+    resolve_org_setting_working_hours,
 )
 from runtime.orchestrator.routine_parser import RoutineParseResult, parse_routines
 
@@ -264,7 +265,9 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
     startup honor ``catch_up_on_startup`` (false -> record a ``skipped`` row so
     the steady-state loop won't re-pick the slot today).
     """
-    cfg = load_org_config(OrgPaths(root=org.root)).working_hours
+    # THR-095: resolve working_hours from DB (override) → config.yaml (default).
+    org_cfg = load_org_config(OrgPaths(root=org.root))
+    cfg = resolve_org_setting_working_hours(org.db, code_default=org_cfg.working_hours)
     if not cfg.enabled:
         return 0
     known_teams = set(org.teams.teams()) if getattr(org, "teams", None) else set()

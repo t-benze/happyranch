@@ -13,17 +13,15 @@ def _seed_org(org_state, *, catch_up: bool | None = None) -> None:
         "---\nname: dev_agent\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\nYou are a developer agent.\n"
     )
     (org_state.root / "workspaces" / "dev_agent").mkdir(parents=True, exist_ok=True)
-    catch_up_line = "" if catch_up is None else f"    catch_up_on_startup: {str(catch_up).lower()}\n"
-    (org_state.root / "org" / "config.yaml").write_text(
-        "dreaming:\n"
-        "  enabled: true\n"
-        "  schedule:\n"
-        '    time: "02:00"\n'
-        '    timezone: "Asia/Shanghai"\n'
-        f"{catch_up_line}"
-        "  agents:\n"
-        "    mode: all\n"
-    )
+    # THR-095: DB-backed storage — write dreaming config to DB, not config.yaml.
+    import json
+    catch_up_val = True if catch_up is None else catch_up
+    dreaming = {
+        "enabled": True,
+        "schedule": {"time": "02:00", "timezone": "Asia/Shanghai", "catch_up_on_startup": catch_up_val},
+        "agents": {"mode": "all", "include": [], "exclude": []},
+    }
+    org_state.db.upsert_org_setting("dreaming", json.dumps(dreaming))
 
 
 def _capture_enqueue(org_state, monkeypatch) -> list:
