@@ -28,7 +28,7 @@ swift test
 
 ## Build the .app bundle
 
-To produce a double-clickable `HappyRanchApp.app` bundle, run the
+To produce a double-clickable `HappyRanch.app` bundle, run the
 bundling script from `app/mac`:
 
 ```bash
@@ -38,25 +38,25 @@ cd app/mac
 
 The script builds the SwiftPM binary (release mode), assembles the
 standard `.app` bundle structure, copies the binary into
-`HappyRanchApp.app/Contents/MacOS/`, and writes the `Info.plist`.
+`HappyRanch.app/Contents/MacOS/`, and writes the `Info.plist`.
 It is idempotent — running it again replaces the previous bundle.
 
 ### Launch the .app
 
 ```bash
-open HappyRanchApp.app
+open HappyRanch.app
 ```
 
-Or double-click `HappyRanchApp.app` in Finder.
+Or double-click `HappyRanch.app` in Finder.
 
 #### First launch — unsigned Gatekeeper bypass
 
 The `.app` bundle is **unsigned** (no Apple Developer account). On first
 launch, macOS Gatekeeper blocks unsigned apps. Bypass once:
 
-- **Option A (recommended):** Right-click `HappyRanchApp.app` → Open,
+- **Option A (recommended):** Right-click `HappyRanch.app` → Open,
   then click Open in the confirmation dialog.
-- **Option B:** Run `xattr -cr HappyRanchApp.app` in Terminal, then
+- **Option B:** Run `xattr -cr HappyRanch.app` in Terminal, then
   double-click normally.
 
 After the one-time bypass the app launches normally thereafter.
