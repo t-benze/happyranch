@@ -73,6 +73,11 @@ if ! test -x "${BUNDLE_NAME}.app/Contents/Resources/daemon/happyranch-daemon"; t
     echo "ERROR: Bundled daemon binary missing or not executable after staging — check dist/happyranch-daemon was built via packaging/build_daemon.sh" >&2
     exit 1
 fi
+chmod +x "${BUNDLE_NAME}.app/Contents/Resources/daemon/happyranch" 2>/dev/null || true
+if ! test -x "${BUNDLE_NAME}.app/Contents/Resources/daemon/happyranch"; then
+    echo "ERROR: Bundled happyranch CLI binary missing or not executable after staging — check dist/happyranch-daemon was built via packaging/build_daemon.sh" >&2
+    exit 1
+fi
 echo "  Daemon bundle copied."
 
 # Copy web/dist into Resources

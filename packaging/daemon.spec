@@ -105,8 +105,20 @@ a = Analysis(
 # ---- PYZ (pure Python modules archive) -------------------------------------
 pyz = PYZ(a.pure)
 
-# ---- EXE (bootloader + PYZ) ------------------------------------------------
-exe = EXE(
+# ---- Analysis: CLI (shares hook + pathex; entry point cli.main:main) --------
+a_cli = Analysis(
+    [str(_PROJ / 'cli' / 'main.py')],
+    pathex=[str(_PROJ)],
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
+    hookspath=[str(_hooks_dir)],
+    runtime_hooks=[],
+    excludes=[],
+)
+
+# ---- EXE: daemon (bootloader + PYZ) -----------------------------------------
+exe_daemon = EXE(
     pyz,
     a.scripts,
     [],
@@ -119,9 +131,26 @@ exe = EXE(
     console=True,
 )
 
-# ---- COLLECT (onedir bundle) ------------------------------------------------
+# ---- EXE: CLI (bootloader + PYZ, same internal deps via shared COLLECT) ------
+pyz_cli = PYZ(a_cli.pure)
+
+exe_cli = EXE(
+    pyz_cli,
+    a_cli.scripts,
+    [],
+    exclude_binaries=True,
+    name='happyranch',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,
+)
+
+# ---- COLLECT (onedir bundle — both EXEs share _internal/) -------------------
 coll = COLLECT(
-    exe,
+    exe_daemon,
+    exe_cli,
     a.binaries,
     a.datas,
     strip=False,

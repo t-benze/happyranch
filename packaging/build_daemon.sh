@@ -29,6 +29,8 @@ uv run pyinstaller packaging/daemon.spec --clean --noconfirm 2>&1
 # ---- 3. Verify output ----
 echo ""
 echo "[3/3] Verifying output..."
+
+# Verify daemon binary
 BIN="dist/happyranch-daemon/happyranch-daemon"
 if [ -x "$BIN" ] || [ -f "$BIN" ]; then
     echo "  Binary: $BIN"
@@ -38,12 +40,29 @@ if [ -x "$BIN" ] || [ -f "$BIN" ]; then
         echo "  Perms:  NOT executable — applying chmod +x"
         chmod +x "$BIN"
     fi
-    SIZE=$(du -sh "dist/happyranch-daemon" | cut -f1)
-    echo "  Size:   $SIZE"
-    echo ""
-    echo "=== Build complete ==="
-    echo "Run:  dist/happyranch-daemon/happyranch-daemon"
 else
-    echo "ERROR: Binary not found at $BIN"
+    echo "ERROR: Daemon binary not found at $BIN"
     exit 1
 fi
+
+# Verify CLI binary
+CLI_BIN="dist/happyranch-daemon/happyranch"
+if [ -x "$CLI_BIN" ] || [ -f "$CLI_BIN" ]; then
+    echo "  Binary: $CLI_BIN"
+    if [ -x "$CLI_BIN" ]; then
+        echo "  Perms:  executable"
+    else
+        echo "  Perms:  NOT executable — applying chmod +x"
+        chmod +x "$CLI_BIN"
+    fi
+else
+    echo "ERROR: CLI binary not found at $CLI_BIN"
+    exit 1
+fi
+
+SIZE=$(du -sh "dist/happyranch-daemon" | cut -f1)
+echo "  Size:   $SIZE"
+echo ""
+echo "=== Build complete ==="
+echo "Run:  dist/happyranch-daemon/happyranch-daemon"
+echo "CLI:  dist/happyranch-daemon/happyranch"
