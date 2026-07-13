@@ -1,3 +1,5 @@
+import pytest
+
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.models import CompletionReport
@@ -24,6 +26,24 @@ def test_log_memory_lifecycle_changed(db):
     assert payload["to_lifecycle"] == "evicted"
     assert payload["reason"] == "superseded by MEM-002"
     assert payload["source"] == "manual"
+
+
+def test_log_memory_read(db):
+    """THR-091 WS-C: log_memory_read records correct row shape."""
+    logger = AuditLogger(db)
+    logger.log_memory_read(
+        agent="dev_agent",
+        id="MEM-001",
+        slug="base-fact",
+    )
+    logs = db.get_audit_logs("AGENT-dev_agent")
+    assert len(logs) == 1
+    assert logs[0]["action"] == "memory_read"
+    assert logs[0]["agent"] == "dev_agent"
+    assert logs[0]["task_id"] == "AGENT-dev_agent"
+    payload = logs[0]["payload"]
+    assert payload["id"] == "MEM-001"
+    assert payload["slug"] == "base-fact"
 
 
 def test_log_session_start(db):
@@ -368,3 +388,24 @@ def test_log_fanout_join_writes_correct_shape(db):
     assert payload["width"] == 2
     assert payload["children_ids"] == ["TASK-CA", "TASK-CB"]
     assert "FAN-OUT JOIN CONTEXT" in payload["context_markdown"]
+
+
+def test_compute_memory_pull_through(db):
+    """THR-091 WS-C: pull-through view computes read count from digest pointers."""
+    logger = AuditLogger(db)
+    # Seed: 5 memory_read events across 3 unique entries
+    logger.log_memory_read(agent="dev_agent", id="MEM-001", slug="a")
+    logger.log_memory_read(agent="dev_agent", id="MEM-002", slug="b")
+    logger.log_memory_read(agent="dev_agent", id="MEM-001", slug="a")  # duplicate read
+    logger.log_memory_read(agent="dev_agent", id="MEM-003", slug="c")
+    logger.log_memory_read(agent="qa_engineer", id="MEM-004", slug="d")  # different agent
+    # Digest contained MEM-001, MEM-002, MEM-005 (3 pointers, 2 read)
+    result = logger.compute_memory_pull_through(
+        agent="dev_agent",
+        digest_ids={"MEM-001", "MEM-002", "MEM-005"},
+    )
+    assert result["digest_count"] == 3
+    assert result["read_count"] == 2
+    assert result["pull_through"] == pytest.approx(2 / 3)
+    assert set(result["read_ids"]) == {"MEM-001", "MEM-002"}
+    assert result["unread_ids"] == ["MEM-005"]

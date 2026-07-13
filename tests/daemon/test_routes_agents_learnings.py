@@ -381,6 +381,30 @@ def test_promote_writes_memory_promoted_audit_row(client_with_migrated_workspace
     assert any(r["action"] == "memory_promoted" for r in rows)
 
 
+def test_get_writes_memory_read_audit_row(client_with_migrated_workspace):
+    """THR-091 WS-C: GET /memory/entries/{id} emits memory_read audit."""
+    client, token, slug, agent, _ = client_with_migrated_workspace
+    # Seed
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"slug": "read-me", "title": "Read Me", "topic": "w", "body": "b\n"},
+    )
+    # Fetch — must emit memory_read audit event
+    r = client.get(
+        f"/api/v1/orgs/{slug}/agents/{agent}/memory/entries/MEM-001",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["slug"] == "read-me"
+    audit = client.get(
+        f"/api/v1/orgs/{slug}/audit?action=memory_read",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    rows = audit.get("entries", [])
+    assert any(r2["action"] == "memory_read" and r2["agent"] == agent for r2 in rows)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # THR-032 P3a — PATCH /memory/entries/{id}/lifecycle
 # ═══════════════════════════════════════════════════════════════════
