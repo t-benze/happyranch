@@ -29,9 +29,8 @@ hiddenimports = collect_submodules('runtime')
 hiddenimports += collect_submodules('cli')  # cli.main entry point in pyproject.toml
 """)
 
-# ---- Analysis --------------------------------------------------------------
-a = Analysis(
-    [str(_PROJ / 'runtime' / 'daemon' / '__main__.py')],
+# ---- Analysis (common kwargs shared by daemon and CLI) -------------------
+_common_analysis_kwargs = dict(
     pathex=[str(_PROJ)],
     binaries=[],
     datas=[
@@ -102,10 +101,20 @@ a = Analysis(
     excludes=[],
 )
 
+a = Analysis(
+    [str(_PROJ / 'runtime' / 'daemon' / '__main__.py')],
+    **_common_analysis_kwargs,
+)
+
+a_cli = Analysis(
+    [str(_PROJ / 'cli' / 'main.py')],
+    **_common_analysis_kwargs,
+)
+
 # ---- PYZ (pure Python modules archive) -------------------------------------
 pyz = PYZ(a.pure)
 
-# ---- EXE (bootloader + PYZ) ------------------------------------------------
+# ---- EXEs (bootloader + PYZ, shared onedir _internal/) --------------------
 exe = EXE(
     pyz,
     a.scripts,
@@ -119,9 +128,23 @@ exe = EXE(
     console=True,
 )
 
-# ---- COLLECT (onedir bundle) ------------------------------------------------
+exe_cli = EXE(
+    pyz,
+    a_cli.scripts,
+    [],
+    exclude_binaries=True,
+    name='happyranch',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,
+)
+
+# ---- COLLECT (onedir bundle, both EXEs share _internal/) -------------------
 coll = COLLECT(
     exe,
+    exe_cli,
     a.binaries,
     a.datas,
     strip=False,
