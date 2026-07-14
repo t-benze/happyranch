@@ -16,6 +16,7 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { AgentChip } from '@/design-system/patterns/AgentChip';
@@ -794,8 +795,7 @@ export function TaskDetailPage(): JSX.Element {
 
   return (
     <>
-      <div className="h-full overflow-y-auto">
-        <div className="mx-auto max-w-5xl px-4 py-6">
+      <ContentWrap>
           {/* Back-nav — return to the roots list */}
           <nav className="mb-4">
             <Link
@@ -1016,8 +1016,7 @@ export function TaskDetailPage(): JSX.Element {
               />
             )}
           </div>
-        </div>
-      </div>
+      </ContentWrap>
 
       {dialog === 'cancel' && (
         <CancelTaskDialog taskId={taskId} onClose={() => setDialog(null)} />

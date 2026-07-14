@@ -90,6 +90,17 @@
       "example": "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' orgSlug='happyranch' />"
     },
     {
+      "name": "ContentWrap",
+      "layer": "layout",
+      "import": "@/design-system/layouts/ContentWrap/ContentWrap",
+      "variants": {},
+      "consumes": [
+        "layout.content",
+        "layout.wrap"
+      ],
+      "example": "<ContentWrap>{children}</ContentWrap>"
+    },
+    {
       "name": "CrescentMoonBadge",
       "layer": "pattern",
       "import": "@/design-system/patterns/CrescentMoonBadge",
