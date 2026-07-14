@@ -51,7 +51,7 @@ export default {
   components: {
     img: props => {
       const alt = props.alt || ''
-      const isPlaceholder = props.src === 'TODO' || alt.startsWith('placeholder:')
+      const isPlaceholder = props.src === 'TODO'
       if (isPlaceholder) {
         return (
           <ScreenshotPlaceholder
