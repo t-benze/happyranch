@@ -156,6 +156,20 @@ class OrgState:
             logger.error(
                 "org %r: failed to register executor_profiles: %s", slug, exc
             )
+        # THR-095: one-shot seed — copy the 4 web-writable knobs from
+        # config.yaml into the org_settings DB table exactly once per org.
+        # Idempotent (sentinel); runs on every daemon startup but is a no-op
+        # after the first run.
+        try:
+            from runtime.orchestrator.org_config import (
+                seed_org_settings_from_config,
+            )
+            seed_org_settings_from_config(paths, db)
+        except Exception as exc:
+            logger.warning(
+                "org %r: org_settings seed skipped (non-fatal): %s", slug, exc
+            )
+
         # Refuse to attach if agent files and teams.yaml disagree. Raises
         # OrgConsistencyError on drift; DaemonState.from_runtime catches
         # per-org so one broken org cannot crash daemon startup, while

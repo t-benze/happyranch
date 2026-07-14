@@ -332,7 +332,7 @@ The dashboard backend exposes a REST API that the frontend consumes. This same A
 
 ### Dashboard is read-only
 
-The dashboard is read-only for orchestration state. All founder actions (approvals, directives, goal-setting, rejections) happen through CLI commands (`happyranch resolve-escalation`, `happyranch kb add`, `happyranch revisit`) or thread conversations. "Pending Your Action" items link to the command you'd run; the dashboard never mutates orchestration state itself. The sole exceptions are the Phase-2 editable configuration surfaces — Org settings (`PUT /settings/org`) and worker-team membership (`PUT /settings/teams`) — which write file-based org config (`config.yaml` / `teams.yaml`) directly; these never touch orchestration state, secrets, or the founder-gated permission/manager surfaces.
+The dashboard is read-only for orchestration state. All founder actions (approvals, directives, goal-setting, rejections) happen through CLI commands (`happyranch resolve-escalation`, `happyranch kb add`, `happyranch revisit`) or thread conversations. "Pending Your Action" items link to the command you'd run; the dashboard never mutates orchestration state itself. The sole exceptions are the Phase-2 editable configuration surfaces — worker-team membership (`PUT /settings/teams`), which writes `teams.yaml` directly, and Org settings (`PUT /settings/org`), which writes the DB-backed `org_settings` table (`config.yaml` seeds it once, then the DB is authoritative); these never touch orchestration state, secrets, or the founder-gated permission/manager surfaces.
 
 ---
 

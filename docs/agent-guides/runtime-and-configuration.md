@@ -220,10 +220,80 @@ See also: `docs/agent-guides/orchestrator-contracts.md` (resolver contract),
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers:
 
 1. Task override: `tasks.session_timeout_seconds`, set via `happyranch revisit ... --session-timeout-seconds N` and inherited by children.
-2. Org override: `session_timeout_seconds:` in `<runtime>/orgs/<slug>/org/config.yaml`.
+2. **Org override**: `org_settings` DB table, section `session_timeout_seconds` (THR-095 single-store).
 3. Code default: `Settings.session_timeout_seconds`.
 
 Positive integers only. `<= 0` or non-int raises at parse time. The `agent_name` argument is unused but kept for call-site symmetry. Legacy `session_timeout_seconds` in agent frontmatter is silently ignored.
+
+## Org Settings Storage (THR-095)
+
+The 4 web-writable operational knobs — `dreaming`, `threads`, `session_timeout_seconds`,
+`working_hours` — are stored in the **`org_settings`** SQLite table (same per-org DB
+as `tasks` / `audit_log`). `org/config.yaml` is a **git-tracked seed file only**;
+the daemon **never** reads or writes these keys from the file once the one-shot
+seed migration has run (first daemon startup after upgrade).  The seed also
+**strips the 4 writable keys from config.yaml** (one-time mutation, atomic
+write) so the file remains clean thereafter.  Every subsequent `PUT` routes
+solely through the DB — the daemon no longer touches `config.yaml` for these
+keys, preserving the #408 single-source-of-truth invariant.
+
+### Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS org_settings (
+    section     TEXT NOT NULL PRIMARY KEY,  -- dreaming | threads | session_timeout_seconds | working_hours
+    value_json  TEXT NOT NULL,             -- JSON blob for that section's subtree
+    updated_at  TEXT NOT NULL,             -- ISO-8601 Z
+    updated_by  TEXT DEFAULT 'founder'
+);
+```
+
+### Resolution ladder
+
+Every consumer site resolves through a **single documented precedence ladder**:
+
+| Knob | Resolution order |
+| --- | --- |
+| `session_timeout_seconds` | `tasks.session_timeout_seconds` (per-task override) → `org_settings` DB row → `Settings.session_timeout_seconds` |
+| `dreaming` / `threads` / `working_hours` | `org_settings` DB row → **dataclass code default** (OrgConfig field defaults, NOT config.yaml) |
+
+**Code-default tier**: the fallback is always the Python dataclass default
+(e.g. `DreamingConfig(enabled=False)`, `OrgConfig().threads_enabled=True`),
+never a value parsed from `config.yaml`.  This is critical: after the one-shot
+seed, `config.yaml` is **not** the read source for these 4 knobs — stale
+seed-file values must never become observable.  The `resolve_org_setting_*`
+helpers accept a `code_default` parameter that every call site MUST pass as
+the true dataclass default.
+
+No site special-cases storage; every reader uses the appropriate
+`resolve_org_setting_*` helper from `runtime/orchestrator/org_config.py`.
+
+### Write path
+
+`PUT /api/v1/settings/org` writes each patched section to the `org_settings`
+table, with its `config:<section>` audit row **in a single SQLite transaction**
+(atomic upsert + audit insert — a crash before commit rolls BOTH back).
+The daemon **does not** touch the git-tracked `org/config.yaml` after the
+one-shot seed — the DB is the sole write target.
+
+### Audit
+
+Each `config:<section>` audit row carries a `tiers` list of **exactly the keys
+that changed** (not the full before-snapshot).  A partial threads update that
+only changes `default_turn_cap` emits `tiers: ["default_turn_cap"]`, not
+`["enabled", "default_turn_cap", "invocation_timeout_seconds"]`.  This preserves
+`AuditLogger.log_org_config_write` touched-tiers semantics.
+
+Audit rows are atomic with their settings row — a crash before commit rolls
+both back (no split-brain).
+
+### Seed migration
+
+A **one-shot, idempotent** seed runs on the first daemon startup after upgrade
+(`org/.org_settings_seeded` sentinel). It copies the current `config.yaml`
+values for the 4 writable keys into `org_settings`, then writes the sentinel.
+On subsequent startups the sentinel makes the seed a no-op. After seeding,
+`config.yaml` values are ignored — the DB is the single authoritative store.
 
 ## Bounded Failure-Recovery (TASK-573)
 

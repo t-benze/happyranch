@@ -515,7 +515,7 @@ async def run_invocation(
     # current_time injection on every thread prompt below. A malformed/missing
     # config falls back to defaults (which resolve to machine-local/UTC).
     from runtime.orchestrator._paths import OrgPaths as _OrgPaths
-    from runtime.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.org_config import load_org_config, resolve_org_setting_threads
     try:
         org_config = load_org_config(_OrgPaths(root=org_state.root))
     except Exception:
@@ -583,10 +583,11 @@ async def run_invocation(
     except Exception:
         protocol_doc_manifest = ""
 
-    # Resolve timeout (org override → code default).
+    # THR-095 F2: resolve threads settings from DB (override) → dataclass defaults.
+    threads_cfg = resolve_org_setting_threads(org_state.db, code_default=OrgConfig())
     timeout: int = settings.session_timeout_seconds
-    if org_config.threads_invocation_timeout_seconds is not None:
-        timeout = org_config.threads_invocation_timeout_seconds
+    if threads_cfg["invocation_timeout_seconds"] is not None:
+        timeout = threads_cfg["invocation_timeout_seconds"]
 
     # --- Active-invocation lock (provider-agnostic, THR-042) ---
     # Every executor must acquire the per-(org, thread, agent) lock so no two

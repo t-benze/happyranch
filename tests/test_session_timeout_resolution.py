@@ -46,7 +46,9 @@ def test_falls_back_to_settings_default(orchestrator: Orchestrator) -> None:
 def test_org_override_used_when_no_task_override(
     orchestrator: Orchestrator, test_runtime: OrgPaths
 ) -> None:
-    _write_org_config(test_runtime, session_timeout=3600)
+    """THR-095 F2: org override is DB-backed (org_settings table)."""
+    import json
+    orchestrator._db.upsert_org_setting("session_timeout_seconds", json.dumps(3600))
     _insert_task(orchestrator._db, "TASK-001", session_timeout=None)
     assert orchestrator._resolve_session_timeout("dev_agent", task_id="TASK-001") == 3600
 
@@ -55,15 +57,20 @@ def test_org_override_used_when_task_id_missing(
     orchestrator: Orchestrator, test_runtime: OrgPaths
 ) -> None:
     """Resolver tolerates a task_id that doesn't exist (e.g. early startup) —
-    the org override still wins over the Settings default."""
-    _write_org_config(test_runtime, session_timeout=2400)
+    the org override still wins over the Settings default.
+
+    THR-095 F2: org override is DB-backed (org_settings table)."""
+    import json
+    orchestrator._db.upsert_org_setting("session_timeout_seconds", json.dumps(2400))
     assert orchestrator._resolve_session_timeout("dev_agent", task_id="TASK-NOPE") == 2400
 
 
 def test_task_override_beats_org(
     orchestrator: Orchestrator, test_runtime: OrgPaths
 ) -> None:
-    _write_org_config(test_runtime, session_timeout=3600)
+    """THR-095 F2: org override is DB-backed (org_settings table)."""
+    import json
+    orchestrator._db.upsert_org_setting("session_timeout_seconds", json.dumps(3600))
     _insert_task(orchestrator._db, "TASK-002", session_timeout=7200)
     assert orchestrator._resolve_session_timeout("dev_agent", task_id="TASK-002") == 7200
 
@@ -77,8 +84,12 @@ def test_no_task_id_uses_org_then_settings(
     orchestrator: Orchestrator, test_runtime: OrgPaths
 ) -> None:
     """When the resolver is called without a task_id (legacy callers), the
-    task layer is skipped and we fall straight to org -> settings."""
-    _write_org_config(test_runtime, session_timeout=2700)
+    task layer is skipped and we fall straight to org -> settings.
+
+    THR-095 F2: org override is now DB-backed (org_settings table), not
+    config.yaml.  Write to the DB table to test the org tier."""
+    import json
+    orchestrator._db.upsert_org_setting("session_timeout_seconds", json.dumps(2700))
     assert orchestrator._resolve_session_timeout("dev_agent") == 2700
 
 

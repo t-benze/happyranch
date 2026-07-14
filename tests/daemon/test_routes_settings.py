@@ -392,17 +392,22 @@ def test_put_org_settings_updates_dreaming(
 def test_put_org_settings_preserves_unmanaged_blocks(
     tmp_home, app, org_state, auth_headers, tmp_path,
 ) -> None:
-    """If org/config.yaml has a working_hours block before the PUT, it must survive."""
+    """If org/config.yaml has a working_hours block before the PUT, it must survive.
+
+    THR-095 F1: after the one-shot seed, the PUT path writes ONLY to the
+    org_settings DB table — config.yaml is NEVER mutated on PUT.  The
+    one-time seed (guarded by sentinel) strips writable keys from config.yaml;
+    after that, every PUT leaves the file untouched.  This test verifies
+    config.yaml is byte-identical after PUT (both writable and non-writable
+    keys intact, non-migrated keys untouched)."""
     import yaml
 
-    # The org_state fixture writes config.yaml into the org root on disk.
-    # We add working_hours + feishu_notifications to that existing file.
     from pathlib import Path
     config_path = Path(org_state.root) / "org" / "config.yaml"
     raw = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
-    raw["working_hours"] = {"enabled": True, "default": {"mode": "continuous", "timezone": "UTC", "interval": "1h"}}
     raw["feishu_notifications"] = {"chat_id": "secret-chat"}
     config_path.write_text(yaml.safe_dump(raw))
+    before_bytes = config_path.read_bytes()
 
     client = TestClient(app)
     r = client.put(
@@ -412,11 +417,15 @@ def test_put_org_settings_preserves_unmanaged_blocks(
     )
     assert r.status_code == 200
 
-    # Read the config back — unmanaged blocks must still be there
-    raw2 = yaml.safe_load(config_path.read_text())
-    assert raw2.get("working_hours") == {"enabled": True, "default": {"mode": "continuous", "timezone": "UTC", "interval": "1h"}}
+    # F1 fix: config.yaml is byte-unchanged after PUT — DB is the sole store.
+    after_bytes = config_path.read_bytes()
+    assert after_bytes == before_bytes, (
+        "config.yaml must be byte-unchanged after PUT — "
+        "the DB is the single authoritative store for writable keys"
+    )
+    raw2 = yaml.safe_load(after_bytes)
+    # feishu_notifications still present (non-writable key)
     assert raw2.get("feishu_notifications") == {"chat_id": "secret-chat"}
-    assert raw2.get("session_timeout_seconds") == 999
 
 
 def test_put_org_settings_no_sensitive_keys_in_response(
@@ -505,27 +514,30 @@ def test_put_org_settings_deep_merge_preserves_sibling_leaves(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """When patching ONE leaf of dreaming and ONE leaf of threads,
-    every unpatched sibling leaf survives in the persisted YAML and on reload."""
-    import yaml
-    from pathlib import Path
+    every unpatched sibling leaf survives in the DB and on re-read.
+
+    THR-095: config.yaml is no longer the read/write source — the DB is.
+    The seed already populated defaults; we override the DB directly to
+    set up custom base values, then patch and verify sibling survival."""
+    import json
 
     client = TestClient(app)
-    config_path = Path(org_state.root) / "org" / "config.yaml"
 
-    # Seed a fully-populated config
-    raw = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
-    raw["dreaming"] = {
+    # THR-095: seed custom base values directly in the DB (config.yaml
+    # is no longer the read source for these keys).
+    dreaming_base = {
         "enabled": False,
         "schedule": {"time": "06:00", "timezone": "Asia/Shanghai", "catch_up_on_startup": False},
         "agents": {"mode": "whitelist", "include": ["dev_agent"], "exclude": ["qa_engineer"]},
     }
-    raw["threads"] = {
+    threads_base = {
         "enabled": True,
         "default_turn_cap": 100,
         "invocation_timeout_seconds": 900,
     }
-    raw["session_timeout_seconds"] = 3600
-    config_path.write_text(yaml.safe_dump(raw))
+    org_state.db.upsert_org_setting("dreaming", json.dumps(dreaming_base))
+    org_state.db.upsert_org_setting("threads", json.dumps(threads_base))
+    org_state.db.upsert_org_setting("session_timeout_seconds", json.dumps(3600))
 
     # Patch ONLY dreaming.enabled and threads.default_turn_cap
     r = client.put(
@@ -554,31 +566,32 @@ def test_put_org_settings_deep_merge_preserves_sibling_leaves(
     assert body["threads"]["invocation_timeout_seconds"] == 900
     assert body["session_timeout_seconds"] == 3600
 
-    # Persisted YAML: unpatched sibling leaves must survive
-    raw2 = yaml.safe_load(config_path.read_text())
-    assert raw2["dreaming"]["enabled"] is True
-    assert raw2["dreaming"]["schedule"] == {"time": "06:00", "timezone": "Asia/Shanghai", "catch_up_on_startup": False}
-    assert raw2["dreaming"]["agents"] == {"mode": "whitelist", "include": ["dev_agent"], "exclude": ["qa_engineer"]}
-    assert raw2["threads"] == {"enabled": True, "default_turn_cap": 200, "invocation_timeout_seconds": 900}
+    # DB: patched values should match unpatched sibling survival
+    dreaming_after = json.loads(org_state.db.get_org_setting("dreaming"))
+    assert dreaming_after["enabled"] is True
+    assert dreaming_after["schedule"] == {"time": "06:00", "timezone": "Asia/Shanghai", "catch_up_on_startup": False}
+    assert dreaming_after["agents"] == {"mode": "whitelist", "include": ["dev_agent"], "exclude": ["qa_engineer"]}
+    threads_after = json.loads(org_state.db.get_org_setting("threads"))
+    assert threads_after == {"enabled": True, "default_turn_cap": 200, "invocation_timeout_seconds": 900}
 
 
 def test_put_org_settings_deep_merge_nested_partial_schedule(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """Patching only one field inside dreaming.schedule leaves the other field intact."""
-    import yaml
-    from pathlib import Path
+    """Patching only one field inside dreaming.schedule leaves the other field intact.
+
+    THR-095: base values are set in the DB, not config.yaml."""
+    import json
 
     client = TestClient(app)
-    config_path = Path(org_state.root) / "org" / "config.yaml"
 
-    raw = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
-    raw["dreaming"] = {
+    # DB-seeded base values
+    dreaming_base = {
         "enabled": True,
         "schedule": {"time": "02:00", "timezone": "UTC", "catch_up_on_startup": True},
         "agents": {"mode": "all", "include": [], "exclude": []},
     }
-    config_path.write_text(yaml.safe_dump(raw))
+    org_state.db.upsert_org_setting("dreaming", json.dumps(dreaming_base))
 
     # Patch only dreaming.schedule.time
     r = client.put(
@@ -594,9 +607,9 @@ def test_put_org_settings_deep_merge_nested_partial_schedule(
     assert body["dreaming"]["schedule"]["timezone"] == "UTC"
     assert body["dreaming"]["catch_up_on_startup"] is True
 
-    # Persisted YAML
-    raw2 = yaml.safe_load(config_path.read_text())
-    assert raw2["dreaming"]["schedule"] == {"time": "08:00", "timezone": "UTC", "catch_up_on_startup": True}
+    # DB: sibling survival
+    dreaming_after = json.loads(org_state.db.get_org_setting("dreaming"))
+    assert dreaming_after["schedule"] == {"time": "08:00", "timezone": "UTC", "catch_up_on_startup": True}
 
 
 # ----------------------------------------------------------------
@@ -641,17 +654,10 @@ def test_put_org_settings_clears_threads_invocation_timeout_via_explicit_null(
 ) -> None:
     """Sending explicit null for threads.invocation_timeout_seconds clears the override.
 
-    Regression guard: the original test did NOT first seed a non-null value,
-    so the old None-stripping implementation would also return None and pass.
-    This test now first persists a non-null value, then clears it, and
-    verifies: (a) response body, (b) persisted config.yaml on disk,
-    (c) GET /settings reload, and (d) sibling threads leaf preservation.
-    """
-    import yaml
-    from pathlib import Path
+    THR-095: DB-backed storage — verification against DB, not config.yaml."""
+    import json
 
     client = TestClient(app)
-    config_path = Path(org_state.root) / "org" / "config.yaml"
 
     # 1. First, set a non-null threads.invocation_timeout_seconds
     r0 = client.put(
@@ -662,9 +668,9 @@ def test_put_org_settings_clears_threads_invocation_timeout_via_explicit_null(
     assert r0.status_code == 200
     assert r0.json()["org"]["threads"]["invocation_timeout_seconds"] == 900
 
-    # Confirm it persisted to config.yaml on disk
-    raw = yaml.safe_load(config_path.read_text())
-    assert raw["threads"].get("invocation_timeout_seconds") == 900
+    # Confirm it persisted to DB
+    threads_after_set = json.loads(org_state.db.get_org_setting("threads"))
+    assert threads_after_set["invocation_timeout_seconds"] == 900
 
     # 2. Now clear it with explicit null
     r = client.put(
@@ -676,9 +682,9 @@ def test_put_org_settings_clears_threads_invocation_timeout_via_explicit_null(
     # (a) Response body shows None
     assert r.json()["org"]["threads"]["invocation_timeout_seconds"] is None
 
-    # (b) Persisted config.yaml on disk shows None
-    raw2 = yaml.safe_load(config_path.read_text())
-    assert raw2["threads"].get("invocation_timeout_seconds") is None
+    # (b) DB shows None
+    threads_after_null = json.loads(org_state.db.get_org_setting("threads"))
+    assert threads_after_null["invocation_timeout_seconds"] is None
 
     # (c) GET /settings reload shows None
     r2 = client.get(

@@ -6,6 +6,7 @@ defaults exactly as before.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -1000,22 +1001,14 @@ def _deep_merge(base: dict, overrides: dict) -> dict:
 def save_org_config(paths: OrgPaths, patch: dict) -> None:
     """Atomically deep-merge *patch* into org/config.yaml for allow-listed keys.
 
-    Algorithm:
-    1. Read the current raw dict from disk. If the file doesn't exist, start
-       with an empty dict (``load_org_config`` treats missing as defaults).
-    2. Deep-merge **only** the allow-listed keys (``dreaming``, ``threads``,
-       ``session_timeout_seconds``) from *patch* into the raw dict. Nested
-       dictionaries within those blocks are merged recursively so a partial
-       patch (e.g. ``{"dreaming": {"enabled": true}}``) does not drop sibling
-       leaves. Every other top-level key is carried through verbatim.
-    3. Validate the candidate dict via ``_build_org_config`` (the existing
-       authoritative validator). If it raises ``OrgConfigError``, the write
-       is aborted and the error is surfaced to the caller.
-    4. Atomic write: ``yaml.safe_dump`` to a temp file in the same directory,
-       then ``os.replace`` (atomic rename on POSIX).
+    THR-095: the 4 web-writable knobs (dreaming, threads, session_timeout_seconds,
+    working_hours) are NO LONGER persisted to config.yaml — the DB-backed
+    org_settings table is the single authoritative store.  This function strips
+    those keys before the file write while still deep-merging them for validation,
+    so a bad patch is still rejected.
 
-    This function is purely additive — it calls ``_build_org_config`` and
-    ``load_org_config`` read-only and never edits their bodies or signatures.
+    The file write is additive-only: non-writable keys (timezone, memory_*,
+    max_revise_rounds, executor_profiles) remain file-persisted.
     """
     config_path = paths.org_config_path
 
@@ -1045,7 +1038,12 @@ def save_org_config(paths: OrgPaths, patch: dict) -> None:
     except OrgConfigError:
         raise  # re-raise so the route can return 422
 
-    # 4. Atomic write
+    # 4. Strip web-writable keys before writing to file (THR-095: DB is the
+    #    single authoritative store for these knobs).
+    for key in _ORG_WRITABLE_KEYS:
+        raw.pop(key, None)
+
+    # 5. Atomic write
     config_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
         prefix=".org-config.", suffix=".yaml", dir=str(config_path.parent)
@@ -1060,6 +1058,382 @@ def save_org_config(paths: OrgPaths, patch: dict) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+# ── Executor profile config write (THR-052 PR-2) ───────────────────────
+# ── Org Settings seed (THR-095) ───────────────────────────────────────
+#
+# One-shot migration: read the 4 writable knobs from org/config.yaml and
+# write them into the org_settings DB table EXACTLY ONCE per org.  After
+# the seed, config.yaml is NO LONGER the read source for these keys — the
+# DB is the single authoritative store.
+
+_ORG_SETTINGS_SEED_SENTINEL = ".org_settings_seeded"
+
+
+def seed_org_settings_from_config(
+    paths: OrgPaths,
+    db,  # Database, forward-ref
+) -> dict[str, str]:
+    """One-shot: copy 4 writable knob values from config.yaml → org_settings DB.
+
+    Returns {section: value_json} for the seeded keys (empty dict when already
+    seeded or config.yaml absent).
+
+    Idempotent: a sentinel file (``.org_settings_seeded``) in the org directory
+    gates the operation.  Once the sentinel exists, this function is a no-op.
+    """
+    sentinel = paths.root / _ORG_SETTINGS_SEED_SENTINEL
+    if sentinel.exists():
+        return {}
+
+    seeded: dict[str, str] = {}
+
+    # Read current config.yaml values for the 4 writable keys.
+    org_cfg = load_org_config(paths)
+
+    # dreaming: store in the same shape as config.yaml so the PATCH deep-merge
+    # works correctly.  Note: catch_up_on_startup lives under schedule in YAML.
+    dreaming = org_cfg.dreaming
+    dreaming_json = json.dumps(
+        {"enabled": dreaming.enabled,
+         "schedule": {"time": dreaming.schedule_time,
+                      "timezone": dreaming.timezone,
+                      "catch_up_on_startup": dreaming.catch_up_on_startup},
+         "agents": {"mode": dreaming.agent_mode,
+                    "include": list(dreaming.include_agents),
+                    "exclude": list(dreaming.exclude_agents)}},
+    )
+    db.upsert_org_setting("dreaming", dreaming_json)
+    seeded["dreaming"] = dreaming_json
+
+    # threads: three flat fields.
+    threads_json = json.dumps({
+        "enabled": org_cfg.threads_enabled,
+        "default_turn_cap": org_cfg.threads_default_turn_cap,
+        "invocation_timeout_seconds": org_cfg.threads_invocation_timeout_seconds,
+    })
+    db.upsert_org_setting("threads", threads_json)
+    seeded["threads"] = threads_json
+
+    # session_timeout_seconds: scalar, but stored as JSON for uniform access.
+    sto_json = json.dumps(org_cfg.session_timeout_seconds)
+    db.upsert_org_setting("session_timeout_seconds", sto_json)
+    seeded["session_timeout_seconds"] = sto_json
+
+    # working_hours: store in config.yaml nested shape.
+    wh = org_cfg.working_hours
+    wh_json = json.dumps({
+        "enabled": wh.enabled,
+        "agents": {"mode": wh.agent_mode,
+                   "include": list(wh.include_agents),
+                   "exclude": list(wh.exclude_agents)},
+        "default": _working_hours_layer_to_dict(wh.default),
+        "teams": {name: _working_hours_layer_to_dict(layer) for name, layer in wh.teams.items()},
+        "overrides": {name: _working_hours_layer_to_dict(layer) for name, layer in wh.overrides.items()},
+    })
+    db.upsert_org_setting("working_hours", wh_json)
+    seeded["working_hours"] = wh_json
+
+    # One-time strip the 4 writable keys from config.yaml so the
+    # git-tracked seed file no longer carries stale values.
+    _strip_writable_keys_from_config(paths)
+
+    # Write the sentinel so this never runs again.
+    sentinel.write_text("")
+    return seeded
+
+
+def _working_hours_layer_to_dict(layer) -> dict:
+    """Serialize a WorkHoursScheduleLayer into a JSON-safe dict
+    matching the config.yaml nested shape."""
+    d: dict = {}
+    if layer.mode is not None:
+        d["mode"] = layer.mode
+    # window is a nested dict with only non-None leaves.
+    window: dict = {}
+    if layer.window_start is not None:
+        window["start"] = layer.window_start
+    if layer.window_end is not None:
+        window["end"] = layer.window_end
+    # windowed mode: timezone lives inside the window dict.
+    # continuous mode: preserve the bare timezone leaf so the seed
+    # round-trips today's effective working_hours.
+    if layer.timezone is not None:
+        if layer.window_start is not None or layer.window_end is not None:
+            window["timezone"] = layer.timezone
+        else:
+            d["timezone"] = layer.timezone
+    if window:
+        d["window"] = window
+    if layer.interval is not None:
+        d["interval"] = layer.interval
+    if layer.days is not None:
+        d["days"] = list(layer.days)
+    if layer.catch_up_on_startup is not None:
+        d["catch_up_on_startup"] = layer.catch_up_on_startup
+    return d
+
+
+def _strip_writable_keys_from_config(paths: OrgPaths) -> None:
+    """One-time: remove the 4 web-writable keys from org/config.yaml.
+
+    Called ONLY from seed_org_settings_from_config (guarded by sentinel).
+    After this, the file retains only non-migrated fields (timezone,
+    executor_profiles, memory_*, max_revise_rounds).
+    """
+    config_path = paths.org_config_path
+    if not config_path.exists():
+        return
+    try:
+        raw = yaml.safe_load(config_path.read_text()) or {}
+    except yaml.YAMLError:
+        return
+    if not isinstance(raw, dict):
+        return
+    changed = False
+    for key in _ORG_WRITABLE_KEYS:
+        if key in raw:
+            del raw[key]
+            changed = True
+    if not changed:
+        return
+    fd, tmp = tempfile.mkstemp(
+        prefix=".org-config.", suffix=".yaml", dir=str(config_path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            yaml.safe_dump(raw, fh, sort_keys=False)
+        os.replace(tmp, config_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+# ── Resolution helpers (THR-095) ──────────────────────────────────────
+#
+# These resolve a single section's effective value from the DB → code-default
+# ladder.  Every consumer site that formerly read a field off load_org_config()
+# MUST use the appropriate helper so the DB override always wins.
+
+
+def _resolve_org_setting_json(db, section: str) -> str | None:
+    """Return the raw value_json for *section* from org_settings, or None."""
+    return db.get_org_setting(section)
+
+
+def resolve_org_setting_dreaming(db, *, code_default) -> "DreamingConfig":
+    """DB → code-default resolved DreamingConfig."""
+    raw = db.get_org_setting("dreaming")
+    if raw is None:
+        return code_default
+    data = json.loads(raw)
+    from runtime.orchestrator.org_config import DreamingConfig
+    schedule = data.get("schedule", {})
+    agents = data.get("agents", {})
+    return DreamingConfig(
+        enabled=data.get("enabled", code_default.enabled),
+        schedule_time=schedule.get("time", code_default.schedule_time),
+        timezone=schedule.get("timezone", code_default.timezone),
+        catch_up_on_startup=schedule.get("catch_up_on_startup", code_default.catch_up_on_startup),
+        agent_mode=agents.get("mode", code_default.agent_mode),
+        include_agents=tuple(agents.get("include", [])),
+        exclude_agents=tuple(agents.get("exclude", [])),
+    )
+
+
+def resolve_org_setting_threads(db, *, code_default) -> dict:
+    """DB → code-default resolved threads settings.
+
+    Returns a dict with keys: enabled, default_turn_cap, invocation_timeout_seconds.
+    """
+    raw = db.get_org_setting("threads")
+    if raw is None:
+        return {
+            "enabled": code_default.threads_enabled,
+            "default_turn_cap": code_default.threads_default_turn_cap,
+            "invocation_timeout_seconds": code_default.threads_invocation_timeout_seconds,
+        }
+    data = json.loads(raw)
+    return {
+        "enabled": data.get("enabled", code_default.threads_enabled),
+        "default_turn_cap": data.get("default_turn_cap", code_default.threads_default_turn_cap),
+        "invocation_timeout_seconds": data.get("invocation_timeout_seconds", code_default.threads_invocation_timeout_seconds),
+    }
+
+
+def resolve_org_setting_session_timeout(db, *, code_default: int | None) -> int | None:
+    """DB → code-default resolved session_timeout_seconds."""
+    raw = db.get_org_setting("session_timeout_seconds")
+    if raw is None:
+        return code_default
+    return json.loads(raw)
+
+
+def resolve_org_setting_working_hours(db, *, code_default) -> "WorkingHoursConfig":
+    """DB → code-default resolved WorkingHoursConfig."""
+    raw = db.get_org_setting("working_hours")
+    if raw is None:
+        return code_default
+    data = json.loads(raw)
+    from runtime.orchestrator.org_config import WorkingHoursConfig, WorkHoursScheduleLayer
+    agents = data.get("agents", {})
+    return WorkingHoursConfig(
+        enabled=data.get("enabled", code_default.enabled),
+        agent_mode=agents.get("mode", code_default.agent_mode),
+        include_agents=tuple(agents.get("include", [])),
+        exclude_agents=tuple(agents.get("exclude", [])),
+        default=_dict_to_working_hours_layer(data.get("default")),
+        teams={name: _dict_to_working_hours_layer(v) for name, v in data.get("teams", {}).items()},
+        overrides={name: _dict_to_working_hours_layer(v) for name, v in data.get("overrides", {}).items()},
+    )
+
+
+def _dict_to_working_hours_layer(d: dict | None):
+    from runtime.orchestrator.org_config import WorkHoursScheduleLayer
+    if not d:
+        return WorkHoursScheduleLayer()
+    window = d.get("window", {}) or {}
+    # F3 fix: timezone may be bare (continuous-mode) or inside window (windowed).
+    timezone = window.get("timezone")
+    if timezone is None:
+        timezone = d.get("timezone")
+    return WorkHoursScheduleLayer(
+        mode=d.get("mode"),
+        window_start=window.get("start"),
+        window_end=window.get("end"),
+        timezone=timezone,
+        interval=d.get("interval"),
+        days=tuple(d["days"]) if "days" in d else None,
+        catch_up_on_startup=d.get("catch_up_on_startup"),
+    )
+
+
+# ── DB-backed settings write (THR-095) ──────────────────────────────────
+#
+# Replaces the former save_org_config (config.yaml) write path for the
+# 4 web-writable knobs.  Each section is written to the org_settings DB
+# table with its config:<section> audit row in ONE transaction.
+
+
+def write_org_setting_to_db(
+    paths: OrgPaths,
+    db,
+    patch: dict,
+    *,
+    actor: str = "founder",
+) -> None:
+    """Partial-update the 4 web-writable knobs in the org_settings DB.
+
+    1. For each patched section: resolve the current full effective value
+       (DB override → code default), deep-merge patch, validate, write to DB
+       with its config:<section> audit row.
+    2. Also calls save_org_config to strip writable keys from config.yaml.
+
+    Raises OrgConfigError on validation failure."""
+    org_cfg = load_org_config(paths)
+
+    # Helper to get the full effective value for a section in config.yaml shape.
+    def _effective_dict(key: str) -> dict:
+        raw = db.get_org_setting(key)
+        if raw is not None:
+            return json.loads(raw)
+        # Fall back to code defaults serialized in config.yaml shape.
+        if key == "dreaming":
+            return {
+                "enabled": org_cfg.dreaming.enabled,
+                "schedule": {
+                    "time": org_cfg.dreaming.schedule_time,
+                    "timezone": org_cfg.dreaming.timezone,
+                    "catch_up_on_startup": org_cfg.dreaming.catch_up_on_startup,
+                },
+                "agents": {
+                    "mode": org_cfg.dreaming.agent_mode,
+                    "include": list(org_cfg.dreaming.include_agents),
+                    "exclude": list(org_cfg.dreaming.exclude_agents),
+                },
+            }
+        elif key == "threads":
+            return {
+                "enabled": org_cfg.threads_enabled,
+                "default_turn_cap": org_cfg.threads_default_turn_cap,
+                "invocation_timeout_seconds": org_cfg.threads_invocation_timeout_seconds,
+            }
+        elif key == "working_hours":
+            wh = org_cfg.working_hours
+            return {
+                "enabled": wh.enabled,
+                "agents": {
+                    "mode": wh.agent_mode,
+                    "include": list(wh.include_agents),
+                    "exclude": list(wh.exclude_agents),
+                },
+                "default": _working_hours_layer_to_dict(wh.default),
+                "teams": {name: _working_hours_layer_to_dict(layer) for name, layer in wh.teams.items()},
+                "overrides": {name: _working_hours_layer_to_dict(layer) for name, layer in wh.overrides.items()},
+            }
+        return {}
+
+    for key in _ORG_WRITABLE_KEYS:
+        if key not in patch:
+            continue
+        patch_val = patch[key]
+
+        # Read current full effective value as before.
+        if key == "session_timeout_seconds":
+            raw = db.get_org_setting(key)
+            before = json.loads(raw) if raw is not None else org_cfg.session_timeout_seconds
+        else:
+            before = _effective_dict(key)
+
+        # Deep-merge patch into current effective value.
+        if isinstance(patch_val, dict) and isinstance(before, dict):
+            merged = _deep_merge(dict(before), patch_val)
+        else:
+            merged = patch_val  # scalar replacement (session_timeout_seconds)
+
+        # Validate by building a full OrgConfig candidate.
+        candidate = _current_raw_dict_from_config(paths)
+        candidate.pop(key, None)
+        candidate[key] = merged
+        _build_org_config(candidate, str(paths.org_config_path))
+
+        # Build before/after audit dicts.
+        if key == "session_timeout_seconds":
+            before_audit = {"value": before} if before is not None else {}
+            after_audit = {"value": merged}
+        else:
+            before_audit = before if isinstance(before, dict) else {}
+            after_audit = merged if isinstance(merged, dict) else {}
+
+        # Write to DB with audit (transactional — single commit).
+        db.upsert_org_setting(
+            section=key,
+            value_json=json.dumps(merged if isinstance(merged, dict) else merged),
+            before=before_audit,
+            after=after_audit,
+            actor=actor,
+        )
+
+    # THR-095 F1 fix: no longer mutate config.yaml on every PUT.
+    # Validation happens in-memory above; the DB is the single authoritative
+    # store for the 4 web-writable knobs.  Non-migrated fields (timezone,
+    # executor profiles) stay untouched in config.yaml.
+
+
+def _current_raw_dict_from_config(paths: OrgPaths) -> dict:
+    """Read the current raw dict from org/config.yaml (or {} if absent)."""
+    if paths.org_config_path.exists():
+        try:
+            raw = yaml.safe_load(paths.org_config_path.read_text()) or {}
+        except yaml.YAMLError:
+            return {}
+        if isinstance(raw, dict):
+            return dict(raw)
+    return {}
 
 
 # ── Executor profile config write (THR-052 PR-2) ───────────────────────
