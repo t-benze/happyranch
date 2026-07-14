@@ -145,7 +145,9 @@ ENOENT death.
 
 **Why a separate `executors.json` file?** The binary-path registry is
 machine-local and must be writable at runtime by the `/api/v1/executor-binaries/register`
-route. Keeping it in a dedicated file under `<daemon-home>` isolates runtime
+route (master-bearer-authed, for manual operator use) and by
+`/api/v1/executors/runtime/register-binary` (scoped-token loopback, for
+built-in agentic CLI self-registration — THR-088). Keeping it in a dedicated file under `<daemon-home>` isolates runtime
 writes from `config.yaml` (which holds Settings values that may be under
 version control or shared across hosts). This is distinct from the THR-052
 executor profile registry (`org/config.yaml`), which describes *which*

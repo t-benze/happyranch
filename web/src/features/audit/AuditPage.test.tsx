@@ -800,14 +800,54 @@ describe('AuditPage — day-grouped timeline', () => {
 // grouping preserved ACROSS pages. jsdom has no IntersectionObserver, so we
 // stub a controllable one and fire the sentinel manually to simulate scroll.
 // ---------------------------------------------------------------------------
+
+// Per-test toggle for the observer-root lock test: when enabled, every useRef
+// object tracks reads via a getter on `.current` that fires a stack check.
+let _trackUseRefReads = false;
+/** Read IDs of TimelineBody refs whose `.current` was accessed. */
+let _timelineBodyReadIds: Set<number> = new Set();
+/** Per-TimelineBody render, refs get sequential ids (0=scrollRef, 1=sentinelRef). */
+let _timelineBodyRefCounter = 0;
+
+vi.mock('react', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react')>();
+  return {
+    ...actual,
+    useRef(init: unknown) {
+      if (!_trackUseRefReads) return actual.useRef(init);
+      const stack = new Error().stack || '';
+      const isTimelineBody = stack.includes('AuditTimeline');
+      const refId = isTimelineBody ? _timelineBodyRefCounter++ : -1;
+      const inner = { value: init };
+      return Object.defineProperty({}, 'current', {
+        get() {
+          if (refId >= 0) _timelineBodyReadIds.add(refId);
+          return inner.value;
+        },
+        set(v: unknown) {
+          inner.value = v;
+        },
+        enumerable: true,
+        configurable: true,
+      });
+    },
+  };
+});
+
 describe('AuditPage — keyset infinite scroll', () => {
   let observerCallbacks: Array<(entries: { isIntersecting: boolean }[]) => void> =
     [];
+  /** Roots passed to IntersectionObserver constructors, ordered by creation. */
+  let observerRoots: Array<Element | null> = [];
 
   class MockIntersectionObserver {
     private cb: (entries: { isIntersecting: boolean }[]) => void;
-    constructor(cb: (entries: { isIntersecting: boolean }[]) => void) {
+    constructor(
+      cb: (entries: { isIntersecting: boolean }[]) => void,
+      options?: IntersectionObserverInit,
+    ) {
       this.cb = cb;
+      observerRoots.push((options?.root as Element | null) ?? null);
     }
     observe() {
       observerCallbacks.push(this.cb);
@@ -828,6 +868,7 @@ describe('AuditPage — keyset infinite scroll', () => {
 
   beforeEach(() => {
     observerCallbacks = [];
+    observerRoots = [];
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
   });
   afterEach(() => {
@@ -927,5 +968,143 @@ describe('AuditPage — keyset infinite scroll', () => {
     // observed sentinel (length 0) is the proof paging halts at next_cursor=null.
     expect(requestCount).toBe(1);
     expect(screen.getByText('End of audit trail')).toBeInTheDocument();
+  });
+
+  test('cursor-walk: pages through 3 cursor-linked pages in order, stopping at null (THR-098)', async () => {
+    // Regression: prove multi-page chaining works end-to-end — page 1
+    // (next_cursor=A) → page 2 (next_cursor=B) → page 3 (next_cursor=null).
+    // The test asserts that each distinct cursor is passed to fetchNextPage
+    // IN ORDER and that the chain stops when next_cursor is null.
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const seenCursors: (string | null)[] = [];
+    let pageHit = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor');
+        seenCursors.push(cursor);
+        pageHit += 1;
+        if (pageHit === 1) {
+          // Page 1 — no cursor → first page, return cursor-A.
+          return HttpResponse.json({
+            entries: [
+              { id: 20, task_id: 'TASK-P1', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-22T10:00:00Z' },
+            ],
+            next_cursor: 'cursor-A',
+          });
+        }
+        if (pageHit === 2 && cursor === 'cursor-A') {
+          // Page 2 — cursor-A → return cursor-B.
+          return HttpResponse.json({
+            entries: [
+              { id: 10, task_id: 'TASK-P2', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-21T10:00:00Z' },
+            ],
+            next_cursor: 'cursor-B',
+          });
+        }
+        // Page 3 — cursor-B → terminal page.
+        return HttpResponse.json({
+          entries: [
+            { id: 5, task_id: 'TASK-P3', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-20T10:00:00Z' },
+          ],
+          next_cursor: null,
+        });
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    // Page 1 renders; page 2/3 rows are NOT visible yet.
+    await waitFor(() => {
+      expect(screen.getByText('TASK-P1')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('TASK-P2')).not.toBeInTheDocument();
+    expect(screen.queryByText('TASK-P3')).not.toBeInTheDocument();
+
+    // Sentinel must be observed (hasNextPage true after page 1).
+    await waitFor(() => expect(observerCallbacks.length).toBeGreaterThan(0));
+
+    // Fire sentinel intersect → fetch page 2.
+    await act(async () => {
+      fireIntersect();
+    });
+    await waitFor(() => {
+      expect(screen.getByText('TASK-P2')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('TASK-P3')).not.toBeInTheDocument();
+
+    // Fire again → fetch page 3 (terminal).
+    await act(async () => {
+      fireIntersect();
+    });
+    await waitFor(() => {
+      expect(screen.getByText('TASK-P3')).toBeInTheDocument();
+    });
+
+    // Cursor chain walked in order: page1(null) → cursor-A → cursor-B.
+    expect(seenCursors).toEqual([null, 'cursor-A', 'cursor-B']);
+
+    // Terminal state: end-of-list affordance renders, no more pages.
+    expect(screen.getByText('End of audit trail')).toBeInTheDocument();
+    expect(pageHit).toBe(3);
+  });
+
+  test('observer-root lock: root is parentElement, never reads scrollRef.current (THR-098)', async () => {
+    // Regression: if scrollRef.current is null during observer creation
+    // (concurrent React ref timing), the observer silently uses the document
+    // viewport and the sentinel never fires inside the scroll box.
+    //
+    // The fix uses sentinel.parentElement, which is always correct. This
+    // test instruments useRef to detect whether TimelineBody reads any
+    // ref's `.current` during observer construction.
+    //
+    // OLD code (root: scrollRef.current) → stack trace lands in TimelineBody → RED.
+    // NEW code (root: node.parentElement) → no ref read → GREEN.
+    _trackUseRefReads = true;
+    _timelineBodyReadIds = new Set();
+    _timelineBodyRefCounter = 0;
+
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, () =>
+        HttpResponse.json({
+          entries: [
+            { id: 10, task_id: 'TASK-A', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-20T10:00:00Z' },
+            { id: 9, task_id: 'TASK-B', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-20T09:00:00Z' },
+          ],
+          next_cursor: 'cursor-next',
+        }),
+      ),
+    );
+
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    // Wait for entries + sentinel observer to be set up (hasNextPage true).
+    await waitFor(() => {
+      expect(screen.getByText('TASK-A')).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(observerCallbacks.length).toBeGreaterThan(0);
+    });
+
+    // KEY ASSERTION: scrollRef (id=0) was NEVER read.
+    // sentinelRef (id=1) is always read to get the DOM node — that's expected.
+    //
+    // With NEW code (root: node.parentElement): only id=1 read → id=0 NOT in set → GREEN.
+    // With OLD code (root: scrollRef.current): id=0 read → id=0 in set → RED.
+    expect(_timelineBodyReadIds.has(0)).toBe(false);
+
+    // Sentry: sentinelRef IS read (the code needs the DOM node).
+    expect(_timelineBodyReadIds.has(1)).toBe(true);
+
+    // Additionally verify the observer root IS the scroll container.
+    expect(observerRoots.length).toBeGreaterThan(0);
+    for (const root of observerRoots) {
+      expect(root).not.toBeNull();
+      // Sentinel parent IS the scroll container <div aria-label="Audit timeline">
+      expect(root).toBeInstanceOf(HTMLDivElement);
+      expect((root as HTMLElement).getAttribute('aria-label')).toBe('Audit timeline');
+    }
+
+    _trackUseRefReads = false;
   });
 });

@@ -55,13 +55,29 @@ def _seed(org_state, *, catch_up: bool | None = None, agents=(_WINDOWED_AGENT, _
         name = text.split("name: ", 1)[1].split("\n", 1)[0]
         (agents_dir / f"{name}.md").write_text(text)
         (org_state.root / "workspaces" / name).mkdir(parents=True, exist_ok=True)
-    config = _CONFIG
-    if catch_up is not None:
-        config = config.replace(
-            '    interval: "2h"\n',
-            f'    interval: "2h"\n    catch_up_on_startup: {str(catch_up).lower()}\n',
-        )
-    (org_state.root / "org" / "config.yaml").write_text(config)
+    # THR-095: DB-backed storage — write working_hours config to DB.
+    import json
+    catch_up_val = True if catch_up is None else catch_up
+    wh = {
+        "enabled": True,
+        "agents": {"mode": "all", "include": [], "exclude": []},
+        "default": {
+            "mode": "windowed",
+            "window": {"start": "09:00", "end": "18:00", "timezone": "Asia/Shanghai"},
+            "interval": "2h",
+            "days": ["mon", "tue", "wed", "thu", "fri"],
+            "catch_up_on_startup": catch_up_val,
+        },
+        "teams": {},
+        "overrides": {
+            "content_writer": {
+                "mode": "continuous",
+                "interval": "1h",
+                "window": {"timezone": "Asia/Shanghai"},
+            },
+        },
+    }
+    org_state.db.upsert_org_setting("working_hours", json.dumps(wh))
 
 
 def _capture(org_state, monkeypatch) -> list:

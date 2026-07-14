@@ -15,8 +15,9 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
     DreamingConfig,
     OrgConfigError,
+    _resolve_timezone,
     load_org_config,
-    resolve_dreaming_timezone,
+    resolve_org_setting_dreaming,
     resolve_timezone_or_local,
 )
 
@@ -125,10 +126,11 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
     The steady-state loop (``startup=False``) always enqueues due dreams.
     """
     org_cfg = load_org_config(OrgPaths(root=org.root))
-    cfg = org_cfg.dreaming
-    # Resolve the effective zone ONCE here, the only point with the full
-    # OrgConfig: dreaming.timezone -> org.timezone -> machine-local -> UTC.
-    tz = resolve_dreaming_timezone(org_cfg)
+    # THR-095 F2: resolve dreaming from DB (override) → dataclass defaults.
+    cfg = resolve_org_setting_dreaming(org.db, code_default=DreamingConfig())
+    # Resolve the effective timezone: dreaming.timezone (from DB-resolved cfg)
+    # → org.timezone (from config.yaml, non-writable) → machine-local → UTC.
+    tz = _resolve_timezone(cfg.timezone or org_cfg.timezone)[0]
     selected = select_dream_agents(_available_agents(org), cfg)
     count = 0
     for agent in selected:

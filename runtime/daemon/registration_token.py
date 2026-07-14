@@ -49,8 +49,9 @@ class RegistrationTokenRecord:
     token_hash: str
     org: str
     name: str  # executor profile name this token is scoped to register
-    issued_at: float
-    expires_at: float
+    purpose: str = 'profile'  # 'profile' for executor profile, 'binary' for binary-path
+    issued_at: float = 0.0
+    expires_at: float = 0.0
     consumed: bool = False
     reserved: bool = False  # set by reserve(), cleared by commit()/release()
 
@@ -381,15 +382,17 @@ class RegistrationTokenStore:
     # can gate both org and runtime routes without modification.
 
     def mint_runtime(
-        self, name: str, now: float | None = None
+        self, name: str, now: float | None = None, purpose: str = 'profile'
     ) -> tuple[str, float]:
         """Mint a runtime-level (org-agnostic) registration token.
 
-        Expires any prior unconsumed runtime token for the same ``name``.
+        Expires any prior unconsumed runtime token for the same ``(name, purpose)``.
 
         Args:
             name: Executor profile name the token is scoped to register.
             now: Injectable clock (seconds since epoch) for testing.
+            purpose: 'profile' for executor profile registration,
+                     'binary' for binary-path registration.
 
         Returns:
             ``(token_plaintext, expires_at)``
@@ -397,7 +400,7 @@ class RegistrationTokenStore:
         if now is None:
             now = time.time()
         with self._lock:
-            self._expire_prior_runtime(name)
+            self._expire_prior_runtime(name, purpose)
             token = REGISTRATION_TOKEN_PREFIX + secrets.token_urlsafe(32)
             token_hash = self._hash(token)
             expires_at = now + self._ttl_seconds
@@ -405,6 +408,7 @@ class RegistrationTokenStore:
                 token_hash=token_hash,
                 org=_RUNTIME_ORG,
                 name=name,
+                purpose=purpose,
                 issued_at=now,
                 expires_at=expires_at,
             )
@@ -418,12 +422,17 @@ class RegistrationTokenStore:
             )
         return token, expires_at
 
-    def _expire_prior_runtime(self, name: str) -> None:
-        """Mark all unconsumed RUNTIME tokens for ``name`` as consumed."""
+    def _expire_prior_runtime(self, name: str, purpose: str = 'profile') -> None:
+        """Mark all unconsumed RUNTIME tokens for ``(name, purpose)`` as consumed.
+
+        Different purposes do NOT expire each other — a binary-purpose token
+        and a profile-purpose token for the same name coexist.
+        """
         for record in self._tokens.values():
             if (
                 record.org == _RUNTIME_ORG
                 and record.name == name
+                and record.purpose == purpose
                 and not record.consumed
             ):
                 record.consumed = True

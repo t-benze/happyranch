@@ -30,6 +30,9 @@ export const mintRegistrationToken = (
 
 export interface RuntimeRegistrationTokenMintRequest {
   name: string;
+  /** 'profile' for executor profile registration (default),
+   *  'binary' for binary-path registration. */
+  purpose?: string;
 }
 
 export const mintRuntimeRegistrationToken = (

@@ -227,6 +227,12 @@ export interface ThreadMessage {
   responder_status: ResponderStatusEntry[];
 }
 
+export interface ThreadMessagesPage {
+  messages: ThreadMessage[];
+  has_more: boolean;
+  next_since_seq: number;
+}
+
 export interface ThreadInboxEvent {
   thread_id: string;
   event_kind: string; // ThreadMessageKind ∪ {"compose", "invite", "archive_request", ...}

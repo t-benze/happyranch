@@ -32,7 +32,7 @@ from runtime.models import (
 )
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import load_org_config
+from runtime.orchestrator.org_config import OrgConfig, resolve_org_setting_threads
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -449,8 +449,7 @@ async def _compose_thread_multipart(
                 status_code=404, detail={"code": "forwarded_source_not_found"},
             )
 
-    org_cfg = load_org_config(org_paths)
-    turn_cap = org_cfg.threads_default_turn_cap
+    turn_cap = resolve_org_setting_threads(org.db, code_default=OrgConfig())["default_turn_cap"]
     addressed_agents = list(body.recipients)
 
     total_file_count = len(file_fields) + len(shared_attachments)
@@ -625,8 +624,7 @@ async def compose_thread(
             )
 
     # Turn cap from org config (default 500).
-    org_cfg = load_org_config(org_paths)
-    turn_cap = org_cfg.threads_default_turn_cap
+    turn_cap = resolve_org_setting_threads(org.db, code_default=OrgConfig())["default_turn_cap"]
 
     # Broadcast model: every recipient (== future participant) gets a REPLY
     # invocation. The founder is not a participant; no founder mint.
@@ -790,8 +788,7 @@ async def _compose_agent_thread_multipart(
     if not external and not founder_in_recipients:
         raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
 
-    org_cfg = load_org_config(org_paths)
-    turn_cap = org_cfg.threads_default_turn_cap
+    turn_cap = resolve_org_setting_threads(org.db, code_default=OrgConfig())["default_turn_cap"]
 
     # Validate shared artifact refs (if any).
     shared_attachments = _normalize_attachments(
@@ -1008,8 +1005,7 @@ async def compose_thread_as_agent(
     if not external and not founder_in_recipients:
         raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
 
-    org_cfg = load_org_config(org_paths)
-    turn_cap = org_cfg.threads_default_turn_cap
+    turn_cap = resolve_org_setting_threads(org.db, code_default=OrgConfig())["default_turn_cap"]
 
     composed_from_task_id = body.task_id
 
@@ -1277,7 +1273,13 @@ async def list_thread_messages_endpoint(
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
-    msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=min(limit, 1000))
+    effective_limit = min(limit, 1000)
+    fetch_limit = effective_limit + 1
+    msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=fetch_limit)
+    has_more = len(msgs) > effective_limit
+    if has_more:
+        msgs = msgs[:effective_limit]
+    next_since_seq = msgs[-1].seq if msgs else since_seq
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
     # Unconditional responders lookup — see get_thread_endpoint: reply and
     # task_followup invocations are disjoint by triggering-row kind, so the
@@ -1286,7 +1288,9 @@ async def list_thread_messages_endpoint(
         "messages": [
             _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
             for m in msgs
-        ]
+        ],
+        "has_more": has_more,
+        "next_since_seq": next_since_seq,
     }
 
 

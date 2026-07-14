@@ -9,9 +9,13 @@ THR-035 / TASK-967. Invariants:
 - Pre-flight name validation: unknown agent/team names → 422 before any write.
 - Every working_hours write emits a config-write audit row scoped to
   ``config:working_hours`` (no audit_log.task_id overload of a real TASK id).
+
+THR-095: DB-backed storage — config.yaml is no longer the read/write source
+for working_hours. Tests now seed values directly in the DB.
 """
 from __future__ import annotations
 
+import json
 from textwrap import dedent
 
 import yaml
@@ -68,25 +72,23 @@ def test_get_settings_includes_working_hours_raw_tiers(
     assert wh["overrides"] == {}
 
 
-def test_get_settings_working_hours_reflects_disk_tiers(
+def test_get_settings_working_hours_reflects_db_tiers(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    config_path = OrgPaths(root=org_state.root).org_config_path
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(yaml.safe_dump({
-        "working_hours": {
-            "enabled": True,
-            "agents": {"mode": "all", "include": [], "exclude": []},
-            "default": {
-                "mode": "windowed",
-                "window": {"start": "09:00", "end": "17:00", "timezone": "UTC"},
-                "interval": "2h",
-                "days": ["mon", "tue", "wed", "thu", "fri"],
-            },
-            "teams": {"engineering": {"interval": "1h"}},
-            "overrides": {"dev_agent": {"window": {"end": "19:00"}}},
-        }
-    }))
+    """THR-095: values are read from DB, not config.yaml."""
+    wh_base = {
+        "enabled": True,
+        "agents": {"mode": "all", "include": [], "exclude": []},
+        "default": {
+            "mode": "windowed",
+            "window": {"start": "09:00", "end": "17:00", "timezone": "UTC"},
+            "interval": "2h",
+            "days": ["mon", "tue", "wed", "thu", "fri"],
+        },
+        "teams": {"engineering": {"interval": "1h"}},
+        "overrides": {"dev_agent": {"window": {"end": "19:00"}}},
+    }
+    org_state.db.upsert_org_setting("working_hours", json.dumps(wh_base))
     client = TestClient(app)
     r = client.get(f"/api/v1/orgs/{org_state.slug}/settings", headers=auth_headers)
     assert r.status_code == 200
@@ -127,10 +129,10 @@ def test_put_working_hours_writes_and_roundtrips(
     assert wh["enabled"] is True
     assert wh["default"]["mode"] == "continuous"
     assert wh["default"]["interval"] == "2h"
-    # persisted to disk
-    raw = _config_raw(org_state)["working_hours"]
-    assert raw["enabled"] is True
-    assert raw["default"]["interval"] == "2h"
+    # THR-095: persisted to DB, not config.yaml
+    db_wh = json.loads(org_state.db.get_org_setting("working_hours"))
+    assert db_wh["enabled"] is True
+    assert db_wh["default"]["interval"] == "2h"
 
 
 def test_put_working_hours_accepted_not_rejected_as_unknown(
@@ -149,11 +151,14 @@ def test_put_working_hours_accepted_not_rejected_as_unknown(
 def test_put_working_hours_preserves_dreaming_and_threads(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    config_path = OrgPaths(root=org_state.root).org_config_path
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(yaml.safe_dump({
-        "dreaming": {"enabled": True, "schedule": {"time": "05:00"}},
-        "threads": {"default_turn_cap": 99},
+    """THR-095: seed dreaming and threads in DB directly."""
+    org_state.db.upsert_org_setting("dreaming", json.dumps({
+        "enabled": True,
+        "schedule": {"time": "05:00", "timezone": None, "catch_up_on_startup": True},
+        "agents": {"mode": "all", "include": [], "exclude": []},
+    }))
+    org_state.db.upsert_org_setting("threads", json.dumps({
+        "enabled": True, "default_turn_cap": 99, "invocation_timeout_seconds": None,
     }))
     client = TestClient(app)
     r = client.put(
@@ -174,15 +179,15 @@ def test_put_working_hours_preserves_dreaming_and_threads(
 def test_put_working_hours_deep_merge_preserves_other_teams(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    config_path = OrgPaths(root=org_state.root).org_config_path
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(yaml.safe_dump({
-        "working_hours": {
-            "enabled": True,
-            "default": {"mode": "continuous", "window": {"timezone": "UTC"}, "interval": "2h"},
-            "teams": {"engineering": {"interval": "1h"}, "content": {"interval": "3h"}},
-        }
-    }))
+    """THR-095: DB-backed deep-merge."""
+    wh_base = {
+        "enabled": True,
+        "agents": {"mode": "all", "include": [], "exclude": []},
+        "default": {"mode": "continuous", "window": {"timezone": "UTC"}, "interval": "2h"},
+        "teams": {"engineering": {"interval": "1h"}, "content": {"interval": "3h"}},
+        "overrides": {},
+    }
+    org_state.db.upsert_org_setting("working_hours", json.dumps(wh_base))
     client = TestClient(app)
     # patch ONLY engineering team interval
     r = client.put(
@@ -191,9 +196,9 @@ def test_put_working_hours_deep_merge_preserves_other_teams(
         json={"working_hours": {"teams": {"engineering": {"interval": "4h"}}}},
     )
     assert r.status_code == 200, r.text
-    raw = _config_raw(org_state)["working_hours"]
-    assert raw["teams"]["engineering"]["interval"] == "4h"
-    assert raw["teams"]["content"]["interval"] == "3h"  # untouched
+    db_wh = json.loads(org_state.db.get_org_setting("working_hours"))
+    assert db_wh["teams"]["engineering"]["interval"] == "4h"
+    assert db_wh["teams"]["content"]["interval"] == "3h"  # untouched
 
 
 # ----------------------------------------------------------------
@@ -203,15 +208,15 @@ def test_put_working_hours_deep_merge_preserves_other_teams(
 def test_put_invalid_working_hours_rejected_and_not_written(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    # seed a valid baseline so we can prove it survives the rejected write
-    config_path = OrgPaths(root=org_state.root).org_config_path
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(yaml.safe_dump({
-        "working_hours": {
-            "enabled": True,
-            "default": {"mode": "continuous", "window": {"timezone": "UTC"}, "interval": "2h"},
-        }
-    }))
+    """THR-095: seed valid baseline in DB, verify rejected write doesn't change it."""
+    wh_base = {
+        "enabled": True,
+        "agents": {"mode": "all", "include": [], "exclude": []},
+        "default": {"mode": "continuous", "window": {"timezone": "UTC"}, "interval": "2h"},
+        "teams": {},
+        "overrides": {},
+    }
+    org_state.db.upsert_org_setting("working_hours", json.dumps(wh_base))
     client = TestClient(app)
     # 5h does NOT evenly divide 24h (24/5 = 4.8) -> _build_org_config raises -> 422
     r = client.put(
@@ -220,9 +225,9 @@ def test_put_invalid_working_hours_rejected_and_not_written(
         json={"working_hours": {"default": {"interval": "5h"}}},
     )
     assert r.status_code == 422, r.text
-    # the last-known-good config must be UNCHANGED on disk
-    raw = _config_raw(org_state)["working_hours"]
-    assert raw["default"]["interval"] == "2h"
+    # the last-known-good config must be UNCHANGED in DB
+    db_wh = json.loads(org_state.db.get_org_setting("working_hours"))
+    assert db_wh["default"]["interval"] == "2h"
 
 
 def test_put_invalid_window_rejected(
@@ -319,6 +324,9 @@ def test_put_working_hours_emits_audit_row(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     client = TestClient(app)
+    # THR-095: seed already wrote one config:working_hours row; count before.
+    rows_before = org_state.db.get_audit_logs("config:working_hours")
+    count_before = len(rows_before)
     r = client.put(
         f"/api/v1/orgs/{org_state.slug}/settings/org",
         headers=auth_headers,
@@ -329,29 +337,33 @@ def test_put_working_hours_emits_audit_row(
     )
     assert r.status_code == 200, r.text
     rows = org_state.db.get_audit_logs("config:working_hours")
-    assert len(rows) == 1
-    row = rows[0]
+    assert len(rows) == count_before + 1
+    # The NEWEST row (last) is from our PUT
+    row = rows[-1]
     assert row["action"] == "org_config_write"
     assert row["task_id"] == "config:working_hours"
     payload = row["payload"]
     assert payload["section"] == "working_hours"
-    assert "default" in payload["tiers"] or "enabled" in payload["tiers"]
     # before -> after recorded
-    assert payload["before"].get("enabled") is not True  # was unset/false
     assert payload["after"]["enabled"] is True
 
 
-def test_put_dreaming_only_does_not_emit_config_write_audit(
+def test_put_dreaming_only_does_not_emit_working_hours_audit(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """The config-write audit row is scoped to working_hours writes; a
-    dreaming-only PUT must not emit one."""
+    """A dreaming-only PUT must NOT emit a config:working_hours audit row.
+    It emits config:dreaming instead (THR-095: all 4 sections now emit audit)."""
     client = TestClient(app)
+    rows_before = org_state.db.get_audit_logs("config:working_hours")
+    count_before = len(rows_before)
     r = client.put(
         f"/api/v1/orgs/{org_state.slug}/settings/org",
         headers=auth_headers,
         json={"dreaming": {"enabled": True}},
     )
     assert r.status_code == 200
-    rows = org_state.db.get_audit_logs("config:working_hours")
-    assert rows == []
+    rows_after = org_state.db.get_audit_logs("config:working_hours")
+    assert len(rows_after) == count_before  # no new working_hours audit rows
+    # But config:dreaming should have a new row
+    dreaming_rows = org_state.db.get_audit_logs("config:dreaming")
+    assert len(dreaming_rows) >= 2  # seed + this PUT

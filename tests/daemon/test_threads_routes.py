@@ -3383,3 +3383,100 @@ def test_list_thread_tasks_route_empty_thread(tmp_home, app, org_state, auth_hea
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data == []
+
+
+# ---------------------------------------------------------------------------
+# THR-098 — pagination signal for GET /threads/{thread_id}/messages
+# ---------------------------------------------------------------------------
+
+
+def test_thread_messages_pagination_signal_long_thread(tmp_home, app, org_state, auth_headers):
+    """A thread with >200 messages returns has_more + next_since_seq across pages.
+
+    The endpoint must signal pagination state so consumers know to keep
+    paging until has_more is false, rather than silently truncating to the
+    first 200 (oldest) messages.
+    """
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={
+            "subject": "long thread",
+            "recipients": ["dev_agent"],
+            "body_markdown": "msg 0",
+        },
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    # Append 249 additional messages (total = 250, more than default limit of 200)
+    for i in range(1, 250):
+        org_state.db.append_thread_message(
+            thread_id=tid,
+            speaker="dev_agent" if i % 2 == 0 else "founder",
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown=f"msg {i}",
+        )
+
+    # Verify we have 250 messages in the DB
+    assert len(org_state.db.list_thread_messages(tid)) == 250
+
+    # Page 1: default limit=200
+    resp1 = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/messages",
+        headers=auth_headers,
+    )
+    assert resp1.status_code == 200, resp1.text
+    data1 = resp1.json()
+    assert "has_more" in data1, "response must include has_more field"
+    assert data1["has_more"] is True, "first page with 200/250 should have has_more=true"
+    assert "next_since_seq" in data1, "response must include next_since_seq field"
+    assert data1["next_since_seq"] is not None
+    assert len(data1["messages"]) == 200, "page 1 should return exactly 200 messages"
+
+    # Page 2: continue from next_since_seq
+    resp2 = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/messages",
+        params={"since_seq": data1["next_since_seq"]},
+        headers=auth_headers,
+    )
+    assert resp2.status_code == 200, resp2.text
+    data2 = resp2.json()
+    assert data2["has_more"] is False, "last page should have has_more=false"
+    assert data2["next_since_seq"] is not None, "next_since_seq should still be set on last page"
+    assert len(data2["messages"]) == 50, "page 2 should return remaining 50 messages"
+
+    # Total across pages must equal all 250 messages
+    all_seqs1 = {m["seq"] for m in data1["messages"]}
+    all_seqs2 = {m["seq"] for m in data2["messages"]}
+    assert len(all_seqs1 & all_seqs2) == 0, "pages must be disjoint by seq"
+    assert len(all_seqs1 | all_seqs2) == 250, "pages must cover all 250 messages"
+
+
+def test_thread_messages_pagination_no_more_for_short_thread(tmp_home, app, org_state, auth_headers):
+    """A thread with fewer than the limit should return has_more=false."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={
+            "subject": "short thread",
+            "recipients": ["dev_agent"],
+            "body_markdown": "only message",
+        },
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/messages",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert "has_more" in data
+    assert data["has_more"] is False, "short thread should have has_more=false"
+    assert "next_since_seq" in data
+    assert data["next_since_seq"] is not None, "even a single message should report next_since_seq"
+    assert len(data["messages"]) == 1

@@ -9,7 +9,9 @@
  * from `useRealOrgSlug()` (URL via react-router) instead of being passed as
  * an argument — that's how the public hook surface stays provider-agnostic.
  */
+import type { InfiniteData } from '@tanstack/react-query';
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -20,6 +22,7 @@ import { subscribeSSE, threads as threadsApi } from '@/lib/api';
 import type {
   ThreadInboxEvent,
   ThreadMessage,
+  ThreadMessagesPage,
   ThreadTailEvent,
 } from '@/lib/api/types';
 import type {
@@ -72,11 +75,25 @@ function useThread(threadId: string | undefined) {
 
 function useThreadMessages(threadId: string | undefined) {
   const slug = useRealOrgSlug();
-  return useQuery({
+  const q = useInfiniteQuery({
     queryKey: ['thread-messages', slug, threadId],
-    queryFn: () => threadsApi.listThreadMessages(slug, threadId as string),
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam }) =>
+      threadsApi.listThreadMessages(slug, threadId as string, {
+        since_seq: pageParam ?? 0,
+      }),
+    getNextPageParam: (last) => (last.has_more ? last.next_since_seq : undefined),
     enabled: !!slug && !!threadId,
   });
+  return {
+    data: q.data ? { pages: q.data.pages } : undefined,
+    isLoading: q.isLoading,
+    isError: q.isError,
+    error: (q.error as Error | null) ?? null,
+    fetchNextPage: () => q.fetchNextPage(),
+    hasNextPage: !!q.hasNextPage,
+    isFetchingNextPage: q.isFetchingNextPage,
+  };
 }
 
 function useThreadTasks(threadId: string | undefined) {
@@ -154,17 +171,32 @@ function useThreadTailSSE(threadId: string | undefined): void {
         sinceSeqRef.current = Math.max(sinceSeqRef.current, ev.seq as number);
 
         if (action === 'append') {
-          // Full ThreadMessage from replay — append to cache.
-          qc.setQueryData<{ messages: ThreadMessage[] }>(
+          // Full ThreadMessage from replay — append to cache (last page).
+          qc.setQueryData<InfiniteData<ThreadMessagesPage>>(
             ['thread-messages', slug, threadId],
             (prev) => {
-              if (!prev) return { messages: [ev as ThreadMessage] };
-              const have = new Set(prev.messages.map((m) => m.seq));
-              if (have.has((ev as ThreadMessage).seq)) return prev;
+              const msg = ev as ThreadMessage;
+              if (!prev || prev.pages.length === 0) {
+                return {
+                  pages: [{ messages: [msg], has_more: false, next_since_seq: msg.seq }],
+                  pageParams: [0],
+                };
+              }
+              // Check if already present across all pages
+              for (const page of prev.pages) {
+                if (page.messages.some((m) => m.seq === msg.seq)) return prev;
+              }
+              const lastPage = { ...prev.pages[prev.pages.length - 1] };
+              lastPage.messages = [...lastPage.messages, msg].sort(
+                (a, b) => a.seq - b.seq,
+              );
+              lastPage.next_since_seq = lastPage.messages[lastPage.messages.length - 1].seq;
               return {
-                messages: [...prev.messages, ev as ThreadMessage].sort(
-                  (a, b) => a.seq - b.seq,
-                ),
+                pages: [
+                  ...prev.pages.slice(0, -1),
+                  lastPage,
+                ],
+                pageParams: prev.pageParams,
               };
             },
           );
