@@ -282,6 +282,13 @@
   --spacing-rail: 244px;
 
   /* ====================================================================== */
+  /* CONTENT — Direction-A centered content cap (ds.css .wrap max-width)     */
+  /* Gives the `max-w-content` utility used by <ContentWrap> (THR-099).      */
+  /* ====================================================================== */
+
+  --spacing-content: 1180px;
+
+  /* ====================================================================== */
   /* SHADOWS — warm/soft Pasture scale (ds.css --shadow / --shadow-sm /     */
   /* --shadow-lg)                                                            */
   /* ====================================================================== */

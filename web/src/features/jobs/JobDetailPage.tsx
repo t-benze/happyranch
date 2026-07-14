@@ -35,6 +35,7 @@ import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { Button } from '@/design-system/primitives/Button';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { useJob, useStopJob } from '@/hooks/jobs';
 // eslint-disable-next-line no-restricted-imports -- need blocked_on_job_id filter not exposed via hooks; THR-011 option 3
 import { listTasks } from '@/lib/api/tasks';
@@ -373,8 +374,7 @@ export function JobDetailPage(): JSX.Element {
   // two-step confirm control becomes unreachable) without this wrapper.
   // Mirrors TaskDetailPage and every other full page.
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-4 py-6">
+    <ContentWrap>
         {/* Breadcrumb: contextual back-link to spawning task (honesty fence — no
             originating-thread field, so we back to the task, not a thread). */}
         <nav className="mb-4">
@@ -478,7 +478,6 @@ export function JobDetailPage(): JSX.Element {
             onClose={() => setOpenDialog(null)}
           />
         )}
-      </div>
-    </div>
+    </ContentWrap>
   );
 }

@@ -21,6 +21,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardSummary } from '@/hooks/dashboard';
 import { useTokensToday, useTokensWeek, formatTokens } from '@/hooks/tokens';
 import { Button } from '@/design-system/primitives/Button';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
@@ -180,8 +181,7 @@ export function DashboardPage(): JSX.Element {
   const pendingCount = s.escalations.length;
 
   return (
-    <div className="bg-surface-canvas h-full overflow-y-auto">
-      <div className="p-6">
+    <ContentWrap>
         {/* Greeting heading — Direction-A serif (var(--font-display)), ds.css
             .h1 parity; copy is a data-derived status summary (THR-030 HOME-02). */}
         <h1 className="font-display text-display text-text-primary mb-1 font-medium">
@@ -423,7 +423,6 @@ export function DashboardPage(): JSX.Element {
             </Panel>
           </div>
         </div>
-      </div>
-    </div>
+    </ContentWrap>
   );
 }

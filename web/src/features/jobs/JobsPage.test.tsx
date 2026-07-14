@@ -282,8 +282,10 @@ describe('JobDetailPage — read path', () => {
     expect(scroller).not.toBeNull();
     expect(scroller).toHaveClass('h-full', 'overflow-y-auto');
     // …and it wraps the constrained content column, confirming it is the page-level
-    // wrapper rather than some inner panel's own scroll area.
-    expect(scroller!.querySelector('.mx-auto.max-w-5xl')).not.toBeNull();
+    // wrapper rather than some inner panel's own scroll area. THR-099 Slice 1
+    // widened this cap from max-w-5xl → the shared <ContentWrap> (max-w-content,
+    // 1180px) — the constrained column still exists, just at the Direction-A cap.
+    expect(scroller!.querySelector('.mx-auto.max-w-content')).not.toBeNull();
   });
 
   // JOBDET-02: the command card is styled with terminal chrome — a "›_ command"
