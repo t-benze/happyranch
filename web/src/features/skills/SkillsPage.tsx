@@ -16,6 +16,7 @@
  * separate shell-level task (see MEM-004) — out of this slice's scope.
  */
 import { useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
 import { Info, Package, Sparkles, TriangleAlert } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useSkillsCatalog } from '@/hooks/skills';
@@ -31,6 +32,7 @@ const FACETS: { value: CatalogFilter; label: string; icon: typeof Package }[] = 
 ];
 
 export function SkillsPage(): JSX.Element {
+  const { slug } = useParams<{ slug: string }>();
   const [filter, setFilter] = useState<CatalogFilter>('all');
   const query = useSkillsCatalog(filter === 'all' ? undefined : { filter });
   const items = query.data?.items ?? [];
@@ -148,7 +150,13 @@ export function SkillsPage(): JSX.Element {
           <ul className="flex flex-col gap-3">
             {items.map((item) => (
               <li key={item.skill_id}>
-                <SkillCard item={item} />
+                <Link
+                  to={`/orgs/${slug ?? ''}/skills/${item.skill_id}`}
+                  className="focus-visible:ring-accent block rounded-md focus:outline-none focus-visible:ring-2"
+                  aria-label={`View ${item.name}`}
+                >
+                  <SkillCard item={item} />
+                </Link>
               </li>
             ))}
           </ul>

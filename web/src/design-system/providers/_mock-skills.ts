@@ -1,23 +1,38 @@
 /**
  * Mock implementation of `SkillsApi` for the prototype sandbox + the FE
- * screenshot harness (THR-092 Slice 1). The backend is merged on main but not
- * yet deployed to the live daemon, so catalog fidelity is proven against
- * these fixtures.
+ * screenshot harness (THR-092 Slices 1–2). The backend is merged on main but
+ * not yet deployed to the live daemon, so fidelity is proven against these
+ * fixtures.
  *
- * Coverage (per brief): read-only bundled system contracts, managed bundled
- * skills, and user-authored custom skills across all three validation_state
- * values (in_catalog / validated / failed_validation), including at least one
- * has_assigned_not_yet_effective row (takes effect next session).
+ * Catalog coverage (Slice 1): read-only bundled system contracts, managed
+ * bundled skills, and user-authored custom skills across all three
+ * validation_state values (in_catalog / validated / failed_validation),
+ * including at least one has_assigned_not_yet_effective row.
+ *
+ * Detail coverage (Slice 2, `DETAILS`): source (bundled/SKILL.md content),
+ * source-gating (read-only system contract, read-only managed bundled,
+ * editable custom), a failed-validation "needs attention" custom draft, and
+ * per-agent assignments spanning effective / assigned-not-yet-effective /
+ * not-assigned so the provenance vocabulary is fully exercised.
  *
  * The Bundled / Custom filter is applied here to mirror the daemon's
  * `?filter=` bucketing: Bundled = managed + system_contract, Custom =
  * user_authored.
  */
-import type { CatalogSkillItem } from '@/lib/api/skills';
+import type { CatalogSkillItem, SkillDetail } from '@/lib/api/skills';
 import type { QueryLike, SkillsApi } from './DataContext';
 
 function ok<T>(data: T): QueryLike<T> {
   return { data, isLoading: false, isError: false, error: null };
+}
+
+function notFound<T>(): QueryLike<T> {
+  return {
+    data: undefined,
+    isLoading: false,
+    isError: true,
+    error: new Error('skill not found'),
+  } as QueryLike<T>;
 }
 
 const FIXTURES: CatalogSkillItem[] = [
@@ -146,6 +161,131 @@ function bucket(item: CatalogSkillItem): 'Bundled' | 'Custom' {
   return item.type === 'user_authored' ? 'Custom' : 'Bundled';
 }
 
+// ── Slice-2 single-skill detail fixtures ────────────────────────────────
+// Keyed by skill_id. Each carries the SKILL.md-derived content (description /
+// when_to_use), source, validation, and — for assignable skills — a per-agent
+// assignments[] spanning the full provenance vocabulary.
+const DETAILS: Record<string, SkillDetail> = {
+  // Read-only system contract: applied by context predicate, NOT per-agent →
+  // no assignments[]; the detail shows the predicate rollup + a lock.
+  'sk-founder-escalation-protocol': {
+    skill_id: 'sk-founder-escalation-protocol',
+    name: 'founder-escalation-protocol',
+    type: 'system_contract',
+    source: 'bundled · contracts/founder-escalation-protocol/SKILL.md',
+    system_contract: true,
+    visibility_category: 'read_only',
+    policy_class: 'contract',
+    status: 'enabled',
+    version: 'locked',
+    validation_state: 'validated',
+    summary:
+      'Escalate merges to main, protocol changes, and genuine ambiguity to the founder. Everything else proceeds autonomously.',
+    description:
+      'A system contract that every agent is shown by context. It defines when to hand a decision back to the founder rather than proceed alone.',
+    when_to_use:
+      'Before merging to main, changing protocol surfaces, or acting under genuine ambiguity.',
+    owner: 'platform',
+    validation: { ok: true, errors: [] },
+  },
+  // Read-only managed bundled skill, but assignable → per-agent assignments[]
+  // with an effective agent, an assigned-not-yet-effective agent, and an
+  // unassigned agent. No edit entry point (platform-managed).
+  'sk-kb-curation': {
+    skill_id: 'sk-kb-curation',
+    name: 'kb-curation',
+    type: 'managed',
+    source: 'bundled · skills/kb-curation/SKILL.md',
+    system_contract: false,
+    visibility_category: 'toggleable',
+    policy_class: 'guidance',
+    status: 'enabled',
+    version: '2.1.0',
+    validation_state: 'validated',
+    summary:
+      'How to search, write, and promote durable cross-agent knowledge without duplicating task-specific notes.',
+    description:
+      'Guidance for curating the shared knowledge base: when to add an entry, how to phrase it for reuse, and when to promote a learning.',
+    when_to_use:
+      'When a task uncovers a durable, cross-agent fact worth preserving beyond the current work.',
+    owner: 'platform',
+    validation: { ok: true, errors: [] },
+    assignments: [
+      { agent: 'kb_curator', assigned: true, effective: true, state: 'effective' },
+      { agent: 'research_lead', assigned: true, effective: true, state: 'effective' },
+      { agent: 'ops_agent', assigned: true, effective: true, state: 'effective' },
+      {
+        agent: 'support_agent',
+        assigned: true,
+        effective: false,
+        state: 'assigned_not_yet_effective',
+      },
+      { agent: 'sales_agent', assigned: false, effective: false, state: 'effective' },
+    ],
+  },
+  // Editable custom skill (validated) → Edit entry point + per-agent table.
+  'sk-tourism-partner-playbook': {
+    skill_id: 'sk-tourism-partner-playbook',
+    name: 'tourism-partner-playbook',
+    type: 'user_authored',
+    source: 'custom · store/tourism-partner-playbook/SKILL.md',
+    system_contract: false,
+    visibility_category: 'toggleable',
+    policy_class: 'guidance',
+    status: 'enabled',
+    version: '1.2.0',
+    validation_state: 'validated',
+    summary:
+      'House style for briefing partner venues on itineraries, seasonal windows, and cancellation handling.',
+    description:
+      'Your team’s house style for partner-venue briefings: how to frame itineraries, flag seasonal windows, and phrase cancellation terms consistently.',
+    when_to_use:
+      'When drafting or reviewing any outbound brief to a partner venue.',
+    owner: 'operator',
+    validation: { ok: true, errors: [] },
+    assignments: [
+      { agent: 'partner_liaison', assigned: true, effective: true, state: 'effective' },
+      { agent: 'itinerary_planner', assigned: true, effective: true, state: 'effective' },
+      {
+        agent: 'support_agent',
+        assigned: true,
+        effective: false,
+        state: 'assigned_not_yet_effective',
+      },
+    ],
+  },
+  // Editable custom skill that FAILED validation → "needs attention" banner
+  // with plain-language issues; no agents assigned yet (can't assign until it
+  // validates). Draft is preserved and editable.
+  'sk-vendor-comms-style': {
+    skill_id: 'sk-vendor-comms-style',
+    name: 'vendor-comms-style',
+    type: 'user_authored',
+    source: 'custom · store/vendor-comms-style/SKILL.md',
+    system_contract: false,
+    visibility_category: 'toggleable',
+    policy_class: 'guidance',
+    status: 'draft',
+    version: '0.3.0',
+    validation_state: 'failed_validation',
+    summary:
+      'Tone and escalation rules for vendor emails. Last validation failed — SKILL.md is missing a required version field.',
+    description:
+      'Draft guidance for vendor email tone and when to escalate a thread. Saved as an editable draft — nothing is lost while you fix it.',
+    when_to_use:
+      'When writing to a vendor and deciding whether a reply needs escalation.',
+    owner: 'operator',
+    validation: {
+      ok: false,
+      errors: [
+        'SKILL.md is missing a required version field.',
+        'The references/pricing.md asset could not be resolved.',
+      ],
+    },
+    assignments: [],
+  },
+};
+
 export const mockSkillsApi: SkillsApi = {
   useSkillsCatalog: (params) => {
     const filter = params?.filter;
@@ -153,5 +293,10 @@ export const mockSkillsApi: SkillsApi = {
       ? FIXTURES.filter((i) => bucket(i) === filter)
       : FIXTURES;
     return ok({ items });
+  },
+  useSkillDetail: (skillId) => {
+    if (!skillId) return notFound<SkillDetail>();
+    const detail = DETAILS[skillId];
+    return detail ? ok(detail) : notFound<SkillDetail>();
   },
 };

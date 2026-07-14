@@ -34,7 +34,7 @@ import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
 import type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
-import type { CatalogSkillItem } from '@/lib/api/skills';
+import type { CatalogSkillItem, SkillDetail } from '@/lib/api/skills';
 import type { ConversationSummary } from '@/lib/api/assistant';
 import type { ThreadTaskSummary } from '@/lib/api/threads';
 import type { workHours as workHoursApi } from '@/lib/api';
@@ -425,14 +425,18 @@ export interface AuditApi {
 }
 
 // ---------------------------------------------------------------------------
-// SkillsApi — read-only Skills Catalog surface (THR-092 Slice 1). Bundled /
-// Custom filter maps to the daemon `?filter=` param. Guidance visibility only.
+// SkillsApi — read-only Skills surface (THR-092). Slice 1: Catalog list
+// (Bundled / Custom filter → daemon `?filter=`). Slice 2: single-skill detail
+// + per-agent effective/provenance. Guidance visibility only.
 // ---------------------------------------------------------------------------
 
 export interface SkillsApi {
   useSkillsCatalog: (params?: {
     filter?: 'Bundled' | 'Custom';
   }) => QueryLike<{ items: CatalogSkillItem[] }>;
+  /** Single-skill detail (source, validation, per-agent assignments[]).
+   *  Backs the Slice-2 Skill Detail + provenance surface. */
+  useSkillDetail: (skillId: string | undefined) => QueryLike<SkillDetail>;
 }
 
 // ---------------------------------------------------------------------------
