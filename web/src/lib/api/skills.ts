@@ -188,3 +188,34 @@ export const assignSkill = (
     method: 'POST',
     body: JSON.stringify(body),
   });
+
+// ── Phase 3b status endpoint ──────────────────────────────────────────
+
+export interface SkillStatusAssignment {
+  agent: string;
+  assigned: boolean;
+  effective: boolean;
+  materialized_version: string | null;
+  state: 'effective' | 'assigned_not_yet_effective';
+}
+
+export interface SkillStatusResponse {
+  skill_id: string;
+  source: string;
+  in_catalog: boolean;
+  validated: boolean;
+  current_version: string;
+  assignments: SkillStatusAssignment[];
+  last_validation: {
+    ok: boolean;
+    version: string | null;
+    at: string | null;
+  } | null;
+}
+
+export const getSkillStatus = (
+  slug: string,
+  skillId: string,
+  params?: { agent?: string },
+): Promise<SkillStatusResponse> =>
+  request(`/orgs/${slug}/skills/${skillId}/status`, { params });

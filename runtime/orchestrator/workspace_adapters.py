@@ -360,6 +360,8 @@ def inject_managed_skills(
     agent_name: str,
     team: str,
     skills_root: Path,
+    org_root: Path | None = None,
+    db: "Database | None" = None,  # noqa: F821
 ) -> None:
     """Inject managed-catalog skills into the workspace based on the
     runtime-managed skill policy (two-gate model).
@@ -369,16 +371,31 @@ def inject_managed_skills(
     for system contracts. Together they replace the wholesale
     ``refresh_session_skills`` dump in Phase 4.
 
+    **Phase 3b:** when ``org_root`` is provided, the per-org user-authored
+    skill store (``<org_root>/skills/<slug>/``) is unioned with the release
+    registry. User-authored skills are materialized alongside bundled skills,
+    with release-wins on slug collision. Materialization events are recorded
+    to the validation store via ``db`` (when provided) so effective-state can
+    compare materialized version against current store version.
+
     Resolution:
     1. Load the SkillRegistry from ``skills_root``.
-    2. Load the eligibility policy from ``<project_root>/org/config.yaml``.
-    3. Resolve exposed skills via ``resolve_exposed_skills`` (both gates).
-    4. Copy each exposed skill's package from the managed catalog into
-       ``.claude/skills/<id>/`` and ``.agents/skills/<id>/``.
+    2. If ``org_root`` is provided, load user-authored registry from
+       ``<org_root>/skills/`` and union (release-wins on slug collision).
+    3. Load the eligibility policy from ``<org_root>/org/config.yaml``
+       (fallback: ``<project_root>/org/config.yaml``).
+    4. Resolve exposed skills via ``resolve_exposed_skills`` (both gates).
+    5. Copy each exposed skill's package into ``.claude/skills/<id>/`` and
+       ``.agents/skills/<id>/``, resolving the source directory by
+       ``SkillEntry.source`` (bundled dir vs ``<org_root>/skills/<slug>/``
+       for ``user_authored``).
+    6. Record materialization events (version, agent) via ``db``.
 
     **Fail-closed:** unapproved, pending_review, rejected, deprecated,
     disabled, or ineligible skills are NOT injected. High-impact policy
     skills with missing or mismatched version approval are NOT injected.
+    Any materialization error raises immediately — a failed materialization
+    must NOT leave a partially-populated skills dir passing as complete.
 
     **Visibility only — NO capability change.** Skills grant no tools,
     credentials, network access, filesystem access, sandbox policy, or
@@ -391,21 +408,59 @@ def inject_managed_skills(
         agent_name: agent to resolve eligibility for
         team: agent's team name (e.g. "engineering", "product", "consultant")
         skills_root: directory containing managed-catalog skill packages
+        org_root: per-org root for user-authored store + eligibility config
+            (``<org_root>/skills/``, ``<org_root>/org/config.yaml``)
+        db: optional DB handle for recording materialization events
     """
     from runtime.skills.registry import SkillRegistry
     from runtime.skills.resolver import EligibilityResolver
     from runtime.skills.exposure import resolve_exposed_skills
 
-    if not skills_root.is_dir():
+    # Load release-shipped managed-catalog skills
+    release_entries: dict[str, "SkillEntry"] = {}  # noqa: F821
+    if skills_root.is_dir():
+        release_registry = SkillRegistry(skills_root=skills_root)
+        for entry in release_registry.list_all():
+            release_entries[entry.id] = entry
+
+    # Load per-org user-authored skills (when org_root provided)
+    user_entries: dict[str, "SkillEntry"] = {}  # noqa: F821
+    if org_root is not None:
+        user_skills_dir = org_root / "skills"
+        if user_skills_dir.is_dir():
+            user_registry = SkillRegistry(skills_root=user_skills_dir)
+            # Release-wins + system-contract-wins on slug collision (v3 §6.3).
+            # Must match the daemon catalog path _union_catalog protection set
+            # (release slugs + SYSTEM_CONTRACTS slugs).
+            from runtime.skills.system_contracts import SYSTEM_CONTRACTS
+            release_slugs: set[str] = {
+                e.slug for e in release_entries.values()
+            }
+            sc_slugs: set[str] = {sc.id for sc in SYSTEM_CONTRACTS}
+            protected_slugs = release_slugs | sc_slugs
+            for entry in user_registry.list_all():
+                if entry.slug not in protected_slugs:
+                    user_entries[entry.id] = entry
+
+    # Union catalog: release + user-authored (release wins on id collision)
+    union_entries: list["SkillEntry"] = []  # noqa: F821
+    union_entries.extend(user_entries.values())
+    union_entries.extend(release_entries.values())
+
+    if not union_entries:
         return
 
-    registry = SkillRegistry(skills_root=skills_root)
-    if not registry.list_all():
-        return
+    # Build a unioned registry for resolve_exposed_skills
+    union_registry = SkillRegistry(skills_root=skills_root)
+    for entry in union_entries:
+        union_registry._entries[entry.id] = entry
 
     # Load eligibility policy from org config YAML
     policy: dict = {}
-    config_path = settings.project_root / "org" / "config.yaml"
+    if org_root is not None:
+        config_path = org_root / "org" / "config.yaml"
+    else:
+        config_path = settings.project_root / "org" / "config.yaml"
     if config_path.is_file():
         import yaml
         try:
@@ -417,15 +472,22 @@ def inject_managed_skills(
 
     resolver = EligibilityResolver(policy)
     exposed = resolve_exposed_skills(
-        registry, resolver, org=slug, team=team, agent=agent_name,
+        union_registry, resolver, org=slug, team=team, agent=agent_name,
     )
 
     for es in exposed:
         skill_id_slug = es.skill.slug
-        # The managed-catalog package lives at <skills_root>/<slug>/
-        src_dir = skills_root / skill_id_slug
+
+        # Resolve source directory by provenance
+        if es.skill.source == "user_authored" and org_root is not None:
+            src_dir = org_root / "skills" / skill_id_slug
+        else:
+            src_dir = skills_root / skill_id_slug
+
         if not src_dir.is_dir():
             continue
+
+        # Materialize the skill into the workspace
         _copy_skills_tree(
             src_dir,
             workspace / ".claude" / "skills" / skill_id_slug,
@@ -436,6 +498,18 @@ def inject_managed_skills(
             workspace / ".agents" / "skills" / skill_id_slug,
             slug=slug,
         )
+
+        # Record materialization event for effective-state version compare
+        if db is not None:
+            db.insert_skill_validation_event(
+                skill_id=es.skill.id,
+                slug=skill_id_slug,
+                agent=agent_name,
+                source="materialization",
+                severity="info",
+                ok=True,
+                version=es.skill.version,
+            )
 
 
 def _memory_bootstrap_section(workspace: Path) -> list[str]:

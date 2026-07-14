@@ -50,6 +50,48 @@ The orchestrator assembles each agent's context into an executor-specific bootst
 
 Claude workspaces have a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Codex, opencode, and Pi workspaces do not use that file. Across executors, agents call back through the same single-line `happyranch ... --from-file` contract. Agents can read, write, and execute freely within their workspace and the cloned codebase, subject to the executor's sandbox mode and the orchestrator's workflow rules. Pi has no HappyRanch-managed sandbox or permission file in this integration.
 
+### Skill materialization at session spawn
+
+Skills — structured guidance packages that tell an agent how to perform specific
+operations — are materialized into the agent's workspace on every session spawn
+by `inject_managed_skills` (`workspace_adapters.py`). This runs on all four spawn
+contexts (task, thread, wake, dream).
+
+**Two sources, unioned with release-and-system-contracts-wins.** Skills come from two directories:
+- **Bundled / release-shipped:** `<project_root>/runtime/skills/<slug>/` — ships
+  inside the repo, read-only at runtime.
+- **User-authored:** `<org_root>/skills/<slug>/` — per-org writable store for
+  operator-authored custom skills (§6, THR-092).
+
+On slug collision (a user-authored skill reuses a slug from a bundled skill
+or a system-contract skill), the bundled or system-contract entry wins — a
+user-authored skill can never shadow a release-shipped or system-contract
+package. The protected-slug set matches the daemon catalog path
+`_union_catalog` (release slugs union SYSTEM_CONTRACTS slugs).
+
+**FAIL-CLOSED materialization.** Any error during materialization raises
+immediately. A failed materialization must NOT leave a partially-populated
+skills directory passing as complete. All four caller contexts (orchestrator
+`run_step`, `thread_runner`, `wake_runner`, `dream_runner`) persist a
+database-terminal failure and return BEFORE executor spawn — a materialization
+error in any spawn path blocks the agent launch, never silently skipped.
+
+**Version-aware effective state (v3, THR-092 Phase 3b).** After each successful
+copy, a materialization event is recorded in the `skill_validation_events` store
+with the materialized version. A skill is `effective` for an agent iff:
+1. The agent has an `allow` eligibility rule for the skill, AND
+2. The last-materialized version equals the current store version.
+
+When a user-authored skill is edited (version bumped in the store), the OLD
+materialized version stays live and functional on disk until the next spawn
+re-materializes the NEW version. A failed re-validation of the edit does NOT
+remove the working old version. The agent is `assigned_not_yet_effective` until
+the new version lands.
+
+**Visibility only — NO capability change.** Skills govern which guidance
+playbooks an agent sees. They grant no tools, credentials, network access,
+filesystem access, sandbox policy, or permission-map/allow-rule/auth changes.
+
 **Only founder-concern boundaries are restricted** (as defined in the org charter):
 - No `git push` to `main` / production deploy
 - No actions involving spend >$200 single or >$100/month recurring

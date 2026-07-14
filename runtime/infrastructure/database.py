@@ -3122,6 +3122,32 @@ class Database:
         d["reason_codes"] = json.loads(d["reason_codes"] or "[]")
         return d
 
+    @_synchronized
+    def get_latest_skill_materialization(
+        self, skill_id: str, agent: str
+    ) -> dict | None:
+        """Return the latest materialization event for a skill+agent pair.
+
+        Used by effective-state computation (§7.1): a skill is effective for an
+        agent iff the latest materialization event's version matches the current
+        store version.
+        """
+        row = self._conn.execute(
+            """SELECT id, skill_id, slug, agent, source, severity, ok, version,
+                       findings, reason_codes, created_at
+                FROM skill_validation_events
+                WHERE skill_id = ? AND agent = ? AND source = 'materialization'
+                ORDER BY created_at DESC LIMIT 1""",
+            (skill_id, agent),
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["ok"] = bool(d["ok"])
+        d["findings"] = json.loads(d["findings"] or "[]")
+        d["reason_codes"] = json.loads(d["reason_codes"] or "[]")
+        return d
+
     # --- Thread IDs ---
 
     @_synchronized

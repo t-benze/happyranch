@@ -176,6 +176,9 @@ async def run_wake(
     )
 
     # Managed-catalog skill injection (THR-055 Phase 4).
+    # FAIL-CLOSED: a materialization error must persist a terminal failure
+    # and return BEFORE executor spawn — no half-populated skills dir may
+    # pass as complete (REVISE TASK-2829).
     try:
         skills_root = settings.project_root / "runtime" / "skills"
         inject_managed_skills(
@@ -184,9 +187,20 @@ async def run_wake(
             agent_name=record.agent_name,
             team=agent_def.team,
             skills_root=skills_root,
+            org_root=org_state.root,
+            db=org_state.db,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        store.update(
+            work_hour_id, status=WorkHourStatus.FAILED,
+            ended_at=datetime.now(timezone.utc),
+            error=f"managed_skills_materialization_failed: {e}",
+        )
+        AuditLogger(org_state.db).log_work_hour_failed(
+            work_hour_id, record.agent_name,
+            reason=f"managed_skills_materialization_failed: {e}",
+        )
+        return
 
     protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
 

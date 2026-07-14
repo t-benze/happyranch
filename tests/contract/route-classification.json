@@ -97,6 +97,7 @@
     "PATCH /api/v1/orgs/{slug}/skills/{skill_id}",
     "POST /api/v1/orgs/{slug}/agents/{agent_id}/skills/{skill_id}/assign",
     "GET /api/v1/orgs/{slug}/skills/validation",
+    "GET /api/v1/orgs/{slug}/skills/{skill_id}/status",
     "GET /api/v1/executor-binaries",
     "POST /api/v1/executor-binaries/register",
     "POST /api/v1/executor-binaries/validate"

@@ -1842,6 +1842,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/skills/{skill_id}/status": {
+      "GET": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "skill_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/skills/{skill_id}/validate": {
       "POST": {
         "params": [
