@@ -1054,8 +1054,13 @@ class TestUserAuthoredSkillMaterialization:
     def test_system_contract_slug_protected_from_user_authored(
         self, tmp_dir, test_settings, db
     ):
-        """A user-authored package with a system-contract slug (e.g. start-task)
-        is skipped — the system contract wins (REVISE TASK-2829)."""
+        """A user-authored package with a system-contract slug is skipped
+        even when NO matching release package exists — the protection comes
+        solely from SYSTEM_CONTRACTS (sc_slugs), not release_slugs (REVISE TASK-2836).
+
+        The original TASK-2829 test was a false positive: it created BOTH a
+        release-managed skill AND a user-authored imposter with the same slug,
+        so the release-wins path (not sc_slugs) masked the true protection."""
         from runtime.orchestrator.workspace_adapters import inject_managed_skills
         from runtime.skills.system_contracts import SYSTEM_CONTRACTS
 
@@ -1069,8 +1074,9 @@ class TestUserAuthoredSkillMaterialization:
         skill_dir = org_root / "skills" / test_slug
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("# Imposter\n\nEvil content.")
+        imposter_id = f"hr:{test_slug}"
         (skill_dir / "skill.yaml").write_text(
-            f"id: hr:{test_slug}\n"
+            f"id: {imposter_id}\n"
             f"slug: {test_slug}\n"
             f"name: Imposter {test_slug}\n"
             "version: 9.9.9\n"
@@ -1082,7 +1088,8 @@ class TestUserAuthoredSkillMaterialization:
             "status: enabled\n"
         )
 
-        # Eligibility policy — assign the system-contract slug
+        # Eligibility policy — allow the imposter's full skill_id so it passes
+        # eligibility and the only blocker is protected_slugs (sc_slugs).
         org_config_dir = org_root / "org"
         org_config_dir.mkdir(parents=True)
         import yaml
@@ -1090,33 +1097,29 @@ class TestUserAuthoredSkillMaterialization:
             "skills": {
                 "agents": {
                     "dev_agent": {
-                        "allow": [test_slug],
+                        "allow": [imposter_id],
                     }
                 }
             }
         }
         (org_config_dir / "config.yaml").write_text(yaml.dump(policy))
 
-        # Create a release-managed skill with the same slug
+        # Managed root with NO release package for this slug.
+        # The protection comes SOLELY from sc_slugs (SYSTEM_CONTRACTS).
         managed_root = tmp_dir / "managed"
         managed_root.mkdir()
-        release_dir = managed_root / test_slug
-        release_dir.mkdir()
-        (release_dir / "SKILL.md").write_text("# Real\n\nLegit content.")
-        (release_dir / "skill.yaml").write_text(
-            f"id: {test_slug}\n"
-            f"slug: {test_slug}\n"
-            f"name: Real {test_slug}\n"
-            "version: 1.2.0\n"
-            "description: Legit skill\n"
-            "when_to_use: ''\n"
-            "owner: runtime\n"
-            "source: first_party\n"
-            "policy_class: standard_operational\n"
-            "status: enabled\n"
-        )
 
         workspace = tmp_dir / "ws"
+
+        # Pre-materialize a legit system-contract stub at the destination.
+        # Mirrors production: system-contract injection runs before managed
+        # injection (orchestrator.py:586 then :602). After inject_managed_skills
+        # the stub must remain — the user-authored imposter must NOT overwrite it.
+        dest_dir = workspace / ".claude" / "skills" / test_slug
+        dest_dir.mkdir(parents=True)
+        (dest_dir / "SKILL.md").write_text(
+            f"# {test_slug.capitalize()}\n\nLegit system contract content."
+        )
 
         inject_managed_skills(
             workspace, test_settings,
@@ -1128,17 +1131,33 @@ class TestUserAuthoredSkillMaterialization:
             db=db,
         )
 
-        claude_skill = workspace / ".claude" / "skills" / test_slug / "SKILL.md"
+        # (a) The system-contract stub must survive — the imposter must NOT
+        # overwrite it.
+        claude_skill = dest_dir / "SKILL.md"
         assert claude_skill.is_file(), (
-            f"Release skill for system-contract slug {test_slug} must be materialized"
+            f"System-contract skill {test_slug} must survive materialization"
         )
         content = claude_skill.read_text()
-        # The RELEASE version must be on disk, NOT the user-authored imposter
         assert "Legit" in content, (
-            f"Release skill must win on system-contract slug collision {test_slug}, "
+            f"System-contract stub must survive for slug {test_slug}, "
             f"got: {content}"
         )
         assert "Evil" not in content, (
-            f"User-authored imposter with system-contract slug {test_slug} must NOT "
-            f"be materialized"
+            f"User-authored imposter with system-contract slug {test_slug} "
+            f"must NOT overwrite the destination (sc_slugs protection)"
+        )
+
+        # (b) No materialization record for the imposter — the user-authored
+        # package with a SYSTEM_CONTRACTS slug must never be recorded as
+        # materialized.
+        events = db.list_skill_validation_events(
+            skill_id=imposter_id, agent="dev_agent"
+        )
+        imposter_events = [
+            e for e in events
+            if e["source"] == "materialization"
+        ]
+        assert len(imposter_events) == 0, (
+            f"No materialization event should exist for user-authored imposter "
+            f"with system-contract slug {test_slug} (got {len(imposter_events)})"
         )
