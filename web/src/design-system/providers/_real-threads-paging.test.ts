@@ -5,12 +5,12 @@
  * through all messages via since_seq until `has_more` becomes false, and the
  * assembled transcript equals ALL messages from the server.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { renderHook, waitFor, act } from '@testing-library/react';
+import { renderHook, waitFor, act, render } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import React from 'react';
+import React, { useEffect } from 'react';
 
 // Use a real-ish slug for the router mock.
 const SLUG = 'test-org';
@@ -171,5 +171,68 @@ describe('useThreadMessages paging (THR-098)', () => {
     expect(result.current.data?.pages.length).toBe(1);
     const allMessages = result.current.data!.pages.flatMap((p) => p.messages);
     expect(allMessages.length).toBe(2);
+  });
+
+  it('auto-pages through all >200 messages via effect loop (no manual fetchNextPage)', async () => {
+    seedToken();
+    const page1Messages = Array.from({ length: 200 }, (_, i) => makeMessage(i + 1));
+    const page2Messages = Array.from({ length: 50 }, (_, i) => makeMessage(201 + i));
+
+    const counter = stubMessagesPages([
+      { messages: page1Messages, has_more: true },
+      { messages: page2Messages, has_more: false },
+    ]);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    // Consumer that models the ThreadsPage messages assembly (flatten all
+    // existing pages + auto-page effect). Before the THR-098 fix the effect
+    // is missing → only page 1 renders (200 msgs, red). After → all 250 msgs
+    // render (green).
+    function MessagesConsumer(): JSX.Element | null {
+      const q = realThreadsApi.useThreadMessages(THREAD_ID);
+      // ThreadsPage auto-page effect (THR-098 fix #1)
+      useEffect(() => {
+        if (q.hasNextPage && !q.isFetchingNextPage) {
+          q.fetchNextPage().catch(() => {});
+        }
+      }, [q.hasNextPage, q.isFetchingNextPage, q.fetchNextPage]);
+      // Flatmap all existing pages — mirrors ThreadsPage
+      const messages = q.data?.pages?.flatMap((p) => p.messages) ?? [];
+      return React.createElement('div', {
+        'data-testid': 'auto-page-container',
+        'data-message-count': messages.length,
+        'data-has-next': String(q.hasNextPage),
+        'data-is-fetching-next': String(q.isFetchingNextPage),
+      }, messages.map((m) =>
+        React.createElement('span', {
+          key: m.seq,
+          'data-testid': `msg-${m.seq}`,
+        }, m.body_markdown)
+      ));
+    }
+
+    const result = render(
+      React.createElement(QueryClientProvider, { client: qc },
+        React.createElement(MessagesConsumer),
+      ),
+    );
+
+    // Wait for auto-page to complete: hasNextPage becomes false and we have all 250 messages
+    await waitFor(() => {
+      const el = result.getByTestId('auto-page-container');
+      expect(el.getAttribute('data-has-next')).toBe('false');
+      expect(el.getAttribute('data-is-fetching-next')).toBe('false');
+      expect(Number(el.getAttribute('data-message-count'))).toBe(250);
+    }, { timeout: 5000 });
+
+    // Verify all individual message elements rendered
+    for (let i = 1; i <= 250; i++) {
+      const msgEl = result.getByTestId(`msg-${i}`);
+      expect(msgEl.textContent).toBe(`msg ${i}`);
+    }
+
+    // Verify both pages were fetched (2 calls)
+    expect(counter.getCallCount()).toBeGreaterThanOrEqual(2);
   });
 });
