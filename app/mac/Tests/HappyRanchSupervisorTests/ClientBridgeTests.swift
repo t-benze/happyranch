@@ -1231,3 +1231,23 @@ func testUseTsnetTransportDefaultsToFalse() {
     #expect(ClientBridge.useTsnetTransport == false,
         "useTsnetTransport must default to false — NWConnection path is the default")
 }
+
+// MARK: - Tsnet engine lifecycle test
+
+@Test("tsnet engine init fails cleanly when HAPPYRANCH_TSNET_AUTH_KEY is absent")
+func testTsnetEngineInitFailsWithoutAuthKey() async throws {
+    // The tsnet lifecycle is guarded behind the off-by-default flag.
+    // When the flag is on but the required config env var is not set,
+    // ensureTsnetEngine() returns a clean error — it does NOT silently
+    // proceed to an uninitialised engine, and it does NOT crash.
+    //
+    // In test runs, HAPPYRANCH_TSNET_AUTH_KEY is not set, and the
+    // stub tsnet_* symbols always return -1.  This test validates the
+    // Swift-level guard (auth key check) fires first, before we even
+    // call into the C-ABI.
+    let error = ClientBridge.ensureTsnetEngine()
+    #expect(error != nil,
+        "ensureTsnetEngine must return an error when HAPPYRANCH_TSNET_AUTH_KEY is not set")
+    #expect(error!.contains("HAPPYRANCH_TSNET_AUTH_KEY"),
+        "Error message must mention the missing env var: got '\(error!)'")
+}

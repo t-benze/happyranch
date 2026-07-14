@@ -1,5 +1,0 @@
-module CTsnet {
-    header "tsnet_shim.h"
-    link "tsnet"
-    export *
-}

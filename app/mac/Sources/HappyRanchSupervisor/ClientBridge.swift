@@ -112,6 +112,115 @@ public final class ClientBridge: @unchecked Sendable {
         ProcessInfo.processInfo.environment["HAPPYRANCH_TSNET_TRANSPORT"] == "1"
     }()
 
+    // MARK: - Tsnet engine lifecycle
+
+    /// Lock guarding tsnet engine state.
+    private static let tsnetLock = NSLock()
+
+    /// Whether the tsnet engine has been successfully initialised and started.
+    /// All accesses are guarded by tsnetLock.
+    nonisolated(unsafe) private static var tsnetEngineReady = false
+
+    /// Cached error from a failed tsnet init/start attempt (nil if never tried or success).
+    /// All accesses are guarded by tsnetLock.
+    nonisolated(unsafe) private static var tsnetInitError: String?
+
+    /// True while tsnet_init/tsnet_start is in progress (guards against concurrent init).
+    /// All accesses are guarded by tsnetLock.
+    nonisolated(unsafe) private static var tsnetInitializing = false
+
+    /// Ensure the in-process tsnet WireGuard engine is initialised and started.
+    ///
+    /// Called lazily on first use when `useTsnetTransport` is true.  Reads
+    /// dev-only config from environment variables:
+    ///   - `HAPPYRANCH_TSNET_AUTH_KEY` (required — Tailscale auth key)
+    ///   - `HAPPYRANCH_TSNET_CONTROL_URL` (optional — defaults to saas)
+    ///   - `HAPPYRANCH_TSNET_HOSTNAME` (optional — defaults to "happyranch-tsnet")
+    ///
+    /// Thread-safe and idempotent — safe to call before every dial.
+    /// Uses blocking C-ABI calls (tsnet_init, tsnet_start) — intended to be
+    /// called off the main thread (ClientBridge dispatch queue).
+    ///
+    /// - Returns: nil on success, or an error message describing the failure.
+    ///   The error is cached; subsequent calls return the same error without
+    ///   re-attempting init.
+    static func ensureTsnetEngine() -> String? {
+        tsnetLock.lock()
+        if tsnetEngineReady {
+            tsnetLock.unlock()
+            return nil
+        }
+        if let err = tsnetInitError {
+            tsnetLock.unlock()
+            return err
+        }
+        if tsnetInitializing {
+            tsnetLock.unlock()
+            return "tsnet engine initialisation in progress — retry"
+        }
+        tsnetInitializing = true
+        tsnetLock.unlock()
+
+        defer {
+            tsnetLock.lock()
+            tsnetInitializing = false
+            tsnetLock.unlock()
+        }
+
+        // Read dev-only config from environment variables.
+        let authKey = ProcessInfo.processInfo.environment["HAPPYRANCH_TSNET_AUTH_KEY"] ?? ""
+        guard !authKey.isEmpty else {
+            let err = "HAPPYRANCH_TSNET_AUTH_KEY environment variable not set"
+            tsnetLock.lock()
+            tsnetInitError = err
+            tsnetLock.unlock()
+            return err
+        }
+
+        let controlURL = ProcessInfo.processInfo.environment["HAPPYRANCH_TSNET_CONTROL_URL"]
+        let hostname = ProcessInfo.processInfo.environment["HAPPYRANCH_TSNET_HOSTNAME"] ?? "happyranch-tsnet"
+
+        // tsnet_init — blocking call that configures the tsnet server.
+        let initResult: Int32 = authKey.withCString { authPtr in
+            hostname.withCString { hostPtr in
+                if let ctrl = controlURL {
+                    return ctrl.withCString { ctrlPtr in
+                        tsnet_init(authPtr, ctrlPtr, hostPtr)
+                    }
+                } else {
+                    return tsnet_init(authPtr, nil, hostPtr)
+                }
+            }
+        }
+
+        if initResult != 0 {
+            let errPtr = tsnet_last_error()
+            let errMsg = errPtr.map { String(cString: $0) } ?? "tsnet_init failed (unknown error)"
+            if let errPtr { tsnet_free_string(errPtr) }
+            tsnetLock.lock()
+            tsnetInitError = errMsg
+            tsnetLock.unlock()
+            return errMsg
+        }
+
+        // tsnet_start — blocking call that brings the engine online.
+        let startResult = tsnet_start()
+        if startResult != 0 {
+            let errPtr = tsnet_last_error()
+            let errMsg = errPtr.map { String(cString: $0) } ?? "tsnet_start failed (unknown error)"
+            if let errPtr { tsnet_free_string(errPtr) }
+            tsnetLock.lock()
+            tsnetInitError = errMsg
+            tsnetLock.unlock()
+            return errMsg
+        }
+
+        tsnetLock.lock()
+        tsnetEngineReady = true
+        tsnetLock.unlock()
+        return nil
+    }
+
     /// The session-scoped credential prefix.
     private static let sessionCredentialPrefix = "hr_session_"
 
@@ -700,6 +809,17 @@ public final class ClientBridge: @unchecked Sendable {
         clientConnection: NWConnection,
         requestToSend: String
     ) {
+        // Ensure the tsnet engine is initialised and started before the first dial.
+        // Idempotent — subsequent calls return immediately.
+        if let initErr = Self.ensureTsnetEngine() {
+            self.sendErrorResponse(
+                to: clientConnection,
+                status: 502,
+                message: "Bad Gateway — tsnet engine not available: \(initErr)"
+            )
+            return
+        }
+
         let addr = "\(homeConnectorHost):\(homeConnectorPort)"
         let connID = tsnet_conn_dial("tcp", addr, 30_000)
 

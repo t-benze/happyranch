@@ -1,30 +1,39 @@
 // swift-tools-version: 6.0
 
 import PackageDescription
+import Foundation
 
 // Resolve the tsnet-bridge directory relative to the package root.
 // libtsnet.a is produced by `go build -buildmode=c-archive` in tsnet-bridge/
 // BEFORE invoking `swift build`.  See build-app.sh stage 0.
 //
-// For development without Go, create a stub libtsnet.a:
-//   echo 'void _tsnet_init(void){} void _tsnet_start(void){} void _tsnet_conn_dial(void){} void _tsnet_conn_read(void){} void _tsnet_conn_write(void){} void _tsnet_conn_close(void){} void _tsnet_dial(void){} void _tsnet_close(void){} void _tsnet_local_addr(void){} void _tsnet_last_error(void){} void _tsnet_free_string(void){}' | clang -x c -c - -o /tmp/stub.o && ar rcs tsnet-bridge/libtsnet.a /tmp/stub.o
+// SELF-CONTAINED DEFAULT BUILD: CTsnet includes tsnet_stub.c (weak symbols)
+// that satisfy all tsnet_* references on a clean checkout with no Go
+// toolchain.  When the real Go-built libtsnet.a is present (tsnet-bridge/
+// directory), the linker flag causes the real strong symbols to override
+// the weak stubs.  No manual pre-step required — `swift build` and
+// `swift test` succeed on any macOS machine.
 let tsnetBridgeDir = "\(Context.packageDirectory)/tsnet-bridge"
+let libtsnetPath = "\(tsnetBridgeDir)/libtsnet.a"
+let hasRealLib = FileManager.default.fileExists(atPath: libtsnetPath)
 
 let package = Package(
     name: "HappyRanchApp",
     platforms: [.macOS(.v14)],
     targets: [
-        .systemLibrary(
+        .target(
             name: "CTsnet",
-            path: "Sources/CTsnet"
+            path: "Sources/CTsnet",
+            sources: ["tsnet_shim.h", "tsnet_stub.c"],
+            publicHeadersPath: "."
         ),
         .target(
             name: "HappyRanchSupervisor",
             dependencies: ["CTsnet"],
             path: "Sources/HappyRanchSupervisor",
-            linkerSettings: [
+            linkerSettings: hasRealLib ? [
                 .unsafeFlags(["-L\(tsnetBridgeDir)", "-ltsnet"])
-            ]
+            ] : []
         ),
         .executableTarget(
             name: "HappyRanchApp",

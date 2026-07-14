@@ -45,6 +45,7 @@ logs/
 # tsnet-bridge build artifacts (built by go build -buildmode=c-archive)
 app/mac/tsnet-bridge/libtsnet.a
 app/mac/tsnet-bridge/libtsnet.h
+app/mac/tsnet-bridge/.stub.o
 
 
 .superpowers
