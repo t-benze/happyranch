@@ -347,18 +347,28 @@ function TimelineBody({
   // (the timeline scrolls inside its own overflow-y-auto box, not the
   // viewport) and load the next older page as it nears view. Re-subscribes
   // when pagination state changes so the moved sentinel is re-observed.
+  //
+  // Root = sentinel.parentElement (the scroll container) — not scrollRef.current.
+  // scrollRef.current can be null during the commit/effect handoff, which would
+  // silently fall back to the document viewport and never fire while the user
+  // scrolls inside the overflow box (THR-098). parentElement is a DOM property
+  // set the moment the sentinel is appended, so it is always correct.
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const node = sentinelRef.current;
     if (!node || !hasNextPage) return;
+    // Sentinel is a direct child of the overflow-y-auto container —
+    // parentElement IS the scroll box. Use it to guarantee the observer
+    // root is the scroll container, never the document viewport.
+    const root = node.parentElement;
     const obs = new IntersectionObserver(
       (obsEntries) => {
         if (obsEntries[0]?.isIntersecting && !isFetchingNextPage) {
           fetchNextPage();
         }
       },
-      { root: scrollRef.current, rootMargin: '200px' },
+      { root, rootMargin: '200px' },
     );
     obs.observe(node);
     return () => obs.disconnect();

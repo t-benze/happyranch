@@ -803,11 +803,17 @@ describe('AuditPage — day-grouped timeline', () => {
 describe('AuditPage — keyset infinite scroll', () => {
   let observerCallbacks: Array<(entries: { isIntersecting: boolean }[]) => void> =
     [];
+  /** Roots passed to IntersectionObserver constructors, ordered by creation. */
+  let observerRoots: Array<Element | null> = [];
 
   class MockIntersectionObserver {
     private cb: (entries: { isIntersecting: boolean }[]) => void;
-    constructor(cb: (entries: { isIntersecting: boolean }[]) => void) {
+    constructor(
+      cb: (entries: { isIntersecting: boolean }[]) => void,
+      options?: IntersectionObserverInit,
+    ) {
       this.cb = cb;
+      observerRoots.push((options?.root as Element | null) ?? null);
     }
     observe() {
       observerCallbacks.push(this.cb);
@@ -828,6 +834,7 @@ describe('AuditPage — keyset infinite scroll', () => {
 
   beforeEach(() => {
     observerCallbacks = [];
+    observerRoots = [];
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
   });
   afterEach(() => {
@@ -927,5 +934,43 @@ describe('AuditPage — keyset infinite scroll', () => {
     // observed sentinel (length 0) is the proof paging halts at next_cursor=null.
     expect(requestCount).toBe(1);
     expect(screen.getByText('End of audit trail')).toBeInTheDocument();
+  });
+
+  test('IntersectionObserver root is the scroll container, not the viewport (THR-098)', async () => {
+    // Regression: if the IntersectionObserver root falls back to the document
+    // viewport (because scrollRef.current is null), the sentinel inside the
+    // overflow-y-auto box never intersects while the user scrolls INSIDE the
+    // box — infinite scroll silently breaks. The fix uses sentinel.parentElement.
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, () =>
+        HttpResponse.json({
+          entries: [
+            { id: 10, task_id: 'TASK-A', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-20T10:00:00Z' },
+            { id: 9, task_id: 'TASK-B', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-20T09:00:00Z' },
+          ],
+          next_cursor: 'cursor-next',
+        }),
+      ),
+    );
+
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    // Wait for entries + sentinel observer to be set up (hasNextPage true).
+    await waitFor(() => {
+      expect(screen.getByText('TASK-A')).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(observerCallbacks.length).toBeGreaterThan(0);
+    });
+
+    // The root MUST be the sentinel's parent (the scroll container), not null/undefined.
+    expect(observerRoots.length).toBeGreaterThan(0);
+    for (const root of observerRoots) {
+      expect(root).not.toBeNull();
+      // Sentry parent is the scroll container <div aria-label="Audit timeline">
+      expect(root).toBeInstanceOf(HTMLDivElement);
+      expect((root as HTMLElement).getAttribute('aria-label')).toBe('Audit timeline');
+    }
   });
 });
