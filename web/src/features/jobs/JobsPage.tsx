@@ -14,6 +14,7 @@
  */
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { useJobsList } from '@/hooks/jobs';
 import type { JobRecord, JobStatus } from '@/lib/api/types';
 
@@ -339,10 +340,17 @@ export function JobsPage(): JSX.Element {
         </FilterGroup>
       </aside>
 
-      {/* Main list column */}
+      {/* Main list column. EM ruling (THR-099 jobs, flag #2): KEEP the filter
+          rail; cap the main list content at the shared 1180 `max-w-content`
+          centered. The pinned ListHeader stays a full-width status toolbar
+          (fixed-height chrome, a single left status pill — not columns needing
+          row-alignment); the scrolling job list is capped by <ContentWrap>,
+          which owns the h-full overflow-y-auto scroll surface (26px pad, 1180
+          cap) — mirroring the tasks scroll-body cap. */}
       <main className="flex min-w-0 flex-1 flex-col">
         <ListHeader pendingCount={statusCounts.pending} />
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1">
+          <ContentWrap>
           {query.isLoading ? (
             <p className="text-text-muted py-12 text-center text-sm">Loading jobs…</p>
           ) : query.isError ? (
@@ -369,6 +377,7 @@ export function JobsPage(): JSX.Element {
               );
             })
           )}
+          </ContentWrap>
         </div>
       </main>
     </div>

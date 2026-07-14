@@ -53,6 +53,7 @@ import { formatAttachmentSize } from '@/lib/threadAttachments';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import {
@@ -458,8 +459,15 @@ export function ArtifactsPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
-      {/* Header — eyebrow + serif title (ART-03); Upload de-emphasised (ART-04). */}
-      <header className="border-border-default border-b p-6">
+      {/* Header — eyebrow + serif title (ART-03); Upload de-emphasised (ART-04).
+          EM ruling (THR-099 artifacts): mirror the tasks dual-cap — cap the
+          pinned-header inner AND the scroll-body inner at the shared 1180
+          `max-w-content` (26px pad) via <ContentWrap> so the header columns sit
+          directly above the body columns. The header STAYS pinned (shrink-0,
+          outside the scroll region) and keeps its full-width border-b; its
+          <ContentWrap> overflow-y-auto is inert on this content-height header. */}
+      <header className="border-border-default shrink-0 border-b">
+        <ContentWrap>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             {hasData && (
@@ -525,42 +533,50 @@ export function ArtifactsPage(): JSX.Element {
             </div>
           </section>
         )}
+        </ContentWrap>
       </header>
 
-      {/* Main content */}
-      <div className="flex-1 overflow-y-auto p-6">
-        {/* Loading */}
-        {listQuery.isLoading && <ArtifactsSkeleton />}
-
-        {/* Error */}
-        {listQuery.isError && (
-          <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
-            <p className="text-feedback-danger text-sm">
-              Could not load artifacts.
-              {listQuery.error?.message && <> {listQuery.error.message}</>}
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => qc.invalidateQueries({ queryKey: ['artifacts', slug] })}
-            >
-              Retry
-            </Button>
-          </div>
-        )}
-
-        {/* Empty — calm empty state */}
-        {hasData && artifacts.length === 0 && (
+      {/* Main content. The h-full-centered empty state is kept OUTSIDE
+          <ContentWrap>: ContentWrap's inner .wrap is content-height, so an
+          `h-full` child collapses instead of centering (MEM-080). It renders
+          directly in this `min-h-0 flex-1` body, which has a definite flex
+          height, so the empty state stays vertically centered. Every other
+          state (loading / error / grid) is capped by <ContentWrap> (1180 cap,
+          26px pad, owns the scroll surface) so the card columns align under the
+          header columns. */}
+      <div className="min-h-0 flex-1">
+        {hasData && artifacts.length === 0 ? (
+          /* Empty — calm empty state (kept full-height centered) */
           <div className="flex h-full items-center justify-center">
             <EmptyState
               title="No artifacts yet"
               body="Upload a file above to share it across the org."
             />
           </div>
-        )}
+        ) : (
+          <ContentWrap>
+            {/* Loading */}
+            {listQuery.isLoading && <ArtifactsSkeleton />}
 
-        {/* Card grid */}
-        {hasData && artifacts.length > 0 && (
+            {/* Error */}
+            {listQuery.isError && (
+              <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+                <p className="text-feedback-danger text-sm">
+                  Could not load artifacts.
+                  {listQuery.error?.message && <> {listQuery.error.message}</>}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => qc.invalidateQueries({ queryKey: ['artifacts', slug] })}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
+
+            {/* Card grid */}
+            {hasData && artifacts.length > 0 && (
           <>
             {/* Honesty note: folders are derived from the name path, not stored. */}
             {showFolders && (
@@ -685,6 +701,8 @@ export function ArtifactsPage(): JSX.Element {
               )
             )}
           </>
+            )}
+          </ContentWrap>
         )}
       </div>
     </div>
