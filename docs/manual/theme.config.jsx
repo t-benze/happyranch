@@ -1,3 +1,6 @@
+import { ImageZoom } from 'nextra/components'
+import { ScreenshotPlaceholder } from './components/ScreenshotPlaceholder'
+
 // HappyRanch brand mark — the leaf/sprig glyph lifted from the marketing
 // mockup (currentColor so it picks up the brand green in both themes).
 const Mark = () => (
@@ -40,6 +43,55 @@ const Mark = () => (
 )
 
 export default {
+  // Render the manual's `![placeholder: ...](TODO)` screenshot markers as a
+  // branded, honesty-fenced "Screenshot coming" card instead of a broken-image
+  // glyph. Real images (src !== 'TODO', alt without the marker prefix) fall
+  // through to Nextra's default zoomable image, so a real shot swaps in later
+  // by just replacing `(TODO)` with an image path — no prose change needed.
+  components: {
+    img: props => {
+      const alt = props.alt || ''
+      const isPlaceholder = props.src === 'TODO' || alt.startsWith('placeholder:')
+      if (isPlaceholder) {
+        return (
+          <ScreenshotPlaceholder
+            caption={alt.replace(/^placeholder:\s*/i, '').trim()}
+          />
+        )
+      }
+      return <ImageZoom {...props} />
+    }
+  },
+  // Bridge from the docs site to the marketing site — a top-nav "Website" link
+  // so docs.happyranch.ai feels connected to happyranch.ai once both are live.
+  navbar: {
+    extraContent: (
+      <a
+        className="hr-navlink"
+        href="https://happyranch.ai"
+        target="_blank"
+        rel="noreferrer"
+      >
+        Website
+        <svg
+          className="hr-navlink-icon"
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M7 17L17 7M9 7h8v8"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </a>
+    )
+  },
   logo: (
     <span className="hr-brand">
       <Mark />
