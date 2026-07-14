@@ -1,0 +1,87 @@
+# =============================================================================
+# HappyRanch Remote Access — self-hosted headscale + DERP
+# =============================================================================
+# Phase-2 Part A: deploy artifact (author-only — founder provisions)
+#
+# This docker-compose stack runs:
+#   1. headscale  — Tailscale-compatible coordination server + embedded DERP relay
+#   2. caddy      — TLS termination (Let's Encrypt) + reverse proxy
+#
+# All secrets go in .env (NEVER committed to the repo).
+# Copy .env.example to .env and fill in real values.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # headscale — coordination server + embedded DERP relay
+  # ---------------------------------------------------------------------------
+  headscale:
+    image: headscale/headscale:0.25
+    container_name: happyranch-headscale
+    restart: unless-stopped
+    ports:
+      # DERP STUN port (UDP) — must be publicly reachable for NAT traversal.
+      - "${DERP_STUN_PORT:-3478}:3478/udp"
+    volumes:
+      # Persistent state: database, noise keys, DERP keys.
+      - headscale-data:/var/lib/headscale
+      # Configuration files.
+      - ./headscale/config.yaml:/etc/headscale/config.yaml:ro
+      - ./derp/derp.yaml:/etc/headscale/derp.yaml:ro
+    environment:
+      # headscale reads env-var references from config.yaml.
+      HEADSCALE_SERVER_URL: "${HEADSCALE_SERVER_URL}"
+      DERP_PUBLIC_HOSTNAME: "${DERP_PUBLIC_HOSTNAME}"
+    networks:
+      - happyranch-tailnet
+    # Health check: headscale's /health endpoint returns 200 when the server is ready.
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Caddy — TLS termination + reverse proxy
+  # ---------------------------------------------------------------------------
+  # Caddy terminates TLS (automatic Let's Encrypt), then reverse-proxies:
+  #   - /         → headscale:8080  (coordination API + basic UI)
+  #   - /derp     → headscale:8080  (DERP WebSocket upgrade)
+  #   - :443      → DERP HTTPS      (DERP relay traffic)
+  caddy:
+    image: caddy:2-alpine
+    container_name: happyranch-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Caddy's own config (Caddyfile).
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Persistent storage for Let's Encrypt certs + Caddy data.
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - happyranch-tailnet
+    depends_on:
+      headscale:
+        condition: service_healthy
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+networks:
+  happyranch-tailnet:
+    driver: bridge
+
+# ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  headscale-data:
+    driver: local
+  caddy-data:
+    driver: local
+  caddy-config:
+    driver: local

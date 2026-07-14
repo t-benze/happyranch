@@ -1,0 +1,30 @@
+# HappyRanch DERP map
+# ====================
+# This is the DERP region map that headscale serves to every node on the
+# tailnet.  It tells each node which DERP relay(s) to use for NAT traversal
+# and fallback relaying.
+#
+# This map contains ONLY our self-hosted DERP relay — NOT Tailscale's
+# public fleet (derpN.tailscale.com).
+
+regions:
+  999:
+    regionid: 999
+    regioncode: "happyranch"
+    regionname: "HappyRanch DERP"
+    nodes:
+      - name: "999a"
+        regionid: 999
+        # The publicly-reachable hostname of the DERP relay.
+        # This MUST match the DNS A record for the control-plane host.
+        # Clients connect here for DERP (HTTPS + WebSocket on port 443
+        # terminated by Caddy, forwarded to headscale's DERP listener).
+        hostname: "${DERP_PUBLIC_HOSTNAME}"
+        # STUN port (UDP).  Must be publicly reachable.
+        stunport: 3478
+        # DERP port.  Set to 443 because Caddy terminates TLS and forwards
+        # to headscale's internal DERP listener.
+        # For embedded headscale DERP, this is the same port Caddy proxies.
+        derpport: 443
+        # STUN only (no DERP) — set to false to enable relay fallback.
+        stunonly: false

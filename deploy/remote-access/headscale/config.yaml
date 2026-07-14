@@ -1,0 +1,127 @@
+---
+# HappyRanch self-hosted headscale control plane
+# ===============================================
+# Phase-2 Part A: deploy artifact (author-only — founder provisions)
+#
+# This is the config for a SINGLE headscale instance that acts as BOTH
+# the Tailscale coordination server AND the embedded DERP relay.
+# No Tailscale SaaS control plane.  No Tailscale public DERP fleet.
+
+# The publicly-reachable URL of the headscale server.
+# Clients (tsnet, Tailscale apps) connect to this URL for coordination.
+# Set via HEADSCALE_SERVER_URL in docker-compose / .env.
+server_url: "${HEADSCALE_SERVER_URL}"
+
+# Listen address for the headscale HTTP API + UI.
+# Caddy sits in front and terminates TLS; headscale listens on localhost only.
+listen_addr: 0.0.0.0:8080
+
+# gRPC listen address (for headscale CLI and external integrations).
+# Bound to localhost-only since all access is via Caddy or on the Docker network.
+grpc_listen_addr: 0.0.0.0:50443
+
+# Metrics endpoint (Prometheus scraping).
+# Exposed on a separate port; gated by Caddy or direct network policy.
+metrics_listen_addr: 0.0.0.0:9090
+
+# ---------------------------------------------------------------------------
+# TLS / ACME — disabled because Caddy terminates TLS
+# ---------------------------------------------------------------------------
+tls_letsencrypt_hostname: ""
+tls_letsencrypt_listen: ""
+tls_letsencrypt_cache_dir: ""
+tls_cert_path: ""
+tls_key_path: ""
+
+# ---------------------------------------------------------------------------
+# Noise protocol (peer-to-peer encryption)
+# ---------------------------------------------------------------------------
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+# ---------------------------------------------------------------------------
+# DERP — self-hosted relay ONLY (no Tailscale public fleet)
+# ---------------------------------------------------------------------------
+derp:
+  server:
+    # Enable the EMBEDDED DERP relay server (runs inside headscale).
+    enabled: true
+    region_id: 999
+    region_code: "happyranch"
+    region_name: "HappyRanch DERP"
+    # STUN port — DERP uses STUN for NAT traversal coordination.
+    # This port must be publicly reachable (UDP) from client networks.
+    stun_listen_addr: "0.0.0.0:3478"
+    # Optional: if clients should connect to the DERP relay on a custom port
+    # (the main listen_addr above is for the coordination API; DERP needs its own port).
+    # When non-zero, headscale's DERP server also listens on this port for HTTPS+DERP.
+    # Set this to the external port Caddy / TLS termination exposes.
+    # private_key_path: /var/lib/headscale/derp_private.key
+    # automatically_add_embedded_derp_region: true
+
+  # Explicitly EMPTY — do NOT fetch from Tailscale's public DERP list.
+  urls: []
+
+  # Paths to DERP map files.  We define the map inline (below) rather than
+  # referencing external files, keeping the config self-contained.
+  paths:
+    - /etc/headscale/derp.yaml
+
+  # Disable automatic DERP map updates — we own the map.
+  auto_update_enabled: false
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    # WAL mode for better concurrent-read performance.
+    write_ahead_log: true
+
+# ---------------------------------------------------------------------------
+# IP allocation — private tailnet subnet
+# ---------------------------------------------------------------------------
+# The IPv4 and IPv6 prefixes from which node addresses are drawn.
+# 100.64.0.0/10 is the CGNAT range Tailscale uses; pick a /24 for a small tailnet.
+ip_prefixes:
+  - 100.64.0.0/10
+  - fd7a:115c:a1e0::/48
+
+# ---------------------------------------------------------------------------
+# DNS configuration (optional — provided by the tailnet)
+# ---------------------------------------------------------------------------
+dns_config:
+  override_local_dns: true
+  # Use public resolvers for the headscale server; nodes get these via the tailnet.
+  nameservers:
+    - 1.1.1.1
+    - 8.8.8.8
+
+# ---------------------------------------------------------------------------
+# ACL / policy
+# ---------------------------------------------------------------------------
+# Minimal default policy: all nodes can reach each other.
+# The founder can restrict this later via `headscale policy set`.
+acl_policy_path: ""
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+log:
+  format: text
+  level: info
+
+# ---------------------------------------------------------------------------
+# Ephemeral nodes & expiry
+# ---------------------------------------------------------------------------
+# Nodes that go offline are automatically removed after this period.
+# Set to 0 to never expire offline nodes (default for a small tailnet).
+# ephemeral_node_inactivity_timeout: 120h
+# node_update_check_interval: 10s
+
+# ---------------------------------------------------------------------------
+# Randomize client port
+# ---------------------------------------------------------------------------
+randomize_client_port: false
