@@ -12,7 +12,7 @@
  */
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import type { ThreadDetailResponse, ThreadMessage, ThreadRecord } from '@/lib/api/types';
+import type { ThreadDetailResponse, ThreadMessage, ThreadMessagesPage, ThreadRecord } from '@/lib/api/types';
 import type { ThreadTaskSummary } from '@/lib/api/threads';
 import { MOCK_MESSAGES, MOCK_PARTICIPANTS, MOCK_THREADS } from '@/mocks';
 import type {
@@ -20,6 +20,7 @@ import type {
   ArchiveResult,
   ComposeArgs,
   ComposeResult,
+  InfiniteQueryLike,
   InviteArgs,
   InviteResult,
   MutationLike,
@@ -141,7 +142,7 @@ function useThread(threadId: string | undefined): QueryLike<ThreadDetailResponse
 
 function useThreadMessages(
   threadId: string | undefined,
-): QueryLike<{ messages: ThreadMessage[] }> {
+): InfiniteQueryLike<ThreadMessagesPage> {
   const flashing = useLoadingFlash(`thread-messages:${threadId ?? ''}`);
   const q = useQuery({
     queryKey: ['mock-thread-messages', threadId],
@@ -149,14 +150,22 @@ function useThreadMessages(
     queryFn: async () => {
       await sleep(0);
       const id = threadId as string;
-      return { messages: store.messages[id] ?? [] };
+      const msgs = store.messages[id] ?? [];
+      return {
+        messages: msgs,
+        has_more: false,
+        next_since_seq: msgs.length > 0 ? msgs[msgs.length - 1].seq : 0,
+      } as ThreadMessagesPage;
     },
   });
   return {
-    data: flashing ? undefined : q.data,
+    data: flashing ? undefined : q.data ? { pages: [q.data] } : undefined,
     isLoading: flashing || q.isLoading,
     isError: q.isError,
     error: q.error,
+    fetchNextPage: async () => {},
+    hasNextPage: false,
+    isFetchingNextPage: false,
   };
 }
 

@@ -5,7 +5,7 @@ const empty: InfiniteQueryLike<AuditListPage> = {
   isLoading: false,
   isError: false,
   error: null,
-  fetchNextPage: () => {
+  fetchNextPage: async () => {
     /* no-op: prototype fixtures fit in a single page */
   },
   hasNextPage: false,

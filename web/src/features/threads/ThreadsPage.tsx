@@ -340,7 +340,8 @@ export function ThreadsPage(): JSX.Element {
   const activeMessagesQuery = useThreadMessages(threadId);
   useThreadTailSSE(threadId);
   const messages: ThreadMessage[] = useMemo(() => {
-    if (activeMessagesQuery.data) return activeMessagesQuery.data.messages;
+    if (activeMessagesQuery.data?.pages)
+      return activeMessagesQuery.data.pages.flatMap((p) => p.messages);
     return activeThread.data?.messages ?? [];
   }, [activeMessagesQuery.data, activeThread.data]);
 

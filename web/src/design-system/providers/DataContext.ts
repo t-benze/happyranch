@@ -24,7 +24,7 @@ import type {
   OrgsListResponse,
   SettingsSnapshot,
   ThreadDetailResponse,
-  ThreadMessage,
+  ThreadMessagesPage,
   ThreadRecord,
 } from '@/lib/api/types';
 import type { threads as threadsApi } from '@/lib/api';
@@ -67,7 +67,7 @@ export interface InfiniteQueryLike<TPage> {
   isLoading: boolean;
   isError: boolean;
   error: Error | null;
-  fetchNextPage: () => void;
+  fetchNextPage: () => Promise<unknown>;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
 }
@@ -110,7 +110,7 @@ export interface ThreadsApi {
   useThread: (threadId: string | undefined) => QueryLike<ThreadDetailResponse>;
   useThreadMessages: (
     threadId: string | undefined,
-  ) => QueryLike<{ messages: ThreadMessage[] }>;
+  ) => InfiniteQueryLike<ThreadMessagesPage>;
   /** Tasks dispatched from this thread, newest-first (THR-061). Read-only. */
   useThreadTasks: (
     threadId: string | undefined,

@@ -44,9 +44,7 @@ function useAuditList(params?: {
     isLoading: q.isLoading,
     isError: q.isError,
     error: (q.error as Error | null) ?? null,
-    fetchNextPage: () => {
-      void q.fetchNextPage();
-    },
+    fetchNextPage: () => q.fetchNextPage(),
     hasNextPage: !!q.hasNextPage,
     isFetchingNextPage: q.isFetchingNextPage,
   };
