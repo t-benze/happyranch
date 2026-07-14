@@ -23,6 +23,8 @@ import type {
   CatalogSkillItem,
   CreateSkillRequest,
   CreateSkillResponse,
+  EditSkillRequest,
+  EditSkillResponse,
   SkillDetail,
   ValidateSkillResponse,
 } from '@/lib/api/skills';
@@ -86,6 +88,43 @@ function mockCreateResponse(body: CreateSkillRequest): CreateSkillResponse {
     source: 'user_authored',
     validation_state: 'validated',
     validation: { ok: true, errors: [] },
+  };
+}
+
+// Slice-4 edit fixture. A body whose name/skill_md opts into the failure path
+// (contains `fail`) returns the failed-validation draft; everything else
+// validates. The response echoes the submitted version so a bumped version
+// drives the edited-effective (takes-effect-next-session) result state
+// (spec v3 §9.5). A failure still persists an editable draft (§9.1a).
+function mockEditResponse(
+  skillId: string,
+  body: EditSkillRequest,
+): EditSkillResponse {
+  const version = (body.version ?? '').trim() || '0.0.0';
+  const optsFail = `${body.name ?? ''} ${body.skill_md ?? ''}`
+    .toLowerCase()
+    .includes('fail');
+  if (optsFail) {
+    return {
+      skill_id: skillId,
+      source: 'user_authored',
+      validation_state: 'in_catalog',
+      validation: {
+        ok: false,
+        errors: [
+          'SKILL.md is missing a required version field.',
+          'The references/pricing.md asset could not be resolved.',
+        ],
+      },
+      version,
+    };
+  }
+  return {
+    skill_id: skillId,
+    source: 'user_authored',
+    validation_state: 'validated',
+    validation: { ok: true, errors: [] },
+    version,
   };
 }
 
@@ -368,4 +407,8 @@ export const mockSkillsApi: SkillsApi = {
           : { ok: true, errors: [] },
       };
     }),
+  useEditSkill: () =>
+    mockMutation<{ skillId: string; body: EditSkillRequest }, EditSkillResponse>(
+      ({ skillId, body }) => mockEditResponse(skillId, body),
+    ),
 };

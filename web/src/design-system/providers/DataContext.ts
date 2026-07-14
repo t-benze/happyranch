@@ -38,6 +38,8 @@ import type {
   CatalogSkillItem,
   CreateSkillRequest,
   CreateSkillResponse,
+  EditSkillRequest,
+  EditSkillResponse,
   SkillDetail,
   ValidateSkillResponse,
 } from '@/lib/api/skills';
@@ -452,6 +454,15 @@ export interface SkillsApi {
   useValidateSkill: () => MutationLike<
     { skillId: string },
     ValidateSkillResponse
+  >;
+  /** Edit a user-authored custom skill and re-validate (Slice-4). The PATCH
+   *  can never mint/alter a system_contract (no policy_class field). A
+   *  content-validation failure still persists an editable draft
+   *  (`validation.ok=false`), so the mutation resolves rather than rejects on
+   *  that path (spec v3 §9.5 / §9.1a). */
+  useEditSkill: () => MutationLike<
+    { skillId: string; body: EditSkillRequest },
+    EditSkillResponse
   >;
 }
 

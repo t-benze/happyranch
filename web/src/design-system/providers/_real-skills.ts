@@ -16,12 +16,15 @@ import { useParams } from 'react-router-dom';
 // the same idiom `_real-dreams` uses for `@/lib/api/dreams`.
 import {
   createSkill,
+  editSkill,
   getSkillCatalogDetail,
   listSkillsCatalog,
   validateSkill,
   type CatalogSkillItem,
   type CreateSkillRequest,
   type CreateSkillResponse,
+  type EditSkillRequest,
+  type EditSkillResponse,
   type SkillDetail,
   type ValidateSkillResponse,
 } from '@/lib/api/skills';
@@ -90,9 +93,30 @@ function useValidateSkill(): MutationLike<
   });
 }
 
+// Edit a user-authored skill (PATCH). Same draft-persist-on-content-failure
+// contract as create: a content-validation failure resolves (spec v3 §9.5);
+// only a 422/transport error rejects. On any persist we invalidate the catalog
+// and the skill's own detail query so the new version/state is picked up.
+function useEditSkill(): MutationLike<
+  { skillId: string; body: EditSkillRequest },
+  EditSkillResponse
+> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ skillId, body }: { skillId: string; body: EditSkillRequest }) =>
+      editSkill(slug, skillId, body),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
+      qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });
+    },
+  });
+}
+
 export const realSkillsApi: SkillsApi = {
   useSkillsCatalog,
   useSkillDetail,
   useCreateSkill,
   useValidateSkill,
+  useEditSkill,
 };

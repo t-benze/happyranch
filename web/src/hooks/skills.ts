@@ -13,6 +13,8 @@ export type {
   CatalogSkillItem,
   CreateSkillRequest,
   CreateSkillResponse,
+  EditSkillRequest,
+  EditSkillResponse,
   SkillDetail,
   ValidateSkillResponse,
 } from '@/lib/api/skills';
@@ -34,3 +36,7 @@ export const useCreateSkill: ReturnType<
 export const useValidateSkill: ReturnType<
   typeof useData
 >['skills']['useValidateSkill'] = () => useData().skills.useValidateSkill();
+
+export const useEditSkill: ReturnType<
+  typeof useData
+>['skills']['useEditSkill'] = () => useData().skills.useEditSkill();

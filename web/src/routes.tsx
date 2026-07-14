@@ -22,6 +22,7 @@ import { AssistantDockHost } from '@/features/system-assistant/AssistantDockHost
 import { AuditPage } from '@/features/audit/AuditPage';
 import { SkillsPage } from '@/features/skills/SkillsPage';
 import { SkillCreatePage } from '@/features/skills/SkillCreatePage';
+import { SkillEditPage } from '@/features/skills/SkillEditPage';
 import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
@@ -109,6 +110,7 @@ export function AppRoutes(): JSX.Element {
           {/* Static `new` ranks above the dynamic `:skillId` in react-router
               v6, but keep it declared first for readability. */}
           <Route path="skills/new" element={<SkillCreatePage />} />
+          <Route path="skills/:skillId/edit" element={<SkillEditPage />} />
           <Route path="skills/:skillId" element={<SkillDetailPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:agent_name" element={<AgentsPage />} />
