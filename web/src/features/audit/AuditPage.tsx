@@ -18,6 +18,7 @@
 import { useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { cn } from '@/lib/utils';
 import { useAuditList } from '@/hooks/audit';
 import { AuditTimeline } from './AuditTimeline';
@@ -131,8 +132,20 @@ export function AuditPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
+      {/* EM ruling (THR-099 audit): KEEP the bordered card header + the side
+          event-legend; cap the inner content at the shared 1180 `max-w-content`
+          centered in the main region beside the shell rail, with the same 26px
+          horizontal pad as tasks. Audit is a full-height, own-inner-scroll page
+          (AuditTimeline scrolls internally + paginates against its own overflow
+          box), so we REUSE <ContentWrap> purely for its 1180 cap + 26px pad and
+          override its inner column to `flex h-full` — that keeps the bounded
+          flex height AuditTimeline's internal scroll/infinite-load needs (its
+          overflow-y-auto never engages because the inner column is exactly
+          h-full). This avoids hand-rolling the arbitrary 26px pad, which eslint
+          forbids in the feature layer. AuditTimeline itself is untouched. */}
+      <ContentWrap className="flex h-full min-h-0 flex-col gap-4">
       {/* --- Top bar --- */}
-      <header className="bg-surface border-border-default mx-4 mt-4 rounded-lg border p-4">
+      <header className="bg-surface border-border-default shrink-0 rounded-lg border p-4">
         <div className="flex items-start justify-between gap-3">
           {/* AUDIT-03: uppercase eyebrow + Newsreader serif title, matching the
               a-audit Direction-A reference and the Tasks/Agents surfaces. */}
@@ -175,7 +188,7 @@ export function AuditPage(): JSX.Element {
       </header>
 
       {/* Timeline (left) + Event-types legend-filter rail (right) */}
-      <div className="flex flex-1 gap-4 overflow-hidden p-4">
+      <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
         <div className="border-border-default bg-surface min-w-0 flex-1 overflow-hidden rounded-lg border">
           <AuditTimeline legendMap={legendColorMap} sinceISO={sinceISO} />
         </div>
@@ -186,6 +199,7 @@ export function AuditPage(): JSX.Element {
           onClear={clearClass}
         />
       </div>
+      </ContentWrap>
     </div>
   );
 }
