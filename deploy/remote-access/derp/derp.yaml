@@ -19,7 +19,12 @@ regions:
         # This MUST match the DNS A record for the control-plane host.
         # Clients connect here for DERP (HTTPS + WebSocket on port 443
         # terminated by Caddy, forwarded to headscale's DERP listener).
-        hostname: "${DERP_PUBLIC_HOSTNAME}"
+        #
+        # IMPORTANT: Replace `changeme.example.com` with YOUR real hostname
+        # BEFORE running `docker compose up`.  Docker Compose does NOT
+        # expand env vars inside bind-mounted files — you MUST edit this
+        # value directly.
+        hostname: "changeme.example.com"
         # STUN port (UDP).  Must be publicly reachable.
         stunport: 3478
         # DERP port.  Set to 443 because Caddy terminates TLS and forwards

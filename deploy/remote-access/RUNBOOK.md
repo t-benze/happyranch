@@ -124,24 +124,42 @@ DERP_PUBLIC_HOSTNAME=headscale.example.com
 
 ---
 
-## Step 4: Configure TLS in Caddyfile
+## Step 4: Verify TLS configuration
 
-Open `Caddyfile` and **uncomment the `tls` directive** with your email:
+The Caddyfile includes `tls {$TLS_EMAIL}` which reads the email from the
+`TLS_EMAIL` variable passed by docker-compose from your `.env` file.  Set
+`TLS_EMAIL=you@example.com` in `.env` to receive certificate expiry
+notifications from Let's Encrypt.
 
-```caddy
-{$HEADSCALE_SERVER_URL:localhost} {
-        tls {$TLS_EMAIL}
-        reverse_proxy headscale:8080 { ... }
-}
-```
-
-If `TLS_EMAIL` is not set, Caddy will still work but will use a
-zero-SSL/Let's Encrypt default — the directive is recommended for
-certificate expiry notifications.
+If `TLS_EMAIL` is empty (the default), Caddy still obtains valid
+Let's Encrypt certificates — the email is only used for notifications.
 
 ---
 
-## Step 5: Start the stack
+## Step 5: Set the DERP hostname in derp.yaml
+
+**This step is REQUIRED before starting the stack.**
+
+Docker Compose does NOT expand environment variables inside bind-mounted
+files.  The file `derp/derp.yaml` contains the literal placeholder
+`changeme.example.com` — you MUST edit it to your real hostname.
+
+```bash
+# Replace the placeholder with your real DERP hostname
+sed -i 's/changeme.example.com/headscale.example.com/g' derp/derp.yaml
+
+# Verify the replacement
+grep hostname derp/derp.yaml
+# Expected: hostname: "headscale.example.com"
+```
+
+> If you skip this step, clients will receive a DERP map pointing at
+> `changeme.example.com` — a non-routable hostname — and DERP relay
+> fallback will fail.
+
+---
+
+## Step 6: Start the stack
 
 ```bash
 docker compose up -d
@@ -170,7 +188,7 @@ docker compose logs caddy
 
 ---
 
-## Step 6: Verify the control plane is reachable
+## Step 7: Verify the control plane is reachable
 
 From the host itself:
 
@@ -192,7 +210,7 @@ curl -s https://headscale.example.com/health
 
 ---
 
-## Step 7: Health check — headscale nodes list
+## Step 8: Health check — headscale nodes list
 
 Use the headscale CLI inside the container:
 
@@ -210,7 +228,7 @@ ID | Hostname | Name | ... | LastSeen | Expiry
 
 ---
 
-## Step 8: DERP reachability probe
+## Step 9: DERP reachability probe
 
 Verify the DERP relay is accessible:
 
@@ -230,7 +248,25 @@ The DERP relay is working if:
 
 ---
 
-## Step 9: Mint a device auth key
+## Step 10: Create the admin user
+
+Before minting auth keys you need a user in headscale.  Create the
+`admin` user now:
+
+```bash
+# Create the admin user
+docker compose exec headscale headscale users create admin
+
+# Verify the user was created
+docker compose exec headscale headscale users list
+# Expected output:
+# ID | Name
+# 1  | admin
+```
+
+---
+
+## Step 11: Mint a device auth key
 
 This is the key the HappyRanch Mac client consumes via
 `HAPPYRANCH_TSNET_AUTH_KEY`.
@@ -268,7 +304,7 @@ docker compose exec headscale headscale preauthkeys list --user admin
 
 ---
 
-## Step 10: Wire the HappyRanch Mac client back to this control plane
+## Step 12: Wire the HappyRanch Mac client back to this control plane
 
 On the Mac running the HappyRanch app, set these environment variables:
 
@@ -279,7 +315,7 @@ export HAPPYRANCH_TSNET_TRANSPORT=1
 # Point at YOUR self-hosted headscale (NOT Tailscale SaaS)
 export HAPPYRANCH_TSNET_CONTROL_URL=https://headscale.example.com
 
-# The auth key minted in Step 9
+# The auth key minted in Step 11
 export HAPPYRANCH_TSNET_AUTH_KEY=abc123def456...
 
 # Optional: custom hostname for the node
@@ -302,7 +338,7 @@ Expected: a new node with the hostname you set (or `happyranch-tsnet` if not set
 
 ---
 
-## Step 11: Verify end-to-end connectivity (optional)
+## Step 13: Verify end-to-end connectivity (optional)
 
 Once a Mac client is registered, you can verify the tailnet is working:
 
@@ -351,7 +387,7 @@ deploy/remote-access/
 ### Node registration fails ("auth key invalid")
 - Verify the auth key was copied correctly (no trailing whitespace)
 - Check if the key expired: `headscale preauthkeys list --user admin`
-- Create a new key if needed (Step 9)
+- Create a new key if needed (Step 11)
 
 ### DERP STUN is unreachable
 - Verify UDP 3478 is open on both the host firewall and cloud firewall

@@ -12,7 +12,7 @@
 {$HEADSCALE_SERVER_URL:localhost} {
         # Let's Encrypt email for TLS certificate issuance.
         # Set the env var TLS_EMAIL in .env (passed through docker-compose).
-        # tls {$TLS_EMAIL}
+        tls {$TLS_EMAIL}
 
         # --- Headscale coordination API + UI ---
         # All standard headscale HTTP traffic is reverse-proxied to headscale:8080.

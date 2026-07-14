@@ -85,14 +85,14 @@ database:
 # ---------------------------------------------------------------------------
 # The IPv4 and IPv6 prefixes from which node addresses are drawn.
 # 100.64.0.0/10 is the CGNAT range Tailscale uses; pick a /24 for a small tailnet.
-ip_prefixes:
+prefixes:
   - 100.64.0.0/10
   - fd7a:115c:a1e0::/48
 
 # ---------------------------------------------------------------------------
 # DNS configuration (optional — provided by the tailnet)
 # ---------------------------------------------------------------------------
-dns_config:
+dns:
   override_local_dns: true
   # Use public resolvers for the headscale server; nodes get these via the tailnet.
   nameservers:
@@ -104,7 +104,10 @@ dns_config:
 # ---------------------------------------------------------------------------
 # Minimal default policy: all nodes can reach each other.
 # The founder can restrict this later via `headscale policy set`.
-acl_policy_path: ""
+# The `policy.path` key is the v0.25 schema; if empty headscale uses a
+# default "accept all" policy.
+policy:
+  path: ""
 
 # ---------------------------------------------------------------------------
 # Logging

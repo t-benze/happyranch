@@ -19,6 +19,10 @@ services:
     image: headscale/headscale:0.25
     container_name: happyranch-headscale
     restart: unless-stopped
+    # The official headscale image is distroless — no shell, no wget, no curl.
+    # The container entrypoint is the headscale binary; we must explicitly pass
+    # the `serve` subcommand to start the coordination server.
+    command: ["serve"]
     ports:
       # DERP STUN port (UDP) — must be publicly reachable for NAT traversal.
       - "${DERP_STUN_PORT:-3478}:3478/udp"
@@ -34,9 +38,11 @@ services:
       DERP_PUBLIC_HOSTNAME: "${DERP_PUBLIC_HOSTNAME}"
     networks:
       - happyranch-tailnet
-    # Health check: headscale's /health endpoint returns 200 when the server is ready.
+    # Health check: `headscale nodes list` queries the gRPC API internally and
+    # returns 0 when the server is running and the database is reachable.
+    # This works in the distroless image (no wget/curl required).
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      test: ["CMD", "headscale", "nodes", "list"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -62,6 +68,10 @@ services:
       # Persistent storage for Let's Encrypt certs + Caddy data.
       - caddy-data:/data
       - caddy-config:/config
+    environment:
+      # These are interpolated into the Caddyfile by Caddy at startup.
+      HEADSCALE_SERVER_URL: "${HEADSCALE_SERVER_URL}"
+      TLS_EMAIL: "${TLS_EMAIL:-}"
     networks:
       - happyranch-tailnet
     depends_on:
