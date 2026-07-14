@@ -383,11 +383,12 @@ const DETAILS: Record<string, SkillDetail> = {
 };
 
 // ── Slice-5 per-agent assignment status fixtures ────────────────────────
-// Keyed by skill_id. The status endpoint is the authoritative assignment
-// source that drives the custom-skill assignment table. Coverage spans the
-// full vocabulary: effective agents, an assigned-not-yet-effective agent, and
-// not-assigned agents (candidates to assign) so the toggle + config-review
-// commit can be exercised without a daemon.
+// Keyed by skill_id. MATCHES PRODUCTION: the daemon's status endpoint returns
+// ONLY already-assigned agents (it skips unassigned agents), so these fixtures
+// carry assigned rows only. The full candidate roster (which surfaces the
+// unassigned, assignable agents) is derived by the panel from the real agents
+// source and unioned with this response — it is NOT seeded here. Coverage:
+// effective agents + an assigned-not-yet-effective agent.
 const STATUS: Record<string, SkillStatusResponse> = {
   'sk-tourism-partner-playbook': {
     skill_id: 'sk-tourism-partner-playbook',
@@ -417,48 +418,19 @@ const STATUS: Record<string, SkillStatusResponse> = {
         materialized_version: '1.1.0',
         state: 'assigned_not_yet_effective',
       },
-      {
-        agent: 'ops_agent',
-        assigned: false,
-        effective: false,
-        materialized_version: null,
-        state: 'assigned_not_yet_effective',
-      },
-      {
-        agent: 'finance_agent',
-        assigned: false,
-        effective: false,
-        materialized_version: null,
-        state: 'assigned_not_yet_effective',
-      },
     ],
     last_validation: { ok: true, version: '1.2.0', at: '2026-07-14T10:00:00Z' },
   },
-  // A failed-validation custom draft: not shown to any agent yet, but the
-  // operator can still queue assignments (they take effect once it validates
-  // and the agent's next session starts).
+  // A failed-validation custom draft: not shown to any agent yet and not yet
+  // assignable — the panel renders the read-only "resolve validation first"
+  // state. Production returns no assigned agents for it.
   'sk-vendor-comms-style': {
     skill_id: 'sk-vendor-comms-style',
     source: 'user_authored',
     in_catalog: true,
     validated: false,
     current_version: '0.3.0',
-    assignments: [
-      {
-        agent: 'support_agent',
-        assigned: false,
-        effective: false,
-        materialized_version: null,
-        state: 'assigned_not_yet_effective',
-      },
-      {
-        agent: 'ops_agent',
-        assigned: false,
-        effective: false,
-        materialized_version: null,
-        state: 'assigned_not_yet_effective',
-      },
-    ],
+    assignments: [],
     last_validation: { ok: false, version: null, at: '2026-07-14T09:00:00Z' },
   },
 };

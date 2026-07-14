@@ -39,6 +39,44 @@ export type AssignAction = 'allow' | 'remove';
  *  here; a toggle back to the committed state drops the entry. */
 export type PendingAssignments = Record<string, boolean>;
 
+/**
+ * Build the FULL candidate roster of per-agent assignment rows the panel
+ * renders, by unioning the real agents roster with the skill's status response.
+ *
+ * The status endpoint (`getSkillStatus().assignments`) returns ONLY agents that
+ * are already assigned the skill (the daemon skips unassigned agents) — so it is
+ * NOT the candidate roster. To let the operator assign a custom skill to an as-
+ * yet-unassigned agent, the candidate list is derived from the real agents
+ * roster (`useAgentsList`): for each roster agent, its committed row from the
+ * status response is used if present, otherwise a synthesized `not_assigned`
+ * row (`assigned:false, effective:false`) is emitted — which `agentProvenance`
+ * (REUSED, no parallel copy) then renders as "Not assigned" with an Assign
+ * control. Roster order is preserved; any assigned agent NOT in the roster (a
+ * lingering assignment after a roster change) is appended so it is never lost.
+ */
+export function rosterAssignments(
+  rosterAgents: string[],
+  assignments: AgentAssignmentFacts[],
+): AgentAssignmentFacts[] {
+  const byAgent = new Map(assignments.map((a) => [a.agent, a]));
+  const seen = new Set<string>();
+  const rows: AgentAssignmentFacts[] = [];
+  for (const agent of rosterAgents) {
+    if (seen.has(agent)) continue;
+    seen.add(agent);
+    rows.push(
+      byAgent.get(agent) ?? { agent, assigned: false, effective: false },
+    );
+  }
+  for (const a of assignments) {
+    if (!seen.has(a.agent)) {
+      seen.add(a.agent);
+      rows.push(a);
+    }
+  }
+  return rows;
+}
+
 /** Desired assigned-state under the queue (committed when not queued). */
 export function desiredAssigned(
   a: AgentAssignmentFacts,

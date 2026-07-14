@@ -21,23 +21,31 @@
  * modules.
  */
 import { useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import {
   BadgeCheck,
   CircleDashed,
   ClipboardCheck,
   Info,
+  Pencil,
   TriangleAlert,
   Users,
 } from 'lucide-react';
+import { useAgentsList } from '@/hooks/agents';
 import { useAssignSkill, useSkillStatus } from '@/hooks/skills';
 import type { ValidationTone } from './skills-catalog';
-import { type AgentAssignmentFacts, type AgentEffectiveStatus } from './skills-detail';
+import {
+  editRoutePath,
+  type AgentAssignmentFacts,
+  type AgentEffectiveStatus,
+} from './skills-detail';
 import {
   CONFIG_REVIEW_NOTE,
   changeCount,
   isChanged,
   previewProvenance,
   reviewChanges,
+  rosterAssignments,
   toggleAssignment,
   toggleLabel,
   type PendingAssignments,
@@ -70,11 +78,17 @@ function Eyebrow({ children }: { children: ReactNode }): JSX.Element {
 }
 
 export function SkillAssignmentPanel({
+  slug,
   skillId,
 }: {
+  slug: string;
   skillId: string;
 }): JSX.Element {
   const status = useSkillStatus(skillId);
+  // The full candidate roster comes from the real agents source, NOT the status
+  // response (which lists only already-assigned agents) — so an unassigned agent
+  // can still be surfaced with an Assign control.
+  const agents = useAgentsList();
   const assign = useAssignSkill();
   const [queue, setQueue] = useState<PendingAssignments>({});
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -94,7 +108,7 @@ export function SkillAssignmentPanel({
     </section>
   );
 
-  if (status.isLoading) {
+  if (status.isLoading || agents.isLoading) {
     return section(
       <div
         className="border-border-subtle bg-surface-subtle mt-4 h-32 animate-pulse rounded-md border"
@@ -116,7 +130,47 @@ export function SkillAssignmentPanel({
     );
   }
 
-  const assignments: AgentAssignmentFacts[] = status.data.assignments;
+  // Validation gate: the assign route rejects a change while the current
+  // version is not validated, so a not-validated skill can queue nothing. Show
+  // a read-only "resolve validation first" state instead of the controls.
+  if (!status.data.validated) {
+    return section(
+      <div
+        className="text-fg-muted border-border-subtle bg-surface-subtle mt-4 rounded-md border p-4"
+        data-testid="assignment-not-validated"
+      >
+        <div className="text-fg flex items-center gap-2 text-sm font-semibold">
+          <TriangleAlert
+            size={15}
+            aria-hidden="true"
+            className="text-fg-subtle shrink-0"
+          />
+          Validation needed before you can assign
+        </div>
+        <p className="text-body-sm mt-1.5">
+          This skill hasn’t passed validation yet, so it isn’t shown to any agent
+          and can’t be assigned. Re-validate it first — then you can choose which
+          agents see it as guidance.
+        </p>
+        <Link
+          to={editRoutePath(slug, skillId)}
+          className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm mt-3 inline-flex max-w-full items-start gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
+        >
+          <Pencil size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+          <span className="min-w-0 break-words">Re-validate skill</span>
+        </Link>
+      </div>,
+    );
+  }
+
+  // Union the real agents roster with the status response so unassigned agents
+  // surface as assignable candidates (not just the already-assigned agents the
+  // status endpoint returns).
+  const roster = (agents.data?.agents ?? []).map((a) => a.name);
+  const assignments: AgentAssignmentFacts[] = rosterAssignments(
+    roster,
+    status.data.assignments,
+  );
   const changes = reviewChanges(assignments, queue);
   const pendingCount = changeCount(assignments, queue);
   const applying = assign.isPending;

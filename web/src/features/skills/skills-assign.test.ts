@@ -7,6 +7,7 @@ import {
   isChanged,
   previewProvenance,
   reviewChanges,
+  rosterAssignments,
   toggleAssignment,
   toggleLabel,
   type PendingAssignments,
@@ -32,6 +33,59 @@ const UNASSIGNED: AgentAssignmentFacts = {
   effective: false,
 };
 const ALL = [EFFECTIVE, NOT_YET, UNASSIGNED];
+
+describe('rosterAssignments — full candidate roster from real agents ∪ status', () => {
+  // The status response carries ONLY assigned agents (production skips
+  // unassigned). partner_liaison/support_agent are assigned; ops_agent and
+  // finance_agent are roster-only unassigned candidates.
+  const STATUS = [EFFECTIVE, NOT_YET];
+
+  test('synthesizes a not_assigned row for a roster agent absent from status', () => {
+    const rows = rosterAssignments(
+      ['partner_liaison', 'support_agent', 'ops_agent', 'finance_agent'],
+      STATUS,
+    );
+    // Assigned agents keep their committed row verbatim.
+    expect(rows.find((r) => r.agent === 'partner_liaison')).toEqual(EFFECTIVE);
+    expect(rows.find((r) => r.agent === 'support_agent')).toEqual(NOT_YET);
+    // Roster-only agents are synthesized as not_assigned candidates.
+    expect(rows.find((r) => r.agent === 'ops_agent')).toEqual({
+      agent: 'ops_agent',
+      assigned: false,
+      effective: false,
+    });
+    expect(rows.find((r) => r.agent === 'finance_agent')).toEqual({
+      agent: 'finance_agent',
+      assigned: false,
+      effective: false,
+    });
+  });
+
+  test('preserves roster order', () => {
+    const rows = rosterAssignments(
+      ['ops_agent', 'support_agent', 'partner_liaison'],
+      STATUS,
+    );
+    expect(rows.map((r) => r.agent)).toEqual([
+      'ops_agent',
+      'support_agent',
+      'partner_liaison',
+    ]);
+  });
+
+  test('appends an assigned agent missing from the roster (never dropped)', () => {
+    const rows = rosterAssignments(['ops_agent'], STATUS);
+    expect(rows.map((r) => r.agent)).toEqual([
+      'ops_agent',
+      'partner_liaison',
+      'support_agent',
+    ]);
+  });
+
+  test('an empty roster falls back to the assigned agents from status', () => {
+    expect(rosterAssignments([], STATUS)).toEqual(STATUS);
+  });
+});
 
 describe('desiredAssigned / isChanged', () => {
   test('falls back to the committed state when the agent is not queued', () => {

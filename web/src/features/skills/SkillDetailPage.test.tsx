@@ -147,8 +147,11 @@ interface StatusResponse {
   last_validation: { ok: boolean; version: string | null; at: string | null } | null;
 }
 
-// Custom skill status spans the full vocabulary: an effective agent, an
-// assigned-not-yet-effective agent, and a not-assigned agent (candidate).
+// Status MATCHES PRODUCTION: the daemon returns ONLY already-assigned agents
+// (unassigned agents are skipped). So the status carries an effective agent and
+// an assigned-not-yet-effective agent — but NOT the unassigned candidate. The
+// unassigned candidate (ops_agent) is surfaced by unioning the real agents
+// roster (below) with this response, exactly as production does.
 const CUSTOM_STATUS: StatusResponse = {
   skill_id: CUSTOM.skill_id,
   source: 'user_authored',
@@ -170,20 +173,31 @@ const CUSTOM_STATUS: StatusResponse = {
       materialized_version: '1.1.0',
       state: 'assigned_not_yet_effective',
     },
-    {
-      agent: 'ops_agent',
-      assigned: false,
-      effective: false,
-      materialized_version: null,
-      state: 'assigned_not_yet_effective',
-    },
   ],
   last_validation: { ok: true, version: '1.2.0', at: '2026-07-14T10:00:00Z' },
 };
 
+// A not-validated custom draft: production returns no assigned agents and the
+// assign route would 409, so the panel renders the read-only gated state.
+const VENDOR_STATUS: StatusResponse = {
+  skill_id: CUSTOM_FAILED.skill_id,
+  source: 'user_authored',
+  in_catalog: true,
+  validated: false,
+  current_version: '0.3.0',
+  assignments: [],
+  last_validation: { ok: false, version: null, at: '2026-07-14T09:00:00Z' },
+};
+
 const STATUS_BY_ID: Record<string, StatusResponse> = {
   [CUSTOM.skill_id]: CUSTOM_STATUS,
+  [CUSTOM_FAILED.skill_id]: VENDOR_STATUS,
 };
+
+// The real agents roster (drives the candidate list). Includes both assigned
+// agents and an UNASSIGNED candidate (ops_agent) that the status response omits
+// — proving an unassigned roster agent still gets an Assign control.
+const ROSTER = ['partner_liaison', 'support_agent', 'ops_agent', 'finance_agent'];
 
 function mount(skillId: string) {
   sessionStorage.setItem('happyranch.token', 'tok');
@@ -195,6 +209,10 @@ function mount(skillId: string) {
   server.use(
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+    // Real agents roster — the candidate source the panel unions with status.
+    http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+      HttpResponse.json({ agents: ROSTER.map((name) => ({ name })) }),
     ),
     http.get(
       `/api/v1/orgs/${SLUG}/skills/catalog/:skillId`,
@@ -221,10 +239,25 @@ function mount(skillId: string) {
         const s = statusStore[sid];
         if (s) {
           const row = s.assignments.find((x) => x.agent === agentId);
-          if (row) {
-            row.assigned = assigning;
-            row.effective = false;
-            row.state = 'assigned_not_yet_effective';
+          if (assigning) {
+            // Production's status endpoint returns ONLY assigned agents, so a
+            // newly-assigned agent JOINS the list (it wasn't there before).
+            if (row) {
+              row.assigned = true;
+              row.effective = false;
+              row.state = 'assigned_not_yet_effective';
+            } else {
+              s.assignments.push({
+                agent: agentId,
+                assigned: true,
+                effective: false,
+                materialized_version: null,
+                state: 'assigned_not_yet_effective',
+              });
+            }
+          } else {
+            // Unassign: the agent drops out of the assigned-only status list.
+            s.assignments = s.assignments.filter((x) => x.agent !== agentId);
           }
         }
         return HttpResponse.json({
@@ -490,6 +523,65 @@ describe('SkillDetailPage — custom assignment + config-review (THR-092 Slice 5
     // …and user-facing "active" is rejected separately.
     expect(main).not.toMatch(/\bactive\b/i);
     // The api request verb ('allow'/'remove') is REQUEST-ONLY — never rendered.
+    expect(main).not.toMatch(/\ballow\b/i);
+    expect(main).not.toMatch(/\bremove\b/i);
+  });
+
+  test('an unassigned roster agent (absent from the status response) still surfaces with an Assign control', async () => {
+    mount(CUSTOM.skill_id);
+    // finance_agent is in the real agents roster but NOT in the status response
+    // (production omits unassigned agents). It must still render as a candidate.
+    await screen.findByText('partner_liaison');
+    const finance = document.querySelector(
+      '[data-agent="finance_agent"]',
+    ) as HTMLElement;
+    expect(finance).not.toBeNull();
+    expect(finance.getAttribute('data-status')).toBe('not_assigned');
+    expect(within(finance).getByText('Not assigned')).toBeInTheDocument();
+    // …with an Assign control, so a custom skill CAN be assigned to a new agent.
+    const assignBtn = within(finance).getByRole('button', {
+      name: /^assign finance_agent$/i,
+    });
+    expect(assignBtn).toBeInTheDocument();
+
+    // Queuing it reveals the config-review affordance (the change is real).
+    fireEvent.click(assignBtn);
+    expect(finance.getAttribute('data-status')).toBe('not_yet_effective');
+    expect(
+      screen.getByRole('button', { name: /review & apply/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('not-validated custom skill: read-only "resolve validation first" gate, NO assign controls', async () => {
+    mount(CUSTOM_FAILED.skill_id);
+    await screen.findByText('vendor-comms-style');
+
+    // The gated read-only state renders instead of the interactive controls.
+    const gate = await screen.findByTestId('assignment-not-validated');
+    expect(
+      within(gate).getByText(/validation needed before you can assign/i),
+    ).toBeInTheDocument();
+    // A link to re-validate (the Slice-4 edit route).
+    const revalidate = within(gate).getByRole('link', {
+      name: /re-?validate skill/i,
+    });
+    expect(revalidate).toHaveAttribute(
+      'href',
+      `/orgs/${SLUG}/skills/${CUSTOM_FAILED.skill_id}/edit`,
+    );
+
+    // No interactive assignment controls while not validated.
+    expect(
+      screen.queryByRole('button', { name: /^(assign|unassign) /i }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /review & apply/i }),
+    ).toBeNull();
+
+    // Copy discipline holds on the gated surface too.
+    const main = document.querySelector('main')?.textContent ?? '';
+    expect(main).not.toMatch(/materializ|admit|permission|approve|grant|\bpending\b/i);
+    expect(main).not.toMatch(/\bactive\b/i);
     expect(main).not.toMatch(/\ballow\b/i);
     expect(main).not.toMatch(/\bremove\b/i);
   });

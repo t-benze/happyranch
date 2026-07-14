@@ -258,7 +258,7 @@ export function SkillDetailPage(): JSX.Element {
           stay READ-ONLY (applied by context, no per-agent controls), keeping
           the Slice-2 source-gating intact. */}
       {editable ? (
-        <SkillAssignmentPanel skillId={skill.skill_id} />
+        <SkillAssignmentPanel slug={slug ?? ''} skillId={skill.skill_id} />
       ) : (
       <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-5 md:p-6">
         <Eyebrow>Per-agent visibility</Eyebrow>
