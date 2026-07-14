@@ -17,7 +17,7 @@
  */
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { Info, Package, Sparkles, TriangleAlert } from 'lucide-react';
+import { Info, Package, Plus, Sparkles, TriangleAlert } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useSkillsCatalog } from '@/hooks/skills';
 import { SkillCard } from './SkillCard';
@@ -103,12 +103,21 @@ export function SkillsPage(): JSX.Element {
             </div>
             <h2 className="text-h2 text-fg">Guidance your agents can use</h2>
           </div>
-          {attention > 0 && (
-            <span className="text-attention-text bg-attention-soft inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold">
-              <TriangleAlert size={12} aria-hidden="true" />
-              {attention} {attention === 1 ? 'needs' : 'need'} attention
-            </span>
-          )}
+          <div className="flex flex-wrap items-center gap-2.5">
+            {attention > 0 && (
+              <span className="text-attention-text bg-attention-soft inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold">
+                <TriangleAlert size={12} aria-hidden="true" />
+                {attention} {attention === 1 ? 'needs' : 'need'} attention
+              </span>
+            )}
+            <Link
+              to={`/orgs/${slug ?? ''}/skills/new`}
+              className="bg-accent-soft text-accent-text hover:bg-accent-soft/80 text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
+            >
+              <Plus size={15} aria-hidden="true" />
+              Add custom skill
+            </Link>
+          </div>
         </div>
 
         {/* Guidance-only global warning */}

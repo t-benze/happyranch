@@ -34,7 +34,13 @@ import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
 import type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
-import type { CatalogSkillItem, SkillDetail } from '@/lib/api/skills';
+import type {
+  CatalogSkillItem,
+  CreateSkillRequest,
+  CreateSkillResponse,
+  SkillDetail,
+  ValidateSkillResponse,
+} from '@/lib/api/skills';
 import type { ConversationSummary } from '@/lib/api/assistant';
 import type { ThreadTaskSummary } from '@/lib/api/threads';
 import type { workHours as workHoursApi } from '@/lib/api';
@@ -437,6 +443,16 @@ export interface SkillsApi {
   /** Single-skill detail (source, validation, per-agent assignments[]).
    *  Backs the Slice-2 Skill Detail + provenance surface. */
   useSkillDetail: (skillId: string | undefined) => QueryLike<SkillDetail>;
+  /** Author / import a user-authored custom skill (Slice-3). Runs the
+   *  technical validate guard synchronously; a content-validation failure
+   *  still persists an editable draft (`validation.ok=false`), so the
+   *  mutation resolves rather than rejects on that path. */
+  useCreateSkill: () => MutationLike<CreateSkillRequest, CreateSkillResponse>;
+  /** Re-run the technical validate guard for an existing draft (Slice-3). */
+  useValidateSkill: () => MutationLike<
+    { skillId: string },
+    ValidateSkillResponse
+  >;
 }
 
 // ---------------------------------------------------------------------------

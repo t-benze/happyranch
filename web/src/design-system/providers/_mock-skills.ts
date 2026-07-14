@@ -19,8 +19,14 @@
  * `?filter=` bucketing: Bundled = managed + system_contract, Custom =
  * user_authored.
  */
-import type { CatalogSkillItem, SkillDetail } from '@/lib/api/skills';
-import type { QueryLike, SkillsApi } from './DataContext';
+import type {
+  CatalogSkillItem,
+  CreateSkillRequest,
+  CreateSkillResponse,
+  SkillDetail,
+  ValidateSkillResponse,
+} from '@/lib/api/skills';
+import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
 
 function ok<T>(data: T): QueryLike<T> {
   return { data, isLoading: false, isError: false, error: null };
@@ -33,6 +39,54 @@ function notFound<T>(): QueryLike<T> {
     isError: true,
     error: new Error('skill not found'),
   } as QueryLike<T>;
+}
+
+/** Non-pending mutation whose `mutateAsync` resolves to `resolve(args)`. Used
+ *  for the Slice-3 create/validate fixtures so the prototype + screenshot
+ *  harness can exercise both the pass and the fail result without a daemon. */
+function mockMutation<TArgs, TResult>(
+  resolve: (args: TArgs) => TResult,
+): MutationLike<TArgs, TResult> {
+  return {
+    isPending: false,
+    mutateAsync: (args: TArgs) => Promise.resolve(resolve(args)),
+  };
+}
+
+// Slice-3 create/validate fixtures. A slug that opts into the failure path
+// (contains `fail`, or collides with a bundled slug) returns the
+// failed-validation draft; everything else validates. This lets the prototype
+// and the screenshot harness render BOTH the success and the failure result
+// (spec v3 §9.1: a failure still persists an editable draft).
+const BUNDLED_SLUGS = new Set(['kb-curation', 'web-fidelity-loop', 'jobs']);
+
+function wantsFailure(slug: string): boolean {
+  const s = slug.trim().toLowerCase();
+  return s.includes('fail') || BUNDLED_SLUGS.has(s);
+}
+
+function mockCreateResponse(body: CreateSkillRequest): CreateSkillResponse {
+  const skillId = `hr:${body.slug.trim() || 'draft'}`;
+  if (wantsFailure(body.slug)) {
+    return {
+      skill_id: skillId,
+      source: 'user_authored',
+      validation_state: 'in_catalog',
+      validation: {
+        ok: false,
+        errors: [
+          "slug collides with release skill 'kb-curation'",
+          'The references/pricing.md asset could not be resolved.',
+        ],
+      },
+    };
+  }
+  return {
+    skill_id: skillId,
+    source: 'user_authored',
+    validation_state: 'validated',
+    validation: { ok: true, errors: [] },
+  };
 }
 
 const FIXTURES: CatalogSkillItem[] = [
@@ -299,4 +353,19 @@ export const mockSkillsApi: SkillsApi = {
     const detail = DETAILS[skillId];
     return detail ? ok(detail) : notFound<SkillDetail>();
   },
+  useCreateSkill: () =>
+    mockMutation<CreateSkillRequest, CreateSkillResponse>(mockCreateResponse),
+  useValidateSkill: () =>
+    mockMutation<{ skillId: string }, ValidateSkillResponse>(({ skillId }) => {
+      // Re-validation mirrors create: a slug embedded in the id opts into the
+      // failure path, otherwise it validates clean.
+      const failed = wantsFailure(skillId);
+      return {
+        skill_id: skillId,
+        validation_state: failed ? 'in_catalog' : 'validated',
+        validation: failed
+          ? { ok: false, errors: ['The references/pricing.md asset could not be resolved.'] }
+          : { ok: true, errors: [] },
+      };
+    }),
 };

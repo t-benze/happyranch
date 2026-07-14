@@ -9,18 +9,23 @@
  * Delegates to the shared `@/lib/api/skills` client — this provider does not
  * re-implement the fetch.
  */
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 // The `@/lib/api` barrel does not re-export the skills client (landed in
 // #421 without a barrel entry), so this provider deep-imports it directly —
 // the same idiom `_real-dreams` uses for `@/lib/api/dreams`.
 import {
+  createSkill,
   getSkillCatalogDetail,
   listSkillsCatalog,
+  validateSkill,
   type CatalogSkillItem,
+  type CreateSkillRequest,
+  type CreateSkillResponse,
   type SkillDetail,
+  type ValidateSkillResponse,
 } from '@/lib/api/skills';
-import type { QueryLike, SkillsApi } from './DataContext';
+import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
 
 function useRealOrgSlug(): string {
   const { slug } = useParams<{ slug: string }>();
@@ -52,7 +57,42 @@ function useSkillDetail(
   }) as QueryLike<SkillDetail>;
 }
 
+// A content-validation failure is NOT an error — the daemon persists an
+// editable draft and returns `201`/`200` with `validation.ok=false` (spec v3
+// §9.1a). So these mutations resolve on that path; only a malformed request
+// (422) or transport error rejects. On any persist we invalidate the catalog
+// (a new/updated draft appears) and the skill's own detail query.
+function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateSkillRequest) => createSkill(slug, body),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
+      qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });
+    },
+  });
+}
+
+function useValidateSkill(): MutationLike<
+  { skillId: string },
+  ValidateSkillResponse
+> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ skillId }: { skillId: string }) =>
+      validateSkill(slug, skillId),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
+      qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });
+    },
+  });
+}
+
 export const realSkillsApi: SkillsApi = {
   useSkillsCatalog,
   useSkillDetail,
+  useCreateSkill,
+  useValidateSkill,
 };
