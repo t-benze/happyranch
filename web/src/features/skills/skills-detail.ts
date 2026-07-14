@@ -147,8 +147,7 @@ export function agentProvenance(a: AgentAssignmentFacts): AgentProvenance {
       statusLabel: 'Effective',
       tone: 'positive',
       takesEffectNextSession: false,
-      reason:
-        'The current version has materialized into this agent’s workspace and is shown to it as guidance.',
+      reason: 'The current version is shown to this agent as guidance.',
     };
   }
   return {

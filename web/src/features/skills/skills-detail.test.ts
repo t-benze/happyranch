@@ -75,7 +75,9 @@ describe('skills-detail — per-agent provenance (guidance-visibility language)'
     expect(p.tone).toBe('positive');
     expect(p.takesEffectNextSession).toBe(false);
     expect(p.reason).not.toMatch(/\bactive\b/i);
-    expect(p.reason).toMatch(/materialized/i);
+    expect(p.reason).toMatch(/shown to this agent as guidance/i);
+    // Guidance-visibility copy only — never backend lifecycle jargon.
+    expect(p.reason).not.toMatch(/materializ/i);
   });
 
   test('assigned-not-yet-effective: attention + takes-effect-next-session', () => {
@@ -100,14 +102,24 @@ describe('skills-detail — per-agent provenance (guidance-visibility language)'
     expect(p.reason).toMatch(/not shown to this agent as guidance/i);
   });
 
-  test('no provenance reason implies a permission / approval grant', () => {
+  test('no provenance label or reason leaks lifecycle / permission jargon', () => {
     const rows = [
       { agent: 'a', assigned: true, effective: true, state: 'effective' },
       { agent: 'b', assigned: true, effective: false, state: 'assigned_not_yet_effective' },
       { agent: 'c', assigned: false, effective: false },
     ];
+    // Copy is GUIDANCE-VISIBILITY only: never backend lifecycle jargon
+    // (materialize / admit / pending) and never permission / approve / grant
+    // wording. Broadened from the literal 'materialize now' to the families.
+    const forbidden = /materializ|admit|permission|approve|grant|\bpending\b/i;
     for (const p of agentProvenanceList(rows)) {
-      expect(p.reason).not.toMatch(/permission|approve|admit|grant|materialize now/i);
+      expect(p.reason).not.toMatch(forbidden);
+      expect(p.statusLabel).not.toMatch(forbidden);
+      // "active" is never user-facing for an assigned agent (spec §3.1).
+      if (p.status !== 'not_assigned') {
+        expect(p.reason).not.toMatch(/\bactive\b/i);
+        expect(p.statusLabel).not.toMatch(/\bactive\b/i);
+      }
     }
   });
 });
