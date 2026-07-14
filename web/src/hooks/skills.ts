@@ -9,7 +9,13 @@
  */
 import { useData } from '@/design-system/providers/DataContext';
 
-export type { CatalogSkillItem, SkillDetail } from '@/lib/api/skills';
+export type {
+  CatalogSkillItem,
+  CreateSkillRequest,
+  CreateSkillResponse,
+  SkillDetail,
+  ValidateSkillResponse,
+} from '@/lib/api/skills';
 
 export const useSkillsCatalog: ReturnType<
   typeof useData
@@ -20,3 +26,11 @@ export const useSkillDetail: ReturnType<
   typeof useData
 >['skills']['useSkillDetail'] = (skillId) =>
   useData().skills.useSkillDetail(skillId);
+
+export const useCreateSkill: ReturnType<
+  typeof useData
+>['skills']['useCreateSkill'] = () => useData().skills.useCreateSkill();
+
+export const useValidateSkill: ReturnType<
+  typeof useData
+>['skills']['useValidateSkill'] = () => useData().skills.useValidateSkill();

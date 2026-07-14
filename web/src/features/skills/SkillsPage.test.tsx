@@ -120,6 +120,13 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     expect(screen.getAllByText('Validated').length).toBeGreaterThan(0);
   });
 
+  test('exposes an "Add custom skill" entry point to the create route', async () => {
+    mount();
+    await screen.findByText('kb-curation');
+    const add = screen.getByRole('link', { name: /Add custom skill/i });
+    expect(add).toHaveAttribute('href', `/orgs/${SLUG}/skills/new`);
+  });
+
   test('read-only system contract shows no toggle/edit control', async () => {
     mount();
     await screen.findByText('founder-escalation-protocol');
