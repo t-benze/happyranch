@@ -598,12 +598,15 @@ class Orchestrator:
         except Exception:
             team = "engineering"
         skills_root = self._settings.project_root / "runtime" / "skills"
+        org_root = self._paths.root
         inject_managed_skills(
             workspace, self._settings,
             slug=self._slug,
             agent_name=agent_name,
             team=team,
             skills_root=skills_root,
+            org_root=org_root,
+            db=self.db,
         )
 
         # Protocol doc manifest — bundled-path one-liner per doc (THR-070).

@@ -184,6 +184,8 @@ async def run_wake(
             agent_name=record.agent_name,
             team=agent_def.team,
             skills_root=skills_root,
+            org_root=org_state.root,
+            db=org_state.db,
         )
     except Exception:
         pass

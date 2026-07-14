@@ -190,6 +190,8 @@ async def run_dream(
             agent_name=dream.agent_name,
             team=agent_team,
             skills_root=skills_root,
+            org_root=org_state.root,
+            db=org_state.db,
         )
     except Exception:
         pass

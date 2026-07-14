@@ -145,11 +145,13 @@ def _assigned_agent_count(policy: dict, skill_id: str) -> int:
     return count
 
 
-def _assignments_for_skill(policy: dict, skill_id: str) -> list[dict]:
+def _assignments_for_skill(policy: dict, skill_id: str, org: OrgState | None = None, current_version: str | None = None) -> list[dict]:
     """Return per-agent assignment list for a skill_id.
 
-    P1: effective is always False (no materialization store).
-    All assignments are assigned_not_yet_effective.
+    When org + current_version are provided (Phase 3b+), compares each agent's
+    last-materialized version against current_version to determine effective.
+    Otherwise (Phase 1 back-compat), all assignments are
+    assigned_not_yet_effective.
     """
     agents_policy = policy.get("agents", {})
     result: list[dict] = []
@@ -157,11 +159,23 @@ def _assignments_for_skill(policy: dict, skill_id: str) -> list[dict]:
         if isinstance(agent_rules, dict):
             allows = agent_rules.get("allow", [])
             if isinstance(allows, list) and skill_id in allows:
+                effective = False
+                materialized_version = None
+                if org is not None and current_version is not None:
+                    mat_event = org.db.get_latest_skill_materialization(
+                        skill_id, agent_name
+                    )
+                    if mat_event is not None and mat_event["version"] == current_version:
+                        effective = True
+                        materialized_version = mat_event["version"]
+                    elif mat_event is not None:
+                        materialized_version = mat_event["version"]
                 result.append({
                     "agent": agent_name,
                     "assigned": True,
-                    "effective": False,  # P1: no materialization store
-                    "state": "assigned_not_yet_effective",
+                    "effective": effective,
+                    "materialized_version": materialized_version,
+                    "state": "effective" if effective else "assigned_not_yet_effective",
                 })
     return result
 
@@ -219,10 +233,12 @@ def skills_catalog(
         else:
             validation_state = "validated"
 
-        # Agent count rollups
+        # Agent count rollups — now backed by materialization store (Phase 3b)
         assigned_count = _assigned_agent_count(policy, entry.id)
-        # P1: no materialization store → effective_agent_count is always 0
-        effective_count = 0
+        assignments = _assignments_for_skill(
+            policy, entry.id, org=org, current_version=entry.version
+        )
+        effective_count = sum(1 for a in assignments if a["effective"])
         has_stale = assigned_count > effective_count
 
         items.append({
@@ -302,10 +318,12 @@ def skills_catalog_detail(
             # User-authored: include validation block + assignments
             if source_type == "user_authored":
                 result["validation"] = {
-                    "ok": True,  # P1: no validation store
+                    "ok": validation_state == "validated",
                     "errors": [],
                 }
-                result["assignments"] = _assignments_for_skill(policy, entry.id)
+                result["assignments"] = _assignments_for_skill(
+                    policy, entry.id, org=org, current_version=entry.version
+                )
 
             return result
 
@@ -397,10 +415,12 @@ def agent_skills_effective(
 
         # Determine provenance reason
         if is_exposed and source_type == "user_authored":
-            # P1: no current-version materialization signal to prove effectiveness.
-            # An assigned+eligible user_authored skill surfaces as
-            # assigned_not_yet_effective, NOT effective/catalog_and_eligible.
-            provenance = "assigned_not_yet_effective"
+            # Check materialization store for version match (Phase 3b)
+            mat_event = org.db.get_latest_skill_materialization(skill_id, agent_id)
+            if mat_event is not None and mat_event["version"] == entry.version:
+                provenance = "catalog_and_eligible"  # effective
+            else:
+                provenance = "assigned_not_yet_effective"
         elif is_exposed:
             provenance = "catalog_and_eligible"
         elif is_disabled:
@@ -409,7 +429,6 @@ def agent_skills_effective(
             provenance = "hidden_because:denied_by_eligibility"
         elif skill_id in agent_allow_ids and source_type == "user_authored":
             # Assigned but resolve_exposed_skills didn't expose it
-            # (e.g., failed materialization check — conservatively hidden in P1)
             provenance = "assigned_not_yet_effective"
             is_exposed = True  # surface it as assigned, not hidden
         else:
@@ -1224,4 +1243,108 @@ def assign_skill(
         "state": "assigned" if assigned else "unassigned",
         "effective_hint": "assigned_not_yet_effective" if assigned else None,
         "materializes_on": "next_session_spawn" if assigned else None,
+    }
+
+
+# ── Route: GET /skills/{skill_id}/status (lifecycle status) ──────────────
+
+@router.get("/skills/{skill_id}/status")
+def skill_status(
+    slug: str,
+    skill_id: str,
+    org: OrgDep,
+    agent: str | None = Query(None, description="Filter to a specific agent"),
+) -> dict:
+    """Read-only projection of the four-state model (§7.1/§7.4) for a skill.
+
+    Compares each agent's last-materialized version to the current store
+    version (§0.4). A skill is `effective` for an agent iff:
+    (assigned == true) AND (last-materialized-version == current-store-version).
+
+    `assigned_not_yet_effective` when assigned but versions differ (or not yet
+    materialized).
+
+    Query params:
+    - agent: filter assignments to a specific agent (optional)
+    """
+    union = _union_catalog(org)
+    policy = _read_eligibility_policy(org)
+
+    # Find the skill in the union catalog
+    skill_entry = None
+    skill_source_type = None
+    for entry, source_type in union:
+        if entry.id == skill_id:
+            skill_entry = entry
+            skill_source_type = source_type
+            break
+
+    if skill_entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "skill_id": skill_id},
+        )
+
+    # Determine validation state
+    if skill_source_type == "user_authored":
+        validation_state = _get_validation_state(org, skill_id, skill_entry.version)
+    else:
+        validation_state = "validated"
+
+    # Last validation event
+    last_validation = org.db.get_latest_skill_validation(skill_id, version=skill_entry.version)
+    validation_block = None
+    if last_validation is not None:
+        validation_block = {
+            "ok": last_validation["ok"],
+            "version": last_validation.get("version"),
+            "at": last_validation.get("created_at"),
+        }
+
+    # Build assignments[] — per-agent lifecycle state
+    assignments: list[dict] = []
+    agents_policy = policy.get("agents", {})
+
+    for agent_name in sorted(agents_policy.keys()):
+        if agent is not None and agent_name != agent:
+            continue
+
+        agent_rules = agents_policy.get(agent_name)
+        if not isinstance(agent_rules, dict):
+            continue
+
+        allows = agent_rules.get("allow", []) or []
+        assigned = skill_id in allows
+
+        if not assigned:
+            continue
+
+        # Check materialization: latest mat event for this (skill, agent)
+        mat_event = org.db.get_latest_skill_materialization(skill_id, agent_name)
+
+        if mat_event is not None and mat_event["version"] == skill_entry.version:
+            effective = True
+            materialized_version = mat_event["version"]
+            agent_state = "effective"
+        else:
+            effective = False
+            materialized_version = mat_event["version"] if mat_event else None
+            agent_state = "assigned_not_yet_effective"
+
+        assignments.append({
+            "agent": agent_name,
+            "assigned": True,
+            "effective": effective,
+            "materialized_version": materialized_version,
+            "state": agent_state,
+        })
+
+    return {
+        "skill_id": skill_id,
+        "source": skill_source_type,
+        "in_catalog": True,
+        "validated": validation_state == "validated",
+        "current_version": skill_entry.version,
+        "assignments": assignments,
+        "last_validation": validation_block,
     }
