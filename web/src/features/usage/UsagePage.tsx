@@ -28,6 +28,7 @@ import { cn } from '@/lib/utils';
 // would be a cosmetic refactor that adds no safety value.
 // eslint-disable-next-line no-restricted-imports
 import { classifyModel } from '@/features/dashboard/topTokens';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { Button } from '@/design-system/primitives/Button';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import type { TokenUsageRollup } from '@/hooks/usage';
@@ -877,8 +878,7 @@ export function UsagePage(): JSX.Element {
   const heroLoading = isAnyLoading && !heroTotals.totalChurn;
 
   return (
-    <div className="bg-surface-canvas h-full overflow-y-auto">
-      <div className="p-6">
+    <ContentWrap>
         {/* Header — Pasture PageHeader pattern */}
         <header className="mb-6 flex items-start justify-between gap-3">
           <PageHeader
@@ -966,7 +966,6 @@ export function UsagePage(): JSX.Element {
           />
         </div>
 
-      </div>
-    </div>
+    </ContentWrap>
   );
 }
