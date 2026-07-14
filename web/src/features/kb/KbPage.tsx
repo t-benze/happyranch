@@ -25,6 +25,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useKbRoutes, useKBList, useKBSearch, useKBStats } from '@/hooks/kb';
 import { useDensity } from '@/hooks/density';
 import { useDreamsList, useDream } from '@/hooks/dreams';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Input } from '@/design-system/primitives/Input';
 import { Button } from '@/design-system/primitives/Button';
@@ -197,7 +198,7 @@ function GroupedFolderRail({
 
 function LoadingSkeleton(): JSX.Element {
   return (
-    <div className="animate-pulse space-y-4 p-4">
+    <div className="animate-pulse space-y-4">
       {[1, 2, 3, 4].map((i) => (
         <div key={i} className="space-y-2">
           <div className="flex items-center gap-2">
@@ -475,13 +476,19 @@ export function KbPage(): JSX.Element {
         />
       </aside>
 
-      {/* Main feed area */}
-      <main className="flex-1 overflow-y-auto bg-surface-canvas">
+      {/* Main feed area — THR-099: cap the main content region at max-w-content
+          (1180) while the folder rail stays functional and full-height. Mirrors
+          Slice 3a/3b: the pinned header inner and the scroll-body inner both use
+          <ContentWrap> so the header eyebrow/title column aligns above the feed
+          columns at 1180 with matching 26px gutters. main is the flex sizer;
+          the body <ContentWrap> owns the internal scroll. */}
+      <main className="flex flex-1 flex-col overflow-hidden bg-surface-canvas">
         {/* Header — KB-02: uppercase eyebrow (live document count) + Newsreader
             serif title, matching the a-knowledge Direction-A reference and the
             Tasks/Audit surfaces. The amber pill surfaces pending dream
             candidates from the same client-side count the feed derives. */}
-        <header className="border-b border-border-subtle p-4">
+        <header className="shrink-0 border-b border-border-subtle">
+          <ContentWrap>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <p className="text-text-muted text-xs font-medium uppercase tracking-wide">
@@ -508,13 +515,19 @@ export function KbPage(): JSX.Element {
               )}
             </div>
           </div>
+          </ContentWrap>
         </header>
 
-        {/* Content */}
+        {/* Content — capped + scrolled inside <ContentWrap>. The min-h-0 flex-1
+            sizer gives the wrap a definite height so the feed scrolls internally
+            and the header stays pinned; per-branch p-4 gutters are dropped since
+            the wrap now owns the 26px padding (avoids doubling to 42px). */}
+        <div className="min-h-0 flex-1">
+          <ContentWrap>
         {loading ? (
           <LoadingSkeleton />
         ) : (isSearching ? searchQuery.isError : listQuery.isError) ? (
-          <div className="p-4 text-center space-y-3">
+          <div className="text-center space-y-3">
             <p className="text-feedback-danger text-sm">
               Could not load Knowledge
             </p>
@@ -539,10 +552,7 @@ export function KbPage(): JSX.Element {
                 default/folder feed the rows return null → the list is empty and
                 collapses (no padding), so candidates never touch the feed. */}
             {!isSearching && dreamsWithCandidates.length > 0 && (
-              <ul
-                aria-label="Candidate entries"
-                className={cn('space-y-2', showCandidatesView && 'p-4')}
-              >
+              <ul aria-label="Candidate entries" className="space-y-2">
                 {dreamsWithCandidates.map((d) => (
                   <DreamCandidateRow
                     key={d.dream_id}
@@ -576,7 +586,7 @@ export function KbPage(): JSX.Element {
                 />
               )
             ) : (
-              <ul className="space-y-2 p-4">
+              <ul className="space-y-2">
                 {/* Live KB documents only — candidates never render here. */}
                 {liveEntries.map((entry) => (
                   <li key={entry.slug}>
@@ -597,6 +607,8 @@ export function KbPage(): JSX.Element {
             )}
           </>
         )}
+          </ContentWrap>
+        </div>
       </main>
 
       {/* Detail drawer */}
