@@ -1,34 +1,42 @@
 /**
  * ConnectRuntimeStep — THR-088 onboarding Step 1 of 2: "Connect your agentic
- * CLI". Two coexisting flows behind one step:
+ * CLI". Two flows behind one step, now sharing ONE copy-paste + live-poll UX:
  *
- *   PRIMARY — built-in dropdown (THR-088 msg22 fix). The user picks a built-in
- *   agentic CLI (claude / codex / opencode / pi from EXECUTOR_BINARY_KINDS).
- *   Registering a built-in = recording its BINARY PATH in the machine-local
- *   executor-binaries registry:
- *     - GET  /health/prereqs RESOLVES each present built-in's absolute path, so
- *       a detected CLI PRE-FILLS the path and the user just confirms it.
- *     - POST /executor-binaries/register {kind, path} validates + stores it.
- *     - POST /executor-binaries/validate {path} gives inline feedback when the
- *       CLI isn't on PATH and the user types an absolute path by hand.
- *   The CONNECT SIGNAL for a built-in is the SYNCHRONOUS register success
- *   (valid:true) — NOT the prereqs "name appears" poll the custom flow uses.
- *   Built-ins are ALWAYS in prereqs, so that poll would false-positive instantly.
+ *   BUILT-IN — dropdown of built-in kinds (claude / codex / opencode / pi from
+ *   EXECUTOR_BINARY_KINDS). The user picks a kind, mints a KIND-SCOPED,
+ *   purpose='binary' registration token, and pastes the generated prompt into
+ *   that CLI. The CLI completes the conformance challenge and POSTs its OWN
+ *   absolute binary path to POST /executors/runtime/register-binary (the kind
+ *   is carried by the token, NOT in the body). Registering = recording the
+ *   BINARY PATH in the machine-local executor-binaries registry.
  *
- *   SECONDARY — custom CLI (unchanged). A copy-paste prompt the user pastes into
- *   their own conformant CLI, which self-drives the EXISTING loopback
- *   registration routes. There is deliberately NO `/connect` one-click route
- *   (founder ruling). "detecting → connected" is driven by POLLING the EXISTING
- *   GET /health/prereqs until the freshly-registered custom NAME appears.
+ *   CUSTOM — same shape, but the pasted prompt self-registers a PROFILE via
+ *   POST /executors/runtime/register (purpose='profile'): command,
+ *   argv_template and adapter. There is deliberately NO `/connect` one-click
+ *   route (founder ruling).
  *
- * Registration-only (founder ruling THR-085 msg45): prereqs is READ to pre-fill
- * a detected path; there is NO detect/scan route and none is added here.
+ * The ONLY difference between the flows is that register target and the token
+ * purpose the backend fence keys on: built-in → register-binary
+ * (purpose='binary'), custom → register (purpose='profile'). A binary-purpose
+ * token CANNOT self-register a profile (the /register fence rejects it), so the
+ * built-in prompt can never mint a profile. Everything else — the mint, the
+ * copy-paste prompt component, the live poll, the connected card — is shared.
  *
- * Honesty fence (THR-061 §D; THR-088): Pasture tokens only; no invented status.
- * The built-in connected card shows the kind (FE-known) + the registered PATH
- * (register-real). The custom flow's 3 conformance checks render as the
- * described SEQUENCE, not live-ticking badges (prereqs can't report per-step
- * progress). No `version`, no `argv_template` — those fields don't exist here.
+ * CONNECT SIGNAL — GET /health/prereqs. Since #400/#420 `present` is TRUE for a
+ * kind ONLY after it is registered in the machine-local binary registry
+ * (get_binary valid) — being on PATH is NOT sufficient. So the built-in poll
+ * predicate `p.tool === name && p.present` is registration-gated and cannot
+ * false-positive on a merely-detected CLI. (This supersedes the earlier note
+ * that built-ins are "always in prereqs so the poll false-positives".) A custom
+ * PROFILE writes no binary, so its `present` stays false; a custom profile
+ * instead only APPEARS in prereqs once it registers, and that appearance is its
+ * connect signal — hence `requirePresent` is true for built-in, false for
+ * custom (see useRuntimeConnect).
+ *
+ * Honesty fence (THR-061 §D; THR-088): scoped tokens only; no invented status.
+ * The connected card shows the kind/name (FE-known) + the registered PATH
+ * (register-real). The conformance checks render as the described SEQUENCE, not
+ * live-ticking badges (prereqs can't report per-step progress).
  */
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -48,13 +56,14 @@ const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
 type Kind = (typeof KINDS)[number];
 
 /** The four built-in adapters — a CUSTOM runtime name may not collide with
- *  them (register 422s on builtin collision), and a builtin already present in
- *  prereqs would otherwise false-positive the custom detect poll. */
+ *  them: built-ins are minted from the dropdown (purpose='binary') and a custom
+ *  name is minted from the form (purpose='profile'); the registry rejects a
+ *  custom profile that would shadow a built-in. */
 const BUILTINS = new Set<string>(KINDS);
 /** Mirrors a sane executor-profile identifier: lowercase, starts alpha. */
 const NAME_RE = /^[a-z][a-z0-9-]{1,39}$/;
 
-/** The three conformance checks the CUSTOM CLI drives — verbatim step ids from
+/** The three conformance checks BOTH flows drive — verbatim step ids from
  *  registration_token.DEFAULT_CONFORMANCE_STEPS. Shown as the sequence the CLI
  *  performs, NOT as live per-step status (prereqs can't report it). */
 const CONFORMANCE_STEPS: { id: string; label: string }[] = [
@@ -77,43 +86,150 @@ interface Connected {
 const FIELD_CLASS =
   'flex h-9 w-full rounded-md border border-border-default bg-surface-raised px-3 py-2 text-sm text-text-primary focus:border-accent-default focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50';
 
-/** Extract a human-readable message from an ApiError (422 detail is a string)
- *  or any thrown value. */
-function errMessage(err: unknown, fallback: string): string {
-  if (err instanceof ApiError) {
-    if (typeof err.detail === 'string') return err.detail;
-    if (err.detail && typeof err.detail === 'object' && 'msg' in err.detail) {
-      return String((err.detail as { msg: unknown }).msg);
-    }
-    return err.message;
-  }
-  if (err instanceof Error) return err.message;
-  return fallback;
-}
+/** Build the copy-paste prompt (no `/connect` link). `target` picks the
+ *  register route + body while the conformance challenge stays identical:
+ *  'binary' → register-binary (built-in path, kind carried by the token),
+ *  'profile' → register (custom profile). */
+type ConnectTarget = 'binary' | 'profile';
 
-/** Build the copy-paste prompt for the custom flow (no `/connect` link). */
-function buildConnectPrompt(name: string, token: string, origin: string): string {
+function buildConnectPrompt(
+  name: string,
+  token: string,
+  origin: string,
+  target: ConnectTarget,
+): string {
   const base = `${origin}/api/v1`;
+  const intro =
+    target === 'binary'
+      ? [
+          `# You're connecting the built-in "${name}" CLI to HappyRanch so it`,
+          `# can be launched from this machine. Do all of this in one run, then`,
+          `# stop. Send this header on every request:`,
+          `#   Authorization: Bearer ${token}`,
+          ``,
+          `# 1. Find your OWN absolute binary path — e.g. the output of`,
+          `#      command -v ${name}   (or)   which ${name}`,
+        ]
+      : [
+          `# You're being connected to HappyRanch as an executor named "${name}".`,
+          `# Do all of this in one run, then stop. Send this header on every request:`,
+          `#   Authorization: Bearer ${token}`,
+          ``,
+          `# 1. Introduce yourself: work out the exact command that runs you`,
+          `#    headless / single-shot, using these placeholders:`,
+          `#      {prompt}  {timeout_seconds}  {workspace}`,
+        ];
+  const registerStep =
+    target === 'binary'
+      ? [
+          `# 3. Register your binary path — POST to`,
+          `#    ${base}/executors/runtime/register-binary`,
+          `#    body {"path":"<your absolute binary path>"}`,
+          `#    (the CLI kind is carried by the token — do NOT send it in the body)`,
+        ]
+      : [
+          `# 3. Register — POST to`,
+          `#    ${base}/executors/runtime/register`,
+          `#    body {"command":"<your-cli>","argv_template":[...,"{prompt}",...],"adapter":"pi"}`,
+        ];
   return [
-    `# You're being connected to HappyRanch as an executor named "${name}".`,
-    `# Do all of this in one run, then stop. Send this header on every request:`,
-    `#   Authorization: Bearer ${token}`,
-    ``,
-    `# 1. Introduce yourself: work out the exact command that runs you`,
-    `#    headless / single-shot, using these placeholders:`,
-    `#      {prompt}  {timeout_seconds}  {workspace}`,
+    ...intro,
     ``,
     `# 2. Complete the conformance challenge — POST each step id to`,
     `#    ${base}/executors/runtime/conformance-checkin`,
     `#    body {"step_id":"<id>"} for each of:`,
     `#      workspace_access   loopback_reachable   cli_callback`,
     ``,
-    `# 3. Register — POST to`,
-    `#    ${base}/executors/runtime/register`,
-    `#    body {"command":"<your-cli>","argv_template":[...,"{prompt}",...],"adapter":"pi"}`,
+    ...registerStep,
     ``,
     `# This token is valid for about 10 minutes. This screen updates live.`,
   ].join('\n');
+}
+
+/** Shared mint → copy-paste → live-poll state machine for BOTH flows. Mints a
+ *  scoped runtime registration token (built-in adds purpose='binary'), then
+ *  polls GET /health/prereqs until the name is registered. `requirePresent`
+ *  gates the match on `p.present`: built-in registration flips `present` true,
+ *  so it must be required; a custom profile writes no binary (present stays
+ *  false) and instead only APPEARS in prereqs once registered, so custom leaves
+ *  it false and matches on appearance. */
+function useRuntimeConnect({
+  purpose,
+  requirePresent,
+  via,
+  onConnected,
+}: {
+  purpose?: 'binary';
+  requirePresent: boolean;
+  via: ConnectMode;
+  onConnected: (c: Connected) => void;
+}) {
+  const [state, setState] = useState<'form' | 'waiting'>('form');
+  const [name, setName] = useState('');
+  const [token, setToken] = useState('');
+  const [expiresAt, setExpiresAt] = useState(0); // epoch seconds
+  const [expired, setExpired] = useState(false);
+
+  const mint = useMutation({
+    mutationFn: (n: string) =>
+      settingsApi.mintRuntimeRegistrationToken(
+        purpose ? { name: n, purpose } : { name: n },
+      ),
+    onSuccess: (resp, n) => {
+      setName(n);
+      setToken(resp.token);
+      setExpiresAt(resp.expires_at);
+      setExpired(false);
+      setState('waiting');
+    },
+  });
+
+  // Time-based expiry (the mint's only lapse signal — expires_at; there is no
+  // conformance-status GET to poll for lapse).
+  useEffect(() => {
+    if (state !== 'waiting' || !expiresAt) return;
+    const ms = expiresAt * 1000 - Date.now();
+    if (ms <= 0) {
+      setExpired(true);
+      return;
+    }
+    const t = window.setTimeout(() => setExpired(true), ms);
+    return () => window.clearTimeout(t);
+  }, [state, expiresAt]);
+
+  // Poll the EXISTING prereqs route while waiting; flip to connected the moment
+  // the freshly-registered name is registered (present-gated for built-ins,
+  // appearance for custom profiles).
+  const poll = useQuery({
+    queryKey: ['health', 'prereqs'],
+    queryFn: healthApi.getPrereqs,
+    enabled: state === 'waiting' && !expired,
+    refetchInterval: state === 'waiting' && !expired ? 2500 : false,
+  });
+
+  useEffect(() => {
+    if (state !== 'waiting') return;
+    const hit = poll.data?.prereqs.find(
+      (p) => p.tool === name && (!requirePresent || p.present),
+    );
+    if (hit) onConnected({ name, path: hit.path, via });
+  }, [poll.data, state, name, requirePresent, via, onConnected]);
+
+  const start = (n: string): void => {
+    if (n && !mint.isPending) mint.mutate(n);
+  };
+  const regenerate = (): void => {
+    if (name && !mint.isPending) mint.mutate(name);
+  };
+  const back = (): void => {
+    setState('form');
+    setToken('');
+    setExpiresAt(0);
+    setExpired(false);
+    mint.reset();
+  };
+
+  return { state, name, token, expired, mint, start, regenerate, back };
 }
 
 export function ConnectRuntimeStep({
@@ -161,7 +277,7 @@ export function ConnectRuntimeStep({
 }
 
 /* ------------------------------------------------------------------ */
-/*  PRIMARY — built-in dropdown → detect/confirm OR manual path        */
+/*  BUILT-IN — dropdown → mint binary token → copy prompt → poll       */
 /* ------------------------------------------------------------------ */
 
 function BuiltinConnect({
@@ -174,76 +290,35 @@ function BuiltinConnect({
   onUseCustom: () => void;
 }): JSX.Element {
   const [kind, setKind] = useState<Kind | ''>('');
-  const [pathInput, setPathInput] = useState('');
-  const [check, setCheck] = useState<{ valid: boolean; error: string | null } | null>(null);
-  const [registerError, setRegisterError] = useState<string | null>(null);
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
-  // READ prereqs to pre-fill a detected built-in's resolved path. Registration
-  // stays the connect signal — this query never drives "connected".
-  const prereqs = useQuery({
-    queryKey: ['health', 'prereqs'],
-    queryFn: healthApi.getPrereqs,
-    staleTime: 120_000,
-    retry: 1,
+  const flow = useRuntimeConnect({
+    purpose: 'binary',
+    requirePresent: true,
+    via: 'builtin',
+    onConnected,
   });
 
-  const validate = useMutation({
-    mutationFn: (path: string) => executorBinaries.validateExecutorBinary({ path }),
-  });
-  const register = useMutation({
-    mutationFn: (body: { kind: string; path: string }) =>
-      executorBinaries.registerExecutorBinary(body),
-  });
-
-  const detected = kind ? prereqs.data?.prereqs.find((p) => p.tool === kind) : undefined;
-  const detectedPath = detected?.present ? (detected.path ?? null) : null;
-  const detectionReady = !prereqs.isPending;
-  const busy = register.isPending || validate.isPending;
-  const trimmedPath = pathInput.trim();
-
-  const onSelect = (value: string): void => {
-    setKind(value as Kind | '');
-    setPathInput('');
-    setCheck(null);
-    setRegisterError(null);
-    validate.reset();
-  };
-
-  // The ONLY connect signal: a synchronous register that returns valid:true.
-  const doRegister = async (path: string): Promise<void> => {
-    if (!kind) return;
-    setRegisterError(null);
-    try {
-      const resp = await register.mutateAsync({ kind, path });
-      if (resp.valid) {
-        onConnected({ name: resp.kind, path: resp.path, via: 'builtin' });
-      } else {
-        setRegisterError(
-          'The daemon stored the path but could not run it. Double-check the binary and try again.',
-        );
-      }
-    } catch (err) {
-      setRegisterError(errMessage(err, 'Could not register this path.'));
-    }
-  };
-
-  const onValidate = async (): Promise<void> => {
-    setRegisterError(null);
-    setCheck(null);
-    try {
-      const res = await validate.mutateAsync(trimmedPath);
-      setCheck({ valid: res.valid, error: res.error });
-    } catch (err) {
-      setCheck({ valid: false, error: errMessage(err, 'Validation failed.') });
-    }
-  };
+  if (flow.state === 'waiting') {
+    return (
+      <WaitingBody
+        name={flow.name}
+        prompt={buildConnectPrompt(flow.name, flow.token, origin, 'binary')}
+        expired={flow.expired}
+        regenerating={flow.mint.isPending}
+        onRegenerate={flow.regenerate}
+        onBack={flow.back}
+        onSkip={onSkip}
+      />
+    );
+  }
 
   return (
     <div className="mt-6 max-w-lg">
       <p className="text-text-secondary text-base leading-relaxed">
-        Pick the agentic CLI you run — Claude Code, Codex, opencode, or Pi.
-        HappyRanch records where its binary lives on this machine so it can
-        launch it.
+        Pick the agentic CLI you run — Claude Code, Codex, opencode, or Pi. Paste
+        the generated prompt into it: it proves it works and tells HappyRanch
+        where its binary lives on this machine so it can launch it.
       </p>
 
       <div className="mt-6 space-y-2">
@@ -251,7 +326,10 @@ function BuiltinConnect({
         <select
           id="builtin-kind"
           value={kind}
-          onChange={(e) => onSelect(e.target.value)}
+          onChange={(e) => {
+            setKind(e.target.value as Kind | '');
+            flow.mint.reset();
+          }}
           className={FIELD_CLASS}
         >
           <option value="">Choose an agentic CLI…</option>
@@ -263,114 +341,22 @@ function BuiltinConnect({
         </select>
       </div>
 
-      {kind && (
-        <div className="mt-4">
-          {!detectionReady ? (
-            <p className="text-text-muted flex items-center gap-2 text-sm">
-              <Spinner className="text-text-muted h-4 w-4" />
-              Checking this machine for <span className="font-mono">{kind}</span>…
-            </p>
-          ) : detectedPath ? (
-            /* (a) present in prereqs → confirm the resolved path */
-            <div className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-4">
-              <div className="flex items-center gap-2">
-                <span
-                  aria-hidden="true"
-                  className="bg-feedback-success/15 text-feedback-success inline-flex h-6 w-6 items-center justify-center rounded-full"
-                >
-                  <Check size={14} />
-                </span>
-                <p className="text-text-primary text-sm font-medium">
-                  Found <span className="font-mono">{kind}</span> on this machine
-                </p>
-              </div>
-              <p className="text-text-muted text-caption mt-3 font-semibold tracking-wider uppercase">
-                Detected at
-              </p>
-              <p className="text-text-secondary mt-1 truncate font-mono text-xs">
-                {detectedPath}
-              </p>
-              {registerError && (
-                <p className="text-feedback-danger mt-3 text-sm" role="alert">
-                  {registerError}
-                </p>
-              )}
-              <div className="mt-4">
-                <Button
-                  type="button"
-                  onClick={() => void doRegister(detectedPath)}
-                  disabled={busy}
-                >
-                  {register.isPending ? 'Connecting…' : 'Confirm & connect'}
-                </Button>
-              </div>
-            </div>
-          ) : (
-            /* (b) not present → manual absolute-path entry */
-            <div className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-4">
-              <p className="text-text-secondary text-sm leading-relaxed">
-                <span className="font-mono">{kind}</span> isn&rsquo;t on this
-                machine&rsquo;s PATH. Enter the absolute path to its binary — for
-                example, the output of{' '}
-                <span className="text-text-primary font-mono">which {kind}</span>.
-              </p>
-              <div className="mt-3 space-y-2">
-                <Label htmlFor="builtin-path">Binary path</Label>
-                <Input
-                  id="builtin-path"
-                  value={pathInput}
-                  onChange={(e) => {
-                    setPathInput(e.target.value);
-                    setCheck(null);
-                    setRegisterError(null);
-                  }}
-                  placeholder={`/absolute/path/to/${kind}`}
-                  className="font-mono"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-                {check && (
-                  <p
-                    className={`flex items-center gap-1.5 text-sm ${
-                      check.valid ? 'text-feedback-success' : 'text-feedback-danger'
-                    }`}
-                    role="status"
-                  >
-                    {check.valid && <Check aria-hidden="true" size={13} />}
-                    {check.valid
-                      ? 'Looks good — this path is absolute, exists, and is executable.'
-                      : (check.error ?? 'This path is not valid.')}
-                  </p>
-                )}
-                {registerError && (
-                  <p className="text-feedback-danger text-sm" role="alert">
-                    {registerError}
-                  </p>
-                )}
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <Button
-                    type="button"
-                    onClick={() => void doRegister(trimmedPath)}
-                    disabled={!trimmedPath || busy}
-                  >
-                    {register.isPending ? 'Connecting…' : 'Register & connect'}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => void onValidate()}
-                    disabled={!trimmedPath || busy}
-                  >
-                    {validate.isPending ? 'Validating…' : 'Validate'}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+      {flow.mint.isError && (
+        <p className="text-feedback-danger mt-3 text-sm" role="alert">
+          {flow.mint.error instanceof ApiError
+            ? `Could not generate a prompt (${flow.mint.error.status}).`
+            : 'Could not generate a prompt. Is the daemon reachable?'}
+        </p>
       )}
 
-      <div className="mt-6 flex flex-wrap items-center gap-4">
+      <div className="mt-6 flex flex-wrap items-center gap-3">
+        <Button
+          type="button"
+          disabled={!kind || flow.mint.isPending}
+          onClick={() => flow.start(kind)}
+        >
+          {flow.mint.isPending ? 'Generating…' : 'Generate connect prompt'}
+        </Button>
         <button
           type="button"
           onClick={onUseCustom}
@@ -387,13 +373,13 @@ function BuiltinConnect({
         </button>
       </div>
 
-      <HowThisWorksBuiltin />
+      <HowThisWorks />
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  SECONDARY — custom CLI: mint token → copy prompt → poll for name   */
+/*  CUSTOM — name → mint profile token → copy prompt → poll for name   */
 /* ------------------------------------------------------------------ */
 
 function CustomConnect({
@@ -405,84 +391,32 @@ function CustomConnect({
   onSkip: () => void;
   onUseBuiltin: () => void;
 }): JSX.Element {
-  const [state, setState] = useState<'form' | 'waiting'>('form');
   const [nameInput, setNameInput] = useState('');
-  const [runtimeName, setRuntimeName] = useState(''); // locked name post-generate
-  const [token, setToken] = useState('');
-  const [expiresAt, setExpiresAt] = useState(0); // epoch seconds
-  const [expired, setExpired] = useState(false);
-
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
+
+  const flow = useRuntimeConnect({
+    requirePresent: false,
+    via: 'custom',
+    onConnected,
+  });
 
   const nameIsBuiltin = BUILTINS.has(nameInput.trim());
   const nameValid = NAME_RE.test(nameInput.trim()) && !nameIsBuiltin;
 
-  const mint = useMutation({
-    mutationFn: (name: string) => settingsApi.mintRuntimeRegistrationToken({ name }),
-    onSuccess: (resp, name) => {
-      setRuntimeName(name);
-      setToken(resp.token);
-      setExpiresAt(resp.expires_at);
-      setExpired(false);
-      setState('waiting');
-    },
-  });
-
-  // Time-based expiry (the only expiry signal the custom shape has — the mint
-  // returns expires_at; there is no conformance-status GET to poll for lapse).
-  useEffect(() => {
-    if (state !== 'waiting' || !expiresAt) return;
-    const ms = expiresAt * 1000 - Date.now();
-    if (ms <= 0) {
-      setExpired(true);
-      return;
-    }
-    const t = window.setTimeout(() => setExpired(true), ms);
-    return () => window.clearTimeout(t);
-  }, [state, expiresAt]);
-
-  // Poll the EXISTING prereqs route while waiting; flip to connected the moment
-  // the freshly-registered custom NAME appears. A custom profile only shows up
-  // post-register, so its appearance IS the connect signal for THIS flow.
-  const poll = useQuery({
-    queryKey: ['health', 'prereqs'],
-    queryFn: healthApi.getPrereqs,
-    enabled: state === 'waiting' && !expired,
-    refetchInterval: state === 'waiting' && !expired ? 2500 : false,
-  });
-
-  useEffect(() => {
-    if (state !== 'waiting') return;
-    const match = poll.data?.prereqs.find((p) => p.tool === runtimeName);
-    if (match) onConnected({ name: runtimeName, path: match.path, via: 'custom' });
-  }, [poll.data, state, runtimeName, onConnected]);
-
   const generate = (): void => {
     const name = nameInput.trim();
-    if (nameValid && !mint.isPending) mint.mutate(name);
+    if (nameValid) flow.start(name);
   };
 
-  const regenerate = (): void => {
-    if (runtimeName && !mint.isPending) mint.mutate(runtimeName);
-  };
-
-  const back = (): void => {
-    setState('form');
-    setToken('');
-    setExpiresAt(0);
-    setExpired(false);
-    mint.reset();
-  };
-
-  if (state === 'waiting') {
+  if (flow.state === 'waiting') {
     return (
       <WaitingBody
-        name={runtimeName}
-        prompt={buildConnectPrompt(runtimeName, token, origin)}
-        expired={expired}
-        regenerating={mint.isPending}
-        onRegenerate={regenerate}
-        onBack={back}
+        name={flow.name}
+        prompt={buildConnectPrompt(flow.name, flow.token, origin, 'profile')}
+        expired={flow.expired}
+        regenerating={flow.mint.isPending}
+        onRegenerate={flow.regenerate}
+        onBack={flow.back}
         onSkip={onSkip}
       />
     );
@@ -512,13 +446,13 @@ function CustomConnect({
           value={nameInput}
           onChange={(e) => {
             setNameInput(e.target.value);
-            mint.reset();
+            flow.mint.reset();
           }}
           placeholder="e.g. my-cli"
           autoFocus
           autoComplete="off"
           spellCheck={false}
-          aria-invalid={nameInput && !nameValid && !mint.isPending ? true : undefined}
+          aria-invalid={nameInput && !nameValid && !flow.mint.isPending ? true : undefined}
         />
         <p className="text-xs">
           {nameInput && nameIsBuiltin ? (
@@ -537,16 +471,16 @@ function CustomConnect({
             </span>
           )}
         </p>
-        {mint.isError && (
+        {flow.mint.isError && (
           <p className="text-feedback-danger text-sm" role="alert">
-            {mint.error instanceof ApiError
-              ? `Could not generate a prompt (${mint.error.status}).`
+            {flow.mint.error instanceof ApiError
+              ? `Could not generate a prompt (${flow.mint.error.status}).`
               : 'Could not generate a prompt. Is the daemon reachable?'}
           </p>
         )}
         <div className="flex flex-wrap items-center gap-3 pt-3">
-          <Button type="submit" disabled={!nameValid || mint.isPending}>
-            {mint.isPending ? 'Generating…' : 'Generate connect prompt'}
+          <Button type="submit" disabled={!nameValid || flow.mint.isPending}>
+            {flow.mint.isPending ? 'Generating…' : 'Generate connect prompt'}
           </Button>
           <button
             type="button"
@@ -571,7 +505,7 @@ function CustomConnect({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Custom waiting body — prompt block + copy + live detect strip      */
+/*  Shared waiting body — prompt block + copy + live detect strip      */
 /* ------------------------------------------------------------------ */
 
 function WaitingBody({
@@ -783,29 +717,7 @@ function StepEyebrow(): JSX.Element {
   );
 }
 
-/** Honesty note for the built-in path-registration flow. */
-function HowThisWorksBuiltin(): JSX.Element {
-  return (
-    <details className="group mt-5">
-      <summary className="text-text-secondary hover:text-text-primary flex cursor-pointer list-none items-center gap-1.5 text-xs">
-        <ChevronRight
-          aria-hidden="true"
-          size={14}
-          className="transition-transform group-open:rotate-90"
-        />
-        How this works
-      </summary>
-      <p className="text-text-muted mt-2 max-w-lg pl-5 text-xs leading-relaxed">
-        HappyRanch only records where the CLI&rsquo;s binary lives on this
-        machine — nothing runs when you connect it. Registering makes the CLI
-        available to choose; assigning an agent to run on it is a separate,
-        later step.
-      </p>
-    </details>
-  );
-}
-
-/** Honesty note for the custom copy-paste flow. */
+/** Honesty note shared by both copy-paste flows. */
 function HowThisWorks(): JSX.Element {
   return (
     <details className="group mt-5">
