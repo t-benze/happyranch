@@ -10,12 +10,16 @@
 import { useData } from '@/design-system/providers/DataContext';
 
 export type {
+  AssignSkillRequest,
+  AssignSkillResponse,
   CatalogSkillItem,
   CreateSkillRequest,
   CreateSkillResponse,
   EditSkillRequest,
   EditSkillResponse,
   SkillDetail,
+  SkillStatusAssignment,
+  SkillStatusResponse,
   ValidateSkillResponse,
 } from '@/lib/api/skills';
 
@@ -40,3 +44,12 @@ export const useValidateSkill: ReturnType<
 export const useEditSkill: ReturnType<
   typeof useData
 >['skills']['useEditSkill'] = () => useData().skills.useEditSkill();
+
+export const useSkillStatus: ReturnType<
+  typeof useData
+>['skills']['useSkillStatus'] = (skillId) =>
+  useData().skills.useSkillStatus(skillId);
+
+export const useAssignSkill: ReturnType<
+  typeof useData
+>['skills']['useAssignSkill'] = () => useData().skills.useAssignSkill();

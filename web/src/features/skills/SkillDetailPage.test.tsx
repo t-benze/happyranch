@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -129,11 +129,90 @@ const BY_ID: Record<string, Detail> = {
   [CUSTOM_FAILED.skill_id]: CUSTOM_FAILED,
 };
 
+// ── Slice-5 per-agent assignment status (drives the custom assignment table).
+interface StatusAssignment {
+  agent: string;
+  assigned: boolean;
+  effective: boolean;
+  materialized_version: string | null;
+  state: 'effective' | 'assigned_not_yet_effective';
+}
+interface StatusResponse {
+  skill_id: string;
+  source: string;
+  in_catalog: boolean;
+  validated: boolean;
+  current_version: string;
+  assignments: StatusAssignment[];
+  last_validation: { ok: boolean; version: string | null; at: string | null } | null;
+}
+
+// Status MATCHES PRODUCTION: the daemon returns ONLY already-assigned agents
+// (unassigned agents are skipped). So the status carries an effective agent and
+// an assigned-not-yet-effective agent — but NOT the unassigned candidate. The
+// unassigned candidate (ops_agent) is surfaced by unioning the real agents
+// roster (below) with this response, exactly as production does.
+const CUSTOM_STATUS: StatusResponse = {
+  skill_id: CUSTOM.skill_id,
+  source: 'user_authored',
+  in_catalog: true,
+  validated: true,
+  current_version: '1.2.0',
+  assignments: [
+    {
+      agent: 'partner_liaison',
+      assigned: true,
+      effective: true,
+      materialized_version: '1.2.0',
+      state: 'effective',
+    },
+    {
+      agent: 'support_agent',
+      assigned: true,
+      effective: false,
+      materialized_version: '1.1.0',
+      state: 'assigned_not_yet_effective',
+    },
+  ],
+  last_validation: { ok: true, version: '1.2.0', at: '2026-07-14T10:00:00Z' },
+};
+
+// A not-validated custom draft: production returns no assigned agents and the
+// assign route would 409, so the panel renders the read-only gated state.
+const VENDOR_STATUS: StatusResponse = {
+  skill_id: CUSTOM_FAILED.skill_id,
+  source: 'user_authored',
+  in_catalog: true,
+  validated: false,
+  current_version: '0.3.0',
+  assignments: [],
+  last_validation: { ok: false, version: null, at: '2026-07-14T09:00:00Z' },
+};
+
+const STATUS_BY_ID: Record<string, StatusResponse> = {
+  [CUSTOM.skill_id]: CUSTOM_STATUS,
+  [CUSTOM_FAILED.skill_id]: VENDOR_STATUS,
+};
+
+// The real agents roster (drives the candidate list). Includes both assigned
+// agents and an UNASSIGNED candidate (ops_agent) that the status response omits
+// — proving an unassigned roster agent still gets an Assign control.
+const ROSTER = ['partner_liaison', 'support_agent', 'ops_agent', 'finance_agent'];
+
 function mount(skillId: string) {
   sessionStorage.setItem('happyranch.token', 'tok');
+  // Stateful clone so a commit (assign POST) mutates the store and the status
+  // refetch reflects the applied change (MEM-037 stateful-mock pattern).
+  const statusStore: Record<string, StatusResponse> = JSON.parse(
+    JSON.stringify(STATUS_BY_ID),
+  );
   server.use(
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+    // Real agents roster — the candidate source the panel unions with status.
+    http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+      HttpResponse.json({ agents: ROSTER.map((name) => ({ name })) }),
     ),
     http.get(
       `/api/v1/orgs/${SLUG}/skills/catalog/:skillId`,
@@ -142,6 +221,52 @@ function mount(skillId: string) {
         return detail
           ? HttpResponse.json(detail)
           : HttpResponse.json({ detail: 'not found' }, { status: 404 });
+      },
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/skills/:skillId/status`, ({ params }) => {
+      const s = statusStore[params.skillId as string];
+      return s
+        ? HttpResponse.json(s)
+        : HttpResponse.json({ detail: 'not found' }, { status: 404 });
+    }),
+    http.post(
+      `/api/v1/orgs/${SLUG}/agents/:agentId/skills/:skillId/assign`,
+      async ({ params, request }) => {
+        const body = (await request.json()) as { action: 'allow' | 'remove' };
+        const agentId = params.agentId as string;
+        const sid = params.skillId as string;
+        const assigning = body.action === 'allow';
+        const s = statusStore[sid];
+        if (s) {
+          const row = s.assignments.find((x) => x.agent === agentId);
+          if (assigning) {
+            // Production's status endpoint returns ONLY assigned agents, so a
+            // newly-assigned agent JOINS the list (it wasn't there before).
+            if (row) {
+              row.assigned = true;
+              row.effective = false;
+              row.state = 'assigned_not_yet_effective';
+            } else {
+              s.assignments.push({
+                agent: agentId,
+                assigned: true,
+                effective: false,
+                materialized_version: null,
+                state: 'assigned_not_yet_effective',
+              });
+            }
+          } else {
+            // Unassign: the agent drops out of the assigned-only status list.
+            s.assignments = s.assignments.filter((x) => x.agent !== agentId);
+          }
+        }
+        return HttpResponse.json({
+          agent_id: agentId,
+          skill_id: sid,
+          state: assigning ? 'assigned' : 'unassigned',
+          effective_hint: assigning ? 'assigned_not_yet_effective' : null,
+          materializes_on: assigning ? 'next_session' : null,
+        });
       },
     ),
   );
@@ -252,5 +377,212 @@ describe('SkillDetailPage — detail + provenance (THR-092 Slice 2)', () => {
     expect(main).not.toMatch(/\badmit\b/i);
     expect(main).not.toMatch(/\bpending\b/i);
     expect(main).not.toMatch(/materialize now/i);
+  });
+});
+
+describe('SkillDetailPage — custom assignment + config-review (THR-092 Slice 5)', () => {
+  test('custom skill shows the interactive per-agent assignment table with all three states + toggles', async () => {
+    mount(CUSTOM.skill_id);
+    // Wait for the assignment table (status-driven) to render.
+    const liaison = (await screen.findByText('partner_liaison')).closest(
+      '[data-agent]',
+    ) as HTMLElement;
+    expect(liaison.getAttribute('data-status')).toBe('effective');
+    expect(within(liaison).getByText('Effective')).toBeInTheDocument();
+
+    const support = document.querySelector(
+      '[data-agent="support_agent"]',
+    ) as HTMLElement;
+    expect(support.getAttribute('data-status')).toBe('not_yet_effective');
+    expect(
+      within(support).getByText('Takes effect next session'),
+    ).toBeInTheDocument();
+
+    const ops = document.querySelector(
+      '[data-agent="ops_agent"]',
+    ) as HTMLElement;
+    expect(ops.getAttribute('data-status')).toBe('not_assigned');
+    expect(within(ops).getByText('Not assigned')).toBeInTheDocument();
+
+    // Each row carries a guidance-visibility toggle (Assign / Unassign), never
+    // the api verb or permission wording.
+    expect(
+      within(ops).getByRole('button', { name: /^assign ops_agent$/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(liaison).getByRole('button', { name: /^unassign partner_liaison$/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('toggling an agent queues a change, previews optimistically, and reveals Review & apply', async () => {
+    mount(CUSTOM.skill_id);
+    const ops = (await screen.findByText('ops_agent')).closest(
+      '[data-agent]',
+    ) as HTMLElement;
+
+    fireEvent.click(
+      within(ops).getByRole('button', { name: /^assign ops_agent$/i }),
+    );
+
+    // Optimistic preview: newly-assigned → "Takes effect next session".
+    expect(ops.getAttribute('data-status')).toBe('not_yet_effective');
+    expect(ops.getAttribute('data-changed')).toBe('true');
+    expect(within(ops).getByText(/will change/i)).toBeInTheDocument();
+    // The row's toggle now offers the reverse action.
+    expect(
+      within(ops).getByRole('button', { name: /^unassign ops_agent$/i }),
+    ).toBeInTheDocument();
+
+    // The config-review affordance appears.
+    expect(screen.getByText(/1 change to review/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /review & apply/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('config-review commit: review-before-commit summary, guidance-visibility note, applies the queued change', async () => {
+    mount(CUSTOM.skill_id);
+    const ops = (await screen.findByText('ops_agent')).closest(
+      '[data-agent]',
+    ) as HTMLElement;
+    fireEvent.click(
+      within(ops).getByRole('button', { name: /^assign ops_agent$/i }),
+    );
+
+    // Open the config-review summary.
+    fireEvent.click(screen.getByRole('button', { name: /review & apply/i }));
+    const review = screen.getByTestId('config-review');
+    expect(
+      within(review).getByText(/ops_agent will be shown this skill as guidance/i),
+    ).toBeInTheDocument();
+    // Guidance-visibility-only note at the commit action.
+    expect(
+      within(review).getByText(/do not change available tools or commands/i),
+    ).toBeInTheDocument();
+
+    // Commit.
+    fireEvent.click(
+      within(review).getByRole('button', { name: /^apply 1 change$/i }),
+    );
+
+    // Success confirmation + the committed table reflects the applied change
+    // (stateful mock: ops_agent is now assigned-not-yet-effective).
+    expect(
+      await screen.findByText(/changes applied — they take effect/i),
+    ).toBeInTheDocument();
+    // The committed table reflects the applied change once the status refetch
+    // (invalidated on commit) resolves.
+    await waitFor(() => {
+      const opsAfter = document.querySelector(
+        '[data-agent="ops_agent"]',
+      ) as HTMLElement;
+      expect(opsAfter.getAttribute('data-status')).toBe('not_yet_effective');
+      expect(opsAfter.getAttribute('data-changed')).toBe('false');
+    });
+    // The review summary is gone once applied.
+    expect(screen.queryByTestId('config-review')).toBeNull();
+  });
+
+  test('custom-only gating: a read-only bundled skill shows NO assignment controls', async () => {
+    mount(MANAGED.skill_id);
+    await screen.findByText('kb-curation');
+    // No per-agent toggle and no config-review affordance on a read-only skill.
+    expect(
+      screen.queryByRole('button', { name: /^(assign|unassign) /i }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /review & apply/i }),
+    ).toBeNull();
+    // The Slice-2 read-only provenance list still renders (not regressed).
+    expect(
+      document.querySelector('[data-agent="kb_curator"]'),
+    ).not.toBeNull();
+  });
+
+  test('copy discipline: the routed assignment + config-review surface has no forbidden token family and never renders the api verb', async () => {
+    mount(CUSTOM.skill_id);
+    const ops = (await screen.findByText('ops_agent')).closest(
+      '[data-agent]',
+    ) as HTMLElement;
+    // Also toggle an existing agent OFF so an "Unassign" change is in the review.
+    fireEvent.click(
+      within(ops).getByRole('button', { name: /^assign ops_agent$/i }),
+    );
+    const support = document.querySelector(
+      '[data-agent="support_agent"]',
+    ) as HTMLElement;
+    fireEvent.click(
+      within(support).getByRole('button', { name: /^unassign support_agent$/i }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /review & apply/i }));
+    screen.getByTestId('config-review');
+
+    const main = document.querySelector('main')?.textContent ?? '';
+    // The full forbidden lifecycle / permission / approval family…
+    expect(main).not.toMatch(/materializ|admit|permission|approve|grant|\bpending\b/i);
+    // …and user-facing "active" is rejected separately.
+    expect(main).not.toMatch(/\bactive\b/i);
+    // The api request verb ('allow'/'remove') is REQUEST-ONLY — never rendered.
+    expect(main).not.toMatch(/\ballow\b/i);
+    expect(main).not.toMatch(/\bremove\b/i);
+  });
+
+  test('an unassigned roster agent (absent from the status response) still surfaces with an Assign control', async () => {
+    mount(CUSTOM.skill_id);
+    // finance_agent is in the real agents roster but NOT in the status response
+    // (production omits unassigned agents). It must still render as a candidate.
+    await screen.findByText('partner_liaison');
+    const finance = document.querySelector(
+      '[data-agent="finance_agent"]',
+    ) as HTMLElement;
+    expect(finance).not.toBeNull();
+    expect(finance.getAttribute('data-status')).toBe('not_assigned');
+    expect(within(finance).getByText('Not assigned')).toBeInTheDocument();
+    // …with an Assign control, so a custom skill CAN be assigned to a new agent.
+    const assignBtn = within(finance).getByRole('button', {
+      name: /^assign finance_agent$/i,
+    });
+    expect(assignBtn).toBeInTheDocument();
+
+    // Queuing it reveals the config-review affordance (the change is real).
+    fireEvent.click(assignBtn);
+    expect(finance.getAttribute('data-status')).toBe('not_yet_effective');
+    expect(
+      screen.getByRole('button', { name: /review & apply/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('not-validated custom skill: read-only "resolve validation first" gate, NO assign controls', async () => {
+    mount(CUSTOM_FAILED.skill_id);
+    await screen.findByText('vendor-comms-style');
+
+    // The gated read-only state renders instead of the interactive controls.
+    const gate = await screen.findByTestId('assignment-not-validated');
+    expect(
+      within(gate).getByText(/validation needed before you can assign/i),
+    ).toBeInTheDocument();
+    // A link to re-validate (the Slice-4 edit route).
+    const revalidate = within(gate).getByRole('link', {
+      name: /re-?validate skill/i,
+    });
+    expect(revalidate).toHaveAttribute(
+      'href',
+      `/orgs/${SLUG}/skills/${CUSTOM_FAILED.skill_id}/edit`,
+    );
+
+    // No interactive assignment controls while not validated.
+    expect(
+      screen.queryByRole('button', { name: /^(assign|unassign) /i }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /review & apply/i }),
+    ).toBeNull();
+
+    // Copy discipline holds on the gated surface too.
+    const main = document.querySelector('main')?.textContent ?? '';
+    expect(main).not.toMatch(/materializ|admit|permission|approve|grant|\bpending\b/i);
+    expect(main).not.toMatch(/\bactive\b/i);
+    expect(main).not.toMatch(/\ballow\b/i);
+    expect(main).not.toMatch(/\bremove\b/i);
   });
 });

@@ -20,12 +20,15 @@
  * user_authored.
  */
 import type {
+  AssignSkillRequest,
+  AssignSkillResponse,
   CatalogSkillItem,
   CreateSkillRequest,
   CreateSkillResponse,
   EditSkillRequest,
   EditSkillResponse,
   SkillDetail,
+  SkillStatusResponse,
   ValidateSkillResponse,
 } from '@/lib/api/skills';
 import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
@@ -379,6 +382,77 @@ const DETAILS: Record<string, SkillDetail> = {
   },
 };
 
+// ── Slice-5 per-agent assignment status fixtures ────────────────────────
+// Keyed by skill_id. MATCHES PRODUCTION: the daemon's status endpoint returns
+// ONLY already-assigned agents (it skips unassigned agents), so these fixtures
+// carry assigned rows only. The full candidate roster (which surfaces the
+// unassigned, assignable agents) is derived by the panel from the real agents
+// source and unioned with this response — it is NOT seeded here. Coverage:
+// effective agents + an assigned-not-yet-effective agent.
+const STATUS: Record<string, SkillStatusResponse> = {
+  'sk-tourism-partner-playbook': {
+    skill_id: 'sk-tourism-partner-playbook',
+    source: 'user_authored',
+    in_catalog: true,
+    validated: true,
+    current_version: '1.2.0',
+    assignments: [
+      {
+        agent: 'partner_liaison',
+        assigned: true,
+        effective: true,
+        materialized_version: '1.2.0',
+        state: 'effective',
+      },
+      {
+        agent: 'itinerary_planner',
+        assigned: true,
+        effective: true,
+        materialized_version: '1.2.0',
+        state: 'effective',
+      },
+      {
+        agent: 'support_agent',
+        assigned: true,
+        effective: false,
+        materialized_version: '1.1.0',
+        state: 'assigned_not_yet_effective',
+      },
+    ],
+    last_validation: { ok: true, version: '1.2.0', at: '2026-07-14T10:00:00Z' },
+  },
+  // A failed-validation custom draft: not shown to any agent yet and not yet
+  // assignable — the panel renders the read-only "resolve validation first"
+  // state. Production returns no assigned agents for it.
+  'sk-vendor-comms-style': {
+    skill_id: 'sk-vendor-comms-style',
+    source: 'user_authored',
+    in_catalog: true,
+    validated: false,
+    current_version: '0.3.0',
+    assignments: [],
+    last_validation: { ok: false, version: null, at: '2026-07-14T09:00:00Z' },
+  },
+};
+
+// The post-commit success returned by the assign endpoint. `state` mirrors the
+// requested action; `materializes_on` communicates the next-session semantics
+// in transport terms (the UI renders its own guidance-visibility copy).
+function mockAssignResponse(
+  agentId: string,
+  skillId: string,
+  body: AssignSkillRequest,
+): AssignSkillResponse {
+  const assigning = body.action === 'allow';
+  return {
+    agent_id: agentId,
+    skill_id: skillId,
+    state: assigning ? 'assigned' : 'unassigned',
+    effective_hint: assigning ? 'assigned_not_yet_effective' : null,
+    materializes_on: assigning ? 'next_session' : null,
+  };
+}
+
 export const mockSkillsApi: SkillsApi = {
   useSkillsCatalog: (params) => {
     const filter = params?.filter;
@@ -410,5 +484,17 @@ export const mockSkillsApi: SkillsApi = {
   useEditSkill: () =>
     mockMutation<{ skillId: string; body: EditSkillRequest }, EditSkillResponse>(
       ({ skillId, body }) => mockEditResponse(skillId, body),
+    ),
+  useSkillStatus: (skillId) => {
+    if (!skillId) return notFound<SkillStatusResponse>();
+    const status = STATUS[skillId];
+    return status ? ok(status) : notFound<SkillStatusResponse>();
+  },
+  useAssignSkill: () =>
+    mockMutation<
+      { agentId: string; skillId: string; body: AssignSkillRequest },
+      AssignSkillResponse
+    >(({ agentId, skillId, body }) =>
+      mockAssignResponse(agentId, skillId, body),
     ),
 };

@@ -35,12 +35,15 @@ import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
 import type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
 import type {
+  AssignSkillRequest,
+  AssignSkillResponse,
   CatalogSkillItem,
   CreateSkillRequest,
   CreateSkillResponse,
   EditSkillRequest,
   EditSkillResponse,
   SkillDetail,
+  SkillStatusResponse,
   ValidateSkillResponse,
 } from '@/lib/api/skills';
 import type { ConversationSummary } from '@/lib/api/assistant';
@@ -463,6 +466,20 @@ export interface SkillsApi {
   useEditSkill: () => MutationLike<
     { skillId: string; body: EditSkillRequest },
     EditSkillResponse
+  >;
+  /** Per-agent assignment status for one skill (Slice-5). Drives the custom-
+   *  skill assignment table: each agent's assigned/effective state +
+   *  materialized version. This is the authoritative assignment source, apart
+   *  from the detail fetch's `assignments[]`. */
+  useSkillStatus: (skillId: string | undefined) => QueryLike<SkillStatusResponse>;
+  /** Assign / unassign one skill for one agent (Slice-5). The commit of the
+   *  config-review queue calls this once per queued change. The request body
+   *  verb (`allow`/`remove`) is transport only — the UI reads guidance-
+   *  visibility labels (Assign / Unassign). Changing an assignment changes what
+   *  an agent is SHOWN as guidance, never the tools or commands it can use. */
+  useAssignSkill: () => MutationLike<
+    { agentId: string; skillId: string; body: AssignSkillRequest },
+    AssignSkillResponse
   >;
 }
 
