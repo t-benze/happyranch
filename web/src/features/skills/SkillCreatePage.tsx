@@ -504,8 +504,8 @@ export function SkillCreatePage(): JSX.Element {
         <Info size={15} aria-hidden="true" className="text-fg-subtle shrink-0" />
         <span>
           <b className="text-fg font-semibold">Guidance visibility only.</b>{' '}
-          Skills shape what an agent is told — they never grant tools, commands,
-          or permissions.
+          Skills shape what an agent is told — they do not change available
+          tools or commands.
         </span>
       </div>
     </div>

@@ -159,15 +159,16 @@ describe('SkillCreatePage — add custom skill (THR-092 Slice 3)', () => {
     await fillMinimalForm();
     await userEvent.click(screen.getByRole('button', { name: /Validate & save/i }));
     await screen.findByLabelText('Validation result');
-    // Scope to the routed content column. The guidance strip legitimately
-    // NEGATES permission wording ("never grant ... permissions"), so — like
-    // SkillsPage.test — scan only for the capability/approval UI language that
-    // must never appear, not the negated words.
+    // Guidance-visibility copy carries NO capability / approval / lifecycle
+    // language anywhere in the routed create-page content — the form AND the
+    // validation-result state rendered below it. Now that the guidance strip
+    // no longer negates "grant … permissions", scan the FULL forbidden family
+    // (mirrors the Slice-2 skills-detail tightening), plus a user-facing
+    // "active" rejection (spec §3.4 / §9.1a — guidance visibility, never
+    // permission / admit / materialize).
+    const forbidden = /materializ|admit|permission|approve|grant|\bpending\b/i;
     const main = document.querySelector('main')?.textContent ?? '';
+    expect(main).not.toMatch(forbidden);
     expect(main).not.toMatch(/\bactive\b/i);
-    expect(main).not.toMatch(/\bapprove\b/i);
-    expect(main).not.toMatch(/\badmit\b/i);
-    expect(main).not.toMatch(/\bpending\b/i);
-    expect(main).not.toMatch(/materializ/i);
   });
 });
