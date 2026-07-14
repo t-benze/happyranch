@@ -287,3 +287,110 @@ html[class~='dark'] a.hr-cta {
   background: var(--hr-green);
   color: #10130e !important;
 }
+
+/* ---- Screenshot placeholder (components/ScreenshotPlaceholder.jsx) ----
+ * Honest, branded stand-in for a not-yet-captured screenshot. A paper card in
+ * a brand-bordered window frame with a "Screenshot coming" badge — clearly a
+ * placeholder, never a fake screenshot. */
+
+.hr-shot {
+  margin: 1.6rem 0;
+  border: 1px solid var(--hr-line);
+  border-radius: 14px;
+  background-color: var(--hr-paper);
+  box-shadow: var(--hr-shadow-sm);
+  overflow: hidden;
+}
+
+/* Window chrome — decorative traffic-light dots on a faint bar. */
+.hr-shot-chrome {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  background-color: var(--hr-bg-2);
+  border-bottom: 1px solid var(--hr-line-soft);
+}
+.hr-shot-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--hr-green-line);
+}
+.hr-shot-dot:nth-child(2) {
+  background-color: var(--hr-line);
+}
+.hr-shot-dot:nth-child(3) {
+  background-color: var(--hr-green-soft);
+  border: 1px solid var(--hr-green-line);
+}
+
+.hr-shot-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+  min-height: 168px;
+  padding: 30px 24px;
+  background-image: radial-gradient(
+    var(--hr-line-soft) 1px,
+    transparent 1px
+  );
+  background-size: 16px 16px;
+}
+.hr-shot-icon {
+  color: var(--hr-green);
+  opacity: 0.9;
+}
+
+/* The honesty fence — a plain, unmistakable "coming" badge. */
+.hr-shot-badge {
+  display: inline-block;
+  font-family: var(--hr-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hr-green-deep);
+  background-color: var(--hr-green-soft);
+  border: 1px solid var(--hr-green-line);
+  border-radius: 999px;
+  padding: 4px 12px;
+}
+.hr-shot-caption {
+  max-width: 42ch;
+  font-family: var(--hr-serif);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--hr-ink-faint);
+}
+
+/* ---- Docs → marketing nav bridge (theme.config.jsx navbar.extraContent) --- */
+
+.hr-navlink {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--hr-sans);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--hr-ink-soft);
+  text-decoration: none;
+  white-space: nowrap;
+  padding: 5px 4px;
+  transition: color 0.15s ease;
+}
+.hr-navlink:hover {
+  color: var(--hr-green-deep);
+}
+.hr-navlink-icon {
+  color: var(--hr-ink-faint);
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+.hr-navlink:hover .hr-navlink-icon {
+  color: var(--hr-green-deep);
+  transform: translate(1px, -1px);
+}
