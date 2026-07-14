@@ -1217,3 +1217,17 @@ private final class FakePairingServer: @unchecked Sendable {
         connection.start(queue: queue)
     }
 }
+
+// MARK: - Tsnet transport flag default test
+
+@Test("ClientBridge.useTsnetTransport defaults to false (NWConnection path)")
+func testUseTsnetTransportDefaultsToFalse() {
+    // The flag is a static let read once at class load from
+    // HAPPYRANCH_TSNET_TRANSPORT env var.  When the env var is NOT set
+    // (which is the case in test runs), the default MUST be false.
+    //
+    // This test ensures the off-by-default contract is upheld — the
+    // existing NWConnection/Tailscale path remains the DEFAULT path.
+    #expect(ClientBridge.useTsnetTransport == false,
+        "useTsnetTransport must default to false — NWConnection path is the default")
+}

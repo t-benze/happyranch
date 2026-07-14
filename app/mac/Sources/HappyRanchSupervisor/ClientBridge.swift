@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import CTsnet
 
 // MARK: - RedeemPairingError
 
@@ -96,6 +97,20 @@ public final class ClientBridge: @unchecked Sendable {
     /// Thread-safe: this is set from outside the bridge, read on the bridge's
     /// internal dispatch queue.
     public var deviceCredential: String?
+
+    /// Whether to use the in-process tsnet WireGuard tunnel for outbound
+    /// connections to the home connector instead of the default Tailscale/
+    /// NWConnection path.
+    ///
+    /// Controlled by the `HAPPYRANCH_TSNET_TRANSPORT` environment variable.
+    /// Set to `"1"` to enable.  Off by default — the existing NWConnection
+    /// path is the default and is NOT deleted.
+    ///
+    /// This flag is read once at init time.  The default (false) MUST select
+    /// the existing NWConnection/Tailscale path.
+    public static let useTsnetTransport: Bool = {
+        ProcessInfo.processInfo.environment["HAPPYRANCH_TSNET_TRANSPORT"] == "1"
+    }()
 
     /// The session-scoped credential prefix.
     private static let sessionCredentialPrefix = "hr_session_"
@@ -618,6 +633,25 @@ public final class ClientBridge: @unchecked Sendable {
             requestToSend = forwardedRequest
         }
 
+        if Self.useTsnetTransport {
+            forwardToHomeConnectorViaTsnet(
+                clientConnection: clientConnection,
+                requestToSend: requestToSend
+            )
+        } else {
+            forwardToHomeConnectorViaNWConnection(
+                clientConnection: clientConnection,
+                requestToSend: requestToSend
+            )
+        }
+    }
+
+    /// Forward the request to the home connector via the existing Tailscale/
+    /// NWConnection path (DEFAULT).
+    private func forwardToHomeConnectorViaNWConnection(
+        clientConnection: NWConnection,
+        requestToSend: String
+    ) {
         let homeEndpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(homeConnectorHost),
             port: NWEndpoint.Port(integerLiteral: homeConnectorPort)
@@ -653,6 +687,98 @@ public final class ClientBridge: @unchecked Sendable {
             }
         }
         homeConnection.start(queue: queue)
+    }
+
+    /// Forward the request to the home connector through the in-process tsnet
+    /// WireGuard tunnel (OFF-BY-DEFAULT — only when `useTsnetTransport` is true).
+    ///
+    /// Uses the tsnet_conn_* C-ABI to open a duplex connection through the
+    /// userspace WireGuard tunnel.  The relay loop runs on a dedicated
+    /// dispatch queue to avoid blocking the bridge's serial queue on
+    /// blocking tsnet_conn_read calls.
+    private func forwardToHomeConnectorViaTsnet(
+        clientConnection: NWConnection,
+        requestToSend: String
+    ) {
+        let addr = "\(homeConnectorHost):\(homeConnectorPort)"
+        let connID = tsnet_conn_dial("tcp", addr, 30_000)
+
+        guard connID >= 0 else {
+            let errPtr = tsnet_last_error()
+            let errMsg = errPtr.map { String(cString: $0) } ?? "unknown tsnet error"
+            if let errPtr { tsnet_free_string(errPtr) }
+            self.sendErrorResponse(
+                to: clientConnection,
+                status: 502,
+                message: "Bad Gateway — tsnet dial failed: \(errMsg)"
+            )
+            return
+        }
+
+        // Write the initial request to tsnet
+        let requestData = requestToSend.data(using: .utf8) ?? Data()
+        let written = requestData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) -> Int32 in
+            guard let base = ptr.baseAddress else { return -1 }
+            return tsnet_conn_write(connID, base.assumingMemoryBound(to: CChar.self), Int32(requestData.count))
+        }
+
+        if written < 0 {
+            tsnet_conn_close(connID)
+            self.sendErrorResponse(
+                to: clientConnection,
+                status: 502,
+                message: "Bad Gateway — tsnet write failed"
+            )
+            return
+        }
+
+        // Relay tsnet -> client on a dedicated queue (tsnet_conn_read blocks)
+        let tsnetQueue = DispatchQueue(
+            label: "com.happyranch.tsnet-relay-\(UUID().uuidString)"
+        )
+        tsnetQueue.async { [weak self, weak clientConnection] in
+            guard let self else { return }
+            self.relayTsnetToClient(
+                connID: connID,
+                client: clientConnection,
+                queue: tsnetQueue
+            )
+        }
+    }
+
+    /// Read from tsnet connection and write to the client NWConnection.
+    /// Runs on a dedicated queue because tsnet_conn_read is a blocking call.
+    private func relayTsnetToClient(
+        connID: Int32,
+        client: NWConnection?,
+        queue: DispatchQueue
+    ) {
+        let bufSize = 65536
+        let buf = UnsafeMutablePointer<CChar>.allocate(capacity: bufSize)
+        defer { buf.deallocate() }
+
+        let n = tsnet_conn_read(connID, buf, Int32(bufSize))
+
+        if n > 0 {
+            let data = Data(bytes: buf, count: Int(n))
+            client?.send(
+                content: data,
+                completion: .contentProcessed { [weak self] _ in
+                    guard let self else { return }
+                    queue.async {
+                        self.relayTsnetToClient(
+                            connID: connID,
+                            client: client,
+                            queue: queue
+                        )
+                    }
+                }
+            )
+        } else {
+            // n == 0: clean close by peer; n < 0: error
+            client?.cancel()
+            tsnet_conn_close(connID)
+        }
     }
 
     /// Relay home connector response chunks to the SPA until the home

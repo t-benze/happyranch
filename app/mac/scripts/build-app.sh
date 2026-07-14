@@ -4,6 +4,7 @@ set -euo pipefail
 # build-app.sh — assemble a self-contained HappyRanch.app bundle.
 #
 # Stages:
+#   0. Build tsnet-bridge Go static library (libtsnet.a)
 #   1. Build the frozen daemon (PyInstaller) via packaging/build_daemon.sh
 #   2. Build the web frontend (web/dist)
 #   3. Build the SwiftPM executable
@@ -11,10 +12,16 @@ set -euo pipefail
 #   5. Place the final .app at ~/Desktop/HappyRanch.app
 #
 # Prerequisites: Xcode 16+ (macOS 15+) with Swift 6 toolchain,
-#                 Python 3.12–3.14, uv, Node.js + npm.
+#                 Python 3.12–3.14, uv, Node.js + npm,
+#                 Go 1.23+ toolchain (for tsnet-bridge).
 #
 # Run from:      app/mac/  (the directory containing Package.swift).
 # Output:        ~/Desktop/HappyRanch.app  (unsigned local build)
+#
+# Go toolchain: the tsnet-bridge build requires a working Go 1.23+
+# installation.  If Go is not installed, install it via:
+#   brew install go
+# or download from https://go.dev/dl/
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -25,15 +32,38 @@ DESKTOP_APP="$HOME/Desktop/${BUNDLE_NAME}.app"
 echo "=== HappyRanch self-contained .app build ==="
 echo ""
 
+# ---- Stage 0: Build tsnet-bridge Go static library ----
+echo "[0/6] Building tsnet-bridge (Go -> libtsnet.a)..."
+TARGET_DIR="$PROJECT_DIR/tsnet-bridge"
+if [ -d "$TARGET_DIR" ]; then
+    if command -v go &>/dev/null; then
+        cd "$TARGET_DIR"
+        CGO_ENABLED=1 go build -buildmode=c-archive -o libtsnet.a . 2>&1 | tail -3
+        if [ -f "$TARGET_DIR/libtsnet.a" ] && [ -f "$TARGET_DIR/libtsnet.h" ]; then
+            echo "  libtsnet.a built ($(du -sh "$TARGET_DIR/libtsnet.a" | cut -f1))."
+        else
+            echo "  WARNING: libtsnet.a was not produced - tsnet transport will be unavailable."
+        fi
+        cd "$PROJECT_DIR"
+    else
+        echo "  WARNING: Go toolchain not found - skipping tsnet-bridge build."
+        echo "  Install Go 1.23+ via 'brew install go' or https://go.dev/dl/"
+        echo "  The app will build without tsnet transport (existing Tailscale path works)."
+    fi
+else
+    echo "  tsnet-bridge/ directory not found - skipping."
+fi
+echo ""
+
 # ---- Stage 1: Build frozen daemon ----
-echo "[1/5] Building frozen daemon (PyInstaller)..."
+echo "[1/6] Building frozen daemon (PyInstaller)..."
 cd "$REPO_ROOT"
 bash packaging/build_daemon.sh
 echo "  Frozen daemon built at: $REPO_ROOT/dist/happyranch-daemon/"
 echo ""
 
 # ---- Stage 2: Build web frontend ----
-echo "[2/5] Building web frontend (Vite)..."
+echo "[2/6] Building web frontend (Vite)..."
 cd "$REPO_ROOT/web"
 npm ci 2>&1 | tail -5
 npm run build 2>&1 | tail -3
@@ -41,13 +71,13 @@ echo "  Web dist built at: $REPO_ROOT/web/dist/"
 echo ""
 
 # ---- Stage 3: Build Swift app ----
-echo "[3/5] Building Swift app..."
+echo "[3/6] Building Swift app..."
 cd "$PROJECT_DIR"
 swift build -c release
 echo ""
 
 # ---- Stage 4: Assemble .app bundle ----
-echo "[4/5] Assembling .app bundle..."
+echo "[4/6] Assembling .app bundle..."
 cd "$PROJECT_DIR"
 
 # Remove any prior local bundle (idempotent)
@@ -140,7 +170,7 @@ echo "  Info.plist configured (PACKAGING_MODE=bundled)."
 echo ""
 
 # ---- Stage 5: Place at Desktop ----
-echo "[5/5] Placing at ~/Desktop..."
+echo "[5/6] Placing at ~/Desktop..."
 rm -rf "$DESKTOP_APP"
 cp -R "${BUNDLE_NAME}.app" "$DESKTOP_APP"
 
