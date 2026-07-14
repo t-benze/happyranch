@@ -16,14 +16,16 @@
  * separate shell-level task (see MEM-004) — out of this slice's scope.
  */
 import { useState } from 'react';
-import { Info, Package, Sparkles, TriangleAlert, LayoutGrid } from 'lucide-react';
+import { Info, Package, Sparkles, TriangleAlert } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useSkillsCatalog } from '@/hooks/skills';
 import { SkillCard } from './SkillCard';
 import { needsAttentionCount, type CatalogFilter } from './skills-catalog';
 
+// Bundled and Custom are the ONLY filter controls (product_lead handoff §1).
+// `'all'` stays as the internal default sentinel — the UNSELECTED state — and
+// is never surfaced as a facet button; it maps to no `?filter=` param.
 const FACETS: { value: CatalogFilter; label: string; icon: typeof Package }[] = [
-  { value: 'all', label: 'All skills', icon: LayoutGrid },
   { value: 'Bundled', label: 'Bundled', icon: Package },
   { value: 'Custom', label: 'Custom', icon: Sparkles },
 ];
@@ -32,7 +34,9 @@ export function SkillsPage(): JSX.Element {
   const [filter, setFilter] = useState<CatalogFilter>('all');
   const query = useSkillsCatalog(filter === 'all' ? undefined : { filter });
   const items = query.data?.items ?? [];
-  const activeFacet = FACETS.find((f) => f.value === filter) ?? FACETS[0];
+  // No facet matches the unfiltered default → header reads "All skills".
+  const headingLabel =
+    FACETS.find((f) => f.value === filter)?.label ?? 'All skills';
   const attention = needsAttentionCount(items);
 
   return (
@@ -51,7 +55,7 @@ export function SkillsPage(): JSX.Element {
                 key={f.value}
                 type="button"
                 aria-pressed={on}
-                onClick={() => setFilter(f.value)}
+                onClick={() => setFilter(on ? 'all' : f.value)}
                 className={`text-body-sm flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-medium transition-colors ${
                   on
                     ? 'bg-accent-soft text-accent-text'
@@ -77,14 +81,14 @@ export function SkillsPage(): JSX.Element {
                 key={f.value}
                 type="button"
                 aria-pressed={on}
-                onClick={() => setFilter(f.value)}
+                onClick={() => setFilter(on ? 'all' : f.value)}
                 className={`text-body-sm rounded-full border px-3 py-1.5 font-semibold transition-colors ${
                   on
                     ? 'bg-accent-soft text-accent-text border-transparent'
                     : 'border-border-default text-fg-muted bg-surface-raised'
                 }`}
               >
-                {f.value === 'all' ? 'All' : f.label}
+                {f.label}
               </button>
             );
           })}
@@ -93,7 +97,7 @@ export function SkillsPage(): JSX.Element {
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-fg-subtle text-overline mb-1 tracking-wider uppercase">
-              {activeFacet.label} · {items.length}
+              {headingLabel} · {items.length}
             </div>
             <h2 className="text-h2 text-fg">Guidance your agents can use</h2>
           </div>

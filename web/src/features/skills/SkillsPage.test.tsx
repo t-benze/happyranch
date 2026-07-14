@@ -134,6 +134,30 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     ).toBeInTheDocument();
   });
 
+  test('read-only system contract still renders its validation badge', async () => {
+    mount();
+    await screen.findByText('founder-escalation-protocol');
+    const card = screen
+      .getByText('founder-escalation-protocol')
+      .closest('article') as HTMLElement;
+    // The skill-level validation badge renders on EVERY catalog row — read-only
+    // only suppresses interactive controls, not the validation_state label.
+    expect(within(card).getByText('Validated')).toBeInTheDocument();
+  });
+
+  test('only Bundled and Custom are exposed as filter controls (no "All skills")', async () => {
+    mount();
+    await screen.findByText('founder-escalation-protocol');
+    // Facets render in both the desktop rail and the mobile chips (jsdom
+    // ignores `md:` visibility), so each label appears twice.
+    expect(screen.getAllByRole('button', { name: 'Bundled' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Custom' })).toHaveLength(2);
+    expect(
+      screen.queryByRole('button', { name: /all skills/i }),
+    ).toBeNull();
+    expect(screen.queryByRole('button', { name: /^All$/ })).toBeNull();
+  });
+
   test('takes-effect-next-session indicator for not-yet-effective assignments', async () => {
     mount();
     const card = (await screen.findByText('kb-curation')).closest(

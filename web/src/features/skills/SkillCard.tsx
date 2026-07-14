@@ -63,7 +63,10 @@ export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
         <div className="mb-1.5 flex flex-wrap items-center gap-2">
           <SourceBadge item={item} />
           {item.system_contract && <ContractBadge />}
-          {!readOnly && <SkillStatusBadge state={item.validation_state} />}
+          {/* Skill-level validation badge renders on EVERY catalog row,
+              including read-only/system_contract — read-only only suppresses
+              INTERACTIVE controls (toggle/unassign), not this status label. */}
+          <SkillStatusBadge state={item.validation_state} />
           <span className="text-mono-sm text-fg-subtle">v{item.version}</span>
         </div>
 
