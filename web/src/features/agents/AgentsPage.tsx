@@ -142,7 +142,16 @@ export function AgentsPage(): JSX.Element {
       </header>
 
       {/* --- Two-pane body --- */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* THR-099 a-agents cap: the mockup .ag-grid caps the two-pane body
+          (roster list + detail pane) at 1180 centered with height:100% and
+          INTERNALLY-scrolling panes. Surgical mx-auto max-w-content wrapper —
+          NOT ContentWrap, whose scroll-and-pad box would fight the full-height
+          two-pane (plan §1b INNER-1180, same recipe as thread-detail Slice 4).
+          The single 1180 cap covers BOTH list and detail (detail is a pane in
+          the grid). The topbar stays full-bleed, matching the mockup .topbar;
+          the 720px inner cap lives inside AgentDetailPane, not here. Panes keep
+          their own overflow — presentational cap only, nothing functional. */}
+      <div className="max-w-content mx-auto flex w-full flex-1 overflow-hidden">
         {/* LEFT: Roster list — Pasture w-rail (244px) */}
         <aside className="border-border-subtle bg-surface-sunken w-rail shrink-0 overflow-y-auto border-r">
           <Tabs value={tab}>
