@@ -14,6 +14,10 @@ export const KB_STRINGS = {
   /** Grouped folder rail (KB-01). */
   railLibrarySection: 'Library',
   railAllEntries: 'All entries',
+  /** Dedicated Candidates view rail row — keeps dream candidates out of the feed. */
+  railCandidates: 'Candidates',
+  emptyCandidatesTitle: 'No candidates pending',
+  emptyCandidatesBody: 'Dream-proposed candidates awaiting review will appear here.',
   authoredBy: (agent: string) => `Authored by ${agent}`,
   sourceTaskLabel: 'Source task:',
   relatedEntriesLabel: 'Related entries:',

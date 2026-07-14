@@ -2,9 +2,12 @@
  * KbPage — the Knowledge surface (§4.5).
  *
  * List view: folder rail (filters by topic) + stacked entry feed.
- * Pending dream-proposed candidates appear first, visually distinct
- * with the accent crescent-moon glyph. The pending-count tag
- * shows the total candidate count from dreams data.
+ * The feed shows live KB documents ONLY. Pending dream-proposed
+ * candidates live in a DEDICATED Candidates view — reached via the
+ * rail's "Candidates (N)" row or the header pending pill — so they
+ * never flood the document feed. Candidate cards keep the accent
+ * crescent-moon glyph. The pending-count (N) is the live count of
+ * per-dream `status==='pending'` candidates, not the stored total.
  *
  * Detail view: fully-rendered KB doc by slug OR candidate review
  * gate with Accept/Dismiss. Accept promotes the candidate to a live
@@ -104,12 +107,20 @@ function GroupedFolderRail({
   total,
   selected,
   onSelect,
+  candidatesCount,
+  candidatesActive,
+  onSelectCandidates,
 }: {
   folders: string[];
   counts: Map<string, number>;
   total: number;
   selected: string | null;
   onSelect: (type: string | null) => void;
+  /** Live pending-candidate count (same signal as the header pill). */
+  candidatesCount: number;
+  /** Whether the dedicated Candidates view is the active selection. */
+  candidatesActive: boolean;
+  onSelectCandidates: () => void;
 }): JSX.Element {
   const rowClass = (active: boolean) =>
     cn(
@@ -129,13 +140,30 @@ function GroupedFolderRail({
         <button
           type="button"
           onClick={() => onSelect(null)}
-          className={rowClass(selected == null)}
+          className={rowClass(selected == null && !candidatesActive)}
         >
           <LibraryIcon />
           <span>{KB_STRINGS.railAllEntries}</span>
           <span className={countClass}>{total}</span>
         </button>
       </section>
+
+      {/* Candidates — dream-proposed entries awaiting review live in their OWN
+          view so they never flood the live-document feed. Shown only when there
+          is live pending work (mirrors the header pill's `> 0` gate). */}
+      {candidatesCount > 0 && (
+        <section>
+          <button
+            type="button"
+            onClick={onSelectCandidates}
+            className={rowClass(candidatesActive)}
+          >
+            <CrescentMoonBadge className="h-4 w-4" />
+            <span>{KB_STRINGS.railCandidates}</span>
+            <span className={countClass}>{candidatesCount}</span>
+          </button>
+        </section>
+      )}
 
       {folders.length > 0 && (
         <section>
@@ -148,7 +176,7 @@ function GroupedFolderRail({
                 <button
                   type="button"
                   onClick={() => onSelect(f)}
-                  className={rowClass(selected === f)}
+                  className={rowClass(selected === f && !candidatesActive)}
                 >
                   <FolderIcon />
                   <span className="truncate">{f}</span>
@@ -193,11 +221,18 @@ function DreamCandidateRow({
   onSelect,
   detailCandidate,
   onPendingCountChange,
+  visible,
 }: {
   dreamId: string;
   onSelect: (c: DreamKbCandidate) => void;
   detailCandidate: DreamKbCandidate | null;
   onPendingCountChange?: (dreamId: string, count: number) => void;
+  /**
+   * When false the row still fetches and REPORTS its pending count (so the
+   * header pill + rail 'Candidates' row stay live) but renders no cards. The
+   * cards are shown only in the dedicated Candidates view.
+   */
+  visible: boolean;
 }): JSX.Element | null {
   const dreamQ = useDream(dreamId);
 
@@ -208,13 +243,15 @@ function DreamCandidateRow({
   }, [dreamQ.data?.kb_candidates]);
 
   // Report pending count for this dream back to the parent so the header tag
-  // tracks live statuses, not the stored kb_candidate_count total.
+  // and the rail 'Candidates (N)' row track live statuses, not the stored
+  // kb_candidate_count total. This runs regardless of `visible`: the row is
+  // kept mounted in every non-search view precisely to keep the count live.
   useEffect(() => {
     onPendingCountChange?.(dreamId, pending.length);
     return () => onPendingCountChange?.(dreamId, 0);
   }, [dreamId, pending.length, onPendingCountChange]);
 
-  if (dreamQ.isLoading || pending.length === 0) return null;
+  if (!visible || dreamQ.isLoading || pending.length === 0) return null;
 
   return (
     <>
@@ -260,6 +297,10 @@ export function KbPage(): JSX.Element {
   const openSlug = params['*'] && params['*'].length > 0 ? params['*'] : undefined;
   const navigate = useNavigate();
   const [folder, setFolder] = useState<string | null>(null);
+  // Dedicated Candidates view: when true (and not searching) the main area
+  // shows dream-proposed candidate cards ONLY; the default/folder views show
+  // live KB documents ONLY. Candidates never interleave with the feed again.
+  const [candidatesView, setCandidatesView] = useState(false);
   const [searchInput, setSearchInput] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [detailCandidate, setDetailCandidate] = useState<DreamKbCandidate | null>(null);
@@ -395,12 +436,14 @@ export function KbPage(): JSX.Element {
 
   const detailOpen = !!openSlug || !!detailCandidate;
 
-  // When searching, candidate rows are hidden — judge emptiness from visible
-  // search results only, otherwise the "No matches" empty state never appears
-  // when a pending candidate exists.
-  const isListEmpty = isSearching
-    ? liveEntries.length === 0
-    : liveEntries.length === 0 && dreamsWithCandidates.length === 0;
+  // The Candidates view is only active when NOT searching — a search always
+  // shows document matches (candidates stay hidden while searching, unchanged).
+  const showCandidatesView = candidatesView && !isSearching;
+
+  // The document feed shows live entries ONLY, so emptiness is decided from the
+  // live entries alone — candidates no longer live here and never suppress the
+  // "No entries yet" / "No matches" empty state.
+  const isListEmpty = liveEntries.length === 0;
 
   return (
     <div className="flex h-full">
@@ -422,7 +465,13 @@ export function KbPage(): JSX.Element {
           counts={folderCounts}
           total={railEntries.length}
           selected={folder}
-          onSelect={setFolder}
+          onSelect={(type) => {
+            setCandidatesView(false);
+            setFolder(type);
+          }}
+          candidatesCount={candidatePendingCount}
+          candidatesActive={showCandidatesView}
+          onSelectCandidates={() => setCandidatesView(true)}
         />
       </aside>
 
@@ -444,9 +493,13 @@ export function KbPage(): JSX.Element {
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {candidatePendingCount > 0 && (
-                <span className="text-xs font-medium text-feedback-warning bg-feedback-warning/10 px-2.5 py-1 rounded-full">
+                <button
+                  type="button"
+                  onClick={() => setCandidatesView(true)}
+                  className="text-xs font-medium text-feedback-warning bg-feedback-warning/10 px-2.5 py-1 rounded-full hover:bg-feedback-warning/20 transition-colors"
+                >
                   {KB_STRINGS.pendingCandidatesTag(candidatePendingCount)}
-                </span>
+                </button>
               )}
               {COMPOSE_ENABLED && (
                 <Button size="sm" onClick={() => setComposeOpen(true)}>
@@ -477,49 +530,72 @@ export function KbPage(): JSX.Element {
               {KB_STRINGS.retry}
             </Button>
           </div>
-        ) : isListEmpty ? (
-          isSearching ? (
-            <EmptyState
-              title={KB_STRINGS.emptySearchTitle}
-              body={KB_STRINGS.emptySearchBody}
-            />
-          ) : (
-            <EmptyState
-              title={KB_STRINGS.emptyListTitle}
-              body={KB_STRINGS.emptyListBody}
-            />
-          )
         ) : (
-          <ul className="space-y-2 p-4">
-            {/* Dream candidates (loaded per-dream via DreamCandidateRow) */}
-            {!isSearching && dreamsWithCandidates.map((d) => (
-              <DreamCandidateRow
-                key={d.dream_id}
-                dreamId={d.dream_id}
-                onSelect={handleCandidateSelect}
-                detailCandidate={detailCandidate}
-                onPendingCountChange={handlePendingCountChange}
-              />
-            ))}
+          <>
+            {/* Candidate cards + live pending-count probes. Mounted whenever
+                not searching so the header pill and the rail 'Candidates (N)'
+                row track live per-dream pending status; the cards themselves
+                render ONLY in the dedicated Candidates view (visible=…). In the
+                default/folder feed the rows return null → the list is empty and
+                collapses (no padding), so candidates never touch the feed. */}
+            {!isSearching && dreamsWithCandidates.length > 0 && (
+              <ul
+                aria-label="Candidate entries"
+                className={cn('space-y-2', showCandidatesView && 'p-4')}
+              >
+                {dreamsWithCandidates.map((d) => (
+                  <DreamCandidateRow
+                    key={d.dream_id}
+                    dreamId={d.dream_id}
+                    visible={showCandidatesView}
+                    onSelect={handleCandidateSelect}
+                    detailCandidate={detailCandidate}
+                    onPendingCountChange={handlePendingCountChange}
+                  />
+                ))}
+              </ul>
+            )}
 
-            {/* Live KB entries */}
-            {/* Live KB entries */}
-            {liveEntries.map((entry) => (
-              <li key={entry.slug}>
-                <KbEntryCard
-                  entry={entry}
-                  to={routes.detail(entry.slug)}
-                  active={openSlug === entry.slug}
-                  density={density}
-                  viewCount={
-                    statsLoaded
-                      ? (viewCountBySlug.get(entry.slug) ?? 0)
-                      : undefined
-                  }
+            {showCandidatesView ? (
+              candidatePendingCount === 0 ? (
+                <EmptyState
+                  title={KB_STRINGS.emptyCandidatesTitle}
+                  body={KB_STRINGS.emptyCandidatesBody}
                 />
-              </li>
-            ))}
-          </ul>
+              ) : null
+            ) : isListEmpty ? (
+              isSearching ? (
+                <EmptyState
+                  title={KB_STRINGS.emptySearchTitle}
+                  body={KB_STRINGS.emptySearchBody}
+                />
+              ) : (
+                <EmptyState
+                  title={KB_STRINGS.emptyListTitle}
+                  body={KB_STRINGS.emptyListBody}
+                />
+              )
+            ) : (
+              <ul className="space-y-2 p-4">
+                {/* Live KB documents only — candidates never render here. */}
+                {liveEntries.map((entry) => (
+                  <li key={entry.slug}>
+                    <KbEntryCard
+                      entry={entry}
+                      to={routes.detail(entry.slug)}
+                      active={openSlug === entry.slug}
+                      density={density}
+                      viewCount={
+                        statsLoaded
+                          ? (viewCountBySlug.get(entry.slug) ?? 0)
+                          : undefined
+                      }
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </main>
 

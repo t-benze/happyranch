@@ -114,6 +114,20 @@ function stubKBStats(stats?: { slug: string; view_count: number; last_viewed_at:
   );
 }
 
+/**
+ * Candidates now live in a DEDICATED view (rail row + header pill), NOT the
+ * default document feed. This helper waits for the live pending count to
+ * surface the header pill, then clicks it to switch into the Candidates view.
+ */
+async function enterCandidatesView(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<void> {
+  const pill = await screen.findByRole('button', {
+    name: /candidate.* pending/i,
+  });
+  await user.click(pill);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Tests — folder filtering                                           */
 /* ------------------------------------------------------------------ */
@@ -195,7 +209,7 @@ describe('KbPage — folder filtering', () => {
 /* ------------------------------------------------------------------ */
 
 describe('KbPage — candidate feed', () => {
-  test('shows dream-proposed candidates in the feed with crescent moon marker', async () => {
+  test('shows dream-proposed candidates in the dedicated Candidates view with crescent moon marker', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubKBStats();
     server.use(
@@ -215,9 +229,15 @@ describe('KbPage — candidate feed', () => {
         }),
       ),
     );
+    const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
     await screen.findByText(/Refund authority by tier/);
-    // Candidate should appear
+    // Candidate is NOT in the default document feed…
+    expect(
+      screen.queryByText(/New refund flow for walk-ins/),
+    ).not.toBeInTheDocument();
+    // …but appears once the Candidates view is opened.
+    await enterCandidatesView(user);
     await screen.findByText(/New refund flow for walk-ins/);
     // Honest provenance label
     expect(
@@ -292,6 +312,92 @@ describe('KbPage — candidate feed', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  Tests — dedicated Candidates view (THR-098)                        */
+/* ------------------------------------------------------------------ */
+
+describe('KbPage — dedicated Candidates view (THR-098)', () => {
+  beforeEach(() => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+  });
+
+  /** orgs + one document + one dream carrying a single pending candidate. */
+  function stubCandidatesFixture() {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [DREAM_WITH_CANDIDATE] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams/DREAM-0099`, () =>
+        HttpResponse.json({
+          ...DREAM_WITH_CANDIDATE,
+          kb_candidates: [CANDIDATE_A],
+        }),
+      ),
+    );
+  }
+
+  test('candidates are ABSENT from the default "All entries" feed — only real documents show', async () => {
+    stubCandidatesFixture();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    // The real document is present in the default feed…
+    await screen.findByText(/Refund authority by tier/);
+    // …and the pending pill has surfaced (count is live), proving the candidate
+    // data loaded — yet the candidate card does NOT flood the document feed.
+    await screen.findByText(/1 candidate pending/);
+    expect(
+      screen.queryByText(/New refund flow for walk-ins/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('pending review')).toBeNull();
+  });
+
+  test('candidates render ONLY in the Candidates view (opened via the rail row); documents are hidden there', async () => {
+    stubCandidatesFixture();
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+
+    // The rail exposes a "Candidates (N)" row wired to the live pending count.
+    const rail = screen.getByRole('complementary', { name: /KB folders/i });
+    const candidatesRow = await within(rail).findByRole('button', {
+      name: /Candidates/,
+    });
+    expect(within(candidatesRow).getByText('1')).toBeInTheDocument();
+
+    await user.click(candidatesRow);
+
+    // Candidate card now shows…
+    await screen.findByText(/New refund flow for walk-ins/);
+    // …and the live document feed is hidden in the Candidates view.
+    expect(
+      screen.queryByText(/Refund authority by tier/),
+    ).not.toBeInTheDocument();
+  });
+
+  test('clicking the header pending pill switches to the Candidates view', async () => {
+    stubCandidatesFixture();
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    // Candidate hidden in the default feed…
+    expect(
+      screen.queryByText(/New refund flow for walk-ins/),
+    ).not.toBeInTheDocument();
+    // …clicking the pill reveals the Candidates view.
+    const pill = await screen.findByRole('button', {
+      name: /1 candidate pending/,
+    });
+    await user.click(pill);
+    await screen.findByText(/New refund flow for walk-ins/);
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /*  Tests — candidate-gate state transitions (Accept/Dismiss)          */
 /* ------------------------------------------------------------------ */
 
@@ -333,6 +439,8 @@ describe('KbPage — candidate review gate', () => {
     );
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    await enterCandidatesView(user);
     await screen.findByText(/New refund flow for walk-ins/);
 
     // Click the candidate to open detail pane
@@ -377,6 +485,8 @@ describe('KbPage — candidate review gate', () => {
     );
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    await enterCandidatesView(user);
     await screen.findByText(/New refund flow for walk-ins/);
 
     // Click the candidate to open detail pane
@@ -415,6 +525,8 @@ describe('KbPage — candidate review gate', () => {
     );
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    await enterCandidatesView(user);
     await screen.findByText(/New refund flow for walk-ins/);
 
     await user.click(screen.getByText(/New refund flow for walk-ins/));
@@ -763,6 +875,8 @@ describe('KbPage — candidate resolution clears detail', () => {
     );
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    await enterCandidatesView(user);
     await screen.findByText(/New refund flow for walk-ins/);
     // Before resolve: pending count tag visible
     expect(screen.getByText(/1 candidate pending/)).toBeInTheDocument();
@@ -830,6 +944,8 @@ describe('KbPage — candidate resolution clears detail', () => {
     );
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    await enterCandidatesView(user);
     await screen.findByText(/New refund flow for walk-ins/);
     // Before resolve: pending count tag visible
     expect(screen.getByText(/1 candidate pending/)).toBeInTheDocument();
@@ -948,10 +1064,12 @@ describe('KbPage — debounced search', () => {
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
     await screen.findByText(/Refund authority by tier/);
-    // Pending candidate exists (visible in feed before search)
+    // Pending candidate exists — reachable via the Candidates view.
+    await enterCandidatesView(user);
     await screen.findByText(/New refund flow for walk-ins/);
 
-    // Start searching
+    // Start searching — a search always shows document matches, so the
+    // Candidates view yields to the search feed (candidates stay hidden).
     await user.type(screen.getByPlaceholderText(/Search entries/i), 'zzz_nonexistent');
 
     // Should render the "No matches" empty state, NOT a blank feed
