@@ -1,0 +1,25 @@
+# =============================================================================
+# Caddyfile — TLS termination + reverse proxy for headscale
+# =============================================================================
+# Phase-2 Part A: deploy artifact
+#
+# Caddy automatically obtains and renews Let's Encrypt certificates for the
+# control-plane hostname.  It reverse-proxies:
+#   - The headscale coordination API + basic web UI
+#   - The DERP relay WebSocket traffic
+#   - The STUN port is handled directly by headscale (UDP, not TLS-terminated)
+
+{$HEADSCALE_SERVER_URL:localhost} {
+        # Let's Encrypt email for TLS certificate issuance.
+        # Set the env var TLS_EMAIL in .env (passed through docker-compose).
+        tls {$TLS_EMAIL}
+
+        # --- Headscale coordination API + UI ---
+        # All standard headscale HTTP traffic is reverse-proxied to headscale:8080.
+        reverse_proxy headscale:8080 {
+                # Pass the real client IP to headscale for audit/logging.
+                header_up X-Real-IP {remote_host}
+                header_up X-Forwarded-For {remote_host}
+                header_up X-Forwarded-Proto {scheme}
+        }
+}

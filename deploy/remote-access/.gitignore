@@ -1,0 +1,2 @@
+# .gitignore — keep secrets out of the repo
+.env
