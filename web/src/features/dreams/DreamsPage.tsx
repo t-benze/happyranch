@@ -33,6 +33,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDreamsList } from '@/hooks/dreams';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -266,8 +267,8 @@ export function DreamsPage(): JSX.Element {
   const nightCount = new Set(dreams.map((d) => d.local_date)).size;
 
   return (
-    <div className="bg-surface-canvas h-full overflow-y-auto">
-      <div className="px-4 py-6">
+    <>
+      <ContentWrap>
         {/* DREAMS-03: Direction-A eyebrow (live night count) + Newsreader serif
             statement title, mirroring the KB-02 / AUDIT-03 / THREADS-04 /
             SCHED-02 header idiom. The "Next run tonight" pill is omitted: no
@@ -335,7 +336,7 @@ export function DreamsPage(): JSX.Element {
           {/* Right-side overview rail — honest, data-backed sections */}
           <DreamsRail dreams={dreams} />
         </div>
-      </div>
+      </ContentWrap>
 
       {/* Detail drawer — portaled overlay, opens on dream-card click */}
       {selectedDreamId && (
@@ -344,6 +345,6 @@ export function DreamsPage(): JSX.Element {
           onClose={() => setSelectedDreamId(null)}
         />
       )}
-    </div>
+    </>
   );
 }
