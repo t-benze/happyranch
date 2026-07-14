@@ -34,6 +34,7 @@ import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
 import type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
+import type { CatalogSkillItem } from '@/lib/api/skills';
 import type { ConversationSummary } from '@/lib/api/assistant';
 import type { ThreadTaskSummary } from '@/lib/api/threads';
 import type { workHours as workHoursApi } from '@/lib/api';
@@ -424,6 +425,17 @@ export interface AuditApi {
 }
 
 // ---------------------------------------------------------------------------
+// SkillsApi — read-only Skills Catalog surface (THR-092 Slice 1). Bundled /
+// Custom filter maps to the daemon `?filter=` param. Guidance visibility only.
+// ---------------------------------------------------------------------------
+
+export interface SkillsApi {
+  useSkillsCatalog: (params?: {
+    filter?: 'Bundled' | 'Custom';
+  }) => QueryLike<{ items: CatalogSkillItem[] }>;
+}
+
+// ---------------------------------------------------------------------------
 // DashboardApi — aggregated summary surface for the Dashboard page.
 // Escalation resolution reuses `TasksApi.useResolveEscalation`, so this
 // surface only carries the summary read.
@@ -499,6 +511,7 @@ export interface DataContextValue {
   dashboard: DashboardApi;
   settings: SettingsApi;
   dreams: DreamsApi;
+  skills: SkillsApi;
   workHours: WorkHoursApi;
   /**
    * Provider-supplied React hook that returns the active feature's route

@@ -23,6 +23,7 @@ import { mockDashboardApi } from './_mock-dashboard';
 import { mockHealthApi } from './_mock-health';
 import { mockKbApi, useMockKbRoutes } from './_mock-kb';
 import { mockDreamsApi, useMockDreamsRoutes } from './_mock-dreams';
+import { mockSkillsApi } from './_mock-skills';
 import { mockOrgsApi } from './_mock-orgs';
 import { useMockAgentsRoutes, useMockJobsRoutes, useMockThreadRoutes } from './_mock-routes';
 import { mockJobsApi } from './_mock-jobs';
@@ -59,6 +60,7 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           dashboard: mockDashboardApi,
           kb: mockKbApi,
           dreams: mockDreamsApi,
+          skills: mockSkillsApi,
           teams: mockTeamsApi,
           health: mockHealthApi,
           assistant: mockAssistantApi,

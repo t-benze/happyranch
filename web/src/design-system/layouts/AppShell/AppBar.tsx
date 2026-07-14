@@ -20,6 +20,7 @@ const SECTION_TITLES: Record<string, string> = {
   threads: 'Threads',
   tasks: 'Tasks',
   agents: 'Agents',
+  skills: 'Skills',
   kb: 'Knowledge',
   artifacts: 'Artifacts',
   usage: 'Usage',
