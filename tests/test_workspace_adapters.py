@@ -1050,3 +1050,95 @@ class TestUserAuthoredSkillMaterialization:
         )
         # No partial state — only the valid skill landed
         assert claude_skill.read_text().startswith("# Valid")
+
+    def test_system_contract_slug_protected_from_user_authored(
+        self, tmp_dir, test_settings, db
+    ):
+        """A user-authored package with a system-contract slug (e.g. start-task)
+        is skipped — the system contract wins (REVISE TASK-2829)."""
+        from runtime.orchestrator.workspace_adapters import inject_managed_skills
+        from runtime.skills.system_contracts import SYSTEM_CONTRACTS
+
+        # Pick a real system-contract slug
+        sc_slugs = {sc.id for sc in SYSTEM_CONTRACTS}
+        assert len(sc_slugs) > 0, "need at least one system contract"
+        test_slug = sorted(sc_slugs)[0]
+
+        # Create a user-authored imposter with that slug
+        org_root = tmp_dir / "org"
+        skill_dir = org_root / "skills" / test_slug
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Imposter\n\nEvil content.")
+        (skill_dir / "skill.yaml").write_text(
+            f"id: hr:{test_slug}\n"
+            f"slug: {test_slug}\n"
+            f"name: Imposter {test_slug}\n"
+            "version: 9.9.9\n"
+            "description: Bogus\n"
+            "when_to_use: ''\n"
+            "owner: operator\n"
+            "source: user_authored\n"
+            "policy_class: standard_operational\n"
+            "status: enabled\n"
+        )
+
+        # Eligibility policy — assign the system-contract slug
+        org_config_dir = org_root / "org"
+        org_config_dir.mkdir(parents=True)
+        import yaml
+        policy = {
+            "skills": {
+                "agents": {
+                    "dev_agent": {
+                        "allow": [test_slug],
+                    }
+                }
+            }
+        }
+        (org_config_dir / "config.yaml").write_text(yaml.dump(policy))
+
+        # Create a release-managed skill with the same slug
+        managed_root = tmp_dir / "managed"
+        managed_root.mkdir()
+        release_dir = managed_root / test_slug
+        release_dir.mkdir()
+        (release_dir / "SKILL.md").write_text("# Real\n\nLegit content.")
+        (release_dir / "skill.yaml").write_text(
+            f"id: {test_slug}\n"
+            f"slug: {test_slug}\n"
+            f"name: Real {test_slug}\n"
+            "version: 1.2.0\n"
+            "description: Legit skill\n"
+            "when_to_use: ''\n"
+            "owner: runtime\n"
+            "source: first_party\n"
+            "policy_class: standard_operational\n"
+            "status: enabled\n"
+        )
+
+        workspace = tmp_dir / "ws"
+
+        inject_managed_skills(
+            workspace, test_settings,
+            slug="test",
+            agent_name="dev_agent",
+            team="engineering",
+            skills_root=managed_root,
+            org_root=org_root,
+            db=db,
+        )
+
+        claude_skill = workspace / ".claude" / "skills" / test_slug / "SKILL.md"
+        assert claude_skill.is_file(), (
+            f"Release skill for system-contract slug {test_slug} must be materialized"
+        )
+        content = claude_skill.read_text()
+        # The RELEASE version must be on disk, NOT the user-authored imposter
+        assert "Legit" in content, (
+            f"Release skill must win on system-contract slug collision {test_slug}, "
+            f"got: {content}"
+        )
+        assert "Evil" not in content, (
+            f"User-authored imposter with system-contract slug {test_slug} must NOT "
+            f"be materialized"
+        )

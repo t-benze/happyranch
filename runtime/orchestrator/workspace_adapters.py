@@ -429,12 +429,17 @@ def inject_managed_skills(
         user_skills_dir = org_root / "skills"
         if user_skills_dir.is_dir():
             user_registry = SkillRegistry(skills_root=user_skills_dir)
-            # Release-wins on slug collision (v3 §6.3)
+            # Release-wins + system-contract-wins on slug collision (v3 §6.3).
+            # Must match the daemon catalog path _union_catalog protection set
+            # (release slugs + SYSTEM_CONTRACTS slugs).
+            from runtime.skills.system_contracts import SYSTEM_CONTRACTS
             release_slugs: set[str] = {
                 e.slug for e in release_entries.values()
             }
+            sc_slugs: set[str] = {sc.id for sc in SYSTEM_CONTRACTS}
+            protected_slugs = release_slugs | sc_slugs
             for entry in user_registry.list_all():
-                if entry.slug not in release_slugs:
+                if entry.slug not in protected_slugs:
                     user_entries[entry.id] = entry
 
     # Union catalog: release + user-authored (release wins on id collision)

@@ -182,6 +182,9 @@ async def run_dream(
         agent_team = agent_def.team if agent_def else "engineering"
     except Exception:
         agent_team = "engineering"
+    # FAIL-CLOSED: a materialization error must persist a terminal failure
+    # and return BEFORE executor spawn — no half-populated skills dir may
+    # pass as complete (REVISE TASK-2829).
     try:
         skills_root = settings.project_root / "runtime" / "skills"
         inject_managed_skills(
@@ -193,8 +196,18 @@ async def run_dream(
             org_root=org_state.root,
             db=org_state.db,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        org_state.db.update_dream(
+            dream_id,
+            status=DreamStatus.FAILED,
+            ended_at=datetime.now(timezone.utc),
+            error=f"managed_skills_materialization_failed: {e}",
+        )
+        AuditLogger(org_state.db).log_dream_failed(
+            dream_id, dream.agent_name,
+            reason=f"managed_skills_materialization_failed: {e}",
+        )
+        return
 
     protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
 

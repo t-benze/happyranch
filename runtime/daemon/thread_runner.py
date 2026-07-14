@@ -565,6 +565,9 @@ async def run_invocation(
                 break
     except Exception:
         agent_team = "engineering"
+    # FAIL-CLOSED: a materialization error must persist a terminal failure
+    # and return BEFORE executor spawn — no half-populated skills dir may
+    # pass as complete (REVISE TASK-2829).
     try:
         skills_root = settings.project_root / "runtime" / "skills"
         inject_managed_skills(
@@ -576,8 +579,13 @@ async def run_invocation(
             org_root=org_state.root,
             db=org_state.db,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        org_state.db.fail_invocation(
+            invocation_token,
+            status=ThreadInvocationStatus.FAILED,
+            decline_reason=f"managed_skills_materialization_failed: {e}",
+        )
+        return
 
     # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
     try:

@@ -57,21 +57,24 @@ operations — are materialized into the agent's workspace on every session spaw
 by `inject_managed_skills` (`workspace_adapters.py`). This runs on all four spawn
 contexts (task, thread, wake, dream).
 
-**Two sources, unioned with release-wins.** Skills come from two directories:
+**Two sources, unioned with release-and-system-contracts-wins.** Skills come from two directories:
 - **Bundled / release-shipped:** `<project_root>/runtime/skills/<slug>/` — ships
   inside the repo, read-only at runtime.
 - **User-authored:** `<org_root>/skills/<slug>/` — per-org writable store for
   operator-authored custom skills (§6, THR-092).
 
-On slug collision (a user-authored skill reuses a slug from a bundled skill),
-the bundled entry wins — a user-authored skill can never shadow a
-release-shipped package.
+On slug collision (a user-authored skill reuses a slug from a bundled skill
+or a system-contract skill), the bundled or system-contract entry wins — a
+user-authored skill can never shadow a release-shipped or system-contract
+package. The protected-slug set matches the daemon catalog path
+`_union_catalog` (release slugs union SYSTEM_CONTRACTS slugs).
 
 **FAIL-CLOSED materialization.** Any error during materialization raises
 immediately. A failed materialization must NOT leave a partially-populated
-skills directory passing as complete. The caller (orchestrator / runners) may
-catch and handle the exception, but `inject_managed_skills` itself does not
-silently skip errors.
+skills directory passing as complete. All four caller contexts (orchestrator
+`run_step`, `thread_runner`, `wake_runner`, `dream_runner`) persist a
+database-terminal failure and return BEFORE executor spawn — a materialization
+error in any spawn path blocks the agent launch, never silently skipped.
 
 **Version-aware effective state (v3, THR-092 Phase 3b).** After each successful
 copy, a materialization event is recorded in the `skill_validation_events` store
