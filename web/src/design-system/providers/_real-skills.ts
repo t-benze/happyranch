@@ -15,17 +15,22 @@ import { useParams } from 'react-router-dom';
 // #421 without a barrel entry), so this provider deep-imports it directly —
 // the same idiom `_real-dreams` uses for `@/lib/api/dreams`.
 import {
+  assignSkill,
   createSkill,
   editSkill,
   getSkillCatalogDetail,
+  getSkillStatus,
   listSkillsCatalog,
   validateSkill,
+  type AssignSkillRequest,
+  type AssignSkillResponse,
   type CatalogSkillItem,
   type CreateSkillRequest,
   type CreateSkillResponse,
   type EditSkillRequest,
   type EditSkillResponse,
   type SkillDetail,
+  type SkillStatusResponse,
   type ValidateSkillResponse,
 } from '@/lib/api/skills';
 import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
@@ -113,10 +118,53 @@ function useEditSkill(): MutationLike<
   });
 }
 
+// Per-agent assignment status for one skill (Slice-5) — the authoritative
+// assignment source that drives the custom-skill assignment table.
+function useSkillStatus(
+  skillId: string | undefined,
+): QueryLike<SkillStatusResponse> {
+  const slug = useRealOrgSlug();
+  return useQuery({
+    queryKey: ['skill-status', slug, skillId],
+    queryFn: () => getSkillStatus(slug, skillId as string),
+    enabled: !!slug && !!skillId,
+    staleTime: 30_000,
+  }) as QueryLike<SkillStatusResponse>;
+}
+
+// Assign / unassign one skill for one agent (Slice-5). Commits one queued
+// config-review change. On success we invalidate the skill's status (the table
+// re-derives), its detail (assignments[] rollup), and the catalog rollups.
+function useAssignSkill(): MutationLike<
+  { agentId: string; skillId: string; body: AssignSkillRequest },
+  AssignSkillResponse
+> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      agentId,
+      skillId,
+      body,
+    }: {
+      agentId: string;
+      skillId: string;
+      body: AssignSkillRequest;
+    }) => assignSkill(slug, agentId, skillId, body),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['skill-status', slug, res.skill_id] });
+      qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });
+      qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
+    },
+  });
+}
+
 export const realSkillsApi: SkillsApi = {
   useSkillsCatalog,
   useSkillDetail,
   useCreateSkill,
   useValidateSkill,
   useEditSkill,
+  useSkillStatus,
+  useAssignSkill,
 };

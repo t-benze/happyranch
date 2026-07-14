@@ -184,9 +184,13 @@ export const assignSkill = (
   skillId: string,
   body: AssignSkillRequest,
 ): Promise<AssignSkillResponse> =>
+  // `request()` JSON-stringifies the body itself (see client.ts), so pass the
+  // raw object — matching every other lib/api module. (createSkill/editSkill
+  // above still pre-stringify, which double-encodes the body; flagged as a
+  // pre-existing #421 bug outside this slice's scope.)
   request(`/orgs/${slug}/agents/${agentId}/skills/${skillId}/assign`, {
     method: 'POST',
-    body: JSON.stringify(body),
+    body,
   });
 
 // ── Phase 3b status endpoint ──────────────────────────────────────────

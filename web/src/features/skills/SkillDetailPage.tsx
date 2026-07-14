@@ -34,6 +34,7 @@ import {
 } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useSkillDetail } from '@/hooks/skills';
+import { SkillAssignmentPanel } from './SkillAssignmentPanel';
 import { SkillStatusBadge } from './SkillStatusBadge';
 import type { ValidationTone } from './skills-catalog';
 import {
@@ -251,14 +252,21 @@ export function SkillDetailPage(): JSX.Element {
         )}
       </section>
 
-      {/* ── Per-agent effective / provenance ──────────────────── */}
+      {/* ── Per-agent effective / provenance ──────────────────────
+          Custom (user-authored) skills get the interactive assignment +
+          config-review surface (Slice-5); bundled / system-contract skills
+          stay READ-ONLY (applied by context, no per-agent controls), keeping
+          the Slice-2 source-gating intact. */}
+      {editable ? (
+        <SkillAssignmentPanel skillId={skill.skill_id} />
+      ) : (
       <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-5 md:p-6">
         <Eyebrow>Per-agent visibility</Eyebrow>
         <h2 className="text-h2 text-fg mb-1">Where this skill is effective</h2>
         <p className="text-fg-muted text-body-sm">
           Which agents can see this skill as guidance, and why. Assigning a
-          skill changes guidance visibility only — it never grants tools,
-          commands, or permissions.
+          skill changes guidance visibility only — it never changes the tools or
+          commands an agent can use.
         </p>
 
         {assignments.length > 0 ? (
@@ -331,14 +339,15 @@ export function SkillDetailPage(): JSX.Element {
           </p>
         )}
       </section>
+      )}
 
       {/* ── Guidance-only footer ──────────────────────────────── */}
       <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mt-4 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
         <Info size={15} aria-hidden="true" className="text-fg-subtle shrink-0" />
         <span>
           <b className="text-fg font-semibold">Guidance visibility only.</b>{' '}
-          Skills shape what an agent is told — they never grant tools, commands,
-          or permissions.
+          Skills shape what an agent is told — they never change the tools or
+          commands an agent can use.
         </span>
       </div>
     </div>
