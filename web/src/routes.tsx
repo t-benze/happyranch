@@ -21,6 +21,7 @@ import { HelpDrawerHost } from '@/host/HelpDrawerHost';
 import { AssistantDockHost } from '@/features/system-assistant/AssistantDockHost';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { SkillsPage } from '@/features/skills/SkillsPage';
+import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
@@ -104,6 +105,7 @@ export function AppRoutes(): JSX.Element {
 
           <Route path="audit" element={<AuditPage />} />
           <Route path="skills" element={<SkillsPage />} />
+          <Route path="skills/:skillId" element={<SkillDetailPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:agent_name" element={<AgentsPage />} />
           <Route path="jobs" element={<JobsPage />} />
