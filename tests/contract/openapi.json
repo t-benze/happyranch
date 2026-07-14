@@ -254,6 +254,20 @@
         ]
       }
     },
+    "/api/v1/executors/runtime/register-binary": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/health": {
       "GET": {
         "params": [],

@@ -135,6 +135,7 @@
     "GET /api/v1/metrics/history": "operational metrics history — agent/CLI facing (THR-066 PR-2)",
     "POST /api/v1/auth/registration-token/runtime": "founder-only runtime-level registration-token mint (THR-088)",
     "POST /api/v1/executors/runtime/conformance-checkin": "cli-only runtime-level conformance check-in (THR-088)",
-    "POST /api/v1/executors/runtime/register": "conformance-gated runtime-level executor registration (THR-088)"
+    "POST /api/v1/executors/runtime/register": "conformance-gated runtime-level executor registration (THR-088)",
+    "POST /api/v1/executors/runtime/register-binary": "cli-only runtime-level binary registration via scoped token (THR-088)"
   }
 }
