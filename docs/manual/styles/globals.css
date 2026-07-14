@@ -1,0 +1,289 @@
+/*
+ * HappyRanch docs — brand theme layer over nextra-theme-docs 3.3.1.
+ *
+ * Tokens are lifted verbatim from the marketing mockup's :root. Nextra owns
+ * the docs *layout* (sidebar + TOC + prose); this sheet only recolors it to
+ * the brand and swaps in the three brand typefaces. The mockup has no
+ * full-page dark theme (only dark bands), so the dark palette here is
+ * synthesized from the mockup's --dk-* tokens and bound to Nextra's
+ * html.dark variant.
+ */
+
+:root {
+  --hr-bg: #f7f5ef;
+  --hr-bg-2: #efece2;
+  --hr-paper: #fffefb;
+  --hr-ink: #211f1a;
+  --hr-ink-soft: #575249;
+  --hr-ink-faint: #918b7e;
+  --hr-line: #e6e1d5;
+  --hr-line-soft: #eee9de;
+  --hr-green: #3c7a4e;
+  --hr-green-deep: #2b5c3a;
+  --hr-green-bright: #5ba36c;
+  --hr-green-soft: #e3efe5;
+  --hr-green-line: #cfe3d3;
+  --hr-amber: #a8712a;
+  --hr-amber-soft: #f3e8d6;
+
+  --hr-serif: 'Newsreader', Georgia, serif;
+  --hr-sans: 'Instrument Sans', system-ui, -apple-system, sans-serif;
+  --hr-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --hr-shadow-sm: 0 1px 2px rgba(40, 44, 32, 0.05),
+    0 10px 30px -20px rgba(40, 44, 32, 0.3);
+  --hr-shadow-lg: 0 40px 80px -32px rgba(40, 44, 32, 0.35),
+    0 8px 24px -12px rgba(40, 44, 32, 0.16);
+}
+
+html[class~='dark'] {
+  --hr-bg: #191d18;
+  --hr-bg-2: #20261f;
+  --hr-paper: #20261f;
+  --hr-ink: #eae7dc;
+  --hr-ink-soft: #a7ab9d;
+  --hr-ink-faint: #787c6f;
+  --hr-line: #333a31;
+  --hr-line-soft: #2b3129;
+  --hr-green: #5ba36c;
+  --hr-green-deep: #7bbf88;
+  --hr-green-bright: #5ba36c;
+  --hr-green-soft: #20261f;
+  --hr-green-line: #333a31;
+  --hr-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4),
+    0 12px 30px -14px rgba(0, 0, 0, 0.5);
+  --hr-shadow-lg: 0 50px 90px -40px rgba(0, 0, 0, 0.7),
+    0 12px 30px -14px rgba(0, 0, 0, 0.5);
+}
+
+/* ---- Global surface + type ------------------------------------------- */
+
+html,
+body {
+  background-color: var(--hr-bg);
+  color: var(--hr-ink);
+  font-family: var(--hr-sans);
+  font-feature-settings: 'ss01' 1, 'calt' 1;
+}
+
+/* Body / UI text is Instrument Sans; headings are Newsreader (display). */
+.nextra-content h1,
+.nextra-content h2,
+.nextra-content h3,
+.nextra-content h4,
+.nextra-content h5,
+.nextra-content h6 {
+  font-family: var(--hr-serif);
+  font-weight: 500;
+  letter-spacing: -0.018em;
+  color: var(--hr-ink);
+}
+
+.nextra-content h1 {
+  font-size: clamp(34px, 4.6vw, 52px);
+  letter-spacing: -0.026em;
+  line-height: 1.06;
+}
+
+.nextra-content {
+  color: var(--hr-ink-soft);
+}
+
+.nextra-content p,
+.nextra-content li {
+  color: var(--hr-ink-soft);
+}
+
+.nextra-content strong {
+  color: var(--hr-ink);
+  font-weight: 600;
+}
+
+.nextra-content blockquote {
+  border-inline-start-color: var(--hr-green-line);
+  color: var(--hr-ink-faint);
+}
+
+.nextra-content a {
+  color: var(--hr-green-deep);
+  text-decoration-color: var(--hr-green-line);
+}
+
+/* ---- Navbar / sidebar / TOC chrome ----------------------------------- */
+
+.nextra-nav-container nav {
+  font-family: var(--hr-sans);
+}
+
+.nextra-nav-container-blur {
+  border-bottom: 1px solid var(--hr-line);
+}
+
+/* Wordmark in the navbar. */
+.hr-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--hr-sans);
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+  color: var(--hr-ink);
+}
+.hr-brand .hr-mark {
+  color: var(--hr-green);
+  flex: none;
+}
+.hr-wordmark b {
+  color: var(--hr-green);
+  font-weight: 600;
+}
+.hr-wordmark-sub {
+  color: var(--hr-ink-faint);
+  font-weight: 500;
+}
+
+/* Sidebar link states → brand green. */
+.nextra-sidebar-container
+  .nextra-focusable[data-active='true'] {
+  color: var(--hr-green-deep);
+  background-color: var(--hr-green-soft);
+}
+html[class~='dark']
+  .nextra-sidebar-container
+  .nextra-focusable[data-active='true'] {
+  color: var(--hr-green-bright);
+}
+
+/* Active TOC entry → brand green. */
+.nextra-toc a:hover,
+.nextra-toc a.nextra-focusable[aria-selected='true'] {
+  color: var(--hr-green-deep);
+}
+
+/* ---- Code blocks ----------------------------------------------------- */
+
+.nextra-content code {
+  font-family: var(--hr-mono);
+}
+
+.nextra-content pre,
+.nextra-code pre {
+  font-family: var(--hr-mono);
+  background-color: var(--hr-paper) !important;
+  border: 1px solid var(--hr-line);
+  border-radius: 12px;
+  box-shadow: var(--hr-shadow-sm);
+}
+
+/* Inline code — warm chip. */
+.nextra-content :not(pre) > code {
+  background-color: var(--hr-green-soft);
+  border: 1px solid var(--hr-green-line);
+  color: var(--hr-green-deep);
+  border-radius: 6px;
+}
+html[class~='dark'] .nextra-content :not(pre) > code {
+  background-color: var(--hr-bg-2);
+  border-color: var(--hr-line);
+  color: var(--hr-ink);
+}
+
+/* ---- Cards (Nextra <Cards>) ------------------------------------------ */
+
+.nextra-card {
+  background-color: var(--hr-paper);
+  border-color: var(--hr-line);
+  border-radius: 14px;
+  box-shadow: var(--hr-shadow-sm);
+  transition: transform 0.16s ease, box-shadow 0.2s ease, border-color 0.2s;
+}
+.nextra-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--hr-shadow-lg);
+  border-color: var(--hr-green-line);
+}
+
+/* ---- Footer ---------------------------------------------------------- */
+
+.nextra-nav-container ~ footer,
+footer.nextra-nav-container,
+.hr-footer {
+  font-family: var(--hr-sans);
+}
+.hr-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 22px;
+}
+.hr-footer-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--hr-ink);
+}
+.hr-footer-brand b {
+  color: var(--hr-green);
+}
+.hr-footer-brand .hr-mark {
+  color: var(--hr-green);
+  width: 20px;
+  height: 20px;
+}
+.hr-footer-line {
+  font-family: var(--hr-serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--hr-ink-faint);
+}
+
+/* ---- Landing hero (pages/index.md) ----------------------------------- */
+
+.hr-eyebrow {
+  display: inline-block;
+  font-family: var(--hr-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--hr-green);
+  margin-bottom: 6px;
+}
+
+.hr-lede {
+  font-family: var(--hr-serif);
+  font-style: italic;
+  font-size: clamp(18px, 2vw, 22px);
+  line-height: 1.45;
+  color: var(--hr-green-deep);
+}
+
+/* Primary CTA — echoes the mockup's .btn-primary green pill. */
+a.hr-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--hr-sans);
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+  color: #fff !important;
+  background: var(--hr-green);
+  padding: 13px 22px;
+  border-radius: 12px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.14) inset,
+    0 12px 24px -12px rgba(60, 122, 78, 0.7);
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s;
+}
+a.hr-cta:hover {
+  background: #347044;
+  transform: translateY(-1px);
+  box-shadow: 0 16px 30px -12px rgba(60, 122, 78, 0.85);
+}
+html[class~='dark'] a.hr-cta {
+  background: var(--hr-green);
+  color: #10130e !important;
+}
