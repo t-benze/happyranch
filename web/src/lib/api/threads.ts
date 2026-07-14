@@ -9,7 +9,7 @@ import type {
   TaskStatus,
   ThreadAttachmentRef,
   ThreadDetailResponse,
-  ThreadMessage,
+  ThreadMessagesPage,
   ThreadRecord,
 } from './types';
 
@@ -64,7 +64,7 @@ export const listThreadMessages = (
   slug: string,
   threadId: string,
   params?: { since_seq?: number; limit?: number },
-): Promise<{ messages: ThreadMessage[] }> =>
+): Promise<ThreadMessagesPage> =>
   request(`/orgs/${slug}/threads/${threadId}/messages`, { params });
 
 export const sendThreadFollowUp = (

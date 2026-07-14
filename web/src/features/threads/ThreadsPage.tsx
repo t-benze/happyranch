@@ -339,8 +339,22 @@ export function ThreadsPage(): JSX.Element {
   const activeThread = useThread(threadId);
   const activeMessagesQuery = useThreadMessages(threadId);
   useThreadTailSSE(threadId);
+
+  // Non-scroll-gated auto-page loop: fetch all remaining pages so the full
+  // transcript renders on open — mirrors the audit-log keyset paging pattern
+  // in _real-audit.ts but driven by a vanilla effect instead of a scroll
+  // observer. Gated on hasNextPage && !isFetchingNextPage to prevent
+  // double-fire / refetch-on-every-render storms (THR-098 fix #1).
+  useEffect(() => {
+    if (!threadId) return;
+    if (activeMessagesQuery.hasNextPage && !activeMessagesQuery.isFetchingNextPage) {
+      activeMessagesQuery.fetchNextPage().catch(() => {});
+    }
+  }, [threadId, activeMessagesQuery.hasNextPage, activeMessagesQuery.isFetchingNextPage, activeMessagesQuery.fetchNextPage]);
+
   const messages: ThreadMessage[] = useMemo(() => {
-    if (activeMessagesQuery.data) return activeMessagesQuery.data.messages;
+    if (activeMessagesQuery.data?.pages)
+      return activeMessagesQuery.data.pages.flatMap((p) => p.messages);
     return activeThread.data?.messages ?? [];
   }, [activeMessagesQuery.data, activeThread.data]);
 

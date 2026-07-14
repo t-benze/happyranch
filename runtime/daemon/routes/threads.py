@@ -1273,7 +1273,13 @@ async def list_thread_messages_endpoint(
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
-    msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=min(limit, 1000))
+    effective_limit = min(limit, 1000)
+    fetch_limit = effective_limit + 1
+    msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=fetch_limit)
+    has_more = len(msgs) > effective_limit
+    if has_more:
+        msgs = msgs[:effective_limit]
+    next_since_seq = msgs[-1].seq if msgs else since_seq
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
     # Unconditional responders lookup — see get_thread_endpoint: reply and
     # task_followup invocations are disjoint by triggering-row kind, so the
@@ -1282,7 +1288,9 @@ async def list_thread_messages_endpoint(
         "messages": [
             _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
             for m in msgs
-        ]
+        ],
+        "has_more": has_more,
+        "next_since_seq": next_since_seq,
     }
 
 

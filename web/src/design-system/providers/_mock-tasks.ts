@@ -74,7 +74,7 @@ function staticInfinite(page: TasksListPage): InfiniteQueryLike<TasksListPage> {
     isLoading: false,
     isError: false,
     error: null,
-    fetchNextPage: () => { /* no-op: prototype fixtures fit in one page */ },
+    fetchNextPage: async () => { /* no-op: prototype fixtures fit in one page */ },
     hasNextPage: false,
     isFetchingNextPage: false,
   };
