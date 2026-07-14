@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import {
   TaskListColumnHeader,
   TaskListRow,
@@ -249,8 +250,18 @@ export function TasksPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
-      {/* Page header: eyebrow + title (left), group-by selector (right) */}
-      <header className="border-border-default bg-surface-page shrink-0 border-b px-6 py-5">
+      {/* Pinned page header: eyebrow + title (left), group-by selector (right).
+          EM ruling (THR-099 plan flag #3): the header STAYS pinned — it is not
+          folded into the scroll body. Its inner content is capped by the shared
+          <ContentWrap> so the header columns align exactly above the scroll-body
+          columns at the 1180 `max-w-content` cap with matching 26px horizontal
+          padding. ContentWrap's overflow-y-auto is inert on this shrink-0,
+          content-height header (it never scrolls); we reuse it purely to share
+          the identical cap+padding as the body without hand-rolling arbitrary
+          values, which eslint forbids in the feature layer. The full-width
+          border-b stays on the outer <header>. */}
+      <header className="border-border-default bg-surface-page shrink-0 border-b">
+        <ContentWrap>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
@@ -281,10 +292,15 @@ export function TasksPage(): JSX.Element {
             </TabsList>
           </Tabs>
         </div>
+        </ContentWrap>
       </header>
 
-      {/* Task list */}
-      <main className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+      {/* Scroll body — same <ContentWrap> cap as the pinned header so its
+          columns sit directly under the header's columns (1180 max-w-content,
+          26px horizontal padding). <main> is the flex sizer; ContentWrap owns
+          the scroll surface. */}
+      <main className="min-h-0 flex-1">
+        <ContentWrap>
         {isLoading ? (
           <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
         ) : allTasks.length === 0 ? (
@@ -331,6 +347,7 @@ export function TasksPage(): JSX.Element {
             )}
           </div>
         )}
+        </ContentWrap>
       </main>
     </div>
   );
