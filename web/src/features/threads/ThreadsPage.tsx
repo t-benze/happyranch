@@ -24,6 +24,7 @@ import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
 import type { ThreadAttachment, ThreadAttachmentRef, ThreadMessage } from '@/lib/api/types';
 import { attachmentContentType, safeArtifactName } from '@/lib/threadAttachments';
@@ -479,7 +480,15 @@ export function ThreadsPage(): JSX.Element {
   // takes the full width and the inbox is not rendered.
   const inbox = (
       <aside className="bg-surface-sunken flex h-full flex-col">
-        <header className="border-border-default border-b px-3 py-3">
+        {/* THR-099 a-threads list cap: the pinned header and the scroll body
+            each REUSE <ContentWrap> so their inner content aligns at the shared
+            1180 `max-w-content` cap with 26px padding (ds.css .content+.wrap).
+            The header stays pinned — shrink-0, ContentWrap's overflow-y-auto is
+            inert on a content-height header; the body owns the scroll. Mirrors
+            TasksPage/AuditPage (Slice 3a/3b): no hand-rolled arbitrary
+            max-width at the feature layer (eslint no-arbitrary-value). */}
+        <header className="border-border-default shrink-0 border-b">
+          <ContentWrap>
           <div className="flex items-start justify-between gap-2">
             {/* THREADS-04: uppercase eyebrow (org-wide thread + dream-opened
                 counts) + Newsreader serif title, matching the a-threads
@@ -533,8 +542,14 @@ export function ThreadsPage(): JSX.Element {
               })}
             </TabsList>
           </Tabs>
+          </ContentWrap>
         </header>
-        <div className="flex-1 overflow-auto p-2">
+        {/* Scroll body — same <ContentWrap> cap as the pinned header so the
+            list column sits directly under the header at the 1180
+            `max-w-content` cap with 26px padding. The flex sizer owns the
+            height; ContentWrap owns the scroll. */}
+        <div className="min-h-0 flex-1">
+          <ContentWrap>
           {/* Loading skeleton */}
           {bucketLoading && <InboxSkeleton />}
 
@@ -597,6 +612,7 @@ export function ThreadsPage(): JSX.Element {
               })}
             </div>
           )}
+          </ContentWrap>
         </div>
       </aside>
   );
@@ -803,6 +819,14 @@ function DetailColumn({
 
   return (
     <section className="flex h-full flex-col">
+      {/* THR-099 a-thread-detail cap: the mockup .td-grid caps the WHOLE
+          two-pane surface (back link + header + convo + rail) at 1180 centered
+          with height:100% and INTERNALLY-scrolling panes. Surgical mx-auto
+          max-w-content wrapper — NOT ContentWrap, whose scroll-and-pad box
+          would fight the full-height grid (plan §1b INNER-1180). The convo
+          stream and rail keep their own overflow-auto; nothing functional
+          changes — presentational cap only. */}
+      <div className="max-w-content mx-auto flex min-h-0 w-full flex-1 flex-col">
       {backNav}
       <ThreadHeader
         threadId={thread.thread_id}
@@ -1045,6 +1069,7 @@ function DetailColumn({
             </div>
           )}
         </aside>
+      </div>
       </div>
     </section>
   );
