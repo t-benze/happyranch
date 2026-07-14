@@ -6,7 +6,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { OnboardingPage } from './OnboardingPage';
 import {
-  executorBinaries,
   health as healthApi,
   orgs as orgsApi,
   settings as settingsApi,
@@ -62,39 +61,87 @@ describe('OnboardingPage — Step 1 (connect a built-in agentic CLI)', () => {
     expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
   });
 
-  test('present built-in: pick claude → detected path → Confirm registers and connects (no false-positive)', async () => {
+  test('Generate is disabled until a built-in kind is picked', async () => {
     const user = userEvent.setup();
-    const regSpy = vi
-      .spyOn(executorBinaries, 'registerExecutorBinary')
-      .mockResolvedValue({ kind: 'claude', path: '/usr/bin/claude', valid: true });
+    renderPage();
+    const gen = await screen.findByRole('button', {
+      name: /generate connect prompt/i,
+    });
+    expect(gen).toBeDisabled();
+
+    await user.selectOptions(
+      await screen.findByLabelText(/pick your agentic cli/i),
+      'claude',
+    );
+    expect(gen).not.toBeDisabled();
+    // The manual absolute-path entry is gone — the copy-paste prompt replaces it.
+    expect(screen.queryByLabelText(/binary path/i)).not.toBeInTheDocument();
+  });
+
+  test('pick built-in → Generate mints a purpose=binary scoped token and shows the register-binary copy-paste prompt (no /connect)', async () => {
+    const user = userEvent.setup();
+    // Keep the kind unregistered so the poll does NOT auto-connect and the
+    // prompt stays on screen for inspection.
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [{ tool: 'claude', present: false, path: null, hint: 'Register Claude Code' }],
+    });
+    const mintSpy = vi
+      .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_BIN123', expires_at: Date.now() / 1000 + 600 });
     renderPage();
 
-    const select = await screen.findByLabelText(/pick your agentic cli/i);
-    // Nothing is connected before the user picks + confirms.
-    expect(
-      screen.queryByRole('heading', { name: /connected/i }),
-    ).not.toBeInTheDocument();
-
-    await user.selectOptions(select, 'claude');
-
-    // The resolved path is pre-filled from prereqs, shown for confirmation.
-    expect(await screen.findByText('/usr/bin/claude')).toBeInTheDocument();
-    // CRITICAL: a present built-in does NOT auto-connect just because it is in
-    // prereqs — registration is the connect signal, and it hasn't happened yet.
-    expect(regSpy).not.toHaveBeenCalled();
-    expect(
-      screen.queryByRole('heading', { name: /claude connected/i }),
-    ).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: /confirm & connect/i }));
-
-    // Register is called with the picked kind + the detected path.
-    await waitFor(() =>
-      expect(regSpy).toHaveBeenCalledWith({ kind: 'claude', path: '/usr/bin/claude' }),
+    await user.selectOptions(
+      await screen.findByLabelText(/pick your agentic cli/i),
+      'claude',
     );
-    // Synchronous register success flips to connected.
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // Kind-scoped, binary-purpose token — the discriminator the backend fence
+    // enforces (a binary token cannot self-register a profile via /register).
+    await waitFor(() =>
+      expect(mintSpy).toHaveBeenCalledWith({ name: 'claude', purpose: 'binary' }),
+    );
+
+    // The SAME prompt block the custom flow uses, pointed at register-binary:
+    // carries the scoped token, targets register-binary (NOT the profile
+    // register route), keeps the conformance challenge, and has no /connect URL.
+    const pre = await screen.findByText(/connecting the built-in/i);
+    expect(pre).toHaveTextContent('hr_tok_BIN123');
+    expect(pre).toHaveTextContent('/executors/runtime/register-binary');
+    expect(pre).toHaveTextContent('/executors/runtime/conformance-checkin');
+    expect(pre).not.toHaveTextContent('/connect/');
+    // Kind is carried by the token, never sent in the request body.
+    expect(pre).not.toHaveTextContent('"kind"');
+  });
+
+  test('built-in poll flips to connected when the kind registers (present:true), via builtin path', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken').mockResolvedValue({
+      token: 'hr_tok_BIN',
+      expires_at: Date.now() / 1000 + 600,
+    });
+    // The machine-local registry now reports claude registered with a path.
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [{ tool: 'claude', present: true, path: '/usr/bin/claude', hint: '' }],
+    });
+    renderPage();
+
+    await user.selectOptions(
+      await screen.findByLabelText(/pick your agentic cli/i),
+      'claude',
+    );
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // The SAME poll the custom flow uses (p.tool === name && p.present) flips
+    // to the SAME connected card.
     expect(
       await screen.findByRole('heading', { name: /claude connected/i }),
+    ).toBeInTheDocument();
+    // The registered PATH is shown (real, register-sourced — honesty fence).
+    expect(screen.getByText('/usr/bin/claude')).toBeInTheDocument();
+    // Built-in connected copy (via:'builtin').
+    expect(
+      screen.getByText(/its binary path is registered on this machine/i),
     ).toBeInTheDocument();
 
     // Continue advances to Step 2 (org create).
@@ -104,60 +151,31 @@ describe('OnboardingPage — Step 1 (connect a built-in agentic CLI)', () => {
     ).toBeInTheDocument();
   });
 
-  test('not-present built-in: pick pi → enter path → Register connects', async () => {
+  test('built-in does NOT connect while present:false — the poll is registration-gated (no false-positive)', async () => {
     const user = userEvent.setup();
-    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
-      prereqs: [
-        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: 'Install Claude Code' },
-        { tool: 'pi', present: false, path: null, hint: 'Install Pi' },
-      ],
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken').mockResolvedValue({
+      token: 'hr_tok_BIN',
+      expires_at: Date.now() / 1000 + 600,
     });
-    const regSpy = vi
-      .spyOn(executorBinaries, 'registerExecutorBinary')
-      .mockResolvedValue({ kind: 'pi', path: '/opt/homebrew/bin/pi', valid: true });
-    renderPage();
-
-    const select = await screen.findByLabelText(/pick your agentic cli/i);
-    await user.selectOptions(select, 'pi');
-
-    // Not on PATH → the manual absolute-path entry appears (no fake detection).
-    const pathInput = await screen.findByLabelText(/binary path/i);
-    await user.type(pathInput, '/opt/homebrew/bin/pi');
-    await user.click(screen.getByRole('button', { name: /register & connect/i }));
-
-    await waitFor(() =>
-      expect(regSpy).toHaveBeenCalledWith({ kind: 'pi', path: '/opt/homebrew/bin/pi' }),
-    );
-    expect(
-      await screen.findByRole('heading', { name: /pi connected/i }),
-    ).toBeInTheDocument();
-    expect(screen.getByText('/opt/homebrew/bin/pi')).toBeInTheDocument();
-  });
-
-  test('not-present built-in: Validate gives inline feedback without registering', async () => {
-    const user = userEvent.setup();
+    // claude is enumerated but NOT registered (present:false) — being on PATH is
+    // not sufficient in #420, so this must NOT be read as connected.
     vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
-      prereqs: [{ tool: 'pi', present: false, path: null, hint: 'Install Pi' }],
+      prereqs: [{ tool: 'claude', present: false, path: null, hint: 'Register Claude Code' }],
     });
-    const valSpy = vi
-      .spyOn(executorBinaries, 'validateExecutorBinary')
-      .mockResolvedValue({ path: '/bad/pi', valid: false, error: 'Path is not executable.' });
-    const regSpy = vi.spyOn(executorBinaries, 'registerExecutorBinary');
     renderPage();
 
     await user.selectOptions(
       await screen.findByLabelText(/pick your agentic cli/i),
-      'pi',
+      'claude',
     );
-    await user.type(await screen.findByLabelText(/binary path/i), '/bad/pi');
-    await user.click(screen.getByRole('button', { name: /^validate$/i }));
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-    await waitFor(() =>
-      expect(valSpy).toHaveBeenCalledWith({ path: '/bad/pi' }),
-    );
-    expect(await screen.findByText(/path is not executable/i)).toBeInTheDocument();
-    // Validate never registers.
-    expect(regSpy).not.toHaveBeenCalled();
+    // Stays in the waiting state; never flips to connected.
+    expect(await screen.findByText(/waiting for/i)).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      screen.queryByRole('heading', { name: /claude connected/i }),
+    ).not.toBeInTheDocument();
   });
 
   test('Skip advances straight to Step 2', async () => {
