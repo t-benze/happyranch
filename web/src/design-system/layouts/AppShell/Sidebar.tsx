@@ -9,6 +9,7 @@ import {
   ListChecks,
   MessageSquare,
   Package,
+  Puzzle,
   ScrollText,
   Settings,
   Sparkles,
@@ -209,6 +210,9 @@ export function Sidebar(): JSX.Element {
             icon={Users}
           >
             Agents
+          </SidebarNavItem>
+          <SidebarNavItem {...sidebarLink('skills', true)} icon={Puzzle}>
+            Skills
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('kb', true)} icon={BookOpen}>
             Knowledge

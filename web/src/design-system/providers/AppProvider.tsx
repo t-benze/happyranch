@@ -29,6 +29,7 @@ import { realSettingsApi } from './_real-settings';
 import { realHealthApi } from './_real-health';
 import { realKbApi } from './_real-kb';
 import { realDreamsApi } from './_real-dreams';
+import { realSkillsApi } from './_real-skills';
 import { realOrgsApi } from './_real-orgs';
 import {
   useRealAgentsRoutes,
@@ -78,6 +79,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           settings: realSettingsApi,
           kb: realKbApi,
           dreams: realDreamsApi,
+          skills: realSkillsApi,
           teams: realTeamsApi,
           health: realHealthApi,
           assistant: realAssistantApi,
