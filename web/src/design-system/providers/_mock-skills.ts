@@ -457,9 +457,14 @@ function mockAssignResponse(
 // ── Slice-6 Runtime Validation event fixtures ───────────────────────────
 // Coverage (spec v3 §8): multiple severities (pass / error / warn / info),
 // multiple sources (Custom / Bundled / Runtime), several named agents, AND a
-// null-agent event (a context-applied contract-predicate error → "Applied by
-// context"). Findings + reason_codes exercise the plain-language mappers. The
-// timestamps are fixed so the harness renders a stable relative age.
+// Covers the three REAL daemon event sources — user_authored (Custom),
+// first_party (Bundled), and materialization ("Applied at session spawn", a
+// skill loaded at session spawn: severity="info", ok=true, no reason_codes,
+// per workspace_adapters.py). Includes an agent-scoped and a null-agent
+// materialization event (the latter → "Applied by context"), plus a
+// user_authored failure whose findings + reason_codes exercise the plain-
+// language mappers. The timestamps are fixed so the harness renders a stable
+// relative age.
 const VALIDATION_EVENTS: ValidationEvent[] = [
   {
     id: 6,
@@ -521,12 +526,12 @@ const VALIDATION_EVENTS: ValidationEvent[] = [
     skill_id: 'sk-tourism-partner-playbook',
     slug: 'tourism-partner-playbook',
     agent: 'itinerary_planner',
-    source: 'runtime',
-    severity: 'warn',
+    source: 'materialization',
+    severity: 'info',
     ok: true,
     version: '1.2.0',
-    findings: ['This skill could not be prepared in time for the next session.'],
-    reason_codes: ['materialization_error'],
+    findings: [],
+    reason_codes: [],
     created_at: '2026-07-13T22:00:00Z',
   },
   {
@@ -534,12 +539,12 @@ const VALIDATION_EVENTS: ValidationEvent[] = [
     skill_id: 'sk-founder-escalation-protocol',
     slug: 'founder-escalation-protocol',
     agent: null,
-    source: 'runtime',
-    severity: 'error',
-    ok: false,
+    source: 'materialization',
+    severity: 'info',
+    ok: true,
     version: 'locked',
-    findings: ['A contract rule could not be checked for one or more agents.'],
-    reason_codes: ['contract_predicate_error'],
+    findings: [],
+    reason_codes: [],
     created_at: '2026-07-13T08:15:00Z',
   },
 ];

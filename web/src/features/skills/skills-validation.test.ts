@@ -90,12 +90,17 @@ describe('agentLabel', () => {
 });
 
 describe('sourceLabel', () => {
-  test('maps daemon source enums to Bundled/Custom/Runtime', () => {
+  test('maps the three real daemon event sources to product labels', () => {
     expect(sourceLabel('user_authored')).toBe('Custom');
     expect(sourceLabel('first_party')).toBe('Bundled');
-    expect(sourceLabel('runtime')).toBe('Runtime');
+    expect(sourceLabel('materialization')).toBe('Applied at session spawn');
   });
-  test('unknown source is humanized', () => {
+  test('the materialization label is copy-gate-safe (no forbidden token, no "active")', () => {
+    const label = sourceLabel('materialization');
+    expect(label).not.toMatch(/materializ|admit|permission|approve|grant|\bpending\b/i);
+    expect(label).not.toMatch(/\bactive\b/i);
+  });
+  test('unknown source is humanized, never the raw enum', () => {
     expect(sourceLabel('some_source')).toBe('Some source');
   });
 });
@@ -122,7 +127,7 @@ describe('toValidationRow', () => {
         severity: 'error',
         ok: false,
         agent: null,
-        source: 'runtime',
+        source: 'materialization',
         findings: ['SKILL.md is missing a required version field.'],
         reason_codes: ['missing_version', 'contract_predicate_error'],
       }),
@@ -131,7 +136,7 @@ describe('toValidationRow', () => {
     expect(row.id).toBe(7);
     expect(row.skillName).toBe('refund-decision-guide');
     expect(row.agentLabel).toBe('Applied by context — all agents');
-    expect(row.sourceLabel).toBe('Runtime');
+    expect(row.sourceLabel).toBe('Applied at session spawn');
     expect(row.severity).toEqual({ text: 'Needs attention', tone: 'attention' });
     expect(row.ok).toBe(false);
     expect(row.okLabel).toBe('Not passed');

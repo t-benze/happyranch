@@ -31,11 +31,14 @@ function humanize(code: string): string {
 }
 
 /**
- * severity → product-language badge. The daemon records `pass` on a clean
- * technical validation and `error` on a failure (routes/skills.py); other
- * severities (`warn`, `info`) are reserved for materialization / contract-
- * predicate events. Failure maps to "Needs attention" — the SAME product
- * label the catalog + detail surfaces use — never permission/approval wording.
+ * severity → product-language badge. The daemon writes EXACTLY three event
+ * severities: `pass` / `error` on a technical validation (routes/skills.py) and
+ * `info` on a materialization event (workspace_adapters.py — a skill applied at
+ * session spawn). All three are mapped here; `info` → a neutral "Info" badge so
+ * the materialization path never renders a raw enum. Failure maps to "Needs
+ * attention" — the SAME product label the catalog + detail surfaces use — never
+ * permission/approval wording. `warn` + a humanized fallback stay as defensive
+ * coverage for any severity a future daemon build might add.
  */
 export function severityBadge(severity: string): SeverityBadge {
   switch (severity) {
@@ -103,6 +106,15 @@ export function agentLabel(agent: string | null): string {
 const SOURCE_COPY: Record<string, string> = {
   user_authored: 'Custom',
   first_party: 'Bundled',
+  // A skill applied / loaded into a workspace at session spawn
+  // (workspace_adapters.py insert_skill_validation_event source="materialization").
+  // Product-safe label: contains no forbidden lifecycle/permission token
+  // (materializ… / admit / permission / approve / grant / pending) and no
+  // user-facing "active", so it passes the routed copy gate.
+  materialization: 'Applied at session spawn',
+  // Dead keys — these are skill.source TYPES, never event `source` values, so
+  // the daemon never emits them here. Kept only as defensive fallbacks so a
+  // stray value renders a word, never a raw enum.
   system_contract: 'System contract',
   runtime: 'Runtime',
 };
@@ -191,7 +203,11 @@ export function toValidationRow(
 
 // ── filters → query params ──────────────────────────────────────────────
 
-export type SourceFilter = 'all' | 'user_authored' | 'first_party' | 'runtime';
+export type SourceFilter =
+  | 'all'
+  | 'user_authored'
+  | 'first_party'
+  | 'materialization';
 export type SeverityFilter = 'all' | 'pass' | 'error' | 'warn' | 'info';
 export type TimeFilter = 'all' | '24h' | '7d' | '30d';
 
@@ -281,11 +297,17 @@ export function agentOptions(events: ValidationEvent[]): FilterOption[] {
     .map((value) => ({ value, label: value }));
 }
 
+// Derived from the REAL event-source domain the daemon writes
+// ({user_authored, first_party, materialization}) — NOT mock-only values. A
+// source the daemon never emits would be an unfilterable dead option, and a
+// real source with no option (materialization) would leave those rows
+// unfilterable. Labels are product-safe; "Applied at session spawn" mirrors the
+// row badge and passes the routed copy gate.
 export const SOURCE_OPTIONS: { value: SourceFilter; label: string }[] = [
   { value: 'all', label: 'All sources' },
   { value: 'user_authored', label: 'Custom' },
   { value: 'first_party', label: 'Bundled' },
-  { value: 'runtime', label: 'Runtime' },
+  { value: 'materialization', label: 'Applied at session spawn' },
 ];
 
 export const SEVERITY_OPTIONS: { value: SeverityFilter; label: string }[] = [

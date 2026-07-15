@@ -46,17 +46,19 @@ const BUNDLED = ev({
   source: 'first_party',
   severity: 'pass',
 });
+// A real materialization event applied by context (null agent → "Applied by
+// context"): source="materialization", severity="info", ok=true — exactly what
+// workspace_adapters.py emits. Seeding the REAL producer value (not the
+// never-emitted source="runtime") exercises the production copy-gate path and
+// makes the row filterable by its real source.
 const CONTEXT = ev({
   id: 4,
   skill_id: 'sk-contract',
   slug: 'founder-escalation-protocol',
   agent: null,
-  source: 'runtime',
-  severity: 'error',
-  ok: false,
+  source: 'materialization',
+  severity: 'info',
   version: 'locked',
-  findings: ['A contract rule could not be checked for one or more agents.'],
-  reason_codes: ['contract_predicate_error'],
 });
 
 const ALL = [PASS, FAIL, BUNDLED, CONTEXT];
@@ -116,9 +118,9 @@ describe('SkillValidationPage — Runtime Validation (THR-092 Slice 6)', () => {
     // severity → product badges
     expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Passed').length).toBeGreaterThan(0);
-    // source → Bundled/Custom/Runtime labels
+    // source → Bundled / Custom / "Applied at session spawn" (materialization)
     expect(screen.getAllByText('Bundled').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Runtime').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Applied at session spawn').length).toBeGreaterThan(0);
   });
 
   test('null-agent event renders the applied-by-context label, never blank', async () => {
@@ -165,6 +167,27 @@ describe('SkillValidationPage — Runtime Validation (THR-092 Slice 6)', () => {
     );
     expect(
       screen.getByRole('link', { name: 'vendor-comms-style' }),
+    ).toBeInTheDocument();
+  });
+
+  test('the materialization source filter drives the query param and narrows to those rows', async () => {
+    const { requests } = mount();
+    await screen.findByRole('link', { name: 'kb-curation' });
+    // materialization is a REAL daemon source, so its rows must be filterable by
+    // their true source (option value="materialization").
+    const sourceSelect = screen.getAllByLabelText('Source')[0];
+    await userEvent.selectOptions(sourceSelect, 'materialization');
+    await waitFor(() =>
+      expect(requests.some((s) => s.includes('source=materialization'))).toBe(true),
+    );
+    // The bundled row drops out; the context-applied materialization row remains.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('link', { name: 'kb-curation' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole('link', { name: 'founder-escalation-protocol' }),
     ).toBeInTheDocument();
   });
 
