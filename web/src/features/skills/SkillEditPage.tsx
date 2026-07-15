@@ -150,25 +150,29 @@ export function SkillEditPage(): JSX.Element {
   // ── Load / error / read-only guards ─────────────────────────────────
   if (query.isLoading) {
     return (
-      <div className="mx-auto w-full max-w-3xl px-4 py-5 md:px-7 md:py-6">
-        {backLink}
-        <div
-          className="border-border-subtle bg-surface-subtle h-40 animate-pulse rounded-md border"
-          aria-hidden="true"
-        />
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl px-4 py-5 md:px-7 md:py-6">
+          {backLink}
+          <div
+            className="border-border-subtle bg-surface-subtle h-40 animate-pulse rounded-md border"
+            aria-hidden="true"
+          />
+        </div>
       </div>
     );
   }
 
   if (query.isError || !detail) {
     return (
-      <div className="mx-auto w-full max-w-3xl px-4 py-5 md:px-7 md:py-6">
-        {backLink}
-        <EmptyState
-          icon={<TriangleAlert size={28} />}
-          title="Could not load this skill"
-          body="This skill is unavailable right now, or the link is out of date."
-        />
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl px-4 py-5 md:px-7 md:py-6">
+          {backLink}
+          <EmptyState
+            icon={<TriangleAlert size={28} />}
+            title="Could not load this skill"
+            body="This skill is unavailable right now, or the link is out of date."
+          />
+        </div>
       </div>
     );
   }
@@ -178,27 +182,29 @@ export function SkillEditPage(): JSX.Element {
   // even when this route is reached directly.
   if (!isEditableSkill(detail)) {
     return (
-      <div className="mx-auto w-full max-w-3xl px-4 py-5 break-words md:px-7 md:py-6">
-        {backLink}
-        <section
-          className="border-border-default bg-surface-raised rounded-md border p-5 md:p-6"
-          aria-label="Read-only skill"
-        >
-          <div className="text-fg flex items-center gap-2 text-sm font-semibold">
-            <Lock size={15} aria-hidden="true" className="text-fg-subtle" />
-            This skill is read-only
-          </div>
-          <p className="text-fg-muted text-body-sm mt-2">
-            {readOnlyReason(detail) ??
-              'Only your own custom skills can be edited here.'}
-          </p>
-          <Link
-            to={`/orgs/${slug ?? ''}/skills/${encodeURIComponent(detail.skill_id)}`}
-            className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm mt-4 inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl px-4 py-5 break-words md:px-7 md:py-6">
+          {backLink}
+          <section
+            className="border-border-default bg-surface-raised rounded-md border p-5 md:p-6"
+            aria-label="Read-only skill"
           >
-            View skill
-          </Link>
-        </section>
+            <div className="text-fg flex items-center gap-2 text-sm font-semibold">
+              <Lock size={15} aria-hidden="true" className="text-fg-subtle" />
+              This skill is read-only
+            </div>
+            <p className="text-fg-muted text-body-sm mt-2">
+              {readOnlyReason(detail) ??
+                'Only your own custom skills can be edited here.'}
+            </p>
+            <Link
+              to={`/orgs/${slug ?? ''}/skills/${encodeURIComponent(detail.skill_id)}`}
+              className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm mt-4 inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
+            >
+              View skill
+            </Link>
+          </section>
+        </div>
       </div>
     );
   }
@@ -250,7 +256,8 @@ export function SkillEditPage(): JSX.Element {
     // `break-words` (inherited overflow-wrap) keeps long mono slugs/paths from
     // forcing horizontal overflow of the content region on narrow viewports
     // (the AppShell rail does not collapse at 390px — MEM-081/084).
-    <div className="mx-auto w-full max-w-3xl px-4 py-5 break-words md:px-7 md:py-6">
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto w-full max-w-3xl px-4 py-5 break-words md:px-7 md:py-6">
       {backLink}
 
       {/* ── Header ─────────────────────────────────────────────── */}
@@ -523,6 +530,7 @@ export function SkillEditPage(): JSX.Element {
           Skills shape what an agent is told — they do not change available
           tools or commands.
         </span>
+      </div>
       </div>
     </div>
   );

@@ -123,7 +123,8 @@ export function SkillCreatePage(): JSX.Element {
     // `break-words` (inherited overflow-wrap) keeps long mono slugs/paths from
     // forcing horizontal overflow of the content region on narrow viewports
     // (the AppShell rail does not collapse at 390px — MEM-081).
-    <div className="mx-auto w-full max-w-3xl px-4 py-5 break-words md:px-7 md:py-6">
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto w-full max-w-3xl px-4 py-5 break-words md:px-7 md:py-6">
       {backLink}
 
       {/* ── Header ─────────────────────────────────────────────── */}
@@ -361,6 +362,7 @@ export function SkillCreatePage(): JSX.Element {
           Skills shape what an agent is told — they do not change available
           tools or commands.
         </span>
+      </div>
       </div>
     </div>
   );

@@ -92,25 +92,29 @@ export function SkillDetailPage(): JSX.Element {
 
   if (query.isLoading) {
     return (
-      <div className="mx-auto w-full max-w-4xl px-4 py-5 md:px-7 md:py-6">
-        {backLink}
-        <div
-          className="border-border-subtle bg-surface-subtle h-40 animate-pulse rounded-md border"
-          aria-hidden="true"
-        />
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto w-full max-w-4xl px-4 py-5 md:px-7 md:py-6">
+          {backLink}
+          <div
+            className="border-border-subtle bg-surface-subtle h-40 animate-pulse rounded-md border"
+            aria-hidden="true"
+          />
+        </div>
       </div>
     );
   }
 
   if (query.isError || !query.data) {
     return (
-      <div className="mx-auto w-full max-w-4xl px-4 py-5 md:px-7 md:py-6">
-        {backLink}
-        <EmptyState
-          icon={<TriangleAlert size={28} />}
-          title="Could not load this skill"
-          body="This skill is unavailable right now, or the link is out of date."
-        />
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto w-full max-w-4xl px-4 py-5 md:px-7 md:py-6">
+          {backLink}
+          <EmptyState
+            icon={<TriangleAlert size={28} />}
+            title="Could not load this skill"
+            body="This skill is unavailable right now, or the link is out of date."
+          />
+        </div>
       </div>
     );
   }
@@ -129,7 +133,8 @@ export function SkillDetailPage(): JSX.Element {
   return (
     // `break-words` (inherited overflow-wrap) keeps long mono identifiers from
     // forcing horizontal overflow of the content region on narrow viewports.
-    <div className="mx-auto w-full max-w-4xl px-4 py-5 break-words md:px-7 md:py-6">
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto w-full max-w-4xl px-4 py-5 break-words md:px-7 md:py-6">
       {backLink}
 
       {/* ── Header ─────────────────────────────────────────────── */}
@@ -349,6 +354,7 @@ export function SkillDetailPage(): JSX.Element {
           Skills shape what an agent is told — they never change the tools or
           commands an agent can use.
         </span>
+      </div>
       </div>
     </div>
   );
