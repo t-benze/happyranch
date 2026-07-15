@@ -45,9 +45,6 @@ export function OrgPulseTable({ rows }: OrgPulseTableProps): JSX.Element {
             >
               <td className="text-text-primary py-2 font-medium">{r.team}</td>
               <td className="text-text-muted py-2 font-mono text-xs">
-                {r.lead}
-              </td>
-              <td className="text-text-muted py-2 font-mono text-xs">
                 {r.members} agents
               </td>
               <td className="py-2">

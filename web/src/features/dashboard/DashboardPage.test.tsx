@@ -613,8 +613,39 @@ describe('DashboardPage', () => {
     server.use(handler(s));
     renderWithProviders(<AppRoutes />, { route: ROUTE });
     await waitFor(() => {
-      expect(screen.getByText(/engineering_head/)).toBeInTheDocument();
+      expect(screen.getByText(/^engineering$/)).toBeInTheDocument();
     });
     expect(screen.getByText(/87%/)).toBeInTheDocument();
+    expect(screen.getByText(/4 agents/)).toBeInTheDocument();
+    // THR-099 Batch 3: the redundant owner (lead) column was dropped to
+    // de-crowd the row toward the a-dashboard reference — the team name and
+    // acceptance carry the row, the owner label is no longer rendered.
+    expect(screen.queryByText(/engineering_head/)).not.toBeInTheDocument();
+  });
+
+  test('recent-activity outcome renders as a colored semantic pill, not grey mono text (THR-099 Batch 3)', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 3;
+    s.recent_activity = [
+      {
+        timestamp: new Date(Date.parse('2026-07-15T00:00:00Z') - 60_000).toISOString(),
+        who: 'dev_agent',
+        event_kind: 'completion_report',
+        task_id: 'TASK-408',
+        verdict: 'ok',
+      },
+    ];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const main = await screen.findByTestId('dashboard-main');
+    // New behavior: the verdict is a rounded-full tinted pill (semanticTone
+    // positive = green), NOT the old trailing grey "· ok" mono text.
+    const pill = within(main).getByText(/^ok$/);
+    expect(pill).toHaveClass('rounded-full');
+    expect(pill).toHaveClass('text-status-open');
+    expect(within(main).queryByText(/· ok/)).not.toBeInTheDocument();
   });
 });
