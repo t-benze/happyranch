@@ -207,24 +207,23 @@ export function DashboardPage(): JSX.Element {
 
   return (
     <ContentWrap>
-        {/* Greeting heading — Direction-A serif (var(--font-display)), ds.css
-            .h1 parity; copy is a data-derived status summary (THR-030 HOME-02). */}
-        <h1 className="font-display text-display text-text-primary mb-1 font-medium">
+        {/* Header chrome — uppercase-tracked eyebrow ABOVE the serif greeting,
+            matching the a-dashboard reference and the Jobs/Audit/Tasks header
+            pattern already shipped (THR-099 PR3). Same live meta (date · org-age
+            · agents-active), moved from a mono line UNDER the title to the shared
+            eyebrow-over-serif chrome so Home reads consistently with the other
+            surfaces. The greeting stays the data-derived status summary. */}
+        <p className="text-text-muted mb-2 text-xs font-medium tracking-wide uppercase">
+          {now.toLocaleDateString(undefined, {
+            weekday: 'long',
+            month: 'long',
+            day: 'numeric',
+          })}
+          {` · Day ${s.org_age_days} · ${s.narrative_counts.agents_active_now} agents active`}
+        </p>
+        <h1 className="font-display text-display text-text-primary mb-8 font-medium">
           {statusSummary(pendingCount)}
         </h1>
-        <div className="text-text-muted mb-8 flex items-baseline gap-3 font-mono text-xs">
-          <span className="text-text-primary font-medium">
-            {now.toLocaleDateString(undefined, {
-              weekday: 'short',
-              month: 'short',
-              day: 'numeric',
-            })}
-          </span>
-          <span>·</span>
-          <span>Day {s.org_age_days}</span>
-          <span className="grow" />
-          <span>{s.narrative_counts.agents_active_now} agents active</span>
-        </div>
 
         {/* Direction-A a-dashboard layout: a wide MAIN column (Waiting-on-you
             queue + Recent-activity feed) beside a narrower RIGHT RAIL of
