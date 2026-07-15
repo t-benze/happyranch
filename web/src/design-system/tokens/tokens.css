@@ -288,6 +288,20 @@
 
   --spacing-content: 1180px;
 
+  /* ---------------------------------------------------------------------- */
+  /* Bespoke own-inner caps (THR-099 Slice 7+8). These pages own a cap ≠     */
+  /* 1180, so they cannot reuse `max-w-content`. Named here so pages apply a */
+  /* non-arbitrary `max-w-content-*` utility (Tailwind v4 @theme) instead of */
+  /* a hand-rolled `max-w-[…]` (eslint tailwindcss/no-arbitrary-value).      */
+  /*   -wide   (1120): a-health hl-wrap + a-workhours wh-wrap (shared cap)   */
+  /*   -narrow (1000): a-settings set-wrap (nav + content column)           */
+  /*   -form   ( 600): a-onboarding centered card                           */
+  /* ---------------------------------------------------------------------- */
+
+  --spacing-content-wide: 1120px;
+  --spacing-content-narrow: 1000px;
+  --spacing-content-form: 600px;
+
   /* ====================================================================== */
   /* SHADOWS — warm/soft Pasture scale (ds.css --shadow / --shadow-sm /     */
   /* --shadow-lg)                                                            */

@@ -554,7 +554,8 @@ export function HealthPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
-      <div className="p-6">
+      {/* a-health hl-wrap: 1120 centered cap (THR-099 Slice 7). */}
+      <div className="max-w-content-wide mx-auto p-6">
         <header className="mb-6 flex items-start justify-between gap-3">
           <PageHeader title="Runtime Health" meta="Live daemon metrics · all orgs" />
           <WindowToggle winIdx={winIdx} onChange={onChangeWindow} />
