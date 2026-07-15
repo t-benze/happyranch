@@ -17,7 +17,7 @@
  */
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { Info, Package, Plus, Sparkles, TriangleAlert } from 'lucide-react';
+import { Activity, Info, Package, Plus, Sparkles, TriangleAlert } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useSkillsCatalog } from '@/hooks/skills';
 import { SkillCard } from './SkillCard';
@@ -110,6 +110,16 @@ export function SkillsPage(): JSX.Element {
                 {attention} {attention === 1 ? 'needs' : 'need'} attention
               </span>
             )}
+            {/* Runtime Validation entry point — mirrors the mockup's Skills
+                topbar link (the read-only event list). One nav entry into the
+                Slice-6 surface. */}
+            <Link
+              to={`/orgs/${slug ?? ''}/skills/validation`}
+              className="border-border-default text-fg-muted hover:bg-bg-subtle hover:text-fg text-body-sm inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
+            >
+              <Activity size={15} aria-hidden="true" />
+              Runtime Validation
+            </Link>
             <Link
               to={`/orgs/${slug ?? ''}/skills/new`}
               className="bg-accent-soft text-accent-text hover:bg-accent-soft/80 text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
