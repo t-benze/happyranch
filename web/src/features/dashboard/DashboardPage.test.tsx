@@ -367,6 +367,28 @@ describe('DashboardPage', () => {
     expect(heading).toHaveTextContent(/all caught up/i);
   });
 
+  test('header chrome: uppercase-tracked eyebrow precedes the serif greeting (THR-099 PR3)', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.agents_active_now = 2;
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const heading = await screen.findByRole('heading', { level: 1 });
+    // The date · org-age · agents-active meta is now the shared uppercase-tracked
+    // eyebrow (Jobs/Audit pattern) — NOT the old mono line that sat UNDER the
+    // title. Old layout: mono meta, title-first. This asserts the new chrome.
+    const eyebrow = screen.getByText(/Day 14 · 2 agents active/i);
+    expect(eyebrow).toHaveClass('uppercase', 'tracking-wide', 'text-xs');
+    expect(eyebrow).not.toHaveClass('font-mono');
+    // DOM order: the eyebrow renders BEFORE the greeting heading.
+    expect(
+      eyebrow.compareDocumentPosition(heading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   test('TODAY card shows an honest Tokens today tile and no Spend today dollars tile (THR-030 HOME-04)', async () => {
     const s = emptySummary();
     s.org_age_days = 14;
