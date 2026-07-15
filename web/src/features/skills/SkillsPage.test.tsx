@@ -220,7 +220,8 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     const mainColumn = root!.querySelector(':scope > .min-w-0.overflow-y-auto');
     expect(mainColumn).not.toBeNull();
     expect(mainColumn!.className).toMatch(/\bmin-h-0\b/);
-    expect(mainColumn!.className).toMatch(/\bflex-1\b/);
+    expect(mainColumn!.classList.contains('flex-1')).toBe(true);
+    expect(mainColumn!.classList.contains('md:flex-1')).toBe(false);
     expect(mainColumn!.className).toMatch(/\boverflow-y-auto\b/);
   });
 
