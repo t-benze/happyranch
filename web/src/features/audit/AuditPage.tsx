@@ -189,7 +189,16 @@ export function AuditPage(): JSX.Element {
 
       {/* Timeline (left) + Event-types legend-filter rail (right) */}
       <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
-        <div className="border-border-default bg-surface min-w-0 flex-1 overflow-hidden rounded-lg border">
+        {/* The timeline card MUST be a bounded-height flex COLUMN (`flex
+            flex-col min-h-0`), not a plain block. AuditTimeline's TimelineBody
+            is `flex-1 overflow-y-auto` and paginates via an IntersectionObserver
+            whose root is that scroll box — TimelineBody only gets a height, and
+            its inner scroll only engages, when its parent is a bounded flex
+            column. A plain `overflow-hidden` block makes `flex-1` inert, so
+            TimelineBody grows to full content height, the card clips it with no
+            scrollbar, the bottom sentinel sits below the clip and never
+            re-intersects, and infinite scroll dies ("can't load more"). */}
+        <div className="border-border-default bg-surface flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
           <AuditTimeline legendMap={legendColorMap} sinceISO={sinceISO} />
         </div>
         <EventTypesRail

@@ -280,10 +280,14 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
     );
   }
 
-  // All-clear calm state (zero failures/escalations)
+  // All-clear calm state (zero failures/escalations). This wrapper must carry
+  // the SAME bounded-height flex-column chain the normal branch gets from its
+  // card parent, so TimelineBody (flex-1 overflow-y-auto) gets a height and its
+  // infinite-scroll sentinel can re-intersect — otherwise this branch clips and
+  // dies exactly like the normal one did (THR-098 re-open).
   if (isAllClear(entries)) {
     return (
-      <div data-testid="all-clear">
+      <div data-testid="all-clear" className="flex h-full min-h-0 flex-col">
         <AllClearBanner />
         <TimelineBody
           entries={entries}
@@ -311,7 +315,7 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
 
 function AllClearBanner(): JSX.Element {
   return (
-    <div className="bg-surface border-border-default shadow-pasture-sm mx-4 mt-4 flex items-center gap-3 rounded-lg border p-4">
+    <div className="bg-surface border-border-default shadow-pasture-sm mx-4 mt-4 flex shrink-0 items-center gap-3 rounded-lg border p-4">
       <span
         aria-hidden="true"
         className="bg-positive inline-block h-2.5 w-2.5 rounded-full"

@@ -795,6 +795,51 @@ describe('AuditPage — day-grouped timeline', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Container-geometry contract (THR-098 re-open): TimelineBody is
+// `flex-1 overflow-y-auto` and paginates via an IntersectionObserver rooted on
+// itself. It only gets a bounded height — and its inner scroll + sentinel
+// re-intersection only work — when its PARENT is a bounded-height flex column.
+// A THR-099 ContentWrap re-fit left the timeline card a plain `overflow-hidden`
+// block, so `flex-1` went inert, TimelineBody grew to full content height, the
+// card clipped it with no scrollbar, and infinite scroll died ("can't load
+// more"). jsdom has no layout, so we lock the CLASS contract that the live
+// geometry depends on — in BOTH render branches.
+// ---------------------------------------------------------------------------
+describe('AuditPage — timeline container-geometry contract', () => {
+  test('normal branch: the timeline card is a bounded-height flex column', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // defaultEntries() contains an escalation → NOT all-clear → normal branch.
+    seedAudit();
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    const body = await screen.findByLabelText('Audit timeline');
+    // AuditTimeline renders TimelineBody directly, so the scroll box's parent
+    // IS the card. It must be a bounded flex column, else TimelineBody's
+    // flex-1 is inert and the card clips the list with no scrollbar.
+    const card = body.parentElement!;
+    expect(card).toHaveClass('flex', 'flex-col', 'min-h-0');
+    // Still clips its own rounded corners.
+    expect(card).toHaveClass('overflow-hidden');
+  });
+
+  test('all-clear branch: the wrapper carries the same bounded flex-column chain', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Zero failures/escalations → all-clear branch renders.
+    seedAudit([
+      { id: 1, task_id: 'TASK-1', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-18T10:00:00Z' },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    const wrapper = await screen.findByTestId('all-clear');
+    expect(wrapper).toHaveClass('flex', 'flex-col', 'h-full', 'min-h-0');
+    // TimelineBody is a direct child of the all-clear wrapper, so the bounded
+    // chain reaches it exactly like the normal branch's card.
+    const body = await screen.findByLabelText('Audit timeline');
+    expect(body.parentElement).toBe(wrapper);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Keyset infinite scroll (THR-069 msg12): the timeline pages older entries in
 // via `cursor`/`next_cursor`, appending them under their own day header —
 // grouping preserved ACROSS pages. jsdom has no IntersectionObserver, so we
