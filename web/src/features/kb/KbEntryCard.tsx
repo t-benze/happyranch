@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { toneClass } from '@/design-system/patterns/semanticTone';
 import { cn } from '@/lib/utils';
 import type { KBEntry } from '@/lib/api/types';
 import { KB_STRINGS } from './strings';
@@ -66,22 +67,32 @@ export function KbEntryCard({
         <FileBadge className="h-3 w-3" />
         <span className="text-text-muted font-mono text-xs tabular-nums">{entry.slug}</span>
       </div>
-      <div className="text-text-primary mt-0.5 flex items-baseline gap-2 flex-wrap">
+      <div className="text-text-primary mt-0.5 flex flex-wrap items-baseline gap-2">
         <span className="font-display font-medium">{entry.title}</span>
-        <span className="text-text-muted text-xs">· {entry.type}</span>
-        <span className="text-text-muted text-xs font-mono tabular-nums">· {relativeAge(entry.updated_at)}</span>
+        {/* Semantic type badge — SOP green / reference blue / ruling amber via
+            the shared colour map (THR-099 Batch 1 proof-of-render). Other
+            types fall back to the neutral grey tone. */}
+        <span
+          className={cn(
+            'inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-semibold uppercase tracking-wide',
+            toneClass(entry.type),
+          )}
+        >
+          {entry.type}
+        </span>
+        <span className="text-text-muted font-mono text-xs tabular-nums">· {relativeAge(entry.updated_at)}</span>
       </div>
       {density === 'comfortable' && entry.tags.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {entry.tags.map((t) => (
-            <span key={t} className="inline-flex items-center rounded-full bg-surface-sunken px-2 py-0.5 text-xs text-text-muted border border-border-subtle">
+            <span key={t} className="bg-surface-sunken text-text-muted border-border-subtle inline-flex items-center rounded-full border px-2 py-0.5 text-xs">
               {t}
             </span>
           ))}
         </div>
       )}
       {viewCount !== undefined && (
-        <div className="text-text-muted mt-1.5 text-xs font-mono tabular-nums">
+        <div className="text-text-muted mt-1.5 font-mono text-xs tabular-nums">
           {KB_STRINGS.viewedLabel(viewCount)}
         </div>
       )}

@@ -50,4 +50,19 @@ describe('StatusBadge — Path B task vocabulary', () => {
     render(<StatusBadge status="superseded" />);
     expect(screen.getByText('superseded')).toBeInTheDocument();
   });
+
+  // THR-099 Batch 1: thread `open` follows the design colour vocabulary —
+  // BLUE (info), not the old GREEN. This asserts the new behaviour and is
+  // RED against the pre-batch code (which used text-status-open green).
+  test('thread open renders the blue info tone, not the old green', () => {
+    render(<StatusBadge status="open" />);
+    const badge = screen.getByText('open');
+    expect(badge).toHaveClass('text-info');
+    expect(badge).not.toHaveClass('text-status-open');
+  });
+
+  test('thread archived stays the neutral grey tone', () => {
+    render(<StatusBadge status="archived" />);
+    expect(screen.getByText('archived')).toHaveClass('text-status-archived');
+  });
 });
