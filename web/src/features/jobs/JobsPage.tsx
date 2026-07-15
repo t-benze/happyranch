@@ -50,10 +50,19 @@ function agentInitials(name: string): string {
   return letters.toUpperCase();
 }
 
-// The card grid — one template shared by the column-header row and every card
-// so the five columns line up exactly: JOB · COMMAND(flex) · REQUESTED BY ·
-// TASK · OPENED.
-const CARD_GRID = 'grid grid-cols-[6.5rem_minmax(0,1fr)_11rem_6.5rem_5rem] items-center gap-4';
+// One shared row shape drives the column-header row AND every card so the five
+// columns line up exactly: JOB · COMMAND(flex) · REQUESTED BY · TASK · OPENED.
+// A flex row with NAMED width utilities on the four fixed columns (no arbitrary
+// grid-template): w-26 ≈ 6.5rem, w-44 = 11rem, w-20 = 5rem, while COMMAND
+// flexes to fill (flex-1 min-w-0).
+const CARD_ROW = 'flex items-center gap-4';
+const CARD_COL = {
+  job: 'w-26 shrink-0',
+  command: 'min-w-0 flex-1',
+  requestedBy: 'w-44 shrink-0',
+  task: 'w-26 shrink-0',
+  opened: 'w-20 shrink-0',
+};
 
 // ── Status groups ────────────────────────────────────────────────────
 
@@ -143,15 +152,15 @@ function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
   return (
     <Link
       to={to}
-      className={`${CARD_GRID} bg-surface-raised border-border-default hover:shadow-pasture shadow-pasture-sm rounded-lg border px-5 py-4 transition-shadow ${
+      className={`${CARD_ROW} bg-surface-raised border-border-default hover:shadow-pasture shadow-pasture-sm rounded-lg border px-5 py-4 transition-shadow ${
         job.status === 'rejected' ? 'opacity-70 hover:opacity-100' : ''
       }`}
     >
       {/* JOB */}
-      <span className="text-mono-sm text-accent-text tracking-wide">{job.id}</span>
+      <span className={`${CARD_COL.job} text-mono-sm text-accent-text tracking-wide`}>{job.id}</span>
 
       {/* COMMAND — title + verbatim command */}
-      <div className="flex min-w-0 flex-col gap-1">
+      <div className={`${CARD_COL.command} flex flex-col gap-1`}>
         <div className="flex min-w-0 items-center gap-2">
           <span className="text-text-primary truncate text-sm font-medium">{job.title}</span>
           {job.status === 'pending' && job.review_required && <NeedsReviewPill />}
@@ -166,31 +175,31 @@ function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
       </div>
 
       {/* REQUESTED BY */}
-      <div className="flex min-w-0 items-center gap-2">
+      <div className={`${CARD_COL.requestedBy} flex min-w-0 items-center gap-2`}>
         <AgentAvatar name={job.agent_name} />
         <span className="text-text-secondary truncate text-sm">{job.agent_name}</span>
       </div>
 
       {/* TASK */}
-      <span className="text-mono-sm text-accent-text truncate">{job.task_id}</span>
+      <span className={`${CARD_COL.task} text-mono-sm text-accent-text truncate`}>{job.task_id}</span>
 
       {/* OPENED */}
-      <div className="flex justify-end">
+      <div className={`${CARD_COL.opened} flex justify-end`}>
         <OutcomeCell job={job} />
       </div>
     </Link>
   );
 }
 
-/** Column-header row above the cards — aligns to the card grid. */
+/** Column-header row above the cards — aligns to the shared card row. */
 function ColumnHeader(): JSX.Element {
   return (
-    <div className={`${CARD_GRID} text-text-muted px-5 pb-1 text-xs font-medium tracking-wider uppercase`}>
-      <span>Job</span>
-      <span>Command</span>
-      <span>Requested by</span>
-      <span>Task</span>
-      <span className="text-right">Opened</span>
+    <div className={`${CARD_ROW} text-text-muted px-5 pb-1 text-xs font-medium tracking-wider uppercase`}>
+      <span className={CARD_COL.job}>Job</span>
+      <span className={CARD_COL.command}>Command</span>
+      <span className={CARD_COL.requestedBy}>Requested by</span>
+      <span className={CARD_COL.task}>Task</span>
+      <span className={`${CARD_COL.opened} text-right`}>Opened</span>
     </div>
   );
 }
