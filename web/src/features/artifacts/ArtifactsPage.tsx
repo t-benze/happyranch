@@ -479,7 +479,14 @@ export function ArtifactsPage(): JSX.Element {
               Everything the org has produced
             </h1>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => setShowUpload((v) => !v)}>
+          {/* Solid green "↑ Upload" pill per the a-artifacts reference (THR-099
+              Batch 3); switches to a quiet ghost "Cancel" once the form is open
+              so the dismiss action does not read as a second primary action. */}
+          <Button
+            variant={showUpload ? 'ghost' : 'default'}
+            size="sm"
+            onClick={() => setShowUpload((v) => !v)}
+          >
             <Upload aria-hidden="true" size={14} />
             {showUpload ? 'Cancel' : 'Upload'}
           </Button>

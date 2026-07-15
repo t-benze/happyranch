@@ -157,6 +157,32 @@ describe('ArtifactsPage', () => {
     expect(postHit).toBe(false);
   });
 
+  test('header Upload action is a filled primary pill when closed and flips to a quiet ghost Cancel when the form is open (THR-099 Batch 3)', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({ artifacts: [] }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    // CLOSED state: the header action reads "Upload" and renders in the
+    // primary FILLED-PILL variant (Button variant="default" → bg-primary),
+    // per the a-artifacts reference. The old always-ghost Upload button had
+    // no bg-primary, so this assertion red-proofs the variant switch.
+    const uploadToggle = await screen.findByRole('button', { name: 'Upload' });
+    expect(uploadToggle).toHaveClass('bg-primary');
+
+    // Toggling the form OPEN flips the SAME control to the quiet GHOST
+    // "Cancel" dismiss state — it must no longer read as a primary action.
+    await user.click(uploadToggle);
+    const cancelToggle = await screen.findByRole('button', { name: 'Cancel' });
+    expect(cancelToggle).not.toHaveClass('bg-primary');
+  });
+
   /* ------------------------------------------------------------------ */
   /*  Delete                                                            */
   /* ------------------------------------------------------------------ */

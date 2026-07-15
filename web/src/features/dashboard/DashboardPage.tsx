@@ -24,6 +24,8 @@ import { Button } from '@/design-system/primitives/Button';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { TONE_CLASS, type Tone } from '@/design-system/patterns/semanticTone';
+import type { ActivityVerdict } from '@/lib/api/types';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { Heartbeat } from './components/Heartbeat';
 import { NarrativeParagraph } from './components/NarrativeParagraph';
@@ -52,6 +54,29 @@ function relativeAge(iso: string, now: Date): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
   return `${Math.floor(seconds / 86400)}d`;
+}
+
+/**
+ * Recent-activity outcome, rendered as a leading colored pill chip per the
+ * a-dashboard reference (THR-099 Batch 3). Replaces the trailing grey mono
+ * "· ok" text with the shared semantic colour vocabulary (semanticTone): our
+ * data carries only ok/fail/warn — the design's richer done/merged/superseded
+ * vocabulary needs fields we do not store, so we honestly colour what we have.
+ */
+const VERDICT_TONE: Record<ActivityVerdict, Tone> = {
+  ok: 'positive',
+  fail: 'danger',
+  warn: 'attention',
+};
+
+function ActivityVerdictPill({ verdict }: { verdict: ActivityVerdict }): JSX.Element {
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${TONE_CLASS[VERDICT_TONE[verdict]]}`}
+    >
+      {verdict}
+    </span>
+  );
 }
 
 interface PanelProps {
@@ -251,16 +276,11 @@ export function DashboardPage(): JSX.Element {
                       <span className="text-text-muted">
                         {relativeAge(r.timestamp, now)} ago
                       </span>
+                      {r.verdict && <ActivityVerdictPill verdict={r.verdict} />}
                       <span className="text-text-primary">{r.who}</span>
                       <span className="text-text-muted">
                         {r.event_kind.replace(/_/g, ' ')}
                       </span>
-                      {r.verdict === 'ok' && (
-                        <span className="text-tier-green">· ok</span>
-                      )}
-                      {r.verdict === 'fail' && (
-                        <span className="text-tier-red">· fail</span>
-                      )}
                       {r._thread_dream_id && (
                         <CrescentMoonBadge className="h-3 w-3" />
                       )}
@@ -300,7 +320,7 @@ export function DashboardPage(): JSX.Element {
               {/* Counter tiles — ds.css display-num / mono pattern */}
               <div className="border-border-default mt-5 grid grid-cols-5 gap-3 border-t pt-4">
                 <div className="text-center">
-                  <div className="font-display text-h1 text-tier-green font-medium tabular-nums">
+                  <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
                     {s.narrative_counts.completed_today}
                   </div>
                   <div className="text-text-muted text-overline mt-1">Completed</div>
@@ -318,7 +338,7 @@ export function DashboardPage(): JSX.Element {
                   <div className="text-text-muted text-overline mt-1">Failed</div>
                 </div>
                 <div className="text-center">
-                  <div className="font-display text-h1 text-tier-green font-medium tabular-nums">
+                  <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
                     {s.narrative_counts.agents_active_now}
                   </div>
                   <div className="text-text-muted text-overline mt-1">Active</div>
