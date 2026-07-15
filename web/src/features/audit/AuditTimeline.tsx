@@ -36,10 +36,13 @@ import { useQueryClient } from '@tanstack/react-query';
 /* ------------------------------------------------------------------ */
 
 function formatTime(iso: string): string {
+  // 24-hour mono clock (e.g. 14:10:02) matching the a-audit design authority —
+  // never a 12-hour AM/PM meridiem (THR-099 Batch 2 fidelity).
   return new Date(iso).toLocaleTimeString(undefined, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
+    hour12: false,
   });
 }
 

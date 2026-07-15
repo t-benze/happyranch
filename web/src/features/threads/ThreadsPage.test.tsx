@@ -950,17 +950,21 @@ describe('ThreadsPage — segmented status filter (THREADS-02)', () => {
     );
   }
 
-  test('renders all / open / done segments with honest per-bucket counts', async () => {
+  test('renders all / open / archived segments with honest per-bucket counts', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountWithBuckets();
     mountAt(`/orgs/${SLUG}/threads`);
 
-    // Three segments, each backed by a real count: All=3, Open=2, Done=1.
+    // Three segments, each backed by a real count: All=3, Open=2, Archived=1.
+    // THR-099 Batch 2: the archived bucket's LABEL is "Archived" (design
+    // vocabulary), not the legacy "Done".
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: /all/i })).toHaveTextContent(/3/);
       expect(screen.getByRole('tab', { name: /open/i })).toHaveTextContent(/2/);
-      expect(screen.getByRole('tab', { name: /done/i })).toHaveTextContent(/1/);
+      expect(screen.getByRole('tab', { name: /archived/i })).toHaveTextContent(/1/);
     });
+    // The legacy "Done" label is gone.
+    expect(screen.queryByRole('tab', { name: /done/i })).not.toBeInTheDocument();
 
     // Default bucket "open": open threads visible, archived hidden.
     expect(screen.getByText(/Open alpha/)).toBeInTheDocument();
@@ -977,8 +981,8 @@ describe('ThreadsPage — segmented status filter (THREADS-02)', () => {
       expect(screen.getByText(/Open alpha/)).toBeInTheDocument();
     });
 
-    // Select "Done" → only the archived thread shows.
-    await user.click(screen.getByRole('tab', { name: /done/i }));
+    // Select "Archived" → only the archived thread shows.
+    await user.click(screen.getByRole('tab', { name: /archived/i }));
     await waitFor(() => {
       expect(screen.getByText(/Archived gamma/)).toBeInTheDocument();
     });

@@ -15,6 +15,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
+import { TONE_CLASS, toneClass } from '@/design-system/patterns/semanticTone';
 import { useJobsList } from '@/hooks/jobs';
 import type { JobRecord, JobStatus } from '@/lib/api/types';
 
@@ -228,13 +229,17 @@ function JobRow({ job, to }: { job: JobRecord; to: string }): JSX.Element {
           <span className="text-mono-sm text-feedback-info bg-info-soft rounded px-2.5 py-1">running…</span>
         )}
         {job.status === 'completed' && (
-          <span className="text-mono-sm text-status-open border-border-default rounded border px-2.5 py-1">
+          <span
+            className={`text-mono-sm inline-flex items-center rounded-full px-2.5 py-0.5 font-medium ${toneClass(`exit ${job.exit_code ?? 0}`)}`}
+          >
             exit {job.exit_code ?? 0}
           </span>
         )}
         {job.status === 'failed' && (
-          <span className="text-mono-sm text-status-abandoned border-border-default rounded border px-2.5 py-1">
-            failed
+          <span
+            className={`text-mono-sm inline-flex items-center rounded-full px-2.5 py-0.5 font-medium ${TONE_CLASS.danger}`}
+          >
+            {job.exit_code != null ? `exit ${job.exit_code}` : 'failed'}
           </span>
         )}
         {job.status === 'rejected' && (
