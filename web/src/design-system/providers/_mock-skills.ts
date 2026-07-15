@@ -30,6 +30,7 @@ import type {
   SkillDetail,
   SkillStatusResponse,
   ValidateSkillResponse,
+  ValidationEvent,
 } from '@/lib/api/skills';
 import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
 
@@ -453,6 +454,121 @@ function mockAssignResponse(
   };
 }
 
+// ── Slice-6 Runtime Validation event fixtures ───────────────────────────
+// Coverage (spec v3 §8): multiple severities (pass / error / warn / info),
+// multiple sources (Custom / Bundled / Runtime), several named agents, AND a
+// null-agent event (a context-applied contract-predicate error → "Applied by
+// context"). Findings + reason_codes exercise the plain-language mappers. The
+// timestamps are fixed so the harness renders a stable relative age.
+const VALIDATION_EVENTS: ValidationEvent[] = [
+  {
+    id: 6,
+    skill_id: 'sk-refund-decision-guide',
+    slug: 'refund-decision-guide',
+    agent: 'support_agent',
+    source: 'user_authored',
+    severity: 'pass',
+    ok: true,
+    version: '1.1.0',
+    findings: [],
+    reason_codes: [],
+    created_at: '2026-07-15T09:12:00Z',
+  },
+  {
+    id: 5,
+    skill_id: 'sk-vendor-comms-style',
+    slug: 'vendor-comms-style',
+    agent: 'vendor_desk',
+    source: 'user_authored',
+    severity: 'error',
+    ok: false,
+    version: '0.3.0',
+    findings: [
+      'SKILL.md is missing a required version field.',
+      'The references/pricing.md asset could not be resolved.',
+    ],
+    reason_codes: ['missing_version', 'invalid_reference_filename'],
+    created_at: '2026-07-15T07:40:00Z',
+  },
+  {
+    id: 4,
+    skill_id: 'sk-tourism-partner-playbook',
+    slug: 'tourism-partner-playbook',
+    agent: 'partner_liaison',
+    source: 'user_authored',
+    severity: 'info',
+    ok: true,
+    version: '1.2.0',
+    findings: [],
+    reason_codes: ['next_session_materialization'],
+    created_at: '2026-07-14T16:05:00Z',
+  },
+  {
+    id: 3,
+    skill_id: 'sk-kb-curation',
+    slug: 'kb-curation',
+    agent: 'research_lead',
+    source: 'first_party',
+    severity: 'pass',
+    ok: true,
+    version: '2.1.0',
+    findings: [],
+    reason_codes: [],
+    created_at: '2026-07-14T11:20:00Z',
+  },
+  {
+    id: 2,
+    skill_id: 'sk-tourism-partner-playbook',
+    slug: 'tourism-partner-playbook',
+    agent: 'itinerary_planner',
+    source: 'runtime',
+    severity: 'warn',
+    ok: true,
+    version: '1.2.0',
+    findings: ['This skill could not be prepared in time for the next session.'],
+    reason_codes: ['materialization_error'],
+    created_at: '2026-07-13T22:00:00Z',
+  },
+  {
+    id: 1,
+    skill_id: 'sk-founder-escalation-protocol',
+    slug: 'founder-escalation-protocol',
+    agent: null,
+    source: 'runtime',
+    severity: 'error',
+    ok: false,
+    version: 'locked',
+    findings: ['A contract rule could not be checked for one or more agents.'],
+    reason_codes: ['contract_predicate_error'],
+    created_at: '2026-07-13T08:15:00Z',
+  },
+];
+
+// Mirror the daemon's server-side filtering so the prototype + screenshot
+// harness can reach a filtered state AND the empty-list case. `since` is an ISO
+// lower bound; `severity`/`source`/`agent`/`skill` are exact matches.
+function filterValidation(params?: {
+  skill?: string;
+  agent?: string;
+  source?: string;
+  since?: string;
+  severity?: string;
+  limit?: number;
+}): ValidationEvent[] {
+  let events = VALIDATION_EVENTS;
+  if (params?.skill) events = events.filter((e) => e.skill_id === params.skill);
+  if (params?.agent) events = events.filter((e) => e.agent === params.agent);
+  if (params?.source) events = events.filter((e) => e.source === params.source);
+  if (params?.severity)
+    events = events.filter((e) => e.severity === params.severity);
+  if (params?.since) {
+    const floor = Date.parse(params.since);
+    events = events.filter((e) => Date.parse(e.created_at) >= floor);
+  }
+  if (params?.limit) events = events.slice(0, params.limit);
+  return events;
+}
+
 export const mockSkillsApi: SkillsApi = {
   useSkillsCatalog: (params) => {
     const filter = params?.filter;
@@ -497,4 +613,6 @@ export const mockSkillsApi: SkillsApi = {
     >(({ agentId, skillId, body }) =>
       mockAssignResponse(agentId, skillId, body),
     ),
+  useSkillValidation: (params) =>
+    ok({ events: filterValidation(params), label: 'Runtime Validation' }),
 };

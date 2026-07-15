@@ -21,6 +21,7 @@ export type {
   SkillStatusAssignment,
   SkillStatusResponse,
   ValidateSkillResponse,
+  ValidationEvent,
 } from '@/lib/api/skills';
 
 export const useSkillsCatalog: ReturnType<
@@ -53,3 +54,8 @@ export const useSkillStatus: ReturnType<
 export const useAssignSkill: ReturnType<
   typeof useData
 >['skills']['useAssignSkill'] = () => useData().skills.useAssignSkill();
+
+export const useSkillValidation: ReturnType<
+  typeof useData
+>['skills']['useSkillValidation'] = (params) =>
+  useData().skills.useSkillValidation(params);

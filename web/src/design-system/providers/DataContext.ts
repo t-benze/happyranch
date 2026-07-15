@@ -45,6 +45,7 @@ import type {
   SkillDetail,
   SkillStatusResponse,
   ValidateSkillResponse,
+  ValidationEvent,
 } from '@/lib/api/skills';
 import type { ConversationSummary } from '@/lib/api/assistant';
 import type { ThreadTaskSummary } from '@/lib/api/threads';
@@ -481,6 +482,18 @@ export interface SkillsApi {
     { agentId: string; skillId: string; body: AssignSkillRequest },
     AssignSkillResponse
   >;
+  /** Runtime Validation event list (Slice-6). Read-only. Filterable by skill,
+   *  agent, source, time (`since`), and severity — each maps 1:1 to the daemon
+   *  query params. Returns the events plus the endpoint's `label` (the surface
+   *  title, "Runtime Validation" — never "Audit"). */
+  useSkillValidation: (params?: {
+    skill?: string;
+    agent?: string;
+    source?: string;
+    since?: string;
+    severity?: string;
+    limit?: number;
+  }) => QueryLike<{ events: ValidationEvent[]; label: string }>;
 }
 
 // ---------------------------------------------------------------------------

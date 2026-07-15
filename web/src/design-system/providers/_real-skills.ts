@@ -21,6 +21,7 @@ import {
   getSkillCatalogDetail,
   getSkillStatus,
   listSkillsCatalog,
+  listSkillValidation,
   validateSkill,
   type AssignSkillRequest,
   type AssignSkillResponse,
@@ -32,6 +33,7 @@ import {
   type SkillDetail,
   type SkillStatusResponse,
   type ValidateSkillResponse,
+  type ValidationEvent,
 } from '@/lib/api/skills';
 import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
 
@@ -159,6 +161,28 @@ function useAssignSkill(): MutationLike<
   });
 }
 
+// Runtime Validation event list (Slice-6) — GET /orgs/:slug/skills/validation.
+// Read-only; the filter params map straight through to the daemon query. The
+// query key carries the params object so switching filters refetches; an empty
+// (undefined) param set shares a key with the page's unfiltered options query,
+// so React Query dedupes them into a single fetch.
+function useSkillValidation(params?: {
+  skill?: string;
+  agent?: string;
+  source?: string;
+  since?: string;
+  severity?: string;
+  limit?: number;
+}): QueryLike<{ events: ValidationEvent[]; label: string }> {
+  const slug = useRealOrgSlug();
+  return useQuery({
+    queryKey: ['skill-validation', slug, params ?? null],
+    queryFn: () => listSkillValidation(slug, params),
+    enabled: !!slug,
+    staleTime: 30_000,
+  }) as QueryLike<{ events: ValidationEvent[]; label: string }>;
+}
+
 export const realSkillsApi: SkillsApi = {
   useSkillsCatalog,
   useSkillDetail,
@@ -167,4 +191,5 @@ export const realSkillsApi: SkillsApi = {
   useEditSkill,
   useSkillStatus,
   useAssignSkill,
+  useSkillValidation,
 };

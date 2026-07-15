@@ -21,6 +21,7 @@ import { HelpDrawerHost } from '@/host/HelpDrawerHost';
 import { AssistantDockHost } from '@/features/system-assistant/AssistantDockHost';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { SkillsPage } from '@/features/skills/SkillsPage';
+import { SkillValidationPage } from '@/features/skills/SkillValidationPage';
 import { SkillCreatePage } from '@/features/skills/SkillCreatePage';
 import { SkillEditPage } from '@/features/skills/SkillEditPage';
 import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
@@ -107,9 +108,10 @@ export function AppRoutes(): JSX.Element {
 
           <Route path="audit" element={<AuditPage />} />
           <Route path="skills" element={<SkillsPage />} />
-          {/* Static `new` ranks above the dynamic `:skillId` in react-router
-              v6, but keep it declared first for readability. */}
+          {/* Static `new`/`validation` rank above the dynamic `:skillId` in
+              react-router v6, but keep them declared first for readability. */}
           <Route path="skills/new" element={<SkillCreatePage />} />
+          <Route path="skills/validation" element={<SkillValidationPage />} />
           <Route path="skills/:skillId/edit" element={<SkillEditPage />} />
           <Route path="skills/:skillId" element={<SkillDetailPage />} />
           <Route path="agents" element={<AgentsPage />} />
