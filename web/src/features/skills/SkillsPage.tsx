@@ -73,7 +73,7 @@ export function SkillsPage(): JSX.Element {
       </aside>
 
       {/* Main column */}
-      <div className="min-w-0 overflow-y-auto px-4 py-5 md:flex-1 md:px-7 md:py-6">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-5 md:px-7 md:py-6">
         {/* Mobile filter chips — replace the rail below md */}
         <div className="mb-4 flex flex-wrap gap-2 md:hidden" aria-label="Skill source filter">
           {FACETS.map((f) => {

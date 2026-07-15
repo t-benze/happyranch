@@ -206,6 +206,24 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     expect(root!.className).toMatch(/\boverflow-hidden\b/);
   });
 
+  test('main scroll column carries bounded-body classes min-h-0 flex-1 overflow-y-auto (THR-092)', async () => {
+    mount();
+    await screen.findByText('kb-curation');
+
+    // The main content column is the direct child of the root flex container
+    // that also carries min-w-0 (the aside only has overflow-y-auto). It MUST
+    // carry min-h-0 + flex-1 (unconditional, not md:-scoped) so it becomes the
+    // bounded inner scroll box in BOTH desktop flex-row and mobile flex-col
+    // layouts — exactly matching AuditPage's bounded-body pattern.
+    const root = document.querySelector('.mx-auto.flex.h-full.w-full.max-w-6xl');
+    expect(root).not.toBeNull();
+    const mainColumn = root!.querySelector(':scope > .min-w-0.overflow-y-auto');
+    expect(mainColumn).not.toBeNull();
+    expect(mainColumn!.className).toMatch(/\bmin-h-0\b/);
+    expect(mainColumn!.className).toMatch(/\bflex-1\b/);
+    expect(mainColumn!.className).toMatch(/\boverflow-y-auto\b/);
+  });
+
   test('copy discipline: no "active"/approve/admit/materialize-now UI language', async () => {
     mount();
     await screen.findByText('kb-curation');
