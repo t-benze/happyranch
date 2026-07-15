@@ -5,6 +5,7 @@ import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import userEvent from '@testing-library/user-event';
+import { formatDateHeader } from './AuditTimeline';
 
 const SLUG = 'alpha';
 
@@ -67,15 +68,21 @@ function defaultEntries() {
 }
 
 describe('AuditPage — day-grouped timeline', () => {
-  test('renders day headers for entries on different days', async () => {
+  // THR-099 PR2: date-group headers render as the a-audit relative uppercase
+  // label ("TODAY · JUN 16" / "YESTERDAY · JUN 15" / "WEEKDAY · MON DD"), not
+  // the raw "YYYY-MM-DD" ISO string. These fixture days are >1 day before now,
+  // so they always take the weekday branch (deterministic for fixed dates).
+  test('renders relative uppercase day headers (not raw ISO)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedAudit();
     mountAt(`/orgs/${SLUG}/audit`);
 
     await waitFor(() => {
-      expect(screen.getByText('2026-06-18')).toBeInTheDocument();
-      expect(screen.getByText('2026-06-17')).toBeInTheDocument();
+      expect(screen.getByText('THURSDAY · JUN 18')).toBeInTheDocument();
+      expect(screen.getByText('WEDNESDAY · JUN 17')).toBeInTheDocument();
     });
+    // The old raw-ISO header must be gone (red-proof for the format change).
+    expect(screen.queryByText('2026-06-18')).not.toBeInTheDocument();
   });
 
   // THR-099 Batch 2: the design authority renders a 24-hour mono clock
@@ -313,6 +320,9 @@ describe('AuditPage — day-grouped timeline', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Dream-originated')).toBeInTheDocument();
     });
+    // THR-099 PR2: the marker is now a labelled "from dream" pill, not a bare
+    // moon glyph (red-proof — old code rendered only the icon, no text).
+    expect(screen.getByText('from dream')).toBeInTheDocument();
   });
 
   test('renders object ID as click-through link', async () => {
@@ -817,6 +827,86 @@ describe('AuditPage — day-grouped timeline', () => {
 });
 
 // ---------------------------------------------------------------------------
+// THR-099 PR2 — AUDIT dot-rail restyle red-proofs (screenshot-diff is the
+// acceptance gate, but these lock the load-bearing structure/copy/mapping so a
+// future rewrap can't silently drop them).
+// ---------------------------------------------------------------------------
+describe('AuditPage — THR-099 PR2 dot-rail restyle', () => {
+  test('renders a vertical connector rail + class→color status dots inside the timeline', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // completion_report → completed (positive); session_failed → failure (danger).
+    seedAudit([
+      { id: 1, task_id: 'TASK-OK', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-18T10:00:00Z' },
+      { id: 2, task_id: 'TASK-FAIL', agent: 'dev_agent', action: 'session_failed', payload: {}, timestamp: '2026-06-18T09:00:00Z' },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    const timeline = await screen.findByLabelText('Audit timeline');
+    await waitFor(() => {
+      expect(within(timeline).getByText('TASK-OK')).toBeInTheDocument();
+    });
+
+    // DELTA 1: the connector line (a border-l span on the rail) is new — old
+    // rows had a free-standing dot with no rail. Scoped to the timeline (the
+    // legend rail has dots but no connector line / no border-l span).
+    expect(timeline.querySelector('span.border-l')).not.toBeNull();
+    // Status-dot color mapping renders per row, INSIDE the timeline (not the
+    // legend): completed → bg-positive, failure → bg-danger.
+    expect(timeline.querySelector('.bg-positive')).not.toBeNull();
+    expect(timeline.querySelector('.bg-danger')).not.toBeNull();
+  });
+
+  test('shows the green "Clean record · 0 failures" panel when the window has zero failures', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Only non-failure entries → failure count 0. Includes an escalation to
+    // prove the panel gate is failures-only (not the stricter all-clear gate).
+    seedAudit([
+      { id: 1, task_id: 'TASK-1', agent: 'dev_agent', action: 'completion_report', payload: {}, timestamp: '2026-06-18T10:00:00Z' },
+      { id: 2, task_id: 'TASK-2', agent: 'qa_engineer', action: 'escalation', payload: {}, timestamp: '2026-06-18T09:00:00Z' },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    await waitFor(() => {
+      expect(screen.getByText('Clean record · 0 failures')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/none failed\. Tap a class above/)).toBeInTheDocument();
+  });
+
+  test('hides the "Clean record" panel when a failure-class entry exists', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedAudit([
+      { id: 1, task_id: 'TASK-FAIL', agent: 'dev_agent', action: 'session_failed', payload: {}, timestamp: '2026-06-18T10:00:00Z' },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    // Wait for the legend to prove data loaded, then assert the panel is absent.
+    const rail = await screen.findByLabelText('Event type filter');
+    const failureBtn = within(rail).getByText('Failure').closest('button')!;
+    await waitFor(() => {
+      expect(within(failureBtn).getByText('1')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Clean record/)).not.toBeInTheDocument();
+  });
+});
+
+describe('formatDateHeader — relative uppercase day labels (THR-099 PR2)', () => {
+  const now = new Date('2026-06-16T12:00:00Z');
+
+  test('labels the current UTC day TODAY · MON DD', () => {
+    expect(formatDateHeader('2026-06-16', now)).toBe('TODAY · JUN 16');
+  });
+
+  test('labels the prior UTC day YESTERDAY · MON DD', () => {
+    expect(formatDateHeader('2026-06-15', now)).toBe('YESTERDAY · JUN 15');
+  });
+
+  test('labels older days WEEKDAY · MON DD', () => {
+    // 2026-06-10 is a Wednesday (UTC).
+    expect(formatDateHeader('2026-06-10', now)).toBe('WEDNESDAY · JUN 10');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Container-geometry contract (THR-098 re-open): TimelineBody is
 // `flex-1 overflow-y-auto` and paginates via an IntersectionObserver rooted on
 // itself. It only gets a bounded height — and its inner scroll + sentinel
@@ -992,8 +1082,9 @@ describe('AuditPage — keyset infinite scroll', () => {
       expect(screen.getByText('TASK-OLD-A')).toBeInTheDocument();
       expect(screen.getByText('TASK-OLD-B')).toBeInTheDocument();
     });
-    expect(screen.getByText('2026-06-20')).toBeInTheDocument();
-    expect(screen.getByText('2026-06-19')).toBeInTheDocument();
+    // Day headers render in the THR-099 PR2 relative uppercase format.
+    expect(screen.getByText('SATURDAY · JUN 20')).toBeInTheDocument();
+    expect(screen.getByText('FRIDAY · JUN 19')).toBeInTheDocument();
     expect(screen.getByText('TASK-NEW-A')).toBeInTheDocument();
 
     // Page 2 was fetched with the opaque cursor returned by page 1.

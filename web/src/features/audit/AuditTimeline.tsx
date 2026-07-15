@@ -46,9 +46,33 @@ function formatTime(iso: string): string {
   });
 }
 
-function formatDateHeader(dateStr: string): string {
-  // YYYY-MM-DD from ISO timestamp, stable across locales/engines.
-  return dateStr;
+const MONTH_ABBR = [
+  'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+  'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC',
+] as const;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Relative, uppercase date-group label matching the a-audit design authority:
+ *  `TODAY · JUN 16`, `YESTERDAY · JUN 15`, else `WEEKDAY · MON DD` (THR-099
+ *  PR2). `dateStr` is the UTC calendar day ("YYYY-MM-DD") produced by
+ *  groupByDay's UTC slice, so today/yesterday are compared in UTC to stay
+ *  consistent with the grouping. `now` is injectable for deterministic tests. */
+export function formatDateHeader(dateStr: string, now: Date = new Date()): string {
+  const todayStr = now.toISOString().slice(0, 10);
+  const yesterdayStr = new Date(now.getTime() - DAY_MS).toISOString().slice(0, 10);
+  const [, mm, dd] = dateStr.split('-');
+  const monDay = `${MONTH_ABBR[Number(mm) - 1]} ${Number(dd)}`;
+
+  let label: string;
+  if (dateStr === todayStr) label = 'TODAY';
+  else if (dateStr === yesterdayStr) label = 'YESTERDAY';
+  else {
+    label = new Date(`${dateStr}T00:00:00Z`)
+      .toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })
+      .toUpperCase();
+  }
+  return `${label} · ${monDay}`;
 }
 
 /** Group entries by calendar day (date string), sort days most-recent first.
@@ -141,25 +165,41 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
   const hasDream = !!entry._thread_dream_id;
 
   return (
-    <div className="border-border-subtle hover:bg-surface-raised flex gap-3 border-b px-3 py-2.5 text-sm transition-colors">
-      {/* Color-coded event dot */}
-      <span
-        aria-hidden="true"
-        className={cn(
-          'mt-[0.4rem] inline-block h-2 w-2 shrink-0 rounded-full',
-          DOT_COLOR_CLASS[legendColor as keyof typeof DOT_COLOR_CLASS] ?? 'bg-fg-muted',
-        )}
-      />
+    <div className="border-border-subtle hover:bg-surface-raised flex gap-3 border-b pr-3 pl-4 text-sm transition-colors">
+      {/* Vertical dot-rail: a continuous 1px connector line threads every row of
+          a day group; the color-coded status dot sits on the rail, painted over
+          the line as an opaque node (a-audit dot-rail, THR-099 PR2). Vertical
+          padding lives on the content column, not the row, so the rail spans the
+          FULL row height and the connector stays unbroken across rows. */}
+      <div aria-hidden="true" className="relative flex w-3 shrink-0 justify-center">
+        {/* Full-height 1px connector line (border-l, centered) behind the dot.
+            h-full spans the row (vertical padding lives on the content column),
+            so consecutive rows' lines abut into one continuous rail. */}
+        <span className="border-border-subtle absolute left-1/2 h-full border-l" />
+        {/* Status dot on the rail, nudged to the first text line, painted over
+            the line (relative → above the absolute connector). */}
+        <span
+          className={cn(
+            'relative mt-3 h-2 w-2 rounded-full',
+            DOT_COLOR_CLASS[legendColor as keyof typeof DOT_COLOR_CLASS] ?? 'bg-fg-muted',
+          )}
+        />
+      </div>
 
-      <div className="min-w-0 flex-1">
-        {/* Narrative sentence + timestamp */}
+      <div className="min-w-0 flex-1 py-2.5">
+        {/* Narrative sentence + dream pill + timestamp */}
         <div className="flex items-baseline gap-3">
           <p className="text-text-secondary min-w-0 flex-1 leading-snug">
             {narrative.segments.map((seg, i) => (
               <Segment key={i} seg={seg} slug={slug} />
             ))}
           </p>
-          {hasDream && <CrescentMoonBadge className="h-3 w-3 shrink-0 self-center" />}
+          {hasDream && (
+            <span className="bg-accent-soft text-accent-text inline-flex shrink-0 items-center gap-1 self-center rounded-full px-2 py-0.5 text-xs font-medium">
+              <CrescentMoonBadge className="h-3 w-3" />
+              from dream
+            </span>
+          )}
           <span className="text-text-muted shrink-0 font-mono text-xs tabular-nums">
             {formatTime(entry.timestamp)}
           </span>
@@ -385,7 +425,7 @@ function TimelineBody({
     <div ref={scrollRef} className="flex-1 overflow-y-auto" aria-label="Audit timeline">
       {days.map(({ date, entries: dayEntries }) => (
         <div key={date}>
-          <h3 className="text-text-secondary bg-surface-sunken border-border-subtle font-display sticky top-0 z-10 border-b px-4 py-2 text-sm font-medium">
+          <h3 className="text-text-muted bg-surface sticky top-0 z-10 px-4 pt-4 pb-2 text-xs font-medium tracking-wide uppercase">
             {formatDateHeader(date)}
           </h3>
           {dayEntries.map((e) => (

@@ -17,6 +17,7 @@
  */
 import { useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { Check } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { cn } from '@/lib/utils';
@@ -70,6 +71,17 @@ export function AuditPage(): JSX.Element {
   );
 
   const legend = useMemo(() => buildClassLegend(allEntries), [allEntries]);
+
+  // "Clean record" sidebar panel (AUDIT design authority): shown when the
+  // current window has entries but ZERO failure-class entries — regardless of
+  // escalations (the design shows it alongside a non-zero Escalation count).
+  // This is a lighter gate than the in-timeline all-clear banner (which also
+  // requires zero escalations); the two are independent.
+  const failureCount = useMemo(
+    () => legend.find((l) => l.eventClass === 'failure')?.count ?? 0,
+    [legend],
+  );
+  const showCleanRecord = allEntries.length > 0 && failureCount === 0;
 
   // Per-action dot color for the timeline rows, derived from each action's
   // class color. Keyed by raw action so AuditTimeline's `legendMap.get(action)`
@@ -201,12 +213,17 @@ export function AuditPage(): JSX.Element {
         <div className="border-border-default bg-surface flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
           <AuditTimeline legendMap={legendColorMap} sinceISO={sinceISO} />
         </div>
-        <EventTypesRail
-          legend={legend}
-          activeClass={filters.eventClass}
-          onToggle={toggleClass}
-          onClear={clearClass}
-        />
+        {/* Right rail: event-type legend-filter, with the green "Clean record"
+            panel stacked below it when the window has zero failures. */}
+        <div className="flex w-56 shrink-0 flex-col gap-4">
+          <EventTypesRail
+            legend={legend}
+            activeClass={filters.eventClass}
+            onToggle={toggleClass}
+            onClear={clearClass}
+          />
+          {showCleanRecord && <CleanRecordPanel total={allEntries.length} />}
+        </div>
       </div>
       </ContentWrap>
     </div>
@@ -268,7 +285,7 @@ function EventTypesRail({
 }): JSX.Element {
   return (
     <aside
-      className="bg-surface border-border-default h-fit w-56 shrink-0 rounded-lg border p-4"
+      className="bg-surface border-border-default h-fit w-full rounded-lg border p-4"
       aria-label="Event type filter"
     >
       <h2 className="text-text-secondary font-display mb-2 text-sm font-medium">Event types</h2>
@@ -308,6 +325,25 @@ function EventTypesRail({
           Show all events
         </button>
       )}
+    </aside>
+  );
+}
+
+/** Green "Clean record" reassurance panel (AUDIT design authority): rendered in
+ *  the right rail below the legend when the current window has zero failures. */
+function CleanRecordPanel({ total }: { total: number }): JSX.Element {
+  return (
+    <aside
+      className="bg-accent-soft border-accent-muted rounded-lg border p-4"
+      aria-label="Clean record"
+    >
+      <div className="flex items-center gap-2">
+        <Check aria-hidden="true" className="text-accent-text h-4 w-4 shrink-0" />
+        <p className="text-accent-text text-sm font-medium">Clean record · 0 failures</p>
+      </div>
+      <p className="text-accent-text mt-1 text-xs">
+        {total} events logged, none failed. Tap a class above to filter the trail.
+      </p>
     </aside>
   );
 }
