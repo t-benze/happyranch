@@ -111,7 +111,9 @@ export function AgentDetailPage(): JSX.Element {
         )}
       </header>
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto">
+        {/* a-workhours wh-wrap: 1120 centered cap (THR-099 Slice 8). */}
+        <div className="max-w-content-wide mx-auto p-4">
         {savedMsg && <SavedBanner message={savedMsg} />}
 
         {/* Reconciliation table */}
@@ -241,6 +243,7 @@ export function AgentDetailPage(): JSX.Element {
             )}
           </div>
         </section>
+        </div>
       </div>
 
       {tier && (

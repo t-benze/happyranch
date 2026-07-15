@@ -70,7 +70,7 @@ export function OnboardingPage(): JSX.Element {
   if (effectivePhase === 'connect') {
     return (
       <div className="bg-surface-canvas h-full overflow-y-auto">
-        <div className="mx-auto max-w-2xl p-6 sm:p-8">
+        <div className="max-w-content-form mx-auto p-6 sm:p-8">
           <ConnectRuntimeStep
             onContinue={() => setPhase('org')}
             onSkip={() => setPhase('org')}
@@ -82,7 +82,7 @@ export function OnboardingPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
-      <div className="mx-auto max-w-2xl p-6 sm:p-8">
+      <div className="max-w-content-form mx-auto p-6 sm:p-8">
         {step === 'welcome' && (
           <WelcomeStep
             existingCount={existingCount}

@@ -75,7 +75,11 @@ export function SettingsPage(): JSX.Element {
       )}
 
       {settingsQuery.data && (
-        <div className="flex flex-1 overflow-hidden" data-testid="settings-content">
+        // a-settings set-wrap: nav + content column capped at 1000, centered.
+        <div
+          className="max-w-content-narrow mx-auto flex w-full flex-1 overflow-hidden"
+          data-testid="settings-content"
+        >
           <SettingsSubNav />
           <main className="flex-1 overflow-y-auto">
             <Routes>
@@ -107,7 +111,7 @@ function SettingsSubNav(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
 
   return (
-    <aside className="border-border-default bg-surface-sunken w-52 shrink-0 overflow-y-auto border-r p-3">
+    <aside className="border-border-default bg-surface-sunken w-50 shrink-0 overflow-y-auto border-r p-3">
       <h3 className="text-overline text-text-secondary mb-2 tracking-wider uppercase">
         Configuration
       </h3>

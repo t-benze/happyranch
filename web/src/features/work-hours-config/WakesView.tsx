@@ -347,6 +347,9 @@ export function WakesView(): JSX.Element {
       {/* Wake list — agent cards */}
       {!query.isLoading && !query.isError && entries.length > 0 && (
         <div className="flex-1 overflow-y-auto" aria-label="Scheduled wakes">
+          {/* a-schedule wrap on the work-hours surface: 1120 centered cap, NOT
+              1180 (THR-099 Slice 8 — /schedule redirects here). */}
+          <div className="max-w-content-wide mx-auto">
           {/* Count eyebrow */}
           <p className="text-overline text-text-secondary mx-4 mt-4 mb-2 tracking-wider uppercase">
             <span className="font-mono tabular-nums">{entries.length}</span> wake{entries.length !== 1 ? 's' : ''} across <span className="font-mono tabular-nums">{groups.length}</span> agent{groups.length !== 1 ? 's' : ''}
@@ -361,6 +364,7 @@ export function WakesView(): JSX.Element {
                 slug={orgSlug ?? ''}
               />
             ))}
+          </div>
           </div>
         </div>
       )}

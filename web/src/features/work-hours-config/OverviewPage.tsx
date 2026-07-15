@@ -134,7 +134,9 @@ export function OverviewPage(): JSX.Element {
       <Header slug={slug} />
       <WorkHoursTabs slug={slug} active="overview" />
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto">
+        {/* a-workhours wh-wrap: 1120 centered cap (THR-099 Slice 8). */}
+        <div className="max-w-content-wide mx-auto p-4">
         {savedMsg && <SavedBanner message={savedMsg} />}
         {error && (
           <div
@@ -272,6 +274,7 @@ export function OverviewPage(): JSX.Element {
             </table>
           </div>
         )}
+        </div>
       </div>
 
       {tier && (
