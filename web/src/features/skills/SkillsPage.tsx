@@ -42,7 +42,7 @@ export function SkillsPage(): JSX.Element {
   const attention = needsAttentionCount(items);
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-6xl flex-col md:flex-row">
+    <div className="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-col overflow-hidden md:flex-row">
       {/* Source rail — desktop only */}
       <aside className="border-border-default hidden shrink-0 overflow-y-auto border-r p-4 md:block md:w-56">
         <div className="text-fg-subtle text-overline mb-3 px-2.5 tracking-wider uppercase">

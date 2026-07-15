@@ -192,6 +192,20 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     expect(screen.getByText('vendor-comms-style')).toBeInTheDocument();
   });
 
+  test('root flex container carries bounded-height classes so scroll is inner-region only (THR-092)', async () => {
+    mount();
+    await screen.findByText('kb-curation');
+
+    // The catalog page has a two-column flex layout. Without min-h-0 + overflow-hidden
+    // on the root flex container, flex items keep default min-height:auto and push the
+    // whole AppShell surface to scroll. The bounded-height pattern (AuditPage.tsx:141-201)
+    // ensures h-full is respected and child overflow-y-auto regions engage.
+    const root = document.querySelector('.mx-auto.flex.h-full.w-full.max-w-6xl');
+    expect(root).not.toBeNull();
+    expect(root!.className).toMatch(/\bmin-h-0\b/);
+    expect(root!.className).toMatch(/\boverflow-hidden\b/);
+  });
+
   test('copy discipline: no "active"/approve/admit/materialize-now UI language', async () => {
     mount();
     await screen.findByText('kb-curation');
