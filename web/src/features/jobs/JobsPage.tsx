@@ -1,18 +1,24 @@
 /**
- * JobsPage — the approval-queue LIST surface ("Jobs · the approval queue").
+ * JobsPage — the approval-queue LIST surface, styled to the Direction-A
+ * `a-jobs` mockup (jobs-design.png): an uppercase eyebrow + serif display
+ * title, an amber "needs you" callout, a column-header row, and the jobs
+ * rendered as elevated CARDS grouped under colored-dot status section headers.
  *
- * REINSTATED per founder ruling (THR-030 seq 91, TASK-907): the standalone
- * Jobs surface — previously retired per PRD §4.13/Q6 — is brought back as the
- * founder's approval queue. The command is the hero of every row; cards route
- * to the existing JobDetailPage where the two-step approve/review flow lives.
+ * IA fidelity over EXISTING data (TASK-2992, THR-099 PR1/3). Every field is
+ * read straight off JobRecord (GET /jobs/) — id, title, script_text,
+ * agent_name, task_id, status, exit_code, review_required, created_at. NO new
+ * fields, NO new routes: the card only NAVIGATES to the existing JobDetailPage
+ * where the two-step approve/reject flow lives (JobDetail is PR3, untouched).
  *
- * PRESENTATION-ONLY, built off data we already have (GET /jobs/). Honesty
- * fence (per the build brief): NO BlockBadge (the design's "needs credential"
- * / "flagged for review" tags need a founder-vault `env:[{key,founderHeld}]`
- * field that does not exist on JobRecord), and NO inline approve/reject — the
- * row only NAVIGATES; the decision lives on the detail surface.
+ * Honesty fence (unchanged from the reinstatement brief): NO BlockBadge / no
+ * "needs credential" tag — that would need a founder-vault `env` field that
+ * does not exist on JobRecord — and NO inline approve/reject on the row. The
+ * mockup's info-annotation bar ("needs credential #204 … JobRecord.env") is a
+ * DESIGN NOTE documenting that same absent field, not shippable product copy,
+ * so it is intentionally not reproduced.
  */
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
+import { Lock } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { TONE_CLASS, toneClass } from '@/design-system/patterns/semanticTone';
@@ -33,240 +39,197 @@ function relativeAge(iso: string): string {
   return `${d}d`;
 }
 
-/** Elapsed wall-clock since a running job's started_at ("6m 02s" / "1h 04m"). */
-function elapsedSince(iso: string): string {
-  const totalSec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
-  const min = Math.floor(totalSec / 60);
-  if (min < 60) return `${min}m ${String(totalSec % 60).padStart(2, '0')}s`;
-  const hr = Math.floor(min / 60);
-  return `${hr}h ${String(min % 60).padStart(2, '0')}m`;
+/** Two-letter avatar initials from an agent name (dev_agent → "DA"). Derived
+ *  client-side — JobRecord carries no role/avatar field. Kept local (not
+ *  imported from features/agents) to respect the web no-restricted-imports
+ *  cross-feature rule. */
+function agentInitials(name: string): string {
+  const parts = name.split(/[_\s-]+/).filter(Boolean);
+  const letters =
+    parts.length >= 2 ? parts[0][0] + parts[1][0] : (parts[0] ?? name).slice(0, 2);
+  return letters.toUpperCase();
 }
 
-/** cwd shown on a row — resolved cwd is more precise; fall back to the hint. */
-function jobCwd(job: JobRecord): string | null {
-  return job.cwd_resolved ?? job.cwd_hint;
-}
-
-// ── Status pill ──────────────────────────────────────────────────────
-
-// Pure lifecycle, system-level. Mirrors the design's JOB_STATUS kinds
-// (warn/run/ok/bad/mute2) onto our semantic tokens. StatusBadge can't be
-// reused here: it has no `running`/`rejected` member, so it would render an
-// undefined style for two of the five real JobStatus values.
-const STATUS_PILL: Record<JobStatus, string> = {
-  pending: 'text-status-archiving bg-tier-yellow-tint',
-  running: 'text-feedback-info bg-info-soft',
-  completed: 'text-status-open bg-tier-green-tint',
-  failed: 'text-status-abandoned bg-tier-red-tint',
-  rejected: 'text-text-muted bg-surface-sunken border border-border-default',
+// One shared row shape drives the column-header row AND every card so the five
+// columns line up exactly: JOB · COMMAND(flex) · REQUESTED BY · TASK · OPENED.
+// A flex row with NAMED width utilities on the four fixed columns (no arbitrary
+// grid-template): w-26 ≈ 6.5rem, w-44 = 11rem, w-20 = 5rem, while COMMAND
+// flexes to fill (flex-1 min-w-0).
+const CARD_ROW = 'flex items-center gap-4';
+const CARD_COL = {
+  job: 'w-26 shrink-0',
+  command: 'min-w-0 flex-1',
+  requestedBy: 'w-44 shrink-0',
+  task: 'w-26 shrink-0',
+  opened: 'w-20 shrink-0',
 };
 
-function JobStatusPill({ status }: { status: JobStatus }): JSX.Element {
-  return (
-    <span
-      className={`text-mono-sm inline-flex items-center rounded-full px-2 py-0.5 font-medium ${STATUS_PILL[status]}`}
-    >
-      {status}
-    </span>
-  );
-}
+// ── Status groups ────────────────────────────────────────────────────
 
-// ── Status-group headers ─────────────────────────────────────────────
-
-// Lifecycle order for the list's status-group sections — founder-blocking
-// pending first. Each header carries a colored dot + a count; the dot reuses
-// the same semantic status tokens as the row pills (no new tokens, no raw hex).
+// Lifecycle order for the status-group sections — founder-blocking pending
+// first. Each header carries a colored dot (same semantic status tokens as the
+// row outcome pills — no new tokens, no raw hex) + the group count.
 const STATUS_GROUP_ORDER: JobStatus[] = ['pending', 'running', 'completed', 'failed', 'rejected'];
 
 const STATUS_GROUP_META: Record<JobStatus, { label: string; dot: string }> = {
-  pending: { label: 'Pending', dot: 'bg-status-archiving' },
+  pending: { label: 'Awaiting your approval', dot: 'bg-status-archiving' },
   running: { label: 'Running', dot: 'bg-feedback-info' },
   completed: { label: 'Completed', dot: 'bg-status-open' },
   failed: { label: 'Failed', dot: 'bg-status-abandoned' },
   rejected: { label: 'Rejected', dot: 'bg-text-muted' },
 };
 
-/**
- * Status-group section header — a colored lifecycle dot, the status label, and
- * the count of rows in the group. Organizes the list into status sections
- * without removing the filter rail (which narrows the fetched set these groups
- * render over). Sticks to the top of the scroll area as its group scrolls past.
- */
+/** Colored lifecycle dot + status label + per-group count. */
 function StatusGroupHeader({ status, count }: { status: JobStatus; count: number }): JSX.Element {
   const { label, dot } = STATUS_GROUP_META[status];
   return (
-    <div className="bg-surface-canvas border-border-default text-text-secondary sticky top-0 z-10 flex items-center gap-2 border-b px-4 py-2">
+    <div className="flex items-center gap-2 px-1">
       <span aria-hidden="true" className={`inline-block h-2 w-2 shrink-0 rounded-full ${dot}`} />
-      <span className="text-xs font-semibold tracking-wider uppercase">{label}</span>
+      <span className="text-text-primary text-sm font-medium">{label}</span>
       <span className="text-mono-sm text-text-muted tabular-nums">{count}</span>
     </div>
   );
 }
 
-// ── Filter rail ──────────────────────────────────────────────────────
+// ── Row bits ─────────────────────────────────────────────────────────
 
-type StatusFilter = 'all' | JobStatus;
-type ReviewFilter = 'all' | 'required' | 'auto';
-
-const STATUS_OPTIONS: { key: StatusFilter; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'pending', label: 'Pending' },
-  { key: 'running', label: 'Running' },
-  { key: 'completed', label: 'Completed' },
-  { key: 'failed', label: 'Failed' },
-  { key: 'rejected', label: 'Rejected' },
-];
-
-const REVIEW_OPTIONS: { key: ReviewFilter; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'required', label: 'Review required' },
-  { key: 'auto', label: 'Auto-run' },
-];
-
-function FilterRow({
-  label,
-  count,
-  active,
-  onSelect,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  onSelect: () => void;
-}): JSX.Element {
-  const disabled = count === 0;
-  const base =
-    'flex items-center gap-2 border-l-2 px-4 py-1.5 text-left text-sm transition-colors';
-  const state = active
-    ? 'border-accent-default bg-surface-sunken text-text-primary'
-    : disabled
-      ? 'border-transparent text-text-muted'
-      : 'border-transparent text-text-secondary hover:bg-surface-sunken hover:text-text-primary';
+/** Green "NEEDS REVIEW" pill — only on pending, still-gated jobs. */
+function NeedsReviewPill(): JSX.Element {
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      aria-pressed={active}
-      onClick={onSelect}
-      className={`${base} ${state} ${disabled ? 'cursor-default opacity-40' : ''}`}
+    <span className="text-mono-sm text-status-open bg-tier-green-tint inline-flex shrink-0 items-center rounded-full px-2 py-0.5 font-medium tracking-wide uppercase">
+      needs review
+    </span>
+  );
+}
+
+/** Requested-by avatar — green initial chip (no backend role field). */
+function AgentAvatar({ name }: { name: string }): JSX.Element {
+  return (
+    <span
+      aria-hidden="true"
+      className="bg-accent-soft text-accent-text flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
     >
-      <span className="flex-1">{label}</span>
-      <span className="text-mono-sm text-text-muted tabular-nums">{count}</span>
-    </button>
+      {agentInitials(name)}
+    </span>
   );
 }
-
-function FilterGroup({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
-  return (
-    <div className="flex flex-col">
-      <div className="text-mono-sm text-text-muted px-4 pb-1.5 font-medium tracking-wider uppercase">
-        {label}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-// ── Job row ──────────────────────────────────────────────────────────
 
 /**
- * Command-forward job card. The verbatim script_text is the hero; the row
- * NAVIGATES to the existing JobDetailPage on click (no inline decision —
- * approve/reject lives on the detail surface).
+ * OPENED column — a lifecycle-tinted outcome pill for terminal/running jobs,
+ * or the relative age for a pending job. Outcome colours read the shared
+ * semanticTone vocabulary (exit 0 green / non-zero red) — Batch 2 settled that.
  */
-function JobRow({ job, to }: { job: JobRecord; to: string }): JSX.Element {
-  const cwd = jobCwd(job);
+function OutcomeCell({ job }: { job: JobRecord }): JSX.Element {
+  const pill = 'text-mono-sm inline-flex items-center rounded-full px-2.5 py-0.5 font-medium';
+  switch (job.status) {
+    case 'running':
+      return (
+        <span className={`${pill} text-feedback-info bg-info-soft gap-1.5`}>
+          <span aria-hidden="true" className="bg-feedback-info h-1.5 w-1.5 rounded-full" />
+          running
+        </span>
+      );
+    case 'completed':
+      return <span className={`${pill} ${toneClass(`exit ${job.exit_code ?? 0}`)}`}>exit {job.exit_code ?? 0}</span>;
+    case 'failed':
+      return (
+        <span className={`${pill} ${TONE_CLASS.danger}`}>
+          {job.exit_code != null ? `exit ${job.exit_code}` : 'failed'}
+        </span>
+      );
+    case 'rejected':
+      return <span className="text-mono-sm text-text-muted">rejected</span>;
+    default:
+      return <span className="text-mono-sm text-text-muted tabular-nums">{relativeAge(job.created_at)}</span>;
+  }
+}
+
+/**
+ * A job as an elevated card. The whole card NAVIGATES to the existing
+ * JobDetailPage (no inline decision). Columns match the header row exactly.
+ */
+function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
   return (
     <Link
       to={to}
-      className={`hover:bg-surface-sunken border-border-default flex items-center gap-4 border-b px-4 py-3 transition-colors ${
+      className={`${CARD_ROW} bg-surface-raised border-border-default hover:shadow-pasture shadow-pasture-sm rounded-lg border px-5 py-4 transition-shadow ${
         job.status === 'rejected' ? 'opacity-70 hover:opacity-100' : ''
       }`}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-mono-sm text-accent-text tracking-wide">{job.id}</span>
-          <JobStatusPill status={job.status} />
-          {job.review_required ? (
-            <span className="text-mono-sm text-text-muted border-border-default rounded border px-1.5 py-0.5 tracking-wider uppercase">
-              review
-            </span>
-          ) : (
-            <span className="text-mono-sm text-accent-text border-border-default rounded border px-1.5 py-0.5 tracking-wider uppercase">
-              auto-run
-            </span>
-          )}
-          {job.status === 'running' && job.started_at && (
-            <span className="text-mono-sm text-feedback-info">running · {elapsedSince(job.started_at)}</span>
-          )}
+      {/* JOB */}
+      <span className={`${CARD_COL.job} text-mono-sm text-accent-text tracking-wide`}>{job.id}</span>
+
+      {/* COMMAND — title + verbatim command */}
+      <div className={`${CARD_COL.command} flex flex-col gap-1`}>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="text-text-primary truncate text-sm font-medium">{job.title}</span>
+          {job.status === 'pending' && job.review_required && <NeedsReviewPill />}
         </div>
         <code
-          className={`text-text-primary block truncate font-mono text-sm ${
+          className={`text-text-muted block truncate font-mono text-xs ${
             job.status === 'rejected' ? 'line-through' : ''
           }`}
         >
-          {job.script_text}
+          $ {job.script_text}
         </code>
-        <div className="text-mono-sm text-text-muted flex items-center gap-2">
-          <span className="text-text-secondary">{job.agent_name}</span>
-          <span aria-hidden="true">·</span>
-          <span className="text-accent-text">{job.task_id}</span>
-          {cwd && (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="truncate">{cwd}</span>
-            </>
-          )}
-          <span className="flex-1" />
-          <span>{relativeAge(job.created_at)}</span>
-        </div>
       </div>
 
-      {/* Static lifecycle state — terminal/running rows only. Pending rows show
-          NO inline control (the decision lives on the detail surface). */}
-      <div className="shrink-0">
-        {job.status === 'running' && (
-          <span className="text-mono-sm text-feedback-info bg-info-soft rounded px-2.5 py-1">running…</span>
-        )}
-        {job.status === 'completed' && (
-          <span
-            className={`text-mono-sm inline-flex items-center rounded-full px-2.5 py-0.5 font-medium ${toneClass(`exit ${job.exit_code ?? 0}`)}`}
-          >
-            exit {job.exit_code ?? 0}
-          </span>
-        )}
-        {job.status === 'failed' && (
-          <span
-            className={`text-mono-sm inline-flex items-center rounded-full px-2.5 py-0.5 font-medium ${TONE_CLASS.danger}`}
-          >
-            {job.exit_code != null ? `exit ${job.exit_code}` : 'failed'}
-          </span>
-        )}
-        {job.status === 'rejected' && (
-          <span className="text-mono-sm text-text-muted rounded px-2.5 py-1">rejected</span>
-        )}
+      {/* REQUESTED BY */}
+      <div className={`${CARD_COL.requestedBy} flex min-w-0 items-center gap-2`}>
+        <AgentAvatar name={job.agent_name} />
+        <span className="text-text-secondary truncate text-sm">{job.agent_name}</span>
+      </div>
+
+      {/* TASK */}
+      <span className={`${CARD_COL.task} text-mono-sm text-accent-text truncate`}>{job.task_id}</span>
+
+      {/* OPENED */}
+      <div className={`${CARD_COL.opened} flex justify-end`}>
+        <OutcomeCell job={job} />
       </div>
     </Link>
   );
 }
 
-// ── List header ──────────────────────────────────────────────────────
-
-/** The running-total of founder-blocking decisions (pending jobs). */
-function ListHeader({ pendingCount }: { pendingCount: number }): JSX.Element {
+/** Column-header row above the cards — aligns to the shared card row. */
+function ColumnHeader(): JSX.Element {
   return (
-    <div className="border-border-default flex h-12 shrink-0 items-center border-b px-4">
-      {pendingCount > 0 ? (
-        <span className="text-status-archiving flex items-center gap-2 text-sm font-medium">
-          <span aria-hidden="true" className="bg-status-archiving inline-block h-2 w-2 rounded-full" />
-          {pendingCount} waiting on you
-        </span>
-      ) : (
-        <span className="text-accent-text flex items-center gap-2 text-sm">
-          <span aria-hidden="true" className="bg-accent-default inline-block h-2 w-2 rounded-full" />
-          Queue clear · nothing waiting on you
-        </span>
-      )}
+    <div className={`${CARD_ROW} text-text-muted px-5 pb-1 text-xs font-medium tracking-wider uppercase`}>
+      <span className={CARD_COL.job}>Job</span>
+      <span className={CARD_COL.command}>Command</span>
+      <span className={CARD_COL.requestedBy}>Requested by</span>
+      <span className={CARD_COL.task}>Task</span>
+      <span className={`${CARD_COL.opened} text-right`}>Opened</span>
+    </div>
+  );
+}
+
+/**
+ * The amber "needs you" callout — the running total of founder-blocking
+ * (pending) decisions. Collapses to a calm queue-clear line when nothing is
+ * pending. Count is derived from existing data (no new field).
+ */
+function NeedsYouCallout({ pendingCount }: { pendingCount: number }): JSX.Element {
+  if (pendingCount === 0) {
+    return (
+      <div className="text-accent-text flex items-center gap-2 text-sm">
+        <span aria-hidden="true" className="bg-accent-default inline-block h-2 w-2 rounded-full" />
+        Queue clear · nothing waiting on you
+      </div>
+    );
+  }
+  return (
+    <div className="bg-attention-soft text-attention-text flex items-start gap-3 rounded-lg px-4 py-3">
+      <Lock aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+      <div className="min-w-0">
+        <p className="text-sm font-semibold">
+          {pendingCount} {pendingCount === 1 ? 'job needs' : 'jobs need'} you
+        </p>
+        <p className="text-sm opacity-90">
+          Every job is a verbatim command an agent can&apos;t run without your sign-off. Same
+          two-step confirm for all — no risk tiers.
+        </p>
+      </div>
     </div>
   );
 }
@@ -276,115 +239,64 @@ function ListHeader({ pendingCount }: { pendingCount: number }): JSX.Element {
 export function JobsPage(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   // status:'all' is REQUIRED — GET /jobs/ defaults to status=pending, which
-  // would hide every non-pending job and break the live filter counts.
+  // would hide every non-pending job and empty out the status groups.
   const query = useJobsList({ status: 'all', limit: 200 });
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>('all');
 
   const jobs = useMemo<JobRecord[]>(() => query.data?.jobs ?? [], [query.data]);
-
-  // Live counts over the full fetched set (independent of the active filters,
-  // matching the design's static count derivations).
-  const statusCounts = useMemo(() => {
-    const c: Record<StatusFilter, number> = {
-      all: jobs.length,
-      pending: 0,
-      running: 0,
-      completed: 0,
-      failed: 0,
-      rejected: 0,
-    };
-    for (const j of jobs) c[j.status] += 1;
-    return c;
-  }, [jobs]);
-
-  const reviewCounts = useMemo(() => {
-    const required = jobs.filter((j) => j.review_required).length;
-    return { all: jobs.length, required, auto: jobs.length - required };
-  }, [jobs]);
-
-  const visible = useMemo(
-    () =>
-      jobs.filter((j) => {
-        if (statusFilter !== 'all' && j.status !== statusFilter) return false;
-        if (reviewFilter === 'required' && !j.review_required) return false;
-        if (reviewFilter === 'auto' && j.review_required) return false;
-        return true;
-      }),
-    [jobs, statusFilter, reviewFilter],
-  );
+  const pendingCount = useMemo(() => jobs.filter((j) => j.status === 'pending').length, [jobs]);
 
   return (
-    <div className="bg-surface-canvas flex h-full">
-      {/* Filter rail */}
-      <aside
-        aria-label="Job filters"
-        className="border-border-default flex w-48 shrink-0 flex-col gap-6 overflow-y-auto border-r py-5"
-      >
-        <FilterGroup label="Status">
-          {STATUS_OPTIONS.map((opt) => (
-            <FilterRow
-              key={opt.key}
-              label={opt.label}
-              count={statusCounts[opt.key]}
-              active={statusFilter === opt.key}
-              onSelect={() => setStatusFilter(opt.key)}
-            />
-          ))}
-        </FilterGroup>
-        <FilterGroup label="Review">
-          {REVIEW_OPTIONS.map((opt) => (
-            <FilterRow
-              key={opt.key}
-              label={opt.label}
-              count={reviewCounts[opt.key]}
-              active={reviewFilter === opt.key}
-              onSelect={() => setReviewFilter(opt.key)}
-            />
-          ))}
-        </FilterGroup>
-      </aside>
+    <div className="bg-surface-canvas h-full">
+      <ContentWrap>
+        <header className="mb-5">
+          <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
+            Founder-gated commands · agents propose, you approve
+          </p>
+          <h1 className="font-display text-text-primary mt-1 text-2xl font-medium">
+            Commands awaiting a decision
+          </h1>
+        </header>
 
-      {/* Main list column. EM ruling (THR-099 jobs, flag #2): KEEP the filter
-          rail; cap the main list content at the shared 1180 `max-w-content`
-          centered. The pinned ListHeader stays a full-width status toolbar
-          (fixed-height chrome, a single left status pill — not columns needing
-          row-alignment); the scrolling job list is capped by <ContentWrap>,
-          which owns the h-full overflow-y-auto scroll surface (26px pad, 1180
-          cap) — mirroring the tasks scroll-body cap. */}
-      <main className="flex min-w-0 flex-1 flex-col">
-        <ListHeader pendingCount={statusCounts.pending} />
-        <div className="min-h-0 flex-1">
-          <ContentWrap>
-          {query.isLoading ? (
-            <p className="text-text-muted py-12 text-center text-sm">Loading jobs…</p>
-          ) : query.isError ? (
-            <p className="text-text-muted py-12 text-center text-sm">Could not load jobs.</p>
-          ) : visible.length === 0 ? (
-            <p className="text-text-muted py-12 text-center text-sm">
-              {jobs.length === 0 ? 'No jobs yet.' : 'No jobs match the current filters.'}
-            </p>
-          ) : (
-            STATUS_GROUP_ORDER.map((status) => {
-              const rows = visible.filter((j) => j.status === status);
-              if (rows.length === 0) return null;
-              return (
-                <section key={status} aria-label={STATUS_GROUP_META[status].label}>
-                  <StatusGroupHeader status={status} count={rows.length} />
-                  <ul>
-                    {rows.map((job) => (
-                      <li key={job.id}>
-                        <JobRow job={job} to={slug ? `/orgs/${slug}/jobs/${job.id}` : '#'} />
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              );
-            })
-          )}
-          </ContentWrap>
-        </div>
-      </main>
+        {query.isLoading ? (
+          <p className="text-text-muted py-12 text-center text-sm">Loading jobs…</p>
+        ) : query.isError ? (
+          <p className="text-text-muted py-12 text-center text-sm">Could not load jobs.</p>
+        ) : jobs.length === 0 ? (
+          <>
+            <NeedsYouCallout pendingCount={0} />
+            <p className="text-text-muted py-12 text-center text-sm">No jobs yet.</p>
+          </>
+        ) : (
+          <>
+            <div className="mb-5">
+              <NeedsYouCallout pendingCount={pendingCount} />
+            </div>
+            <ColumnHeader />
+            <div className="mt-2 flex flex-col gap-6">
+              {STATUS_GROUP_ORDER.map((status) => {
+                const rows = jobs.filter((j) => j.status === status);
+                if (rows.length === 0) return null;
+                return (
+                  <section
+                    key={status}
+                    aria-label={STATUS_GROUP_META[status].label}
+                    className="flex flex-col gap-2"
+                  >
+                    <StatusGroupHeader status={status} count={rows.length} />
+                    <ul className="flex flex-col gap-2">
+                      {rows.map((job) => (
+                        <li key={job.id}>
+                          <JobCard job={job} to={slug ? `/orgs/${slug}/jobs/${job.id}` : '#'} />
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </ContentWrap>
     </div>
   );
 }

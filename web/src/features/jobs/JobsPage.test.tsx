@@ -114,27 +114,26 @@ function stubJobsList(jobs: JobRecord[] = LIST_JOBS) {
 }
 
 describe('JobsPage — approval-queue list', () => {
-  test('renders command heroes, status pills, and the "waiting on you" header', async () => {
+  test('renders command heroes, outcome pills, and the amber "needs you" callout', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobsList();
     mountAt(`/orgs/${SLUG}/jobs`);
 
-    // Verbatim command is the hero of the row.
+    // The verbatim command is rendered on each card (now prefixed with a `$ `
+    // shell glyph beneath the job title).
     await waitFor(() =>
       expect(
-        screen.getByText('data-pipeline publish --stack local --type guides --all'),
+        screen.getByText(/data-pipeline publish --stack local --type guides --all/),
       ).toBeInTheDocument(),
     );
 
-    // N waiting on you = pending count (exactly one pending in the fixture).
-    expect(screen.getByText(/1 waiting on you/)).toBeInTheDocument();
+    // Amber callout total = pending count (exactly one pending in the fixture).
+    expect(screen.getByText(/1 job needs you/)).toBeInTheDocument();
 
-    // Status pills render for non-pending statuses StatusBadge can't express.
-    // (`running` pill is distinct from the `running…` static state; `rejected`
-    // appears as both the pill and the right-side static label, hence getAll.)
+    // Outcome pills render for running / terminal statuses.
     expect(screen.getByText('running')).toBeInTheDocument();
     expect(screen.getAllByText('rejected').length).toBeGreaterThanOrEqual(1);
-    // Completed row shows its real exit code.
+    // Completed card shows its real exit code.
     expect(screen.getByText('exit 0')).toBeInTheDocument();
   });
 
@@ -162,8 +161,9 @@ describe('JobsPage — approval-queue list', () => {
 
     // The fixture spreads one job across each of the five lifecycle states, so
     // every status renders as a labelled section (an <section aria-label> →
-    // implicit ARIA "region" landmark), in founder-blocking-first order.
-    const pending = await screen.findByRole('region', { name: 'Pending' });
+    // implicit ARIA "region" landmark), in founder-blocking-first order. The
+    // pending group carries the design's "Awaiting your approval" label.
+    const pending = await screen.findByRole('region', { name: 'Awaiting your approval' });
     // The header carries the group count (exactly one pending in the fixture).
     expect(within(pending).getByText('1')).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Running' })).toBeInTheDocument();
@@ -172,25 +172,32 @@ describe('JobsPage — approval-queue list', () => {
     expect(screen.getByRole('region', { name: 'Rejected' })).toBeInTheDocument();
   });
 
-  test('status filter narrows the list to the chosen lifecycle state', async () => {
+  // Red-proof for the presentational IA change (MEM-323): assert the
+  // status-group → colored-dot mapping and the card-shape (elevated
+  // surface-raised card) directly, so a regression in the grouping colours or
+  // the card treatment fails a test rather than only a screenshot diff.
+  test('status groups carry lifecycle-colored dots and jobs render as elevated cards', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobsList();
-    const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/jobs`);
 
-    await waitFor(() =>
-      expect(screen.getByText('npm run build')).toBeInTheDocument(),
-    );
-
-    // Click the "Completed" status filter → only the completed command remains.
-    await user.click(screen.getByRole('button', { name: /Completed/ }));
-
-    await waitFor(() =>
-      expect(screen.queryByText('npm run build')).not.toBeInTheDocument(),
-    );
+    // Pending (founder-blocking) group header → amber archiving dot.
+    const pending = await screen.findByRole('region', { name: 'Awaiting your approval' });
+    expect(pending.querySelector('.bg-status-archiving')).not.toBeNull();
+    // Running group → blue info dot; Failed group → red abandoned dot.
     expect(
-      screen.getByText('data-pipeline publish --stack local --type guides --all'),
-    ).toBeInTheDocument();
+      screen.getByRole('region', { name: 'Running' }).querySelector('.bg-feedback-info'),
+    ).not.toBeNull();
+    expect(
+      screen.getByRole('region', { name: 'Failed' }).querySelector('.bg-status-abandoned'),
+    ).not.toBeNull();
+
+    // Each job is an elevated CARD (rounded surface-raised tile), not a flat
+    // table row — the core PR1 IA delta.
+    const card = screen.getByRole('link', {
+      name: /data-pipeline publish --stack local --type guides --all/,
+    });
+    expect(card).toHaveClass('bg-surface-raised', 'rounded-lg');
   });
 
   test('a job card links to the existing detail route', async () => {
