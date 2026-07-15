@@ -138,6 +138,23 @@ describe('JobsPage — approval-queue list', () => {
     expect(screen.getByText('exit 0')).toBeInTheDocument();
   });
 
+  test('outcome chips read the shared semantic-tone vocabulary (exit 0 green-filled, non-zero exit red-filled)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobsList([
+      makeJob({ id: 'JOB-OK', status: 'completed', exit_code: 0, script_text: 'ok-cmd' }),
+      makeJob({ id: 'JOB-BAD', status: 'failed', exit_code: 1, script_text: 'bad-cmd' }),
+    ]);
+    mountAt(`/orgs/${SLUG}/jobs`);
+
+    // exit 0 → positive tone → green tinted FILL (not a bare outline).
+    const ok = await screen.findByText('exit 0');
+    expect(ok).toHaveClass('bg-tier-green-tint');
+    // non-zero exit → danger tone → red tinted fill, and the row shows the
+    // real exit code (THR-099 Batch 2: outcome chips converge on semanticTone).
+    const bad = await screen.findByText('exit 1');
+    expect(bad).toHaveClass('bg-tier-red-tint');
+  });
+
   test('groups jobs under status-section headers, each with a per-status count', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobsList();

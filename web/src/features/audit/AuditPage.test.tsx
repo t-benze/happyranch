@@ -78,6 +78,28 @@ describe('AuditPage — day-grouped timeline', () => {
     });
   });
 
+  // THR-099 Batch 2: the design authority renders a 24-hour mono clock
+  // (e.g. 14:10:02) — never a 12-hour AM/PM meridiem.
+  test('renders row timestamps as a 24-hour mono clock (no AM/PM)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedAudit([
+      {
+        id: 1,
+        task_id: 'TASK-1',
+        session_id: 'sess-1',
+        agent: 'dev_agent',
+        action: 'completion_report',
+        payload: {},
+        timestamp: '2026-06-18T13:05:09Z',
+      },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    const timeEl = await screen.findByText(/^\d{1,2}:\d{2}:\d{2}(\s?[ap]m)?$/i);
+    expect(timeEl.textContent).toMatch(/^\d{1,2}:\d{2}:\d{2}$/);
+    expect(timeEl.textContent).not.toMatch(/[ap]m/i);
+  });
+
   // AUDIT-03: page header treatment — uppercase eyebrow + Newsreader serif
   // title, matching the a-audit Direction-A reference and the Tasks/Agents
   // surfaces shipped earlier this program.

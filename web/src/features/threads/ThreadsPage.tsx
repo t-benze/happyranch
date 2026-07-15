@@ -70,9 +70,11 @@ function useNowMs(active: boolean): number {
 // Segmented inbox filter (THREADS-02). 'done' = archived; 'all' = both, derived
 // client-side by merging the two per-status fetches (the list payload carries no
 // finer waiting/active split, so no other bucket is honestly derivable here).
+// THR-099 Batch 2: the 'done' bucket's user-facing LABEL is "Archived" (design
+// status vocabulary); the internal key stays 'done' to avoid churn.
 type InboxBucket = 'all' | 'open' | 'done';
 const INBOX_BUCKETS: InboxBucket[] = ['all', 'open', 'done'];
-const BUCKET_LABEL: Record<InboxBucket, string> = { all: 'All', open: 'Open', done: 'Done' };
+const BUCKET_LABEL: Record<InboxBucket, string> = { all: 'All', open: 'Open', done: 'Archived' };
 
 function threadStatusOrFallback(status: string): 'open' | 'archived' {
   if (status === 'open' || status === 'archived') return status;
