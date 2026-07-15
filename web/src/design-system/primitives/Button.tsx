@@ -17,7 +17,10 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 
 const buttonVariants = cva(
-  'focus-visible:ring-ring inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0',
+  // Direction-A "Pasture": buttons are filled rounded PILLS with a text label
+  // (radius-pill). THR-099 Batch 1 — replaces the rounded-md rectangle so
+  // primary actions stop reading as circular icon-buttons across surfaces.
+  'focus-visible:ring-ring inline-flex items-center justify-center gap-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0',
   {
     variants: {
       variant: {
@@ -34,9 +37,11 @@ const buttonVariants = cva(
       },
       size: {
         default: 'h-9 px-3 py-1.5',
-        sm: 'h-8 rounded-md px-2 text-xs',
-        lg: 'h-10 rounded-md px-4',
-        icon: 'h-9 w-9',
+        sm: 'h-8 px-2 text-xs',
+        lg: 'h-10 px-4',
+        // Icon-only actions keep a squircle (rounded-md) — a pill on a square
+        // box is the circular icon-button THR-099 is removing.
+        icon: 'h-9 w-9 rounded-md',
       },
     },
     defaultVariants: {

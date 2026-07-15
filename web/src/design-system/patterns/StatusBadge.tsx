@@ -13,6 +13,8 @@
  * Pure prop-driven.
  */
 
+import { TONE_CLASS } from './semanticTone';
+
 export type ThreadStatus = 'open' | 'archived';
 export type TaskStatus =
   | 'pending'
@@ -33,22 +35,24 @@ interface StatusBadgeProps {
   blockKind?: BlockKind | null;
 }
 
-// ds.css .tag pattern: rounded-pill, 11px/600, tinted bg + text, optional led dot.
-// .tag.ok = green (open/in_progress/completed)
-// .tag.warn = amber (pending)
-// .tag.bad = red (failed/escalated)
-// .tag.mute = grey (cancelled/superseded/archived)
+// Tinted pill tones read from the shared semantic colour vocabulary
+// (semanticTone.TONE_CLASS) so this DS badge matches every other status/type
+// badge once Batches 2–3 wire the feature surfaces onto the map.
+// THR-099 fix: thread `open` moves GREEN → BLUE (info) per the design
+// vocabulary (open=blue / archived=grey). `pending` (amber) and `failed`
+// (abandoned-red) keep their own distinct tokens — they are not tones in the
+// shared set — so they stay literal.
 const STATUS_STYLE: Record<ThreadStatus | TaskStatus, string> = {
-  open: 'text-status-open bg-tier-green-tint',
-  archived: 'text-status-archived border border-border-default bg-transparent',
+  open: TONE_CLASS.info,
+  archived: TONE_CLASS.neutral,
   pending: 'text-status-archiving bg-tier-yellow-tint',
-  in_progress: 'text-status-open bg-tier-green-tint',
-  escalated: 'text-status-escalated bg-tier-red-tint',
-  blocked: 'text-status-escalated bg-tier-red-tint',
-  completed: 'text-status-open bg-tier-green-tint',
+  in_progress: TONE_CLASS.positive,
+  escalated: TONE_CLASS.danger,
+  blocked: TONE_CLASS.danger,
+  completed: TONE_CLASS.positive,
   failed: 'text-status-abandoned bg-tier-red-tint',
-  cancelled: 'text-status-archived border border-border-default bg-transparent',
-  superseded: 'text-status-archived border border-border-default bg-transparent',
+  cancelled: TONE_CLASS.neutral,
+  superseded: TONE_CLASS.neutral,
 };
 
 /**
