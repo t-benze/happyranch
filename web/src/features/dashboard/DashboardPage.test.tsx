@@ -648,4 +648,44 @@ describe('DashboardPage', () => {
     expect(pill).toHaveClass('text-status-open');
     expect(within(main).queryByText(/· ok/)).not.toBeInTheDocument();
   });
+
+  test("Today 'Completed' counter uses the neutral text-text-primary, not the old accent green (THR-099 Batch 3)", async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 7;
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const rail = await screen.findByTestId('dashboard-rail');
+    // The numeral tile sits directly above its "Completed" label.
+    const numeral = within(rail).getByText('Completed')
+      .previousElementSibling as HTMLElement;
+    expect(numeral).toHaveTextContent('7');
+    // THR-099 Batch 3 neutralised the non-status Today numerals to near-black
+    // (text-text-primary). The old accent green (text-tier-green) is gone —
+    // both assertions red-proof against the pre-change class.
+    expect(numeral).toHaveClass('text-text-primary');
+    expect(numeral).not.toHaveClass('text-tier-green');
+  });
+
+  test("Today 'Active' counter uses the neutral text-text-primary, not the old accent green (THR-099 Batch 3)", async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    s.narrative_counts.agents_active_now = 4;
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const rail = await screen.findByTestId('dashboard-rail');
+    // The numeral tile sits directly above its "Active" label.
+    const numeral = within(rail).getByText('Active')
+      .previousElementSibling as HTMLElement;
+    expect(numeral).toHaveTextContent('4');
+    // Same Batch-3 neutralisation as the Completed tile: near-black numeral,
+    // no accent green — red-proofs against the old text-tier-green class.
+    expect(numeral).toHaveClass('text-text-primary');
+    expect(numeral).not.toHaveClass('text-tier-green');
+  });
 });
