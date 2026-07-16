@@ -1120,14 +1120,16 @@ describe('KbPage — grouped folder rail (KB-01)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
   });
 
-  test('renders a labeled Library section with an "All entries" row carrying the total count', async () => {
+  test('renders a labeled TYPE section with an "All entries" row carrying the total count', async () => {
     stubRail([ENTRY_A, ENTRY_B, ENTRY_C]);
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
     await screen.findByText(/Refund authority by tier/);
 
     const rail = screen.getByRole('complementary', { name: /KB folders/i });
-    // Section label
-    expect(within(rail).getByText('Library')).toBeInTheDocument();
+    // THR-099 P2: the old "Library" + "Folders" sections fold into one design-
+    // matching "Type" facet header. Red-proof: the pre-P2 rail said "Library".
+    expect(within(rail).getByText('Type')).toBeInTheDocument();
+    expect(within(rail).queryByText('Library')).toBeNull();
     // "All entries" row with the total (3) count
     const allBtn = within(rail).getByRole('button', { name: /All entries/i });
     expect(allBtn).toBeInTheDocument();
@@ -1214,5 +1216,48 @@ describe('KbPage — grouped folder rail (KB-01)', () => {
     expect(within(rail).queryByRole('button', { name: /^review$/ })).toBeNull();
     expect(within(rail).queryByRole('button', { name: /^build$/ })).toBeNull();
     expect(within(rail).queryByRole('button', { name: /^protocols$/ })).toBeNull();
+  });
+
+  // THR-099 P2 — TAGS facet. Red-proof: the pre-P2 rail had no Tags section and
+  // no tag pills, so both the header assertion and the click-to-filter flow
+  // fail against the old GroupedFolderRail.
+  test('renders a TAGS facet of tag pills backed by the tags[] field', async () => {
+    stubRail([ENTRY_A, ENTRY_B, ENTRY_C]);
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+
+    const rail = screen.getByRole('complementary', { name: /KB folders/i });
+    expect(within(rail).getByText('Tags')).toBeInTheDocument();
+    // One pill per distinct tag across the library (policy, finance, intake).
+    expect(within(rail).getByRole('button', { name: 'intake' })).toBeInTheDocument();
+    expect(within(rail).getByRole('button', { name: 'finance' })).toBeInTheDocument();
+    expect(within(rail).getByRole('button', { name: 'policy' })).toBeInTheDocument();
+  });
+
+  test('clicking a tag pill narrows the feed to entries carrying that tag; toggling clears it', async () => {
+    stubRail([ENTRY_A, ENTRY_B, ENTRY_C]);
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    // Sanity: the intake-only entry is visible before any tag filter.
+    expect(screen.getByText(/Spanish-speaking walk-in flow/)).toBeInTheDocument();
+
+    const rail = screen.getByRole('complementary', { name: /KB folders/i });
+    const intakePill = within(rail).getByRole('button', { name: 'intake' });
+    await user.click(intakePill);
+
+    // Only the intake-tagged entry survives; the finance-only entries drop out.
+    expect(intakePill).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() =>
+      expect(screen.queryByText(/Refund authority by tier/)).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Chargeback dispute window/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Spanish-speaking walk-in flow/)).toBeInTheDocument();
+
+    // Toggle the same pill off → the full feed returns.
+    await user.click(within(rail).getByRole('button', { name: 'intake' }));
+    await waitFor(() =>
+      expect(screen.getByText(/Refund authority by tier/)).toBeInTheDocument(),
+    );
   });
 });
