@@ -91,16 +91,19 @@ function FolderIcon(): JSX.Element {
 }
 
 /**
- * GroupedFolderRail — KB-01. Replaces the flat type list with labeled
- * sections (folder icons + per-folder counts), matching the Direction-A
- * `a-knowledge` reference.
+ * GroupedFolderRail — KB-01 + THR-099 P2 faceted rail. Renders the design's
+ * (a-knowledge) faceted rail: a TYPE section (the "All entries" total row +
+ * one row per existing `type`, with folder icons and per-value counts) and a
+ * TAGS section (pills over the existing `tags[]` field). Both are backed by
+ * fields that already ship on KBEntry.
  *
- * DATA FENCE (Confusion Protocol): the design also calls for ENGINEERING
- * (review/qa/build) vs ORG (protocols/from-dreams) origin sections. The
- * kb-list payload carries no origin/category/path field to back that split,
- * and KBEntry has no "from dream" flag, so those folders are honestly OMITTED
- * here (not zero-faked). The backed grouping below is over the existing
- * `type` field — the same dimension the flat rail already filtered on.
+ * DATA FENCE (Confusion Protocol / honesty fence): the design also shows an
+ * ORIGIN → "from dreams" facet. KBEntry carries NO origin/from-dream field, so
+ * an origin facet over LIVE entries cannot be honestly backed — it is OMITTED
+ * (not zero-faked); the rail test `does NOT zero-fake…` guards this. The only
+ * real from-dream signal is the dream-proposed CANDIDATES queue, which already
+ * has its own rail row below (kept unchanged) rather than being relabelled as
+ * an entry-origin facet.
  */
 function GroupedFolderRail({
   folders,
@@ -111,6 +114,9 @@ function GroupedFolderRail({
   candidatesCount,
   candidatesActive,
   onSelectCandidates,
+  tags,
+  selectedTag,
+  onSelectTag,
 }: {
   folders: string[];
   counts: Map<string, number>;
@@ -122,6 +128,11 @@ function GroupedFolderRail({
   /** Whether the dedicated Candidates view is the active selection. */
   candidatesActive: boolean;
   onSelectCandidates: () => void;
+  /** Tag facet values (sorted by frequency), backed by the `tags[]` field. */
+  tags: string[];
+  /** The active tag filter, or null when no tag narrows the feed. */
+  selectedTag: string | null;
+  onSelectTag: (tag: string | null) => void;
 }): JSX.Element {
   const rowClass = (active: boolean) =>
     cn(
@@ -131,12 +142,21 @@ function GroupedFolderRail({
         : 'text-text-muted hover:bg-surface-raised',
     );
   const countClass = 'ml-auto font-mono text-xs tabular-nums';
+  const tagPillClass = (active: boolean) =>
+    cn(
+      'inline-flex items-center rounded-full border px-2.5 py-1 text-xs',
+      active
+        ? 'border-transparent bg-accent-muted text-accent-text font-medium'
+        : 'border-border-subtle bg-surface-sunken text-text-muted hover:bg-surface-raised',
+    );
 
   return (
     <div className="space-y-4">
+      {/* TYPE — the "All entries" total row plus one row per existing `type`,
+          folded into a single design-matching section (was Library + Folders). */}
       <section>
         <h3 className="text-text-muted font-display mb-1.5 px-2.5 text-2xs font-medium tracking-wider uppercase">
-          {KB_STRINGS.railLibrarySection}
+          {KB_STRINGS.railTypeSection}
         </h3>
         <button
           type="button"
@@ -147,31 +167,8 @@ function GroupedFolderRail({
           <span>{KB_STRINGS.railAllEntries}</span>
           <span className={countClass}>{total}</span>
         </button>
-      </section>
-
-      {/* Candidates — dream-proposed entries awaiting review live in their OWN
-          view so they never flood the live-document feed. Shown only when there
-          is live pending work (mirrors the header pill's `> 0` gate). */}
-      {candidatesCount > 0 && (
-        <section>
-          <button
-            type="button"
-            onClick={onSelectCandidates}
-            className={rowClass(candidatesActive)}
-          >
-            <CrescentMoonBadge className="h-4 w-4" />
-            <span>{KB_STRINGS.railCandidates}</span>
-            <span className={countClass}>{candidatesCount}</span>
-          </button>
-        </section>
-      )}
-
-      {folders.length > 0 && (
-        <section>
-          <h3 className="text-text-muted font-display mb-1.5 px-2.5 text-2xs font-medium tracking-wider uppercase">
-            {KB_STRINGS.filterFolders}
-          </h3>
-          <ul className="space-y-0.5">
+        {folders.length > 0 && (
+          <ul className="mt-0.5 space-y-0.5">
             {folders.map((f) => (
               <li key={f}>
                 <button
@@ -186,6 +183,50 @@ function GroupedFolderRail({
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      {/* Candidates — dream-proposed entries awaiting review live in their OWN
+          view so they never flood the live-document feed. Shown only when there
+          is live pending work (mirrors the header pill's `> 0` gate). This is
+          the only honest from-dream affordance; see the DATA FENCE above. */}
+      {candidatesCount > 0 && (
+        <section>
+          <button
+            type="button"
+            onClick={onSelectCandidates}
+            className={rowClass(candidatesActive)}
+          >
+            <CrescentMoonBadge className="h-4 w-4" />
+            <span>{KB_STRINGS.railCandidates}</span>
+            <span className={countClass}>{candidatesCount}</span>
+          </button>
+        </section>
+      )}
+
+      {/* TAGS — faceted pills over the existing `tags[]` field. Selecting a tag
+          narrows the feed client-side; selecting it again clears the filter. */}
+      {tags.length > 0 && (
+        <section>
+          <h3 className="text-text-muted font-display mb-1.5 px-2.5 text-2xs font-medium tracking-wider uppercase">
+            {KB_STRINGS.railTagsSection}
+          </h3>
+          <div className="flex flex-wrap gap-1.5 px-2.5">
+            {tags.map((t) => {
+              const active = selectedTag === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => onSelectTag(active ? null : t)}
+                  className={tagPillClass(active)}
+                >
+                  {t}
+                </button>
+              );
+            })}
+          </div>
         </section>
       )}
     </div>
@@ -305,6 +346,9 @@ export function KbPage(): JSX.Element {
   const [searchInput, setSearchInput] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [detailCandidate, setDetailCandidate] = useState<DreamKbCandidate | null>(null);
+  // Active tag facet (THR-099 P2). Narrows the document feed client-side over
+  // the already-fetched entries' `tags[]` — no new route or param.
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const { density } = useDensity();
   const queryClient = useQueryClient();
@@ -353,12 +397,18 @@ export function KbPage(): JSX.Element {
 
   // When searching, /kb/search returns matches across ALL types — apply
   // the selected folder/type client-side so the active pill stays honored.
+  // The selected tag facet (THR-099 P2) narrows further, client-side, over
+  // the already-fetched entries' `tags[]` (no new route).
   const liveEntries = useMemo(() => {
+    let entries = rawEntries;
     if (isSearching && folder) {
-      return rawEntries.filter((e) => e.type === folder);
+      entries = entries.filter((e) => e.type === folder);
     }
-    return rawEntries;
-  }, [rawEntries, folder, isSearching]);
+    if (selectedTag) {
+      entries = entries.filter((e) => e.tags.includes(selectedTag));
+    }
+    return entries;
+  }, [rawEntries, folder, isSearching, selectedTag]);
 
   // Fetch dreams to find those with candidates
   const dreamsQuery = useDreamsList({ limit: 50 });
@@ -404,6 +454,23 @@ export function KbPage(): JSX.Element {
     () => Array.from(folderCounts.keys()).sort(),
     [folderCounts],
   );
+
+  // Tag facet (THR-099 P2): one pill per distinct tag across the unfiltered
+  // library, ordered by frequency (per-value counts back the ordering, per the
+  // brief) then alphabetically, and capped so the rail stays a facet, not a
+  // wall. Backed entirely by the existing `tags[]` field.
+  const railTags = useMemo(() => {
+    const tagCounts = new Map<string, number>();
+    for (const e of railEntries) {
+      for (const t of e.tags) {
+        tagCounts.set(t, (tagCounts.get(t) ?? 0) + 1);
+      }
+    }
+    return Array.from(tagCounts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 12)
+      .map(([tag]) => tag);
+  }, [railEntries]);
 
   const loading = listQuery.isLoading || dreamsQuery.isLoading;
 
@@ -473,6 +540,12 @@ export function KbPage(): JSX.Element {
           candidatesCount={candidatePendingCount}
           candidatesActive={showCandidatesView}
           onSelectCandidates={() => setCandidatesView(true)}
+          tags={railTags}
+          selectedTag={selectedTag}
+          onSelectTag={(tag) => {
+            setCandidatesView(false);
+            setSelectedTag(tag);
+          }}
         />
       </aside>
 

@@ -13,6 +13,16 @@ export const KB_STRINGS = {
   filterFolders: 'Folders',
   /** Grouped folder rail (KB-01). */
   railLibrarySection: 'Library',
+  /**
+   * Faceted rail section headers (THR-099 P2). The design (a-knowledge)
+   * splits the rail into TYPE / (ORIGIN) / TAGS facets. TYPE folds the old
+   * Library + Folders sections into one type-grouped section; TAGS is a new
+   * facet backed by the existing `tags[]` field. ORIGIN (from-dreams) is
+   * intentionally OMITTED — KBEntry carries no origin field, so it cannot be
+   * honestly backed as a live-entry facet (see the honesty-fence rail test).
+   */
+  railTypeSection: 'Type',
+  railTagsSection: 'Tags',
   railAllEntries: 'All entries',
   /** Dedicated Candidates view rail row — keeps dream candidates out of the feed. */
   railCandidates: 'Candidates',
