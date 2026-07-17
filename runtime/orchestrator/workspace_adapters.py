@@ -822,30 +822,18 @@ def build_settings_json(
     repo_names: list[str],
     agent_name: str | None = None,
 ) -> dict:
-    """Build .claude/settings.json with a git pull hook for all repos."""
-    if repo_names:
-        pull_cmds = " && ".join(
-            f"(cd repos/{name} && git pull --ff-only 2>/dev/null; true)"
-            for name in repo_names
-        )
-        hooks = {
-            "PreToolUse": [
-                {
-                    "matcher": "Bash|Read|Grep|Glob",
-                    "hooks": [
-                        {"type": "command", "command": pull_cmds, "once": True}
-                    ],
-                }
-            ]
-        }
-    else:
-        hooks = {}
+    """Build .claude/settings.json for a workspace.
 
+    ``repo_names`` is accepted for signature stability but no longer feeds a
+    PreToolUse pull hook — repo freshness moved daemon-side (THR-103): the
+    orchestrator fast-forward-pulls every cloned repo at session spawn via
+    ``refresh_workspace_repos``, uniformly for all executors.
+    """
     return {
         "permissions": {
             "allow": allow_rules_for_agent(paths, agent_name, cli=False),
         },
-        "hooks": hooks,
+        "hooks": {},
     }
 
 
@@ -898,7 +886,8 @@ class PersistentWorkspaceSetup:
 
         return self.detect_repo_names(workspace)
 
-    def detect_repo_names(self, workspace: Path) -> list[str]:
+    @staticmethod
+    def detect_repo_names(workspace: Path) -> list[str]:
         repos_dir = workspace / "repos"
         if not repos_dir.exists():
             return []
@@ -906,6 +895,42 @@ class PersistentWorkspaceSetup:
             d.name for d in repos_dir.iterdir()
             if d.is_dir() and (d / ".git").exists()
         )
+
+
+def refresh_workspace_repos(workspace: Path) -> None:
+    """Fast-forward-refresh every cloned repo under ``workspace/repos/``.
+
+    Called by the orchestrator on EVERY session spawn, before the executor
+    subprocess starts, so all executors (claude, codex, opencode, pi) get
+    fresh repo state (THR-103). This replaces the Claude-only PreToolUse
+    settings hook that previously ran the same pull.
+
+    Failure semantics: NEVER raises and never blocks a spawn. Offline,
+    dirty-tree, non-fast-forward, or conflicted pulls exit non-zero, which
+    ``subprocess.run`` without ``check=True`` does not raise for — the
+    returncode is deliberately not inspected. Hung fetches are bounded by a
+    per-repo 30s timeout; one repo's failure does not stop its siblings.
+
+    Only already-cloned repos are refreshed (``detect_repo_names`` filters to
+    dirs with a ``.git``); first-time cloning stays in the bootstrap path
+    (``context_builder.clone_repo``).
+    """
+    try:
+        repo_names = PersistentWorkspaceSetup.detect_repo_names(workspace)
+    except OSError as exc:
+        logger.debug("repo refresh: could not scan %s: %s", workspace, exc)
+        return
+    for name in repo_names:
+        repo_dir = workspace / "repos" / name
+        try:
+            subprocess.run(
+                ["git", "pull", "--ff-only"],
+                cwd=str(repo_dir),
+                capture_output=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as exc:
+            logger.info("repo refresh: git pull skipped for %s: %s", repo_dir, exc)
 
 
 class ClaudeWorkspaceAdapter:
@@ -956,8 +981,9 @@ class ClaudeWorkspaceAdapter:
             workspace=workspace,
             include_start_task=True,
             repo_refresh_note=(
-                "repositories cloned under `repos/`. Each is kept fresh via the "
-                "PreToolUse hook in `.claude/settings.json`."
+                "repositories cloned under `repos/`. The daemon fast-forward-"
+                "refreshes each cloned repo at session spawn, before your "
+                "session starts."
             ),
             callback_note=(
                 "The `--from-file` form is mandatory here — multi-line `happyranch` "
@@ -1109,9 +1135,10 @@ class CodexWorkspaceAdapter:
             workspace=workspace,
             include_start_task=True,
             repo_refresh_note=(
-                "repositories cloned under `repos/`. Refresh repository state "
-                "yourself when the task requires it; do not assume Claude-specific "
-                "workspace hooks exist."
+                "repositories cloned under `repos/`. The daemon fast-forward-"
+                "refreshes each cloned repo at session spawn, before your "
+                "session starts; refresh again yourself mid-task if you need "
+                "newer state."
             ),
             callback_note=(
                 "Use the `--from-file` form to keep the callback contract stable "

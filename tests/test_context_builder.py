@@ -47,14 +47,16 @@ def test_build_settings_json_no_repos(test_settings, tmp_dir, runtime):
 
 
 def test_build_settings_json_with_repos(test_settings, tmp_dir, runtime):
+    """THR-103: repo refresh is daemon-side; settings.json no longer bakes a
+    PreToolUse pull hook. The `repo_names` param is accepted but the hook is
+    always empty — repos are kept fresh by ``refresh_workspace_repos`` in
+    ``_run_agent``."""
     builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     builder.write_settings_json(workspace, repo_names=["my-opc", "web-app"])
     data = json.loads((workspace / ".claude" / "settings.json").read_text())
-    hook_cmd = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert "repos/my-opc" in hook_cmd
-    assert "repos/web-app" in hook_cmd
+    assert data["hooks"] == {}
 
 
 def test_ensure_workspace_ready_grants_engineering_head_gh_resolve_rules(
@@ -198,9 +200,8 @@ def test_build_claude_md_points_at_agent_yaml_for_repos(test_settings, tmp_dir, 
 
 
 def test_ensure_workspace_ready_detects_cloned_repos(test_settings, tmp_dir, runtime):
-    """Cloned repos drive the PreToolUse git-pull hook (so `git pull` fires
-    per repo) but do not get enumerated in CLAUDE.md — agent.yaml is the
-    single source of truth for that list."""
+    """THR-103: cloned repos still drive settings.json generation but no longer
+    produce a PreToolUse pull hook — repo freshness is daemon-side now."""
     builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     # Simulate pre-existing cloned repos
@@ -209,9 +210,7 @@ def test_ensure_workspace_ready_detects_cloned_repos(test_settings, tmp_dir, run
         repo_dir.mkdir(parents=True)
     builder.ensure_workspace_ready(workspace, "dev_agent", "You are the Dev Agent.")
     settings_data = json.loads((workspace / ".claude" / "settings.json").read_text())
-    hook_cmd = settings_data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert "repos/my-opc" in hook_cmd
-    assert "repos/web-app" in hook_cmd
+    assert settings_data["hooks"] == {}
 
 
 def test_ensure_workspace_ready_does_not_overwrite_existing_learnings(test_settings, tmp_dir, runtime):
