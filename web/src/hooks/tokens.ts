@@ -20,14 +20,13 @@ import type { TokenUsageRollup } from '@/lib/api/tokens';
 import type { QueryLike } from '@/design-system/providers/DataContext';
 
 /**
- * Shared compact token formatter (e.g. 26_500_000 -> '26.5M'). It is defined
- * in the audit feature, but the cross-feature import boundary forbids one
- * feature from reaching into another's modules directly — the sanctioned
- * channel is "through @/hooks/" (eslint.config.js). Surfacing it here lets the
- * dashboard "Tokens today" tile reuse the exact formatter rather than
- * hand-rolling one (THR-030 HOME-04).
+ * Shared compact token formatter (e.g. 26_500_000 -> '26.5M'). The canonical
+ * definition now lives in the neutral @/lib/format module (THR-099
+ * number-overflow consolidation). This back-compat re-export is preserved so
+ * existing `@/hooks/tokens` consumers (Dashboard "Tokens today" tile, Threads
+ * fresh-tokens rail, and their tests) keep working without import churn.
  */
-export { formatTokens } from '@/features/audit/audit-narrative';
+export { formatTokens } from '@/lib/format';
 
 export function useTopThreadTokens(params?: {
   since?: string;

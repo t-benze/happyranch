@@ -31,6 +31,8 @@ import { classifyModel } from '@/features/dashboard/topTokens';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { Button } from '@/design-system/primitives/Button';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
+import { StatValue } from '@/design-system/patterns/StatValue';
+import { formatTokens } from '@/lib/format';
 import type { TokenUsageRollup } from '@/hooks/usage';
 
 /* ------------------------------------------------------------------ */
@@ -72,11 +74,11 @@ function saveWindowIdx(idx: number): void {
 /*  Format helpers                                                     */
 /* ------------------------------------------------------------------ */
 
-function fmtNum(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toLocaleString();
-}
+// The local `fmtNum` compact helper was folded into the canonical
+// `formatTokens` (@/lib/format) — THR-099 number-overflow consolidation. Its
+// sub-1000 `toLocaleString` path is deliberately dropped for the canonical
+// `String(n)` (locked in lib/format.test.ts); hero prose numerals now call
+// `formatTokens`, and the overflow-prone table/panel cells render via StatValue.
 
 function pct(part: number, whole: number): string {
   if (whole === 0) return '0%';
@@ -163,23 +165,32 @@ function HeroCard({
       <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
         Token burn · {windowLabel} · {dateRange}
       </p>
-      <p className="font-display text-display text-text-primary mt-2 font-medium tabular-nums">
-        {fmtNum(totalChurn)}
+      <p
+        className="font-display text-display text-text-primary mt-2 font-medium tabular-nums"
+        title={totalChurn.toLocaleString()}
+      >
+        {formatTokens(totalChurn)}
       </p>
       {/* Dollars always zero — honesty fence: no dollar metric in data-model. */}
       <p className="text-text-muted mt-1 text-sm">$0.00 · not metered</p>
       <div className="border-border-default mt-4 grid grid-cols-3 gap-4 border-t pt-4">
         <div>
           <p className="text-text-muted text-xs">Fresh</p>
-          <p className="font-display text-h2 text-text-primary font-medium tabular-nums">
-            {fmtNum(totalChurn)}
+          <p
+            className="font-display text-h2 text-text-primary font-medium tabular-nums"
+            title={totalChurn.toLocaleString()}
+          >
+            {formatTokens(totalChurn)}
           </p>
           <p className="text-text-muted text-2xs">input + output + reasoning</p>
         </div>
         <div>
           <p className="text-text-muted text-xs">From cache</p>
-          <p className="font-display text-h2 text-text-primary font-medium tabular-nums">
-            {fmtNum(cacheRead)}
+          <p
+            className="font-display text-h2 text-text-primary font-medium tabular-nums"
+            title={cacheRead.toLocaleString()}
+          >
+            {formatTokens(cacheRead)}
           </p>
           <p className="text-text-muted text-2xs">
             {cacheRead > 0 ? pct(cacheRead, totalChurn + cacheRead) + ' of all reads' : 'none'}
@@ -187,8 +198,11 @@ function HeroCard({
         </div>
         <div>
           <p className="text-text-muted text-xs">Detail</p>
-          <p className="font-mono text-body text-text-primary tabular-nums">
-            in {fmtNum(inputTokens)} / out {fmtNum(outputTokens)}
+          <p
+            className="font-mono text-body text-text-primary tabular-nums"
+            title={`in ${inputTokens.toLocaleString()} / out ${outputTokens.toLocaleString()}`}
+          >
+            in {formatTokens(inputTokens)} / out {formatTokens(outputTokens)}
           </p>
         </div>
       </div>
@@ -215,8 +229,8 @@ function CacheSavedCallout({
 }): JSX.Element {
   return (
     <div className="border-feedback-success/30 bg-feedback-success/10 text-feedback-success mt-3 rounded-lg border p-3 text-sm">
-      <p className="font-medium tabular-nums">
-        Cache saved {fmtNum(cacheRead)} tokens · {pct(cacheRead, totalChurn + cacheRead)} served from cache
+      <p className="font-medium tabular-nums" title={cacheRead.toLocaleString()}>
+        Cache saved {formatTokens(cacheRead)} tokens · {pct(cacheRead, totalChurn + cacheRead)} served from cache
       </p>
     </div>
   );
@@ -404,9 +418,11 @@ function BreakdownTable({
                     />
                   </svg>
                 </td>
-                <td className="text-text-primary py-2 pr-3 text-right tabular-nums">{r.totalTokens.toLocaleString()}</td>
-                <td className="text-text-muted py-2 text-right tabular-nums">
-                  {r.cacheReadTokens.toLocaleString()}
+                <td className="text-text-primary py-2 pr-3 text-right">
+                  <StatValue value={r.totalTokens} />
+                </td>
+                <td className="text-text-muted py-2 text-right">
+                  <StatValue value={r.cacheReadTokens} />
                 </td>
               </tr>
             ))}
@@ -545,9 +561,10 @@ function ByTeamCard({
               <span className="text-text-primary truncate" title={r.team}>
                 {r.team}
               </span>
-              <span className="text-text-primary ml-auto tabular-nums">
-                {r.totalTokens.toLocaleString()}
-              </span>
+              <StatValue
+                value={r.totalTokens}
+                className="text-text-primary ml-auto shrink-0"
+              />
             </li>
           ))}
         </ul>
@@ -654,16 +671,15 @@ function TopThreadsTable({
                   className="fill-accent"
                 />
               </svg>
-              <span className="text-text-primary ml-auto tabular-nums">
-                {r.totalTokens.toLocaleString()}
-              </span>
-              <span
-                className="text-text-muted w-20 shrink-0 text-right tabular-nums"
-                title="cache reads — never counted toward burn"
-              >
-                {r.cacheReadTokens.toLocaleString()}
-                <span className="text-text-disabled ml-1.5">cache</span>
-              </span>
+              <StatValue
+                value={r.totalTokens}
+                className="text-text-primary ml-auto shrink-0"
+              />
+              <StatValue
+                value={r.cacheReadTokens}
+                suffix="cache"
+                className="text-text-muted shrink-0"
+              />
             </li>
           );
         })}

@@ -142,6 +142,13 @@ describe('UsagePage', () => {
     // Cache savings = 2000 (shown as "From cache" line)
     const caches = screen.getAllByText('2.0K');
     expect(caches.length).toBeGreaterThanOrEqual(1);
+    // THR-099 display-metric contract: the compacted visible text keeps the
+    // EXACT value available via title (never lost). Hero + Fresh both expose
+    // churn 1600 → '1,600'; From-cache tile + cache-saved callout both expose
+    // cacheRead 2000 → '2,000'; the Detail line exposes both raw in/out.
+    expect(screen.getAllByTitle('1,600').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByTitle('2,000').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTitle('in 1,000 / out 500')).toBeDefined();
     // "not metered" caption
     expect(screen.getByText('$0.00 · not metered')).toBeDefined();
     // Pasture: section label uses text-text-secondary + uppercase tracking.
@@ -668,9 +675,10 @@ describe('UsagePage', () => {
 
   it('each team total equals the summed burn of that team\'s agents', () => {
     const card = renderUsage03();
-    // engineering = dev_agent 1600 + code_reviewer 400 = 2000
-    expect(within(card).getByText('2,000')).toBeDefined();
-    // consultant = consultant_a 300
+    // engineering = dev_agent 1600 + code_reviewer 400 = 2000 — rendered compact
+    // via StatValue (THR-099), exact figure preserved in the title.
+    expect(within(card).getByTitle('2,000')).toHaveTextContent('2.0K');
+    // consultant = consultant_a 300 (<1000 stays exact)
     expect(within(card).getByText('300')).toBeDefined();
   });
 

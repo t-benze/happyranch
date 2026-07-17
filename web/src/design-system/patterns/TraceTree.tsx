@@ -6,6 +6,7 @@
  */
 import type { TaskRecallNode } from '@/lib/api/types';
 import { IdBadge } from './IdBadge';
+import { StatValue } from './StatValue';
 import { StatusBadge } from './StatusBadge';
 import type { Density } from './AuditRow';
 
@@ -26,9 +27,9 @@ export interface TraceTreeProps {
   taskHref?: (taskId: string) => string;
 }
 
-function fmtTokens(n: number): string {
-  return n.toLocaleString();
-}
+// The local `fmtTokens` (raw toLocaleString) was folded into the canonical
+// compact `formatTokens` (@/lib/format) and now renders via the overflow-safe
+// StatValue — THR-099 number-overflow fix. Full precision stays in the title.
 
 function fmtUsd(n: number): string {
   return `$${n.toFixed(2)}`;
@@ -81,7 +82,7 @@ function Node({
         <StatusBadge status={node.status} />
         {cost && (
           <span className="text-fg-muted ml-auto font-mono text-xs">
-            {fmtTokens(cost.tokens)} tok
+            <StatValue value={cost.tokens} align="inline" className="text-fg-muted" /> tok
             {cost.usd != null ? ` · ${fmtUsd(cost.usd)}` : ''}
           </span>
         )}

@@ -21,6 +21,7 @@ import {
 } from '@/hooks/metrics';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { Sparkline } from '@/design-system/patterns/Sparkline';
+import { formatCount } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 /* ------------------------------------------------------------------ */
@@ -81,9 +82,11 @@ export function fmtMs(latencySeconds: number | null | undefined): string {
   return `${ms.toFixed(1)} ms`;
 }
 
-function fmtInt(n: number): string {
-  return n.toLocaleString();
-}
+// The local `fmtInt` (raw toLocaleString) was folded into the canonical
+// `formatCount` (@/lib/format) — THR-099 number-overflow consolidation. Health
+// counts are exact small bounded integers, so formatCount keeps them precise
+// and grouped (never compacted).
+const fmtInt = formatCount;
 
 /** Compact relative time from an ISO string, e.g. "12s ago", "3m ago". */
 export function fmtRelTime(iso: string, now: number = Date.now()): string {

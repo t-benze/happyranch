@@ -19,6 +19,7 @@
  * the returned segments to <Link>s (entity refs) and styled text.
  */
 import type { AuditEntry } from '@/lib/api/types';
+import { formatTokens } from '@/lib/format';
 
 /** A clickable entity. Only types that have an EXISTING client route are
  *  emitted as refs (task/thread/job/agent); everything else stays plain text. */
@@ -93,11 +94,9 @@ function tokensOf(p: Record<string, unknown>): number | undefined {
 /*  Formatters                                                        */
 /* ------------------------------------------------------------------ */
 
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
+// `formatTokens` is the canonical compact display-number formatter. It was
+// relocated to the neutral @/lib/format module (THR-099 number-overflow fix);
+// this feature now consumes it via the import above and no longer owns the def.
 
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;

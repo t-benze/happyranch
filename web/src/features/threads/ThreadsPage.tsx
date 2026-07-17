@@ -23,6 +23,7 @@ import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
+import { StatValue } from '@/design-system/patterns/StatValue';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
@@ -30,7 +31,7 @@ import type { ThreadAttachment, ThreadAttachmentRef, ThreadMessage } from '@/lib
 import { attachmentContentType, safeArtifactName } from '@/lib/threadAttachments';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
-import { formatTokens, useThreadFreshTokens } from '@/hooks/tokens';
+import { useThreadFreshTokens } from '@/hooks/tokens';
 import { isGPrefixArmed } from '@/hooks/global-jump';
 import {
   useAbortReplies,
@@ -1010,7 +1011,9 @@ function DetailColumn({
               {typeof freshTokens.data === 'number' && (
                 <div className="flex items-center justify-between gap-2">
                   <dt className="text-text-muted text-xs">Fresh tokens</dt>
-                  <dd className="text-text-secondary text-xs tabular-nums">{formatTokens(freshTokens.data)}</dd>
+                  <dd className="text-text-secondary text-xs">
+                    <StatValue value={freshTokens.data} align="inline" />
+                  </dd>
                 </div>
               )}
               <div className="flex items-center justify-between gap-2">

@@ -19,11 +19,12 @@ import { ChevronRight } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardSummary } from '@/hooks/dashboard';
-import { useTokensToday, useTokensWeek, formatTokens } from '@/hooks/tokens';
+import { useTokensToday, useTokensWeek } from '@/hooks/tokens';
 import { Button } from '@/design-system/primitives/Button';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { StatValue } from '@/design-system/patterns/StatValue';
 import { TONE_CLASS, type Tone } from '@/design-system/patterns/semanticTone';
 import type { ActivityVerdict } from '@/lib/api/types';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
@@ -154,11 +155,14 @@ export function DashboardPage(): JSX.Element {
     ? new Date(new Date(q.data.server_now).getTime() - 7 * 86_400_000).toISOString()
     : undefined;
   const tokensWeekQ = useTokensWeek({ since: tokensWeekSince });
-  // Honest display value: the real formatted total only once resolved; the
-  // neutral em-dash while pending/disabled/errored — never a fabricated 0.
-  const weekBurnDisplay =
+  // Honest display value: the real total only once resolved; the neutral
+  // em-dash while pending/disabled/errored — never a fabricated 0. Rendered
+  // via the overflow-safe StatValue (compact visible text, full precision in
+  // the title) — same primitive the sibling Tokens-today tile rides, so the
+  // exact figure is never lost on hover (THR-099 number-overflow).
+  const weekBurnDisplay: ReactNode =
     tokensWeekQ.data !== undefined && !tokensWeekQ.isError
-      ? formatTokens(tokensWeekQ.data)
+      ? <StatValue value={tokensWeekQ.data} align="inline" />
       : '—';
 
   if (q.isLoading) {
@@ -349,15 +353,23 @@ export function DashboardPage(): JSX.Element {
                   <div className="text-text-muted text-overline mt-1">KB entries</div>
                 </div>
                 <div className="text-center">
-                  <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
-                    {/* Honest tile: render the real summed total ONLY once the
-                        /tokens query has succeeded with a defined figure. While
-                        pending, disabled, or errored the value is unknown, so we
-                        show the dashboard's neutral em-dash placeholder (see
-                        OrgPulseTable) rather than a fabricated 0 (THR-030 HOME-04). */}
-                    {tokensTodayQ.data !== undefined && !tokensTodayQ.isError
-                      ? formatTokens(tokensTodayQ.data)
-                      : '—'}
+                  {/* Tokens-today holds a compact token SUM (e.g. "346.1K")
+                      which is wider than a raw count. It steps down to text-h2
+                      (vs the sibling counts' text-h1) so the value fits its 1/5
+                      column without colliding with the card edge (THR-099
+                      number-overflow: overflow-11.24.21), and renders via the
+                      overflow-safe StatValue so full precision stays in the
+                      title. Honest tile: show the real summed total ONLY once
+                      the /tokens query has succeeded with a defined figure;
+                      while pending, disabled, or errored the value is unknown so
+                      we show the dashboard's neutral em-dash placeholder rather
+                      than a fabricated 0 (THR-030 HOME-04). */}
+                  <div className="font-display text-h2 text-text-primary font-medium tabular-nums">
+                    {tokensTodayQ.data !== undefined && !tokensTodayQ.isError ? (
+                      <StatValue value={tokensTodayQ.data} align="inline" />
+                    ) : (
+                      '—'
+                    )}
                   </div>
                   <div className="text-text-muted text-overline mt-1">Tokens today</div>
                 </div>

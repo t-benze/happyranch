@@ -18,6 +18,7 @@
 import { useMemo, useState } from 'react';
 import { useTopThreadTokens } from '@/hooks/tokens';
 import { cn } from '@/lib/utils';
+import { StatValue } from '@/design-system/patterns/StatValue';
 import { toTopRows } from '../topTokens';
 
 const WINDOWS = [
@@ -27,7 +28,10 @@ const WINDOWS = [
 ] as const;
 
 const TOP_N = 8;
-const BAR_W = 96; // px — SVG viewport for the churn bar
+// Narrower churn bar than the Usage table's: this panel lives in the ~320px
+// dashboard rail, so the row must reserve horizontal room for the compact
+// total + cache StatValues to stay on-card (THR-099 overflow-11.24.31).
+const BAR_W = 48; // px — SVG viewport for the churn bar
 const BAR_H = 8;
 
 /**
@@ -99,11 +103,11 @@ export function TopTokenThreadsPanel(): JSX.Element {
         <ul className="space-y-1.5 font-mono text-xs">
           {rows.map((r) => (
             <li key={r.threadId} className="flex items-center gap-2">
-              <span className="text-text-primary w-24 shrink-0 truncate" title={r.threadId}>
+              <span className="text-text-primary w-20 shrink-0 truncate" title={r.threadId}>
                 {r.threadId}
               </span>
               <span
-                className="text-text-muted w-28 shrink-0 truncate"
+                className="text-text-muted min-w-0 flex-1 truncate"
                 title={MODEL_LABEL_EXPLANATIONS[r.modelLabel] ?? r.modelLabel}
               >
                 {r.modelLabel}
@@ -123,16 +127,17 @@ export function TopTokenThreadsPanel(): JSX.Element {
                   className="fill-accent"
                 />
               </svg>
-              <span className="text-text-primary ml-auto tabular-nums">
-                {r.totalTokens.toLocaleString()}
-              </span>
-              <span
-                className="text-text-muted w-20 shrink-0 text-right tabular-nums"
-                title="cache reads — never counted toward churn"
-              >
-                {r.cacheReadTokens.toLocaleString()}
-                <span className="text-text-disabled ml-1.5">cache</span>
-              </span>
+              <StatValue
+                value={r.totalTokens}
+                align="inline"
+                className="text-text-primary shrink-0"
+              />
+              <StatValue
+                value={r.cacheReadTokens}
+                suffix="cache"
+                align="inline"
+                className="text-text-muted shrink-0"
+              />
             </li>
           ))}
         </ul>

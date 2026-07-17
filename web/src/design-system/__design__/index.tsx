@@ -40,6 +40,7 @@ import { KbdChip } from '@/design-system/patterns/KbdChip';
 import { MessageBubble } from '@/design-system/patterns/MessageBubble';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import { StatValue } from '@/design-system/patterns/StatValue';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import registry from '@/design-system/registry.json';
 
@@ -78,6 +79,7 @@ const componentMap: Record<string, ReactNode> = {
   IdBadge: <IdBadge id="THR-042" kind="thread" />,
   KbdChip: <KbdChip keys={['Ctrl', 'Enter']} />,
   StatusBadge: <StatusBadge status="open" />,
+  StatValue: <StatValue value={3707054} format="tokens" suffix="cache" align="right" />,
   EmptyState: (
     <div className="border-border-default h-40 w-full max-w-md border">
       <EmptyState
