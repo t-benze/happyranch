@@ -76,6 +76,13 @@ export function MentionAutocomplete({
     minWidth: 200,
     maxWidth: 320,
     zIndex: 1000,
+    // When portalled to document.body inside a Radix modal Dialog (which
+    // makes everything outside DialogContent pointer-inert), the popup
+    // receives no mouse events. pointerEvents:'auto' overrides the
+    // inherited inertness so clicks land on suggestions. Keyboard
+    // selection is unaffected because it uses a document-level keydown
+    // listener.
+    pointerEvents: 'auto',
   };
 
   // Portal to document.body. Without this, an ancestor `transform`
