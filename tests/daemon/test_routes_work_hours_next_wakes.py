@@ -5,6 +5,8 @@ THR-035 / TASK-967. Additive read-only endpoint.
 """
 from __future__ import annotations
 
+import json
+
 import yaml
 from fastapi.testclient import TestClient
 
@@ -12,9 +14,47 @@ from runtime.orchestrator._paths import OrgPaths
 
 
 def _seed_working_hours(org_state, block: dict) -> None:
-    p = OrgPaths(root=org_state.root).org_config_path
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(yaml.safe_dump({"working_hours": block}))
+    """Seed the schedule the way the runtime actually stores it post-THR-095:
+    the DB ``org_settings`` store, NOT config.yaml (which is a one-shot
+    migration seed, stripped after ingest)."""
+    org_state.db.upsert_org_setting("working_hours", json.dumps(block))
+
+
+def test_next_wakes_reads_db_org_settings_not_config_yaml(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-100 regression: post-migration, config.yaml carries NO working_hours
+    (the seed is stripped) and the DB org_settings store is authoritative.
+    The preview must resolve from the DB — exactly like the scheduler and
+    GET /settings — not fall back to the disabled code default via a file read.
+    """
+    # Mirror POST-MIGRATION state: an ENABLED schedule in the DB store only.
+    org_state.db.upsert_org_setting("working_hours", json.dumps({
+        "enabled": True,
+        "default": {
+            "mode": "continuous",
+            "window": {"timezone": "Asia/Shanghai"},
+            "interval": "2h",
+        },
+    }))
+    # And NO working_hours key in config.yaml (absent file == stripped seed).
+    cfg_path = OrgPaths(root=org_state.root).org_config_path
+    if cfg_path.exists():
+        assert "working_hours" not in (yaml.safe_load(cfg_path.read_text()) or {})
+
+    client = TestClient(app)
+    r = client.get(
+        f"/api/v1/orgs/{org_state.slug}/work-hours/next-wakes",
+        headers=auth_headers,
+        params={"agent": "dev_agent", "count": 3},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["enabled"] is True
+    assert body["timezone"] == "Asia/Shanghai"
+    assert body["mode"] == "continuous"
+    assert body["error"] is None
+    assert len(body["next_wakes"]) == 3
 
 
 def test_next_wakes_returns_resolved_continuous_slots(
