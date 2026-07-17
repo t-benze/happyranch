@@ -28,8 +28,11 @@ from runtime.daemon.state import DaemonState
 from runtime.daemon.work_hours_scheduler import next_wake_slots
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import TaskRecord, WorkHourRecord, WorkHourStatus
-from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import OrgConfigError, load_org_config
+from runtime.orchestrator.org_config import (
+    OrgConfigError,
+    WorkingHoursConfig,
+    resolve_org_setting_working_hours,
+)
 from runtime.orchestrator.routine_parser import MAX_ROUTINES_PER_WAKE
 
 router = APIRouter(dependencies=[require_token()])
@@ -117,7 +120,7 @@ def work_hours_next_wakes(
     a client fault).
     """
     count = max(1, min(count, 50))
-    cfg = load_org_config(OrgPaths(root=org.root)).working_hours
+    cfg = resolve_org_setting_working_hours(org.db, code_default=WorkingHoursConfig())
     team = None
     registry = getattr(org, "teams", None)
     if registry is not None:
