@@ -143,7 +143,12 @@ const srv = await createServer({ root: findDist(), api });
 try {
   for (const theme of ['light', 'dark']) {
     console.log(`[thr099] ${theme} — dashboard`);
-    await shoot({ session: `thr099-${theme}`, theme, url: `${srv.url}/orgs/${SLUG}/dashboard`, waitTitle: '346,100', outName: 'thr099-dashboard-THEME.png' });
+    // Wait on the Top-token-threads panel's max total (unique on the page).
+    // The TODAY tile's 346,100 title is no longer unique now the "This week's
+    // burn" card ALSO carries its full-precision title (TASK-3034 Finding 1
+    // fix) — both queries sum the same seeded agent rollup — so a getByTitle
+    // on 346,100 would strict-violate. The full-page shot still captures both.
+    await shoot({ session: `thr099-${theme}`, theme, url: `${srv.url}/orgs/${SLUG}/dashboard`, waitTitle: '3,707,054', outName: 'thr099-dashboard-THEME.png' });
 
     console.log(`[thr099] ${theme} — usage (24h/7d/30d)`);
     await shoot({

@@ -505,6 +505,9 @@ describe('DashboardPage', () => {
 
     // Honest token figure via the shared compact formatter, scoped to the card.
     expect(within(card).getByText(formatTokens(274_400_991))).toBeInTheDocument();
+    // THR-099 display-metric contract: the compacted 7d-burn keeps the EXACT
+    // value available via the StatValue title (never lost on hover).
+    expect(within(card).getByTitle('274,400,991')).toBeInTheDocument();
     // Tokens are the unit (dollar burn is deferred — no '$' on this card).
     expect(within(card).getByText('Tokens')).toBeInTheDocument();
     expect(within(card).queryByText(/\$/)).not.toBeInTheDocument();

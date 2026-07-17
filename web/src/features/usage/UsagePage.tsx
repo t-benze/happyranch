@@ -165,7 +165,10 @@ function HeroCard({
       <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
         Token burn · {windowLabel} · {dateRange}
       </p>
-      <p className="font-display text-display text-text-primary mt-2 font-medium tabular-nums">
+      <p
+        className="font-display text-display text-text-primary mt-2 font-medium tabular-nums"
+        title={totalChurn.toLocaleString()}
+      >
         {formatTokens(totalChurn)}
       </p>
       {/* Dollars always zero — honesty fence: no dollar metric in data-model. */}
@@ -173,14 +176,20 @@ function HeroCard({
       <div className="border-border-default mt-4 grid grid-cols-3 gap-4 border-t pt-4">
         <div>
           <p className="text-text-muted text-xs">Fresh</p>
-          <p className="font-display text-h2 text-text-primary font-medium tabular-nums">
+          <p
+            className="font-display text-h2 text-text-primary font-medium tabular-nums"
+            title={totalChurn.toLocaleString()}
+          >
             {formatTokens(totalChurn)}
           </p>
           <p className="text-text-muted text-2xs">input + output + reasoning</p>
         </div>
         <div>
           <p className="text-text-muted text-xs">From cache</p>
-          <p className="font-display text-h2 text-text-primary font-medium tabular-nums">
+          <p
+            className="font-display text-h2 text-text-primary font-medium tabular-nums"
+            title={cacheRead.toLocaleString()}
+          >
             {formatTokens(cacheRead)}
           </p>
           <p className="text-text-muted text-2xs">
@@ -189,7 +198,10 @@ function HeroCard({
         </div>
         <div>
           <p className="text-text-muted text-xs">Detail</p>
-          <p className="font-mono text-body text-text-primary tabular-nums">
+          <p
+            className="font-mono text-body text-text-primary tabular-nums"
+            title={`in ${inputTokens.toLocaleString()} / out ${outputTokens.toLocaleString()}`}
+          >
             in {formatTokens(inputTokens)} / out {formatTokens(outputTokens)}
           </p>
         </div>
@@ -217,7 +229,7 @@ function CacheSavedCallout({
 }): JSX.Element {
   return (
     <div className="border-feedback-success/30 bg-feedback-success/10 text-feedback-success mt-3 rounded-lg border p-3 text-sm">
-      <p className="font-medium tabular-nums">
+      <p className="font-medium tabular-nums" title={cacheRead.toLocaleString()}>
         Cache saved {formatTokens(cacheRead)} tokens · {pct(cacheRead, totalChurn + cacheRead)} served from cache
       </p>
     </div>

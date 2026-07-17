@@ -19,7 +19,7 @@ import { ChevronRight } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardSummary } from '@/hooks/dashboard';
-import { useTokensToday, useTokensWeek, formatTokens } from '@/hooks/tokens';
+import { useTokensToday, useTokensWeek } from '@/hooks/tokens';
 import { Button } from '@/design-system/primitives/Button';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
@@ -155,11 +155,14 @@ export function DashboardPage(): JSX.Element {
     ? new Date(new Date(q.data.server_now).getTime() - 7 * 86_400_000).toISOString()
     : undefined;
   const tokensWeekQ = useTokensWeek({ since: tokensWeekSince });
-  // Honest display value: the real formatted total only once resolved; the
-  // neutral em-dash while pending/disabled/errored — never a fabricated 0.
-  const weekBurnDisplay =
+  // Honest display value: the real total only once resolved; the neutral
+  // em-dash while pending/disabled/errored — never a fabricated 0. Rendered
+  // via the overflow-safe StatValue (compact visible text, full precision in
+  // the title) — same primitive the sibling Tokens-today tile rides, so the
+  // exact figure is never lost on hover (THR-099 number-overflow).
+  const weekBurnDisplay: ReactNode =
     tokensWeekQ.data !== undefined && !tokensWeekQ.isError
-      ? formatTokens(tokensWeekQ.data)
+      ? <StatValue value={tokensWeekQ.data} align="inline" />
       : '—';
 
   if (q.isLoading) {
