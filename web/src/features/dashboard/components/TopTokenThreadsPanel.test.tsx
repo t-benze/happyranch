@@ -69,17 +69,18 @@ describe('TopTokenThreadsPanel', () => {
       'THR-low',
     ]);
 
-    // High-churn row: observed model id verbatim, churn total shown.
+    // High-churn row: observed model id verbatim, churn total shown compact
+    // (THR-099) with full precision preserved in the StatValue title.
     const high = items[0];
     expect(within(high).getByText('claude-opus-4-8[1m]')).toBeInTheDocument();
-    expect(within(high).getByText('1,700')).toBeInTheDocument();
+    expect(within(high).getByTitle('1,700')).toHaveTextContent('1.7K');
 
     // Low row: codex NULL → (cli-unreported); the huge cache number is shown
-    // but is NOT the churn total (15).
+    // (compact, full precision in title) but is NOT the churn total (15).
     const low = items[1];
     expect(within(low).getByText('(cli-unreported)')).toBeInTheDocument();
-    expect(within(low).getByText('15')).toBeInTheDocument();
-    expect(within(low).getByText(/9,999,999/)).toBeInTheDocument();
+    expect(within(low).getByTitle('15')).toHaveTextContent('15'); // <1000 stays exact
+    expect(within(low).getByTitle('9,999,999')).toHaveTextContent('10.0M');
 
     // Window selector present, 7d default.
     expect(screen.getByRole('button', { name: '7d' })).toHaveAttribute(
@@ -230,9 +231,10 @@ describe('TopTokenThreadsPanel', () => {
 
     render(<TopTokenThreadsPanel />);
 
-    // The cache column shows the number and a "cache" label.
-    const cacheSpan = screen.getByTitle('cache reads — never counted toward churn');
-    expect(cacheSpan).toBeInTheDocument();
+    // The cache column shows the compact number (full precision preserved in
+    // the StatValue title) and a "cache" label (THR-099).
+    const cacheSpan = screen.getByTitle('1,234,567');
+    expect(cacheSpan).toHaveTextContent('1.2M');
 
     // The "cache" label text must be present as a distinct element
     // (an inner span with its own class for styling).

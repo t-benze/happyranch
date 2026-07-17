@@ -668,9 +668,10 @@ describe('UsagePage', () => {
 
   it('each team total equals the summed burn of that team\'s agents', () => {
     const card = renderUsage03();
-    // engineering = dev_agent 1600 + code_reviewer 400 = 2000
-    expect(within(card).getByText('2,000')).toBeDefined();
-    // consultant = consultant_a 300
+    // engineering = dev_agent 1600 + code_reviewer 400 = 2000 — rendered compact
+    // via StatValue (THR-099), exact figure preserved in the title.
+    expect(within(card).getByTitle('2,000')).toHaveTextContent('2.0K');
+    // consultant = consultant_a 300 (<1000 stays exact)
     expect(within(card).getByText('300')).toBeDefined();
   });
 

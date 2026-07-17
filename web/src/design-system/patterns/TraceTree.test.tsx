@@ -38,10 +38,12 @@ describe('TraceTree', () => {
     expect(screen.getByText('Child task')).toBeInTheDocument();
   });
 
-  test('renders token annotation when cost is supplied', () => {
+  test('renders compact token annotation when cost is supplied, full precision in title', () => {
     render(wrap(<TraceTree root={node} costs={costs} density="compact" />));
-    expect(screen.getByText(/5,000 tok/)).toBeInTheDocument();
-    expect(screen.getByText(/1,200 tok/)).toBeInTheDocument();
+    // THR-099: token counts now render compact via StatValue; the exact figure
+    // is preserved in the title tooltip so nothing is lost.
+    expect(screen.getByTitle('5,000')).toHaveTextContent('5.0K');
+    expect(screen.getByTitle('1,200')).toHaveTextContent('1.2K');
     expect(screen.getByText(/\$0\.05/)).toBeInTheDocument();
   });
 
