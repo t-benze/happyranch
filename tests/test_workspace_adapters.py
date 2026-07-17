@@ -43,8 +43,8 @@ def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings,
     assert (workspace / "task_history.md").exists()
 
     data = json.loads((workspace / ".claude" / "settings.json").read_text())
-    hook_cmd = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert "repos/my-opc" in hook_cmd
+    # THR-103: repo freshness is daemon-side; no PreToolUse pull hook is baked.
+    assert data["hooks"] == {}
 
 
 def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings, tmp_dir, runtime):

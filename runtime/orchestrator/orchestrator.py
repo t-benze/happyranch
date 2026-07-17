@@ -44,6 +44,7 @@ from runtime.orchestrator.workspace_adapters import (
     inject_managed_skills,
     inject_system_contracts,
     refresh_session_skills,
+    refresh_workspace_repos,
 )
 from runtime.orchestrator.teams import TeamsRegistry
 
@@ -588,6 +589,12 @@ class Orchestrator:
         # session so edits to system/contract skills reach agents without a
         # lifecycle event (THR-070).
         refresh_session_skills(workspace, self._settings, slug=self._slug)
+
+        # THR-103: fast-forward-refresh every cloned repo so the agent has
+        # fresh code regardless of executor (claude/codex/opencode/pi).
+        # Must run BEFORE the executor subprocess starts. Failure is non-
+        # blocking: offline / dirty / non-ff / timeout are swallowed.
+        refresh_workspace_repos(workspace)
 
         # System-contract injection was done above by ensure_system_contracts_materialized
         # (TASK-2511). Do NOT call inject_system_contracts here — it would be a
