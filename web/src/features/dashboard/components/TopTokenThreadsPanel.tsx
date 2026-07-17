@@ -34,25 +34,6 @@ const TOP_N = 8;
 const BAR_W = 48; // px — SVG viewport for the churn bar
 const BAR_H = 8;
 
-/**
- * Plain-English explanations for each cryptic model label produced by
- * classifyModel() (see ../topTokens.ts). This map is a pure presentation
- * layer — the label strings themselves are never changed. Used for tooltip
- * text so the founder understands what each label means at a glance.
- */
-export const MODEL_LABEL_EXPLANATIONS: Record<string, string> = {
-  '(unknown — pre-fix)':
-    'Frozen history from before the model-population fix (pre-June 12, 2026).',
-  '(unknown — ANOMALY)':
-    'Post-cutover NULL-model session — worth investigating for parser drift.',
-  '(mixed)':
-    'Multiple models on this rollup, or NULL-model sessions mixed with observed models.',
-  '(cli-unreported)':
-    'Codex sessions that never emit a model field.',
-  '(unknown)':
-    'No sessions with model data (defensive fallback).',
-};
-
 export function TopTokenThreadsPanel(): JSX.Element {
   const [winIdx, setWinIdx] = useState(1); // default 7d
   const win = WINDOWS[winIdx];
@@ -105,12 +86,6 @@ export function TopTokenThreadsPanel(): JSX.Element {
             <li key={r.threadId} className="flex items-center gap-2">
               <span className="text-text-primary w-20 shrink-0 truncate" title={r.threadId}>
                 {r.threadId}
-              </span>
-              <span
-                className="text-text-muted min-w-0 flex-1 truncate"
-                title={MODEL_LABEL_EXPLANATIONS[r.modelLabel] ?? r.modelLabel}
-              >
-                {r.modelLabel}
               </span>
               <svg
                 width={BAR_W}

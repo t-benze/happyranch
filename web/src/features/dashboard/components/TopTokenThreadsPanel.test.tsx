@@ -1,7 +1,7 @@
 import { render, screen, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { tokens } from '@/lib/api';
-import { TopTokenThreadsPanel, MODEL_LABEL_EXPLANATIONS } from './TopTokenThreadsPanel';
+import { TopTokenThreadsPanel } from './TopTokenThreadsPanel';
 
 type TokenUsageRollup = tokens.TokenUsageRollup;
 
@@ -32,7 +32,7 @@ function loaded(data: TokenUsageRollup[]) {
 describe('TopTokenThreadsPanel', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('ranks by churn DESC, separates cache from total, and labels models', () => {
+  it('ranks by churn DESC and separates cache from total', () => {
     mockHook.mockReturnValue(
       loaded([
         // Big cache, tiny churn — must rank BELOW the high-churn thread.
@@ -69,16 +69,14 @@ describe('TopTokenThreadsPanel', () => {
       'THR-low',
     ]);
 
-    // High-churn row: observed model id verbatim, churn total shown compact
-    // (THR-099) with full precision preserved in the StatValue title.
+    // High-churn row: churn total shown compact (THR-099) with full precision
+    // preserved in the StatValue title.
     const high = items[0];
-    expect(within(high).getByText('claude-opus-4-8[1m]')).toBeInTheDocument();
     expect(within(high).getByTitle('1,700')).toHaveTextContent('1.7K');
 
-    // Low row: codex NULL → (cli-unreported); the huge cache number is shown
-    // (compact, full precision in title) but is NOT the churn total (15).
+    // Low row: the huge cache number is shown (compact, full precision in
+    // title) but is NOT the churn total (15).
     const low = items[1];
-    expect(within(low).getByText('(cli-unreported)')).toBeInTheDocument();
     expect(within(low).getByTitle('15')).toHaveTextContent('15'); // <1000 stays exact
     expect(within(low).getByTitle('9,999,999')).toHaveTextContent('10.0M');
 
@@ -107,107 +105,6 @@ describe('TopTokenThreadsPanel', () => {
     });
     render(<TopTokenThreadsPanel />);
     expect(screen.getByText('Failed to load token usage.')).toBeInTheDocument();
-  });
-
-  // BUG 1 — opaque model labels: the model-label span must carry a plain-English
-  // explanation in its title attribute for each cryptic label string.
-  it('BUG 1: explains each cryptic model label with a plain-English tooltip', () => {
-    // Produce one row per cryptic label that appears in production.
-    const labelsUnderTest: string[] = [];
-    const rows: TokenUsageRollup[] = [];
-
-    // (unknown — pre-fix)
-    rows.push(
-      rollup({
-        thread_id: 'THR-prefix',
-        input_tokens: 30,
-        output_tokens: 20,
-        total_tokens: 50,
-        non_null_sessions: 0,
-        null_codex_sessions: 0,
-        null_claude_sessions: 2,
-        null_claude_max_created_at: '2026-06-10T09:00:00+00:00',
-      }),
-    );
-    labelsUnderTest.push('(unknown — pre-fix)');
-
-    // (unknown — ANOMALY)
-    rows.push(
-      rollup({
-        thread_id: 'THR-anomaly',
-        input_tokens: 40,
-        output_tokens: 30,
-        total_tokens: 70,
-        non_null_sessions: 0,
-        null_codex_sessions: 0,
-        null_claude_sessions: 1,
-        null_claude_max_created_at: '2026-06-13T00:00:00+00:00',
-      }),
-    );
-    labelsUnderTest.push('(unknown — ANOMALY)');
-
-    // (mixed)
-    rows.push(
-      rollup({
-        thread_id: 'THR-mixed',
-        input_tokens: 50,
-        output_tokens: 40,
-        total_tokens: 90,
-        non_null_sessions: 2,
-        model_distinct: 2,
-        model_any: 'z',
-      }),
-    );
-    labelsUnderTest.push('(mixed)');
-
-    // (cli-unreported)
-    rows.push(
-      rollup({
-        thread_id: 'THR-cli',
-        input_tokens: 20,
-        output_tokens: 10,
-        total_tokens: 30,
-        non_null_sessions: 0,
-        null_codex_sessions: 3,
-        null_claude_sessions: 0,
-      }),
-    );
-    labelsUnderTest.push('(cli-unreported)');
-
-    // (unknown) — defensive fallback (no sessions at all)
-    rows.push(
-      rollup({
-        thread_id: 'THR-unknown',
-        input_tokens: 5,
-        output_tokens: 5,
-        total_tokens: 10,
-        non_null_sessions: 0,
-        null_codex_sessions: 0,
-        null_claude_sessions: 0,
-        sessions: 0,
-      }),
-    );
-    labelsUnderTest.push('(unknown)');
-
-    mockHook.mockReturnValue(loaded(rows));
-    render(<TopTokenThreadsPanel />);
-
-    const items = screen.getAllByRole('listitem');
-    expect(items).toHaveLength(labelsUnderTest.length);
-    // Collect every rendered model-label span by scanning for the label text.
-    for (const label of labelsUnderTest) {
-      const span = screen.getByText(label, { selector: 'span' });
-      expect(span).toBeInTheDocument();
-      // The title attribute must contain a plain-English explanation, NOT just
-      // repeat the cryptic label.
-      const title = span.getAttribute('title');
-      expect(title).not.toBeNull();
-      expect(title).not.toBe(label); // must be an explanation, not the label
-      expect(title!.length).toBeGreaterThan(label.length + 10); // substantive
-      // The explanation map must have an entry for this label.
-      expect(MODEL_LABEL_EXPLANATIONS[label]).toBeDefined();
-      expect(title).toBe(MODEL_LABEL_EXPLANATIONS[label]);
-    }
   });
 
   // BUG 2 — cache count cramped: the cache number must render with a
