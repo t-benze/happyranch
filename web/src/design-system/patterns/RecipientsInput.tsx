@@ -81,8 +81,8 @@ export function RecipientsInput({
 
   const matches = useMemo(() => {
     if (!popup) return [];
+    if (popup.query.trim().length === 0) return [];
     const q = popup.query.toLowerCase();
-    // Empty query (e.g. caret right after a comma+space) shows all agents.
     const taken = new Set(
       value.split(',').map((s) => s.trim()).filter(Boolean),
     );

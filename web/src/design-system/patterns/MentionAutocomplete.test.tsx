@@ -72,4 +72,20 @@ describe('MentionAutocomplete', () => {
     await user.keyboard('{ArrowDown}{Enter}');
     expect(onSelect).toHaveBeenCalledWith(AGENTS[1]);
   });
+
+  it('mouse click on a suggestion selects it (onMouseDown -> onSelect)', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(
+      <MentionAutocomplete
+        anchor={ANCHOR}
+        matches={AGENTS}
+        onSelect={onSelect}
+        onDismiss={vi.fn()}
+      />,
+    );
+    // Click the second agent (content_writer)
+    await user.click(screen.getByText('content_writer'));
+    expect(onSelect).toHaveBeenCalledWith(AGENTS[1]);
+  });
 });
