@@ -1,4 +1,4 @@
-"""Executor registration routes — THR-052 PR-2.
+"""Executor registration routes — THR-052 PR-2 / THR-088 / THR-107.
 
 POST /api/v1/orgs/{slug}/executors/conformance-checkin
     Loopback-only, scoped-token-only. Records a conformance step arrival
@@ -8,8 +8,10 @@ POST /api/v1/orgs/{slug}/executors/conformance-checkin
 
 POST /api/v1/orgs/{slug}/executors/register
     Loopback-only, scoped-token-only. Consumes a fully-conformant
-    registration token, validates the profile, atomically writes it into
-    org/config.yaml, and audits the write.
+    org-scoped registration token, validates the profile, and atomically
+    writes it to the machine-global runtime store (THR-107: the per-org
+    config.yaml executor_profiles surface is removed — both this route
+    and the runtime-level route persist to the same store).
 """
 from __future__ import annotations
 
@@ -24,12 +26,6 @@ from runtime.orchestrator.executor_binary_registry import set_binary, validate_b
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
-from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import (
-    OrgConfigError,
-    load_org_config,
-    write_executor_profile_entry,
-)
 from runtime.orchestrator.executor_registry import get_registry, ExecutorRegistry
 from runtime.orchestrator.executor_registry import (
     ExecutorProfileCollisionError,
@@ -261,7 +257,13 @@ def register_executor(
     body: ExecutorRegisterRequest,
     org: OrgDep,
 ) -> ExecutorRegisterResponse:
-    """Register a custom executor profile and write it to org/config.yaml.
+    """Register a custom executor profile via an org-scoped token.
+
+    THR-107: the profile is persisted to the machine-global runtime store
+    (``<daemon-home>/executor_profiles.yaml``) — the per-org config.yaml
+    executor_profiles surface is removed. The org-scoped token still gates
+    WHO may register; the resulting definition is machine-global, exactly
+    as with ``POST /executors/runtime/register``.
 
     Requirements (ALL must pass):
     1. Token is valid, unexpired, unconsumed, loopback (checked by
@@ -271,18 +273,17 @@ def register_executor(
     4. Conformance challenge is fully complete.
     5. Static validation passes (valid adapter, command on PATH, valid
        argv_template, no builtin collision).
-    6. Token is atomically consumed BEFORE any durable side effects.
-       Consume is the atomic validate-and-mark gate: if it returns None
-       (expired, already-consumed, wrong-org) the route aborts with 401
-       and no config/audit write occurs.
-    7. On successful consume: write durable config first, then register
-       the in-memory profile. Durable config is the source of truth;
-       in-memory registration only happens after the config write
-       succeeds so that a config-write failure does not leave a stale
+    6. Token is atomically reserved BEFORE any durable side effects;
+       committed only on clean success, released on any failure so the
+       token stays valid for retry within its unexpired TTL.
+    7. On successful reserve: write the durable runtime store first, then
+       register the in-memory profile. The durable store is the source of
+       truth; in-memory registration only happens after the store write
+       succeeds so that a write failure does not leave a stale
        (unaudited, non-durable) profile in the process-wide registry.
 
     On success returns 200. On any validation failure returns 4xx
-    without touching the config.
+    without touching the store.
     """
     token_value = _extract_token(request)
     store = request.app.state.daemon.registration_token_store
@@ -370,10 +371,11 @@ def register_executor(
     #    reserve (step 6) independently.  The lock serialises the
     #    write+register so that a double-check inside the lock sees the
     #    winner's published profile and rejects the loser with 409.
-    #    Without this lock, the loser's config write would overwrite the
-    #    winner's before the winner's register_custom_profile completes,
-    #    and the loser's register_custom_profile would then raise
-    #    ExecutorProfileCollisionError — leaving durable config (loser's)
+    #    Without this lock, the loser's runtime-store write would
+    #    overwrite the winner's before the winner's
+    #    register_custom_profile completes, and the loser's
+    #    register_custom_profile would then raise
+    #    ExecutorProfileCollisionError — leaving durable store (loser's)
     #    and in-memory registry (winner's) diverged with no audit.
     #
     #    The lock is acquired AFTER reserve so the existing same-token
@@ -393,22 +395,19 @@ def register_executor(
                     f"registered with a different definition.",
                 )
 
-        # 8. Durable: write config.yaml entry.
+        # 8. Durable: write the machine-global runtime store (THR-107 —
+        #    the per-org config.yaml executor_profiles surface is removed).
         config_entry = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
             "adapter": body.adapter,
         }
-        paths = OrgPaths(root=org.root)
-        org_config_before = load_org_config(paths)
-        before_snapshot = dict(org_config_before.executor_profiles)
-
         try:
-            write_executor_profile_entry(paths, profile_name, config_entry)
-        except OrgConfigError as exc:
+            save_runtime_profile(profile_name, config_entry)
+        except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Config write error: {exc}",
+                detail=f"Runtime profile write error: {exc}",
             )
 
         # 9. In-memory: register the profile in the process-wide registry.
@@ -424,24 +423,23 @@ def register_executor(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             )
-
-        # 10. Audit the write
-        org_config_after = load_org_config(paths)
-        after_snapshot = dict(org_config_after.executor_profiles)
-        logger = AuditLogger(org.db)
-        logger.log_org_config_write(
-            section="executor_profiles",
-            tiers=[profile_name],
-            before=before_snapshot,
-            after=after_snapshot,
-            actor="founder",
-        )
     except BaseException:
         # Release reservation on ANY failure so the token stays valid
         # for retry within its unexpired TTL.
         store.release(token_value, slug)
         raise
     else:
+        # 10. Audit the successful registration. The definition is
+        #     machine-global (runtime store), so the audit row goes to the
+        #     dedicated runtime-audit.db under daemon_home() — the same
+        #     path as POST /executors/runtime/register — NOT to a per-org
+        #     org-config audit (there is no org-config write anymore).
+        _audit_runtime_registration(
+            profile_name=profile_name,
+            command=body.command,
+            argv_template=body.argv_template,
+            adapter=body.adapter,
+        )
         # COMMIT (permanent consume) ONLY on clean success.
         store.commit(token_value, slug)
     finally:

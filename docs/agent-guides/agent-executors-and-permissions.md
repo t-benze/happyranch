@@ -5,8 +5,8 @@
 authoritative store. The workspace ``agent.yaml`` is no longer read or
 written for executor resolution. The executor is resolved against the
 **executor registry** — capability-registered, not name-listed (THR-052).
-Four **built-in** profiles ship with the runtime; custom CLI profiles can
-be registered in org config.
+Four **built-in** profiles ship with the runtime; custom CLI profiles are
+registered in the machine-global runtime store (THR-107 — see below).
 
 **Built-in profiles:**
 
@@ -40,27 +40,35 @@ Missing values default to `claude`. All executors share `protocol/skills/`.
 **Custom CLI profiles** (example — OpenClaw):
 
 Any agentic CLI that accepts a prompt via a positional flag and returns
-structured output can register as a custom profile in the org's
-`config.yaml`. A custom profile declares an `argv_template` with supported
-placeholders (`{prompt}`, `{timeout_seconds}`, `{workspace}`) and an
-`adapter` for workspace preparation (one of `claude`, `codex`, `opencode`,
-`pi` — typically `pi` for AGENTS.md-based CLIs).
+structured output can register as a custom profile. **THR-107:** custom
+profiles are defined exclusively in the **machine-global runtime store**
+(`<daemon-home>/executor_profiles.yaml`, typically
+`~/.happyranch/executor_profiles.yaml`) — registered once per machine and
+visible to EVERY org. The legacy per-org `org/config.yaml`
+`executor_profiles` block is removed: it is no longer parsed, and a
+one-shot startup migration lifts any lingering block into the runtime
+store with a loud deprecation warning (name collisions across orgs are
+logged and skipped — the existing store definition wins). A custom
+profile declares an `argv_template` with supported placeholders
+(`{prompt}`, `{timeout_seconds}`, `{workspace}`) and an `adapter` for
+workspace preparation (one of `claude`, `codex`, `opencode`, `pi` —
+typically `pi` for AGENTS.md-based CLIs).
 
 ```yaml
-# org/config.yaml
-executor_profiles:
-  openclaw:
-    command: openclaw
-    argv_template:
-      - openclaw
-      - agent
-      - --local
-      - --json
-      - --message
-      - "{prompt}"
-      - --timeout
-      - "{timeout_seconds}"
-    adapter: pi
+# ~/.happyranch/executor_profiles.yaml (machine-global runtime store;
+# written by the registration flow — not hand-edited)
+openclaw:
+  command: openclaw
+  argv_template:
+    - openclaw
+    - agent
+    - --local
+    - --json
+    - --message
+    - "{prompt}"
+    - --timeout
+    - "{timeout_seconds}"
+  adapter: pi
 ```
 
 Custom profiles use the `GenericCliExecutor` which validates the argv template
@@ -137,9 +145,11 @@ The register route uses a per-profile-name lock so two concurrent registrations
 for the same profile name cannot both pass the preflight collision check before
 either publishes. The write order is:
 
-1. **Consume** the token atomically (reserve → durable config write → in-memory
+1. **Reserve** the token atomically (reserve → durable store write → in-memory
    registry → audit → commit; release on any failure).
-2. **Write** to `org/config.yaml` (durable, audited).
+2. **Write** to the machine-global runtime store
+   (`<daemon-home>/executor_profiles.yaml`) — durable; audited in
+   `runtime-audit.db` under the daemon home (THR-107: no org-config write).
 3. **Register** in the process-wide in-memory registry (only after the durable
    write succeeds).
 
@@ -154,8 +164,8 @@ master-bearer-authed) and renders two copy-paste blocks:
 1. **Conformance prompt** — embeds the `hrreg_` token, the three conformance
    steps with descriptions, and the exact `happyranch executors register`
    command to run.
-2. **Config snippet** — the resulting `executor_profiles` YAML entry the daemon
-   will write on successful registration.
+2. **Config snippet** — the resulting profile entry the daemon will write
+   to the machine-global runtime store on successful registration.
 
 ### Candidate CLI verb
 
@@ -178,8 +188,9 @@ registration payload.
 
 ### Registration ≠ enrollment
 
-A registered profile becomes a **selectable executor option** in org config;
-it is **not** an agent enrollment. Assigning an agent to a registered executor
+A registered profile becomes a **selectable executor option** (machine-global,
+visible to every org); it is **not** an agent enrollment. Assigning an agent
+to a registered executor
 is a separate founder gate — see [Switching an Existing Agent's
 Executor](#switching-an-existing-agents-executor) and
 `protocol/skills/manage-agent/SKILL.md`. Registration only adds the profile
@@ -196,7 +207,7 @@ opencode: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default
 
 Pi: `PiExecutor.run` invokes `pi -p ... --mode json` from the agent workspace. Use external containment when command/tool restriction matters.
 
-Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in org `config.yaml`). Founder approval bootstraps the right workspace surface. See `protocol/skills/manage-agent/SKILL.md`.
+Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in the machine-global runtime store). Founder approval bootstraps the right workspace surface. See `protocol/skills/manage-agent/SKILL.md`.
 
 **THR-095:** Repos are configured in the **org/agents/<name>.md frontmatter**
 (``AgentDef.repos``) — the single authoritative store. The workspace

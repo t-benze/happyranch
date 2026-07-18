@@ -303,3 +303,182 @@ class TestBuildStateAutoProvision:
         # Active pointer unchanged
         reg_after = runtimes.load()
         assert reg_after.active.resolve() == rt_path.resolve()
+
+
+# ── THR-107: one-shot migration of legacy per-org executor_profiles ─────
+
+
+def _write_org_config(org_root: Path, body: str) -> None:
+    (org_root / "org" / "config.yaml").write_text(body)
+
+
+def _agent_with_executor(org_root: Path, executor: str) -> None:
+    """Seed an engineering team + an active agent declaring ``executor``."""
+    (org_root / "org" / "teams.yaml").write_text(
+        "teams:\n  engineering:\n    manager: engineering_manager\n"
+    )
+    agent = AgentDef(
+        name="dev_agent",
+        team="engineering",
+        role="worker",
+        executor=executor,
+        allow_rules=(),
+        repos={},
+        enrolled_by="founder",
+        enrolled_at_task=None,
+        enrolled_at=datetime(2026, 6, 30, tzinfo=timezone.utc),
+        system_prompt="You are the dev agent.\n",
+        description="Dev agent",
+    )
+    (OrgPaths(root=org_root).agents_dir / "dev_agent.md").write_text(
+        render_agent_text(agent)
+    )
+
+
+def test_from_runtime_migrates_legacy_block_and_registers_same_boot(
+    tmp_path: Path, monkeypatch, caplog,
+) -> None:
+    """THR-107 upgrade-boot guarantee: an org whose config.yaml still
+    carries a legacy executor_profiles block AND whose agents declare that
+    executor must load on the FIRST post-upgrade boot. The migration lifts
+    the block into the machine-global runtime store BEFORE the store is
+    loaded, so the profile registers in the same boot."""
+    import logging
+
+    daemon_home = tmp_path / ".happyranch"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+    reset_registry()
+    try:
+        rt = RuntimeDir.init(tmp_path / "rt")
+        org_root = rt.orgs_dir / "alpha"
+        _seed_org(org_root)
+        _write_org_config(org_root, """
+executor_profiles:
+  openclaw:
+    command: echo
+    adapter: pi
+    argv_template:
+      - echo
+      - "{prompt}"
+""")
+        _agent_with_executor(org_root, "openclaw")
+
+        with caplog.at_level(logging.WARNING):
+            state = DaemonState.from_runtime(rt, Settings())
+
+        # Org loaded on the upgrade boot — NOT broken.
+        assert "alpha" in state.orgs, state.broken_orgs
+
+        # Profile registered in the same boot (via the runtime store).
+        assert get_registry().is_registered("openclaw")
+
+        # Durably lifted into the machine-global runtime store.
+        store_path = daemon_home / "executor_profiles.yaml"
+        assert store_path.exists()
+        store = yaml.safe_load(store_path.read_text())
+        assert store["openclaw"]["command"] == "echo"
+
+        # Loud deprecation warning names the org and the migrated entry.
+        assert "openclaw" in caplog.text
+        assert "alpha" in caplog.text
+        assert (
+            "deprecat" in caplog.text.lower()
+            or "removed" in caplog.text.lower()
+        )
+    finally:
+        reset_registry()
+
+
+def test_from_runtime_migration_collision_logs_skips_and_boots_both_orgs(
+    tmp_path: Path, monkeypatch, caplog,
+) -> None:
+    """THR-107 collision edge: two orgs carry the SAME legacy profile name
+    with DIFFERENT definitions. The first lift wins; the conflicting one
+    is logged + skipped; the daemon still boots BOTH orgs (no crash, no
+    broken org)."""
+    import logging
+
+    daemon_home = tmp_path / ".happyranch"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+    reset_registry()
+    try:
+        rt = RuntimeDir.init(tmp_path / "rt")
+        for slug, command in (("alpha", "echo"), ("beta", "printf")):
+            org_root = rt.orgs_dir / slug
+            _seed_org(org_root)
+            _write_org_config(org_root, f"""
+executor_profiles:
+  shared:
+    command: {command}
+    adapter: pi
+    argv_template:
+      - {command}
+      - "{{prompt}}"
+""")
+
+        with caplog.at_level(logging.WARNING):
+            state = DaemonState.from_runtime(rt, Settings())
+
+        # BOTH orgs boot — the collision never crashes an org load.
+        assert sorted(state.orgs.keys()) == ["alpha", "beta"]
+        assert state.broken_orgs == {}
+
+        # Exactly one definition wins (first lift in iteration order);
+        # the other is skipped with a warning.
+        store = yaml.safe_load(
+            (daemon_home / "executor_profiles.yaml").read_text()
+        )
+        assert store["shared"]["command"] in ("echo", "printf")
+        registered = get_registry().get_profile("shared")
+        assert registered is not None
+        assert registered.command == store["shared"]["command"]
+        assert "shared" in caplog.text
+        assert "skip" in caplog.text.lower()
+    finally:
+        reset_registry()
+
+
+def test_add_org_lifts_legacy_block_without_registering(
+    tmp_path: Path, monkeypatch, caplog,
+) -> None:
+    """THR-107 strand-proofing for orgs attached AFTER daemon boot: add_org
+    lifts a legacy block into the runtime store (loud, durable) but does
+    NOT register it into the process registry — the store load at next
+    daemon startup (or an explicit runtime registration) activates it."""
+    import asyncio
+    import logging
+
+    daemon_home = tmp_path / ".happyranch"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+    reset_registry()
+    try:
+        rt = RuntimeDir.init(tmp_path / "rt")
+        state = DaemonState.from_runtime(rt, Settings())
+
+        # Org appears on disk AFTER boot (init/re-attach path).
+        org_root = rt.orgs_dir / "lateorg"
+        _seed_org(org_root)
+        _write_org_config(org_root, """
+executor_profiles:
+  lateclaw:
+    command: echo
+    adapter: pi
+    argv_template:
+      - echo
+      - "{prompt}"
+""")
+
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(state.add_org("lateorg"))
+
+        assert "lateorg" in state.orgs
+        # Lifted durably…
+        store = yaml.safe_load(
+            (daemon_home / "executor_profiles.yaml").read_text()
+        )
+        assert "lateclaw" in store
+        # …but NOT registered by the org path (store load owns that).
+        assert not get_registry().is_registered("lateclaw")
+        assert "lateclaw" in caplog.text
+    finally:
+        reset_registry()

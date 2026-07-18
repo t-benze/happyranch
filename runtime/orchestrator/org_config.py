@@ -193,10 +193,6 @@ class OrgConfig:
     # of genuine revise cycles (worker-of-record re-delegations) before a
     # deliberate stop-with-best. 0 = disabled (today's behavior unchanged).
     max_revise_rounds: int = 0
-    # THR-052: per-org custom executor profiles. Each entry maps a profile name
-    # to {command, argv_template, adapter?}. Parsed but NOT validated for PATH
-    # resolution at parse time (that happens during registration).
-    executor_profiles: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def load_from_text(cls, text: str, path: str = "<text>") -> "OrgConfig":
@@ -914,27 +910,11 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
             ),
         )
 
-    # THR-052: executor_profiles — parse and retain but do NOT validate
-    # command resolution here. Registration (which resolves shutil.which)
-    # happens during OrgState.load so profiles are registered before any
-    # route handler validates executors.
-    executor_profiles: dict[str, dict] = {}
-    exec_profiles_block = data.get("executor_profiles")
-    if exec_profiles_block is not None:
-        if not isinstance(exec_profiles_block, dict):
-            raise OrgConfigError(
-                f"{path}: executor_profiles must be a mapping"
-            )
-        for key, val in exec_profiles_block.items():
-            if not isinstance(key, str) or not key:
-                raise OrgConfigError(
-                    f"{path}: executor_profiles keys must be non-empty strings"
-                )
-            if not isinstance(val, dict):
-                raise OrgConfigError(
-                    f"{path}: executor_profiles.{key} must be a mapping"
-                )
-        executor_profiles = dict(exec_profiles_block)
+    # THR-107: the legacy per-org executor_profiles block is NO LONGER
+    # parsed — custom executor profiles live exclusively in the
+    # machine-global runtime store (runtime_executor_store.py). A lingering
+    # block in config.yaml is treated like any other unknown key (ignored
+    # here); the one-shot startup migration lifts and loudly deprecates it.
 
     return OrgConfig(
         session_timeout_seconds=timeout,
@@ -945,7 +925,6 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
         max_revise_rounds=max_revise,
         memory_search=search_cfg,
         memory_compaction=comp_cfg,
-        executor_profiles=executor_profiles,
         **threads_kwargs,
     )
 
@@ -1008,7 +987,7 @@ def save_org_config(paths: OrgPaths, patch: dict) -> None:
     so a bad patch is still rejected.
 
     The file write is additive-only: non-writable keys (timezone, memory_*,
-    max_revise_rounds, executor_profiles) remain file-persisted.
+    max_revise_rounds) remain file-persisted.
     """
     config_path = paths.org_config_path
 
@@ -1180,7 +1159,7 @@ def _strip_writable_keys_from_config(paths: OrgPaths) -> None:
 
     Called ONLY from seed_org_settings_from_config (guarded by sentinel).
     After this, the file retains only non-migrated fields (timezone,
-    executor_profiles, memory_*, max_revise_rounds).
+    memory_*, max_revise_rounds).
     """
     config_path = paths.org_config_path
     if not config_path.exists():
@@ -1421,7 +1400,7 @@ def write_org_setting_to_db(
     # THR-095 F1 fix: no longer mutate config.yaml on every PUT.
     # Validation happens in-memory above; the DB is the single authoritative
     # store for the 4 web-writable knobs.  Non-migrated fields (timezone,
-    # executor profiles) stay untouched in config.yaml.
+    # memory_*) stay untouched in config.yaml.
 
 
 def _current_raw_dict_from_config(paths: OrgPaths) -> dict:
@@ -1434,80 +1413,6 @@ def _current_raw_dict_from_config(paths: OrgPaths) -> dict:
         if isinstance(raw, dict):
             return dict(raw)
     return {}
-
-
-# ── Executor profile config write (THR-052 PR-2) ───────────────────────
-#
-# A dedicated helper for adding/updating a single executor_profiles entry.
-# This is deliberately separate from save_org_config (the master-bearer
-# settings PATCH path) so executor_profiles is NOT writable through the
-# generic settings surface. Only the conformance-gated registration route
-# calls this.
-
-
-def write_executor_profile_entry(
-    paths: OrgPaths,
-    name: str,
-    entry: dict,
-) -> None:
-    """Atomically add or update a single executor_profiles.<name> entry
-    in org/config.yaml.
-
-    1. Read the current raw dict from disk.
-    2. Deep-merge ``entry`` into ``raw["executor_profiles"][name]``.
-       All other keys (both top-level and within executor_profiles) are
-       carried through verbatim.
-    3. Validate the candidate via ``_build_org_config``.
-       If invalid, raise ``OrgConfigError``.
-    4. Atomic write via temp file + ``os.replace``.
-
-    This function never adds executor_profiles to ``_ORG_WRITABLE_KEYS`` —
-    it is the ONLY write path for this section.
-    """
-    config_path = paths.org_config_path
-
-    # 1. Read current raw dict
-    if config_path.exists():
-        try:
-            raw = yaml.safe_load(config_path.read_text()) or {}
-        except yaml.YAMLError as exc:
-            raise OrgConfigError(f"malformed YAML in {config_path}: {exc}") from exc
-        if not isinstance(raw, dict):
-            raise OrgConfigError(f"{config_path}: top-level must be a mapping")
-    else:
-        raw = {}
-
-    # 2. Deep-merge the single entry
-    raw = dict(raw)
-    profiles = dict(raw.get("executor_profiles", {}))
-    if name in profiles and isinstance(profiles[name], dict) and isinstance(entry, dict):
-        # Merge into existing entry (update case)
-        profiles[name] = _deep_merge(profiles[name], entry)
-    else:
-        profiles[name] = entry
-    raw["executor_profiles"] = profiles
-
-    # 3. Validate candidate via the authoritative validator
-    try:
-        _build_org_config(raw, str(config_path))
-    except OrgConfigError:
-        raise  # re-raise so the route can return 422
-
-    # 4. Atomic write
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(
-        prefix=".org-config.", suffix=".yaml", dir=str(config_path.parent)
-    )
-    try:
-        with os.fdopen(fd, "w") as fh:
-            yaml.safe_dump(raw, fh, sort_keys=False)
-        os.replace(tmp, config_path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
 
 
 # ── Skills eligibility config write (THR-092 Phase 3a) ──────────────────
