@@ -646,94 +646,119 @@ describe('SettingsPage — Agents section', () => {
   });
 });
 
-describe('SettingsPage — Executors section', () => {
-  beforeEach(() => {
-    stubBaseHandlers();
+describe('SettingsPage — Executors section (shared connect flow, THR-107 S2)', () => {
+  // The stale THR-052 registration-token generator (name/command/argv/adapter
+  // form → legacy /auth/registration-token → static conformance prompt +
+  // config.yaml snippet) was replaced by the SAME chrome-free <ConnectFlow>
+  // onboarding uses: mode toggle → runtime-token mint → copy-paste prompt →
+  // live GET /health/prereqs poll → connected card.
+  const RUNTIME_TOKEN = 'hrreg_runtime_token_xyz789';
+
+  function stubMintOk() {
     server.use(
-      http.post('/api/v1/auth/registration-token', () =>
+      http.post('/api/v1/auth/registration-token/runtime', () =>
         HttpResponse.json({
-          token: 'hrreg_test_token_abc123',
+          token: RUNTIME_TOKEN,
           expires_at: Math.floor(Date.now() / 1000) + 600,
         }),
       ),
     );
+  }
+
+  beforeEach(() => {
+    stubBaseHandlers();
+    stubMintOk();
+    // Default: nothing registered → the poll never matches, flow stays waiting.
+    server.use(
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({ prereqs: [] }),
+      ),
+      // The sibling ExecutorBinariesSection ("CLI binary paths") also mounts on
+      // this panel — stub its list so it renders cleanly and its own banner
+      // doesn't leak into these connect-flow assertions.
+      http.get('/api/v1/executor-binaries', () =>
+        HttpResponse.json({ entries: [] }),
+      ),
+    );
   });
 
-  test('renders registration form with name, command, argv_template, adapter', async () => {
+  test('renders the shared connect flow (built-in mode) instead of the stale generator', async () => {
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
     await waitFor(() =>
-      expect(screen.getByTestId('executor-registration-form')).toBeInTheDocument(),
+      expect(
+        screen.getByRole('button', { name: /generate connect prompt/i }),
+      ).toBeInTheDocument(),
     );
 
-    expect(screen.getByLabelText('Profile name')).toBeInTheDocument();
-    expect(screen.getByLabelText(/Command/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/argv_template/)).toBeInTheDocument();
-    expect(screen.getByLabelText('Adapter')).toBeInTheDocument();
+    // Built-in mode: the agentic-CLI dropdown + the custom-mode toggle.
+    expect(screen.getByLabelText('Pick your agentic CLI')).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /generate registration token/i }),
+      screen.getByRole('button', { name: /connect a custom cli instead/i }),
     ).toBeInTheDocument();
+
+    // The orthogonal read-only notice is preserved.
+    expect(
+      screen.getByText('Per-agent executor assignment'),
+    ).toBeInTheDocument();
+
+    // The stale generator + its legacy copy are GONE.
+    expect(
+      screen.queryByTestId('executor-registration-form'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('conformance-prompt')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('config-snippet')).not.toBeInTheDocument();
+    expect(screen.queryByText(/happyranch executors register/i)).toBeNull();
+    expect(screen.queryByText(/config\.yaml/i)).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /generate registration token/i }),
+    ).toBeNull();
   });
 
-  test('generate button calls mint route and renders conformance prompt + config snippet', async () => {
+  test('custom mode: name → runtime-token mint → copy-paste prompt + live poll waiting state', async () => {
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
     await waitFor(() =>
-      expect(screen.getByTestId('executor-registration-form')).toBeInTheDocument(),
+      expect(
+        screen.getByRole('button', { name: /generate connect prompt/i }),
+      ).toBeInTheDocument(),
     );
 
-    // Fill the form
-    await user.type(screen.getByLabelText('Profile name'), 'my-exec');
-    await user.type(screen.getByLabelText(/Command/), 'my-cli');
-    await user.type(
-      screen.getByLabelText(/argv_template/),
-      '{prompt} --timeout {timeout_seconds}',
-    );
-
-    // Submit
     await user.click(
-      screen.getByRole('button', { name: /generate registration token/i }),
+      screen.getByRole('button', { name: /connect a custom cli instead/i }),
+    );
+    await user.type(screen.getByLabelText('Name this CLI'), 'my-cli');
+    await user.click(
+      screen.getByRole('button', { name: /generate connect prompt/i }),
     );
 
-    // Wait for the results
+    // Waiting body: prompt block carries the minted runtime token + the
+    // ratified profile register route (NOT the legacy CLI / config.yaml).
     await waitFor(() =>
-      expect(screen.getByTestId('conformance-prompt')).toBeInTheDocument(),
+      expect(screen.getByText(/Waiting for/i)).toBeInTheDocument(),
     );
-    await waitFor(() =>
-      expect(screen.getByTestId('config-snippet')).toBeInTheDocument(),
-    );
-
-    // Prompt should contain the token
-    const prompt = screen.getByTestId('conformance-prompt');
-    expect(prompt.textContent).toContain('hrreg_test_token_abc123');
+    const prompt = screen.getByText(/Authorization: Bearer/i);
+    expect(prompt.textContent).toContain(RUNTIME_TOKEN);
+    expect(prompt.textContent).toContain('/executors/runtime/register');
+    expect(prompt.textContent).not.toContain('register-binary');
     expect(prompt.textContent).toContain('workspace_access');
     expect(prompt.textContent).toContain('loopback_reachable');
     expect(prompt.textContent).toContain('cli_callback');
-
-    // Prompt must use --exec-command (not --command) matching the CLI arg name (FINDING 1)
-    expect(prompt.textContent).toContain('--exec-command');
-    // Prompt must use --argv-template-json with a valid JSON array (FINDING 2)
-    expect(prompt.textContent).toContain('--argv-template-json');
-    // The JSON array must be valid JSON wrapping argv elements.
-    // userEvent.type interprets {…} as special-key syntax, so only
-    // --timeout survives from the typed '{prompt} --timeout {timeout_seconds}'.
-    // The critical check: --argv-template-json emits properly quoted JSON.
-    expect(prompt.textContent).toMatch(
-      /--argv-template-json\s+'\[.*\]'/,
-    );
-
-    // Config snippet should contain the profile
-    const snippet = screen.getByTestId('config-snippet');
-    expect(snippet.textContent).toContain('my-exec');
-    expect(snippet.textContent).toContain('my-cli');
-    expect(snippet.textContent).toContain('pi');
+    // No legacy CLI / config.yaml copy anywhere in the flow.
+    expect(prompt.textContent).not.toContain('executors register');
+    expect(prompt.textContent).not.toContain('config.yaml');
   });
 
-  test('shows error on mint failure', async () => {
+  test('custom mode: the prereqs poll flips to the register-real connected card', async () => {
+    // Registered profile appears in prereqs (present stays false for a profile).
     server.use(
-      http.post('/api/v1/auth/registration-token', () =>
-        HttpResponse.json({ detail: 'not allowed' }, { status: 401 }),
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [
+            { tool: 'my-cli', present: false, path: null, hint: '' },
+          ],
+        }),
       ),
     );
 
@@ -741,39 +766,84 @@ describe('SettingsPage — Executors section', () => {
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
     await waitFor(() =>
-      expect(screen.getByTestId('executor-registration-form')).toBeInTheDocument(),
+      expect(
+        screen.getByRole('button', { name: /generate connect prompt/i }),
+      ).toBeInTheDocument(),
     );
 
-    await user.type(screen.getByLabelText('Profile name'), 'bad-exec');
-    await user.type(screen.getByLabelText(/Command/), 'bad-cli');
-    await user.type(screen.getByLabelText(/argv_template/), '{prompt}');
     await user.click(
-      screen.getByRole('button', { name: /generate registration token/i }),
+      screen.getByRole('button', { name: /connect a custom cli instead/i }),
+    );
+    await user.type(screen.getByLabelText('Name this CLI'), 'my-cli');
+    await user.click(
+      screen.getByRole('button', { name: /generate connect prompt/i }),
+    );
+
+    // Connected card: Settings-context subtitle (no "manage from Settings"
+    // clause), register-real name + path, and "Connect another".
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /connect another/i }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/available to every org/i)).toBeInTheDocument();
+    expect(screen.queryByText(/manage your CLIs anytime from Settings/i)).toBeNull();
+    expect(screen.getByText('Registered at')).toBeInTheDocument();
+    expect(screen.getByText('on PATH')).toBeInTheDocument();
+    expect(screen.getAllByText('my-cli').length).toBeGreaterThan(0);
+  });
+
+  test('built-in mode: dropdown → mint → prompt targets register-binary', async () => {
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    const select = await screen.findByLabelText('Pick your agentic CLI');
+    // Pick the first real kind (skip the placeholder option).
+    const kind = within(select).getAllByRole('option')[1] as HTMLOptionElement;
+    await user.selectOptions(select, kind.value);
+    await user.click(
+      screen.getByRole('button', { name: /generate connect prompt/i }),
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId('registration-error')).toBeInTheDocument(),
+      expect(screen.getByText(/Waiting for/i)).toBeInTheDocument(),
     );
+    const prompt = screen.getByText(/Authorization: Bearer/i);
+    expect(prompt.textContent).toContain(RUNTIME_TOKEN);
+    expect(prompt.textContent).toContain('/executors/runtime/register-binary');
   });
 
-  test('shows error when required fields are empty', async () => {
+  test('shows an error when the runtime-token mint fails', async () => {
+    // Use 403 (not 401) — a 401 triggers the client's master-bearer retry path.
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({ detail: 'not allowed' }, { status: 403 }),
+      ),
+    );
+
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
     await waitFor(() =>
-      expect(screen.getByTestId('executor-registration-form')).toBeInTheDocument(),
+      expect(
+        screen.getByRole('button', { name: /generate connect prompt/i }),
+      ).toBeInTheDocument(),
     );
 
-    // Submit with empty fields
     await user.click(
-      screen.getByRole('button', { name: /generate registration token/i }),
+      screen.getByRole('button', { name: /connect a custom cli instead/i }),
+    );
+    await user.type(screen.getByLabelText('Name this CLI'), 'bad-cli');
+    await user.click(
+      screen.getByRole('button', { name: /generate connect prompt/i }),
     );
 
+    // Scope to the connect section so the sibling binaries banner can't match.
+    const connect = screen.getByTestId('executors-connect');
     await waitFor(() =>
-      expect(screen.getByTestId('registration-error')).toBeInTheDocument(),
-    );
-    expect(screen.getByTestId('registration-error').textContent).toContain(
-      'required',
+      expect(within(connect).getByRole('alert')).toHaveTextContent(
+        /Could not generate a prompt \(403\)/i,
+      ),
     );
   });
 });
