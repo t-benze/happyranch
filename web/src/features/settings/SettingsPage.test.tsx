@@ -646,7 +646,7 @@ describe('SettingsPage — Agents section', () => {
   });
 });
 
-describe('SettingsPage — Executors section (THR-107 S2 shared custom-connect)', () => {
+describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first management surface)', () => {
   beforeEach(() => {
     stubBaseHandlers();
     server.use(
@@ -657,30 +657,106 @@ describe('SettingsPage — Executors section (THR-107 S2 shared custom-connect)'
           expires_at: Math.floor(Date.now() / 1000) + 600,
         }),
       ),
-      // Nothing registered by default → the poll stays in the waiting state.
+      // Nothing registered by default → fresh-env list + the poll stays waiting.
+      http.get('/api/v1/executor-binaries', () =>
+        HttpResponse.json({ entries: [] }),
+      ),
       http.get('/api/v1/health/prereqs', () =>
         HttpResponse.json({ prereqs: [] }),
       ),
     );
   });
 
-  test('renders the shared custom-connect form (name → generate), not the legacy token form', async () => {
+  /** Open the inline connect flow via the single "Connect a CLI" entry. */
+  async function openConnect(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(
+      await screen.findByRole('button', { name: /connect a cli/i }),
+    );
+  }
+
+  test('lands on the registered list + a single "Connect a CLI" entry, not the connect form', async () => {
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
-    expect(await screen.findByLabelText(/name this cli/i)).toBeInTheDocument();
+    // Management-first: the registered binary list is the primary content.
     expect(
-      screen.getByRole('button', { name: /generate connect prompt/i }),
+      await screen.findByTestId('executor-binaries-section'),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /connect a cli/i }),
+    ).toBeInTheDocument();
+
+    // The connect form is gated behind that button — not shown yet.
+    expect(screen.queryByTestId('executors-connect')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/name this cli/i)).not.toBeInTheDocument();
 
     // The legacy THR-052 surface is gone.
     expect(
       screen.queryByTestId('executor-registration-form'),
     ).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/argv_template/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Adapter')).not.toBeInTheDocument();
   });
 
-  test('generate mints via the RUNTIME token route and shows the profile-register prompt (no legacy CLI / config.yaml)', async () => {
+  test('manual absolute-path entry is DEMOTED behind an "Advanced" disclosure on each row', async () => {
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    const row = await screen.findByTestId('binary-row-claude');
+    // The disclosure is present; the path input lives under it (kept, not deleted).
+    expect(
+      within(row).getByText(/advanced: enter path manually/i),
+    ).toBeInTheDocument();
+    expect(within(row).getByLabelText(/Register binary path/i)).toBeInTheDocument();
+  });
+
+  test('Connect a CLI opens the shared flow inline (built-in default), reachable to custom', async () => {
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    await openConnect(user);
+
+    // Built-in mode is the default: the kind dropdown, not the name input.
+    expect(await screen.findByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
+    expect(screen.getByTestId('executors-connect')).toBeInTheDocument();
+
+    // The mode toggle (built-in convergence) switches to the custom name form.
+    await user.click(screen.getByText(/connect a custom cli instead/i));
+    expect(await screen.findByLabelText(/name this cli/i)).toBeInTheDocument();
+  });
+
+  test('built-in connect mints via the RUNTIME token route and shows the register-binary prompt', async () => {
+    const mintPaths: string[] = [];
+    server.use(
+      http.post('/api/v1/auth/registration-token', () => {
+        mintPaths.push('legacy');
+        return HttpResponse.json({ token: 'x', expires_at: 0 });
+      }),
+      http.post('/api/v1/auth/registration-token/runtime', () => {
+        mintPaths.push('runtime');
+        return HttpResponse.json({
+          token: 'hrreg_runtime_bin',
+          expires_at: Math.floor(Date.now() / 1000) + 600,
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    await openConnect(user);
+    await user.selectOptions(
+      await screen.findByLabelText(/pick your agentic cli/i),
+      'claude',
+    );
+    await user.click(
+      screen.getByRole('button', { name: /generate connect prompt/i }),
+    );
+
+    const pre = await screen.findByText(/connecting the built-in "claude"/i);
+    expect(pre).toHaveTextContent('hrreg_runtime_bin');
+    expect(pre).toHaveTextContent('/executors/runtime/register-binary');
+    expect(mintPaths).toEqual(['runtime']);
+  });
+
+  test('custom connect mints via the RUNTIME token route and shows the profile-register prompt (no legacy CLI / config.yaml)', async () => {
     const mintPaths: string[] = [];
     server.use(
       http.post('/api/v1/auth/registration-token', () => {
@@ -699,6 +775,8 @@ describe('SettingsPage — Executors section (THR-107 S2 shared custom-connect)'
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
+    await openConnect(user);
+    await user.click(screen.getByText(/connect a custom cli instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
     await user.click(
       screen.getByRole('button', { name: /generate connect prompt/i }),
@@ -717,7 +795,7 @@ describe('SettingsPage — Executors section (THR-107 S2 shared custom-connect)'
     expect(mintPaths).toEqual(['runtime']);
   });
 
-  test('poll flips to the connected card when the custom name appears in prereqs (honest signal only)', async () => {
+  test('poll flips to the connected card, then Done collapses back to the refreshed list', async () => {
     server.use(
       http.get('/api/v1/health/prereqs', () =>
         HttpResponse.json({
@@ -729,6 +807,8 @@ describe('SettingsPage — Executors section (THR-107 S2 shared custom-connect)'
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
+    await openConnect(user);
+    await user.click(screen.getByText(/connect a custom cli instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
     await user.click(
       screen.getByRole('button', { name: /generate connect prompt/i }),
@@ -741,14 +821,22 @@ describe('SettingsPage — Executors section (THR-107 S2 shared custom-connect)'
     expect(screen.getByText('/opt/bin/my-cli')).toBeInTheDocument();
     // Settings-appropriate subtitle — no circular "manage from Settings" clause.
     expect(screen.queryByText(/manage your CLIs anytime from Settings/i)).not.toBeInTheDocument();
+
+    // Done collapses back to the list (the connect flow unmounts).
+    await user.click(screen.getByRole('button', { name: /^done$/i }));
+    expect(
+      await screen.findByRole('button', { name: /connect a cli/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('executors-connect')).not.toBeInTheDocument();
   });
 
   test('preserves the name-collision guard against built-ins', async () => {
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
-    const input = await screen.findByLabelText(/name this cli/i);
-    await user.type(input, 'claude');
+    await openConnect(user);
+    await user.click(screen.getByText(/connect a custom cli instead/i));
+    await user.type(await screen.findByLabelText(/name this cli/i), 'claude');
 
     expect(screen.getByText(/isn.t a built-in/i)).toBeInTheDocument();
     expect(
@@ -765,16 +853,20 @@ describe('SettingsPage — Executors section (THR-107 S2 shared custom-connect)'
     expect(screen.getByText('Agents page')).toHaveAttribute('href', '../agents');
   });
 
-  test('no onboarding chrome leaks into Settings (no step eyebrow / Continue / Skip / built-in toggle)', async () => {
+  test('no onboarding chrome leaks into Settings (no step eyebrow / Continue / Skip)', async () => {
+    const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
-    await screen.findByLabelText(/name this cli/i);
+    await openConnect(user);
+    await screen.findByLabelText(/pick your agentic cli/i);
+
     expect(screen.queryByText(/step 1 of 2/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^continue$/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/skip/i)).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/connect a built-in cli instead/i),
-    ).not.toBeInTheDocument();
+
+    // The built-in↔custom mode toggle is NOT onboarding chrome — it is core to
+    // the shared flow (S3 built-in convergence) and SHOULD be present.
+    expect(screen.getByText(/connect a custom cli instead/i)).toBeInTheDocument();
   });
 });
 

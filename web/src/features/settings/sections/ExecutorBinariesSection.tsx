@@ -17,7 +17,7 @@
  * Authority: KB ADR `executor-path-registry-resolution`.
  */
 import { useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Terminal, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronRight, Terminal, XCircle } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { ApiError } from '@/lib/api';
@@ -148,13 +148,26 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
         ) : (
           <p className="text-text-muted text-sm">
             No path registered — the daemon cannot spawn{' '}
-            <span className="font-mono">{kind}</span> agents until you register one below.
+            <span className="font-mono">{kind}</span> agents until you connect it.
           </p>
         )}
       </div>
 
-      {/* Manual-entry remediation — the ONLY discovery mechanism (no auto-detect). */}
-      <div className="mt-3 space-y-2">
+      {/* Manual absolute-path entry — DEMOTED to a secondary "Advanced"
+          disclosure (THR-107 S3). The primary add path is the shared
+          "Connect a CLI" flow; manual entry is kept as a management convenience
+          (fast re-point of a moved binary). Still the only discovery mechanism
+          — no auto-detect. */}
+      <details className="group mt-3" data-testid={`binary-manual-${kind}`}>
+        <summary className="text-text-secondary hover:text-text-primary flex cursor-pointer list-none items-center gap-1.5 text-xs">
+          <ChevronRight
+            aria-hidden="true"
+            size={14}
+            className="transition-transform group-open:rotate-90"
+          />
+          Advanced: enter path manually
+        </summary>
+        <div className="mt-3 space-y-2">
         <label
           htmlFor={inputId}
           className="text-label text-text-muted font-medium tracking-wide"
@@ -221,7 +234,8 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
             {registerError}
           </p>
         )}
-      </div>
+        </div>
+      </details>
     </div>
   );
 }
@@ -241,10 +255,12 @@ export function ExecutorBinariesSection(): JSX.Element {
   return (
     <section className="space-y-4" data-testid="executor-binaries-section">
       <p className="text-text-secondary text-sm">
-        Tell the daemon where each executor CLI binary lives on this machine.
-        Paths are stored in machine-local runtime config and take effect on the
-        next agent spawn. Discovery is registration-only — enter the absolute
-        path yourself; there is no automatic scan.
+        Where each built-in executor CLI binary lives on this machine. Paths are
+        stored in machine-local runtime config and take effect on the next agent
+        spawn. Register one with <span className="font-medium">Connect a CLI</span>{' '}
+        below, or expand <span className="font-medium">Advanced: enter path
+        manually</span> on a row to type the absolute path yourself — there is no
+        automatic scan.
       </p>
 
       {query.isLoading && (
@@ -261,7 +277,8 @@ export function ExecutorBinariesSection(): JSX.Element {
       {query.data && (
         <>
           {/* Actionable fresh-env "register your CLI" blocked banner. Never an
-              opaque failure — it names the remediation (the fields below). */}
+              opaque failure — it names the remediation (Connect a CLI below, or
+              the per-row Advanced manual-entry disclosure). */}
           {!anyRegistered && (
             <div
               className="border-tier-red-tint bg-tier-red-tint/40 flex items-start gap-3 rounded-lg border p-4"
@@ -275,12 +292,15 @@ export function ExecutorBinariesSection(): JSX.Element {
                 </h3>
                 <p className="text-text-secondary text-sm">
                   The daemon can't spawn agents until at least one executor CLI
-                  binary is registered. Register your CLI by entering its
-                  absolute path below (for example, the output of{' '}
+                  binary is registered. Use{' '}
+                  <span className="font-medium">Connect a CLI</span> below, or
+                  expand <span className="font-medium">Advanced: enter path
+                  manually</span> on a row to enter an absolute path (for example,
+                  the output of{' '}
                   <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs">
                     which claude
                   </code>
-                  ), then click <span className="font-medium">Register</span>.
+                  ).
                 </p>
               </div>
             </div>
