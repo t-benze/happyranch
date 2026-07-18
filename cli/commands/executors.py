@@ -8,8 +8,10 @@ Conformance steps (must match RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS):
   2. loopback_reachable — the candidate reaches http://127.0.0.1 (daemon loopback)
   3. cli_callback        — the candidate runs this CLI verb with the hrreg_ token
 
-On success the daemon atomically writes the profile into org/config.yaml
-and the candidate can be assigned to agents.
+On success the daemon atomically writes the profile into the
+machine-global runtime store (``<daemon-home>/executor_profiles.yaml``;
+THR-107 — the per-org config.yaml surface is removed) and the candidate
+can be assigned to agents.
 
 For runtime-level registration (org-agnostic, visible to all orgs), use
 ``happyranch executors runtime-register``.

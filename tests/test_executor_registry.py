@@ -215,35 +215,6 @@ class TestExecutorRegistry:
         assert p is not None
         assert p.argv_template == ["echo", "{prompt}"]
 
-    def test_register_custom_from_config_collision(self) -> None:
-        """register_custom_from_config also detects collisions between
-        custom profiles from different orgs."""
-        registry = ExecutorRegistry()
-        config_alpha = {
-            "shared": {
-                "command": None,  # skip which()
-                "argv_template": ["echo", "{prompt}"],
-                "adapter": "pi",
-            }
-        }
-        registry.register_custom_from_config(config_alpha)
-        assert registry.is_registered("shared")
-
-        config_beta = {
-            "shared": {
-                "command": None,
-                "argv_template": ["printf", "{prompt}"],
-                "adapter": "pi",
-            }
-        }
-        with pytest.raises(ExecutorProfileCollisionError, match="shared"):
-            registry.register_custom_from_config(config_beta)
-
-        # Alpha's profile unchanged
-        p = registry.get_profile("shared")
-        assert p is not None
-        assert p.argv_template == ["echo", "{prompt}"]
-
     def test_register_custom_profile_rejects_missing_argv_template(self) -> None:
         registry = ExecutorRegistry()
         profile = ExecutorProfile(
@@ -268,44 +239,43 @@ class TestExecutorRegistry:
         with pytest.raises(ValueError, match="Invalid argv_template"):
             registry.register_custom_profile(profile)
 
-    def test_register_custom_from_config(self) -> None:
-        registry = ExecutorRegistry()
+    def test_validate_custom_profile_config_builds_profile(self) -> None:
+        """THR-107: validate_custom_profile_config is the canonical
+        validation seam for BOTH register routes and the runtime-store
+        startup load (register_custom_from_config is removed)."""
         config = {
-            "openclaw": {
-                "command": "fake-cli",
-                "argv_template": [
-                    "fake-cli", "run", "--input", "{prompt}",
-                    "--timeout", "{timeout_seconds}",
-                ],
-                "adapter": "pi",
-            }
+            "command": None,  # skip which() resolution (test seam)
+            "argv_template": [
+                "fake-cli", "run", "--input", "{prompt}",
+                "--timeout", "{timeout_seconds}",
+            ],
+            "adapter": "pi",
         }
-        # Use command=None to skip which() resolution (test seam)
-        config["openclaw"]["command"] = None
-        registry.register_custom_from_config(config)
+        registry = ExecutorRegistry()
+        profile = ExecutorRegistry.validate_custom_profile_config(
+            "openclaw", config
+        )
+        registry.register_custom_profile(profile)
         assert registry.is_registered("openclaw")
         p = registry.get_profile("openclaw")
         assert p is not None
         assert p.adapter_id == "pi"
         assert p.argv_template is not None
 
-    def test_register_custom_from_config_rejects_invalid_adapter(self) -> None:
-        registry = ExecutorRegistry()
+    def test_validate_custom_profile_config_rejects_invalid_adapter(self) -> None:
         config = {
-            "bad": {
-                "command": None,
-                "argv_template": ["cmd", "{prompt}"],
-                "adapter": "nonexistent",
-            }
+            "command": None,
+            "argv_template": ["cmd", "{prompt}"],
+            "adapter": "nonexistent",
         }
         with pytest.raises(ValueError, match="adapter"):
-            registry.register_custom_from_config(config)
+            ExecutorRegistry.validate_custom_profile_config("bad", config)
 
-    def test_register_custom_from_config_rejects_missing_argv(self) -> None:
-        registry = ExecutorRegistry()
-        config = {"bad": {"command": None}}
+    def test_validate_custom_profile_config_rejects_missing_argv(self) -> None:
         with pytest.raises(ValueError, match="argv_template"):
-            registry.register_custom_from_config(config)
+            ExecutorRegistry.validate_custom_profile_config(
+                "bad", {"command": None}
+            )
 
     def test_list_profile_names_includes_builtins(self) -> None:
         registry = ExecutorRegistry()

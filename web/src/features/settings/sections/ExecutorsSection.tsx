@@ -7,8 +7,10 @@
  *
  *   (1) A registration/conformance PROMPT the founder pastes into the candidate
  *       CLI — embeds the hrreg_ token and the exact conformance-challenge steps.
- *   (2) The proposed executor_profiles config snippet matching the daemon's
- *       register route expected shape.
+ *   (2) The proposed profile entry the daemon persists to the machine-global
+ *       runtime store (executor_profiles.yaml under the daemon home) on
+ *       successful registration (THR-107: the per-org org/config.yaml
+ *       executor_profiles surface is removed).
  */
 import { useState, type FormEvent } from 'react';
 import { useParams } from 'react-router-dom';
@@ -118,14 +120,13 @@ export function ExecutorsSection(): JSX.Element {
 
   const configSnippet = result
     ? [
-        '# executor_profiles entry for org/config.yaml',
-        '# (written automatically on successful registration)',
+        '# profile entry written to the machine-global runtime store',
+        '# (~/.happyranch/executor_profiles.yaml) on successful registration',
         '',
-        'executor_profiles:',
-        `  ${name.trim()}:`,
-        `    command: "${command.trim()}"`,
-        `    argv_template: ${argvYaml}`,
-        `    adapter: ${adapter}`,
+        `${name.trim()}:`,
+        `  command: "${command.trim()}"`,
+        `  argv_template: ${argvYaml}`,
+        `  adapter: ${adapter}`,
       ].join('\n')
     : '';
 
@@ -273,9 +274,10 @@ export function ExecutorsSection(): JSX.Element {
               Step 2 — Resulting config entry
             </h3>
             <p className="text-text-secondary text-xs">
-              On successful registration, the daemon writes this entry to{' '}
+              On successful registration, the daemon writes this entry to the
+              machine-global runtime store{' '}
               <code className="text-text-secondary bg-surface-sunken rounded px-1 font-mono text-xs">
-                org/config.yaml
+                ~/.happyranch/executor_profiles.yaml
               </code>
               :
             </p>

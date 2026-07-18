@@ -237,9 +237,10 @@ class ExecutorRegistry:
         """Validate a custom profile config entry and return the built
         ExecutorProfile WITHOUT registering it.
 
-        This is the CANONICAL validation path. Both the register route
-        and ``register_custom_from_config`` drive through this method so
-        validation can never silently diverge.
+        This is the CANONICAL validation path. The register routes and
+        the runtime-store startup load (``DaemonState.from_runtime``)
+        drive through this method so validation can never silently
+        diverge.
 
         Raises ``ValueError`` for: invalid adapter, missing/bad argv_template,
         unsupported placeholder, command-not-on-PATH, non-string command.
@@ -289,18 +290,6 @@ class ExecutorRegistry:
             argv_template=[str(e) for e in argv_template],
             command=command,
         )
-
-    def register_custom_from_config(
-        self, profiles: dict[str, dict]
-    ) -> None:
-        """Register custom profiles from an org-config executor_profiles block.
-
-        Each entry: ``{name: {command, argv_template, adapter?}}``.
-        ``command`` is the resolved executable (or None for skip).
-        """
-        for name, cfg in profiles.items():
-            profile = self.validate_custom_profile_config(name, cfg)
-            self.register_custom_profile(profile)
 
 
 # ---------------------------------------------------------------------------
