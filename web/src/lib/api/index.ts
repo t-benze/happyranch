@@ -11,6 +11,7 @@ export * as kb from './kb';
 export * as metrics from './metrics';
 export * as orgs from './orgs';
 export * as runtime from './runtime';
+export * as runtimeExecutors from './runtime-executors';
 export * as jobs from './jobs';
 export * as tasks from './tasks';
 export * as teams from './teams';
