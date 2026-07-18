@@ -9,13 +9,24 @@
  * as a link. Plain primary clicks call `onSelect()` after suppressing the
  * default full-page reload, so the composition can drive SPA routing.
  *
- * Renders AgentChip for `lastSpeaker`, IdBadge for the thread id, and the
- * semantic status pill set (THREADS-05): an `active` pill for open threads, a
- * `done` pill for archived (terminal) threads, plus an additive `from dream`
- * pill when the thread was composed from a dream. The needs-you dot is a
- * leading 6px accent. The finer Direction-A states (waiting-on-you / review /
- * merged / live / idle) are intentionally absent — no field on the thread-list
- * payload backs them honestly.
+ * Two layouts, selected by `layout` (default keeps the historical shape so the
+ * design gallery and any non-thread consumer are untouched):
+ *
+ *   - `default` — two-line row: a leading needs-you accent dot + subject on
+ *     line-1 with right-pinned status/dream pills; IdBadge + AgentChip on
+ *     line-2. Renders the `active`/`done` status pills (THREADS-05).
+ *
+ *   - `thread`  — THR-099 id-first single-line row (a-threads `.thread`): a
+ *     leading STATUS-driven dot (open=green accent, archived=grey), then the
+ *     mono thread id, the serif subject, the status BADGE routed through the
+ *     shared `semanticTone` vocabulary (open→info/blue, archived→neutral/grey),
+ *     an inline `from dream` pill, and `last <last_speaker>`; the relative
+ *     timestamp (`meta`) is right-aligned. Line-2 (multi-participant list) is
+ *     intentionally omitted — `participants` is not on the thread-LIST payload
+ *     (honesty fence); only the backed `last_speaker` is shown.
+ *
+ * The finer Direction-A states (waiting-on-you / review / merged / live / idle)
+ * are intentionally absent — no field on the thread-list payload backs them.
  *
  * Direction-A Pasture card styling: bg-surface border-border-default rounded-lg
  * shadow-pasture-sm (ds.css .card). Active row uses accent-muted + left marker.
@@ -24,6 +35,7 @@ import type { ReactNode } from 'react';
 import { AgentChip } from './AgentChip';
 import { CrescentMoonBadge } from './CrescentMoonBadge';
 import { IdBadge } from './IdBadge';
+import { toneClass } from './semanticTone';
 
 interface InboxRowProps {
   threadId: string;
@@ -35,6 +47,11 @@ interface InboxRowProps {
   active: boolean;
   /** Composed-from-dream marker — renders an additive "from dream" pill. */
   fromDream?: boolean;
+  /**
+   * Row model. `default` is the historical two-line shape (unchanged);
+   * `thread` is the THR-099 id-first single-line thread-list row.
+   */
+  layout?: 'default' | 'thread';
   /** Destination URL for the row. Used as the `<a href>`. */
   href: string;
   /**
@@ -45,6 +62,9 @@ interface InboxRowProps {
   onSelect?: () => void;
 }
 
+const FROM_DREAM_PILL =
+  'bg-accent-soft text-accent-text inline-flex items-center gap-1 rounded-full px-2 py-px text-xs leading-relaxed font-semibold';
+
 export function InboxRow({
   threadId,
   subject,
@@ -54,6 +74,7 @@ export function InboxRow({
   needsYou,
   active,
   fromDream = false,
+  layout = 'default',
   href,
   onSelect,
 }: InboxRowProps): JSX.Element {
@@ -65,6 +86,72 @@ export function InboxRow({
     e.preventDefault();
     onSelect();
   };
+
+  const shellCls = `group relative block w-full rounded-lg border px-3 py-2 text-left no-underline transition-colors ${
+    active
+      ? 'bg-accent-muted border-accent-muted shadow-pasture-sm'
+      : 'bg-surface border-border-default shadow-pasture-sm hover:border-border-strong'
+  }`;
+  const activeMarker = active && (
+    <span
+      aria-hidden="true"
+      className="bg-accent absolute inset-y-1 left-0 w-0.5 rounded-full"
+    />
+  );
+
+  if (layout === 'thread') {
+    // id-first single-line row (a-threads `.thread`). Status-driven leading dot
+    // (open=green accent, archived=grey); status badge routed through the shared
+    // semanticTone vocabulary; inline `from dream` + `last <last_speaker>`.
+    const dotCls = status === 'open' ? 'bg-accent' : 'bg-border-strong';
+    return (
+      <a
+        href={href}
+        onClick={handleClick}
+        aria-current={active ? 'page' : undefined}
+        className={shellCls}
+      >
+        {activeMarker}
+        <div className="flex items-center gap-2.5">
+          <span
+            aria-hidden="true"
+            className={`inline-block h-2 w-2 shrink-0 rounded-full ${dotCls}`}
+          />
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+            <IdBadge id={threadId} kind="thread" />
+            <span className="font-display text-body-sm text-text-primary truncate font-medium">
+              {subject}
+            </span>
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${toneClass(status)}`}
+            >
+              {status}
+            </span>
+            {fromDream && (
+              <span className={FROM_DREAM_PILL}>
+                <CrescentMoonBadge className="h-3 w-3" />
+                from dream
+              </span>
+            )}
+            {lastSpeaker && (
+              <span className="text-caption text-text-muted inline-flex items-center gap-1">
+                last
+                <span className="text-text-secondary font-mono">
+                  {lastSpeaker.name}
+                </span>
+              </span>
+            )}
+          </div>
+          {meta && (
+            <span className="text-caption text-text-muted shrink-0 whitespace-nowrap">
+              {meta}
+            </span>
+          )}
+        </div>
+      </a>
+    );
+  }
+
   const statusLabel = status === 'open' ? 'active' : 'done';
   const statusPillCls =
     status === 'open'
@@ -76,18 +163,9 @@ export function InboxRow({
       href={href}
       onClick={handleClick}
       aria-current={active ? 'page' : undefined}
-      className={`group relative block w-full rounded-lg border px-3 py-2 text-left no-underline transition-colors ${
-        active
-          ? 'bg-accent-muted border-accent-muted shadow-pasture-sm'
-          : 'bg-surface border-border-default shadow-pasture-sm hover:border-border-strong'
-      }`}
+      className={shellCls}
     >
-      {active && (
-        <span
-          aria-hidden="true"
-          className="bg-accent absolute inset-y-1 left-0 w-0.5 rounded-full"
-        />
-      )}
+      {activeMarker}
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           {needsYou && (
@@ -102,7 +180,7 @@ export function InboxRow({
         </div>
         <span className="flex shrink-0 items-center gap-1">
           {fromDream && (
-            <span className="bg-accent-soft text-accent-text inline-flex items-center gap-1 rounded-full px-2 py-px text-xs leading-relaxed font-semibold">
+            <span className={FROM_DREAM_PILL}>
               <CrescentMoonBadge className="h-3 w-3" />
               from dream
             </span>
@@ -134,7 +212,7 @@ export const meta = {
   name: "InboxRow",
   layer: "pattern",
   import: "@/design-system/patterns/InboxRow",
-  variants: { status: ["open", "archived"] },
+  variants: { status: ["open", "archived"], layout: ["default", "thread"] },
   consumes: ["components.inbox_row"],
   example: "<InboxRow threadId='THR-042' subject='Refund policy' status='open' needsYou={true} active={false} href='/orgs/demo/threads/THR-042' />",
 } as const;

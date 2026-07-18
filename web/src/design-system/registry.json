@@ -221,6 +221,10 @@
         "status": [
           "open",
           "archived"
+        ],
+        "layout": [
+          "default",
+          "thread"
         ]
       },
       "consumes": [
@@ -434,7 +438,8 @@
       "variants": {
         "variant": [
           "pills",
-          "underline"
+          "underline",
+          "segmented"
         ]
       },
       "consumes": [

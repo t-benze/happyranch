@@ -89,3 +89,83 @@ describe('InboxRow — semantic status pills (THREADS-05)', () => {
     expect(screen.getByLabelText('needs you')).toBeInTheDocument();
   });
 });
+
+/**
+ * THR-099 — the `layout="thread"` row model is id-first and single-line: a
+ * status-driven leading dot (open=green accent, archived=grey), the mono thread
+ * id, the serif subject, the status BADGE routed through the shared semanticTone
+ * vocabulary (open→"open"/blue, archived→"archived"/grey — NOT active/done), an
+ * inline `from dream` pill, and `last <last_speaker>`. The default layout is
+ * left untouched (its own describe above still asserts active/done).
+ */
+describe('InboxRow — thread layout (THR-099 id-first row)', () => {
+  test('open thread renders the "open" badge (semanticTone vocab, not "active")', () => {
+    render(
+      <InboxRow
+        threadId="THR-021"
+        subject="Settings dialog parity"
+        status="open"
+        needsYou={false}
+        active={false}
+        layout="thread"
+        href="#"
+      />,
+    );
+    expect(screen.getByText('open')).toBeInTheDocument();
+    expect(screen.queryByText('active')).not.toBeInTheDocument();
+    // mono thread id leads the row.
+    expect(screen.getByText('THR-021')).toBeInTheDocument();
+  });
+
+  test('archived thread renders the "archived" badge (not "done")', () => {
+    render(
+      <InboxRow
+        threadId="THR-011"
+        subject="Artifacts folder support"
+        status="archived"
+        needsYou={false}
+        active={false}
+        layout="thread"
+        href="#"
+      />,
+    );
+    expect(screen.getByText('archived')).toBeInTheDocument();
+    expect(screen.queryByText('done')).not.toBeInTheDocument();
+    expect(screen.queryByText('active')).not.toBeInTheDocument();
+  });
+
+  test('renders inline "last <last_speaker>" from the honest last_speaker', () => {
+    render(
+      <InboxRow
+        threadId="THR-020"
+        subject="Dynamic workflow planning"
+        status="open"
+        needsYou={false}
+        active={false}
+        layout="thread"
+        lastSpeaker={{ name: 'dev_agent', role: 'worker' }}
+        href="#"
+      />,
+    );
+    expect(screen.getByText('dev_agent')).toBeInTheDocument();
+  });
+
+  test('dream-originated thread keeps the additive "from dream" pill inline', () => {
+    render(
+      <InboxRow
+        threadId="THR-006"
+        subject="KB consolidation pass"
+        status="open"
+        needsYou={false}
+        active={false}
+        layout="thread"
+        fromDream
+        href="#"
+      />,
+    );
+    expect(screen.getByText('from dream')).toBeInTheDocument();
+    expect(screen.getByLabelText(/Dream-originated/)).toBeInTheDocument();
+    // Additive: the status badge still renders alongside the dream pill.
+    expect(screen.getByText('open')).toBeInTheDocument();
+  });
+});
