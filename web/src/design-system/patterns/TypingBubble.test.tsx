@@ -28,4 +28,53 @@ describe('TypingBubble', () => {
     expect(screen.getByText('queued')).toBeInTheDocument();
     expect(screen.getByLabelText('bravo is queued')).toBeInTheDocument();
   });
+
+  // a-thread-detail `.replying`: compact inline indicator — no heavy card,
+  // just a bold name row above a small dots chat-bubble. Token-aware class
+  // checks (classList.contains) rather than word-boundary regex (MEM-327).
+  it('renders as a compact inline indicator, not a bordered card', () => {
+    render(<TypingBubble agentName="charlie" status="working" startedAt={null} nowMs={now} />);
+    const root = screen.getByLabelText('charlie is replying');
+    // No card chrome: the surface-raised/padding card is gone.
+    expect(root.classList.contains('p-4')).toBe(false);
+    expect(root.classList.contains('bg-surface-raised')).toBe(false);
+    expect(root.classList.contains('rounded-lg')).toBe(false);
+    // Agent name is bold plain text (AgentChip role-dot dropped per design).
+    const name = screen.getByText('charlie');
+    expect(name.classList.contains('font-semibold')).toBe(true);
+  });
+
+  it('holds the dots inside a small surface-sunken chat-bubble', () => {
+    render(<TypingBubble agentName="delta" status="working" startedAt={null} nowMs={now} />);
+    const dot = screen.getByLabelText('delta is replying').querySelector('.typing-dot');
+    expect(dot).not.toBeNull();
+    const bubble = dot!.closest('div.bg-surface-sunken');
+    expect(bubble).not.toBeNull();
+    expect(bubble!.classList.contains('border')).toBe(true);
+    expect(bubble!.classList.contains('rounded-lg')).toBe(true);
+  });
+
+  it('tints the caption info-blue while working, muted while queued', () => {
+    const { rerender } = render(
+      <TypingBubble agentName="echo" status="working" startedAt={null} nowMs={now} />,
+    );
+    expect(screen.getByText('replying…').classList.contains('text-info')).toBe(true);
+    rerender(<TypingBubble agentName="echo" status="queued" startedAt={null} nowMs={now} />);
+    expect(screen.getByText('queued').classList.contains('text-text-muted')).toBe(true);
+  });
+
+  it('renders an optional trailing control in the name row', () => {
+    render(
+      <TypingBubble
+        agentName="foxtrot"
+        status="working"
+        startedAt={null}
+        nowMs={now}
+        trailing={<button type="button">Abort reply</button>}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Abort reply' }),
+    ).toBeInTheDocument();
+  });
 });

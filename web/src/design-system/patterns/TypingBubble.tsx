@@ -12,7 +12,6 @@
  * and the System Assistant dock (THR-056).
  */
 import type { ReactNode } from 'react';
-import { AgentChip } from './AgentChip';
 import { formatElapsed } from '@/lib/elapsed';
 
 export function TypingBubble({
@@ -38,16 +37,24 @@ export function TypingBubble({
   const caption = working ? `replying… ${formatElapsed(startedAt, now)}`.trimEnd() : 'queued';
 
   return (
+    // Compact inline indicator (a-thread-detail `.replying`): a bold name row
+    // with the "replying…" caption + optional abort control, above a small
+    // chat-bubble that holds only the animated dots. No heavy card — the sender
+    // avatar (TurnAvatar / dock) already carries identity beside it.
     <article
-      className="border-border-subtle bg-surface-raised rounded-lg border p-4"
+      className="min-w-0"
       aria-label={`${agentName} is ${working ? 'replying' : 'queued'}`}
     >
-      <header className="text-caption mb-2 flex items-baseline gap-2">
-        <AgentChip name={agentName} role="worker" />
-        <span className="text-text-muted ml-auto">{caption}</span>
-        {trailing}
-      </header>
-      <TypingDots animate={working} />
+      <div className="flex items-center gap-2">
+        <span className="text-fg truncate text-sm font-semibold">{agentName}</span>
+        <span className={`text-caption ${working ? 'text-info' : 'text-text-muted'}`}>
+          {caption}
+        </span>
+        {trailing ? <span className="ml-auto shrink-0">{trailing}</span> : null}
+      </div>
+      <div className="border-border-default bg-surface-sunken mt-2 inline-flex w-fit items-center rounded-lg border px-3.5 py-2.5">
+        <TypingDots animate={working} />
+      </div>
     </article>
   );
 }
