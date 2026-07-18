@@ -1034,3 +1034,166 @@ class TestRuntimeRegisterBinaryRoute:
             "purpose": "binary",
         })
         assert r.status_code == 422
+
+
+# ── Runtime Profile Management Routes (THR-107 S4a) ─────────────────────
+
+
+def _entry(command: str = "echo", adapter: str = "pi") -> dict:
+    return {
+        "command": command,
+        "argv_template": ["{prompt}"],
+        "adapter": adapter,
+    }
+
+
+class TestRuntimeProfilesListRoute:
+    """GET /api/v1/executors/runtime/profiles"""
+
+    def test_list_empty_store(self, client, tmp_home):
+        r = client.get("/api/v1/executors/runtime/profiles")
+        assert r.status_code == 200
+        assert r.json() == {"profiles": []}
+
+    def test_list_populated_sorted_by_name(self, client, tmp_home):
+        save_runtime_profile("zeta-exec", _entry(command="zeta-cli"))
+        save_runtime_profile("alpha-exec", _entry(command="alpha-cli", adapter="codex"))
+
+        r = client.get("/api/v1/executors/runtime/profiles")
+        assert r.status_code == 200
+        profiles = r.json()["profiles"]
+        assert [p["name"] for p in profiles] == ["alpha-exec", "zeta-exec"]
+        alpha = profiles[0]
+        assert alpha["command"] == "alpha-cli"
+        assert alpha["adapter"] == "codex"
+        # No binary registered for this profile name — honest signal
+        assert alpha["present"] is False
+        assert alpha["path"] is None
+
+    def test_list_present_path_from_binary_registry(self, client, tmp_home, tmp_path):
+        """present/path mirror the /health/prereqs signal: the machine-local
+        binary registry, NOT merely being on PATH."""
+        from runtime.orchestrator.executor_binary_registry import set_binary
+
+        save_runtime_profile("my-exec", _entry())
+        bin_path = tmp_path / "my-exec-cli"
+        bin_path.write_text("#!/bin/sh\n")
+        bin_path.chmod(0o755)
+        set_binary("my-exec", str(bin_path))
+
+        r = client.get("/api/v1/executors/runtime/profiles")
+        assert r.status_code == 200
+        (profile,) = r.json()["profiles"]
+        assert profile["name"] == "my-exec"
+        assert profile["present"] is True
+        assert profile["path"] == str(bin_path)
+
+    def test_list_requires_bearer_auth(self, app, tmp_home):
+        unauth = TestClient(app)  # no Authorization header
+        r = unauth.get("/api/v1/executors/runtime/profiles")
+        assert r.status_code == 401
+
+
+class TestRuntimeProfileDeleteRoute:
+    """DELETE /api/v1/executors/runtime/profiles/{name}"""
+
+    def test_delete_present_removes_from_store(self, client, tmp_home):
+        save_runtime_profile("doomed", _entry())
+
+        r = client.delete("/api/v1/executors/runtime/profiles/doomed")
+        assert r.status_code == 200
+        assert r.json() == {"name": "doomed", "removed": True}
+        assert "doomed" not in load_runtime_profiles()
+
+        # List no longer shows it
+        r = client.get("/api/v1/executors/runtime/profiles")
+        assert r.json() == {"profiles": []}
+
+        # Second delete → 404
+        r = client.delete("/api/v1/executors/runtime/profiles/doomed")
+        assert r.status_code == 404
+
+    def test_delete_absent_404(self, client, tmp_home):
+        r = client.delete("/api/v1/executors/runtime/profiles/never-existed")
+        assert r.status_code == 404
+
+    def test_delete_clears_durable_store_and_in_memory_registry(self, client, tmp_home):
+        """THR-107 S4a symmetry: the durable store is the source of truth
+        and register publishes to BOTH surfaces — DELETE must clear both,
+        or the removed profile lingers in-process until restart."""
+        from runtime.orchestrator.executor_registry import ExecutorProfile
+
+        save_runtime_profile("both-exec", _entry())
+        registry = get_registry()
+        registry.register_custom_profile(ExecutorProfile(
+            name="both-exec",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["{prompt}"],
+            command="echo",
+        ))
+        assert registry.is_registered("both-exec")
+
+        r = client.delete("/api/v1/executors/runtime/profiles/both-exec")
+        assert r.status_code == 200
+
+        assert "both-exec" not in load_runtime_profiles()
+        assert not registry.is_registered("both-exec")
+        assert registry.get_profile("both-exec") is None
+
+    def test_delete_builtin_name_rejected(self, client, tmp_home):
+        """Pathological hand-edited store carrying a built-in name: the
+        route refuses (422) and never unregisters the built-in."""
+        save_runtime_profile("claude", _entry())
+
+        r = client.delete("/api/v1/executors/runtime/profiles/claude")
+        assert r.status_code == 422
+
+        assert get_registry().is_registered("claude")
+        assert get_registry().get_profile("claude").kind == "builtin"
+
+    def test_delete_writes_audit_row(self, client, tmp_home):
+        """Removal audits to runtime-audit.db mirroring the registration
+        row shape: task_id='executor:<name>', payload {command,
+        argv_template, adapter}; action is 'executor_removed'."""
+        from runtime.infrastructure.database import Database
+
+        save_runtime_profile("audited-exec", _entry(command="audit-cli"))
+
+        r = client.delete("/api/v1/executors/runtime/profiles/audited-exec")
+        assert r.status_code == 200
+
+        audit_db_path = tmp_home / "runtime-audit.db"
+        assert audit_db_path.exists()
+        audit_db = Database(audit_db_path)
+        try:
+            rows = audit_db.get_audit_logs("executor:audited-exec")
+            assert len(rows) == 1
+            row = rows[0]
+            assert row["task_id"] == "executor:audited-exec"
+            assert row["action"] == "executor_removed"
+            assert row["agent"] == "founder"
+            payload = row["payload"]
+            assert payload["command"] == "audit-cli"
+            assert payload["argv_template"] == ["{prompt}"]
+            assert payload["adapter"] == "pi"
+        finally:
+            audit_db.close()
+
+    def test_delete_404_writes_no_audit_row(self, client, tmp_home):
+        r = client.delete("/api/v1/executors/runtime/profiles/ghost")
+        assert r.status_code == 404
+        audit_db_path = tmp_home / "runtime-audit.db"
+        if audit_db_path.exists():
+            from runtime.infrastructure.database import Database
+            audit_db = Database(audit_db_path)
+            try:
+                assert audit_db.get_audit_logs("executor:ghost") == []
+            finally:
+                audit_db.close()
+
+    def test_delete_requires_bearer_auth(self, app, tmp_home):
+        unauth = TestClient(app)  # no Authorization header
+        r = unauth.delete("/api/v1/executors/runtime/profiles/anything")
+        assert r.status_code == 401

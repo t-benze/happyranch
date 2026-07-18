@@ -100,7 +100,9 @@
     "GET /api/v1/orgs/{slug}/skills/{skill_id}/status",
     "GET /api/v1/executor-binaries",
     "POST /api/v1/executor-binaries/register",
-    "POST /api/v1/executor-binaries/validate"
+    "POST /api/v1/executor-binaries/validate",
+    "GET /api/v1/executors/runtime/profiles",
+    "DELETE /api/v1/executors/runtime/profiles/{name}"
   ],
   "excluded": {
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion": "agent callback",

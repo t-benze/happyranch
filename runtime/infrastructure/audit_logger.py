@@ -529,6 +529,38 @@ class AuditLogger:
             },
         )
 
+    def log_executor_removed(
+        self,
+        *,
+        profile_name: str,
+        command: str,
+        argv_template: list[str],
+        adapter: str,
+        actor: str = "founder",
+    ) -> None:
+        """Record a successful runtime-level executor profile removal.
+
+        THR-107 S4a: mirrors ``log_executor_registered`` — same dedicated
+        runtime audit database, same scope-prefix ``task_id`` convention,
+        same payload keys (the payload captures the REMOVED definition);
+        only the action verb differs.
+
+        Row shape:
+          task_id = "executor:<profile_name>"
+          action  = "executor_removed"
+          payload = {command, argv_template, adapter}
+        """
+        self._db.insert_audit_log(
+            task_id=f"executor:{profile_name}",
+            agent=actor,
+            action="executor_removed",
+            payload={
+                "command": command,
+                "argv_template": [str(e) for e in argv_template],
+                "adapter": adapter,
+            },
+        )
+
     def log_learning_added(
         self,
         *,

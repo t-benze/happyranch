@@ -199,6 +199,28 @@ Executor](#switching-an-existing-agents-executor) and
 to the executor registry; the founder must still explicitly assign it to
 individual agents.
 
+### Managing registered custom profiles (THR-107 S4a)
+
+Two founder-facing management routes expose the machine-global runtime
+store for LIST + REMOVE (standard daemon bearer auth — same posture as
+`GET /api/v1/executor-binaries`; **no** registration token, these are
+management reads/writes, not registration):
+
+- `GET /api/v1/executors/runtime/profiles` — lists every custom profile
+  in the runtime store: `name`, `command`, `adapter`, plus a
+  `present`/`path` signal mirroring `/health/prereqs` (present only when
+  the machine-local binary registry holds a valid path for the profile
+  name — being on PATH is not sufficient).
+- `DELETE /api/v1/executors/runtime/profiles/{name}` — removes one
+  profile from BOTH surfaces, durable store first (source of truth),
+  then the transient in-memory registry
+  (`ExecutorRegistry.unregister_custom_profile`) so the removed profile
+  does not linger in-process until restart. 404 when the name is not in
+  the store; built-in executor names are never removable. The removal is
+  audited to `runtime-audit.db` with the same row shape as registration
+  (`task_id='executor:<name>'`, payload `{command, argv_template,
+  adapter}`, action `executor_removed`).
+
 ## Executor Notes
 
 All executors converge on `executors._run_command`, which runs every launch under the **per-provider throttle** (`runtime/orchestrator/throttle.py`, issue #85): a `threading.BoundedSemaphore` ceiling per provider string, an inter-launch spacing gate, and slot-releasing 429 backoff. Each executor passes its own `provider` string (the profile name — `"claude"`, `"codex"`, `"opencode"`, `"pi"`, or a custom profile name) and an optional `on_throttle_event` audit callback. The throttle never touches the permission surface — it is purely a launch-timing wrapper. See [runtime-and-configuration.md → Executor Throttle](./runtime-and-configuration.md#executor-throttle) and `docs/adr/0001-per-provider-executor-throttle.md`.
