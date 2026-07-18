@@ -26,9 +26,11 @@ export function TypingBubble({
   startedAt: string | null;
   nowMs?: number;
   /**
-   * Optional inline control rendered at the far right of the header row, next
-   * to the "replying…" caption (e.g. the threads "Abort reply" button). Omitted
-   * by other consumers (System Assistant dock) so their layout is unchanged.
+   * Optional generic inline control rendered at the far right of the header
+   * row, next to the "replying…" caption. Omitted by most consumers (e.g. the
+   * System Assistant dock) so their layout is unchanged. Note: the threads
+   * "Abort reply" control now lives inside the Composer input pill — thread
+   * abort is no longer a TypingBubble `trailing` use.
    */
   trailing?: ReactNode;
 }): JSX.Element {
@@ -38,9 +40,9 @@ export function TypingBubble({
 
   return (
     // Compact inline indicator (a-thread-detail `.replying`): a bold name row
-    // with the "replying…" caption + optional abort control, above a small
-    // chat-bubble that holds only the animated dots. No heavy card — the sender
-    // avatar (TurnAvatar / dock) already carries identity beside it.
+    // with the "replying…" caption + an optional generic trailing control, above
+    // a small chat-bubble that holds only the animated dots. No heavy card — the
+    // sender avatar (TurnAvatar / dock) already carries identity beside it.
     <article
       className="min-w-0"
       aria-label={`${agentName} is ${working ? 'replying' : 'queued'}`}
