@@ -63,6 +63,10 @@ describe('TypingBubble', () => {
     expect(screen.getByText('queued').classList.contains('text-text-muted')).toBe(true);
   });
 
+  // The generic `trailing` slot is still supported for arbitrary inline
+  // controls, but the "Abort reply" control no longer lives here — it moved
+  // INTO the composer input pill (THR-099 Phase A). Use a neutral label so the
+  // test documents the generic capability without implying abort placement.
   it('renders an optional trailing control in the name row', () => {
     render(
       <TypingBubble
@@ -70,11 +74,16 @@ describe('TypingBubble', () => {
         status="working"
         startedAt={null}
         nowMs={now}
-        trailing={<button type="button">Abort reply</button>}
+        trailing={<button type="button">Custom action</button>}
       />,
     );
     expect(
-      screen.getByRole('button', { name: 'Abort reply' }),
+      screen.getByRole('button', { name: 'Custom action' }),
     ).toBeInTheDocument();
+  });
+
+  it('renders no abort control beside the replying indicator by default', () => {
+    render(<TypingBubble agentName="golf" status="working" startedAt={null} nowMs={now} />);
+    expect(screen.queryByRole('button', { name: /Abort reply/i })).toBeNull();
   });
 });

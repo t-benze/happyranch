@@ -221,7 +221,92 @@ describe('Composer / mentions', () => {
   });
 });
 
-// NOTE: the "Abort replies" control was moved OUT of the Composer to sit inline
-// by the transcript replying indicator (THR-061 a-thread-detail fidelity FIX,
-// TASK-2550). Its behaviour is now covered by the ThreadsPage abort-replies
-// suite, so the Composer-level abort tests were removed with the props.
+// THR-099 Phase A (founder seq57): the "Abort reply" control was moved back
+// INSIDE the composer input pill as an optional, in-flight-gated trailing action
+// next to the circular send button — reversing the earlier "moved OUT" decision.
+describe('Composer / abort replies', () => {
+  it('renders no abort control by default (prop omitted)', () => {
+    render(
+      <Composer agents={[]} threadId="THR-a" orgSlug="test-org" onSend={NOOP_SEND} />,
+    );
+    expect(screen.queryByRole('button', { name: /Abort reply/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Aborting/i })).toBeNull();
+  });
+
+  it('renders the abort control ONLY while replies are in flight (active)', () => {
+    const onAbort = vi.fn();
+    const { rerender } = render(
+      <Composer
+        agents={[]}
+        threadId="THR-b"
+        orgSlug="test-org"
+        onSend={NOOP_SEND}
+        abortReplies={{ active: false, isPending: false, onAbort }}
+      />,
+    );
+    // Inactive → not rendered.
+    expect(screen.queryByRole('button', { name: /Abort reply/i })).toBeNull();
+    // Active → rendered, enabled, labelled "Abort reply".
+    rerender(
+      <Composer
+        agents={[]}
+        threadId="THR-b"
+        orgSlug="test-org"
+        onSend={NOOP_SEND}
+        abortReplies={{ active: true, isPending: false, onAbort }}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: /Abort reply/i });
+    expect(btn).toBeEnabled();
+  });
+
+  it('shows "Aborting…" and disables the control while pending', () => {
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-c"
+        orgSlug="test-org"
+        onSend={NOOP_SEND}
+        abortReplies={{ active: true, isPending: true, onAbort: vi.fn() }}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: /Aborting…/i });
+    expect(btn).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /^Abort reply$/i })).toBeNull();
+  });
+
+  it('sits inside the input pill, to the LEFT of the circular send button', () => {
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-d"
+        orgSlug="test-org"
+        onSend={NOOP_SEND}
+        abortReplies={{ active: true, isPending: false, onAbort: vi.fn() }}
+      />,
+    );
+    const abort = screen.getByRole('button', { name: /Abort reply/i });
+    const send = screen.getByRole('button', { name: /^Send$/i });
+    // Same flex pill container holds both, abort before send in DOM order.
+    expect(abort.parentElement).toBe(send.parentElement);
+    expect(
+      abort.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('fires onAbort when clicked', async () => {
+    const user = userEvent.setup();
+    const onAbort = vi.fn();
+    render(
+      <Composer
+        agents={[]}
+        threadId="THR-e"
+        orgSlug="test-org"
+        onSend={NOOP_SEND}
+        abortReplies={{ active: true, isPending: false, onAbort }}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /Abort reply/i }));
+    expect(onAbort).toHaveBeenCalledTimes(1);
+  });
+});
