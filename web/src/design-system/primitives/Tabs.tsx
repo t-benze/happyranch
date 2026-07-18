@@ -2,11 +2,15 @@
  * Tabs primitive — shadcn/ui canonical (Radix Tabs), styled against our
  * semantic tokens.
  *
- * Two visual variants:
+ * Three visual variants:
  *   - `pills`     — default; rounded chip-style triggers for status filters
  *                   (inbox: open / archived / abandoned).
  *   - `underline` — TODO: reserved for future Audit sub-tabs. Not implemented
  *                   in PR 5; document here so the contract is explicit.
+ *   - `segmented` — bordered pill CONTAINER with the active trigger filled
+ *                   green (accent-soft); the thread-list All/Open/Archived
+ *                   control (THR-099, a-threads `.seg`). Additive — the
+ *                   `pills`/`underline` triggers are untouched.
  *
  * Usage:
  *   <Tabs value={status} onValueChange={(v) => setStatus(v as StatusTab)}>
@@ -30,6 +34,9 @@ const tabsListVariants = cva('inline-flex items-center', {
       pills: 'gap-1',
       // underline TODO — see file header.
       underline: 'border-border-default gap-3 border-b',
+      // segmented — bordered pill container (a-threads `.seg`).
+      segmented:
+        'border-border-default bg-surface-sunken gap-1 rounded-full border p-1',
     },
   },
   defaultVariants: { variant: 'pills' },
@@ -61,6 +68,8 @@ const tabsTriggerVariants = cva(
           'text-text-muted hover:text-text-primary data-[state=active]:bg-surface-raised data-[state=active]:text-text-primary rounded-md px-2 py-0.5',
         underline:
           'text-text-muted hover:text-text-primary data-[state=active]:border-accent-default data-[state=active]:text-text-primary -mb-px border-b-2 border-transparent px-1 pb-1',
+        segmented:
+          'text-text-muted hover:text-text-primary data-[state=active]:bg-accent-soft data-[state=active]:text-accent-text rounded-full px-3 py-1 font-semibold',
       },
     },
     defaultVariants: { variant: 'pills' },
@@ -105,7 +114,7 @@ export const meta = {
   layer: "primitive",
   import: "@/design-system/primitives/Tabs",
   variants: {
-    variant: ["pills", "underline"],
+    variant: ["pills", "underline", "segmented"],
   },
   consumes: ["components.tabs"],
   example: "<Tabs value='open'><TabsList><TabsTrigger value='open'>open</TabsTrigger></TabsList></Tabs>",

@@ -517,38 +517,44 @@ export function ThreadsPage(): JSX.Element {
               {S.newThread}
             </Button>
           </div>
-          <Input
-            type="text"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder={S.filterPlaceholder}
-            className="text-caption mt-2 h-7 px-2 py-1"
-            aria-label="Filter threads"
-          />
-          <Tabs
-            className="mt-2"
-            value={bucket}
-            onValueChange={(v) => setBucket(v as InboxBucket)}
-          >
-            <TabsList aria-label="Status filter">
-              {INBOX_BUCKETS.map((b) => {
-                const loading =
-                  b === 'all'
-                    ? openQuery.isLoading || archivedQuery.isLoading
-                    : b === 'done'
-                      ? archivedQuery.isLoading
-                      : openQuery.isLoading;
-                return (
-                  <TabsTrigger key={b} value={b}>
-                    {BUCKET_LABEL[b]}
-                    <span className="text-text-muted ml-1 text-xs tabular-nums">
-                      {loading ? '…' : counts[b]}
-                    </span>
-                  </TabsTrigger>
-                );
-              })}
-            </TabsList>
-          </Tabs>
+          {/* THR-099: segmented All/Open/Archived pills on the LEFT, compact
+              live-text Filter right-aligned on the SAME row (a-threads `.seg`
+              row). The filter keeps its working substring match — just compact
+              and right-pinned (EM ruling: do NOT downgrade to a ghost button). */}
+          <div className="mt-3 flex items-center gap-2">
+            <Tabs
+              value={bucket}
+              onValueChange={(v) => setBucket(v as InboxBucket)}
+            >
+              <TabsList variant="segmented" aria-label="Status filter">
+                {INBOX_BUCKETS.map((b) => {
+                  const loading =
+                    b === 'all'
+                      ? openQuery.isLoading || archivedQuery.isLoading
+                      : b === 'done'
+                        ? archivedQuery.isLoading
+                        : openQuery.isLoading;
+                  return (
+                    <TabsTrigger key={b} variant="segmented" value={b}>
+                      {BUCKET_LABEL[b]}
+                      <span className="ml-1 text-xs tabular-nums opacity-60">
+                        {loading ? '…' : counts[b]}
+                      </span>
+                    </TabsTrigger>
+                  );
+                })}
+              </TabsList>
+            </Tabs>
+            <div className="flex-1" />
+            <Input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder={S.filterPlaceholder}
+              className="text-caption h-7 w-44 shrink-0 px-2 py-1"
+              aria-label="Filter threads"
+            />
+          </div>
           </ContentWrap>
         </header>
         {/* Scroll body — same <ContentWrap> cap as the pinned header so the
@@ -606,6 +612,7 @@ export function ThreadsPage(): JSX.Element {
                     status={threadStatusOrFallback(t.status)}
                     needsYou={false}
                     active={t.thread_id === threadId}
+                    layout="thread"
                     fromDream={!!t.composed_from_dream_id}
                     meta={
                       <span className="whitespace-nowrap tabular-nums">
