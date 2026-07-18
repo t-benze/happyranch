@@ -1189,15 +1189,25 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, onAb
               // mutation is thread-level, covering both working and queued).
               trailing={
                 onAbortReplies ? (
-                  <button
+                  // Bordered outline PILL (a-thread-detail `.abort`): reuses the
+                  // DS Button pill base + `outline` variant, overriding the hover
+                  // to danger (border + text + soft danger fill). The `sm` size's
+                  // h-8 is 4rem on this spacing scale — too tall for the compact
+                  // design pill — so height is left content-driven with the
+                  // mockup's own `padding: 4px 12px` (px-3 py-1, named tokens).
+                  // One click still aborts EVERY in-flight reply — styling only,
+                  // mutation intact.
+                  <Button
                     type="button"
+                    variant="outline"
+                    size="sm"
                     onClick={onAbortReplies}
                     disabled={isAborting}
                     title="Abort pending replies"
-                    className="text-text-muted hover:text-feedback-danger disabled:text-text-disabled ml-1 shrink-0 rounded transition-colors disabled:cursor-default"
+                    className="hover:border-feedback-danger hover:bg-danger-soft hover:text-feedback-danger h-auto px-3 py-1"
                   >
                     {isAborting ? 'Aborting…' : 'Abort reply'}
-                  </button>
+                  </Button>
                 ) : undefined
               }
             />
