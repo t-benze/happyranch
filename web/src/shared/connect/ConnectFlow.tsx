@@ -208,7 +208,10 @@ export function CustomConnect({
   waitingSkipSlot,
 }: {
   onConnected: (c: Connected) => void;
-  onUseBuiltin: () => void;
+  /** Switch back to the built-in dropdown. Omit on custom-only mounts (e.g.
+   *  Settings ▸ Executors, where built-ins live in a separate section) — the
+   *  "Connect a built-in CLI instead" toggle then renders nothing. */
+  onUseBuiltin?: () => void;
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
 }): JSX.Element {
@@ -303,14 +306,16 @@ export function CustomConnect({
           <Button type="submit" disabled={!nameValid || flow.mint.isPending}>
             {flow.mint.isPending ? 'Generating…' : 'Generate connect prompt'}
           </Button>
-          <button
-            type="button"
-            onClick={onUseBuiltin}
-            className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs underline-offset-2 hover:underline"
-          >
-            <ArrowLeft aria-hidden="true" size={14} />
-            Connect a built-in CLI instead
-          </button>
+          {onUseBuiltin && (
+            <button
+              type="button"
+              onClick={onUseBuiltin}
+              className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs underline-offset-2 hover:underline"
+            >
+              <ArrowLeft aria-hidden="true" size={14} />
+              Connect a built-in CLI instead
+            </button>
+          )}
           {skipSlot}
         </div>
         <HowThisWorks />
