@@ -49,7 +49,11 @@ describe('ExecutorBinariesSection (Settings → Executors → CLI binary paths)'
         'data-validity',
         'unregistered',
       );
-      // The manual-entry remediation is present on every row.
+      // The manual-entry remediation is still present on every row — now
+      // DEMOTED behind the "Advanced: enter path manually" disclosure (S3).
+      expect(
+        within(row).getByText(/advanced: enter path manually/i),
+      ).toBeInTheDocument();
       expect(within(row).getByLabelText(/Register binary path/i)).toBeInTheDocument();
     }
   });
@@ -68,6 +72,8 @@ describe('ExecutorBinariesSection (Settings → Executors → CLI binary paths)'
     render();
 
     const row = await screen.findByTestId('binary-row-claude');
+    // Manual entry is behind the "Advanced" disclosure now — open it first.
+    await userEvent.click(within(row).getByText(/advanced: enter path manually/i));
     await userEvent.type(within(row).getByLabelText(/Register binary path/i), '/nope');
     await userEvent.click(within(row).getByRole('button', { name: /^Validate$/i }));
 
