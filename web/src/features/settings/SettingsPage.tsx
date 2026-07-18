@@ -203,7 +203,7 @@ function ExecutorsPanel(): JSX.Element {
         <ExecutorBinariesSection />
       </section>
       <section className="border-border-default border-t pt-8">
-        <h2 className="font-display mb-3 text-lg font-semibold">Custom executor profiles</h2>
+        <h2 className="font-display mb-3 text-lg font-semibold">Connect an agentic CLI</h2>
         <ExecutorsSection />
       </section>
     </div>
