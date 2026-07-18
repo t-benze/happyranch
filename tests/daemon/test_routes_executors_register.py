@@ -2,6 +2,11 @@
 and POST /api/v1/orgs/{slug}/executors/register.
 
 THR-052 PR-2 — registration gate + daemon-verified conformance.
+THR-107 — the org-scoped register route persists to the machine-global
+runtime store (executor_profiles.yaml under daemon home); the per-org
+config.yaml executor_profiles surface is removed. The org audit row keeps
+its org_config_write shape + "executor_profiles" section label, with
+before/after snapshots of the runtime store.
 """
 from __future__ import annotations
 
@@ -26,8 +31,8 @@ from runtime.daemon.routes import auth as auth_route
 from runtime.daemon.state import DaemonState
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executor_registry import get_registry, reset_registry
-from runtime.orchestrator.org_config import OrgConfigError
 from runtime.runtime import RuntimeDir
+from runtime.runtime import daemon_home as _daemon_home
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -43,6 +48,14 @@ def _make_org_config(org_root: Path, yaml_str: str) -> None:
 def _config_raw(org_root: Path) -> dict:
     """Read the raw org/config.yaml dict."""
     p = OrgPaths(root=org_root).org_config_path
+    if not p.exists():
+        return {}
+    return yaml.safe_load(p.read_text()) or {}
+
+
+def _store_raw() -> dict:
+    """Read the raw machine-global runtime store (THR-107 write target)."""
+    p = _daemon_home() / "executor_profiles.yaml"
     if not p.exists():
         return {}
     return yaml.safe_load(p.read_text()) or {}
@@ -113,7 +126,7 @@ def _complete_challenge(store, token, org="alpha", now=None):
 
 
 class TestRegisterHappyPath:
-    """Mint token → complete conformance → POST /register → config written."""
+    """Mint token → complete conformance → POST /register → runtime store written."""
 
     def test_full_happy_path(self, app, daemon_state, monkeypatch):
         _bypass_loopback(monkeypatch)
@@ -141,13 +154,15 @@ class TestRegisterHappyPath:
         # Token consumed
         assert store.validate(token, "alpha") is None
 
-        # Config written
-        raw = _config_raw(daemon_state.orgs["alpha"].root)
-        assert "executor_profiles" in raw
-        assert "test-executor" in raw["executor_profiles"]
-        entry = raw["executor_profiles"]["test-executor"]
+        # THR-107: written to the machine-global runtime store, NOT to
+        # the org's config.yaml.
+        profiles = _store_raw()
+        assert "test-executor" in profiles
+        entry = profiles["test-executor"]
         assert entry["command"] == "echo"
         assert entry["argv_template"] == ["echo", "{prompt}"]
+        raw = _config_raw(daemon_state.orgs["alpha"].root)
+        assert "executor_profiles" not in raw
 
     def test_register_persists_unrelated_config_keys(self, app, daemon_state, monkeypatch):
         _bypass_loopback(monkeypatch)
@@ -175,12 +190,13 @@ feishu_notifications:
         assert r.status_code == 200
 
         raw = _config_raw(org_root)
-        # Unrelated keys survive
+        # Unrelated keys survive — the register route no longer touches
+        # org/config.yaml at all (THR-107).
         assert raw["session_timeout_seconds"] == 7200
         assert raw["feishu_notifications"]["enabled"] is True
-        # New profile added
-        assert "executor_profiles" in raw
-        assert "test-executor" in raw["executor_profiles"]
+        assert "executor_profiles" not in raw
+        # New profile added to the runtime store instead
+        assert "test-executor" in _store_raw()
 
     def test_register_records_audit_log(self, app, daemon_state, monkeypatch):
         _bypass_loopback(monkeypatch)
@@ -198,7 +214,11 @@ feishu_notifications:
         })
         assert r.status_code == 200
 
-        # Audit log row scoped to config:executor_profiles
+        # THR-107: the audit row keeps the org_config_write shape and the
+        # "executor_profiles" section label in the ORG's audit log, but
+        # its before/after snapshots now capture RUNTIME STORE state (the
+        # durable write target) — the org-token-gated registration stays
+        # visible in that org's audit trail and records what changed.
         db = daemon_state.orgs["alpha"].db
         logs = db.get_audit_logs("config:executor_profiles")
         assert len(logs) == 1
@@ -206,7 +226,9 @@ feishu_notifications:
         assert log["action"] == "org_config_write"
         payload = yaml.safe_load(log["payload"]) if isinstance(log["payload"], str) else log["payload"]
         assert payload["section"] == "executor_profiles"
-        assert "test-executor" in str(payload)
+        # before: store had no entry; after: store holds the new profile.
+        assert "test-executor" not in payload["before"]
+        assert payload["after"]["test-executor"]["command"] == "echo"
 
 
 # ── Conformance check-in route ──────────────────────────────────────────
@@ -393,7 +415,7 @@ class TestRegisterReplayRejected:
 
 class TestConcurrentSameToken:
     """Two concurrent register requests with the same token MUST produce
-    exactly one success, one config write, one audit row.
+    exactly one success, one runtime-store write, one audit row.
 
     This is the regression test for the HIGH race caught in code review:
     the old code called ``store.consume()`` AFTER the config write without
@@ -466,18 +488,16 @@ class TestConcurrentSameToken:
         # Token is consumed (winner committed) — validate returns None
         assert store.validate(token, "alpha") is None
 
-        # Exactly one config entry written
-        raw = _config_raw(daemon_state.orgs["alpha"].root)
-        assert "executor_profiles" in raw
-        assert "test-executor" in raw["executor_profiles"]
-        entry = raw["executor_profiles"]["test-executor"]
-        assert entry["command"] == "echo"
+        # Exactly one runtime-store entry written
+        profiles = _store_raw()
+        assert "test-executor" in profiles
+        assert profiles["test-executor"]["command"] == "echo"
 
-        # Exactly one audit log entry
+        # Exactly one audit row (org audit log, org_config_write shape)
         db = daemon_state.orgs["alpha"].db
         logs = db.get_audit_logs("config:executor_profiles")
         assert len(logs) == 1, (
-            f"Expected exactly 1 audit log, got {len(logs)}"
+            f"Expected exactly 1 audit row, got {len(logs)}"
         )
 
 
@@ -771,14 +791,13 @@ class TestRegistrationIsIsolated:
 
 class TestDuplicateProfileConflict:
     """Registering a second profile with the same name but different config
-    is rejected, and the rejection leaves config, registry, audit, and
-    token-consumption semantics consistent."""
+    is rejected, and the rejection leaves the runtime store, registry,
+    audit, and token-consumption semantics consistent."""
 
     def test_register_duplicate_name_conflict(self, app, daemon_state, monkeypatch):
         _bypass_loopback(monkeypatch)
         client = TestClient(app)
         store = daemon_state.registration_token_store
-        org_root = daemon_state.orgs["alpha"].root
         registry = get_registry()
 
         # Register first profile
@@ -818,12 +837,11 @@ class TestDuplicateProfileConflict:
             f"got command={still_registered.command!r}"
         )
 
-        # 2. Config still has the FIRST definition (echo), not printf
-        raw = _config_raw(org_root)
-        profiles = raw.get("executor_profiles", {})
+        # 2. Runtime store still has the FIRST definition (echo), not printf
+        profiles = _store_raw()
         assert "test-executor" in profiles
         assert profiles["test-executor"]["command"] == "echo", (
-            f"Config should retain 'echo', got {profiles['test-executor']['command']!r}"
+            f"Store should retain 'echo', got {profiles['test-executor']['command']!r}"
         )
 
         # 3. Token2 is NOT consumed (conflict detected pre-consumption)
@@ -831,11 +849,11 @@ class TestDuplicateProfileConflict:
             "Second token should remain valid — conflict was detected before consume"
         )
 
-        # 4. Only one audit log (for the first, successful registration)
+        # 4. Only one audit row (for the first, successful registration)
         db = daemon_state.orgs["alpha"].db
         logs = db.get_audit_logs("config:executor_profiles")
         assert len(logs) == 1, (
-            f"Expected exactly 1 audit log, got {len(logs)}"
+            f"Expected exactly 1 audit row, got {len(logs)}"
         )
 
 
@@ -844,12 +862,12 @@ class TestDuplicateProfileConflict:
 
 class TestConcurrentDifferentTokens:
     """Two concurrent registrations using DIFFERENT scoped tokens for the
-    SAME profile name but with CONFLICTING definitions MUST leave config,
-    registry, and audit state consistent.
+    SAME profile name but with CONFLICTING definitions MUST leave the
+    runtime store, registry, and audit state consistent.
 
-    Expected outcome: at most one 200; the config entry matches the
+    Expected outcome: at most one 200; the store entry matches the
     in-memory profile; audit rows match the successful durable change
-    only; no 409 response leaves config that disagrees with the registry.
+    only; no 409 response leaves a store that disagrees with the registry.
     """
 
     def test_concurrent_different_tokens_conflicting_defs(
@@ -859,7 +877,6 @@ class TestConcurrentDifferentTokens:
 
         _bypass_loopback(monkeypatch)
         store = daemon_state.registration_token_store
-        org_root = daemon_state.orgs["alpha"].root
 
         # Mint two different tokens for the same profile name
         token1, _ = store.mint("alpha", "test-executor")
@@ -871,9 +888,9 @@ class TestConcurrentDifferentTokens:
         # write+register for the same name.  Both threads will pass
         # the preflight check and consume (different tokens), then
         # collide at the lock.  The lock's double-check rejects the
-        # loser with 409 while the winner writes config, registers,
-        # and audits.  We don't need an artificial barrier — the
-        # test verifies the key invariant: config and registry stay
+        # loser with 409 while the winner writes the runtime store,
+        # registers, and audits.  We don't need an artificial barrier —
+        # the test verifies the key invariant: store and registry stay
         # consistent regardless of which thread wins the lock race.
 
         def do_register(token: str, command: str, argv: list):
@@ -906,13 +923,12 @@ class TestConcurrentDifferentTokens:
         assert registered is not None
         assert registered.command in ("echo", "printf")
 
-        # 2. Config matches the registry
-        raw = _config_raw(org_root)
-        profiles = raw.get("executor_profiles", {})
+        # 2. Runtime store matches the registry
+        profiles = _store_raw()
         assert "test-executor" in profiles
-        config_command = profiles["test-executor"]["command"]
-        assert config_command == registered.command, (
-            f"Config command {config_command!r} must match "
+        store_command = profiles["test-executor"]["command"]
+        assert store_command == registered.command, (
+            f"Store command {store_command!r} must match "
             f"registry command {registered.command!r}"
         )
 
@@ -920,7 +936,7 @@ class TestConcurrentDifferentTokens:
         db = daemon_state.orgs["alpha"].db
         logs = db.get_audit_logs("config:executor_profiles")
         assert len(logs) == 1, (
-            f"Expected exactly 1 audit log, got {len(logs)}"
+            f"Expected exactly 1 audit row, got {len(logs)}"
         )
 
         # 4. Token state: at least one token is consumed (the winner's).
@@ -959,43 +975,42 @@ class TestNonListArgvTemplate:
         assert r.status_code == 422
 
 
-# ── Regression: config-write failure MUST NOT leak in-memory profile ────
+# ── Regression: store-write failure MUST NOT leak in-memory profile ─────
 
 
-class TestConfigWriteFailureDoesNotLeakRegistry:
-    """When write_executor_profile_entry raises OrgConfigError after
-    store.consume() succeeds, the route must return 422, the in-memory
-    registry must NOT contain the profile, no config file must be written,
-    and no audit row must appear.
+class TestStoreWriteFailureDoesNotLeakRegistry:
+    """When save_runtime_profile raises after store.reserve() succeeds,
+    the route must return 422, the in-memory registry must NOT contain
+    the profile, no store entry must be written, and no audit row must
+    appear.
 
     Recovery: after the forced failure, a fresh token for the same profile
     name with the write path restored MUST succeed — proving no stale
     in-memory state blocks subsequent registration.
     """
 
-    def test_config_write_failure_no_registry_leak(
+    def test_store_write_failure_no_registry_leak(
         self, app, daemon_state, monkeypatch,
     ):
         _bypass_loopback(monkeypatch)
         client = TestClient(app)
         store = daemon_state.registration_token_store
-        org_root = daemon_state.orgs["alpha"].root
 
         token, _ = store.mint("alpha", "test-executor")
         _complete_challenge(store, token)
 
         from runtime.daemon.routes import executors as routes_mod
 
-        # Capture original write_executor_profile_entry before monkeypatching
-        original_write = routes_mod.write_executor_profile_entry
+        # Capture original save_runtime_profile before monkeypatching
+        original_write = routes_mod.save_runtime_profile
 
-        # Force write_executor_profile_entry to raise OrgConfigError
-        def _failing_write(paths, name, entry):
-            raise OrgConfigError("simulated config write failure")
+        # Force save_runtime_profile to raise
+        def _failing_write(name, entry):
+            raise RuntimeError("simulated runtime store write failure")
 
         monkeypatch.setattr(
             routes_mod,
-            "write_executor_profile_entry",
+            "save_runtime_profile",
             _failing_write,
         )
 
@@ -1011,12 +1026,12 @@ class TestConfigWriteFailureDoesNotLeakRegistry:
             "adapter": "pi",
         })
         assert r.status_code == 422, r.json()
-        assert "simulated config write failure" in r.json()["detail"]
+        assert "simulated runtime store write failure" in r.json()["detail"]
 
         # Token must NOT be consumed (retry-safe: on failure nothing is
         # written and the token remains valid for retry within TTL).
         assert store.validate(token, "alpha") is not None, (
-            "Token was consumed on config-write failure — it must remain "
+            "Token was consumed on store-write failure — it must remain "
             "valid so the caller can retry with the same token."
         )
 
@@ -1024,23 +1039,20 @@ class TestConfigWriteFailureDoesNotLeakRegistry:
         # the first (failed) attempt.
         assert not registry.is_registered("test-executor"), (
             "Profile test-executor leaked into in-memory registry after "
-            "config-write failure — the profile must not be registered"
+            "store-write failure — the profile must not be registered"
         )
 
-        # No config file entry written after the failed attempt
-        raw = _config_raw(org_root)
-        assert "executor_profiles" not in raw or "test-executor" not in raw.get(
-            "executor_profiles", {}
-        ), (
-            "executor_profiles.test-executor was written to config.yaml "
-            "despite config-write failure"
+        # No runtime-store entry written after the failed attempt
+        assert "test-executor" not in _store_raw(), (
+            "executor_profiles.yaml gained test-executor despite the "
+            "store-write failure"
         )
 
-        # No audit log entry after the failed attempt
+        # No audit row after the failed attempt
         db = daemon_state.orgs["alpha"].db
         logs = db.get_audit_logs("config:executor_profiles")
         assert len(logs) == 0, (
-            f"Expected 0 audit logs, got {len(logs)} — audit should not "
+            f"Expected 0 audit rows, got {len(logs)} — audit should not "
             f"record a failed write"
         )
 
@@ -1048,7 +1060,7 @@ class TestConfigWriteFailureDoesNotLeakRegistry:
         _complete_challenge(store, token)
         monkeypatch.setattr(
             routes_mod,
-            "write_executor_profile_entry",
+            "save_runtime_profile",
             original_write,
         )
         client.headers.update({"Authorization": f"Bearer {token}"})
@@ -1065,27 +1077,26 @@ class TestConfigWriteFailureDoesNotLeakRegistry:
     def test_recovery_after_forced_failure(
         self, app, daemon_state, monkeypatch,
     ):
-        """After a forced config-write failure, a fresh token for the same
+        """After a forced store-write failure, a fresh token for the same
         profile name with the write path restored MUST succeed — proving no
         stale in-memory state blocks subsequent registration."""
         _bypass_loopback(monkeypatch)
         client = TestClient(app)
         store = daemon_state.registration_token_store
-        org_root = daemon_state.orgs["alpha"].root
 
         # --- Phase 1: forced failure ---
         token1, _ = store.mint("alpha", "test-executor")
         _complete_challenge(store, token1)
 
         from runtime.daemon.routes import executors as routes_mod
-        original_write = routes_mod.write_executor_profile_entry
+        original_write = routes_mod.save_runtime_profile
 
-        def _failing_write(paths, name, entry):
-            raise OrgConfigError("simulated config write failure")
+        def _failing_write(name, entry):
+            raise RuntimeError("simulated runtime store write failure")
 
         monkeypatch.setattr(
             routes_mod,
-            "write_executor_profile_entry",
+            "save_runtime_profile",
             _failing_write,
         )
 
@@ -1101,11 +1112,11 @@ class TestConfigWriteFailureDoesNotLeakRegistry:
         assert not registry.is_registered("test-executor")
 
         # --- Phase 2: recovery — restore write, mint fresh token ---
-        # Restore only the write_executor_profile_entry patch (undo() would
+        # Restore only the save_runtime_profile patch (undo() would
         # also remove the loopback bypass).
         monkeypatch.setattr(
             routes_mod,
-            "write_executor_profile_entry",
+            "save_runtime_profile",
             original_write,
         )
 
@@ -1126,26 +1137,29 @@ class TestConfigWriteFailureDoesNotLeakRegistry:
         # Registry now has the profile
         assert registry.is_registered("test-executor")
 
-        # Config written
-        raw = _config_raw(org_root)
-        assert "executor_profiles" in raw
-        assert "test-executor" in raw["executor_profiles"]
+        # Runtime store written
+        assert "test-executor" in _store_raw()
 
-        # Audit log written
+        # Audit row written (org audit log, org_config_write shape)
         db = daemon_state.orgs["alpha"].db
         logs = db.get_audit_logs("config:executor_profiles")
         assert len(logs) == 1
 
 
-# ── Parity test: register route and startup config validation accept/reject
+# ── Parity test: register route and startup runtime-store load accept/reject
 #    the SAME inputs so future drift fails a test. ──────────────────────────
 
 class TestValidationParityWithStartupConfig:
     """Assert the register route drives through the same canonical validation
-    as ``ExecutorRegistry.register_custom_from_config`` (used at startup).
+    as the daemon-startup runtime-store load (THR-107: the startup
+    registration path is ``load_runtime_profiles`` → per-profile
+    ``validate_custom_profile_config`` + ``register_custom_profile`` inside
+    ``DaemonState.from_runtime``).
 
-    Every rejection/acceptance a caller sees through the route must match what
-    a daemon restart would do with the same profile in config.yaml.
+    Every rejection/acceptance a caller sees through the route must match
+    what a daemon restart does with the same profile persisted in the
+    runtime store: invalid entries are never registered (startup logs and
+    skips them); valid entries register.
     """
 
     # ── Rejected profiles (must be rejected by BOTH paths) ───────────────
@@ -1180,19 +1194,26 @@ class TestValidationParityWithStartupConfig:
 
     @pytest.mark.parametrize("cfg,label", _INVALID_PROFILES)
     def test_invalid_profiles_rejected_by_both_paths(
-        self, cfg, label, daemon_state, monkeypatch
+        self, cfg, label, runtime_with_token, daemon_state, monkeypatch
     ):
         """Invalid profiles must raise ValueError in the canonical validator
-        AND 422 from the register route."""
+        AND never register through the startup runtime-store load."""
         from runtime.orchestrator.executor_registry import ExecutorRegistry
+        from runtime.orchestrator.runtime_executor_store import (
+            save_runtime_profile,
+        )
 
         # Canonical validation must reject
         with pytest.raises(ValueError):
             ExecutorRegistry.validate_custom_profile_config("test-parity", cfg)
 
-        # Startup config path (simulated) must also reject
-        with pytest.raises(ValueError):
-            get_registry().register_custom_from_config({"test-parity": cfg})
+        # Startup path: persist the invalid entry in the runtime store,
+        # then drive the REAL daemon-startup load — the entry must be
+        # skipped (logged), never registered.
+        save_runtime_profile("test-parity", cfg)
+        reset_registry()
+        DaemonState.from_runtime(runtime_with_token, Settings())
+        assert not get_registry().is_registered("test-parity")
 
     # ── Accepted profiles (must be accepted by BOTH paths) ───────────────
 
@@ -1230,11 +1251,14 @@ class TestValidationParityWithStartupConfig:
 
     @pytest.mark.parametrize("cfg,expected_marker", _VALID_PROFILES)
     def test_valid_profiles_accepted_by_both_paths(
-        self, cfg, expected_marker, daemon_state, monkeypatch
+        self, cfg, expected_marker, runtime_with_token, daemon_state, monkeypatch
     ):
         """Valid profiles must build a correct ExecutorProfile in the canonical
-        validator AND be registerable through the config path."""
+        validator AND register through the startup runtime-store load."""
         from runtime.orchestrator.executor_registry import ExecutorRegistry
+        from runtime.orchestrator.runtime_executor_store import (
+            save_runtime_profile,
+        )
 
         profile_name = "test-parity-valid"
 
@@ -1247,6 +1271,9 @@ class TestValidationParityWithStartupConfig:
         assert profile.argv_template == [str(e) for e in cfg["argv_template"]]
         assert profile.command == cfg["command"]
 
-        # Config path must register without error
-        get_registry().register_custom_from_config({profile_name: cfg})
+        # Startup path: persist in the runtime store, then drive the REAL
+        # daemon-startup load — the entry must register.
+        save_runtime_profile(profile_name, cfg)
+        reset_registry()
+        DaemonState.from_runtime(runtime_with_token, Settings())
         assert get_registry().is_registered(profile_name)

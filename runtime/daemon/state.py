@@ -14,9 +14,6 @@ from runtime.daemon.org_state import OrgState
 from runtime.daemon.queue import TaskQueue
 from runtime.daemon.registration_token import RegistrationTokenStore
 from runtime.orchestrator.org_validation import OrgConsistencyError
-from runtime.orchestrator.executor_registry import (
-    ExecutorProfileCollisionError,
-)
 from runtime.runtime import RuntimeDir
 
 logger = logging.getLogger(__name__)
@@ -28,9 +25,8 @@ class DaemonState:
     settings: Settings
     orgs: dict[str, OrgState] = field(default_factory=dict)
     # Orgs whose folder is on disk but failed to attach (typically an
-    # OrgConsistencyError from validate_team_membership, an
-    # ExecutorProfileCollisionError from custom profile registration,
-    # or a ValueError / AgentParseError from agent file validation).
+    # OrgConsistencyError from validate_team_membership, or a
+    # ValueError / AgentParseError from agent file validation).
     # Surfaced via GET /orgs so the founder isn't left guessing why an
     # org went missing after a restart.
     broken_orgs: dict[str, str] = field(default_factory=dict)
@@ -70,15 +66,34 @@ class DaemonState:
         state = cls(runtime=runtime, settings=settings)
         # __post_init__ constructs metrics_store at runtime.root/metrics.db
 
+        # THR-107: one-shot lift of any legacy per-org executor_profiles
+        # config blocks into the machine-global runtime store BEFORE the
+        # store is loaded below, so profiles lifted on this very boot are
+        # registered in the same boot (agents declaring them still pass
+        # validation during org load). Collisions/malformed blocks are
+        # logged and skipped — migration never blocks startup.
+        from runtime.orchestrator.runtime_executor_store import (
+            load_runtime_profiles,
+            migrate_legacy_org_profiles,
+        )
+        from runtime.orchestrator._paths import OrgPaths
+        for slug, root in runtime.iter_org_roots():
+            try:
+                migrate_legacy_org_profiles(
+                    OrgPaths(root=root).org_config_path, slug
+                )
+            except Exception as exc:
+                logger.warning(
+                    "org %r: legacy executor_profiles migration failed: %s",
+                    slug, exc,
+                )
+
         # Load runtime-level executor profiles into the process-wide registry
         # so every org can resolve them (machine-global, visible to all orgs).
         #
         # Per-profile iteration: a bad persisted profile must not prevent
         # valid later profiles from loading. Each profile is validated and
         # registered individually; invalid entries are logged and skipped.
-        from runtime.orchestrator.runtime_executor_store import (
-            load_runtime_profiles,
-        )
         from runtime.orchestrator.executor_registry import get_registry
         runtime_profiles = load_runtime_profiles()
         if runtime_profiles:
@@ -100,8 +115,7 @@ class DaemonState:
         for slug, root in runtime.iter_org_roots():
             try:
                 org = OrgState.load(slug=slug, root=root, settings=settings)
-            except (OrgConsistencyError, ExecutorProfileCollisionError,
-                    ValueError) as exc:
+            except (OrgConsistencyError, ValueError) as exc:
                 # One broken org must not crash the daemon. Record the
                 # error for GET /orgs and skip; the folder stays intact
                 # on disk so the founder can fix teams.yaml and restart.

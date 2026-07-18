@@ -88,29 +88,28 @@ def test_org_state_load_refuses_on_team_drift(tmp_path: Path) -> None:
     assert "family_operations" in str(exc_info.value)
 
 
-# ── THR-052: custom executor profile registration-before-validation ──
+# ── THR-107: legacy per-org executor_profiles block no longer registers ──
 
 def _make_org_config(org_root: Path, body: str) -> None:
     (org_root / "org" / "config.yaml").parent.mkdir(parents=True, exist_ok=True)
     (org_root / "org" / "config.yaml").write_text(body)
 
 
-def test_org_state_load_registers_custom_profiles_before_agent_validation(
-    tmp_path: Path,
+def test_org_state_load_does_not_register_legacy_executor_profiles(
+    tmp_path: Path, monkeypatch,
 ) -> None:
-    """Production-shaped regression: org/config.yaml defines a custom executor
-    profile and an active agent file uses that executor. Before the fix
-    (profiles registered AFTER validation), this would fail with
-    AgentParseError('executor must be a registered profile'). After the fix
-    (profiles registered BEFORE validation), it must load successfully."""
-    from runtime.orchestrator.executor_registry import reset_registry
+    """THR-107: the per-org executor_profiles config surface is removed.
+    A legacy block in org/config.yaml must NOT register anything into the
+    process-wide registry via the org_state startup path. (The one-shot
+    startup migration lifts it into the machine-global runtime store
+    instead — see DaemonState.from_runtime tests.)"""
+    from runtime.orchestrator.executor_registry import get_registry, reset_registry
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
     reset_registry()
 
     org_root = tmp_path / "rt" / "orgs" / "testorg"
     _seed_org(org_root)
-    paths = OrgPaths(root=org_root)
 
-    # Write org/config.yaml with a custom executor profile.
     _make_org_config(org_root, """
 executor_profiles:
   openclaw:
@@ -121,48 +120,24 @@ executor_profiles:
       - "{prompt}"
 """)
 
-    # Write an active agent file that declares the custom executor.
-    agent = AgentDef(
-        name="dev_agent",
-        team="engineering",
-        role="worker",
-        executor="openclaw",
-        allow_rules=(),
-        repos={},
-        enrolled_by="founder",
-        enrolled_at_task=None,
-        enrolled_at=datetime(2026, 6, 30, tzinfo=timezone.utc),
-        system_prompt="You are the dev agent.\n",
-        description="Dev agent",
-    )
-    # Also register the team in teams.yaml so team validation passes.
-    (org_root / "org" / "teams.yaml").write_text(
-        "teams:\n  engineering:\n    manager: engineering_manager\n"
-    )
-    (paths.agents_dir / "dev_agent.md").write_text(render_agent_text(agent))
-
-    # This must succeed — custom profile is registered before agent validation.
     org = OrgState.load(slug="testorg", root=org_root, settings=Settings())
     assert org.slug == "testorg"
 
-    # The custom profile must be in the registry.
-    from runtime.orchestrator.executor_registry import get_registry
-    assert get_registry().is_registered("openclaw")
-    profile = get_registry().get_profile("openclaw")
-    assert profile is not None
-    assert profile.kind == "custom"
-    assert profile.command == "echo"
-
+    # The legacy block must NOT reach the process registry.
+    assert not get_registry().is_registered("openclaw")
     org.close()
+    reset_registry()
 
 
 def test_org_state_load_fails_when_custom_profile_unregistered_and_agent_declares_it(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
-    """When org/config.yaml is malformed (profiles not registered) and an
-    active agent declares a custom executor, OrgState.load must fail validation
-    normally — the agent depends on an unregistered profile."""
+    """An active agent declaring a custom executor that is NOT registered
+    (THR-107: e.g. a legacy config block that is no longer parsed, here a
+    malformed one that cannot even be lifted) must fail validation — the
+    agent depends on an unregistered profile."""
     from runtime.orchestrator.executor_registry import reset_registry
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
     reset_registry()
 
     org_root = tmp_path / "rt" / "orgs" / "badorg"
