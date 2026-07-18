@@ -150,7 +150,7 @@ def test_skill_cli_commands_exist() -> None:
                     referenced.add(tokens[0].rstrip("`,."))
     referenced -= {"<subcommand>"}
     # These are referenced only as negative examples ("Don't call X")
-    # in the review skill which replaces the removed talk surface.
+    # in the reflection skill which replaces the removed talk surface.
     referenced -= {"talk", "dispatch"}
     missing = referenced - known
     assert not missing, f"skills reference missing CLI commands: {missing}"
