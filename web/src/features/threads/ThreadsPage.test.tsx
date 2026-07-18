@@ -1164,22 +1164,21 @@ describe('ThreadsPage — abort replies', () => {
     return mountAt(`/orgs/${SLUG}/threads/${threadId}`);
   }
 
-  test('abort control sits inline on the replying indicator (not the composer footer)', async () => {
+  test('abort control sits INSIDE the composer footer (not the replying indicator)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithResponders([
       { agent_name: 'dev_agent', status: 'working' },
     ]);
 
-    // THR-061 fidelity FIX: "Abort reply" moved OUT of the composer footer and
-    // now sits inline on the transcript replying row (the TypingBubble).
+    // THR-099 Phase A (founder seq57): "Abort reply" moved back INTO the composer
+    // input pill and no longer sits on the transcript replying row.
     const btn = await screen.findByRole('button', { name: /Abort reply/i });
     expect(btn).toBeEnabled();
     const footer = document.querySelector('footer');
     expect(footer).not.toBeNull();
-    expect(footer!.contains(btn)).toBe(false);
-    // It lives on the in-flight bubble row (article labelled "<agent> is replying").
-    const bubble = btn.closest('article');
-    expect(bubble?.getAttribute('aria-label')).toMatch(/is replying/i);
+    expect(footer!.contains(btn)).toBe(true);
+    // It does NOT live on the in-flight bubble row (article "<agent> is replying").
+    expect(btn.closest('article')).toBeNull();
   });
 
   test('no abort control renders when there are no in-flight responders', async () => {

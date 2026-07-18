@@ -16,12 +16,16 @@
  *
  * Auto-grow, @-mention autocomplete, Enter-to-send (Shift+Enter for new
  * line) live in MentionTextarea so the same typing experience is reused
- * by other surfaces (e.g. NewThreadDialog). Abort-reply moved OUT of the
- * composer to sit inline by the transcript replying indicator (a-thread-detail).
+ * by other surfaces (e.g. NewThreadDialog). The optional "Abort reply" control
+ * sits INSIDE the input pill as a trailing action next to the circular send
+ * button (THR-099 Phase A, founder seq57 — reversing the earlier "moved OUT"
+ * decision). It renders only while replies are in flight and is owned entirely
+ * by props (the parent holds the thread-level abort mutation).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, Paperclip, X } from 'lucide-react';
 import { MAX_THREAD_ATTACHMENTS, REMOVE_ATTACHMENT_LABEL } from '@/lib/threadAttachments';
+import { Button } from '@/design-system/primitives/Button';
 import { MentionTextarea } from './MentionTextarea';
 import type { AgentSummary } from '@/lib/api/agents';
 
@@ -111,6 +115,15 @@ interface ComposerProps {
    * must not call @/lib/orgSlug directly).
    */
   orgSlug: string;
+  /**
+   * Optional "Abort reply" trailing action rendered INSIDE the input pill, to
+   * the left of the circular send button (THR-099 Phase A). The button renders
+   * ONLY while `active` (replies in flight); shows "Aborting…" + disabled while
+   * `isPending`; otherwise "Abort reply". `onAbort` aborts EVERY in-flight reply
+   * (the parent owns the thread-level mutation — the pattern stays pure). Other
+   * Composer surfaces (NewThreadDialog, the assistant dock) omit this prop.
+   */
+  abortReplies?: { active: boolean; isPending: boolean; onAbort: () => void };
 }
 
 export function Composer({
@@ -126,6 +139,7 @@ export function Composer({
   agents = [],
   threadId = '',
   orgSlug,
+  abortReplies,
 }: ComposerProps): JSX.Element {
   const { draft, setDraft, clearDraft } = useThreadDraft(orgSlug, threadId);
   const canSend = Boolean(draft.trim() || attachments.length);
@@ -220,6 +234,26 @@ export function Composer({
           registerFocus={registerFocus}
           className="text-body text-text-primary placeholder:text-text-muted w-full resize-none bg-transparent py-1.5 focus:outline-none disabled:opacity-50"
         />
+        {/* "Abort reply" — trailing action INSIDE the pill, left of the circular
+            send (THR-099 Phase A). Renders only while replies are in flight.
+            Reuses the SAME bordered-outline DS Button pill as the old inline
+            control: the `sm` size's h-8 is 4rem on this spacing scale (too tall
+            for the compact pill), so height is left content-driven with the
+            mockup's own padding (px-3 py-1, named tokens). One click still aborts
+            EVERY in-flight reply — the parent owns the thread-level mutation. */}
+        {abortReplies?.active && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={abortReplies.onAbort}
+            disabled={abortReplies.isPending}
+            title="Abort pending replies"
+            className="hover:border-feedback-danger hover:bg-danger-soft hover:text-feedback-danger mb-0.5 h-auto shrink-0 px-3 py-1"
+          >
+            {abortReplies.isPending ? 'Aborting…' : 'Abort reply'}
+          </Button>
+        )}
         <button
           type="button"
           onClick={submit}
@@ -246,5 +280,5 @@ export const meta = {
   import: "@/design-system/patterns/Composer",
   variants: {},
   consumes: ["components.textarea", "components.button"],
-  example: "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' orgSlug='happyranch' />",
+  example: "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' orgSlug='happyranch' abortReplies={{ active: true, isPending: false, onAbort: () => {} }} />",
 } as const;

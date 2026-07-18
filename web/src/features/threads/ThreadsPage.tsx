@@ -362,6 +362,10 @@ export function ThreadsPage(): JSX.Element {
     return activeThread.data?.messages ?? [];
   }, [activeMessagesQuery.data, activeThread.data]);
 
+  // In-flight responders (working/queued) — the presence of any gates the
+  // "Abort reply" control now rendered INSIDE the composer pill (THR-099 Phase A).
+  const inFlightResponders = useMemo(() => selectInFlightResponders(messages), [messages]);
+
   const anyWorking = useMemo(
     () =>
       messages.some((m) =>
@@ -637,8 +641,6 @@ export function ThreadsPage(): JSX.Element {
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
           onRemoveParticipant={setRemoveTarget}
-          isAborting={abortReplies.isPending}
-          onAbortReplies={() => { abortReplies.mutateAsync().catch(() => {}); }}
           composer={
             <Composer
               agents={agents}
@@ -652,6 +654,14 @@ export function ThreadsPage(): JSX.Element {
               attachments={pendingAttachments}
               onAttachmentsChange={setPendingAttachments}
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
+              // "Abort reply" lives INSIDE the input pill (THR-099 Phase A).
+              // Renders only while replies are in flight; one click aborts EVERY
+              // in-flight reply (thread-level mutation, unchanged).
+              abortReplies={{
+                active: inFlightResponders.length > 0,
+                isPending: abortReplies.isPending,
+                onAbort: () => { abortReplies.mutateAsync().catch(() => {}); },
+              }}
             />
           }
           slug={slug}
@@ -722,10 +732,6 @@ interface DetailColumnProps {
   onArchive: () => void;
   /** Open the confirm-remove dialog for the given participant. */
   onRemoveParticipant: (name: string) => void;
-  /** Abort all in-flight replies — rendered inline by the transcript replying indicator. */
-  onAbortReplies: () => void;
-  /** True while the abort mutation is in flight (button shows "Aborting…"). */
-  isAborting: boolean;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -742,8 +748,6 @@ function DetailColumn({
   onInvite,
   onArchive,
   onRemoveParticipant,
-  onAbortReplies,
-  isAborting,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -865,8 +869,6 @@ function DetailColumn({
               slug={slug}
               threadId={threadId}
               nowMs={nowMs}
-              onAbortReplies={onAbortReplies}
-              isAborting={isAborting}
             />
           </div>
           <footer className="border-border-default bg-surface-sunken border-t p-3">
@@ -1090,12 +1092,9 @@ interface TranscriptProps {
   slug?: string;
   threadId?: string;
   nowMs?: number;
-  /** Abort all in-flight replies — surfaced inline next to the replying bubble. */
-  onAbortReplies?: () => void;
-  isAborting?: boolean;
 }
 
-function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, onAbortReplies, isAborting }: TranscriptProps): JSX.Element {
+function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs }: TranscriptProps): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
 
   // Agents mid-reply (working) or waiting to reply (queued)
@@ -1184,32 +1183,9 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, onAb
               status={s.status as 'queued' | 'working'}
               startedAt={s.started_at}
               nowMs={nowMs}
-              // "Abort reply" sits inline on the in-flight row (a-thread-detail);
-              // a single click aborts EVERY in-flight reply on the thread (the
-              // mutation is thread-level, covering both working and queued).
-              trailing={
-                onAbortReplies ? (
-                  // Bordered outline PILL (a-thread-detail `.abort`): reuses the
-                  // DS Button pill base + `outline` variant, overriding the hover
-                  // to danger (border + text + soft danger fill). The `sm` size's
-                  // h-8 is 4rem on this spacing scale — too tall for the compact
-                  // design pill — so height is left content-driven with the
-                  // mockup's own `padding: 4px 12px` (px-3 py-1, named tokens).
-                  // One click still aborts EVERY in-flight reply — styling only,
-                  // mutation intact.
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={onAbortReplies}
-                    disabled={isAborting}
-                    title="Abort pending replies"
-                    className="hover:border-feedback-danger hover:bg-danger-soft hover:text-feedback-danger h-auto px-3 py-1"
-                  >
-                    {isAborting ? 'Aborting…' : 'Abort reply'}
-                  </Button>
-                ) : undefined
-              }
+              // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
+              // founder seq57). The generic `trailing` slot is intentionally left
+              // unused here — no abort control renders beside the replying row.
             />
           </div>
         </div>

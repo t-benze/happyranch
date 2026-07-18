@@ -87,7 +87,7 @@
         "components.textarea",
         "components.button"
       ],
-      "example": "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' orgSlug='happyranch' />"
+      "example": "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' orgSlug='happyranch' abortReplies={{ active: true, isPending: false, onAbort: () => {} }} />"
     },
     {
       "name": "ContentWrap",

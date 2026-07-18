@@ -108,6 +108,9 @@ const componentMap: Record<string, ReactNode> = {
         orgSlug="happyranch"
         onSend={() => {}}
         helper="Ctrl+Enter to send (preview, won't fire)"
+        // THR-099 Phase A: the in-flight-gated "Abort reply" trailing action
+        // renders INSIDE the input pill, left of the circular send button.
+        abortReplies={{ active: true, isPending: false, onAbort: () => {} }}
       />
     </div>
   ),
