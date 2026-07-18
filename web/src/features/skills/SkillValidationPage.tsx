@@ -179,9 +179,12 @@ function EventRow({ row, slug }: { row: ValidationRow; slug: string }): JSX.Elem
       data-event-id={row.id}
       data-severity={row.severity.text}
     >
+      {/* `relative` contains the sr-only span (position:absolute) so it cannot
+          escape the validation list's overflow-y-auto scroller to the ICB and
+          window-scroll the surface — same THR-092 fix as SkillCard. */}
       <div
         aria-hidden="true"
-        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${okTint}`}
+        className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${okTint}`}
       >
         <OkIcon size={18} />
         <span className="sr-only">{row.okLabel}</span>
