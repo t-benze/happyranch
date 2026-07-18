@@ -152,6 +152,25 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     expect(within(card).getByText('Validated')).toBeInTheDocument();
   });
 
+  test('read-only lock label is wrapped in a positioned container (THR-092 whole-surface-scroll guard)', async () => {
+    mount();
+    await screen.findByText('founder-escalation-protocol');
+    const card = screen
+      .getByText('founder-escalation-protocol')
+      .closest('article') as HTMLElement;
+    // The "Read-only system contract" lock label is screen-reader-only, and the
+    // `sr-only` utility makes it position:absolute. Its wrapping <div> MUST be a
+    // positioning context (`relative`) — otherwise the span's containing block
+    // resolves to the ICB, it escapes the catalog's overflow-y-auto scroller,
+    // and the WHOLE surface window-scrolls (the founder-reported THR-092 bug).
+    // Token-aware (classList.contains), never a word-boundary regex.
+    const srLabel = within(card).getByText('Read-only system contract', {
+      selector: 'span',
+    });
+    const wrapper = srLabel.parentElement as HTMLElement;
+    expect(wrapper.classList.contains('relative')).toBe(true);
+  });
+
   test('only Bundled and Custom are exposed as filter controls (no "All skills")', async () => {
     mount();
     await screen.findByText('founder-escalation-protocol');

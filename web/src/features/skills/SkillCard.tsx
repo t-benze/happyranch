@@ -108,8 +108,13 @@ export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
       </div>
 
       {readOnly && (
+        // `relative` gives the sr-only span (position:absolute via the sr-only
+        // utility) a local containing block. Without it the span's containing
+        // block resolves to the ICB and it escapes the catalog's overflow-y-auto
+        // scroller, inflating document height and window-scrolling the whole
+        // surface (THR-092). Mirrors AuditTimeline's relative-wraps-absolute idiom.
         <div
-          className="text-fg-subtle mt-0.5 shrink-0 self-start"
+          className="text-fg-subtle relative mt-0.5 shrink-0 self-start"
           title="Read-only system contract"
         >
           <Lock size={15} aria-hidden="true" />

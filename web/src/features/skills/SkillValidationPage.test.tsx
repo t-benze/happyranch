@@ -147,6 +147,18 @@ describe('SkillValidationPage — Runtime Validation (THR-092 Slice 6)', () => {
     expect(link).toHaveAttribute('href', `/orgs/${SLUG}/skills/sk-vendor`);
   });
 
+  test('result icon sr-only label is wrapped in a positioned container (THR-092 whole-surface-scroll guard)', async () => {
+    mount();
+    const link = await screen.findByRole('link', { name: 'vendor-comms-style' });
+    const row = link.closest('article') as HTMLElement;
+    // The pass/fail sr-only label is position:absolute (sr-only utility). Its
+    // wrapping <div> MUST be `relative` so it cannot escape the validation
+    // list's overflow-y-auto scroller to the ICB and window-scroll the surface.
+    const srLabel = row.querySelector('span.sr-only') as HTMLElement;
+    expect(srLabel).not.toBeNull();
+    expect(srLabel.parentElement?.classList.contains('relative')).toBe(true);
+  });
+
   test('a severity filter drives the endpoint query param and narrows the list', async () => {
     const { requests } = mount();
     await screen.findByRole('link', { name: 'kb-curation' });
