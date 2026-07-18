@@ -139,54 +139,54 @@ class TestSkillRegistryLoad:
         assert entry.skill_md_path.exists()
 
 
-class TestReviewSkillRegistration:
-    """Tests for the review skill as a managed-catalog standard_operational entry."""
+class TestReflectionSkillRegistration:
+    """Tests for the reflection skill as a managed-catalog standard_operational entry."""
 
-    def test_review_skill_loaded_as_standard_operational(self):
-        """The review skill is loaded as a managed catalog entry (not system_contract)."""
+    def test_reflection_skill_loaded_as_standard_operational(self):
+        """The reflection skill is loaded as a managed catalog entry (not system_contract)."""
         from runtime.skills.registry import SkillRegistry
 
         registry = SkillRegistry(skills_root=FIXTURES)
-        entry = registry.get("hr:review")
+        entry = registry.get("hr:reflection")
 
-        assert entry is not None, "review skill should be in managed catalog"
-        assert entry.id == "hr:review"
-        assert entry.slug == "review"
+        assert entry is not None, "reflection skill should be in managed catalog"
+        assert entry.id == "hr:reflection"
+        assert entry.slug == "reflection"
         assert entry.policy_class == "standard_operational"
         assert entry.status == "enabled"
 
-    def test_review_skill_has_required_metadata(self):
-        """The review skill carries owner, version, source."""
+    def test_reflection_skill_has_required_metadata(self):
+        """The reflection skill carries owner, version, source."""
         from runtime.skills.registry import SkillRegistry
 
         registry = SkillRegistry(skills_root=FIXTURES)
-        entry = registry.get("hr:review")
+        entry = registry.get("hr:reflection")
 
-        assert entry.name == "Review"
+        assert entry.name == "Reflection"
         assert entry.version == "1.0.0"
         assert entry.owner == "engineering_manager"
-        assert entry.source.startswith("runtime/skills/review")
+        assert entry.source.startswith("runtime/skills/reflection")
         assert entry.when_to_use != ""
         assert entry.description != ""
 
-    def test_review_skill_has_skill_md(self):
-        """The review skill's SKILL.md body is available."""
+    def test_reflection_skill_has_skill_md(self):
+        """The reflection skill's SKILL.md body is available."""
         from runtime.skills.registry import SkillRegistry
 
         registry = SkillRegistry(skills_root=FIXTURES)
-        entry = registry.get("hr:review")
+        entry = registry.get("hr:reflection")
 
         assert entry.skill_md_path is not None
         assert entry.skill_md_path.name == "SKILL.md"
         assert entry.skill_md_path.exists()
 
-    def test_review_skill_appears_in_catalog_list(self):
-        """list_all() includes the review skill."""
+    def test_reflection_skill_appears_in_catalog_list(self):
+        """list_all() includes the reflection skill."""
         from runtime.skills.registry import SkillRegistry
 
         registry = SkillRegistry(skills_root=FIXTURES)
         all_ids = {e.id for e in registry.list_all()}
-        assert "hr:review" in all_ids
+        assert "hr:reflection" in all_ids
 
 
 class TestManageAgentManageRepoRegistration:

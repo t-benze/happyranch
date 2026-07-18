@@ -1,11 +1,11 @@
 ---
-name: review
-description: Use this skill when asked mid-thread to review your recent work. Produces an opening report (recent tasks, learnings, frictions) posted as a thread reply, and captures learnings + optional KB entries via direct `happyranch learning add` / `happyranch kb add` calls at the end.
+name: reflection
+description: Use this skill when asked mid-thread to reflect on your recent work. Produces an opening report (recent tasks, learnings, frictions) posted as a thread reply, and captures learnings + optional KB entries via direct `happyranch learning add` / `happyranch kb add` calls at the end.
 ---
 
-# review
+# reflection
 
-Triggered on-demand when the founder asks you to "review" inside a thread turn. It produces a structured opening report and, when the founder is satisfied, persists learnings and optional KB entries directly — no endpoints, no transcript store, no task dispatch.
+Triggered on-demand when the founder asks you to "reflect" inside a thread turn. It produces a structured opening report and, when the founder is satisfied, persists learnings and optional KB entries directly — no endpoints, no transcript store, no task dispatch.
 
 ## Identity
 
@@ -13,7 +13,7 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 
 ## START — opening report as a thread reply
 
-1. **Find the window for the report.** Scan `task_history.md` for your most recent review (look for "review" in the briefs/outcomes). If no prior review exists, use "all-time, capped at 30 days."
+1. **Find the window for the report.** Scan `task_history.md` for your most recent reflection (look for "reflection" — or the legacy "review" — in the briefs/outcomes). If no prior reflection exists, use "all-time, capped at 30 days."
 
 2. **Gather inputs:**
    - `task_history.md` (in the workspace root).
@@ -22,7 +22,7 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 
 3. **Emit the opening report as a thread reply.** Use exactly these section headings, in this order:
 
-   ## Since last review
+   ## Since last reflection
    Window dates and one-line counts by terminal status.
 
    ## Notable tasks
@@ -41,7 +41,7 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 
 ## END — direct learning/KB capture (no endpoint)
 
-When the founder indicates the review is done:
+When the founder indicates the reflection is done:
 
 1. **Summarize.** In your own head, list: what was discussed, what decisions got reached, what remains open.
 
@@ -76,13 +76,13 @@ The `--from-file` pattern matches `happyranch report-completion` and other callb
 
 ## No dispatch
 
-**A review session does not create tasks.** Do not call `happyranch dispatch` or `happyranch run`. If actionable work surfaces, recommend the founder open a thread or dispatch it separately, or self-dispatch a root from a normal thread turn — not from review.
+**A reflection session does not create tasks.** Do not call `happyranch dispatch` or `happyranch run`. If actionable work surfaces, recommend the founder open a thread or dispatch it separately, or self-dispatch a root from a normal thread turn — not from reflection.
 
-This is skill-level enforcement. The review skill has no task-path auth; there is no talk-mode dispatch surface to abuse. If you need to act on a finding, tell the founder and let them decide the next step.
+This is skill-level enforcement. The reflection skill has no task-path auth; there is no talk-mode dispatch surface to abuse. If you need to act on a finding, tell the founder and let them decide the next step.
 
 ## What NOT to do
 
-- Don't start tasks (`happyranch run ...`) from inside a review. If something actionable comes up, tell the founder explicitly.
+- Don't start tasks (`happyranch run ...`) from inside a reflection. If something actionable comes up, tell the founder explicitly.
 - Don't write learnings you've already written — the daemon appends verbatim, so duplicates will clutter.
-- Don't treat KB entries as a catch-all for in-review notes. KB is for durable, cross-agent-relevant knowledge. Everything else is a per-agent learning.
+- Don't treat KB entries as a catch-all for in-reflection notes. KB is for durable, cross-agent-relevant knowledge. Everything else is a per-agent learning.
 - Don't call `happyranch talk start|end|resume|abandon` — those endpoints no longer exist. This skill replaces the talk flow entirely.

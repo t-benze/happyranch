@@ -9,12 +9,12 @@ skills:
   teams:
     engineering:
       allow:
-        - hr:review
+        - hr:reflection
       deny: []
   agents:
     product_lead:
       allow:
-        - hr:review
+        - hr:reflection
         - hr:manage-agent
         - hr:manage-repo
       deny: []

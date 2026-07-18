@@ -58,9 +58,9 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     (skills_root / "start-task" / "SKILL.md").write_text(
         "---\nname: start-task\ndescription: Use this skill at the start of every task.\n---\n"
     )
-    (skills_root / "review").mkdir(parents=True)
-    (skills_root / "review" / "SKILL.md").write_text(
-        "---\nname: review\ndescription: Mid-thread review capturing learnings and KB entries.\n---\n"
+    (skills_root / "reflection").mkdir(parents=True)
+    (skills_root / "reflection" / "SKILL.md").write_text(
+        "---\nname: reflection\ndescription: Mid-thread reflection capturing learnings and KB entries.\n---\n"
     )
 
     workspace = tmp_dir / "workspaces" / "dev_agent"
@@ -78,7 +78,7 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     # Cutover: wholesale dump disabled — no skills land during bootstrap.
     assert not (workspace / ".claude" / "skills" / "start-task").exists()
     assert not (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
-    assert not (workspace / ".agents" / "skills" / "review" / "SKILL.md").exists()
+    assert not (workspace / ".agents" / "skills" / "reflection" / "SKILL.md").exists()
     # Fresh workspace: migrated layout (memory/ dir, no flat learnings.md).
     assert (workspace / "memory").is_dir()
     assert (workspace / "memory" / "_index.md").exists()
@@ -912,13 +912,13 @@ class TestUserAuthoredSkillMaterialization:
 
         # Create a user-authored skill with same slug as a release skill
         org_root = tmp_dir / "org"
-        skill_dir = org_root / "skills" / "review"  # collides with release 'review'
+        skill_dir = org_root / "skills" / "reflection"  # collides with release 'reflection'
         skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# Bogus Review\n\nEvil content.")
+        (skill_dir / "SKILL.md").write_text("# Bogus Reflection\n\nEvil content.")
         (skill_dir / "skill.yaml").write_text(
-            "id: hr:review\n"
-            "slug: review\n"
-            "name: Bogus Review\n"
+            "id: hr:reflection\n"
+            "slug: reflection\n"
+            "name: Bogus Reflection\n"
             "version: 9.9.9\n"
             "description: Bogus\n"
             "when_to_use: ''\n"
@@ -928,7 +928,7 @@ class TestUserAuthoredSkillMaterialization:
             "status: enabled\n"
         )
 
-        # Eligibility policy — agent is eligible for 'review'
+        # Eligibility policy — agent is eligible for 'reflection'
         org_config_dir = org_root / "org"
         org_config_dir.mkdir(parents=True)
         import yaml
@@ -936,25 +936,25 @@ class TestUserAuthoredSkillMaterialization:
             "skills": {
                 "agents": {
                     "dev_agent": {
-                        "allow": ["review"],
+                        "allow": ["reflection"],
                     }
                 }
             }
         }
         (org_config_dir / "config.yaml").write_text(yaml.dump(policy))
 
-        # Create release-managed skill 'review'
+        # Create release-managed skill 'reflection'
         managed_root = tmp_dir / "managed"
         managed_root.mkdir()
-        release_review = managed_root / "review"
+        release_review = managed_root / "reflection"
         release_review.mkdir()
-        (release_review / "SKILL.md").write_text("# Real Review\n\nLegit content.")
+        (release_review / "SKILL.md").write_text("# Real Reflection\n\nLegit content.")
         (release_review / "skill.yaml").write_text(
-            "id: review\n"
-            "slug: review\n"
-            "name: Code Review\n"
+            "id: reflection\n"
+            "slug: reflection\n"
+            "name: Reflection\n"
             "version: 1.2.0\n"
-            "description: Legit review skill\n"
+            "description: Legit reflection skill\n"
             "when_to_use: ''\n"
             "owner: runtime\n"
             "source: first_party\n"
@@ -974,7 +974,7 @@ class TestUserAuthoredSkillMaterialization:
             db=db,
         )
 
-        claude_skill = workspace / ".claude" / "skills" / "review" / "SKILL.md"
+        claude_skill = workspace / ".claude" / "skills" / "reflection" / "SKILL.md"
         assert claude_skill.is_file()
         content = claude_skill.read_text()
         # The RELEASE version must be on disk, NOT the user-authored imposter

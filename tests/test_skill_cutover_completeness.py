@@ -11,7 +11,7 @@ REAL-SOURCE GUARD: This test reads the REAL in-repo artifacts —
   - ``org/config.yaml`` (eligibility policy, shipped in Phase 2-3)
   - ``runtime/skills/`` (managed catalog with real approval states)
   - ``protocol/skills/`` (injection + bootstrap source skill bodies)
-If the shipped policy, catalog, or source dirs drift (e.g. review's policy_class changes, or a catalog entry
+If the shipped policy, catalog, or source dirs drift (e.g. reflection's policy_class changes, or a catalog entry
 regresses), this guard MUST fail — it is a fail-closed integrity check.
 """
 
@@ -42,14 +42,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # org/config.yaml and every executor adapter:
 #
 # Eligibility classes (from the real org/config.yaml shipped in Phase 2-3):
-#   A. review-eligible via team membership (engineering → hr:review)
+#   A. reflection-eligible via team membership (engineering → hr:reflection)
 #      — dev_agent, code_reviewer, qa_engineer, frontend_engineer
-#   B. review-eligible + manage-*-eligible via agent list
-#      — product_lead (hr:review + hr:manage-agent + hr:manage-repo)
-#   C. review-eligible via team + manage-*-eligible via agent list
-#      — engineering_manager (engineering team → hr:review; agent → hr:manage-*)
+#   B. reflection-eligible + manage-*-eligible via agent list
+#      — product_lead (hr:reflection + hr:manage-agent + hr:manage-repo)
+#   C. reflection-eligible via team + manage-*-eligible via agent list
+#      — engineering_manager (engineering team → hr:reflection; agent → hr:manage-*)
 #   D. NON-eligible — no team allow, no agent allow
-#      — consultant_head (gets NEITHER review NOR manage-*)
+#      — consultant_head (gets NEITHER reflection NOR manage-*)
 #
 # Executor adapter coverage:
 #   - claude: dev_agent, frontend_engineer, engineering_manager,
@@ -59,17 +59,17 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _REPRESENTATIVE_ROSTER: list[tuple[str, str, str, str, str]] = [
     # (name, team, role, executor, eligibility_class)
-    ("dev_agent", "engineering", "worker", "claude", "A — review via team"),
-    ("code_reviewer", "engineering", "worker", "codex", "A — review via team; exercises Codex adapter"),
-    ("qa_engineer", "engineering", "worker", "opencode", "A — review via team; exercises Opencode adapter"),
-    ("frontend_engineer", "engineering", "worker", "claude", "A — review via team"),
-    ("engineering_manager", "engineering", "manager", "claude", "C — review (team) + manage-* (agent)"),
-    ("product_lead", "product", "manager", "claude", "B — review + manage-* (agent)"),
+    ("dev_agent", "engineering", "worker", "claude", "A — reflection via team"),
+    ("code_reviewer", "engineering", "worker", "codex", "A — reflection via team; exercises Codex adapter"),
+    ("qa_engineer", "engineering", "worker", "opencode", "A — reflection via team; exercises Opencode adapter"),
+    ("frontend_engineer", "engineering", "worker", "claude", "A — reflection via team"),
+    ("engineering_manager", "engineering", "manager", "claude", "C — reflection (team) + manage-* (agent)"),
+    ("product_lead", "product", "manager", "claude", "B — reflection + manage-* (agent)"),
     ("consultant_head", "consultant", "manager", "claude", "D — NON-eligible"),
 ]
 
-# Which agents are review-eligible per the real policy (derived from config.yaml)
-_REVIEW_ELIGIBLE: frozenset[str] = frozenset({
+# Which agents are reflection-eligible per the real policy (derived from config.yaml)
+_REFLECTION_ELIGIBLE: frozenset[str] = frozenset({
     "dev_agent", "code_reviewer", "qa_engineer",
     "frontend_engineer", "engineering_manager", "product_lead",
 })
@@ -153,7 +153,7 @@ def _write_teams_config(paths: OrgPaths) -> None:
     """Write org/teams.yaml so TeamsRegistry.load() works.
 
     Teams membership is required for eligibility resolution (team-level
-    allows like engineering → hr:review). This is synthetic because teams.yaml
+    allows like engineering → hr:reflection). This is synthetic because teams.yaml
     is runtime-only state — NOT in-repo.
     """
     import yaml
@@ -342,7 +342,7 @@ class TestContractCompletenessPostCutover:
         - Bootstrap must NOT leak any skills into the workspace
         - Only explicit injection delivers skills
         - manage-agent/manage-repo must NEVER appear (fail-closed)
-        - review must appear ONLY for eligible agents
+        - reflection must appear ONLY for eligible agents
         - System contracts must be context-correct
         """
         import runtime.orchestrator.workspace_adapters as wa
@@ -444,23 +444,23 @@ class TestContractCompletenessPostCutover:
                             )
 
                     # ── Verify managed-catalog skills ────────────────
-                    if name in _REVIEW_ELIGIBLE:
-                        if "review" not in injected:
+                    if name in _REFLECTION_ELIGIBLE:
+                        if "reflection" not in injected:
                             failures.append(
-                                f"MISSING managed skill 'review' for "
+                                f"MISSING managed skill 'reflection' for "
                                 f"({name}, {context_str}, repos={has_repos})"
                             )
                     else:
-                        if "review" in injected:
+                        if "reflection" in injected:
                             failures.append(
-                                f"UNEXPECTED managed skill 'review' for "
+                                f"UNEXPECTED managed skill 'reflection' for "
                                 f"({name}, {context_str}, repos={has_repos})"
                             )
 
                     # manage-agent / manage-repo: exposed for eligible managers (THR-055 seq 55)
                     # Per real org/config.yaml:
                     #   engineering_manager: allow [manage-agent, manage-repo]
-                    #   product_lead: allow [review, manage-agent, manage-repo]
+                    #   product_lead: allow [reflection, manage-agent, manage-repo]
                     #   All others: NO manage-* eligibility
                     is_manager = name in {"engineering_manager", "product_lead"}
                     for hi_skill in ("manage-agent", "manage-repo"):
@@ -479,8 +479,8 @@ class TestContractCompletenessPostCutover:
 
                     # ── Verify no bloat / no extra skills ────────────
                     expected_full = set(expected_sys)
-                    if name in _REVIEW_ELIGIBLE:
-                        expected_full.add("review")
+                    if name in _REFLECTION_ELIGIBLE:
+                        expected_full.add("reflection")
                     if is_manager:
                         expected_full.update({"manage-agent", "manage-repo"})
                     unexpected = injected - expected_full
@@ -547,9 +547,9 @@ class TestContractCompletenessPostCutover:
                     f"Available skills: {leaked}"
                 )
 
-            # Also verify review leaks (it's in protocol/skills/ too)
-            assert "review" in leaked, (
-                f"RED-PROOF FAIL: wholesale dump did NOT leak 'review'. "
+            # Also verify reflection leaks (it's in protocol/skills/ too)
+            assert "reflection" in leaked, (
+                f"RED-PROOF FAIL: wholesale dump did NOT leak 'reflection'. "
                 f"Available: {leaked}"
             )
 

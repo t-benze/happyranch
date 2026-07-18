@@ -115,6 +115,22 @@ async def _lifespan(app: FastAPI):
                     )
         except Exception as exc:
             _logger.warning("THR-095 migration error for org %s: %s", org.slug, exc)
+        # THR-106: one-shot skill-id rename hr:review -> hr:reflection in the
+        # persisted org/config.yaml skills eligibility section (allow + deny,
+        # org/team/agent scope). Sentinel-gated (.hr_review_renamed).
+        try:
+            from runtime.orchestrator.org_config import migrate_hr_review_skill_id
+            rename_outcome = migrate_hr_review_skill_id(OrgPaths(root=org.root))
+            if rename_outcome != "skipped (already migrated)":
+                _logger.info(
+                    "THR-106 hr:review->hr:reflection migration for org %s: %s",
+                    org.slug, rename_outcome,
+                )
+        except Exception as exc:
+            _logger.warning(
+                "THR-106 skill-id rename migration error for org %s: %s",
+                org.slug, exc,
+            )
         recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
         if recovered:
             _logger.warning(
