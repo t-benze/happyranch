@@ -234,8 +234,10 @@ Requirements:
 
 - You are currently in an active task session (you have a `task_id` +
   `session_id` from `start-task`).
-- You name the OTHER agents you want in the thread. The founder is not a
-  participant — they follow the thread via the web UI.
+- You name the recipients you want in the thread. To address the founder,
+  include the literal `"@founder"` (see the note below) — a list of just
+  `["@founder"]` is valid. The founder is not a participant row — they
+  follow the thread via the web UI.
 
 ### Procedure
 
@@ -245,6 +247,15 @@ Requirements:
     "subject": "<≤120 chars>",
     "recipients": ["agent_a", "agent_b"],
     "body_markdown": "<the message>"}
+
+   > **To address the founder** — e.g. to open a founder-only thread —
+   > include the literal `"@founder"` in `recipients`, WITH the `@`. It is
+   > a routing literal, not an agent name: a bare `"founder"` is rejected
+   > as an unknown agent (404). `"@founder"` also satisfies the
+   > at-least-one-recipient requirement on its own, so
+   > `"recipients": ["@founder"]` opens a thread with just you and the
+   > founder. The founder is not added as a participant row; they follow
+   > the thread via the web UI.
 
 2. Single-line:
 
