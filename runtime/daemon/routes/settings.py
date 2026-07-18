@@ -229,46 +229,6 @@ def _org_config_to_view_from_resolved(
     )
 
 
-def _org_config_to_view(cfg) -> OrgSettingsView:
-    """Pure function: map OrgConfig → OrgSettingsView (allow-list).
-
-    DEPRECATED for the 4 web-writable knobs — use _org_config_to_view_from_resolved
-    instead (THR-095).  Kept for backward-compat reference."""
-    wh = cfg.working_hours
-    return OrgSettingsView(
-        session_timeout_seconds=cfg.session_timeout_seconds,
-        dreaming=DreamingSettingsView(
-            enabled=cfg.dreaming.enabled,
-            schedule=DreamingScheduleView(
-                time=cfg.dreaming.schedule_time,
-                timezone=cfg.dreaming.timezone,
-            ),
-            catch_up_on_startup=cfg.dreaming.catch_up_on_startup,
-            agents=DreamingAgentsView(
-                mode=cfg.dreaming.agent_mode,
-                include=list(cfg.dreaming.include_agents),
-                exclude=list(cfg.dreaming.exclude_agents),
-            ),
-        ),
-        threads=ThreadsSettingsView(
-            enabled=cfg.threads_enabled,
-            default_turn_cap=cfg.threads_default_turn_cap,
-            invocation_timeout_seconds=cfg.threads_invocation_timeout_seconds,
-        ),
-        working_hours=WorkingHoursSettingsView(
-            enabled=wh.enabled,
-            agents=WorkHoursAgentsView(
-                mode=wh.agent_mode,
-                include=list(wh.include_agents),
-                exclude=list(wh.exclude_agents),
-            ),
-            default=_layer_to_view(wh.default),
-            teams={name: _layer_to_view(layer) for name, layer in wh.teams.items()},
-            overrides={name: _layer_to_view(layer) for name, layer in wh.overrides.items()},
-        ),
-    )
-
-
 # ----------------------------------------------------------------
 # Response envelope
 # ----------------------------------------------------------------
