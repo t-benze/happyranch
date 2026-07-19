@@ -664,6 +664,11 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       http.get('/api/v1/health/prereqs', () =>
         HttpResponse.json({ prereqs: [] }),
       ),
+      // Custom-profiles list renders inside the panel now (THR-107 S4b) →
+      // must be stubbed (onUnhandledRequest:'error'). Empty by default.
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({ profiles: [] }),
+      ),
     );
   });
 
@@ -828,6 +833,68 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       await screen.findByRole('button', { name: /connect a cli/i }),
     ).toBeInTheDocument();
     expect(screen.queryByTestId('executors-connect')).not.toBeInTheDocument();
+  });
+
+  test('Done after a custom connect refetches the profiles list so the just-connected CLI appears (invalidation, not stale cache)', async () => {
+    // A custom connect creates a profile the panel must show on return. The
+    // profiles list starts EMPTY (cached at first mount), then — as the connect
+    // completes — the machine-global store gains the new profile. That query
+    // carries a 10s staleTime, so CustomProfilesSection remounts on Done INSIDE
+    // the stale window: only the explicit invalidation forces the refetch that
+    // surfaces the just-connected CLI. Without it the row stays invisible.
+    let profileGets = 0;
+    let store: {
+      name: string;
+      command: string | null;
+      adapter: string | null;
+      present: boolean;
+      path: string | null;
+    }[] = [];
+    server.use(
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [{ tool: 'my-cli', present: false, path: '/opt/bin/my-cli', hint: '' }],
+        }),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', () => {
+        profileGets += 1;
+        return HttpResponse.json({ profiles: store });
+      }),
+    );
+
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+
+    // Initial mount: the list loads EMPTY and is cached under the
+    // runtime-profiles key (staleTime 10s).
+    expect(await screen.findByTestId('custom-profiles-empty')).toBeInTheDocument();
+    const getsBeforeConnect = profileGets;
+
+    // Drive a custom connect to the connected card.
+    await openConnect(user);
+    await user.click(screen.getByText(/connect a custom cli instead/i));
+    await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
+    await user.click(
+      screen.getByRole('button', { name: /generate connect prompt/i }),
+    );
+    expect(
+      await screen.findByRole('heading', { name: /my-cli connected/i }),
+    ).toBeInTheDocument();
+
+    // The CLI registered during the connect → the store now holds the profile.
+    store = [
+      { name: 'my-cli', command: 'my-cli', adapter: 'pi', present: true, path: '/opt/bin/my-cli' },
+    ];
+
+    // Done collapses back to the list → invalidates the profiles query → refetch.
+    await user.click(screen.getByRole('button', { name: /^done$/i }));
+
+    // The just-connected custom CLI now renders (the forced refetch surfaced it)…
+    expect(await screen.findByTestId('profile-row-my-cli')).toBeInTheDocument();
+    // …and it took a fresh GET to do so — the stale cache did not silently
+    // satisfy the remount (this is the assertion that fails on the old
+    // executor-binaries-only invalidation).
+    expect(profileGets).toBeGreaterThan(getsBeforeConnect);
   });
 
   test('preserves the name-collision guard against built-ins', async () => {

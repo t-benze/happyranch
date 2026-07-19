@@ -33,7 +33,9 @@ import { ArrowLeft, Plug } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { ConnectFlow } from '@/shared/connect/ConnectFlow';
 import type { ConnectMode } from '@/shared/connect/useRuntimeConnect';
+import { RUNTIME_PROFILES_KEY } from '@/hooks/runtime-executors';
 import { ExecutorBinariesSection } from './ExecutorBinariesSection';
+import { CustomProfilesSection } from './CustomProfilesSection';
 
 /** Connected-card subtitle for the Settings mount, keyed on the originating
  *  mode. The onboarding "manage your CLIs anytime from Settings" clause is
@@ -48,12 +50,16 @@ export function ExecutorsSection(): JSX.Element {
   const [connecting, setConnecting] = useState(false);
   const qc = useQueryClient();
 
-  /** Collapse back to the list. Invalidate the binary registry so a built-in
-   *  connect (which registers via the runtime route, bypassing the
-   *  register-binary mutation's own invalidation) is reflected immediately —
-   *  the "refreshed list on connect" the design calls for. */
+  /** Collapse back to the list. Invalidate BOTH management queries so a connect
+   *  (which registers via the runtime route, bypassing either mutation's own
+   *  invalidation) is reflected immediately — the "refreshed list on connect"
+   *  the design calls for. The custom-profiles query carries a 10s staleTime,
+   *  so without this invalidation CustomProfilesSection remounts inside the
+   *  stale window and reuses the pre-connect (often empty) payload — a custom
+   *  CLI just connected would stay invisible until the cache lapsed. */
   const backToList = (): void => {
     void qc.invalidateQueries({ queryKey: ['executor-binaries'] });
+    void qc.invalidateQueries({ queryKey: RUNTIME_PROFILES_KEY });
     setConnecting(false);
   };
 
@@ -89,6 +95,10 @@ export function ExecutorsSection(): JSX.Element {
         <div className="space-y-6" data-testid="executors-list">
           {/* Registered list — the primary management view (Step-0 §6-1). */}
           <ExecutorBinariesSection />
+
+          {/* Custom CLIs connected via the shared custom flow — list + remove
+              (THR-107 S4b), consuming the S4a list/remove backend. */}
+          <CustomProfilesSection />
 
           {/* The single "Connect a CLI" entry into the shared connect flow. */}
           <Button
