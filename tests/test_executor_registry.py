@@ -227,6 +227,47 @@ class TestExecutorRegistry:
         with pytest.raises(ValueError, match="argv_template"):
             registry.register_custom_profile(profile)
 
+    # ── THR-107 S4a: unregister_custom_profile ───────────────────────────
+
+    def _custom_profile(self, name: str = "openclaw") -> ExecutorProfile:
+        return ExecutorProfile(
+            name=name,
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+        )
+
+    def test_unregister_custom_profile_removes_it(self) -> None:
+        registry = ExecutorRegistry()
+        registry.register_custom_profile(self._custom_profile())
+        assert registry.is_registered("openclaw")
+
+        removed = registry.unregister_custom_profile("openclaw")
+
+        assert removed is True
+        assert not registry.is_registered("openclaw")
+        assert registry.get_profile("openclaw") is None
+        assert "openclaw" not in registry.list_profile_names()
+
+    def test_unregister_absent_name_returns_false(self) -> None:
+        registry = ExecutorRegistry()
+        assert registry.unregister_custom_profile("no-such-profile") is False
+
+    def test_unregister_builtin_raises(self) -> None:
+        registry = ExecutorRegistry()
+        for name in ("claude", "codex", "opencode", "pi"):
+            with pytest.raises(ValueError, match="built-in"):
+                registry.unregister_custom_profile(name)
+            assert registry.is_registered(name)
+
+    def test_unregister_is_case_insensitive(self) -> None:
+        registry = ExecutorRegistry()
+        registry.register_custom_profile(self._custom_profile())
+        assert registry.unregister_custom_profile("OpenClaw") is True
+        assert not registry.is_registered("openclaw")
+
     def test_register_custom_profile_rejects_invalid_argv_template(self) -> None:
         registry = ExecutorRegistry()
         profile = ExecutorProfile(

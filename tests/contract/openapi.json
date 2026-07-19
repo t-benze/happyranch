@@ -240,6 +240,38 @@
         ]
       }
     },
+    "/api/v1/executors/runtime/profiles": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/executors/runtime/profiles/{name}": {
+      "DELETE": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "name",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/executors/runtime/register": {
       "POST": {
         "params": [

@@ -230,6 +230,34 @@ class ExecutorRegistry:
                 )
         self._profiles[key] = profile
 
+    def unregister_custom_profile(self, name: str) -> bool:
+        """Remove a registered CUSTOM executor profile.
+
+        The symmetric inverse of :meth:`register_custom_profile` for the
+        runtime-level management surface (THR-107 S4a). The durable
+        runtime store is the source of truth; callers remove the store
+        entry first and then clear the transient in-process profile via
+        this method so the removed profile does not linger until restart.
+
+        Returns True when a custom profile was removed, False when
+        ``name`` is not registered (no-op).
+
+        Raises:
+            ValueError: if ``name`` is a built-in profile — built-ins are
+                registered at construction time and can never be removed
+                (same invariant :meth:`register_custom_profile` protects).
+        """
+        key = name.lower()
+        existing = self._profiles.get(key)
+        if existing is None:
+            return False
+        if existing.kind == "builtin":
+            raise ValueError(
+                f"Cannot unregister built-in executor profile {name!r}"
+            )
+        del self._profiles[key]
+        return True
+
     @classmethod
     def validate_custom_profile_config(
         cls, name: str, cfg: dict

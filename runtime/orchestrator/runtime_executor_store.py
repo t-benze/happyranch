@@ -108,6 +108,35 @@ def save_runtime_profile(name: str, entry: dict) -> None:
         raise
 
 
+def remove_runtime_profile(name: str) -> None:
+    """Atomically remove a single runtime executor profile entry.
+
+    No-op when ``name`` is absent (or the store file does not exist) —
+    mirrors ``executor_binary_registry.remove_binary``. The rewrite uses
+    the same atomic temp-file + ``os.replace`` pattern as
+    ``save_runtime_profile``.
+    """
+    path = _store_path()
+    current = load_runtime_profiles()
+    if name not in current:
+        return
+    del current[name]
+
+    fd, tmp = tempfile.mkstemp(
+        prefix=".executor-profiles.", suffix=".yaml", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            yaml.safe_dump(current, fh, sort_keys=False)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 # ---------------------------------------------------------------------------
 # THR-107: one-shot migration of the legacy per-org executor_profiles block
 # ---------------------------------------------------------------------------

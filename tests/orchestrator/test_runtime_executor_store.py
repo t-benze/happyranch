@@ -9,6 +9,7 @@ import yaml
 from runtime.orchestrator.runtime_executor_store import (
     load_runtime_profiles,
     migrate_legacy_org_profiles,
+    remove_runtime_profile,
     save_runtime_profile,
 )
 
@@ -265,3 +266,61 @@ class TestMigrateLegacyOrgProfiles:
         with caplog.at_level(logging.WARNING):
             assert migrate_legacy_org_profiles(config_path, "alpha") == []
         assert load_runtime_profiles() == {}
+
+
+# ── THR-107 S4a: remove_runtime_profile ─────────────────────────────────
+
+
+class TestRemoveRuntimeProfile:
+    """remove_runtime_profile: atomic removal, no-op on absent name."""
+
+    def test_remove_existing_profile_preserves_others(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        entry_a = {"command": "cli-a", "argv_template": ["{prompt}"], "adapter": "pi"}
+        entry_b = {"command": "cli-b", "argv_template": ["{prompt}"], "adapter": "pi"}
+        save_runtime_profile("exec-a", entry_a)
+        save_runtime_profile("exec-b", entry_b)
+
+        remove_runtime_profile("exec-a")
+
+        profiles = load_runtime_profiles()
+        assert "exec-a" not in profiles
+        assert profiles["exec-b"] == entry_b
+
+    def test_remove_last_profile_leaves_empty_store(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        save_runtime_profile(
+            "only", {"command": "cli", "argv_template": ["{prompt}"], "adapter": "pi"}
+        )
+        remove_runtime_profile("only")
+        assert load_runtime_profiles() == {}
+
+    def test_remove_absent_name_is_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        entry = {"command": "cli", "argv_template": ["{prompt}"], "adapter": "pi"}
+        save_runtime_profile("keeper", entry)
+
+        remove_runtime_profile("no-such-profile")  # must not raise
+
+        assert load_runtime_profiles() == {"keeper": entry}
+
+    def test_remove_when_file_missing_is_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        remove_runtime_profile("anything")  # must not raise
+        assert load_runtime_profiles() == {}
+        # No-op must not create the store file either
+        assert not (tmp_path / "executor_profiles.yaml").exists()
+
+    def test_remove_writes_valid_yaml(self, tmp_path, monkeypatch):
+        """The atomic rewrite leaves a parseable YAML mapping behind."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        entry = {"command": "cli", "argv_template": ["{prompt}"], "adapter": "pi"}
+        save_runtime_profile("exec-a", entry)
+        save_runtime_profile("exec-b", entry)
+
+        remove_runtime_profile("exec-a")
+
+        raw = yaml.safe_load(
+            (tmp_path / "executor_profiles.yaml").read_text(encoding="utf-8")
+        )
+        assert raw == {"exec-b": entry}

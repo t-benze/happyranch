@@ -20,9 +20,14 @@ import threading
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from runtime.daemon.auth import require_registration_token
+from runtime.daemon.auth import require_registration_token, require_token
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX
-from runtime.orchestrator.executor_binary_registry import set_binary, validate_binary
+from runtime.orchestrator.executor_binary_registry import (
+    get_binary,
+    is_binary_valid,
+    set_binary,
+    validate_binary,
+)
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
@@ -34,6 +39,7 @@ from runtime.orchestrator.executor_registry import (
 from runtime.orchestrator.runtime_executor_store import (
     save_runtime_profile,
     load_runtime_profiles,
+    remove_runtime_profile,
 )
 
 router = APIRouter()
@@ -96,6 +102,42 @@ def _audit_runtime_registration(
     try:
         logger = AuditLogger(db)
         logger.log_executor_registered(
+            profile_name=profile_name,
+            command=command,
+            argv_template=argv_template,
+            adapter=adapter,
+            actor=actor,
+        )
+    finally:
+        db.close()
+
+
+def _audit_runtime_removal(
+    *,
+    profile_name: str,
+    command: str,
+    argv_template: list[str],
+    adapter: str,
+    actor: str = "founder",
+) -> None:
+    """Write a runtime-level executor removal audit row.
+
+    Mirrors ``_audit_runtime_registration`` — same dedicated
+    runtime-audit.db under daemon_home(), same scope-prefix task_id
+    convention, same payload keys; only the action verb differs.
+
+    Row shape (THR-107 S4a):
+      task_id = "executor:<profile_name>"
+      action  = "executor_removed"
+      payload = {command, argv_template, adapter}
+    """
+    from runtime.runtime import daemon_home
+
+    audit_db_path = daemon_home() / "runtime-audit.db"
+    db = Database(audit_db_path)
+    try:
+        logger = AuditLogger(db)
+        logger.log_executor_removed(
             profile_name=profile_name,
             command=command,
             argv_template=argv_template,
@@ -802,3 +844,148 @@ def runtime_register_binary(
         path=resolved,
         valid=True,
     )
+
+
+# ── Runtime profile management routes (THR-107 S4a) ──────────────────────
+#
+# LIST + REMOVE for custom profiles in the machine-global runtime store.
+# These are founder-facing MANAGEMENT routes (standard daemon bearer auth,
+# same posture as GET /executor-binaries) — NOT registration routes, so no
+# registration-token dependency.
+
+
+class RuntimeProfileEntry(BaseModel):
+    """Summary of one custom executor profile in the runtime store."""
+    name: str = Field(..., description="Profile name (runtime store key)")
+    command: str | None = Field(
+        None, description="Executable name from the stored profile definition"
+    )
+    adapter: str | None = Field(
+        None, description="Workspace adapter id (claude/codex/opencode/pi)"
+    )
+    present: bool = Field(
+        False,
+        description=(
+            "True when the machine-local binary registry holds a valid "
+            "path for this profile name — same signal as /health/prereqs"
+        ),
+    )
+    path: str | None = Field(
+        None, description="The registered binary path when present, else None"
+    )
+
+
+class RuntimeProfileList(BaseModel):
+    """All custom profiles in the machine-global runtime store."""
+    profiles: list[RuntimeProfileEntry]
+
+
+class RemoveRuntimeProfileResponse(BaseModel):
+    name: str
+    removed: bool
+
+
+@runtime_router.get(
+    "/executors/runtime/profiles",
+    response_model=RuntimeProfileList,
+    dependencies=[require_token()],
+)
+def list_runtime_executor_profiles() -> RuntimeProfileList:
+    """List custom executor profiles from the machine-global runtime store.
+
+    Reads ``load_runtime_profiles()`` — the durable source of truth — and
+    reports each profile's name, command, and adapter. ``present``/``path``
+    mirror the /health/prereqs signal: the machine-local executor binary
+    registry (a profile counts as connected only after its binary is
+    explicitly registered; being on PATH is NOT sufficient).
+
+    Honesty fence: only real store data — no invented status.
+    """
+    stored = load_runtime_profiles()
+    entries: list[RuntimeProfileEntry] = []
+    for name in sorted(stored.keys()):
+        entry = stored[name]
+        command = entry.get("command")
+        adapter = entry.get("adapter")
+        bin_path = get_binary(name)
+        registered = bin_path is not None and is_binary_valid(bin_path)
+        entries.append(RuntimeProfileEntry(
+            name=name,
+            command=command if isinstance(command, str) else None,
+            adapter=adapter if isinstance(adapter, str) else None,
+            present=registered,
+            path=bin_path if registered else None,
+        ))
+    return RuntimeProfileList(profiles=entries)
+
+
+@runtime_router.delete(
+    "/executors/runtime/profiles/{name}",
+    response_model=RemoveRuntimeProfileResponse,
+    dependencies=[require_token()],
+)
+def remove_runtime_executor_profile(name: str) -> RemoveRuntimeProfileResponse:
+    """Remove a custom executor profile (durable store + in-memory registry).
+
+    Symmetric inverse of the register path: registration writes the durable
+    runtime store FIRST, then publishes the transient in-memory profile —
+    removal clears the durable store FIRST (source of truth; a store-write
+    failure must not leave a resurrectable entry behind), then unregisters
+    the in-process profile so it does not linger until restart.
+
+    404 when the name is not in the runtime store. Built-in executor names
+    can never be removed (422) — the store never legitimately holds them.
+
+    The removal is audited to runtime-audit.db with the same row shape as
+    registration (``task_id='executor:<name>'``, payload {command,
+    argv_template, adapter}); action verb ``executor_removed``.
+    """
+    registry = get_registry()
+
+    # Serialize against concurrent register/remove for the same name —
+    # same per-profile-name lock as the register routes.
+    profile_lock = _acquire_profile_lock(name)
+    try:
+        stored = load_runtime_profiles()
+        entry = stored.get(name)
+        if entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No custom executor profile named {name!r} "
+                f"in the runtime store",
+            )
+
+        existing = registry.get_profile(name)
+        if existing is not None and existing.kind == "builtin":
+            # Pathological hand-edited store carrying a built-in name:
+            # refuse without touching either surface.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "builtin_collision",
+                    "name": name,
+                    "detail": f"Cannot remove built-in executor {name!r}.",
+                },
+            )
+
+        # 1. Durable: remove from the machine-global runtime store (the
+        #    source of truth) — mirrors register's durable-first ordering.
+        remove_runtime_profile(name)
+
+        # 2. In-memory: clear the transient process-wide profile so the
+        #    removed executor is immediately unresolvable (no restart
+        #    needed). No-op when the profile was never loaded in-process.
+        registry.unregister_custom_profile(name)
+
+        # 3. Audit the removal (mirrors _audit_runtime_registration).
+        argv = entry.get("argv_template")
+        _audit_runtime_removal(
+            profile_name=name,
+            command=str(entry.get("command") or ""),
+            argv_template=argv if isinstance(argv, list) else [],
+            adapter=str(entry.get("adapter") or ""),
+        )
+    finally:
+        profile_lock.release()
+
+    return RemoveRuntimeProfileResponse(name=name, removed=True)
