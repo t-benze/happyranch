@@ -535,7 +535,7 @@ A skill reaches an agent session only when **both** gates pass:
 
 | Policy class | Governance |
 | --- | --- |
-| `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids (e.g., `review`). Passes the catalog gate with status=enabled. |
+| `standard_operational` | Workflow guidance, repo conventions, role playbooks, debugging aids (e.g., `reflection`). Passes the catalog gate with status=enabled. |
 | `high_impact_policy` | Pricing, legal/compliance, security, production release, escalation thresholds, agent roster governance (e.g., ``manage-agent``, ``manage-repo``). Scoped to managers/operators via eligibility policy (`policy_class` still scopes eligibility). Passes the catalog gate with status=enabled (no per-version approval gate — release pipeline IS the approval). |
 | `system_contract` | Runtime protocol and mandatory operating-contract skills (e.g., `start-task`, `thread`, `jobs`). **Outside the toggleable catalog** — not shown, not toggleable. |
 
@@ -705,21 +705,23 @@ context; ``--workspace`` enables the repo check.
 - Add new daemon routes
 - Change the existing permission model
 
-### 4.8 Managed-Catalog Standard-Operational Entry — ``review`` (THR-055 Phase 2)
+### 4.8 Managed-Catalog Standard-Operational Entry — ``reflection`` (THR-055 Phase 2)
 
-The ``review`` skill is the first HappyRanch skill migrated into the managed
-catalog as a ``standard_operational`` entry. It was previously delivered via
-the wholesale ``protocol/skills/`` dump alongside the system contracts.
+The ``reflection`` skill (the operational self-reflection workflow; named
+``review`` until the THR-106 rename) is the first HappyRanch skill migrated
+into the managed catalog as a ``standard_operational`` entry. It was
+previously delivered via the wholesale ``protocol/skills/`` dump alongside
+the system contracts.
 
-**Package location.** ``runtime/skills/review/{skill.yaml,SKILL.md}``.
+**Package location.** ``runtime/skills/reflection/{skill.yaml,SKILL.md}``.
 
 **Registration metadata.**
-- ``id``: ``hr:review``
+- ``id``: ``hr:reflection``
 - ``policy_class``: ``standard_operational``
 - ``owner``: ``engineering_manager``
 - ``version``: ``1.0.0``
 
-**Eligibility scoping.** ``review`` visibility is scoped to **team managers and
+**Eligibility scoping.** ``reflection`` visibility is scoped to **team managers and
 review-loop participants** — NOT org-wide. The default eligibility policy in
 ``org/config.yaml`` grants access to:
 - The ``engineering`` team (dev_agent, code_reviewer, qa_engineer,
@@ -728,19 +730,28 @@ review-loop participants** — NOT org-wide. The default eligibility policy in
   engineering team who participates in founder review loops).
 
 A non-participant agent (e.g., ``support_agent`` on the ``cx`` team, or any
-agent outside these allow lists) does NOT resolve ``review`` as exposed.
+agent outside these allow lists) does NOT resolve ``reflection`` as exposed.
 The eligibility formula is the standard additive-inheritance model (see §4.1):
 team-scoped allow, with agent-scoped allow for team managers outside the
 engineering team.
 
-**Provenance.** ``skills effective --agent dev_agent`` shows ``review`` with
+**Provenance.** ``skills effective --agent dev_agent`` shows ``reflection`` with
 ``team(engineering) ALLOW`` eligibility provenance and ``standard_operational``
-policy class. ``skills policy explain hr:review --agent dev_agent`` shows the
+policy class. ``skills policy explain hr:reflection --agent dev_agent`` shows the
 catalog gate (PASS — present, enabled) and eligibility gate (team-scoped allow).
 
-**Phase-2 additive constraint.** The ``review`` SKILL.md body also remains
-in ``protocol/skills/review/`` so that the existing wholesale-dump path
-(``refresh_session_skills``) continues to deliver ``review`` to all agents
+**Rename migration (THR-106).** Skill eligibility policy is persisted ONLY in
+each deployed org's ``org/config.yaml`` — there is no database storage for it.
+A one-shot daemon-startup migration (``migrate_hr_review_skill_id``) rewrites
+``hr:review`` → ``hr:reflection`` inside the persisted skills section (allow
+AND deny lists, at org/team/agent scope), scoped to the ``skills:`` block so
+unrelated config survives byte-for-byte. It is gated by a durable
+``.hr_review_renamed`` sentinel in the org root (mirroring the
+``.agent_yaml_consumed`` one-shot pattern) so it never re-runs.
+
+**Phase-2 additive constraint.** The ``reflection`` SKILL.md body also remains
+in ``protocol/skills/reflection/`` so that the existing wholesale-dump path
+(``refresh_session_skills``) continues to deliver ``reflection`` to all agents
 as a safety net. Physical removal from the always-injected set is a Phase-4
 change gated on a completeness test proving catalog resolution delivers the
 full required set. Phase 2 is ADDITIVE only — the managed-catalog entry is
@@ -749,7 +760,7 @@ registered and eligibility is scoped; the wholesale dump is untouched.
 **Fences.** Phase 2 does not:
 - Grant tools, credentials, or capabilities (review command access remains
   in allow_rules / daemon auth per the existing permission model)
-- Physically delete ``review`` from ``protocol/skills/`` (Phase 4)
+- Physically delete ``reflection`` from ``protocol/skills/`` (Phase 4)
 - Require a SQLite migration (file/YAML-backed only)
 - Add new daemon routes
 - Change the existing permission model or auth
@@ -849,7 +860,7 @@ and ``.agents/skills/<id>/``.
    catalog gate + eligibility gate).
 4. Copy each exposed skill's package into the workspace skill dirs.
 
-**Context-exposure rules:** managed skills are context-AGNOSTIC — ``review``,
+**Context-exposure rules:** managed skills are context-AGNOSTIC — ``reflection``,
 ``manage-agent``, and ``manage-repo`` are injected into ALL session types
 where the agent is eligible ($4.1 two-gate model). System contracts remain
 context-aware ($4.7).
@@ -874,7 +885,7 @@ net. They are NOT deleted — only the copy-into-workspace step is gated.
 session context (4) × every repo state (2) = 56 combinations receive the
 complete required set without the wholesale dump. The test asserts:
 - System contracts are context-correct per §4.7 predicates.
-- ``review`` is injected for engineering team + product_lead.
+- ``reflection`` is injected for engineering team + product_lead.
 - ``manage-agent`` / ``manage-repo`` are exposed to eligible managers/operators
   only and hidden from non-eligible agents (eligibility gate).
 - ``dream`` is excluded from non-dream contexts.

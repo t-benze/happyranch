@@ -501,25 +501,25 @@ class TestSkillsPolicyExplain:
         assert "allow: ✓" in out
 
 
-class TestSkillsCliReview:
-    """CLI tests for the review skill as a managed-catalog standard_operational entry."""
+class TestSkillsCliReflection:
+    """CLI tests for the reflection skill as a managed-catalog standard_operational entry."""
 
-    def _make_review_policy(self, tmp_path, team_allow=True, agent_allows=None):
-        """Helper: create a policy YAML with review scoped to engineering team
+    def _make_reflection_policy(self, tmp_path, team_allow=True, agent_allows=None):
+        """Helper: create a policy YAML with reflection scoped to engineering team
         and optionally to specific agents."""
         import yaml as _yaml
         policy: dict = {"skills": {"teams": {}, "agents": {}}}
         if team_allow:
-            policy["skills"]["teams"]["engineering"] = {"allow": ["hr:review"], "deny": []}
+            policy["skills"]["teams"]["engineering"] = {"allow": ["hr:reflection"], "deny": []}
         if agent_allows:
             for agent_name in agent_allows:
-                policy["skills"]["agents"][agent_name] = {"allow": ["hr:review"], "deny": []}
+                policy["skills"]["agents"][agent_name] = {"allow": ["hr:reflection"], "deny": []}
         path = tmp_path / "config.yaml"
         path.write_text("---\n" + _yaml.dump(policy, default_flow_style=False))
         return str(path)
 
-    def test_catalog_list_includes_review(self, capsys):
-        """'skills catalog list' shows the review skill."""
+    def test_catalog_list_includes_reflection(self, capsys):
+        """'skills catalog list' shows the reflection skill."""
         from cli.commands.skills import cmd_skills_catalog_list
         import argparse
 
@@ -527,11 +527,11 @@ class TestSkillsCliReview:
         cmd_skills_catalog_list(ns)
 
         out = capsys.readouterr().out
-        assert "hr:review" in out
-        assert "Review" in out
+        assert "hr:reflection" in out
+        assert "Reflection" in out
 
-    def test_catalog_list_json_includes_review(self, capsys):
-        """JSON output from catalog list includes review."""
+    def test_catalog_list_json_includes_reflection(self, capsys):
+        """JSON output from catalog list includes reflection."""
         from cli.commands.skills import cmd_skills_catalog_list
         import argparse
 
@@ -541,14 +541,14 @@ class TestSkillsCliReview:
         out = capsys.readouterr().out
         data = json.loads(out)
         ids = [d["id"] for d in data]
-        assert "hr:review" in ids
+        assert "hr:reflection" in ids
 
-    def test_effective_review_exposed_to_engineering_team(self, capsys, tmp_path):
-        """'skills effective --agent dev_agent' shows review as exposed when engineering team is allowed."""
+    def test_effective_reflection_exposed_to_engineering_team(self, capsys, tmp_path):
+        """'skills effective --agent dev_agent' shows reflection as exposed when engineering team is allowed."""
         from cli.commands.skills import cmd_skills_effective
         import argparse
 
-        policy_path = self._make_review_policy(tmp_path)
+        policy_path = self._make_reflection_policy(tmp_path)
         ns = argparse.Namespace(
             agent="dev_agent", org="happyranch", team="engineering",
             skills_root=str(FIXTURES), policy_path=policy_path, json=False,
@@ -557,15 +557,15 @@ class TestSkillsCliReview:
         cmd_skills_effective(ns)
 
         out = capsys.readouterr().out
-        assert "hr:review" in out
+        assert "hr:reflection" in out
         assert "ALLOW" in out
 
-    def test_effective_review_not_exposed_to_non_participant(self, capsys, tmp_path):
-        """'skills effective --agent support_agent --team cx' does NOT show review."""
+    def test_effective_reflection_not_exposed_to_non_participant(self, capsys, tmp_path):
+        """'skills effective --agent support_agent --team cx' does NOT show reflection."""
         from cli.commands.skills import cmd_skills_effective
         import argparse
 
-        policy_path = self._make_review_policy(tmp_path)
+        policy_path = self._make_reflection_policy(tmp_path)
         ns = argparse.Namespace(
             agent="support_agent", org="happyranch", team="cx",
             skills_root=str(FIXTURES), policy_path=policy_path, json=False,
@@ -574,15 +574,15 @@ class TestSkillsCliReview:
         cmd_skills_effective(ns)
 
         out = capsys.readouterr().out
-        # review should NOT appear in effective skills
-        assert "hr:review" not in out or "Effective skills (0)" in out
+        # reflection should NOT appear in effective skills
+        assert "hr:reflection" not in out or "Effective skills (0)" in out
 
-    def test_effective_review_exposed_to_product_lead(self, capsys, tmp_path):
-        """'skills effective --agent product_lead --team product' shows review via agent scope."""
+    def test_effective_reflection_exposed_to_product_lead(self, capsys, tmp_path):
+        """'skills effective --agent product_lead --team product' shows reflection via agent scope."""
         from cli.commands.skills import cmd_skills_effective
         import argparse
 
-        policy_path = self._make_review_policy(tmp_path, agent_allows=["product_lead"])
+        policy_path = self._make_reflection_policy(tmp_path, agent_allows=["product_lead"])
         ns = argparse.Namespace(
             agent="product_lead", org="happyranch", team="product",
             skills_root=str(FIXTURES), policy_path=policy_path, json=False,
@@ -591,16 +591,16 @@ class TestSkillsCliReview:
         cmd_skills_effective(ns)
 
         out = capsys.readouterr().out
-        assert "hr:review" in out
+        assert "hr:reflection" in out
 
-    def test_policy_explain_review_exposed(self, capsys, tmp_path):
-        """'skills policy explain hr:review --agent dev_agent' shows review IS available."""
+    def test_policy_explain_reflection_exposed(self, capsys, tmp_path):
+        """'skills policy explain hr:reflection --agent dev_agent' shows reflection IS available."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
 
-        policy_path = self._make_review_policy(tmp_path)
+        policy_path = self._make_reflection_policy(tmp_path)
         ns = argparse.Namespace(
-            skill_id="hr:review", agent="dev_agent",
+            skill_id="hr:reflection", agent="dev_agent",
             org="happyranch", team="engineering",
             skills_root=str(FIXTURES), policy_path=policy_path, json=False,
         )
@@ -613,14 +613,14 @@ class TestSkillsCliReview:
         assert "ALLOWED" in out
         assert "standard_operational" in out
 
-    def test_policy_explain_review_not_exposed_to_non_participant(self, capsys, tmp_path):
-        """'skills policy explain hr:review --agent support_agent --team cx' shows NOT available."""
+    def test_policy_explain_reflection_not_exposed_to_non_participant(self, capsys, tmp_path):
+        """'skills policy explain hr:reflection --agent support_agent --team cx' shows NOT available."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
 
-        policy_path = self._make_review_policy(tmp_path)
+        policy_path = self._make_reflection_policy(tmp_path)
         ns = argparse.Namespace(
-            skill_id="hr:review", agent="support_agent",
+            skill_id="hr:reflection", agent="support_agent",
             org="happyranch", team="cx",
             skills_root=str(FIXTURES), policy_path=policy_path, json=False,
         )
@@ -631,14 +631,14 @@ class TestSkillsCliReview:
         # Non-participant has no allow rules
         assert "NOT EXPLICITLY ALLOWED" in out
 
-    def test_policy_explain_review_shows_team_provenance(self, capsys, tmp_path):
-        """'skills policy explain hr:review' shows team-scoped eligibility provenance."""
+    def test_policy_explain_reflection_shows_team_provenance(self, capsys, tmp_path):
+        """'skills policy explain hr:reflection' shows team-scoped eligibility provenance."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
 
-        policy_path = self._make_review_policy(tmp_path)
+        policy_path = self._make_reflection_policy(tmp_path)
         ns = argparse.Namespace(
-            skill_id="hr:review", agent="dev_agent",
+            skill_id="hr:reflection", agent="dev_agent",
             org="happyranch", team="engineering",
             skills_root=str(FIXTURES), policy_path=policy_path, json=False,
         )
@@ -648,14 +648,14 @@ class TestSkillsCliReview:
         assert "Team policy" in out
         assert "allow: ✓" in out
 
-    def test_policy_explain_review_json(self, capsys, tmp_path):
-        """JSON output from policy explain includes review provenance."""
+    def test_policy_explain_reflection_json(self, capsys, tmp_path):
+        """JSON output from policy explain includes reflection provenance."""
         from cli.commands.skills import cmd_skills_policy_explain
         import argparse
 
-        policy_path = self._make_review_policy(tmp_path)
+        policy_path = self._make_reflection_policy(tmp_path)
         ns = argparse.Namespace(
-            skill_id="hr:review", agent="dev_agent",
+            skill_id="hr:reflection", agent="dev_agent",
             org="happyranch", team="engineering",
             skills_root=str(FIXTURES), policy_path=policy_path, json=True,
         )
@@ -663,15 +663,15 @@ class TestSkillsCliReview:
 
         out = capsys.readouterr().out
         data = json.loads(out)
-        assert data["skill_id"] == "hr:review"
+        assert data["skill_id"] == "hr:reflection"
         assert data["catalog_gate"]["passed"] is True
         assert data["is_exposed"] is True
         # Provenance
         assert data["eligibility"]["team"] == "engineering"
         assert data["eligibility"]["team_policy"]["allow"] is True
 
-    def test_validate_includes_review_in_catalog(self, capsys):
-        """'skills catalog validate' includes the review skill in its output."""
+    def test_validate_includes_reflection_in_catalog(self, capsys):
+        """'skills catalog validate' includes the reflection skill in its output."""
         from cli.commands.skills import cmd_skills_catalog_validate
         import argparse
 
@@ -679,14 +679,14 @@ class TestSkillsCliReview:
         cmd_skills_catalog_validate(ns)
 
         out = capsys.readouterr().out
-        assert "hr:review" in out
+        assert "hr:reflection" in out
 
-    def test_effective_system_contracts_does_not_include_review(self, capsys, tmp_path):
-        """'skills effective' system contracts section does NOT include review."""
+    def test_effective_system_contracts_does_not_include_reflection(self, capsys, tmp_path):
+        """'skills effective' system contracts section does NOT include reflection."""
         from cli.commands.skills import cmd_skills_effective
         import argparse
 
-        policy_path = self._make_review_policy(tmp_path)
+        policy_path = self._make_reflection_policy(tmp_path)
         ns = argparse.Namespace(
             agent="dev_agent", org="happyranch", team="engineering",
             skills_root=str(FIXTURES), policy_path=policy_path, json=False,
@@ -695,8 +695,8 @@ class TestSkillsCliReview:
         cmd_skills_effective(ns)
 
         out = capsys.readouterr().out
-        # Check system contracts section does NOT list review
-        # review appears only in Effective skills / Blocked, not in System Contracts
+        # Check system contracts section does NOT list reflection
+        # reflection appears only in Effective skills / Blocked, not in System Contracts
         # The system contracts section should show exactly 5 contracts
         assert "System Contracts (runtime-injected):" in out
         # review should appear in effective/blocked section, not system contracts

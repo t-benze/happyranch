@@ -1192,6 +1192,124 @@ def _strip_writable_keys_from_config(paths: OrgPaths) -> None:
         raise
 
 
+# ── THR-106 one-shot skill-id rename: hr:review → hr:reflection ────────
+#
+# The managed self-reflection skill was renamed (id ``hr:review`` →
+# ``hr:reflection``, slug ``review`` → ``reflection``).  Skill eligibility
+# policy is persisted ONLY in each deployed org's org/config.yaml (there is
+# no DB storage for it), so a bare catalog rename would strand every org
+# whose config still lists the old id — an unknown-skill-id validation
+# warning and the skill silently dropped from every effective set.
+
+_HR_REVIEW_RENAME_SENTINEL = ".hr_review_renamed"
+_HR_REVIEW_OLD_ID = "hr:review"
+_HR_REVIEW_NEW_ID = "hr:reflection"
+
+# Token-exact match: never rewrite longer ids sharing the prefix
+# (e.g. a hypothetical ``hr:review-notes``).
+_HR_REVIEW_TOKEN_RE = re.compile(
+    r"(?<![\w-])" + re.escape(_HR_REVIEW_OLD_ID) + r"(?![\w-])"
+)
+
+
+def migrate_hr_review_skill_id(paths: OrgPaths) -> str:
+    """One-shot: rewrite ``hr:review`` → ``hr:reflection`` in the persisted
+    org/config.yaml skills eligibility section (allow AND deny lists, at
+    org/team/agent scope).
+
+    Idempotent: a durable sentinel file (``.hr_review_renamed``) in the org
+    root gates the operation — mirroring the ``.agent_yaml_consumed``
+    pattern.  Once the sentinel exists this function is a no-op forever,
+    even if the old id is later reintroduced.
+
+    The rewrite is TEXTUAL and scoped to the top-level ``skills:`` block so
+    unrelated config — comments and formatting included — is preserved
+    byte-for-byte.  The result is parse-validated before the atomic write.
+
+    Raises ``OrgConfigError`` (sentinel NOT written, file untouched) when
+    the existing config cannot be parsed — the next startup retries.
+
+    Returns an outcome string for startup logging.
+    """
+    sentinel = paths.root / _HR_REVIEW_RENAME_SENTINEL
+    if sentinel.exists():
+        return "skipped (already migrated)"
+
+    config_path = paths.org_config_path
+    if not config_path.exists():
+        # Lock now: any config.yaml written later comes from the renamed
+        # seed template and can never carry the old id legitimately.
+        sentinel.write_text("")
+        return "locked (no config.yaml)"
+
+    text = config_path.read_text(encoding="utf-8")
+
+    # Parse guard — never rewrite a file we cannot parse.
+    try:
+        raw = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise OrgConfigError(
+            f"THR-106 skill-id rename: malformed YAML in {config_path}: {exc}"
+        ) from exc
+    if not isinstance(raw, dict) or "skills" not in raw:
+        sentinel.write_text("")
+        return "locked (no skills section)"
+
+    # Locate the top-level ``skills:`` block textually: from the column-0
+    # ``skills:`` line up to (not including) the next column-0 key.  Blank
+    # lines and comments inside the block stay inside.  When the document
+    # is a single flow-style mapping (no column-0 ``skills:`` line), fall
+    # back to a whole-file token replace — skill ids appear nowhere else
+    # in a flow-only config.
+    lines = text.splitlines(keepends=True)
+    start: int | None = None
+    end = len(lines)
+    for i, line in enumerate(lines):
+        if start is None:
+            if re.match(r"^(?:\"skills\"|'skills'|skills)\s*:", line):
+                start = i
+        elif re.match(r"^[^\s#]", line):
+            end = i
+            break
+    if start is None:
+        start, end = 0, len(lines)
+
+    section = "".join(lines[start:end])
+    new_section, replaced = _HR_REVIEW_TOKEN_RE.subn(_HR_REVIEW_NEW_ID, section)
+    if replaced == 0:
+        sentinel.write_text("")
+        return "locked (no hr:review references)"
+
+    new_text = "".join(lines[:start]) + new_section + "".join(lines[end:])
+
+    # Post-rewrite validation: the result must still parse.
+    try:
+        yaml.safe_load(new_text)
+    except yaml.YAMLError as exc:  # pragma: no cover — token swap keeps YAML valid
+        raise OrgConfigError(
+            f"THR-106 skill-id rename produced unparseable YAML for "
+            f"{config_path}: {exc}"
+        ) from exc
+
+    # Atomic write (same pattern as the other config.yaml writers).
+    fd, tmp = tempfile.mkstemp(
+        prefix=".org-config.", suffix=".yaml", dir=str(config_path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(new_text)
+        os.replace(tmp, config_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+    sentinel.write_text("")
+    return f"renamed ({replaced} occurrence(s))"
+
+
 # ── Resolution helpers (THR-095) ──────────────────────────────────────
 #
 # These resolve a single section's effective value from the DB → code-default

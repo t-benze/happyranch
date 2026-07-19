@@ -43,7 +43,7 @@ New specs should include a short status block near the top:
 | `2026-04-19-task-status-redesign.md` | implemented | Current status vocabulary: `docs/agent-guides/orchestrator-contracts.md`. |
 | `2026-04-20-multi-executor-design.md` | implemented | Current executor guide: `docs/agent-guides/agent-executors-and-permissions.md`. |
 | `2026-04-21-opc-revisit-design.md` | implemented | Old name; current command is `happyranch revisit`. |
-| `2026-04-21-talk-flow-design.md` | removed | Talk surface removed per THR-023 (2026-06-15); replaced by `protocol/skills/review/SKILL.md`. |
+| `2026-04-21-talk-flow-design.md` | removed | Talk surface removed per THR-023 (2026-06-15); replaced by `protocol/skills/reflection/SKILL.md` (named `review` until the THR-106 rename). |
 | `2026-04-23-revisit-root-link-design.md` | implemented | Current revisit notes: `docs/agent-guides/features-and-invariants.md`. |
 | `2026-04-24-content-team-design.md` | historical | Org-specific planning background. |
 | `2026-04-26-multi-org-runtime-design.md` | superseded | Replaced by parallel multi-org runtime and HappyRanch rename work. |

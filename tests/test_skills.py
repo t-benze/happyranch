@@ -16,7 +16,7 @@ def _parse_frontmatter(text: str) -> dict:
     return yaml.safe_load(fm)
 
 
-@pytest.mark.parametrize("skill_name", ["start-task", "make-worktree", "manage-repo", "manage-agent", "review", "dream"])
+@pytest.mark.parametrize("skill_name", ["start-task", "make-worktree", "manage-repo", "manage-agent", "reflection", "dream"])
 def test_skill_has_required_frontmatter(skill_name: str) -> None:
     skill_md = SKILLS_ROOT / skill_name / "SKILL.md"
     assert skill_md.exists(), f"missing {skill_md}"
@@ -84,28 +84,28 @@ def test_start_task_skill_documents_manager_decision_field() -> None:
     assert "escalate" in body
 
 
-def test_review_skill_documents_start_procedure() -> None:
-    body = (SKILLS_ROOT / "review" / "SKILL.md").read_text()
+def test_reflection_skill_documents_start_procedure() -> None:
+    body = (SKILLS_ROOT / "reflection" / "SKILL.md").read_text()
     assert "thread reply" in body
     assert "## Notable tasks" in body
     assert "## New learnings" in body
     assert "## Open questions / frictions" in body
 
 
-def test_review_skill_documents_end_procedure() -> None:
-    body = (SKILLS_ROOT / "review" / "SKILL.md").read_text()
+def test_reflection_skill_documents_end_procedure() -> None:
+    body = (SKILLS_ROOT / "reflection" / "SKILL.md").read_text()
     assert "happyranch learning add" in body
     assert "happyranch kb add" in body
     assert "--from-file" in body
 
 
-def test_review_skill_documents_single_line_rationale() -> None:
-    body = (SKILLS_ROOT / "review" / "SKILL.md").read_text()
+def test_reflection_skill_documents_single_line_rationale() -> None:
+    body = (SKILLS_ROOT / "reflection" / "SKILL.md").read_text()
     assert "Bash(happyranch *)" in body
 
 
-def test_review_skill_documents_no_dispatch() -> None:
-    body = (SKILLS_ROOT / "review" / "SKILL.md").read_text()
+def test_reflection_skill_documents_no_dispatch() -> None:
+    body = (SKILLS_ROOT / "reflection" / "SKILL.md").read_text()
     assert "no dispatch" in body.lower()
 
 
@@ -150,7 +150,7 @@ def test_skill_cli_commands_exist() -> None:
                     referenced.add(tokens[0].rstrip("`,."))
     referenced -= {"<subcommand>"}
     # These are referenced only as negative examples ("Don't call X")
-    # in the review skill which replaces the removed talk surface.
+    # in the reflection skill which replaces the removed talk surface.
     referenced -= {"talk", "dispatch"}
     missing = referenced - known
     assert not missing, f"skills reference missing CLI commands: {missing}"

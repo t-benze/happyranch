@@ -101,15 +101,15 @@ class TestCatalogGateStatusOnly:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Two-gate exposure — review skill (eligibility-scoped)
+# Two-gate exposure — reflection skill (eligibility-scoped)
 # ══════════════════════════════════════════════════════════════════════════
 
 
-class TestTwoGateExposureReview:
-    """Two-gate exposure tests for the review skill with team-scoped eligibility."""
+class TestTwoGateExposureReflection:
+    """Two-gate exposure tests for the reflection skill with team-scoped eligibility."""
 
-    def test_review_exposed_to_engineering_team_member(self):
-        """A dev_agent in the engineering team resolves review as exposed."""
+    def test_reflection_exposed_to_engineering_team_member(self):
+        """A dev_agent in the engineering team resolves reflection as exposed."""
         from runtime.skills.registry import SkillRegistry
         from runtime.skills.resolver import EligibilityResolver
         from runtime.skills.exposure import resolve_exposed_skills
@@ -117,7 +117,7 @@ class TestTwoGateExposureReview:
         registry = SkillRegistry(skills_root=FIXTURES)
         policy = {
             "teams": {
-                "engineering": {"allow": ["hr:review"], "deny": []},
+                "engineering": {"allow": ["hr:reflection"], "deny": []},
             },
         }
         resolver = EligibilityResolver(policy)
@@ -126,10 +126,10 @@ class TestTwoGateExposureReview:
         )
 
         exposed_ids = {s.skill.id for s in exposed}
-        assert "hr:review" in exposed_ids
+        assert "hr:reflection" in exposed_ids
 
-    def test_review_not_exposed_to_non_participant_agent(self):
-        """An agent NOT in the engineering team does NOT resolve review."""
+    def test_reflection_not_exposed_to_non_participant_agent(self):
+        """An agent NOT in the engineering team does NOT resolve reflection."""
         from runtime.skills.registry import SkillRegistry
         from runtime.skills.resolver import EligibilityResolver
         from runtime.skills.exposure import resolve_exposed_skills
@@ -137,7 +137,7 @@ class TestTwoGateExposureReview:
         registry = SkillRegistry(skills_root=FIXTURES)
         policy = {
             "teams": {
-                "engineering": {"allow": ["hr:review"], "deny": []},
+                "engineering": {"allow": ["hr:reflection"], "deny": []},
             },
         }
         resolver = EligibilityResolver(policy)
@@ -146,10 +146,10 @@ class TestTwoGateExposureReview:
         )
 
         exposed_ids = {s.skill.id for s in exposed}
-        assert "hr:review" not in exposed_ids
+        assert "hr:reflection" not in exposed_ids
 
-    def test_review_exposed_to_product_lead_via_agent_scope(self):
-        """product_lead (a team manager but not in engineering) resolves review via agent scope."""
+    def test_reflection_exposed_to_product_lead_via_agent_scope(self):
+        """product_lead (a team manager but not in engineering) resolves reflection via agent scope."""
         from runtime.skills.registry import SkillRegistry
         from runtime.skills.resolver import EligibilityResolver
         from runtime.skills.exposure import resolve_exposed_skills
@@ -157,10 +157,10 @@ class TestTwoGateExposureReview:
         registry = SkillRegistry(skills_root=FIXTURES)
         policy = {
             "teams": {
-                "engineering": {"allow": ["hr:review"], "deny": []},
+                "engineering": {"allow": ["hr:reflection"], "deny": []},
             },
             "agents": {
-                "product_lead": {"allow": ["hr:review"], "deny": []},
+                "product_lead": {"allow": ["hr:reflection"], "deny": []},
             },
         }
         resolver = EligibilityResolver(policy)
@@ -169,10 +169,10 @@ class TestTwoGateExposureReview:
         )
 
         exposed_ids = {s.skill.id for s in exposed}
-        assert "hr:review" in exposed_ids
+        assert "hr:reflection" in exposed_ids
 
-    def test_review_not_exposed_to_org_wide_non_participant(self):
-        """An org-wide agent with no explicit allow does NOT resolve review."""
+    def test_reflection_not_exposed_to_org_wide_non_participant(self):
+        """An org-wide agent with no explicit allow does NOT resolve reflection."""
         from runtime.skills.registry import SkillRegistry
         from runtime.skills.resolver import EligibilityResolver
         from runtime.skills.exposure import resolve_exposed_skills
@@ -180,7 +180,7 @@ class TestTwoGateExposureReview:
         registry = SkillRegistry(skills_root=FIXTURES)
         policy = {
             "teams": {
-                "engineering": {"allow": ["hr:review"], "deny": []},
+                "engineering": {"allow": ["hr:reflection"], "deny": []},
             },
         }
         resolver = EligibilityResolver(policy)
@@ -189,10 +189,10 @@ class TestTwoGateExposureReview:
         )
 
         exposed_ids = {s.skill.id for s in exposed}
-        assert "hr:review" not in exposed_ids
+        assert "hr:reflection" not in exposed_ids
 
-    def test_review_not_exposed_with_no_policy_at_all(self):
-        """Without any eligibility policy, review is NOT exposed (empty allow union)."""
+    def test_reflection_not_exposed_with_no_policy_at_all(self):
+        """Without any eligibility policy, reflection is NOT exposed (empty allow union)."""
         from runtime.skills.registry import SkillRegistry
         from runtime.skills.resolver import EligibilityResolver
         from runtime.skills.exposure import resolve_exposed_skills
@@ -204,10 +204,10 @@ class TestTwoGateExposureReview:
         )
 
         exposed_ids = {s.skill.id for s in exposed}
-        assert "hr:review" not in exposed_ids
+        assert "hr:reflection" not in exposed_ids
 
-    def test_review_exposed_with_provenance(self):
-        """Exposed review carries correct eligibility provenance."""
+    def test_reflection_exposed_with_provenance(self):
+        """Exposed reflection carries correct eligibility provenance."""
         from runtime.skills.registry import SkillRegistry
         from runtime.skills.resolver import EligibilityResolver
         from runtime.skills.exposure import resolve_exposed_skills
@@ -215,7 +215,7 @@ class TestTwoGateExposureReview:
         registry = SkillRegistry(skills_root=FIXTURES)
         policy = {
             "teams": {
-                "engineering": {"allow": ["hr:review"], "deny": []},
+                "engineering": {"allow": ["hr:reflection"], "deny": []},
             },
         }
         resolver = EligibilityResolver(policy)
@@ -224,7 +224,7 @@ class TestTwoGateExposureReview:
         )
 
         for s in exposed:
-            if s.skill.id == "hr:review":
+            if s.skill.id == "hr:reflection":
                 assert len(s.allowed_by) > 0
                 assert any(r.scope == "team" and r.id == "engineering" for r in s.allowed_by)
                 assert len(s.denied_by) == 0
@@ -235,16 +235,16 @@ class TestTwoGateExposureReview:
 # ══════════════════════════════════════════════════════════════════════════
 
 
-class TestReviewSkillNotInSystemContracts:
-    """Verify review is NOT a system contract (it's standard_operational, managed catalog)."""
+class TestReflectionSkillNotInSystemContracts:
+    """Verify reflection is NOT a system contract (it's standard_operational, managed catalog)."""
 
-    def test_review_not_in_system_contracts_list(self):
-        """review does not appear in the system_contracts tuple."""
+    def test_reflection_not_in_system_contracts_list(self):
+        """reflection does not appear in the system_contracts tuple."""
         from runtime.skills.system_contracts import list_system_contracts
 
         contracts = list_system_contracts()
         ids = {sc.id for sc in contracts}
-        assert "review" not in ids
+        assert "reflection" not in ids
         # The 5 system contracts remain intact
         assert "start-task" in ids
         assert "jobs" in ids
@@ -613,7 +613,7 @@ class TestNegativeInvariants:
         policy = {
             "agents": {
                 "engineering_manager": {"allow": ["hr:manage-agent", "hr:manage-repo"], "deny": []},
-                "product_lead": {"allow": ["hr:review", "hr:manage-agent", "hr:manage-repo"], "deny": []},
+                "product_lead": {"allow": ["hr:reflection", "hr:manage-agent", "hr:manage-repo"], "deny": []},
             },
         }
         resolver = EligibilityResolver(policy)
@@ -624,4 +624,4 @@ class TestNegativeInvariants:
         exposed_ids = {s.skill.id for s in exposed}
         assert "hr:manage-agent" not in exposed_ids
         assert "hr:manage-repo" not in exposed_ids
-        assert "hr:review" not in exposed_ids
+        assert "hr:reflection" not in exposed_ids

@@ -602,7 +602,7 @@ class Orchestrator:
 
         # Managed-catalog skill injection (THR-055 Phase 4).
         # Resolves the two-gated catalog + eligibility policy and injects
-        # managed skills (review, manage-agent, manage-repo) into the
+        # managed skills (reflection, manage-agent, manage-repo) into the
         # workspace alongside system contracts.
         try:
             from runtime.orchestrator.prompt_loader import load_agent
