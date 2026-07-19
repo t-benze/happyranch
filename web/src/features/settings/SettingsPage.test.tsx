@@ -664,6 +664,11 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       http.get('/api/v1/health/prereqs', () =>
         HttpResponse.json({ prereqs: [] }),
       ),
+      // Custom-profiles list renders inside the panel now (THR-107 S4b) →
+      // must be stubbed (onUnhandledRequest:'error'). Empty by default.
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({ profiles: [] }),
+      ),
     );
   });
 

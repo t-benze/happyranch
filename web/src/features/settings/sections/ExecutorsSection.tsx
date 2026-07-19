@@ -34,6 +34,7 @@ import { Button } from '@/design-system/primitives/Button';
 import { ConnectFlow } from '@/shared/connect/ConnectFlow';
 import type { ConnectMode } from '@/shared/connect/useRuntimeConnect';
 import { ExecutorBinariesSection } from './ExecutorBinariesSection';
+import { CustomProfilesSection } from './CustomProfilesSection';
 
 /** Connected-card subtitle for the Settings mount, keyed on the originating
  *  mode. The onboarding "manage your CLIs anytime from Settings" clause is
@@ -89,6 +90,10 @@ export function ExecutorsSection(): JSX.Element {
         <div className="space-y-6" data-testid="executors-list">
           {/* Registered list — the primary management view (Step-0 §6-1). */}
           <ExecutorBinariesSection />
+
+          {/* Custom CLIs connected via the shared custom flow — list + remove
+              (THR-107 S4b), consuming the S4a list/remove backend. */}
+          <CustomProfilesSection />
 
           {/* The single "Connect a CLI" entry into the shared connect flow. */}
           <Button
