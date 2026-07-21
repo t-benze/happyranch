@@ -162,11 +162,11 @@ def cmd_schedules_spawn(args: argparse.Namespace) -> None:
 # ── register ────────────────────────────────────────────────────────────
 
 def register(sub) -> None:
-    p = sub.add_parser("todos", help="Agent Todos — list/show/pause/cancel/edit/spawn schedules")
-    wh_sub = p.add_subparsers(dest="schedules_command", required=True)
+    # ── founder/operator management surface: todos ──────────────────
+    p_todos = sub.add_parser("todos", help="Agent Todos — list/show/pause/cancel/edit schedules")
+    todos_sub = p_todos.add_subparsers(dest="todos_command", required=True)
 
-    # Management
-    p_list = wh_sub.add_parser("list", help="List Todos")
+    p_list = todos_sub.add_parser("list", help="List Todos")
     p_list.add_argument("--org", default=None)
     p_list.add_argument("--agent")
     p_list.add_argument("--status")
@@ -174,31 +174,36 @@ def register(sub) -> None:
     p_list.add_argument("--json", action="store_true")
     p_list.set_defaults(func=cmd_schedules_list)
 
-    p_show = wh_sub.add_parser("show", help="Show a Todo")
+    p_show = todos_sub.add_parser("show", help="Show a Todo")
     p_show.add_argument("--org", default=None)
     p_show.add_argument("schedule_id")
     p_show.add_argument("--json", action="store_true")
     p_show.set_defaults(func=cmd_schedules_show)
 
-    p_pause = wh_sub.add_parser("pause", help="Pause a Todo")
+    p_pause = todos_sub.add_parser("pause", help="Pause a Todo")
     p_pause.add_argument("--org", default=None)
     p_pause.add_argument("schedule_id")
     p_pause.set_defaults(func=cmd_schedules_pause)
 
-    p_cancel = wh_sub.add_parser("cancel", help="Cancel a Todo")
+    p_cancel = todos_sub.add_parser("cancel", help="Cancel a Todo")
     p_cancel.add_argument("--org", default=None)
     p_cancel.add_argument("schedule_id")
     p_cancel.set_defaults(func=cmd_schedules_cancel)
 
-    p_edit = wh_sub.add_parser("edit", help="Edit a Todo (fire_at, recurrence, timezone)")
+    p_edit = todos_sub.add_parser("edit", help="Edit a Todo (fire_at, recurrence, timezone)")
     p_edit.add_argument("--org", default=None)
     p_edit.add_argument("schedule_id")
     p_edit.add_argument("--from-file", required=True)
     p_edit.set_defaults(func=cmd_schedules_edit)
 
-    # Agent spawn callback
-    p_spawn = wh_sub.add_parser(
-        "spawn", help="Agent callback: spawn a schedule's root task",
+    # ── agent fire callback: schedules spawn ──────────────────────
+    p_sched = sub.add_parser(
+        "schedules",
+        help="Agent callback: spawn a schedule's root task",
+    )
+    sched_sub = p_sched.add_subparsers(dest="schedule_spawn_command", required=True)
+    p_spawn = sched_sub.add_parser(
+        "spawn", help="Spawn a root task from a schedule fire",
     )
     p_spawn.add_argument("--org", required=True)
     p_spawn.add_argument("--schedule-id", required=True)
