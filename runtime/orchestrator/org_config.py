@@ -1629,6 +1629,3 @@ def write_skill_eligibility_entry(
         except FileNotFoundError:
             pass
         raise
-
-
-

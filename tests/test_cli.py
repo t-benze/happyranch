@@ -2381,5 +2381,3 @@ def test_schedules_create_not_under_todos():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["todos", "create", "--org", "x", "--from-file", "/f"])
-
-
