@@ -186,7 +186,7 @@ def test_update_rejects_immutable_identity_fields(tmp_path):
     with pytest.raises(ValueError, match="unsupported schedule fields"):
         db.schedules.update("SCHEDULE-001", kind=ScheduleKind.WEEKLY)
     with pytest.raises(ValueError, match="unsupported schedule fields"):
-        db.schedules.update("SCHEDULE-001", created_at="2026-01-01")
+        db.schedules.update("SCHEDULE-001", source_instruction="changed")
 
 
 def test_update_rejects_unknown_field(tmp_path):

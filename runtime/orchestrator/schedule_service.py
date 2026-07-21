@@ -2,15 +2,14 @@
 and audit for create / list / get / pause / cancel / edit.
 
 No I/O beyond the ``Database`` (which owns ``ScheduleStore`` and
-``insert_audit_log``) and the ``AuditLogger``.  No routes, no scheduler
-loop, no wake queue.  This is the non-route foundation.
+``insert_audit_log``).  No routes, no scheduler loop, no wake queue.
+This is the non-route foundation.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
 
-from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 from runtime.orchestrator.schedule_rules import (
@@ -30,11 +29,11 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# Terminal statuses where no lifecycle transition is allowed (except
-# recovery paths owned by the future scheduler/runner, not the service).
-_TERMINAL = frozenset({ScheduleStatus.FIRED, ScheduleStatus.CANCELLED,
-                        ScheduleStatus.EXPIRED, ScheduleStatus.FAILED,
-                        ScheduleStatus.TIMEOUT})
+# Fields the service will allow callers to edit in this phase.
+# Only timing/recurrence fields — lifecycle fields, provenance, and
+# content fields (normalized_brief, source_instruction) are immutable
+# after insert until a future phase lands a properly reviewed store change.
+_ALLOWED_EDIT_FIELDS = frozenset({"fire_at", "recurrence", "timezone"})
 
 
 class ScheduleService:
@@ -42,11 +41,11 @@ class ScheduleService:
 
     Every method that mutates state writes an audit row with
     ``task_id=<SCHEDULE-NNN>`` using the established scope-prefix convention.
+    Audit rows are written directly via ``Database.insert_audit_log``.
     """
 
-    def __init__(self, db: Database, audit: AuditLogger) -> None:
+    def __init__(self, db: Database) -> None:
         self._db = db
-        self._audit = audit
 
     # ── create ────────────────────────────────────────────────────────
 
@@ -61,16 +60,17 @@ class ScheduleService:
         timezone: str,
         normalized_brief: str,
         source_instruction: str,
-        scheduling_enabled: bool = True,
+        scheduling_enabled: bool | None = None,
         indefinite: bool = False,
     ) -> ScheduleRecord:
         """Validate the request against the v1 envelope, persist, and audit.
 
         The ``scheduling_enabled`` gate checks the per-agent capability flag
-        resolved by the caller (future route layer); the service itself does
-        *not* read org config.
+        resolved by the caller (future route layer).  Default-deny: the caller
+        MUST pass ``True`` explicitly; omission, ``None``, and ``False`` are
+        all rejected.
         """
-        if not scheduling_enabled:
+        if scheduling_enabled is not True:
             raise ScheduleServiceError(
                 "scheduling is not enabled for this agent"
             )
@@ -133,11 +133,17 @@ class ScheduleService:
         self._db.schedules.insert(record)
 
         # --- audit ---
-        self._audit.log_schedule_created(
-            schedule_id, agent_name,
-            kind=kind,
-            normalized_brief=record.normalized_brief,
-            recurrence=recurrence,
+        payload: dict = {
+            "kind": kind.value,
+            "normalized_brief": record.normalized_brief,
+        }
+        if recurrence is not None:
+            payload["recurrence"] = recurrence
+        self._db.insert_audit_log(
+            task_id=schedule_id,
+            agent=agent_name,
+            action="schedule_created",
+            payload=payload,
         )
 
         return self._db.schedules.get(schedule_id)
@@ -181,7 +187,11 @@ class ScheduleService:
             status=ScheduleStatus.PAUSED,
             active=0,
         )
-        self._audit.log_schedule_paused(schedule_id, agent_name)
+        self._db.insert_audit_log(
+            task_id=schedule_id,
+            agent=agent_name,
+            action="schedule_paused",
+        )
         return self._db.schedules.get(schedule_id)
 
     # ── cancel ────────────────────────────────────────────────────────
@@ -189,16 +199,17 @@ class ScheduleService:
     def cancel(self, schedule_id: str, agent_name: str) -> ScheduleRecord:
         """Terminate a schedule permanently.
 
-        Accepts ``armed`` and ``paused``; rejects terminal statuses
-        (fired, cancelled, expired, failed, timeout).
+        Accepts only ``armed`` and ``paused``; rejects ``firing`` and all
+        terminal statuses (fired, cancelled, expired, failed, timeout).
         """
         record = self._db.schedules.get(schedule_id)
         if record is None:
             raise ScheduleServiceError(f"schedule {schedule_id} not found")
 
-        if record.status in _TERMINAL:
+        if record.status not in (ScheduleStatus.ARMED, ScheduleStatus.PAUSED):
             raise ScheduleServiceError(
-                f"cannot cancel {schedule_id}: status {record.status.value} is terminal"
+                f"cannot cancel {schedule_id}: status {record.status.value} "
+                f"is not armed or paused"
             )
 
         self._db.schedules.update(
@@ -206,7 +217,11 @@ class ScheduleService:
             status=ScheduleStatus.CANCELLED,
             active=0,
         )
-        self._audit.log_schedule_cancelled(schedule_id, agent_name)
+        self._db.insert_audit_log(
+            task_id=schedule_id,
+            agent=agent_name,
+            action="schedule_cancelled",
+        )
         return self._db.schedules.get(schedule_id)
 
     # ── edit ──────────────────────────────────────────────────────────
@@ -217,28 +232,37 @@ class ScheduleService:
         agent_name: str,
         **fields: Any,
     ) -> ScheduleRecord:
-        """Edit mutable fields of a schedule, re-validating before re-arming.
+        """Edit mutable fields of a schedule, re-validating before applying.
 
-        Accepts only ``armed`` and ``paused`` statuses; terminal state edits
-        are rejected.  After applying the changes the service re-runs the
-        relevant validators on the *new* values.  If validation fails the
-        record is left unchanged.
+        Accepts only ``armed`` and ``paused`` statuses; ``firing`` and
+        terminal state edits are rejected.  Only timing/recurrence fields
+        (fire_at, recurrence, timezone) may be edited in this phase;
+        lifecycle fields, normalized_brief, and source_instruction are
+        rejected.
 
-        The method does **not** itself change status back to ``armed`` from
-        ``paused`` — the caller can pass ``status=ScheduleStatus.ARMED``
-        explicitly if they want to re-arm a paused schedule during edit.
+        After applying the changes the service re-runs the relevant
+        validators on the *new* values.  If validation fails the record
+        is left unchanged.
         """
         record = self._db.schedules.get(schedule_id)
         if record is None:
             raise ScheduleServiceError(f"schedule {schedule_id} not found")
 
-        if record.status in _TERMINAL:
+        if record.status not in (ScheduleStatus.ARMED, ScheduleStatus.PAUSED):
             raise ScheduleServiceError(
-                f"cannot edit {schedule_id}: status {record.status.value} is terminal"
+                f"cannot edit {schedule_id}: status {record.status.value} "
+                f"is not armed or paused"
             )
 
         if not fields:
             return record
+
+        # Reject fields outside the allowlist
+        bad = set(fields) - _ALLOWED_EDIT_FIELDS
+        if bad:
+            raise ScheduleServiceError(
+                f"cannot edit these fields on a schedule: {sorted(bad)}"
+            )
 
         # Validate mutable fields
         kind = fields.get("kind", record.kind)
@@ -259,14 +283,11 @@ class ScheduleService:
                 "v1 supports one_shot and weekly only."
             )
 
-        # Strip string fields
-        for key in ("normalized_brief", "source_instruction"):
-            if key in fields and isinstance(fields[key], str):
-                fields[key] = fields[key].strip()
-
         self._db.schedules.update(schedule_id, **fields)
-        self._audit.log_schedule_edited(
-            schedule_id, agent_name,
-            fields=list(fields.keys()),
+        self._db.insert_audit_log(
+            task_id=schedule_id,
+            agent=agent_name,
+            action="schedule_edited",
+            payload={"fields": sorted(fields.keys())},
         )
         return self._db.schedules.get(schedule_id)
