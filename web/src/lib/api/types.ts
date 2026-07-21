@@ -781,7 +781,7 @@ export interface ScheduleListResponse {
 }
 
 export interface ScheduleEditFields {
-  fire_at?: string | null;
-  recurrence?: Record<string, string> | null;
-  timezone?: string | null;
+  fire_at?: string;
+  recurrence?: Record<string, string>;
+  timezone?: string;
 }

@@ -307,6 +307,90 @@ def test_edit_noop(client, org_state, frozen_clock) -> None:
     assert r.status_code == 200
 
 
+# ── edit rejection: unknown fields ───────────────────────────────────
+
+UNKNOWN_EDIT_PAYLOADS = [
+    {"normalized_brief": "changed"},
+    {"source_instruction": "changed"},
+    {"status": "cancelled"},
+    {"active": False},
+    {"expires_at": "2027-01-01T00:00:00+00:00"},
+    {"indefinite": True},
+    {"unknown_key": "value"},
+]
+
+
+@pytest.mark.parametrize("payload", UNKNOWN_EDIT_PAYLOADS)
+def test_edit_unknown_field_rejected(
+    client, org_state, frozen_clock, payload,
+) -> None:
+    """Unsupported/unknown edit fields return 422 and do not change state."""
+    sid = _seed_one_shot(org_state, agent="dev_agent")
+    record_before = org_state.db.schedules.get(sid)
+
+    r = client.patch(
+        f"/api/v1/orgs/{org_state.slug}/schedules/{sid}",
+        json=payload,
+    )
+    assert r.status_code == 422
+
+    # Verify state unchanged
+    record_after = org_state.db.schedules.get(sid)
+    assert record_after.normalized_brief == record_before.normalized_brief
+    assert record_after.source_instruction == record_before.source_instruction
+    assert record_after.status == record_before.status
+
+    # Verify no schedule_edited audit row was written for the rejected edit
+    audit_rows = org_state.db.get_audit_logs(sid)
+    schedule_edited_rows = [
+        row for row in audit_rows
+        if row.get("action") == "schedule_edited"
+    ]
+    assert len(schedule_edited_rows) == 0, (
+        f"unexpected schedule_edited audit row for rejected payload {payload}"
+    )
+
+
+# ── edit rejection: explicit null ────────────────────────────────────
+
+EXPLICIT_NULL_PAYLOADS = [
+    {"recurrence": None},
+    {"fire_at": None},
+    {"timezone": None},
+    {"fire_at": "2026-08-01T00:00:00+00:00", "recurrence": None},
+]
+
+
+@pytest.mark.parametrize("payload", EXPLICIT_NULL_PAYLOADS)
+def test_edit_explicit_null_rejected(
+    client, org_state, frozen_clock, payload,
+) -> None:
+    """Explicit null for any mutable edit field returns 422."""
+    sid = _seed_one_shot(org_state, agent="dev_agent")
+
+    r = client.patch(
+        f"/api/v1/orgs/{org_state.slug}/schedules/{sid}",
+        json=payload,
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "explicit_null"
+
+
+@pytest.mark.parametrize("payload", EXPLICIT_NULL_PAYLOADS)
+def test_edit_weekly_explicit_null_rejected(
+    client, org_state, frozen_clock, payload,
+) -> None:
+    """Explicit null on a weekly schedule also returns 422."""
+    sid = _seed_weekly(org_state, agent="dev_agent")
+
+    r = client.patch(
+        f"/api/v1/orgs/{org_state.slug}/schedules/{sid}",
+        json=payload,
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "explicit_null"
+
+
 def test_edit_not_found(client, org_state) -> None:
     r = client.patch(
         f"/api/v1/orgs/{org_state.slug}/schedules/SCHEDULE-999",

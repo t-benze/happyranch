@@ -125,6 +125,8 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 
 class ScheduleEditBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
     fire_at: str | None = Field(None, description="ISO-8601 datetime for the next fire")
     recurrence: dict | None = Field(None, description="Weekly recurrence dict")
     timezone: str | None = Field(None, description="IANA timezone string")
@@ -139,6 +141,24 @@ def edit_schedule(
 
     svc = ScheduleService(org.db)
     acting_agent = f"operator@{slug}"
+
+    # Reject explicit null for every mutable edit field.
+    excplicit_nulls = [
+        f for f in body.model_fields_set
+        if getattr(body, f) is None
+    ]
+    if excplicit_nulls:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "explicit_null",
+                "fields": excplicit_nulls,
+                "message": (
+                    "fields must be omitted when not providing a value; "
+                    "null is not a valid edit value"
+                ),
+            },
+        )
 
     # Build keyword args from non-None body fields.
     kwargs: dict = {}
