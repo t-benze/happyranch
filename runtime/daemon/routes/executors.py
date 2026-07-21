@@ -188,8 +188,13 @@ def _token_org_name_mismatch(
 
 
 class ConformanceCheckinRequest(BaseModel):
-    """A single conformance step arrival from the candidate CLI."""
+    """A single conformance step arrival from the candidate CLI.
+
+    ``envelope`` is optional and only validated for the ``emit_envelope``
+    conformance step (THR-107). Non-emit steps ignore it.
+    """
     step_id: str = Field(..., min_length=1)
+    envelope: dict | None = Field(None)
 
 
 class ConformanceCheckinResponse(BaseModel):
@@ -222,6 +227,101 @@ class ExecutorRegisterResponse(BaseModel):
     argv_template: list[str]
 
 
+# Allowed token_usage keys — must match TokenUsage field names
+# (runtime/models.py:302). model and usage_raw_json are str|null;
+# all others are int|null.
+_ALLOWED_TOKEN_USAGE_KEYS = frozenset({
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "reasoning_tokens",
+    "model",
+    "usage_raw_json",
+})
+
+# token_usage keys whose values must be int or None (not str, not bool)
+_TOKEN_USAGE_INT_KEYS = _ALLOWED_TOKEN_USAGE_KEYS - {"model", "usage_raw_json"}
+
+
+def _validate_emit_envelope_step(body: ConformanceCheckinRequest) -> None:
+    """Validate the envelope payload for the ``emit_envelope`` conformance step.
+
+    THR-107 Phase 1: the ``emit_envelope`` step MUST carry a valid sample
+    envelope. Other steps ignore the envelope field.
+
+    Validation (per design spec §4.2):
+    - ``envelope_version`` must be integer 1.
+    - ``token_usage``, when present, must be a dict whose keys are known
+      TokenUsage field names; unknown keys are rejected.
+    - ``token_usage`` int fields must be int or None — string values,
+      bools, and floats are rejected.
+    """
+    if body.step_id != "emit_envelope":
+        return  # non-emit steps ignore envelope
+    if body.envelope is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "envelope_required",
+                "detail": "The 'emit_envelope' conformance step requires an envelope payload.",
+            },
+        )
+    version = body.envelope.get("envelope_version")
+    if version != 1 or not isinstance(version, int) or isinstance(version, bool):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "invalid_envelope_version",
+                "detail": f"envelope_version must be integer 1, got {version!r}.",
+            },
+        )
+
+    # Validate token_usage shape when present (THR-107 review-followup)
+    token_usage = body.envelope.get("token_usage")
+    if token_usage is not None:
+        if not isinstance(token_usage, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "invalid_token_usage",
+                    "detail": "token_usage must be a dict, got " + type(token_usage).__name__ + ".",
+                },
+            )
+        unknown_keys = set(token_usage) - _ALLOWED_TOKEN_USAGE_KEYS
+        if unknown_keys:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "invalid_token_usage",
+                    "detail": "Unknown token_usage keys: " + ", ".join(sorted(unknown_keys)) + ".",
+                },
+            )
+        # Validate int-key value types: must be int or None (bool is int
+        # subclass in Python, so reject bool explicitly before the int check).
+        for key in _TOKEN_USAGE_INT_KEYS:
+            val = token_usage.get(key)
+            if val is not None and (isinstance(val, bool) or not isinstance(val, int)):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "invalid_token_usage",
+                        "detail": "token_usage." + key + " must be int or null, got " + type(val).__name__ + ".",
+                    },
+                )
+        # Validate string-key value types: must be str or None
+        for key in ("model", "usage_raw_json"):
+            val = token_usage.get(key)
+            if val is not None and not isinstance(val, str):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "invalid_token_usage",
+                        "detail": "token_usage." + key + " must be str or null, got " + type(val).__name__ + ".",
+                    },
+                )
+
+
 # ---------------------------------------------------------------------------
 # POST /conformance-checkin
 # ---------------------------------------------------------------------------
@@ -239,7 +339,7 @@ def conformance_checkin(
     """Record a conformance step arrival for a pending registration token.
 
     Called by the candidate CLI after completing each required check-in
-    step (workspace access, loopback reachability, CLI callback).
+    step (workspace access, loopback reachability, CLI callback, emit_envelope).
 
     The step_id must be one of the known conformance steps.
     Returns the current conformance state so the CLI can report progress.
@@ -269,6 +369,9 @@ def conformance_checkin(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown step {body.step_id!r}. Valid: {sorted(valid_step_ids)}",
         )
+
+    # Validate envelope for emit_envelope step (THR-107)
+    _validate_emit_envelope_step(body)
 
     # Record arrival
     arrived = store.record_step_arrival(token_value, slug, body.step_id)
@@ -551,6 +654,9 @@ def runtime_conformance_checkin(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown step {body.step_id!r}. Valid: {sorted(valid_step_ids)}",
         )
+
+    # Validate envelope for emit_envelope step (THR-107)
+    _validate_emit_envelope_step(body)
 
     # Record arrival
     arrived = store.record_step_arrival_runtime(token_value, body.step_id)

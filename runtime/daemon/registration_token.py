@@ -116,6 +116,7 @@ class RegistrationTokenStore:
         "workspace_access",
         "loopback_reachable",
         "cli_callback",
+        "emit_envelope",
     ]
 
     def __init__(self, ttl_seconds: int = DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS):

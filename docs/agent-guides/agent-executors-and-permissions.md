@@ -76,6 +76,28 @@ at registration time and substitutes placeholders at launch. No shell string
 is constructed — each template element becomes exactly one argv element, with
 placeholders replaced by their resolved values.
 
+**Result-envelope (THR-107).** Custom CLIs may opt into token metering by
+emitting a single-line JSON envelope on stdout between sentinel markers:
+
+```
+__HR_ENVELOPE_BEGIN__
+{"envelope_version":1,"token_usage":{"input_tokens":1500,"output_tokens":420,"model":"my-cli"}}
+__HR_ENVELOPE_END__
+```
+
+The envelope is **optional** — absence preserves existing behavior (no token
+accounting). The ``envelope_version`` must be ``1`` (integer). The
+``token_usage`` object maps 1:1 to the ``TokenUsage`` model with identical
+key names. A top-level ``model`` field backfills ``token_usage.model`` when
+absent. Multiple envelopes are last-wins. A minimal valid sample is:
+
+```json
+{"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1}}
+```
+
+The full contract is documented in
+``docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md``.
+
 ## Self-Registration (custom executors)
 
 THR-052 adds a founder-initiated, candidate-CLI-completed registration flow for
@@ -103,7 +125,7 @@ are short-lived — the founder re-mints in one click). Key properties:
 
 ### Conformance challenge
 
-Each minted token opens a conformance challenge with three required check-in
+Each minted token opens a conformance challenge with four required check-in
 steps (mirrored in `RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS`):
 
 | Step | What it proves | How it arrives |
@@ -111,6 +133,7 @@ steps (mirrored in `RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS`):
 | `workspace_access` | The candidate CLI can read the agent prompt, workspace layout, and skills | Auto-completed by the candidate CLI (it is running locally) |
 | `loopback_reachable` | The candidate CLI can reach `http://127.0.0.1` (the daemon loopback) | Auto-completed by the candidate CLI |
 | `cli_callback` | The candidate CLI can invoke `happyranch executors register` with the `hrreg_` token | Completed when the candidate runs the register verb |
+| `emit_envelope` | The candidate CLI can produce a well-formed result-envelope (THR-107 Phase 1) | CLI posts a sample envelope with the checkin; validated against the envelope schema |
 
 The candidate CLI reports step arrivals via `POST /api/v1/orgs/{slug}/executors/conformance-checkin`
 (gated by `require_registration_token()` — loopback-only; other routes' auth is
@@ -125,7 +148,7 @@ Registration succeeds **only** when ALL of the following are true:
 
 1. Token is valid, unexpired, unconsumed, and loopback (checked by the dependency gate).
 2. Token org matches the route slug.
-3. The conformance challenge is fully complete — all three steps arrived.
+3. The conformance challenge is fully complete — all four steps arrived.
 4. Static validation passes: adapter is a known value, command is on `PATH`,
    `argv_template` is a non-empty list of strings with supported placeholders
    (`{prompt}`, `{timeout_seconds}`, `{workspace}`), and the profile name does
@@ -136,7 +159,7 @@ Registration succeeds **only** when ALL of the following are true:
 These checks are enforced against the daemon's own token-store state —
 the register request cannot succeed by asserting conformance in its
 payload; the token must already have been driven through the token-gated
-loopback conformance check-in sequence (all three steps recorded, token
+loopback conformance check-in sequence (all four steps recorded, token
 valid, unconsumed, loopback-scoped, and org-matching) before the register
 call is accepted. The store is populated by conformance check-ins that the
 candidate CLI submits over the token-gated loopback channel.
@@ -163,7 +186,7 @@ candidate CLI's profile name, command, `argv_template`, and adapter. On
 "Generate", the SPA calls `POST /auth/registration-token` (loopback-only,
 master-bearer-authed) and renders two copy-paste blocks:
 
-1. **Conformance prompt** — embeds the `hrreg_` token, the three conformance
+1. **Conformance prompt** — embeds the `hrreg_` token, the four conformance
    steps with descriptions, and the exact `happyranch executors register`
    command to run.
 2. **Config snippet** — the resulting profile entry the daemon will write
@@ -185,7 +208,8 @@ happyranch executors register \
 `--argv-template-json` is a single JSON-encoded array — leading-dash tokens
 like `--prompt-file` live safely inside it without shell-escaping issues.
 The verb auto-completes `workspace_access` and `loopback_reachable` (the
-candidate is running locally), then posts `cli_callback` and finally the
+candidate is running locally), then posts a sample `emit_envelope` check-in
+with a minimal valid envelope payload, then `cli_callback`, and finally the
 registration payload.
 
 ### Registration ≠ enrollment

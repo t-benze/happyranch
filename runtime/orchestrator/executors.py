@@ -471,6 +471,123 @@ def _parse_pi_usage(stdout: str) -> TokenUsage | None:
     # Fall back to raw-only preservation (original behavior).
     return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
 
+# ── Generic CLI result-envelope sentinels (THR-107) ────────────────────
+
+_HR_ENVELOPE_BEGIN = "__HR_ENVELOPE_BEGIN__"
+_HR_ENVELOPE_END = "__HR_ENVELOPE_END__"
+
+
+def _parse_generic_cli_usage(stdout: str) -> TokenUsage | None:
+    """Parse a custom CLI's stdout for a THR-107 result-envelope.
+
+    Best-effort — mirrors the contract of every built-in parser:
+    - Returns None when stdout is empty/whitespace (no parse attempted).
+    - Returns TokenUsage with token fields NULL and raw JSON on parser failure
+      (forensic preservation — same pattern as _parse_claude_usage:222).
+
+    Algorithm:
+    1. Empty stdout → None.
+    2. Last occurrence of __HR_ENVELOPE_BEGIN__ via rfind → None if absent.
+    3. __HR_ENVELOPE_END__ after begin → raw-only TokenUsage if absent.
+    4. JSON parse the block → raw-only TokenUsage on JSONDecodeError.
+    5. Validate envelope_version == 1 (int) → raw-only if absent/wrong.
+    6. Map token_usage dict to TokenUsage fields with key-name parity.
+    7. Top-level model backfills token_usage.model when absent.
+    """
+    if not stdout or not stdout.strip():
+        return None
+
+    # Last envelope wins (rfind).
+    begin_pos = stdout.rfind(_HR_ENVELOPE_BEGIN)
+    if begin_pos == -1:
+        return None
+
+    # Locate the closing sentinel after the begin marker.
+    end_pos = stdout.find(_HR_ENVELOPE_END, begin_pos + len(_HR_ENVELOPE_BEGIN))
+    if end_pos == -1:
+        # Missing END — forensic tail preservation.
+        tail = stdout[begin_pos:]
+        logger.warning(
+            "generic CLI usage parser: missing %s sentinel", _HR_ENVELOPE_END
+        )
+        return TokenUsage(usage_raw_json=tail[:_TAIL_BYTES])
+
+    # Extract the JSON block between sentinels.
+    block = stdout[begin_pos + len(_HR_ENVELOPE_BEGIN) : end_pos].strip()
+    if not block:
+        return None
+
+    try:
+        obj = json.loads(block)
+    except json.JSONDecodeError:
+        logger.warning("generic CLI usage parser: envelope is not valid JSON")
+        return TokenUsage(usage_raw_json=block[:_TAIL_BYTES])
+
+    if not isinstance(obj, dict):
+        return TokenUsage(usage_raw_json=block[:_TAIL_BYTES])
+
+    # Validate envelope_version — must be integer 1.
+    version = obj.get("envelope_version")
+    if version != 1 or not isinstance(version, int) or isinstance(version, bool):
+        logger.warning(
+            "generic CLI usage parser: envelope_version=%r, expected 1 (int)",
+            version,
+        )
+        return TokenUsage(usage_raw_json=json.dumps(obj))
+
+    # Map token_usage dict to TokenUsage fields.
+    token_usage_raw = obj.get("token_usage")
+    if not isinstance(token_usage_raw, dict):
+        token_usage_raw = {}
+
+    input_tokens = token_usage_raw.get("input_tokens")
+    output_tokens = token_usage_raw.get("output_tokens")
+    cache_read_tokens = token_usage_raw.get("cache_read_tokens")
+    cache_creation_tokens = token_usage_raw.get("cache_creation_tokens")
+    reasoning_tokens = token_usage_raw.get("reasoning_tokens")
+    model = token_usage_raw.get("model")
+    usage_raw_json_val = token_usage_raw.get("usage_raw_json")
+
+    # Coerce int fields (tolerate float → int, reject non-numeric).
+    def _to_int(value: object) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value) if value == int(value) else None
+        return None
+
+    input_tokens = _to_int(input_tokens)
+    output_tokens = _to_int(output_tokens)
+    cache_read_tokens = _to_int(cache_read_tokens)
+    cache_creation_tokens = _to_int(cache_creation_tokens)
+    reasoning_tokens = _to_int(reasoning_tokens)
+
+    # Model coercion: only str|None survives.
+    if model is not None and not isinstance(model, str):
+        model = None
+    if usage_raw_json_val is not None and not isinstance(usage_raw_json_val, str):
+        usage_raw_json_val = None
+
+    # Top-level model backfills token_usage.model when absent.
+    if model is None:
+        top_level_model = obj.get("model")
+        if isinstance(top_level_model, str):
+            model = top_level_model
+
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        reasoning_tokens=reasoning_tokens,
+        model=model,
+        usage_raw_json=usage_raw_json_val,
+    )
+
 
 def is_rate_limit_signature(text: str) -> bool:
     """True when ``text`` matches a known provider rate-limit signature.
@@ -917,7 +1034,7 @@ class GenericCliExecutor:
             session_id,
             timeout_seconds,
             on_started=on_started,
-            usage_parser=None,  # custom CLI usage parsing is not supported yet
+            usage_parser=_parse_generic_cli_usage,
             provider=self._provider,
             on_throttle_event=on_throttle_event,
         )

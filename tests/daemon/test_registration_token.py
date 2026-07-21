@@ -249,15 +249,18 @@ class TestConformanceStateMachine:
         # Record second step — still not complete
         store.record_step_arrival(token, "alpha", "loopback_reachable", now=now + 1)
         assert not store.is_challenge_complete(token, "alpha", now=now + 1)
-        # Record third step — now complete
+        # Record third step — still not complete (4 steps now)
         store.record_step_arrival(token, "alpha", "cli_callback", now=now + 2)
-        assert store.is_challenge_complete(token, "alpha", now=now + 2)
+        assert not store.is_challenge_complete(token, "alpha", now=now + 2)
+        # Record fourth step — now complete
+        store.record_step_arrival(token, "alpha", "emit_envelope", now=now + 3)
+        assert store.is_challenge_complete(token, "alpha", now=now + 3)
 
     def test_expired_token_cannot_complete(self, store):
         now = 1_000_000.0
         token, _ = store.mint("alpha", "my-executor", now=now)
         # Record all steps while valid
-        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+        for step_id in ["workspace_access", "loopback_reachable", "cli_callback", "emit_envelope"]:
             store.record_step_arrival(token, "alpha", step_id, now=now)
         # After TTL, query returns False
         past_ttl = now + DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS + 1
@@ -269,6 +272,7 @@ class TestConformanceStateMachine:
         store.record_step_arrival(token, "alpha", "workspace_access", now=now)
         store.record_step_arrival(token, "alpha", "loopback_reachable", now=now)
         store.record_step_arrival(token, "alpha", "cli_callback", now=now)
+        store.record_step_arrival(token, "alpha", "emit_envelope", now=now)
         assert store.is_challenge_complete(token, "alpha", now=now)
         # Consume the token
         store.consume(token, "alpha", now=now)
