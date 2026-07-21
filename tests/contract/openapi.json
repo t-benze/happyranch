@@ -1810,6 +1810,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/schedules/{schedule_id}/spawn": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "schedule_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/settings": {
       "GET": {
         "params": [

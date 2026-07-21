@@ -340,6 +340,66 @@ Some work happens on a fixed schedule. The orchestrator's scheduler triggers the
 
 Each scheduled task is configured in the orchestrator's scheduler (a cron-like system). Missed runs (e.g., Mac Mini was off) are handled by a catch-up mechanism: on startup, the orchestrator checks for missed scheduled tasks and runs them.
 
+#### Agent Todos (THR-105): agent-owned scheduled work
+
+Agent Todos are persistent Schedule records stored in the ``schedules`` SQLite
+table. Each agent may own up to 20 armed schedules; the org cap is 100. Every
+Schedule carries a ``normalized_brief`` (what fires) and a ``source_instruction``
+(the natural-language instruction the manager originally provided, preserved
+for audit/reconciliation).
+
+**Kinds.** Two kinds are supported:
+
+- **One-shot** — fires exactly once at a specified UTC ``fire_at`` (max 90 days
+  out), then transitions to ``fired`` (terminal).
+- **Weekly** — fires every week on a single weekday + HH:MM local time + timezone.
+  After each fire the schedule re-arms with the next occurrence and continues
+  until either the founder cancels/pauses it or it reaches its ``expires_at``
+  (default 90 days from creation). Indefinite weekly schedules (``indefinite=1``,
+  founder-set only) have no expiry.
+
+**Fire mechanism.** The schedule fire is a two-stage pipeline:
+
+1. **Scheduler (daemon loop).** A 60-second tick scans all orgs for ARMED
+   Schedule rows whose ``fire_at <= now`` (one-shot) or ``fire_at`` is within a
+   120-second tolerance window (weekly). For weekly rows whose ``fire_at`` is
+   stale (missed during daemon downtime), the scheduler advances ``fire_at`` to
+   the next weekly occurrence or expires the schedule — **no replay/backfill**
+   of missed occurrences. A claimed row transitions from ARMED → FIRING.
+
+2. **Runner + spawn callback.** The schedule worker loop drains the
+   ``ScheduleQueue`` and invokes the owning agent's executor with a dedicated
+   schedule-fire prompt. The agent's single job is to call the
+   ``happyranch schedules spawn`` callback exactly once. The spawn callback:
+
+   - Accepts only FIRING Schedule rows (single-use, record-scoped guard).
+   - Creates one root task from the stored ``normalized_brief``, targeted to the
+     owning agent on its own team.
+   - Records ``spawned_task_ids`` and increments ``fire_count``.
+   - Resolves the terminal state: one-shot → FIRED (terminal); weekly → re-armed
+     with the next ``fire_at``, or EXPIRED if the next occurrence exceeds
+     ``expires_at`` and ``indefinite=0``.
+   - Writes ``schedule_spawned`` and ``schedule_completed`` audit log rows.
+   - Enqueues the spawned task.
+
+**Token usage.** Token usage for the schedule-fire executor session is recorded
+under ``scope_type="schedule"`` and ``scope_id=<SCHEDULE-NNN>``, keeping it
+separate from task-scoped token usage.
+
+**Constraints.**
+
+- The schedule's ``normalized_brief`` is the brief for the spawned root task —
+  the schedule payload cannot choose the agent, team, or brief.
+- Every Schedule targets a single agent on its own team (self-targeted).
+- Cross-agent scheduling is not supported.
+- Hidden / invisible schedules (not visible in the CLI ``list`` output) are
+  not supported — every Schedule is visible to its owning agent.
+- Weekly schedules never replay/backfill missed occurrences. A daemon restart
+  after a missed slot advances the schedule to the next occurrence without
+  enqueuing a fire job for the stale slot.
+- The spawn callback is the only fire path — no alternate trigger mechanisms
+  exist.
+
 #### Mode 3: Persistent (Support Agent only)
 The Support Agent is the one exception. Tourists need real-time help and the response time target is under 5 minutes. Two approaches:
 

@@ -232,13 +232,16 @@ class ScheduleStore:
             )
             self._conn.commit()
 
-    def recover_firing(self) -> int:
+    def recover_firing(self) -> list[tuple[str, str]]:
         """Mark stale ``firing`` rows ``failed`` after a daemon restart.
 
         Mirrors ``WorkHoursStore.recover_running``: a schedule left ``firing``
         when the daemon died can never receive its callback.
+
+        Returns a list of ``(schedule_id, agent_name)`` tuples for every
+        recovered row so the caller can emit ``schedule_failed`` audit rows.
         """
-        changed = 0
+        recovered: list[tuple[str, str]] = []
         for record in self.list(limit=500):
             if record.status == ScheduleStatus.FIRING:
                 self.update(
@@ -247,5 +250,5 @@ class ScheduleStore:
                     error="daemon_restart",
                     updated_at=_now(),
                 )
-                changed += 1
-        return changed
+                recovered.append((record.id, record.agent_name))
+        return recovered

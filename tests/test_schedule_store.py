@@ -304,7 +304,7 @@ def test_recover_firing_marks_failed(tmp_path):
                                 status=ScheduleStatus.FIRED,
                                 agent_name="support_agent"))
 
-    assert db.schedules.recover_firing() == 1
+    assert len(db.schedules.recover_firing()) == 1
     recovered = db.schedules.get("SCHEDULE-001")
     assert recovered.status == ScheduleStatus.FAILED
     assert recovered.error == "daemon_restart"

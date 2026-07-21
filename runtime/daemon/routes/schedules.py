@@ -1,23 +1,35 @@
-"""Agent Todos — founder management surface for schedules (THR-105 Phase 3).
+"""Agent Todos — schedule management and fire-spawn callback (THR-105).
 
-Read-only list/show and state-mutation pause/cancel/edit routes over the
-existing ``ScheduleService``.  No firing, no scheduler loop, no agent
-arming yet — this is the founder/operator visibility and management layer.
+Management surface (founder/operator): list, show, pause, cancel, edit.
+Fire path (agent callback): single-use record-scoped spawn that creates
+exactly one root task from the stored normalized_brief.
 
 User-facing label: Todos.  Internal primitive: Schedule / SCHEDULE-NNN.
 """
 from __future__ import annotations
 
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
+from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
-from runtime.models import ScheduleKind, ScheduleStatus
+from runtime.models import ScheduleKind, ScheduleStatus, TaskRecord
+from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 from runtime.orchestrator.schedule_service import ScheduleService, ScheduleServiceError
 
 router = APIRouter(dependencies=[require_token()])
 
+
+# ── helpers ─────────────────────────────────────────────────────────────
 
 def _schedule_to_dict(record) -> dict:
     return {
@@ -121,10 +133,6 @@ def cancel_schedule(
 
 # ── edit ────────────────────────────────────────────────────────────────
 
-from pydantic import BaseModel, Field  # noqa: E402
-from pydantic.json_schema import SkipJsonSchema  # noqa: E402
-
-
 class ScheduleEditBody(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -144,8 +152,6 @@ def edit_schedule(
     slug: str, schedule_id: str, body: ScheduleEditBody, org: OrgDep, request: Request,
 ) -> dict:
     """Edit mutable fields of a Todo (fire_at, recurrence, timezone)."""
-    from datetime import datetime, timezone as tz_mod
-
     svc = ScheduleService(org.db)
     acting_agent = f"operator@{slug}"
 
@@ -187,3 +193,245 @@ def edit_schedule(
     except ScheduleServiceError as exc:
         raise HTTPException(status_code=409, detail={"code": "state_conflict", "message": str(exc)})
     return _schedule_to_dict(record)
+
+
+# ── spawn ───────────────────────────────────────────────────────────────
+
+class ScheduleSpawnBody(BaseModel):
+    """Payload for the schedule spawn callback. Only ``summary`` is accepted;
+    the target agent, team, and brief come from the stored Schedule row — the
+    payload cannot choose them."""
+    summary: str = Field(min_length=1)
+
+
+def _write_schedule_transcript(
+    root: Path,
+    schedule_id: str,
+    agent_name: str,
+    summary: str,
+    spawned_task_ids: list[str],
+    status: str = "fired",
+) -> Path:
+    """Write a schedule transcript under ``<root>/schedules/SCHEDULE-NNN.md``.
+
+    Atomic replace mirrors ``_write_wake_transcript``.
+    The ``status`` parameter reflects the true terminal final status
+    (``fired`` for completed, ``expired`` for weekly expiry scenarios).
+    """
+    target_dir = root / "schedules"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    frontmatter = {
+        "schedule_id": schedule_id,
+        "agent_name": agent_name,
+        "status": status,
+        "spawned_task_count": len(spawned_task_ids),
+        "spawned_task_ids": spawned_task_ids,
+    }
+    body = f"---\n{yaml.safe_dump(frontmatter, sort_keys=False)}---\n\n{summary}\n"
+    target = target_dir / f"{schedule_id}.md"
+    fd, tmp_name = tempfile.mkstemp(dir=target_dir, prefix=f".{schedule_id}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(body.encode("utf-8"))
+        os.replace(tmp_name, target)
+    except Exception:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
+    return target
+
+
+@router.post("/schedules/{schedule_id}/spawn")
+async def spawn_schedule(
+    slug: str,
+    schedule_id: str,
+    body: ScheduleSpawnBody,
+    org: OrgDep,
+    request: Request,
+) -> dict:
+    state: DaemonState = request.app.state.daemon
+    registry = org.teams
+    if registry is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unknown_team", "valid": []},
+        )
+
+    created: list[str] = []
+    async with org.db_lock:
+        schedule = org.db.schedules.get(schedule_id)
+        if schedule is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "not_found", "schedule_id": schedule_id},
+            )
+        # Single-use / record-scoped guard: only a `firing` schedule may spawn.
+        if schedule.status != ScheduleStatus.FIRING:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "schedule_not_firing",
+                    "status": schedule.status.value,
+                },
+            )
+
+        agent = schedule.agent_name
+        # Self-team-only (structural): the spawned task is always created on
+        # the schedule's owning agent's team and targeted to that agent.
+        team = registry.team_for_agent(agent) or registry.team_for_manager(agent)
+        if team is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "agent_team_unresolved", "agent": agent},
+            )
+
+        # Create exactly one root task from the stored normalized_brief.
+        # The payload cannot choose the agent, team, or brief.
+        try:
+            task_id = org.db.next_task_id()
+            org.db.insert_task(TaskRecord(
+                id=task_id,
+                brief=schedule.normalized_brief,
+                team=team,
+                assigned_agent=agent,
+            ))
+            created.append(task_id)
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(
+                status_code=500,
+                detail={"code": "task_creation_failed", "error": str(exc)},
+            )
+
+        now = datetime.now(timezone.utc)
+        spawned_task_ids = schedule.spawned_task_ids + created
+        fire_count = schedule.fire_count + 1
+
+        # Terminal status returned to the caller after enqueue+audit.
+        # "completed" for one-shot / weekly re-arm; "expired" for weekly
+        # expiry paths that still enqueue the current fire's task.
+        return_status = "completed"
+
+        if schedule.kind == ScheduleKind.ONE_SHOT:
+            # One-shot: transition to fired (terminal).
+            transcript_path = _write_schedule_transcript(
+                org.root, schedule_id, agent, body.summary, spawned_task_ids,
+            )
+            org.db.schedules.update(
+                schedule_id,
+                status=ScheduleStatus.FIRED,
+                active=0,
+                spawned_task_ids=spawned_task_ids,
+                last_fired_at=now,
+                fire_count=fire_count,
+                session_id=None,
+                transcript_path=str(transcript_path),
+                updated_at=now,
+            )
+        else:
+            # Weekly: compute next occurrence, re-arm or expire.
+            recurrence = schedule.recurrence
+            if recurrence is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail={"code": "weekly_no_recurrence", "schedule_id": schedule_id},
+                )
+
+            next_fire = next_weekly_occurrence(
+                recurrence["day"],
+                recurrence["time"],
+                recurrence["tz"],
+                after=now,
+            )
+
+            if next_fire is None:
+                # Could not compute next occurrence — should not happen for a
+                # valid weekly recurrence, but guard cleanly.
+                transcript_path = _write_schedule_transcript(
+                    org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                    status="expired",
+                )
+                org.db.schedules.update(
+                    schedule_id,
+                    status=ScheduleStatus.EXPIRED,
+                    active=0,
+                    spawned_task_ids=spawned_task_ids,
+                    last_fired_at=now,
+                    fire_count=fire_count,
+                    transcript_path=str(transcript_path),
+                    updated_at=now,
+                )
+                org.db.insert_audit_log(
+                    task_id=schedule_id,
+                    agent=agent,
+                    action="schedule_expired",
+                    payload={"reason": "no_next_occurrence"},
+                )
+                return_status = "expired"
+            elif (
+                schedule.expires_at is not None
+                and schedule.indefinite != 1
+                and next_fire > schedule.expires_at
+            ):
+                # Expired: no re-arm. Next occurrence exceeds expires_at.
+                transcript_path = _write_schedule_transcript(
+                    org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                    status="expired",
+                )
+                org.db.schedules.update(
+                    schedule_id,
+                    status=ScheduleStatus.EXPIRED,
+                    active=0,
+                    spawned_task_ids=spawned_task_ids,
+                    last_fired_at=now,
+                    fire_count=fire_count,
+                    transcript_path=str(transcript_path),
+                    updated_at=now,
+                )
+                org.db.insert_audit_log(
+                    task_id=schedule_id,
+                    agent=agent,
+                    action="schedule_expired",
+                    payload={"reason": "past_expires_at"},
+                )
+                return_status = "expired"
+            else:
+                # Re-arm with next fire_at.
+                transcript_path = _write_schedule_transcript(
+                    org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                )
+                org.db.schedules.update(
+                    schedule_id,
+                    status=ScheduleStatus.ARMED,
+                    active=1,
+                    fire_at=next_fire,
+                    spawned_task_ids=spawned_task_ids,
+                    last_fired_at=now,
+                    fire_count=fire_count,
+                    session_id=None,
+                    transcript_path=str(transcript_path),
+                    updated_at=now,
+                )
+
+    # Enqueue + audit outside the db lock.
+    for task_id in created:
+        enqueue_task(state, org.slug, task_id)
+
+    # Audit: schedule_spawned + schedule_completed.
+    org.db.insert_audit_log(
+        task_id=schedule_id,
+        agent=agent,
+        action="schedule_spawned",
+        payload={"spawned_task_ids": created},
+    )
+    org.db.insert_audit_log(
+        task_id=schedule_id,
+        agent=agent,
+        action="schedule_completed",
+        payload={"spawned_task_ids": created, "summary": body.summary},
+    )
+
+    return {
+        "schedule_id": schedule_id,
+        "status": return_status,
+        "spawned_task_ids": created,
+    }

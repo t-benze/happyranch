@@ -2224,3 +2224,120 @@ def test_completion_payload_from_file_accepts_absolute_path(tmp_path):
     task_id, body = _completion_payload_from_file(str(path))
     assert task_id == "T"
     assert body["output_summary"] == "done"
+
+
+# ── THR-105 schedule/todos CLI ─────────────────────────────────────────
+
+
+def test_schedules_spawn_parses_to_cmd_schedules_spawn():
+    """happyranch schedules spawn ... parses to cmd_schedules_spawn."""
+    from cli.commands.schedules import cmd_schedules_spawn
+
+    parser = build_parser()
+    args = parser.parse_args([
+        "schedules", "spawn",
+        "--org", "test-org",
+        "--schedule-id", "SCHEDULE-001",
+        "--from-file", "/tmp/test.json",
+    ])
+    assert args.command == "schedules"
+    assert args.schedule_spawn_command == "spawn"
+    assert args.org == "test-org"
+    assert args.schedule_id == "SCHEDULE-001"
+    assert args.from_file == "/tmp/test.json"
+    assert args.func is cmd_schedules_spawn
+
+
+def test_schedules_without_spawn_exits_error():
+    """happyranch schedules (without spawn) exits with argparse error."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["schedules"])
+
+
+def test_todos_list_parses_to_cmd_schedules_list():
+    """happyranch todos list still parses."""
+    from cli.commands.schedules import cmd_schedules_list
+
+    parser = build_parser()
+    args = parser.parse_args(["todos", "list"])
+    assert args.command == "todos"
+    assert args.todos_command == "list"
+    assert args.func is cmd_schedules_list
+
+
+def test_todos_show_parses_to_cmd_schedules_show():
+    """happyranch todos show still parses."""
+    from cli.commands.schedules import cmd_schedules_show
+
+    parser = build_parser()
+    args = parser.parse_args(["todos", "show", "SCHEDULE-001"])
+    assert args.command == "todos"
+    assert args.todos_command == "show"
+    assert args.func is cmd_schedules_show
+
+
+def test_todos_pause_parses_to_cmd_schedules_pause():
+    """happyranch todos pause still parses."""
+    from cli.commands.schedules import cmd_schedules_pause
+
+    parser = build_parser()
+    args = parser.parse_args(["todos", "pause", "SCHEDULE-001"])
+    assert args.command == "todos"
+    assert args.todos_command == "pause"
+    assert args.func is cmd_schedules_pause
+
+
+def test_todos_cancel_parses_to_cmd_schedules_cancel():
+    """happyranch todos cancel still parses."""
+    from cli.commands.schedules import cmd_schedules_cancel
+
+    parser = build_parser()
+    args = parser.parse_args(["todos", "cancel", "SCHEDULE-001"])
+    assert args.command == "todos"
+    assert args.todos_command == "cancel"
+    assert args.func is cmd_schedules_cancel
+
+
+def test_todos_edit_parses_to_cmd_schedules_edit():
+    """happyranch todos edit still parses."""
+    from cli.commands.schedules import cmd_schedules_edit
+
+    parser = build_parser()
+    args = parser.parse_args([
+        "todos", "edit", "SCHEDULE-001",
+        "--from-file", "/tmp/edit.json",
+    ])
+    assert args.command == "todos"
+    assert args.todos_command == "edit"
+    assert args.func is cmd_schedules_edit
+
+
+def test_schedules_spawn_not_under_todos():
+    """happyranch todos spawn does NOT exist; spawn is only under schedules."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["todos", "spawn", "--org", "x", "--schedule-id", "S-001", "--from-file", "/f"])
+
+
+def test_schedule_runner_prompt_names_schedules_spawn():
+    """The schedule runner prompt names the real callback command."""
+    from runtime.daemon.schedule_runner import build_schedule_prompt
+    from runtime.orchestrator.org_config import OrgConfig
+
+    prompt = build_schedule_prompt(
+        org_slug="test-org",
+        schedule_id="SCHEDULE-001",
+        agent_name="dev_agent",
+        role="worker",
+        team="engineering",
+        normalized_brief="test",
+        kind="one_shot",
+        fire_at_iso="2026-07-22T12:00:00+00:00",
+        recurrence=None,
+        timezone="UTC",
+        org_config=OrgConfig(),
+    )
+    # The prompt must instruct the agent to call happyranch schedules spawn (not todos spawn)
+    assert "happyranch schedules spawn" in prompt
+    assert "happyranch todos spawn" not in prompt

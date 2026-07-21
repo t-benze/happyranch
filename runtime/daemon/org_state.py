@@ -15,6 +15,7 @@ from pathlib import Path
 from runtime.config import Settings
 from runtime.daemon.dream_queue import DreamQueue
 from runtime.daemon.event_bus import EventBus
+from runtime.daemon.schedule_queue import ScheduleQueue
 from runtime.daemon.wake_queue import WakeQueue
 from runtime.daemon.sessions import SessionTracker
 from runtime.daemon.thread_queue import ThreadQueue
@@ -44,6 +45,7 @@ class OrgState:
     thread_queue: ThreadQueue = field(default_factory=ThreadQueue)
     dream_queue: DreamQueue = field(default_factory=DreamQueue)
     wake_queue: WakeQueue = field(default_factory=WakeQueue)
+    schedule_queue: ScheduleQueue = field(default_factory=ScheduleQueue)
     event_bus: EventBus = field(init=False)
     thread_store: ThreadStore = field(init=False)
 
