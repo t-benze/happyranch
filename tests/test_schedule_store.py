@@ -7,6 +7,7 @@ JSON spawned_task_ids round-trip, and recover_firing.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -210,6 +211,69 @@ def test_update_with_recurrence_json(tmp_path):
 
 
 # ------------------------------------------------------------- recover_firing
+
+
+def test_list_due_weekly_asia_shanghai_correctly_detected_in_utc(tmp_path):
+    """Regression: THR-105 Phase 1 fix-forward — a weekly occurrence computed
+    for Asia/Shanghai must be persisted as a UTC instant and found by list_due
+    at the equivalent UTC time.
+
+    Scenario: next_weekly_occurrence("Mon", "09:00", "Asia/Shanghai", after=…)
+    returns 2026-07-20T01:00:00+00:00 (UTC).  That is the same instant as
+    2026-07-20T09:00:00+08:00.  When querying at 2026-07-20T01:30:00+00:00
+    (30 min later in UTC), list_due MUST return the schedule.
+
+    Before the fix, the local-zone datetime was stored as raw TEXT
+    (e.g. "2026-07-20T09:00:00+08:00") and TEXT comparison against
+    "2026-07-20T01:30:00+00:00" failed — '2' vs '0' at position 18.
+    """
+    from runtime.orchestrator.schedule_rules import next_weekly_occurrence
+
+    db = Database(tmp_path / "db.sqlite")
+
+    # Compute next Mon 09:00 Asia/Shanghai after 2026-07-19T00:00Z.
+    after = datetime(2026, 7, 19, 0, 0, 0, tzinfo=timezone.utc)
+    fire_at = next_weekly_occurrence("Mon", "09:00", "Asia/Shanghai", after=after)
+    assert fire_at is not None
+    # This should be UTC: 2026-07-20T01:00:00+00:00
+    assert fire_at.tzinfo == timezone.utc
+
+    db.schedules.insert(_record(
+        id="SCHEDULE-001",
+        kind=ScheduleKind.WEEKLY,
+        fire_at=fire_at,
+        status=ScheduleStatus.ARMED,
+        recurrence={"day": "Mon", "time": "09:00", "tz": "Asia/Shanghai"},
+    ))
+
+    # Query at 2026-07-20T01:30:00+00:00 — 30 min after the fire_at UTC instant.
+    now = datetime(2026, 7, 20, 1, 30, 0, tzinfo=timezone.utc)
+    due = db.schedules.list_due(now)
+    assert [r.id for r in due] == ["SCHEDULE-001"], (
+        f"weekly Asia/Shanghai schedule not found by list_due at UTC {now.isoformat()}"
+    )
+
+    # Also verify: querying just BEFORE fire_at (e.g. 1 min before) should NOT return it.
+    before_now = datetime(2026, 7, 20, 0, 59, 0, tzinfo=timezone.utc)
+    due_before = db.schedules.list_due(before_now)
+    assert due_before == [], "list_due should not return schedule before fire_at"
+
+    # And: direct insert of a non-UTC fire_at should be normalized at the
+    # store boundary, so list_due still finds it.
+    local_fire = datetime(2026, 7, 20, 9, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    assert local_fire.utcoffset() == timedelta(hours=8)
+    db.schedules.insert(_record(
+        id="SCHEDULE-002",
+        kind=ScheduleKind.WEEKLY,
+        fire_at=local_fire,
+        status=ScheduleStatus.ARMED,
+        agent_name="qa_engineer",
+        recurrence={"day": "Mon", "time": "09:00", "tz": "Asia/Shanghai"},
+    ))
+    due2 = db.schedules.list_due(now)
+    assert "SCHEDULE-002" in [r.id for r in due2], (
+        "directly-inserted local-zone fire_at not normalized to UTC"
+    )
 
 
 def test_recover_firing_marks_failed(tmp_path):

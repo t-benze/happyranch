@@ -180,12 +180,28 @@ def test_next_weekly_occurrence_same_day_past_time():
 def test_next_weekly_occurrence_with_timezone():
     """Shanghai is UTC+8; 09:00 Shanghai = 01:00 UTC.
     From Sunday 2026-07-19 00:00 UTC, next Mon 09:00 Shanghai should be
-    2026-07-20 01:00 UTC."""
+    2026-07-20 01:00 UTC.  The design contract requires the result to be
+    a UTC-aware instant."""
     after = datetime(2026, 7, 19, 0, 0, 0, tzinfo=timezone.utc)
     result = next_weekly_occurrence("Mon", "09:00", "Asia/Shanghai", after=after)
     assert result is not None
-    # result is a datetime with tzinfo, compare in UTC
-    assert result.astimezone(timezone.utc) == datetime(2026, 7, 20, 1, 0, 0, tzinfo=timezone.utc)
+    # result is already a UTC instant per design contract
+    assert result == datetime(2026, 7, 20, 1, 0, 0, tzinfo=timezone.utc)
+    assert result.tzinfo == timezone.utc
+
+
+def test_next_weekly_occurrence_returns_utc_instant():
+    """Every path returns a UTC-aware datetime, even for non-UTC timezones."""
+    after = datetime(2026, 7, 19, 0, 0, 0, tzinfo=timezone.utc)
+    for tz_name, day, time_str, expected_utc in [
+        ("Asia/Shanghai", "Mon", "09:00", datetime(2026, 7, 20, 1, 0, 0, tzinfo=timezone.utc)),
+        ("America/New_York", "Mon", "09:00", datetime(2026, 7, 20, 13, 0, 0, tzinfo=timezone.utc)),
+        ("UTC", "Mon", "09:00", datetime(2026, 7, 20, 9, 0, 0, tzinfo=timezone.utc)),
+    ]:
+        result = next_weekly_occurrence(day, time_str, tz_name, after=after)
+        assert result is not None, f"no result for {tz_name}"
+        assert result == expected_utc, f"{tz_name}: {result} != {expected_utc}"
+        assert result.tzinfo == timezone.utc, f"{tz_name}: tzinfo={result.tzinfo}, expected UTC"
 
 
 def test_next_weekly_occurrence_invalid_tz_returns_none():

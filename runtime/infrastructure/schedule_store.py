@@ -90,6 +90,13 @@ class ScheduleStore:
 
     # ------------------------------------------------------------------ CRUD
 
+    @staticmethod
+    def _utc(dt: datetime) -> datetime:
+        """Normalize a datetime to UTC, preserving the absolute instant."""
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
     def insert(self, record: ScheduleRecord) -> None:
         with self._lock:
             self._conn.execute(
@@ -105,7 +112,7 @@ class ScheduleStore:
                     record.agent_name,
                     record.team,
                     record.kind.value,
-                    record.fire_at.isoformat(),
+                    self._utc(record.fire_at).isoformat(),
                     json.dumps(record.recurrence) if record.recurrence else None,
                     record.timezone,
                     record.normalized_brief,
@@ -160,13 +167,17 @@ class ScheduleStore:
     # ----------------------------------------------------- due / active helpers
 
     def list_due(self, now: datetime) -> list[ScheduleRecord]:
-        """Return ``armed`` rows whose ``fire_at <= now``, ordered by fire_at ASC."""
+        """Return ``armed`` rows whose ``fire_at <= now``, ordered by fire_at ASC.
+
+        Both ``fire_at`` (persisted) and ``now`` are normalized to UTC so
+        timezone-offset TEXT values compare correctly.
+        """
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM schedules "
                 "WHERE status = ? AND fire_at <= ? "
                 "ORDER BY fire_at ASC",
-                (ScheduleStatus.ARMED.value, now.isoformat()),
+                (ScheduleStatus.ARMED.value, self._utc(now).isoformat()),
             ).fetchall()
         return [self._row_to_model(row) for row in rows]
 
@@ -205,6 +216,8 @@ class ScheduleStore:
             elif hasattr(value, "value"):
                 value = value.value
             elif hasattr(value, "isoformat"):
+                if key in ("fire_at", "expires_at", "last_fired_at") and isinstance(value, datetime):
+                    value = self._utc(value)
                 value = value.isoformat()
             values.append(value)
         values.append(schedule_id)

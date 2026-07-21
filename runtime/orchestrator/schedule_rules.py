@@ -167,6 +167,7 @@ def next_weekly_occurrence(
                 hour, minute, tzinfo=tz,
             )
             if candidate > local_after:
-                return candidate
+                # Design contract: persisted fire_at values are UTC instants.
+                return candidate.astimezone(timezone.utc)
         day_start += timedelta(days=1)
     return None
