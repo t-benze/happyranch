@@ -27,6 +27,7 @@ from runtime.models import (
     TokenUsage,
 )
 from runtime.infrastructure.work_hours_store import WorkHoursStore
+from runtime.infrastructure.schedules_store import ScheduleStore
 
 
 def _parse_dt(value: str) -> datetime:
@@ -131,6 +132,7 @@ class Database:
         # and lock so the single-connection serialization invariant (see
         # `_synchronized`) is preserved across both surfaces.
         self.work_hours = WorkHoursStore(self._conn, self._lock)
+        self.schedules = ScheduleStore(self._conn, self._lock)
 
     @property
     def path(self) -> Path:
@@ -571,6 +573,33 @@ class Database:
                 ON work_hours(agent_name, local_date);
             CREATE INDEX IF NOT EXISTS idx_work_hours_status
                 ON work_hours(status);
+
+            CREATE TABLE IF NOT EXISTS schedules (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                team TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                fire_at TEXT NOT NULL,
+                recurrence TEXT,
+                timezone TEXT NOT NULL,
+                normalized_brief TEXT NOT NULL,
+                source_instruction TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'armed',
+                active INTEGER NOT NULL DEFAULT 1,
+                expires_at TEXT,
+                indefinite INTEGER NOT NULL DEFAULT 0,
+                spawned_task_ids TEXT,
+                last_fired_at TEXT,
+                fire_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_schedules_agent_status
+                ON schedules(agent_name, status);
+            CREATE INDEX IF NOT EXISTS idx_schedules_fire_at
+                ON schedules(fire_at);
+            CREATE INDEX IF NOT EXISTS idx_schedules_status
+                ON schedules(status);
 
             CREATE TABLE IF NOT EXISTS session_token_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

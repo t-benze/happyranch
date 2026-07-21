@@ -284,6 +284,48 @@ class WorkHourRecord(BaseModel):
     created_at: datetime = Field(default_factory=_now)
 
 
+class ScheduleKind(StrEnum):
+    ONE_SHOT = "one_shot"
+    WEEKLY = "weekly"
+
+
+class ScheduleStatus(StrEnum):
+    ARMED = "armed"
+    FIRING = "firing"
+    FIRED = "fired"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+    FAILED = "failed"
+
+
+class ScheduleRecord(BaseModel):
+    """A persisted schedule — the backend primitive for Agent Todos.
+
+    User-facing label is "Todos"; internal primitive is ``Schedule`` /
+    ``schedules`` table / ``SCHEDULE-NNN`` ids. See the THR-105 design
+    spec and PRD for the full v1 envelope.
+    """
+    id: str
+    agent_name: str
+    team: str
+    kind: ScheduleKind
+    fire_at: datetime
+    recurrence: dict | None = None
+    timezone: str
+    normalized_brief: str
+    source_instruction: str
+    status: ScheduleStatus = ScheduleStatus.ARMED
+    active: int = 1
+    expires_at: datetime | None = None
+    indefinite: int = 0
+    spawned_task_ids: list[str] = Field(default_factory=list)
+    last_fired_at: datetime | None = None
+    fire_count: int = 0
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
 class DreamKbCandidate(BaseModel):
     id: int | None = None
     dream_id: str
