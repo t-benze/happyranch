@@ -31,6 +31,7 @@ from runtime.daemon.routes import (
     threads,
     tokens,
     work_hours,
+    schedules,
 )
 from runtime.daemon.routes import settings as settings_routes
 from runtime.daemon.state import DaemonState
@@ -249,6 +250,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
     app.include_router(dreams.router, prefix="/api/v1/orgs/{slug}", tags=["dreams"])
     app.include_router(work_hours.router, prefix="/api/v1/orgs/{slug}", tags=["work-hours"])
+    app.include_router(schedules.router, prefix="/api/v1/orgs/{slug}", tags=["schedules"])
     app.include_router(jobs.router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(jobs.dual_router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(artifacts.router, prefix="/api/v1/orgs/{slug}", tags=["artifacts"])

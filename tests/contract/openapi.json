@@ -1694,6 +1694,122 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/schedules": {
+      "GET": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "status",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/schedules/{schedule_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "schedule_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
+      "PATCH": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "schedule_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/schedules/{schedule_id}/cancel": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "schedule_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/schedules/{schedule_id}/pause": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "schedule_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/settings": {
       "GET": {
         "params": [
