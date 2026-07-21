@@ -49,11 +49,19 @@ def _validate_kind(kind: str) -> ScheduleKind:
     return ScheduleKind(kind)
 
 
-def _validate_recurrence(kind: ScheduleKind, recurrence: dict | None) -> None:
+_ALLOWED_RECURRENCE_KEYS = frozenset({"day", "time", "tz"})
+
+
+def _validate_recurrence(kind: ScheduleKind, recurrence: dict | None) -> dict | None:
+    """Validate and normalize weekly recurrence.
+
+    Returns a clean normalized dict for weekly, or None for one_shot.
+    Raises ValidationError on any v1 envelope violation.
+    """
     if kind == ScheduleKind.ONE_SHOT:
         if recurrence is not None:
             raise ValidationError("one_shot schedules must not carry recurrence")
-        return
+        return None
 
     # weekly
     if recurrence is None:
@@ -65,6 +73,15 @@ def _validate_recurrence(kind: ScheduleKind, recurrence: dict | None) -> None:
         raise ValidationError(
             "weekly recurrence must be a dict {day, time, tz}"
         )
+
+    # Reject any extra or alternate keys
+    extra_keys = set(recurrence.keys()) - _ALLOWED_RECURRENCE_KEYS
+    if extra_keys:
+        raise ValidationError(
+            f"weekly recurrence must only contain keys {sorted(_ALLOWED_RECURRENCE_KEYS)}; "
+            f"extra keys: {sorted(extra_keys)}"
+        )
+
     day = recurrence.get("day")
     time_val = recurrence.get("time")
     tz = recurrence.get("tz")
@@ -83,6 +100,9 @@ def _validate_recurrence(kind: ScheduleKind, recurrence: dict | None) -> None:
     # Validate time format HH:MM
     _validate_time_format(str(time_val))
     _validate_timezone(str(tz))
+
+    # Return clean normalized dict — no hidden/extra keys
+    return {"day": day_str, "time": str(time_val), "tz": str(tz)}
 
 
 def _validate_time_format(t: str) -> None:
@@ -170,8 +190,8 @@ def validate_schedule_create(
     # Timezone validation
     _validate_timezone(timezone)
 
-    # Recurrence shape validation
-    _validate_recurrence(schedule_kind, recurrence)
+    # Recurrence shape validation — returns normalized recurrence
+    recurrence = _validate_recurrence(schedule_kind, recurrence)
 
     # Horizon check for one-shot
     if schedule_kind == ScheduleKind.ONE_SHOT:
@@ -184,11 +204,17 @@ def validate_schedule_create(
 
     # Recurring expiry / review
     if schedule_kind == ScheduleKind.WEEKLY:
-        if not indefinite and expires_at is None:
-            raise ValidationError(
-                "recurring schedules require an expires_at or indefinite=True; "
-                f"default {DEFAULT_RECURRING_EXPIRY_DAYS}-day review window applies"
-            )
+        if not indefinite:
+            expiry_boundary = now + timedelta(days=DEFAULT_RECURRING_EXPIRY_DAYS)
+            if expires_at is None:
+                # Default to now + 90 days when omitted
+                expires_at = expiry_boundary
+            elif expires_at > expiry_boundary:
+                raise ValidationError(
+                    f"recurring schedule expires_at exceeds the "
+                    f"{DEFAULT_RECURRING_EXPIRY_DAYS}-day review window; "
+                    f"max allowed: {expiry_boundary.isoformat()}"
+                )
 
     # Caps (pre-insert count — caller passes current armed count)
     if armed_count_agent >= MAX_ARMED_PER_AGENT:

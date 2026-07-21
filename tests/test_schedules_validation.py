@@ -7,7 +7,7 @@ and disabled-capability input rejection.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -120,6 +120,63 @@ def test_weekly_accepts_exactly_one_weekday():
     )
     assert r["kind"] == "weekly"
     assert r["recurrence"] == {"day": "Sat", "time": "09:00", "tz": "Asia/Shanghai"}
+
+
+def test_rejects_extra_recurrence_key_cron():
+    """Reject any extra/alternate keys beyond {day, time, tz}."""
+    with pytest.raises(ValidationError, match="extra keys"):
+        validate_schedule_create(
+            agent_name="dev_agent",
+            kind="weekly",
+            fire_at=_utc(2026, 7, 25, 9),
+            recurrence={"day": "Sat", "time": "09:00", "tz": "Asia/Shanghai", "cron": "* * * * *"},
+            timezone="Asia/Shanghai",
+            source_instruction="x",
+            normalized_brief="x",
+            armed_count_agent=0,
+            armed_count_org=0,
+            scheduling_enabled=True,
+            now=TEST_CLOCK,
+        )
+
+
+def test_rejects_extra_recurrence_keys_multiple():
+    """Reject multiple extra keys like interval, every, count."""
+    with pytest.raises(ValidationError, match="extra keys"):
+        validate_schedule_create(
+            agent_name="dev_agent",
+            kind="weekly",
+            fire_at=_utc(2026, 7, 25, 9),
+            recurrence={"day": "Sat", "time": "09:00", "tz": "Asia/Shanghai", "interval": 2, "every": "week"},
+            timezone="Asia/Shanghai",
+            source_instruction="x",
+            normalized_brief="x",
+            armed_count_agent=0,
+            armed_count_org=0,
+            scheduling_enabled=True,
+            now=TEST_CLOCK,
+        )
+
+
+def test_normalized_recurrence_has_no_extra_keys():
+    """The returned recurrence dict must be a clean normalized {day, time, tz}."""
+    r = validate_schedule_create(
+        agent_name="dev_agent",
+        kind="weekly",
+        fire_at=_utc(2026, 7, 25, 9),
+        recurrence={"day": "Sat", "time": "09:00", "tz": "Asia/Shanghai"},
+        timezone="Asia/Shanghai",
+        source_instruction="x",
+        normalized_brief="x",
+        armed_count_agent=0,
+        armed_count_org=0,
+        scheduling_enabled=True,
+        now=TEST_CLOCK,
+        indefinite=True,
+        expires_at=None,
+    )
+    assert r["recurrence"] == {"day": "Sat", "time": "09:00", "tz": "Asia/Shanghai"}
+    assert set(r["recurrence"].keys()) == {"day", "time", "tz"}
 
 
 def test_rejects_multi_weekday_recurrence():
@@ -408,7 +465,30 @@ def test_accepts_one_shot_within_horizon():
 
 # --------------- recurring expiry / indefinite ---------------
 
-def test_rejects_recurring_without_expiry_or_indefinite():
+def test_defaults_recurring_expiry_when_omitted():
+    """When indefinite is False and expires_at is omitted, default to now+90 days."""
+    r = validate_schedule_create(
+        agent_name="dev_agent",
+        kind="weekly",
+        fire_at=_utc(2026, 7, 25, 9),
+        recurrence={"day": "Sat", "time": "09:00", "tz": "Asia/Shanghai"},
+        timezone="Asia/Shanghai",
+        source_instruction="x",
+        normalized_brief="x",
+        armed_count_agent=0,
+        armed_count_org=0,
+        scheduling_enabled=True,
+        now=TEST_CLOCK,
+        indefinite=False,
+        expires_at=None,
+    )
+    assert r["expires_at"] is not None
+    expected_default = TEST_CLOCK + timedelta(days=90)
+    assert r["expires_at"] == expected_default
+
+
+def test_rejects_recurring_expiry_beyond_90_days():
+    """Provided expires_at must not exceed the 90-day review window."""
     with pytest.raises(ValidationError, match="expir"):
         validate_schedule_create(
             agent_name="dev_agent",
@@ -423,8 +503,29 @@ def test_rejects_recurring_without_expiry_or_indefinite():
             scheduling_enabled=True,
             now=TEST_CLOCK,
             indefinite=False,
-            expires_at=None,
+            expires_at=_utc(2027, 1, 1, 12),  # > 90 days from Jul 21
         )
+
+
+def test_accepts_recurring_expiry_within_90_days():
+    """Explicit expires_at within the 90-day window is accepted."""
+    r = validate_schedule_create(
+        agent_name="dev_agent",
+        kind="weekly",
+        fire_at=_utc(2026, 7, 25, 9),
+        recurrence={"day": "Sat", "time": "09:00", "tz": "Asia/Shanghai"},
+        timezone="Asia/Shanghai",
+        source_instruction="x",
+        normalized_brief="x",
+        armed_count_agent=0,
+        armed_count_org=0,
+        scheduling_enabled=True,
+        now=TEST_CLOCK,
+        indefinite=False,
+        expires_at=_utc(2026, 8, 21, 12),  # ~31 days, within 90
+    )
+    assert r["expires_at"] is not None
+    assert r["indefinite"] is False
 
 
 def test_accepts_recurring_with_indefinite():
