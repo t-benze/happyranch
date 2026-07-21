@@ -40,16 +40,36 @@ lands on the EM; the dev the EM hands it to must also see it).
 
 ## 1. Goal
 
-Let the founder **attach files — especially images (mockups) — when creating a
-task**, and guarantee those files are readable by the assigned agent **and by every
-descendant task** the agent spawns down the tree, delivered as real files the
-executor can `Read` plus an `Attachments:` block naming each file and its on-disk
-path in the brief prompt.
+Let **both the founder AND agents attach files — especially images (mockups) — when
+creating/dispatching a task**, and guarantee those files are readable by the assigned
+agent **and by every descendant task** the agent spawns down the tree, delivered as
+real files the executor can `Read` plus an `Attachments:` block naming each file and
+its on-disk path in the brief prompt.
 
-The capability is intentionally **narrow for v1**: only the **founder** attaches, and
-only **at task-create time**. An **agent** attaching arbitrary files off its own disk
-is **out of scope** (it brushes the permission model) and is noted as a founder-gated
-fast-follow only (§13).
+**Agent-attach is IN v1** (founder ruling seq8: tasks are normally *agent-dispatched*,
+so agents must be able to attach). This adds **no new permission surface**: agents
+**already** have a sanctioned path to put local bytes into the org artifact store
+(`happyranch artifacts put`, in their allow-rules today), so referencing those bytes as
+a task attachment is an **existing capability + a new pointer row** in
+`task_attachments` — it reuses the existing artifact-store scoping, not a new reach off
+the host disk. Two covered cases:
+
+- **(a) DELEGATION** — a manager's sub-tasks **inherit** the parent's attachments
+  automatically via up-the-tree resolution (§8); the manager does **not** re-attach.
+  This is the founder's seq3 case (she attaches a mockup on the EM's task; the dev the
+  EM delegates to sees it without re-attaching).
+- **(b) ORIGINATION** — an agent starting a task with a **new file of its own**
+  references that file through the artifact store: it `happyranch artifacts put`s the
+  bytes (existing allow-rule), then passes the resulting `artifact_name` as a task
+  attachment ref on dispatch — the same reference-only path the founder uses.
+
+**The one retained guard (invariant, §14):** *attach* means "reference bytes **already
+in the artifact store** (or `put`-then-reference through the **existing** artifact
+route)" — it is **NOT** a new capability to read arbitrary absolute host filesystem
+paths. This design does **not** widen what an agent can reach off the host disk. If any
+implementation step would need a **new local-path-read capability** or any
+**auth/permission-model change**, the implementer **must STOP and escalate**
+(founder-gated).
 
 ## 2. Motivation & anchor use cases
 
@@ -108,34 +128,36 @@ audit actions (§11).
 
 > **Boundary / STOP-and-escalate.** If, during build, the design appears to require
 > altering an existing schema column, overloading `audit_log.task_id` scope
-> semantics, touching **authentication / the daemon bearer-token flow**, or touching
+> semantics, touching **authentication / the daemon bearer-token flow**, touching
 > a **permission-generation surface** (Claude `--allowedTools`, Codex sandbox flags,
-> opencode `permission.bash`, the baseline `happyranch` allow-rule), the implementer
-> **must STOP and escalate**. Those are founder-contract surfaces outside EM
-> authority. See §10 for the one genuinely-open transport question that touches the
+> opencode `permission.bash`, the baseline `happyranch` allow-rule), or adding a **new
+> local-path-read capability** that would let an agent reference **arbitrary absolute
+> host filesystem paths** (rather than bytes already `put` into the artifact store —
+> §1 invariant), the implementer **must STOP and escalate**. Those are founder-contract
+> surfaces outside EM authority. Agent-attach as designed reuses the **existing**
+> artifact-store `put` path and adds no such surface; if the implementation drifts into
+> one, stop. See §10 for the one genuinely-open transport question that touches the
 > bearer-token multipart path.
 
-## 5. Executor capability matrix — honest degradation
+## 5. Where the daemon's job ends (not a decision — the design boundary)
 
-Files are delivered **by path, universally**: the materialization step (§7c) writes
-real files into a session dir and the `Attachments:` block names each path. Every
-executor can therefore *reach* the bytes.
+The daemon's responsibility is exactly two steps, and stops there:
 
-**Image perception is best-effort per executor** and is **not** guaranteed by this
-design:
+1. **Write** each resolved attachment file to a path in the **worker's session dir**
+   (the materialization step, §7c).
+2. **Name** each file — its on-disk path, size, and content-type hint — in an
+   `Attachments:` block injected into the brief prompt (§7c).
 
-| Executor | File reachable by path | Native image perception |
-|---|---|---|
-| Claude Code | yes | **yes** — can `Read` an image file and see it |
-| Codex | yes | **varies** — may only see the path/bytes, not perceive the image |
-| opencode | yes | **varies** |
+From there the **worker** — its agentic CLI, with its own tools — **loads and
+processes** the file. The runtime delivers the same by-path artifact + `Attachments:`
+block to **every** executor uniformly; there is **no per-executor special-casing** and
+nothing further for the daemon to decide.
 
-**No per-executor special-casing.** The runtime delivers the same artifact +
-`Attachments:` block to all executors. The honest statement in the brief block is:
-"these files are on disk at these paths; image perception depends on your executor."
-A founder attaching a mockup for a *frontend_engineer* (Claude-based) gets perception;
-the same mockup handed to a Codex-based reviewer is reachable but may not be *seen*.
-This is a known, documented degradation, not a bug to paper over.
+> **Footnote (inherent to the worker, not a daemon design choice):** *how much* a
+> worker extracts from a given file — especially an image — depends on that CLI's own
+> abilities. Claude Code can open and vision-read an image at the path; a non-vision
+> CLI sees an opaque file at that path. This is a property of the worker tool, not a
+> knob this design sets, so it is **not** a founder sign-off item.
 
 ## 6. Data model — a new `task_attachments` table
 
@@ -233,8 +255,8 @@ At **session spawn**, for the task being spawned:
    absolute path + size + content-type hint, mirroring the thread-prompt format:
 
    ```text
-   Attachments (materialized to disk — Read them by path; image perception is
-   best-effort per executor):
+   Attachments (materialized to disk — load them by path with your own tools; how much
+   you extract from an image depends on this CLI's abilities):
    - mockup.png (image/png, 124033 bytes) -> /…/.happyranch/attachments/TASK-XXX/mockup.png
    ```
 
@@ -362,10 +384,15 @@ scope-prefix semantics change.
 
 Build is blocked until the founder signs off on this design. Specifically:
 
-1. **Ratify v1 scope: founder-attaches-at-create-time only.** Confirm that
-   **agent-attaches-arbitrary-files-off-its-own-disk is a founder-gated fast-follow**,
-   OUT of v1 (it brushes the permission model — an agent writing arbitrary local bytes
-   into the org store as a "task attachment" is a new capability surface). §1.
+1. **Ratify v1 scope: BOTH founder AND agents attach (agent-attach IN), guarded to
+   artifact-store references only.** Confirm that agents may attach at
+   task-create/dispatch time via the **existing** `happyranch artifacts put` path
+   (delegation-inherit + agent-origination, §1), and that the **retained invariant**
+   holds: attach = reference bytes already in the artifact store (or `put`-then-
+   reference through the existing artifact route), **NOT** a new capability to read
+   arbitrary absolute host filesystem paths — no widening of host-disk reach; any step
+   needing a new local-path-read capability or auth/permission-model change STOPs and
+   escalates. §1 / §14.
 2. **Confirm the inheritance model:** resolve-**UP** the `parent_task_id` tree at
    materialization (single source of truth, no copy-on-spawn) — §8 — and the
    union-to-root vs. nearest-ancestor sub-question (§8 recommends union-to-root).
@@ -377,11 +404,14 @@ Build is blocked until the founder signs off on this design. Specifically:
    **per-task attachment count cap** (recommend 5), whether to add a per-task aggregate
    byte cap, and confirm **per-file 10 MB** (artifact-store cap) is retained
    unchanged.
-5. **Accept the honest executor degradation (§5):** files are delivered by-path
-   universally; **image perception is best-effort** (Claude yes; Codex/opencode vary),
-   with no per-executor special-casing.
-6. **Acknowledge the protocol/05b doc-parity delta (§7c)** lands in the build PR, and
-   the OpenAPI + web-coverage regen (§7b/§12) is part of the same PR.
+5. **Acknowledge the doc-parity deltas land in the build PR:** the
+   `protocol/05b-agent-runtime.md` session-spawn materialization paragraph (§7c) **and**
+   the OpenAPI snapshot + web `openapi-coverage.test.ts` regen (§7b/§12) are all part of
+   the same build PR.
+
+*(Note: §5 — where the daemon's job ends and how much a worker extracts from an image —
+is a design boundary inherent to the worker CLI, **not** a sign-off decision; it was
+removed from this gate.)*
 
 On sign-off, the build lands as a phased engineering effort (new `task_attachments`
 table + `POST /tasks` `attachments` ref + task read view + spawn-time
@@ -390,13 +420,18 @@ resolve-up/materialize/inject seam + per-session-dir cleanup + web upload/detail
 through the normal dev → code_reviewer → qa merge gate. **No part of it is authorized
 to build before sign-off**, and any implementation step that appears to require
 touching an existing schema column, the `audit_log` scope convention, **auth / the
-bearer-token flow**, or a permission-generation surface must STOP and escalate (§4 /
-§10 boundary).
+bearer-token flow**, a permission-generation surface, or a **new local-path-read
+capability** (arbitrary absolute host paths, beyond the existing artifact-store `put`
+route — §1 invariant) must STOP and escalate (§4 / §10 boundary).
 
 ## 14. Non-goals (v1 no-list, consolidated)
 
-- No **agent-attaches-arbitrary-local-files** (founder-gated fast-follow; brushes the
-  permission model) — §1/§13.
+- No **new local-path-read capability** — *attach* means "reference bytes **already in
+  the org artifact store** (or `put`-then-reference through the **existing** artifact
+  route)", for both founder and agents. Agents do **not** gain the ability to reference
+  arbitrary absolute host filesystem paths; host-disk reach is **not** widened. If a
+  step needs that, STOP and escalate — §1/§13 invariant. *(Agent-attach itself is IN
+  v1 — §1; only the arbitrary-host-path reach is excluded.)*
 - No **second byte store** — bytes live once in the org artifact store; the task table
   stores references + metadata only.
 - No **inline multipart on `POST /tasks`** — reference-only route, client does
@@ -406,8 +441,8 @@ bearer-token flow**, or a permission-generation surface must STOP and escalate (
 - No **auth / bearer-token / permission-generation change** — if the transport needs
   one, STOP and escalate (§10). Additive table + additive audit actions + reused
   artifact store only.
-- No **per-executor image special-casing** — by-path delivery for all; perception is
-  best-effort (§5).
+- No **per-executor image special-casing** — by-path delivery for all; how much a
+  worker extracts from a file is inherent to its own CLI, not a daemon knob (§5).
 - No **automatic artifact-blob deletion** on task-tree completion in v1 (follow-up);
   only the regenerable per-session materialized dir is cleaned (§9).
 - No **file previews / virus scanning / content extraction** (matches the thread-spec
