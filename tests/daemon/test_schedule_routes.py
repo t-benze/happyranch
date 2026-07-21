@@ -717,6 +717,20 @@ def test_create_weekly_success(tmp_home, app, org_state, auth_headers):
     assert body["expires_at"] is not None
 
 
+def test_create_rejects_naive_fire_at(tmp_home, app, org_state, auth_headers):
+    """An offset-less ISO string like '2026-08-01T09:00:00' produces a naive
+    datetime that causes TypeError in the service layer.  The route must
+    reject it with a controlled 422 before it reaches ScheduleService."""
+    from fastapi.testclient import TestClient
+    _enable_scheduling(org_state)
+    _register_session(org_state)
+    client = TestClient(app)
+    payload = _create_payload(fire_at="2026-08-01T09:00:00")
+    status, detail = _post_create(client, payload, auth_headers)
+    assert status == 422
+    assert detail.get("code") == "invalid_fire_at"
+
+
 def test_create_respects_agent_cap(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
     _enable_scheduling(org_state)

@@ -163,6 +163,18 @@ def create_schedule(
             status_code=422,
             detail={"code": "invalid_fire_at", "got": body.fire_at},
         )
+    if fire_at.tzinfo is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_fire_at",
+                "got": body.fire_at,
+                "message": (
+                    "fire_at must include a timezone offset "
+                    "(e.g., +00:00, +08:00, Z)"
+                ),
+            },
+        )
 
     # ── call service ──
     svc = ScheduleService(org.db)
