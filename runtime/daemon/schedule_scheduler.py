@@ -54,7 +54,14 @@ def schedule_due_schedules(
     never re-fires an already-claimed row.
     """
     if startup:
-        org.db.schedules.recover_firing()
+        recovered = org.db.schedules.recover_firing()
+        for schedule_id, agent_name in recovered:
+            org.db.insert_audit_log(
+                task_id=schedule_id,
+                agent=agent_name,
+                action="schedule_failed",
+                payload={"reason": "daemon_restart"},
+            )
 
     store = org.db.schedules
     due_records = store.list_due(now)
@@ -74,6 +81,12 @@ def schedule_due_schedules(
                     and record.indefinite != 1
                     and next_fire > record.expires_at
                 ):
+                    org.db.insert_audit_log(
+                        task_id=record.id,
+                        agent=record.agent_name,
+                        action="schedule_expired",
+                        payload={"kind": record.kind.value},
+                    )
                     store.update(
                         record.id,
                         status=ScheduleStatus.EXPIRED,
@@ -87,6 +100,12 @@ def schedule_due_schedules(
                         active=1,
                     )
             else:
+                org.db.insert_audit_log(
+                    task_id=record.id,
+                    agent=record.agent_name,
+                    action="schedule_expired",
+                    payload={"kind": record.kind.value},
+                )
                 store.update(
                     record.id,
                     status=ScheduleStatus.EXPIRED,

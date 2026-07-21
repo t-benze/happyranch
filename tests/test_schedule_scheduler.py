@@ -183,6 +183,12 @@ def test_weekly_stale_slot_expires_when_past_expiry(tmp_path):
     record = db.schedules.get("SCHEDULE-001")
     assert record.status == ScheduleStatus.EXPIRED
     assert record.active == 0
+    # Audit: schedule_expired row emitted
+    logs = db.get_audit_logs("SCHEDULE-001")
+    assert any(
+        entry["action"] == "schedule_expired"
+        for entry in logs
+    ), f"expected schedule_expired audit row, got {logs}"
 
 
 def test_weekly_on_time_fires_normally(tmp_path):
@@ -236,6 +242,13 @@ def test_startup_recovery_clears_stale_firing(tmp_path):
     record = db.schedules.get("SCHEDULE-001")
     assert record.status == ScheduleStatus.FAILED
     assert record.error == "daemon_restart"
+    # Audit: schedule_failed row emitted
+    logs = db.get_audit_logs("SCHEDULE-001")
+    assert any(
+        entry["action"] == "schedule_failed"
+        and entry["payload"]["reason"] == "daemon_restart"
+        for entry in logs
+    ), f"expected schedule_failed audit row, got {logs}"
 
 
 def test_startup_recovery_then_schedules_due(tmp_path):

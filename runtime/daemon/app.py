@@ -204,7 +204,14 @@ async def _lifespan(app: FastAPI):
     # Startup recovery: a schedule left `firing` when the daemon died can never
     # receive its spawn callback, so mark it failed (mirrors recover_running).
     for org in state.orgs.values():
-        org.db.schedules.recover_firing()
+        recovered = org.db.schedules.recover_firing()
+        for schedule_id, agent_name in recovered:
+            org.db.insert_audit_log(
+                task_id=schedule_id,
+                agent=agent_name,
+                action="schedule_failed",
+                payload={"reason": "daemon_restart"},
+            )
 
     schedule_worker_tasks = [
         asyncio.create_task(schedule_worker_loop(state, state.settings))
