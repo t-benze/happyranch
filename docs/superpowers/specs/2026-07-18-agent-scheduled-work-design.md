@@ -115,10 +115,12 @@ existing machinery, it reuses it **without modification** (§7).
 
 > **Boundary / STOP-and-escalate.** If, during build, the design appears to
 > require altering an existing schema column, overloading the `audit_log.task_id`
-> scope-prefix semantics, or touching a permission-generation surface (Claude
+> scope-prefix semantics, touching a permission-generation surface (Claude
 > `--allowedTools`, Codex sandbox flags, opencode `permission.bash`, the baseline
-> `happyranch` allow-rule), the implementer **must STOP and escalate** rather than
-> proceed. Those are founder-contract surfaces outside EM authority.
+> `happyranch` allow-rule), adding a new top-level runtime, frontend, or CLI
+> dependency, or modifying auth / notification routing, the implementer **must
+> STOP and escalate** rather than proceed. Those are founder-contract surfaces
+> outside EM authority.
 
 ## 5. Schedule types (v1)
 
@@ -126,14 +128,14 @@ Exactly two firing rules, kept deliberately small:
 
 1. **One-shot, absolute time.** Fires once at a stored UTC instant
    (`fire_at`), then transitions to `fired` (terminal). Use cases B and C.
-2. **Simple weekly recurrence.** A set of weekdays + one local time-of-day +
+2. **Simple weekly recurrence.** Exactly one weekday + one local time-of-day +
    a timezone; each fire computes the *next* occurrence and re-arms
    `fire_at`. Use case A.
 
 **Explicitly NOT in v1:** cron syntax, arbitrary intervals ("every 3 days"),
-monthly/"last business day"/nth-weekday rules, multiple times-of-day per rule,
-end-date-by-count ("10 times then stop"). Recurrence beyond a plain weekly rule is
-follow-up work, not v1.
+multi-weekday recurrence, monthly/"last business day"/nth-weekday rules,
+multiple times-of-day per rule, end-date-by-count ("10 times then stop").
+Recurrence beyond a single-weekday weekly rule is follow-up work, not v1.
 
 The recurrence math is **partly reusable** from the working-hours slot-grid
 engine: `work_hours_scheduler.next_wake_slots` / `windowed_slot_minutes` already
@@ -155,7 +157,7 @@ same audit/token/provenance conventions without touching the existing table.
 | `team` | TEXT | resolved from the agent; the spawned task's team |
 | `kind` | TEXT | `one_shot` \| `weekly` |
 | `fire_at` | TEXT | next UTC firing instant (recomputed per recurrence) |
-| `recurrence` | TEXT (JSON) | null for one-shot; `{days:[...], time:"HH:MM", tz:"..."}` for weekly. **New column in a new table — not an overload.** |
+| `recurrence` | TEXT (JSON) | null for one-shot; `{day:"Mon", time:"HH:MM", tz:"..."}` for weekly (exactly one weekday). **New column in a new table — not an overload.** |
 | `timezone` | TEXT | display tz for the founder-visible list |
 | `normalized_brief` | TEXT | the structured brief that fires as the task |
 | `source_instruction` | TEXT | verbatim NL instruction, for audit/founder review |
@@ -330,14 +332,12 @@ scope-prefix semantics change.
 ## 12. Naming — internal primitive vs. user-facing label
 
 Founder (seq9) asked whether to call this **"Todos"** — she frames it as a to-do
-app for agents. Recommendation:
+app for agents. Founder seq19 ratified **"Todos"** as the sole approved
+user-facing label.
 
-- **User-facing label: adopt the founder's mental model — "Todos" (or
-  "Reminders").** These read naturally to a founder ("my agent's to-do list") and
-  match how she described the feature. Between the two, **"Reminders"** is a hair
-  more precise (a Todo can imply an open checklist item with no time; every item
-  here is time-triggered), but **"Todos" is the founder's own word** and carries
-  her intent — either works.
+- **User-facing label: "Todos".** Reads naturally to a founder ("my agent's
+  to-do list") and matches how she described the feature. This is settled —
+  founder seq19 approved it.
 - **Internal primitive: name it for its defining property — a *scheduled
   trigger* (`Schedule` / `schedules` table / `SCHEDULE-NNN`).** Do **not** name
   the internal primitive "todo" or "task."
@@ -347,12 +347,8 @@ called **`tasks`** (the task tree). Naming the internal store "todos" invites
 constant confusion with `tasks` in code, audit rows, and protocol docs — two
 task-shaped nouns one synonym apart. Keeping the *internal* name anchored on the
 scheduled-trigger property (`Schedule`) keeps the code vocabulary unambiguous,
-while the *user-facing* label can freely be "Todos" to match the founder. UI/CLI
+while the *user-facing* label is "Todos" to match the founder. UI/CLI
 copy says "Todos"; tables, ids, routes, and audit actions say "schedule."
-
-**This naming choice does not block the design** — the final user-facing label is
-product_lead's / founder's call. The engineering ask is only: keep the internal
-noun distinct from `tasks`.
 
 ## 13. Founder sign-off (resolved) and build gate
 
@@ -378,8 +374,9 @@ caps + CLI/web list + audit + protocol 05b/05c doc-parity in the same PR), route
 through the normal dev → code_reviewer → qa merge gate. **No part of it is
 complete without verification output**, and any implementation step that appears
 to require touching an existing schema column, the `audit_log` scope convention,
-auth/notification routing, or a permission-generation surface must STOP and
-escalate (§4 boundary).
+auth/notification routing, a permission-generation surface, or adding a new
+top-level runtime, frontend, or CLI dependency must STOP and escalate (§4
+boundary).
 
 ## 14. Non-goals (v1 no-list, consolidated)
 
