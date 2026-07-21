@@ -1049,3 +1049,175 @@ describe('AgentDetailPane — recent jobs cross-link', () => {
     expect(screen.queryByText(/Recent jobs/i)).not.toBeInTheDocument();
   });
 });
+
+describe('AgentDetailPane — Start Thread Reflection affordance (THR-106)', () => {
+  test('Reflection button appears in Start Thread dialog for a single-agent start', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => {
+      expect(screen.getByText('manager')).toBeInTheDocument();
+    });
+
+    // Click the Start Thread button
+    const startBtn = screen.getByRole('button', { name: /Start Thread/i });
+    await user.click(startBtn);
+
+    // Dialog opens with Reflection button
+    const dialog = await screen.findByRole('dialog');
+    const reflectionBtn = within(dialog).getByRole('button', { name: /^Reflection$/i });
+    expect(reflectionBtn).toBeInTheDocument();
+  });
+
+  test('clicking Reflection posts canned compose body and navigates to new thread detail', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let composeBody: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
+        composeBody = await request.json();
+        return HttpResponse.json(
+          { thread_id: 'THR-REFL-1', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-REFL-1`, () =>
+        HttpResponse.json({
+          thread_id: 'THR-REFL-1',
+          subject: 'Reflection - engineering_head',
+          status: 'open',
+          started_at: 'now',
+          archived_at: null,
+          forwarded_from_id: null,
+          forwarded_from_kind: null,
+          turn_cap: 500,
+          turns_used: 0,
+          summary: null,
+          transcript_path: null,
+          participants: ['engineering_head'],
+          messages: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-REFL-1/messages`, () =>
+        HttpResponse.json({ messages: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-REFL-1/tail`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => {
+      expect(screen.getByText('manager')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Start Thread/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: /^Reflection$/i }));
+
+    // Assert POST body has the canned reflection content
+    await waitFor(() => {
+      expect(composeBody).toEqual({
+        subject: 'Reflection - engineering_head',
+        recipients: ['engineering_head'],
+        body_markdown:
+          'Run self-reflection (hr:reflection) on your recent work and post your opening reflection report.',
+      });
+    });
+    // Navigated to thread detail — header shows subject
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Reflection - engineering_head/i })).toBeInTheDocument(),
+    );
+  });
+
+  test('Reflection double-click creates exactly one thread (synchronous in-flight guard)', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+
+    let resolvePost: (v: unknown) => void;
+    const postDeferred = new Promise((r) => { resolvePost = r; });
+    let postCount = 0;
+    let detailGetCount = 0;
+
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async () => {
+        postCount++;
+        await postDeferred;
+        return HttpResponse.json(
+          { thread_id: 'THR-REFL-DBL', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-REFL-DBL`, () => {
+        detailGetCount++;
+        return HttpResponse.json({
+          thread_id: 'THR-REFL-DBL',
+          subject: 'Reflection - engineering_head',
+          status: 'open',
+          started_at: 'now',
+          archived_at: null,
+          forwarded_from_id: null,
+          forwarded_from_kind: null,
+          turn_cap: 500,
+          turns_used: 0,
+          summary: null,
+          transcript_path: null,
+          participants: ['engineering_head'],
+          messages: [],
+        });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-REFL-DBL/messages`, () =>
+        HttpResponse.json({ messages: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-REFL-DBL/tail`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => {
+      expect(screen.getByText('manager')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Start Thread/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    const reflectionBtn = within(dialog).getByRole('button', { name: /^Reflection$/i });
+
+    // fireEvent.click is synchronous — two clicks in the same tick.
+    fireEvent.click(reflectionBtn);
+    fireEvent.click(reflectionBtn);
+
+    // Release the deferred POST.
+    resolvePost!({});
+
+    // Assert exactly one POST reached the server.
+    await waitFor(() => {
+      expect(postCount).toBe(1);
+    });
+    await waitFor(() => {
+      expect(detailGetCount).toBe(1);
+    });
+    // Navigated once to thread detail.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Reflection - engineering_head/i })).toBeInTheDocument(),
+    );
+  });
+});

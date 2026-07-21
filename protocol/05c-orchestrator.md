@@ -721,24 +721,21 @@ the system contracts.
 - ``owner``: ``engineering_manager``
 - ``version``: ``1.0.0``
 
-**Eligibility scoping.** ``reflection`` visibility is scoped to **team managers and
-review-loop participants** — NOT org-wide. The default eligibility policy in
-``org/config.yaml`` grants access to:
-- The ``engineering`` team (dev_agent, code_reviewer, qa_engineer,
-  engineering_manager).
-- ``product_lead`` via agent-scoped allow (team manager outside the
-  engineering team who participates in founder review loops).
+**Eligibility scoping.** ``reflection`` is **org-wide** (universal) — ALL agents
+receive it through the durable managed-skill policy. The default eligibility
+policy in ``org/config.yaml`` grants access via ``skills.org.allow:
+[hr:reflection]``, making it available to every agent in the org regardless of
+team or role.
 
-A non-participant agent (e.g., ``support_agent`` on the ``cx`` team, or any
-agent outside these allow lists) does NOT resolve ``reflection`` as exposed.
 The eligibility formula is the standard additive-inheritance model (see §4.1):
-team-scoped allow, with agent-scoped allow for team managers outside the
-engineering team.
+org-scoped allow grants ``reflection`` to all agents. Per-team or per-agent
+denies would take precedence (deny wins over allow) but the shipped default is
+universal.
 
 **Provenance.** ``skills effective --agent dev_agent`` shows ``reflection`` with
-``team(engineering) ALLOW`` eligibility provenance and ``standard_operational``
+``org(org) ALLOW`` eligibility provenance and ``standard_operational``
 policy class. ``skills policy explain hr:reflection --agent dev_agent`` shows the
-catalog gate (PASS — present, enabled) and eligibility gate (team-scoped allow).
+catalog gate (PASS — present, enabled) and eligibility gate (org-scoped allow).
 
 **Rename migration (THR-106).** Skill eligibility policy is persisted ONLY in
 each deployed org's ``org/config.yaml`` — there is no database storage for it.
@@ -749,18 +746,16 @@ unrelated config survives byte-for-byte. It is gated by a durable
 ``.hr_review_renamed`` sentinel in the org root (mirroring the
 ``.agent_yaml_consumed`` one-shot pattern) so it never re-runs.
 
-**Phase-2 additive constraint.** The ``reflection`` SKILL.md body also remains
-in ``protocol/skills/reflection/`` so that the existing wholesale-dump path
-(``refresh_session_skills``) continues to deliver ``reflection`` to all agents
-as a safety net. Physical removal from the always-injected set is a Phase-4
-change gated on a completeness test proving catalog resolution delivers the
-full required set. Phase 2 is ADDITIVE only — the managed-catalog entry is
-registered and eligibility is scoped; the wholesale dump is untouched.
+**Delivery model.** ``reflection`` is delivered exclusively through the managed-skill
+policy injection path (``inject_managed_skills``, see §4.10) — the legacy wholesale
+``protocol/skills/`` dump is disabled by default (``_WHOLESALE_DUMP_ENABLED = False``
+in ``workspace_adapters.py``). The ``SKILL.md`` body lives in
+``runtime/skills/reflection/`` (the managed catalog), with a backup copy in
+``protocol/skills/reflection/`` as a reversible safety net. Universal delivery is
+proven by the contract-completeness guard test (``test_skill_cutover_completeness.py``).
 
-**Fences.** Phase 2 does not:
-- Grant tools, credentials, or capabilities (review command access remains
-  in allow_rules / daemon auth per the existing permission model)
-- Physically delete ``reflection`` from ``protocol/skills/`` (Phase 4)
+**Fences.** ``reflection`` does not:
+- Grant tools, credentials, or capabilities (skill content is permission-inert)
 - Require a SQLite migration (file/YAML-backed only)
 - Add new daemon routes
 - Change the existing permission model or auth
@@ -885,7 +880,7 @@ net. They are NOT deleted — only the copy-into-workspace step is gated.
 session context (4) × every repo state (2) = 56 combinations receive the
 complete required set without the wholesale dump. The test asserts:
 - System contracts are context-correct per §4.7 predicates.
-- ``reflection`` is injected for engineering team + product_lead.
+- ``reflection`` is injected for ALL agents (org-wide universal).
 - ``manage-agent`` / ``manage-repo`` are exposed to eligible managers/operators
   only and hidden from non-eligible agents (eligibility gate).
 - ``dream`` is excluded from non-dream contexts.

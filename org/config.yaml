@@ -4,17 +4,13 @@
 
 skills:
   org:
-    allow: []
+    allow:
+      - hr:reflection
     deny: []
-  teams:
-    engineering:
-      allow:
-        - hr:reflection
-      deny: []
+  teams: {}
   agents:
     product_lead:
       allow:
-        - hr:reflection
         - hr:manage-agent
         - hr:manage-repo
       deny: []
