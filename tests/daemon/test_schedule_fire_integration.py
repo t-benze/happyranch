@@ -349,3 +349,129 @@ async def test_schedule_weekly_fire_rearms(tmp_path):
     assert record.active == 1
     assert record.fire_count == 1
     assert len(record.spawned_task_ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_schedule_weekly_fire_expired_callback_preserved(tmp_path):
+    """Regression: weekly fire -> spawn -> EXPIRED (past expires_at) is NOT
+    overwritten to FAILED/no_callback by run_schedule.
+
+    The spawn callback resolves the row to EXPIRED after a successful fire
+    whose next occurrence exceeds expires_at.  run_schedule must recognize
+    EXPIRED as a valid callback-resolved terminal state and leave it alone."""
+    from runtime.orchestrator.schedule_rules import next_weekly_occurrence
+
+    settings = Settings()
+    db = Database(tmp_path / "test.db")
+    org_dir = _setup_org(tmp_path, db)
+    now = datetime.now(timezone.utc)
+    recurrence = {"day": "Wed", "time": "09:00", "tz": "UTC"}
+    # Expires at a time BEFORE the next weekly occurrence — the callback
+    # will see past_expires_at and transition to EXPIRED.
+    next_fire = next_weekly_occurrence("Wed", "09:00", "UTC", after=now)
+    # Set expires_at to now (which is before next_fire).
+    expires_at = now
+
+    db.schedules.insert(ScheduleRecord(
+        id="SCHEDULE-004",
+        agent_name="dev_agent",
+        team="engineering",
+        kind=ScheduleKind.WEEKLY,
+        fire_at=now - timedelta(hours=1),
+        recurrence=recurrence,
+        timezone="UTC",
+        normalized_brief="Expiring weekly task",
+        source_instruction="Run weekly, expiring",
+        status=ScheduleStatus.FIRING,
+        expires_at=expires_at,
+        indefinite=0,
+    ))
+
+    from runtime.daemon.org_state import OrgState
+    teams = TeamsRegistry.load(org_dir)
+    fake_orch = _FakeOrch()
+
+    org_state = OrgState(
+        slug="test-org",
+        root=org_dir,
+        db=db,
+        teams=teams,
+        settings=settings,
+        orchestrator=fake_orch,
+    )
+
+    from runtime.daemon.app import create_app
+    from fastapi.testclient import TestClient
+    from runtime.daemon.state import DaemonState
+    from runtime.daemon import paths as daemon_paths
+    from runtime.runtime import RuntimeDir
+
+    rt = RuntimeDir.init(tmp_path / "rt3")
+    state = DaemonState.from_runtime(rt, settings)
+    state.orgs["test-org"] = org_state
+    state.queue._running = True
+    app = create_app(state)
+    client = TestClient(app, base_url="http://testserver")
+    client.headers.update(
+        {"Authorization": f"Bearer {daemon_paths.read_token()}"}
+    )
+
+    await run_schedule(
+        org_state=org_state,
+        schedule_id="SCHEDULE-004",
+        settings=settings,
+        executor_factory=lambda name, settings, paths:
+            _SpawningExecutor(client, "test-org", "SCHEDULE-004"),
+    )
+
+    record = db.schedules.get("SCHEDULE-004")
+    # The spawn callback should have marked it EXPIRED.
+    assert record.status == ScheduleStatus.EXPIRED, (
+        f"Expected EXPIRED, got {record.status}"
+    )
+    assert record.active == 0
+    assert record.fire_count == 1
+    assert len(record.spawned_task_ids) == 1
+
+    # Verify the task was created.
+    task_id = record.spawned_task_ids[0]
+    task = db.get_task(task_id)
+    assert task is not None
+    assert task.assigned_agent == "dev_agent"
+    assert task.team == "engineering"
+    assert task.brief == "Expiring weekly task"
+
+    # Verify schedule_expired audit was written.
+    audit_rows = db._conn.execute(
+        "SELECT * FROM audit_log WHERE task_id = ? AND action = 'schedule_expired'",
+        ("SCHEDULE-004",),
+    ).fetchall()
+    assert len(audit_rows) >= 1, "expected schedule_expired audit row"
+
+    # Verify schedule_spawned audit was written.
+    spawn_rows = db._conn.execute(
+        "SELECT * FROM audit_log WHERE task_id = ? AND action = 'schedule_spawned'",
+        ("SCHEDULE-004",),
+    ).fetchall()
+    assert len(spawn_rows) >= 1, "expected schedule_spawned audit row"
+
+    # Verify schedule_completed audit was written.
+    comp_rows = db._conn.execute(
+        "SELECT * FROM audit_log WHERE task_id = ? AND action = 'schedule_completed'",
+        ("SCHEDULE-004",),
+    ).fetchall()
+    assert len(comp_rows) >= 1, "expected schedule_completed audit row"
+
+    # Verify no schedule_failed row was written.
+    failed_rows = db._conn.execute(
+        "SELECT * FROM audit_log WHERE task_id = ? AND action = 'schedule_failed'",
+        ("SCHEDULE-004",),
+    ).fetchall()
+    assert len(failed_rows) == 0, "schedule_failed must not be written for a successful expired fire"
+
+    # Verify the schedule_fired audit (start of lifecycle) was also written.
+    fired_rows = db._conn.execute(
+        "SELECT * FROM audit_log WHERE task_id = ? AND action = 'schedule_fired'",
+        ("SCHEDULE-004",),
+    ).fetchall()
+    assert len(fired_rows) >= 1, "expected schedule_fired audit row"

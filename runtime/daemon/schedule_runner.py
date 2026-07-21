@@ -246,7 +246,7 @@ async def run_schedule(
     refreshed = store.get(schedule_id)
     if refreshed is None:
         return
-    if refreshed.status in (ScheduleStatus.FIRED, ScheduleStatus.ARMED):
+    if refreshed.status in (ScheduleStatus.FIRED, ScheduleStatus.ARMED, ScheduleStatus.EXPIRED):
         # The spawn callback already drove the row to its terminal/re-armed
         # state. Nothing to do.
         return
