@@ -553,11 +553,12 @@ in ``session_token_usage`` with ``scope_type="schedule"`` and
 ``scope_id=<schedule_id>``.
 
 **Runner resolution.** After the executor returns, ``run_schedule`` checks the
-row's updated status. If the spawn callback drove it to FIRED (one-shot) or
-ARMED (weekly re-arm), the runner exits — the callback already handled
-terminal resolution. If the session returned successfully without calling
-spawn, the runner marks the row FAILED with error ``no_callback``. On executor
-failure or timeout, the row is marked FAILED or TIMEOUT respectively.
+row's updated status. If the spawn callback drove it to FIRED (one-shot),
+ARMED (weekly re-arm), or EXPIRED (weekly past-expiry, terminal), the runner
+exits — the callback already handled terminal resolution. If the session
+returned successfully without calling spawn, the runner marks the row FAILED
+with error ``no_callback``. On executor failure or timeout, the row is marked
+FAILED or TIMEOUT respectively.
 
 **No hidden schedules.** Every Schedule is visible to the CLI ``list`` command
 and to the owning agent in the schedule-fire prompt. There is no mechanism for

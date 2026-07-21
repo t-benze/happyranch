@@ -210,17 +210,20 @@ def _write_schedule_transcript(
     agent_name: str,
     summary: str,
     spawned_task_ids: list[str],
+    status: str = "fired",
 ) -> Path:
-    """Write a minimal schedule transcript under ``<root>/schedules/SCHEDULE-NNN.md``.
+    """Write a schedule transcript under ``<root>/schedules/SCHEDULE-NNN.md``.
 
     Atomic replace mirrors ``_write_wake_transcript``.
+    The ``status`` parameter reflects the true terminal final status
+    (``fired`` for completed, ``expired`` for weekly expiry scenarios).
     """
     target_dir = root / "schedules"
     target_dir.mkdir(parents=True, exist_ok=True)
     frontmatter = {
         "schedule_id": schedule_id,
         "agent_name": agent_name,
-        "status": "fired",
+        "status": status,
         "spawned_task_count": len(spawned_task_ids),
         "spawned_task_ids": spawned_task_ids,
     }
@@ -343,6 +346,10 @@ async def spawn_schedule(
             if next_fire is None:
                 # Could not compute next occurrence — should not happen for a
                 # valid weekly recurrence, but guard cleanly.
+                transcript_path = _write_schedule_transcript(
+                    org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                    status="expired",
+                )
                 org.db.schedules.update(
                     schedule_id,
                     status=ScheduleStatus.EXPIRED,
@@ -350,6 +357,7 @@ async def spawn_schedule(
                     spawned_task_ids=spawned_task_ids,
                     last_fired_at=now,
                     fire_count=fire_count,
+                    transcript_path=str(transcript_path),
                     updated_at=now,
                 )
                 org.db.insert_audit_log(
@@ -364,7 +372,11 @@ async def spawn_schedule(
                 and schedule.indefinite != 1
                 and next_fire > schedule.expires_at
             ):
-                # Expired: no re-arm.
+                # Expired: no re-arm. Next occurrence exceeds expires_at.
+                transcript_path = _write_schedule_transcript(
+                    org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                    status="expired",
+                )
                 org.db.schedules.update(
                     schedule_id,
                     status=ScheduleStatus.EXPIRED,
@@ -372,6 +384,7 @@ async def spawn_schedule(
                     spawned_task_ids=spawned_task_ids,
                     last_fired_at=now,
                     fire_count=fire_count,
+                    transcript_path=str(transcript_path),
                     updated_at=now,
                 )
                 org.db.insert_audit_log(

@@ -196,6 +196,13 @@ async def test_schedule_fire_creates_task_via_spawn(tmp_path, monkeypatch):
     assert len(record.spawned_task_ids) == 1
     assert record.fire_count == 1
 
+    # Verify transcript_path is set and transcript file exists.
+    assert record.transcript_path is not None
+    assert Path(record.transcript_path).exists()
+    transcript_content = Path(record.transcript_path).read_text()
+    assert "status: fired" in transcript_content
+    assert "schedule_id: SCHEDULE-001" in transcript_content
+
     # Verify task was created
     task_id = record.spawned_task_ids[0]
     task = db.get_task(task_id)
@@ -350,6 +357,13 @@ async def test_schedule_weekly_fire_rearms(tmp_path):
     assert record.fire_count == 1
     assert len(record.spawned_task_ids) == 1
 
+    # Verify transcript_path is set for re-armed weekly fire.
+    assert record.transcript_path is not None
+    assert Path(record.transcript_path).exists()
+    transcript_content = Path(record.transcript_path).read_text()
+    assert "status: fired" in transcript_content
+    assert "schedule_id: SCHEDULE-003" in transcript_content
+
 
 @pytest.mark.asyncio
 async def test_schedule_weekly_fire_expired_callback_preserved(tmp_path):
@@ -475,3 +489,20 @@ async def test_schedule_weekly_fire_expired_callback_preserved(tmp_path):
         ("SCHEDULE-004",),
     ).fetchall()
     assert len(fired_rows) >= 1, "expected schedule_fired audit row"
+
+    # Verify transcript_path is set and the transcript file exists on disk.
+    assert record.transcript_path is not None, (
+        "transcript_path must be set for expired weekly fire"
+    )
+    transcript_file = Path(record.transcript_path)
+    assert transcript_file.exists(), (
+        f"transcript file must exist: {record.transcript_path}"
+    )
+    transcript_content = transcript_file.read_text()
+    # Frontmatter must reflect expired — not fired — for terminal expired.
+    assert "status: expired" in transcript_content, (
+        f"transcript frontmatter must show status=expired, got:\n{transcript_content}"
+    )
+    assert "schedule_id: SCHEDULE-004" in transcript_content
+    assert "agent_name: dev_agent" in transcript_content
+    assert "spawned_task_ids:" in transcript_content
