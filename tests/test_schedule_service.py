@@ -31,11 +31,14 @@ _FROZEN_NOW = datetime(2026, 7, 22, 0, 0, tzinfo=timezone.utc)
 
 @pytest.fixture
 def frozen_clock(monkeypatch):
-    """Freeze the ScheduleService clock so weekly-occurrence tests
-    are date-stable — they compute expected fire_at from next_weekly_occurrence
-    with a fixed ``after`` instead of hard-coding July 2026 dates."""
+    """Freeze the service and store clocks so all date-dependent
+    validations and DB timestamps are date-stable."""
     monkeypatch.setattr(
         "runtime.orchestrator.schedule_service._now",
+        lambda: _FROZEN_NOW,
+    )
+    monkeypatch.setattr(
+        "runtime.infrastructure.schedule_store._now",
         lambda: _FROZEN_NOW,
     )
     return _FROZEN_NOW
@@ -68,7 +71,7 @@ def _record(**overrides) -> ScheduleRecord:
 
 # ── create ───────────────────────────────────────────────────────────────
 
-def test_create_one_shot_success(tmp_path):
+def test_create_one_shot_success(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -76,7 +79,7 @@ def test_create_one_shot_success(tmp_path):
         agent_name="dev_agent",
         team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None,
         timezone="Asia/Shanghai",
         normalized_brief="Follow up with customer",
@@ -208,12 +211,12 @@ def test_create_rejects_blank_normalized_brief(tmp_path):
         )
 
 
-def test_create_rejects_invalid_one_shot_horizon(tmp_path):
+def test_create_rejects_invalid_one_shot_horizon(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     # 100 days in the future → beyond 90-day horizon
-    far = _now() + timedelta(days=100)
+    far = _FROZEN_NOW + timedelta(days=100)
     with pytest.raises(ScheduleServiceError, match="within 90 days"):
         svc.create(
             agent_name="dev_agent", team="engineering",
@@ -222,6 +225,26 @@ def test_create_rejects_invalid_one_shot_horizon(tmp_path):
             normalized_brief="x", source_instruction="x",
             scheduling_enabled=True,
         )
+
+
+def test_create_one_shot_rejects_past_fire_at(tmp_path, frozen_clock):
+    """One-shot create with a past fire_at must be rejected and no row
+    is inserted."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    past = _FROZEN_NOW - timedelta(days=7)
+    with pytest.raises(ScheduleServiceError, match="fire_at must be in the future"):
+        svc.create(
+            agent_name="dev_agent", team="engineering",
+            kind=ScheduleKind.ONE_SHOT,
+            fire_at=past, recurrence=None, timezone="UTC",
+            normalized_brief="x", source_instruction="x",
+            scheduling_enabled=True,
+        )
+
+    # No row was inserted
+    assert len(svc.list()) == 0
 
 
 def test_create_rejects_invalid_weekly_recurrence(tmp_path):
@@ -309,14 +332,14 @@ def test_create_rejects_org_cap_exceeded(tmp_path, frozen_clock):
 
 # ── get / list ───────────────────────────────────────────────────────────
 
-def test_get_returns_record(tmp_path):
+def test_get_returns_record(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -359,14 +382,14 @@ def test_list_all_and_filtered(tmp_path, frozen_clock):
 
 # ── pause ────────────────────────────────────────────────────────────────
 
-def test_pause_success(tmp_path):
+def test_pause_success(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -421,14 +444,14 @@ def test_pause_rejects_missing(tmp_path):
 
 # ── cancel ───────────────────────────────────────────────────────────────
 
-def test_cancel_success_from_armed(tmp_path):
+def test_cancel_success_from_armed(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -443,14 +466,14 @@ def test_cancel_success_from_armed(tmp_path):
     assert audit_rows[0]["task_id"] == r.id
 
 
-def test_cancel_success_from_paused(tmp_path):
+def test_cancel_success_from_paused(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -512,29 +535,29 @@ def test_cancel_rejects_missing(tmp_path):
 
 # ── edit ─────────────────────────────────────────────────────────────────
 
-def test_edit_success_revalidates(tmp_path):
+def test_edit_success_revalidates(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="old brief", source_instruction="old instruction",
         scheduling_enabled=True,
     )
 
     edited = svc.edit(r.id, "dev_agent",
-                      fire_at=_utc(day=29, h=10),
+                      fire_at=_FROZEN_NOW + timedelta(days=7, hours=10),
                       timezone="Asia/Shanghai")
-    assert edited.fire_at == _utc(day=29, h=10)
+    assert edited.fire_at == _FROZEN_NOW + timedelta(days=7, hours=10)
     assert edited.timezone == "Asia/Shanghai"
     # provenance fields unchanged
     assert edited.normalized_brief == "old brief"
     assert edited.source_instruction == "old instruction"
-    # updated_at should have bumped
-    assert edited.updated_at > r.updated_at
+    # updated_at should have bumped (may be equal under frozen clock)
+    assert edited.updated_at >= r.updated_at
 
     # Audit row
     audit_rows = db.get_audit_logs_by_action("schedule_edited")
@@ -608,7 +631,7 @@ def test_edit_rejects_missing(tmp_path):
 
 # ── edit field allowlist (reviewer findings #4, #5) ───────────────────────
 
-def test_edit_rejects_normalized_brief(tmp_path):
+def test_edit_rejects_normalized_brief(tmp_path, frozen_clock):
     """normalized_brief is a provenance field — immutable after creation."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -616,7 +639,7 @@ def test_edit_rejects_normalized_brief(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="original brief", source_instruction="original instruction",
         scheduling_enabled=True,
@@ -630,7 +653,7 @@ def test_edit_rejects_normalized_brief(tmp_path):
     assert got.normalized_brief == "original brief"
 
 
-def test_edit_rejects_source_instruction(tmp_path):
+def test_edit_rejects_source_instruction(tmp_path, frozen_clock):
     """source_instruction is a provenance field — immutable after creation."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -638,7 +661,7 @@ def test_edit_rejects_source_instruction(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="original brief", source_instruction="original instruction",
         scheduling_enabled=True,
@@ -652,7 +675,7 @@ def test_edit_rejects_source_instruction(tmp_path):
     assert got.source_instruction == "original instruction"
 
 
-def test_edit_rejects_arbitrary_lifecycle_field_status(tmp_path):
+def test_edit_rejects_arbitrary_lifecycle_field_status(tmp_path, frozen_clock):
     """Lifecycle field 'status' is rejected by edit allowlist."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -660,7 +683,7 @@ def test_edit_rejects_arbitrary_lifecycle_field_status(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -674,7 +697,7 @@ def test_edit_rejects_arbitrary_lifecycle_field_status(tmp_path):
     assert got.status == ScheduleStatus.ARMED
 
 
-def test_edit_rejects_arbitrary_lifecycle_field_active(tmp_path):
+def test_edit_rejects_arbitrary_lifecycle_field_active(tmp_path, frozen_clock):
     """Lifecycle field 'active' is rejected by edit allowlist."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -682,7 +705,7 @@ def test_edit_rejects_arbitrary_lifecycle_field_active(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -695,7 +718,7 @@ def test_edit_rejects_arbitrary_lifecycle_field_active(tmp_path):
     assert got.active == 1
 
 
-def test_edit_rejects_arbitrary_lifecycle_field_created_at(tmp_path):
+def test_edit_rejects_arbitrary_lifecycle_field_created_at(tmp_path, frozen_clock):
     """Lifecycle field 'created_at' is rejected by edit allowlist."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -703,13 +726,13 @@ def test_edit_rejects_arbitrary_lifecycle_field_created_at(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
     )
 
-    new_ts = _utc(day=1, h=0)
+    new_ts = _FROZEN_NOW - timedelta(days=21)
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
         svc.edit(r.id, "dev_agent", created_at=new_ts)
 
@@ -717,7 +740,7 @@ def test_edit_rejects_arbitrary_lifecycle_field_created_at(tmp_path):
     assert got.created_at > new_ts
 
 
-def test_edit_rejects_arbitrary_lifecycle_field_updated_at(tmp_path):
+def test_edit_rejects_arbitrary_lifecycle_field_updated_at(tmp_path, frozen_clock):
     """Lifecycle field 'updated_at' is rejected by edit allowlist."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -725,17 +748,17 @@ def test_edit_rejects_arbitrary_lifecycle_field_updated_at(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
-        svc.edit(r.id, "dev_agent", updated_at=_utc(day=1, h=0))
+        svc.edit(r.id, "dev_agent", updated_at=_FROZEN_NOW - timedelta(days=21))
 
 
-def test_edit_rejects_arbitrary_lifecycle_field_spawned_task_ids(tmp_path):
+def test_edit_rejects_arbitrary_lifecycle_field_spawned_task_ids(tmp_path, frozen_clock):
     """Lifecycle field 'spawned_task_ids' is rejected by edit allowlist."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -743,7 +766,7 @@ def test_edit_rejects_arbitrary_lifecycle_field_spawned_task_ids(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -753,7 +776,7 @@ def test_edit_rejects_arbitrary_lifecycle_field_spawned_task_ids(tmp_path):
         svc.edit(r.id, "dev_agent", spawned_task_ids=["TASK-999"])
 
 
-def test_edit_rejects_arbitrary_lifecycle_field_last_fired_at(tmp_path):
+def test_edit_rejects_arbitrary_lifecycle_field_last_fired_at(tmp_path, frozen_clock):
     """Lifecycle field 'last_fired_at' is rejected by edit allowlist."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -761,17 +784,17 @@ def test_edit_rejects_arbitrary_lifecycle_field_last_fired_at(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
-        svc.edit(r.id, "dev_agent", last_fired_at=_utc(day=28, h=9))
+        svc.edit(r.id, "dev_agent", last_fired_at=_FROZEN_NOW + timedelta(days=6, hours=9))
 
 
-def test_edit_rejects_arbitrary_lifecycle_field_fire_count(tmp_path):
+def test_edit_rejects_arbitrary_lifecycle_field_fire_count(tmp_path, frozen_clock):
     """Lifecycle field 'fire_count' is rejected by edit allowlist."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -779,7 +802,7 @@ def test_edit_rejects_arbitrary_lifecycle_field_fire_count(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -789,7 +812,7 @@ def test_edit_rejects_arbitrary_lifecycle_field_fire_count(tmp_path):
         svc.edit(r.id, "dev_agent", fire_count=5)
 
 
-def test_edit_rejects_arbitrary_lifecycle_field_expires_at(tmp_path):
+def test_edit_rejects_arbitrary_lifecycle_field_expires_at(tmp_path, frozen_clock):
     """Lifecycle field 'expires_at' is rejected by edit allowlist."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -797,19 +820,19 @@ def test_edit_rejects_arbitrary_lifecycle_field_expires_at(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
     )
 
     with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
-        svc.edit(r.id, "dev_agent", expires_at=_utc(day=30, h=9))
+        svc.edit(r.id, "dev_agent", expires_at=_FROZEN_NOW + timedelta(days=8, hours=9))
 
 
 # ── edit from paused ────────────────────────────────────────────────────
 
-def test_edit_succeeds_from_paused(tmp_path):
+def test_edit_succeeds_from_paused(tmp_path, frozen_clock):
     """Edit should work on PAUSED schedules."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -817,15 +840,15 @@ def test_edit_succeeds_from_paused(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
     )
     svc.pause(r.id, "dev_agent")
 
-    edited = svc.edit(r.id, "dev_agent", fire_at=_utc(day=29, h=10))
-    assert edited.fire_at == _utc(day=29, h=10)
+    edited = svc.edit(r.id, "dev_agent", fire_at=_FROZEN_NOW + timedelta(days=7, hours=10))
+    assert edited.fire_at == _FROZEN_NOW + timedelta(days=7, hours=10)
     assert edited.status == ScheduleStatus.PAUSED  # status unchanged by edit
 
 
@@ -865,7 +888,7 @@ def test_create_one_shot_rejects_cron_recurrence(tmp_path):
         )
 
 
-def test_edit_one_shot_rejects_adding_recurrence(tmp_path):
+def test_edit_one_shot_rejects_adding_recurrence(tmp_path, frozen_clock):
     """Edit must reject attaching recurrence to an existing one-shot schedule."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -873,7 +896,7 @@ def test_edit_one_shot_rejects_adding_recurrence(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -883,7 +906,7 @@ def test_edit_one_shot_rejects_adding_recurrence(tmp_path):
         svc.edit(r.id, "dev_agent", recurrence={"cron": "* * * * *"})
 
 
-def test_edit_one_shot_row_unchanged_after_rejected_recurrence(tmp_path):
+def test_edit_one_shot_row_unchanged_after_rejected_recurrence(tmp_path, frozen_clock):
     """After a rejected recurrence edit, the one-shot row remains unchanged."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -891,7 +914,7 @@ def test_edit_one_shot_row_unchanged_after_rejected_recurrence(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -906,10 +929,10 @@ def test_edit_one_shot_row_unchanged_after_rejected_recurrence(tmp_path):
     assert got is not None
     assert got.recurrence is None
     assert got.kind == ScheduleKind.ONE_SHOT
-    assert got.fire_at == _utc(day=28, h=9)
+    assert got.fire_at == _FROZEN_NOW + timedelta(days=6, hours=9)
 
 
-def test_edit_one_shot_accepts_null_recurrence(tmp_path):
+def test_edit_one_shot_accepts_null_recurrence(tmp_path, frozen_clock):
     """Setting recurrence=None on a one-shot is idempotent and accepted."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -917,7 +940,7 @@ def test_edit_one_shot_accepts_null_recurrence(tmp_path):
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -949,14 +972,14 @@ def test_create_weekly_indefinite_skips_expiry(tmp_path, frozen_clock):
     assert record.expires_at is None
 
 
-def test_create_one_shot_has_no_expiry(tmp_path):
+def test_create_one_shot_has_no_expiry(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     record = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
