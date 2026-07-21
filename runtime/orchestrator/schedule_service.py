@@ -14,6 +14,7 @@ from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 from runtime.orchestrator.schedule_rules import (
     default_expires_at,
+    next_weekly_occurrence,
     validate_caps,
     validate_one_shot_horizon,
     validate_weekly_recurrence,
@@ -102,6 +103,22 @@ class ScheduleService:
             err = validate_weekly_recurrence(recurrence)
             if err:
                 raise ScheduleServiceError(err)
+            # Normalize fire_at: must match the next weekly occurrence.
+            now = _now()
+            expected = next_weekly_occurrence(
+                recurrence["day"], recurrence["time"], recurrence["tz"],
+                after=now,
+            )
+            if expected is None:
+                raise ScheduleServiceError(
+                    "could not compute next occurrence for weekly schedule"
+                )
+            if fire_at != expected:
+                raise ScheduleServiceError(
+                    f"fire_at must match the next weekly occurrence "
+                    f"({recurrence['day']} {recurrence['time']} {recurrence['tz']}); "
+                    f"expected {expected.isoformat()}, got {fire_at.isoformat()}"
+                )
         else:
             raise ScheduleServiceError(
                 f"unsupported schedule kind: {kind.value}. "
@@ -289,6 +306,28 @@ class ScheduleService:
             err = validate_weekly_recurrence(recurrence)
             if err:
                 raise ScheduleServiceError(err)
+            # Normalize fire_at against the (possibly updated) recurrence.
+            # If the caller supplied fire_at it must match; if only recurrence
+            # changed we auto-derive the correct fire_at.
+            now = _now()
+            expected = next_weekly_occurrence(
+                recurrence["day"], recurrence["time"], recurrence["tz"],
+                after=now,
+            )
+            if expected is None:
+                raise ScheduleServiceError(
+                    "could not compute next occurrence for weekly schedule"
+                )
+            if "fire_at" in fields:
+                if fields["fire_at"] != expected:
+                    raise ScheduleServiceError(
+                        f"fire_at must match the next weekly occurrence "
+                        f"({recurrence['day']} {recurrence['time']} {recurrence['tz']}); "
+                        f"expected {expected.isoformat()}, got {fields['fire_at'].isoformat()}"
+                    )
+            else:
+                # Derive fire_at from recurrence when not explicitly passed.
+                fields["fire_at"] = expected
         else:
             raise ScheduleServiceError(
                 f"unsupported schedule kind: {record.kind.value}. "
