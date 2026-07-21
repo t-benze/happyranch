@@ -25,12 +25,15 @@ def _parse_dt(value: str) -> datetime:
 
 
 # Columns the caller may patch via ``update`` (mutable lifecycle fields).
-# Identity columns (id, agent_name, team, kind) and source_instruction /
-# created_at are immutable after insert.
+# Columns the caller may patch via ``update`` (mutable lifecycle fields).
+# Identity columns (id, agent_name, team, kind) and created_at are
+# immutable after insert.
 _UPDATABLE = {
     "fire_at",
     "recurrence",
     "timezone",
+    "normalized_brief",
+    "source_instruction",
     "status",
     "active",
     "expires_at",

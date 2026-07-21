@@ -501,12 +501,13 @@ def test_edit_success_revalidates(tmp_path):
 
     edited = svc.edit(r.id, "dev_agent",
                       fire_at=_utc(day=29, h=10),
-                      timezone="Asia/Shanghai")
+                      timezone="Asia/Shanghai",
+                      normalized_brief="new brief",
+                      source_instruction="new instruction")
     assert edited.fire_at == _utc(day=29, h=10)
     assert edited.timezone == "Asia/Shanghai"
-    # provenance fields unchanged
-    assert edited.normalized_brief == "old brief"
-    assert edited.source_instruction == "old instruction"
+    assert edited.normalized_brief == "new brief"
+    assert edited.source_instruction == "new instruction"
     # updated_at should have bumped
     assert edited.updated_at > r.updated_at
 
@@ -514,7 +515,8 @@ def test_edit_success_revalidates(tmp_path):
     audit_rows = db.get_audit_logs_by_action("schedule_edited")
     assert len(audit_rows) == 1
     assert audit_rows[0]["task_id"] == r.id
-    assert sorted(audit_rows[0]["payload"]["fields"]) == ["fire_at", "timezone"]
+    assert sorted(audit_rows[0]["payload"]["fields"]) == ["fire_at", "normalized_brief",
+                                                           "source_instruction", "timezone"]
 
 
 def test_edit_rejects_terminal_state(tmp_path):
@@ -581,8 +583,8 @@ def test_edit_rejects_missing(tmp_path):
 
 # ── edit field allowlist (reviewer findings #4, #5) ───────────────────────
 
-def test_edit_rejects_normalized_brief(tmp_path):
-    """normalized_brief is immutable after insert in this phase."""
+def test_edit_allows_normalized_brief(tmp_path):
+    """normalized_brief is editable with non-blank validation."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -595,16 +597,12 @@ def test_edit_rejects_normalized_brief(tmp_path):
         scheduling_enabled=True,
     )
 
-    with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
-        svc.edit(r.id, "dev_agent", normalized_brief="new")
-
-    # Record unchanged
-    got = svc.get(r.id)
-    assert got.normalized_brief == "original brief"
+    edited = svc.edit(r.id, "dev_agent", normalized_brief="updated brief")
+    assert edited.normalized_brief == "updated brief"
 
 
-def test_edit_rejects_source_instruction(tmp_path):
-    """source_instruction is immutable after insert in this phase."""
+def test_edit_allows_source_instruction(tmp_path):
+    """source_instruction is editable with non-blank validation."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -617,12 +615,8 @@ def test_edit_rejects_source_instruction(tmp_path):
         scheduling_enabled=True,
     )
 
-    with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
-        svc.edit(r.id, "dev_agent", source_instruction="new")
-
-    # Record unchanged
-    got = svc.get(r.id)
-    assert got.source_instruction == "original instruction"
+    edited = svc.edit(r.id, "dev_agent", source_instruction="updated instruction")
+    assert edited.source_instruction == "updated instruction"
 
 
 def test_edit_rejects_blank_normalized_brief(tmp_path):
@@ -639,7 +633,7 @@ def test_edit_rejects_blank_normalized_brief(tmp_path):
         scheduling_enabled=True,
     )
 
-    with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
+    with pytest.raises(ScheduleServiceError, match="normalized_brief is required"):
         svc.edit(r.id, "dev_agent", normalized_brief="")
 
     # Record unchanged
@@ -661,7 +655,7 @@ def test_edit_rejects_blank_source_instruction(tmp_path):
         scheduling_enabled=True,
     )
 
-    with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
+    with pytest.raises(ScheduleServiceError, match="source_instruction is required"):
         svc.edit(r.id, "dev_agent", source_instruction="   ")
 
     # Record unchanged
