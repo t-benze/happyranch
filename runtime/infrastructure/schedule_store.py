@@ -31,6 +31,8 @@ _UPDATABLE = {
     "fire_at",
     "recurrence",
     "timezone",
+    "normalized_brief",
+    "source_instruction",
     "status",
     "active",
     "expires_at",
