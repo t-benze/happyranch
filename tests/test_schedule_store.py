@@ -186,7 +186,24 @@ def test_update_rejects_immutable_identity_fields(tmp_path):
     with pytest.raises(ValueError, match="unsupported schedule fields"):
         db.schedules.update("SCHEDULE-001", kind=ScheduleKind.WEEKLY)
     with pytest.raises(ValueError, match="unsupported schedule fields"):
+        db.schedules.update("SCHEDULE-001", created_at=_dt(day=1, hour=0))
+
+
+def test_update_rejects_immutable_provenance_fields(tmp_path):
+    """Provenance fields (normalized_brief, source_instruction) are immutable."""
+    db = Database(tmp_path / "db.sqlite")
+    db.schedules.insert(_record(
+        normalized_brief="original brief",
+        source_instruction="original instruction",
+    ))
+    with pytest.raises(ValueError, match="unsupported schedule fields"):
+        db.schedules.update("SCHEDULE-001", normalized_brief="changed")
+    with pytest.raises(ValueError, match="unsupported schedule fields"):
         db.schedules.update("SCHEDULE-001", source_instruction="changed")
+    # Row unchanged
+    got = db.schedules.get("SCHEDULE-001")
+    assert got.normalized_brief == "original brief"
+    assert got.source_instruction == "original instruction"
 
 
 def test_update_rejects_unknown_field(tmp_path):
