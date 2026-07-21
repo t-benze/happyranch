@@ -122,14 +122,21 @@ def cancel_schedule(
 # ── edit ────────────────────────────────────────────────────────────────
 
 from pydantic import BaseModel, Field  # noqa: E402
+from pydantic.json_schema import SkipJsonSchema  # noqa: E402
 
 
 class ScheduleEditBody(BaseModel):
     model_config = {"extra": "forbid"}
 
-    fire_at: str | None = Field(None, description="ISO-8601 datetime for the next fire")
-    recurrence: dict | None = Field(None, description="Weekly recurrence dict")
-    timezone: str | None = Field(None, description="IANA timezone string")
+    fire_at: str | SkipJsonSchema[None] = Field(
+        None, description="ISO-8601 datetime for the next fire"
+    )
+    recurrence: dict | SkipJsonSchema[None] = Field(
+        None, description="Weekly recurrence dict"
+    )
+    timezone: str | SkipJsonSchema[None] = Field(
+        None, description="IANA timezone string"
+    )
 
 
 @router.patch("/schedules/{schedule_id}")

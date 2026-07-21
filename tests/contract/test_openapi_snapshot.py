@@ -79,3 +79,56 @@ def test_openapi_snapshot_matches() -> None:
             f"HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest {__file__}"
         )
         raise AssertionError("\n".join(msg_lines))
+
+
+# ── ScheduleEditBody null-type regression ─────────────────────────────
+
+_NON_NULLABLE_EDIT_FIELDS = ["fire_at", "recurrence", "timezone"]
+
+
+def test_schedule_edit_body_schema_no_null_type() -> None:
+    """ScheduleEditBody must not advertise ``type: null`` for mutable fields.
+
+    The route rejects explicit-null payloads at runtime (422 ``explicit_null``),
+    so the OpenAPI schema must not tell callers that null is a valid value.
+    """
+    app = create_app(DaemonState.idle(Settings()))
+    full = app.openapi()
+
+    # Navigate to the PATCH /orgs/{slug}/schedules/{schedule_id} request body.
+    schedule_edit_path = "/api/v1/orgs/{slug}/schedules/{schedule_id}"
+
+    # Try both the component-schema and path-embedded paths.
+    edit_body_schema = None
+
+    # 1) Check openapi.json shape (which pins the path/param view; the full
+    #    Pydantic-generated schema lives in components.schemas).
+    schemas = full.get("components", {}).get("schemas", {})
+    for name, schema in schemas.items():
+        if "ScheduleEditBody" in name:
+            edit_body_schema = schema
+            break
+
+    assert edit_body_schema is not None, (
+        "ScheduleEditBody schema not found in components.schemas"
+    )
+
+    properties = edit_body_schema.get("properties", {})
+    for field_name in _NON_NULLABLE_EDIT_FIELDS:
+        prop = properties.get(field_name)
+        assert prop is not None, f"{field_name} missing from ScheduleEditBody schema"
+
+        # Must NOT expose type: null or anyOf with a null branch.
+        prop_json = json.dumps(prop)
+        has_null_type = prop.get("type") == "null"
+        has_null_anyof = any(
+            branch.get("type") == "null"
+            for branch in prop.get("anyOf", [])
+        ) if "anyOf" in prop else False
+
+        assert not has_null_type, (
+            f"ScheduleEditBody.{field_name} exposes type=null: {prop_json}"
+        )
+        assert not has_null_anyof, (
+            f"ScheduleEditBody.{field_name} exposes anyOf null branch: {prop_json}"
+        )
