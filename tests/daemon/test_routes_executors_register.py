@@ -1400,6 +1400,104 @@ class TestEmitEnvelopeConformance:
         assert RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS.index("emit_envelope") == 3
 
 
+    def test_emit_envelope_rejected_token_usage_not_dict(self, app, daemon_state, monkeypatch):
+        """token_usage must be a dict when present; non-dict values must be rejected."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {"envelope_version": 1, "token_usage": "not-a-dict"},
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_token_usage" in r.json()["detail"]["code"]
+
+        # Verify step was NOT recorded
+        pending = store.get_pending_steps(token, "alpha")
+        assert "emit_envelope" in (pending or [])
+
+    def test_emit_envelope_rejected_unknown_token_usage_keys(self, app, daemon_state, monkeypatch):
+        """token_usage keys must be known TokenUsage field names."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {
+                    "envelope_version": 1,
+                    "token_usage": {"input_tokens": 1, "bogus_field": 99},
+                },
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_token_usage" in r.json()["detail"]["code"]
+
+        # Verify step was NOT recorded
+        pending = store.get_pending_steps(token, "alpha")
+        assert "emit_envelope" in (pending or [])
+
+    def test_emit_envelope_accepted_valid_minimal_token_usage(self, app, daemon_state, monkeypatch):
+        """Valid minimal token_usage dict should pass."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {
+                    "envelope_version": 1,
+                    "token_usage": {"input_tokens": 1},
+                },
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["arrived"] is True
+
+    def test_emit_envelope_rejected_bad_token_usage_value_type(self, app, daemon_state, monkeypatch):
+        """token_usage values for int fields must be int or null, not strings."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {
+                    "envelope_version": 1,
+                    "token_usage": {"input_tokens": "should-be-int"},
+                },
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_token_usage" in r.json()["detail"]["code"]
+
+        # Verify step was NOT recorded
+        pending = store.get_pending_steps(token, "alpha")
+        assert "emit_envelope" in (pending or [])
+
+
 class TestRuntimeEmitEnvelopeConformance:
     """Runtime-level emit_envelope conformance (THR-088 + THR-107)."""
 
@@ -1432,3 +1530,78 @@ class TestRuntimeEmitEnvelopeConformance:
         )
         assert r.status_code == 400
         assert "envelope_required" in r.json()["detail"]["code"]
+
+    def test_runtime_emit_envelope_rejected_token_usage_not_dict(self, app, daemon_state, monkeypatch):
+        """token_usage must be a dict when present; non-dict values must be rejected."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint_runtime("runtime-emit")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {"envelope_version": 1, "token_usage": "not-a-dict"},
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_token_usage" in r.json()["detail"]["code"]
+
+        # Verify step was NOT recorded
+        pending = store.get_pending_steps_runtime(token)
+        assert "emit_envelope" in (pending or [])
+
+    def test_runtime_emit_envelope_rejected_unknown_token_usage_keys(self, app, daemon_state, monkeypatch):
+        """token_usage keys must be known TokenUsage field names."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint_runtime("runtime-emit")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {
+                    "envelope_version": 1,
+                    "token_usage": {"input_tokens": 1, "bogus_field": 99},
+                },
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_token_usage" in r.json()["detail"]["code"]
+
+        # Verify step was NOT recorded
+        pending = store.get_pending_steps_runtime(token)
+        assert "emit_envelope" in (pending or [])
+
+    def test_runtime_emit_envelope_rejected_bad_token_usage_value_type(self, app, daemon_state, monkeypatch):
+        """token_usage values for int fields must be int or null, not strings."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint_runtime("runtime-emit")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {
+                    "envelope_version": 1,
+                    "token_usage": {"input_tokens": "should-be-int"},
+                },
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_token_usage" in r.json()["detail"]["code"]
+
+        # Verify step was NOT recorded
+        pending = store.get_pending_steps_runtime(token)
+        assert "emit_envelope" in (pending or [])

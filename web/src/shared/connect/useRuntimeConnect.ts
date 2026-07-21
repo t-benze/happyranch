@@ -29,13 +29,14 @@ export const BUILTINS = new Set<string>(KINDS);
 /** Mirrors a sane executor-profile identifier: lowercase, starts alpha. */
 export const NAME_RE = /^[a-z][a-z0-9-]{1,39}$/;
 
-/** The three conformance checks BOTH flows drive — verbatim step ids from
+/** The four conformance checks BOTH flows drive — verbatim step ids from
  *  registration_token.DEFAULT_CONFORMANCE_STEPS. Shown as the sequence the CLI
  *  performs, NOT as live per-step status (prereqs can't report it). */
 export const CONFORMANCE_STEPS: { id: string; label: string }[] = [
   { id: 'workspace_access', label: 'Reads its workspace & skills' },
   { id: 'loopback_reachable', label: 'Reaches HappyRanch at 127.0.0.1' },
   { id: 'cli_callback', label: 'Reports in & registers' },
+  { id: 'emit_envelope', label: 'Produces a valid result-envelope' },
 ];
 
 /** Which flow produced the connection — drives the connected-card copy. */
@@ -104,7 +105,7 @@ export function buildConnectPrompt(
     `# 2. Complete the conformance challenge — POST each step id to`,
     `#    ${base}/executors/runtime/conformance-checkin`,
     `#    body {"step_id":"<id>"} for each of:`,
-    `#      workspace_access   loopback_reachable   cli_callback`,
+    `#      workspace_access   loopback_reachable   cli_callback   emit_envelope`,
     ``,
     ...registerStep,
     ``,

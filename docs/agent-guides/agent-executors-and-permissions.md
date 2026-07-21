@@ -125,7 +125,7 @@ are short-lived — the founder re-mints in one click). Key properties:
 
 ### Conformance challenge
 
-Each minted token opens a conformance challenge with three required check-in
+Each minted token opens a conformance challenge with four required check-in
 steps (mirrored in `RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS`):
 
 | Step | What it proves | How it arrives |
@@ -133,6 +133,7 @@ steps (mirrored in `RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS`):
 | `workspace_access` | The candidate CLI can read the agent prompt, workspace layout, and skills | Auto-completed by the candidate CLI (it is running locally) |
 | `loopback_reachable` | The candidate CLI can reach `http://127.0.0.1` (the daemon loopback) | Auto-completed by the candidate CLI |
 | `cli_callback` | The candidate CLI can invoke `happyranch executors register` with the `hrreg_` token | Completed when the candidate runs the register verb |
+| `emit_envelope` | The candidate CLI can produce a well-formed result-envelope (THR-107 Phase 1) | CLI posts a sample envelope with the checkin; validated against the envelope schema |
 
 The candidate CLI reports step arrivals via `POST /api/v1/orgs/{slug}/executors/conformance-checkin`
 (gated by `require_registration_token()` — loopback-only; other routes' auth is
@@ -147,7 +148,7 @@ Registration succeeds **only** when ALL of the following are true:
 
 1. Token is valid, unexpired, unconsumed, and loopback (checked by the dependency gate).
 2. Token org matches the route slug.
-3. The conformance challenge is fully complete — all three steps arrived.
+3. The conformance challenge is fully complete — all four steps arrived.
 4. Static validation passes: adapter is a known value, command is on `PATH`,
    `argv_template` is a non-empty list of strings with supported placeholders
    (`{prompt}`, `{timeout_seconds}`, `{workspace}`), and the profile name does
@@ -158,7 +159,7 @@ Registration succeeds **only** when ALL of the following are true:
 These checks are enforced against the daemon's own token-store state —
 the register request cannot succeed by asserting conformance in its
 payload; the token must already have been driven through the token-gated
-loopback conformance check-in sequence (all three steps recorded, token
+loopback conformance check-in sequence (all four steps recorded, token
 valid, unconsumed, loopback-scoped, and org-matching) before the register
 call is accepted. The store is populated by conformance check-ins that the
 candidate CLI submits over the token-gated loopback channel.
@@ -185,7 +186,7 @@ candidate CLI's profile name, command, `argv_template`, and adapter. On
 "Generate", the SPA calls `POST /auth/registration-token` (loopback-only,
 master-bearer-authed) and renders two copy-paste blocks:
 
-1. **Conformance prompt** — embeds the `hrreg_` token, the three conformance
+1. **Conformance prompt** — embeds the `hrreg_` token, the four conformance
    steps with descriptions, and the exact `happyranch executors register`
    command to run.
 2. **Config snippet** — the resulting profile entry the daemon will write
