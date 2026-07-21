@@ -251,12 +251,14 @@ class TestRuntimeConformanceStateMachine:
         store.record_step_arrival_runtime(token, "loopback_reachable", now=now + 1)
         assert not store.is_challenge_complete_runtime(token, now=now + 1)
         store.record_step_arrival_runtime(token, "cli_callback", now=now + 2)
-        assert store.is_challenge_complete_runtime(token, now=now + 2)
+        assert not store.is_challenge_complete_runtime(token, now=now + 2)
+        store.record_step_arrival_runtime(token, "emit_envelope", now=now + 3)
+        assert store.is_challenge_complete_runtime(token, now=now + 3)
 
     def test_expired_token_cannot_complete_runtime(self, store):
         now = 1_000_000.0
         token, _ = store.mint_runtime("my-executor", now=now)
-        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+        for step_id in ["workspace_access", "loopback_reachable", "cli_callback", "emit_envelope"]:
             store.record_step_arrival_runtime(token, step_id, now=now)
         past_ttl = now + DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS + 1
         assert not store.is_challenge_complete_runtime(token, now=past_ttl)

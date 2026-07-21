@@ -76,6 +76,28 @@ at registration time and substitutes placeholders at launch. No shell string
 is constructed — each template element becomes exactly one argv element, with
 placeholders replaced by their resolved values.
 
+**Result-envelope (THR-107).** Custom CLIs may opt into token metering by
+emitting a single-line JSON envelope on stdout between sentinel markers:
+
+```
+__HR_ENVELOPE_BEGIN__
+{"envelope_version":1,"token_usage":{"input_tokens":1500,"output_tokens":420,"model":"my-cli"}}
+__HR_ENVELOPE_END__
+```
+
+The envelope is **optional** — absence preserves existing behavior (no token
+accounting). The ``envelope_version`` must be ``1`` (integer). The
+``token_usage`` object maps 1:1 to the ``TokenUsage`` model with identical
+key names. A top-level ``model`` field backfills ``token_usage.model`` when
+absent. Multiple envelopes are last-wins. A minimal valid sample is:
+
+```json
+{"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1}}
+```
+
+The full contract is documented in
+``docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md``.
+
 ## Self-Registration (custom executors)
 
 THR-052 adds a founder-initiated, candidate-CLI-completed registration flow for

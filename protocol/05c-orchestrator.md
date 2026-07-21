@@ -50,6 +50,8 @@ The orchestrator is the application code that ties everything together. It spawn
 
 **7. Provides the founder dashboard.** Aggregates audit logs, escalation summaries, and team health metrics into a weekly report.
 
+**8. Executor result-envelope contract (THR-107).** Custom (non-built-in) CLIs may opt into token metering by emitting a versioned JSON envelope on stdout. The daemon-side generic parser ``_parse_generic_cli_usage`` (``runtime/orchestrator/executors.py``) reads it via sentinel markers ``__HR_ENVELOPE_BEGIN__`` / ``__HR_ENVELOPE_END__``. The envelope is optional — absence preserves existing behavior. The envelope is validated at registration-time via the ``emit_envelope`` conformance step (``DEFAULT_CONFORMANCE_STEPS`` in ``runtime/daemon/registration_token.py``). A candidate CLI must POST a valid sample envelope to complete registration. The full schema and contract are in ``docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md``.
+
 ### Inter-Team communication patterns
 
 | Trigger | From Team | To Team | Payload |

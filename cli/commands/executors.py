@@ -103,18 +103,33 @@ def _run_conformance_steps(
     token_headers: dict[str, str],
     label: str,
 ) -> None:
+    # A minimal valid sample envelope for the emit_envelope conformance step
+    # (THR-107 Phase 1). Posted as the envelope payload alongside step_id
+    # when the step is emit_envelope.
+    _SAMPLE_ENVELOPE = {
+        "envelope_version": 1,
+        "token_usage": {
+            "input_tokens": 1,
+            "output_tokens": 1,
+        },
+    }
+
     conformance_steps = [
         "workspace_access",
         "loopback_reachable",
         "cli_callback",
+        "emit_envelope",
     ]
 
     print(f"Running conformance check-ins for {label}...")
     for step_id in conformance_steps:
+        payload: dict = {"step_id": step_id}
+        if step_id == "emit_envelope":
+            payload["envelope"] = _SAMPLE_ENVELOPE
         try:
             r = client.post(
                 checkin_path,
-                json={"step_id": step_id},
+                json=payload,
                 headers=token_headers,
             )
         except Exception as exc:

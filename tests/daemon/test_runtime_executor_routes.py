@@ -194,9 +194,9 @@ class TestRuntimeConformanceCheckinRoute:
         assert r.status_code == 200
         body = r.json()
         assert not body["all_complete"]
-        assert len(body["pending"]) == 2
+        assert len(body["pending"]) == 3
 
-        # Complete all steps
+        # Complete remaining non-emit steps
         for step_id in ["loopback_reachable", "cli_callback"]:
             r = client.post(
                 "/api/v1/executors/runtime/conformance-checkin",
@@ -207,7 +207,10 @@ class TestRuntimeConformanceCheckinRoute:
 
         r = client.post(
             "/api/v1/executors/runtime/conformance-checkin",
-            json={"step_id": "workspace_access"},
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}},
+            },
             headers={"Authorization": f"Bearer {token}"},
         )
         assert r.status_code == 200
@@ -226,10 +229,19 @@ class TestRuntimeRegisterRoute:
         token, _ = store.mint_runtime("my-executor")
         headers = {"Authorization": f"Bearer {token}"}
 
-        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+        steps_and_payloads = [
+            ("workspace_access", None),
+            ("loopback_reachable", None),
+            ("cli_callback", None),
+            ("emit_envelope", {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ]
+        for step_id, envelope in steps_and_payloads:
+            payload: dict = {"step_id": step_id}
+            if envelope is not None:
+                payload["envelope"] = envelope
             r = client.post(
                 "/api/v1/executors/runtime/conformance-checkin",
-                json={"step_id": step_id},
+                json=payload,
                 headers=headers,
             )
             assert r.status_code == 200
@@ -322,10 +334,19 @@ class TestRuntimeRegisterRoute:
         token, _ = store.mint_runtime("claude")
         headers = {"Authorization": f"Bearer {token}"}
 
-        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+        steps_and_payloads = [
+            ("workspace_access", None),
+            ("loopback_reachable", None),
+            ("cli_callback", None),
+            ("emit_envelope", {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ]
+        for step_id, envelope in steps_and_payloads:
+            payload: dict = {"step_id": step_id}
+            if envelope is not None:
+                payload["envelope"] = envelope
             r = client.post(
                 "/api/v1/executors/runtime/conformance-checkin",
-                json={"step_id": step_id},
+                json=payload,
                 headers=headers,
             )
             assert r.status_code == 200
@@ -346,10 +367,19 @@ class TestRuntimeRegisterRoute:
         headers = {"Authorization": f"Bearer {token}"}
 
         # Complete conformance first
-        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+        steps_and_payloads = [
+            ("workspace_access", None),
+            ("loopback_reachable", None),
+            ("cli_callback", None),
+            ("emit_envelope", {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ]
+        for step_id, envelope in steps_and_payloads:
+            payload: dict = {"step_id": step_id}
+            if envelope is not None:
+                payload["envelope"] = envelope
             r = client.post(
                 "/api/v1/executors/runtime/conformance-checkin",
-                json={"step_id": step_id},
+                json=payload,
                 headers=headers,
             )
             assert r.status_code == 200
@@ -370,10 +400,19 @@ class TestRuntimeRegisterRoute:
         headers = {"Authorization": f"Bearer {token}"}
 
         # Complete conformance first
-        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+        steps_and_payloads = [
+            ("workspace_access", None),
+            ("loopback_reachable", None),
+            ("cli_callback", None),
+            ("emit_envelope", {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ]
+        for step_id, envelope in steps_and_payloads:
+            payload: dict = {"step_id": step_id}
+            if envelope is not None:
+                payload["envelope"] = envelope
             r = client.post(
                 "/api/v1/executors/runtime/conformance-checkin",
-                json={"step_id": step_id},
+                json=payload,
                 headers=headers,
             )
             assert r.status_code == 200
@@ -418,10 +457,19 @@ class TestRuntimeRegisterAudit:
         headers = {"Authorization": f"Bearer {token}"}
 
         # Complete conformance
-        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+        steps_and_payloads = [
+            ("workspace_access", None),
+            ("loopback_reachable", None),
+            ("cli_callback", None),
+            ("emit_envelope", {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ]
+        for step_id, envelope in steps_and_payloads:
+            payload: dict = {"step_id": step_id}
+            if envelope is not None:
+                payload["envelope"] = envelope
             r = client.post(
                 "/api/v1/executors/runtime/conformance-checkin",
-                json={"step_id": step_id},
+                json=payload,
                 headers=headers,
             )
             assert r.status_code == 200
@@ -589,10 +637,19 @@ class TestRuntimeRegisterBinaryRoute:
         token, _ = store.mint_runtime(kind, purpose="binary")
         headers = {"Authorization": f"Bearer {token}"}
 
-        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+        steps_and_payloads = [
+            ("workspace_access", None),
+            ("loopback_reachable", None),
+            ("cli_callback", None),
+            ("emit_envelope", {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ]
+        for step_id, envelope in steps_and_payloads:
+            payload: dict = {"step_id": step_id}
+            if envelope is not None:
+                payload["envelope"] = envelope
             r = client.post(
                 "/api/v1/executors/runtime/conformance-checkin",
-                json={"step_id": step_id},
+                json=payload,
                 headers=headers,
             )
             assert r.status_code == 200
@@ -666,10 +723,19 @@ class TestRuntimeRegisterBinaryRoute:
         headers = {"Authorization": f"Bearer {token}"}
 
         # Complete conformance (token is still profile-purpose)
-        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+        steps_and_payloads = [
+            ("workspace_access", None),
+            ("loopback_reachable", None),
+            ("cli_callback", None),
+            ("emit_envelope", {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ]
+        for step_id, envelope in steps_and_payloads:
+            payload: dict = {"step_id": step_id}
+            if envelope is not None:
+                payload["envelope"] = envelope
             r = client.post(
                 "/api/v1/executors/runtime/conformance-checkin",
-                json={"step_id": step_id},
+                json=payload,
                 headers=headers,
             )
             assert r.status_code == 200

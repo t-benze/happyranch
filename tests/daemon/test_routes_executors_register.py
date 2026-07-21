@@ -1277,3 +1277,158 @@ class TestValidationParityWithStartupConfig:
         reset_registry()
         DaemonState.from_runtime(runtime_with_token, Settings())
         assert get_registry().is_registered(profile_name)
+
+
+# ── emit_envelope conformance step (THR-107 Phase 1) ───────────────────
+
+
+_SAMPLE_ENVELOPE = {
+    "envelope_version": 1,
+    "token_usage": {"input_tokens": 1, "output_tokens": 1},
+}
+
+
+class TestEmitEnvelopeConformance:
+    """The ``emit_envelope`` conformance step requires a valid sample envelope."""
+
+    def test_emit_envelope_accepted_with_valid_sample(self, app, daemon_state, monkeypatch):
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": _SAMPLE_ENVELOPE},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["arrived"] is True
+        assert "emit_envelope" not in (body.get("pending") or [])
+
+    def test_emit_envelope_rejected_without_envelope(self, app, daemon_state, monkeypatch):
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={"step_id": "emit_envelope"},
+        )
+        assert r.status_code == 400
+        assert "envelope_required" in r.json()["detail"]["code"]
+
+    def test_emit_envelope_rejected_with_invalid_version(self, app, daemon_state, monkeypatch):
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {"envelope_version": 2},
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_envelope_version" in r.json()["detail"]["code"]
+
+    def test_non_emit_step_ignores_envelope(self, app, daemon_state, monkeypatch):
+        """Non-emit steps should ignore the envelope field entirely."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        # workspace_access with an envelope — should still succeed and ignore envelope
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={"step_id": "workspace_access", "envelope": _SAMPLE_ENVELOPE},
+        )
+        assert r.status_code == 200
+        assert r.json()["arrived"] is True
+
+    def test_registration_blocked_until_emit_envelope_arrives(self, app, daemon_state, monkeypatch):
+        """Registration should be blocked when emit_envelope is pending."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        # Complete all steps except emit_envelope
+        for step_id in ["workspace_access", "loopback_reachable", "cli_callback"]:
+            r = client.post(
+                "/api/v1/orgs/alpha/executors/conformance-checkin",
+                json={"step_id": step_id},
+            )
+            assert r.status_code == 200
+
+        # Registration should be blocked
+        r = client.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 400
+        assert "Conformance incomplete" in r.json()["detail"]
+        assert "emit_envelope" in str(r.json()["detail"])
+
+        # Now complete emit_envelope
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": _SAMPLE_ENVELOPE},
+        )
+        assert r.status_code == 200
+        assert r.json()["all_complete"] is True
+
+    def test_default_conformance_steps_includes_emit_envelope(self):
+        """DEFAULT_CONFORMANCE_STEPS must include emit_envelope (THR-107)."""
+        assert "emit_envelope" in RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS
+        # Should be the 4th step
+        assert RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS.index("emit_envelope") == 3
+
+
+class TestRuntimeEmitEnvelopeConformance:
+    """Runtime-level emit_envelope conformance (THR-088 + THR-107)."""
+
+    def test_runtime_emit_envelope_accepted(self, app, daemon_state, monkeypatch):
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint_runtime("runtime-emit")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={"step_id": "emit_envelope", "envelope": _SAMPLE_ENVELOPE},
+        )
+        assert r.status_code == 200
+        assert r.json()["arrived"] is True
+
+    def test_runtime_emit_envelope_rejected_without_envelope(self, app, daemon_state, monkeypatch):
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint_runtime("runtime-emit")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={"step_id": "emit_envelope"},
+        )
+        assert r.status_code == 400
+        assert "envelope_required" in r.json()["detail"]["code"]

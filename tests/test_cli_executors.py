@@ -225,7 +225,7 @@ def test_cmd_executors_register_happy_path(capsys) -> None:
     from cli.commands.executors import cmd_executors_register
 
     fake = MagicMock()
-    # Mock POST responses: 3 check-ins (200) + register (200)
+    # Mock POST responses: 4 check-ins (200) + register (200)
     fake.post.side_effect = [
         # workspace_access
         MagicMock(
@@ -233,7 +233,7 @@ def test_cmd_executors_register_happy_path(capsys) -> None:
             json=lambda: {
                 "step_id": "workspace_access",
                 "arrived": True,
-                "pending": ["loopback_reachable", "cli_callback"],
+                "pending": ["loopback_reachable", "cli_callback", "emit_envelope"],
                 "all_complete": False,
             },
         ),
@@ -243,7 +243,7 @@ def test_cmd_executors_register_happy_path(capsys) -> None:
             json=lambda: {
                 "step_id": "loopback_reachable",
                 "arrived": True,
-                "pending": ["cli_callback"],
+                "pending": ["cli_callback", "emit_envelope"],
                 "all_complete": False,
             },
         ),
@@ -252,6 +252,16 @@ def test_cmd_executors_register_happy_path(capsys) -> None:
             status_code=200,
             json=lambda: {
                 "step_id": "cli_callback",
+                "arrived": True,
+                "pending": ["emit_envelope"],
+                "all_complete": False,
+            },
+        ),
+        # emit_envelope
+        MagicMock(
+            status_code=200,
+            json=lambda: {
+                "step_id": "emit_envelope",
                 "arrived": True,
                 "pending": [],
                 "all_complete": True,
@@ -403,16 +413,20 @@ def test_cmd_executors_register_register_http_error(capsys) -> None:
         # workspace_access
         MagicMock(status_code=200,
                    json=lambda: {"step_id": "workspace_access", "arrived": True,
-                                 "pending": ["loopback_reachable", "cli_callback"],
+                                 "pending": ["loopback_reachable", "cli_callback", "emit_envelope"],
                                  "all_complete": False}),
         # loopback_reachable
         MagicMock(status_code=200,
                    json=lambda: {"step_id": "loopback_reachable", "arrived": True,
-                                 "pending": ["cli_callback"],
+                                 "pending": ["cli_callback", "emit_envelope"],
                                  "all_complete": False}),
         # cli_callback
         MagicMock(status_code=200,
                    json=lambda: {"step_id": "cli_callback", "arrived": True,
+                                 "pending": ["emit_envelope"], "all_complete": False}),
+        # emit_envelope
+        MagicMock(status_code=200,
+                   json=lambda: {"step_id": "emit_envelope", "arrived": True,
                                  "pending": [], "all_complete": True}),
         # register -> 409
         MagicMock(
@@ -447,14 +461,17 @@ def test_cmd_executors_register_json_with_extra_spaces_in_elements(capsys) -> No
     fake.post.side_effect = [
         MagicMock(status_code=200,
                    json=lambda: {"step_id": "workspace_access", "arrived": True,
-                                 "pending": ["loopback_reachable", "cli_callback"],
+                                 "pending": ["loopback_reachable", "cli_callback", "emit_envelope"],
                                  "all_complete": False}),
         MagicMock(status_code=200,
                    json=lambda: {"step_id": "loopback_reachable", "arrived": True,
-                                 "pending": ["cli_callback"],
+                                 "pending": ["cli_callback", "emit_envelope"],
                                  "all_complete": False}),
         MagicMock(status_code=200,
                    json=lambda: {"step_id": "cli_callback", "arrived": True,
+                                 "pending": ["emit_envelope"], "all_complete": False}),
+        MagicMock(status_code=200,
+                   json=lambda: {"step_id": "emit_envelope", "arrived": True,
                                  "pending": [], "all_complete": True}),
         MagicMock(
             status_code=200,
@@ -491,14 +508,17 @@ def test_cmd_executors_register_register_connection_error(capsys) -> None:
     fake.post.side_effect = [
         MagicMock(status_code=200,
                    json=lambda: {"step_id": "workspace_access", "arrived": True,
-                                 "pending": ["loopback_reachable", "cli_callback"],
+                                 "pending": ["loopback_reachable", "cli_callback", "emit_envelope"],
                                  "all_complete": False}),
         MagicMock(status_code=200,
                    json=lambda: {"step_id": "loopback_reachable", "arrived": True,
-                                 "pending": ["cli_callback"],
+                                 "pending": ["cli_callback", "emit_envelope"],
                                  "all_complete": False}),
         MagicMock(status_code=200,
                    json=lambda: {"step_id": "cli_callback", "arrived": True,
+                                 "pending": ["emit_envelope"], "all_complete": False}),
+        MagicMock(status_code=200,
+                   json=lambda: {"step_id": "emit_envelope", "arrived": True,
                                  "pending": [], "all_complete": True}),
         ConnectionError("register refused"),
     ]

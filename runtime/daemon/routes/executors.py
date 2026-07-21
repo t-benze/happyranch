@@ -188,8 +188,13 @@ def _token_org_name_mismatch(
 
 
 class ConformanceCheckinRequest(BaseModel):
-    """A single conformance step arrival from the candidate CLI."""
+    """A single conformance step arrival from the candidate CLI.
+
+    ``envelope`` is optional and only validated for the ``emit_envelope``
+    conformance step (THR-107). Non-emit steps ignore it.
+    """
     step_id: str = Field(..., min_length=1)
+    envelope: dict | None = Field(None)
 
 
 class ConformanceCheckinResponse(BaseModel):
@@ -222,6 +227,33 @@ class ExecutorRegisterResponse(BaseModel):
     argv_template: list[str]
 
 
+def _validate_emit_envelope_step(body: ConformanceCheckinRequest) -> None:
+    """Validate the envelope payload for the ``emit_envelope`` conformance step.
+
+    THR-107 Phase 1: the ``emit_envelope`` step MUST carry a valid sample
+    envelope. Other steps ignore the envelope field.
+    """
+    if body.step_id != "emit_envelope":
+        return  # non-emit steps ignore envelope
+    if body.envelope is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "envelope_required",
+                "detail": "The 'emit_envelope' conformance step requires an envelope payload.",
+            },
+        )
+    version = body.envelope.get("envelope_version")
+    if version != 1 or not isinstance(version, int) or isinstance(version, bool):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "invalid_envelope_version",
+                "detail": f"envelope_version must be integer 1, got {version!r}.",
+            },
+        )
+
+
 # ---------------------------------------------------------------------------
 # POST /conformance-checkin
 # ---------------------------------------------------------------------------
@@ -239,7 +271,7 @@ def conformance_checkin(
     """Record a conformance step arrival for a pending registration token.
 
     Called by the candidate CLI after completing each required check-in
-    step (workspace access, loopback reachability, CLI callback).
+    step (workspace access, loopback reachability, CLI callback, emit_envelope).
 
     The step_id must be one of the known conformance steps.
     Returns the current conformance state so the CLI can report progress.
@@ -269,6 +301,9 @@ def conformance_checkin(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown step {body.step_id!r}. Valid: {sorted(valid_step_ids)}",
         )
+
+    # Validate envelope for emit_envelope step (THR-107)
+    _validate_emit_envelope_step(body)
 
     # Record arrival
     arrived = store.record_step_arrival(token_value, slug, body.step_id)
@@ -551,6 +586,9 @@ def runtime_conformance_checkin(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown step {body.step_id!r}. Valid: {sorted(valid_step_ids)}",
         )
+
+    # Validate envelope for emit_envelope step (THR-107)
+    _validate_emit_envelope_step(body)
 
     # Record arrival
     arrived = store.record_step_arrival_runtime(token_value, body.step_id)

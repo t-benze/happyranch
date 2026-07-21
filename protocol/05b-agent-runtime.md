@@ -23,6 +23,18 @@ coding-agent capabilities: file system access, shell commands, web search, and g
 operations. Executor selection is stored per workspace in `agent.yaml`, so agents
 can run on different executors in the same org.
 
+**Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
+by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
+``__HR_ENVELOPE_BEGIN__`` and ``__HR_ENVELOPE_END__``. The daemon parses the
+envelope via a generic best-effort parser (``_parse_generic_cli_usage`` in
+``runtime/orchestrator/executors.py``). The envelope is optional — absence
+preserves existing behavior (no token accounting). The envelope schema maps 1:1 to
+the ``TokenUsage`` model (``runtime/models.py:302``) with identical key names.
+Token-accounting invariants (``total`` excludes cache reads, nullable tolerance,
+model-null backfill to provider label) apply uniformly to envelope-reported tokens.
+The full contract is documented in
+``docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md``.
+
 Each agent's configuration specifies context and workspace:
 
 ```

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from runtime.config import Settings
+from runtime.models import TokenUsage
 from runtime.orchestrator.executor_registry import (
     ExecutorProfile,
     ExecutorProfileCollisionError,
@@ -14,7 +17,7 @@ from runtime.orchestrator.executor_registry import (
     reset_registry,
     validate_argv_template,
 )
-from runtime.orchestrator.executors import GenericCliExecutor
+from runtime.orchestrator.executors import GenericCliExecutor, _parse_generic_cli_usage
 
 
 # ---------------------------------------------------------------------------
@@ -510,3 +513,101 @@ class TestGenericCliExecutor:
         assert result.success is False
         assert result.returncode == 1
         assert "something went wrong" in (result.stderr_tail or "")
+
+    # ── Envelope tests (THR-107) ────────────────────────────────────────
+
+    @patch("runtime.orchestrator.executors.subprocess")
+    def test_writes_token_usage_from_envelope(self, mock_subprocess, tmp_path):
+        """A fake CLI emitting a valid envelope → token_usage is populated."""
+        workspace = tmp_path / "agent_ws"
+        workspace.mkdir()
+
+        _BEGIN = "__HR_ENVELOPE_BEGIN__"
+        _END = "__HR_ENVELOPE_END__"
+        envelope = json.dumps({
+            "envelope_version": 1,
+            "token_usage": {"input_tokens": 299, "output_tokens": 101},
+        })
+        stdout = f"Agent output...\n{_BEGIN}\n{envelope}\n{_END}\n...more output"
+
+        proc = MagicMock()
+        proc.pid = 9997
+        proc.returncode = 0
+        proc.communicate.return_value = (stdout, "")
+        mock_subprocess.Popen.return_value = proc
+
+        executor = GenericCliExecutor(
+            profile_name="enveloped",
+            argv_template=["echo", "--prompt", "{prompt}"],
+            provider="enveloped",
+        )
+        result = executor.run(
+            workspace=workspace,
+            prompt="hi",
+            timeout_seconds=30,
+        )
+
+        assert result.success is True
+        assert result.token_usage is not None
+        assert result.token_usage.input_tokens == 299
+        assert result.token_usage.output_tokens == 101
+
+    @patch("runtime.orchestrator.executors.subprocess")
+    def test_no_envelope_still_succeeds(self, mock_subprocess, tmp_path):
+        """A fake CLI with NO envelope → succeeds with token_usage=None."""
+        workspace = tmp_path / "agent_ws"
+        workspace.mkdir()
+
+        stdout = "Agent completed the task."
+
+        proc = MagicMock()
+        proc.pid = 9998
+        proc.returncode = 0
+        proc.communicate.return_value = (stdout, "")
+        mock_subprocess.Popen.return_value = proc
+
+        executor = GenericCliExecutor(
+            profile_name="noenvelope",
+            argv_template=["echo", "--prompt", "{prompt}"],
+            provider="noenvelope",
+        )
+        result = executor.run(
+            workspace=workspace,
+            prompt="hi",
+            timeout_seconds=30,
+        )
+
+        assert result.success is True
+        assert result.token_usage is None
+
+    @patch("runtime.orchestrator.executors.subprocess")
+    def test_malformed_envelope_still_succeeds(self, mock_subprocess, tmp_path):
+        """A fake CLI with a malformed envelope → still succeeds, token_usage has forensic data."""
+        workspace = tmp_path / "agent_ws"
+        workspace.mkdir()
+
+        _BEGIN = "__HR_ENVELOPE_BEGIN__"
+        _END = "__HR_ENVELOPE_END__"
+        stdout = f"Output...\n{_BEGIN}\nnot valid json\n{_END}\nmore"
+
+        proc = MagicMock()
+        proc.pid = 9999
+        proc.returncode = 0
+        proc.communicate.return_value = (stdout, "")
+        mock_subprocess.Popen.return_value = proc
+
+        executor = GenericCliExecutor(
+            profile_name="broken",
+            argv_template=["echo", "--prompt", "{prompt}"],
+            provider="broken",
+        )
+        result = executor.run(
+            workspace=workspace,
+            prompt="hi",
+            timeout_seconds=30,
+        )
+
+        assert result.success is True
+        assert result.token_usage is not None
+        assert result.token_usage.input_tokens is None
+        assert result.token_usage.usage_raw_json is not None
