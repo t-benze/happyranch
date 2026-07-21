@@ -25,18 +25,16 @@ def _parse_dt(value: str) -> datetime:
 
 
 # Fields writable via ``update``.  Identity/lifecycle columns (id, agent_name,
-# team, kind, created_at) are immutable after insert.  Content/provenance
-# fields (fire_at, recurrence, timezone, normalized_brief, source_instruction)
-# are editable through the service layer.  Runtime fields (status, active,
-# spawned_task_ids, last_fired_at, fire_count, session_id, error,
-# transcript_path, expires_at, indefinite, updated_at) are writable by the
-# scheduler/runner.
+# team, kind, created_at) are immutable after insert.  Provenance fields
+# (normalized_brief, source_instruction) are also immutable — set at creation
+# only.  Runtime fields (status, active, spawned_task_ids, last_fired_at,
+# fire_count, session_id, error, transcript_path, expires_at, indefinite,
+# updated_at) are writable by the scheduler/runner.  fire_at, recurrence,
+# and timezone are editable through the service layer.
 _UPDATABLE = {
     "fire_at",
     "recurrence",
     "timezone",
-    "normalized_brief",
-    "source_instruction",
     "status",
     "active",
     "expires_at",

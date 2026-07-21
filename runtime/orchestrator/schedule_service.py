@@ -31,12 +31,12 @@ def _now() -> datetime:
 
 
 # Fields the service will allow callers to edit in this phase.
-# Timing/recurrence fields plus content fields that preserve the approved
-# envelope.  Lifecycle fields, provenance, expiry/indefinite are NOT
-# editable through this service.
+# Timing/recurrence fields only.  Content fields (normalized_brief,
+# source_instruction) are provenance fields set at creation and immutable
+# afterward.  Lifecycle fields, expiry/indefinite are NOT editable
+# through this service.
 _ALLOWED_EDIT_FIELDS = frozenset({
     "fire_at", "recurrence", "timezone",
-    "normalized_brief", "source_instruction",
 })
 
 
@@ -261,9 +261,9 @@ class ScheduleService:
 
         Accepts only ``armed`` and ``paused`` statuses; ``firing`` and
         terminal state edits are rejected.  Editable fields: fire_at,
-        recurrence, timezone, normalized_brief, source_instruction.
-        Content fields are stripped and re-checked for non-blank;
-        blank edits are rejected and the row is left unchanged.
+        recurrence, timezone.
+        normalized_brief and source_instruction are provenance fields
+        set at creation and immutable afterward.
 
         After applying the changes the service re-runs the relevant
         validators on the *new* values.  If validation fails the record
@@ -333,22 +333,6 @@ class ScheduleService:
                 f"unsupported schedule kind: {record.kind.value}. "
                 "v1 supports one_shot and weekly only."
             )
-
-        # Strip string fields and re-run mandatory non-blank checks
-        for key in ("normalized_brief", "source_instruction"):
-            if key in fields and isinstance(fields[key], str):
-                fields[key] = fields[key].strip()
-
-        if "normalized_brief" in fields:
-            if not (fields["normalized_brief"] and fields["normalized_brief"].strip()):
-                raise ScheduleServiceError(
-                    "normalized_brief is required and must not be blank"
-                )
-        if "source_instruction" in fields:
-            if not (fields["source_instruction"] and fields["source_instruction"].strip()):
-                raise ScheduleServiceError(
-                    "source_instruction is required and must not be blank"
-                )
 
         self._db.schedules.update(schedule_id, **fields)
         self._db.insert_audit_log(

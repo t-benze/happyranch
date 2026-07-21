@@ -501,13 +501,12 @@ def test_edit_success_revalidates(tmp_path):
 
     edited = svc.edit(r.id, "dev_agent",
                       fire_at=_utc(day=29, h=10),
-                      timezone="Asia/Shanghai",
-                      normalized_brief="new brief",
-                      source_instruction="new instruction")
+                      timezone="Asia/Shanghai")
     assert edited.fire_at == _utc(day=29, h=10)
     assert edited.timezone == "Asia/Shanghai"
-    assert edited.normalized_brief == "new brief"
-    assert edited.source_instruction == "new instruction"
+    # provenance fields unchanged
+    assert edited.normalized_brief == "old brief"
+    assert edited.source_instruction == "old instruction"
     # updated_at should have bumped
     assert edited.updated_at > r.updated_at
 
@@ -515,8 +514,7 @@ def test_edit_success_revalidates(tmp_path):
     audit_rows = db.get_audit_logs_by_action("schedule_edited")
     assert len(audit_rows) == 1
     assert audit_rows[0]["task_id"] == r.id
-    assert sorted(audit_rows[0]["payload"]["fields"]) == ["fire_at", "normalized_brief",
-                                                           "source_instruction", "timezone"]
+    assert sorted(audit_rows[0]["payload"]["fields"]) == ["fire_at", "timezone"]
 
 
 def test_edit_rejects_terminal_state(tmp_path):
@@ -583,8 +581,8 @@ def test_edit_rejects_missing(tmp_path):
 
 # ── edit field allowlist (reviewer findings #4, #5) ───────────────────────
 
-def test_edit_allows_normalized_brief(tmp_path):
-    """normalized_brief is editable with non-blank validation."""
+def test_edit_rejects_normalized_brief(tmp_path):
+    """normalized_brief is a provenance field — immutable after creation."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -597,52 +595,16 @@ def test_edit_allows_normalized_brief(tmp_path):
         scheduling_enabled=True,
     )
 
-    edited = svc.edit(r.id, "dev_agent", normalized_brief="updated brief")
-    assert edited.normalized_brief == "updated brief"
+    with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
+        svc.edit(r.id, "dev_agent", normalized_brief="updated brief")
 
-
-def test_edit_allows_source_instruction(tmp_path):
-    """source_instruction is editable with non-blank validation."""
-    db = Database(tmp_path / "db.sqlite")
-    svc = ScheduleService(db)
-
-    r = svc.create(
-        agent_name="dev_agent", team="engineering",
-        kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
-        recurrence=None, timezone="UTC",
-        normalized_brief="original brief", source_instruction="original instruction",
-        scheduling_enabled=True,
-    )
-
-    edited = svc.edit(r.id, "dev_agent", source_instruction="updated instruction")
-    assert edited.source_instruction == "updated instruction"
-
-
-def test_edit_rejects_blank_normalized_brief(tmp_path):
-    """Blank normalized_brief edit is rejected and does not persist."""
-    db = Database(tmp_path / "db.sqlite")
-    svc = ScheduleService(db)
-
-    r = svc.create(
-        agent_name="dev_agent", team="engineering",
-        kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
-        recurrence=None, timezone="UTC",
-        normalized_brief="original brief", source_instruction="original instruction",
-        scheduling_enabled=True,
-    )
-
-    with pytest.raises(ScheduleServiceError, match="normalized_brief is required"):
-        svc.edit(r.id, "dev_agent", normalized_brief="")
-
-    # Record unchanged
+    # Row remains unchanged
     got = svc.get(r.id)
     assert got.normalized_brief == "original brief"
 
 
-def test_edit_rejects_blank_source_instruction(tmp_path):
-    """Blank source_instruction edit is rejected and does not persist."""
+def test_edit_rejects_source_instruction(tmp_path):
+    """source_instruction is a provenance field — immutable after creation."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -655,10 +617,10 @@ def test_edit_rejects_blank_source_instruction(tmp_path):
         scheduling_enabled=True,
     )
 
-    with pytest.raises(ScheduleServiceError, match="source_instruction is required"):
-        svc.edit(r.id, "dev_agent", source_instruction="   ")
+    with pytest.raises(ScheduleServiceError, match="cannot edit these fields"):
+        svc.edit(r.id, "dev_agent", source_instruction="updated instruction")
 
-    # Record unchanged
+    # Row remains unchanged
     got = svc.get(r.id)
     assert got.source_instruction == "original instruction"
 
@@ -1104,7 +1066,7 @@ def test_edit_weekly_rejects_mismatched_fire_at(tmp_path):
     assert got.recurrence == rec
 
 
-def test_edit_weekly_accepts_normalized_fire_at(tmp_path):
+def test_edit_weekly_accepts_valid_fire_at(tmp_path):
     """Weekly edit succeeds when fire_at matches the next occurrence."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -1119,10 +1081,13 @@ def test_edit_weekly_accepts_normalized_fire_at(tmp_path):
         scheduling_enabled=True,
     )
 
-    # Edit normalized_brief only — fire_at stays the same and must still be valid
-    edited = svc.edit(r.id, "dev_agent", normalized_brief="updated")
-    assert edited.normalized_brief == "updated"
+    # Edit timezone only — fire_at stays the same and must still be valid.
+    # Provenance fields are immutable and unchanged.
+    edited = svc.edit(r.id, "dev_agent", timezone="Asia/Shanghai")
+    assert edited.timezone == "Asia/Shanghai"
     assert edited.fire_at == _utc(day=27, h=9)
+    assert edited.normalized_brief == "old"
+    assert edited.source_instruction == "old"
 
 
 def test_edit_weekly_auto_derives_fire_at_on_recurrence_change(tmp_path):
