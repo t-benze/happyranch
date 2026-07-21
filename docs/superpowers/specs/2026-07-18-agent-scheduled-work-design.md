@@ -1,12 +1,17 @@
 # Agent-Owned Scheduled Work ("Todos") — Design Spike
 
 **Date:** 2026-07-18
-**Status:** DESIGN-ONLY. **Build is gated on founder sign-off of THIS design.** No
-implementation, no schema migration, and no permission-model change may land until
-the founder approves the design below — see §12 (Open founder sign-off items).
+**Status:** DESIGN-ONLY. **Founder signed off on this design on 2026-07-21
+at THR-105 seq19.** Implementation, schema migration, and permission-envelope
+behavior still land only through the normal engineering merge gates, and the
+boundaries below remain acceptance criteria for v1.
 **Origin:** THR-105. Founder authorized the capability and the *fully-autonomous*
 arming posture at THR-105 seq9 (reversing the earlier founder-scheduled / one-shot
-v1 framing at seq4). Product and engineering framing settled seq5–seq8.
+v1 framing at seq4). Product and engineering framing settled seq5–seq8; founder
+approval at seq19 ratified the label Todos, autonomy-with-mandatory-normalization,
+the v1 no-list, and defaults of 20 armed Todos per agent, 100 org-wide, 90-day
+one-shot horizon, and 90-day recurring review/expiry unless explicitly marked
+indefinite.
 **Author:** engineering_manager (design spike; founder is the reviewer/approver).
 **Relates to:**
 - `runtime/daemon/work_hours_scheduler.py`, `runtime/daemon/wake_queue.py`,
@@ -347,30 +352,31 @@ copy says "Todos"; tables, ids, routes, and audit actions say "schedule."
 product_lead's / founder's call. The engineering ask is only: keep the internal
 noun distinct from `tasks`.
 
-## 13. Open founder sign-off items (the gate)
+## 13. Founder sign-off (resolved) and build gate
 
-Build is blocked until the founder signs off on this design. Specifically:
+Founder sign-off landed on 2026-07-21 at THR-105 seq19. The approved decisions:
 
-1. **Approve the permission envelope (§9) as the v1 acceptance bar** — this is the
-   agent-permission-model change and is the load-bearing gate. In particular the
-   founder should set the concrete numbers: **active-schedule cap**, **max
-   horizon**, and the **default review/expiry window** length.
-2. **Confirm fully-autonomous arming *with* mandatory normalization (§8)** is the
-   intended reading of seq9 (autonomy = no pre-arming approval, not opaque
-   scheduling).
-3. **Ratify the user-facing label** ("Todos" vs "Reminders") — non-blocking for
-   engineering, but a founder/product call (§12).
-4. **Confirm v1 scope boundaries (§5 types, §3/§ no-list):** one-shot + weekly
-   only; self-target only; no silent schedules; no unbounded recurrence; no
-   complex calendar UI; no NL scheduling without a normalized reviewable schedule.
+1. **Permission envelope (§9) is the v1 acceptance bar** — this is the
+   agent-permission-model change and the load-bearing gate. Concrete defaults:
+   **20 armed Todos per agent**, **100 armed Todos org-wide**, **90-day one-shot
+   horizon**, and **90-day recurring review/expiry** unless explicitly marked
+   indefinite.
+2. **Fully-autonomous arming *with* mandatory normalization (§8)** is approved:
+   autonomy = no pre-arming approval, not opaque scheduling.
+3. **User-facing label is Todos**; internal primitive remains `Schedule`.
+4. **V1 scope boundaries (§5 types, §3/§14 no-list) are approved:** one-shot +
+   weekly only; self-target only; no silent schedules; no unbounded recurrence;
+   no complex calendar UI; no NL scheduling without a normalized reviewable
+   schedule.
 
-On sign-off, the build lands as a phased engineering effort (new `schedules` table
+The build lands as a phased engineering effort (new `schedules` table
 + scheduler loop/queue/runner/callback reusing the §7 seam + capability flag &
 caps + CLI/web list + audit + protocol 05b/05c doc-parity in the same PR), routed
 through the normal dev → code_reviewer → qa merge gate. **No part of it is
-authorized to build before sign-off**, and any implementation step that appears to
-require touching an existing schema column, the `audit_log` scope convention, or a
-permission-generation surface must STOP and escalate (§4 boundary).
+complete without verification output**, and any implementation step that appears
+to require touching an existing schema column, the `audit_log` scope convention,
+auth/notification routing, or a permission-generation surface must STOP and
+escalate (§4 boundary).
 
 ## 14. Non-goals (v1 no-list, consolidated)
 
