@@ -297,10 +297,11 @@ def _validate_emit_envelope_step(body: ConformanceCheckinRequest) -> None:
                     "detail": "Unknown token_usage keys: " + ", ".join(sorted(unknown_keys)) + ".",
                 },
             )
-        # Validate int-key value types: must be int or None
+        # Validate int-key value types: must be int or None (bool is int
+        # subclass in Python, so reject bool explicitly before the int check).
         for key in _TOKEN_USAGE_INT_KEYS:
             val = token_usage.get(key)
-            if val is not None and not isinstance(val, int):
+            if val is not None and (isinstance(val, bool) or not isinstance(val, int)):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={

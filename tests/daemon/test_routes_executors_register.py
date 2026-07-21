@@ -1497,6 +1497,58 @@ class TestEmitEnvelopeConformance:
         pending = store.get_pending_steps(token, "alpha")
         assert "emit_envelope" in (pending or [])
 
+    def test_emit_envelope_rejected_bool_input_tokens_rejected(self, app, daemon_state, monkeypatch):
+        """token_usage int fields must reject bool values (bool is int subclass in Python)."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {
+                    "envelope_version": 1,
+                    "token_usage": {"input_tokens": True},
+                },
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_token_usage" in r.json()["detail"]["code"]
+
+        # Verify step was NOT recorded
+        pending = store.get_pending_steps(token, "alpha")
+        assert "emit_envelope" in (pending or [])
+
+    def test_emit_envelope_rejected_bool_output_tokens_rejected(self, app, daemon_state, monkeypatch):
+        """All int fields must reject bool, not just input_tokens (the check is generic)."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "emit-test")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {
+                    "envelope_version": 1,
+                    "token_usage": {"output_tokens": False, "input_tokens": 1},
+                },
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_token_usage" in r.json()["detail"]["code"]
+
+        # Verify step was NOT recorded
+        pending = store.get_pending_steps(token, "alpha")
+        assert "emit_envelope" in (pending or [])
+
     def test_emit_envelope_rejected_model_not_str_or_null(self, app, daemon_state, monkeypatch):
         """token_usage.model must be str or null, not int."""
         _bypass_loopback(monkeypatch)
@@ -1648,6 +1700,58 @@ class TestRuntimeEmitEnvelopeConformance:
                 "envelope": {
                     "envelope_version": 1,
                     "token_usage": {"input_tokens": "should-be-int"},
+                },
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_token_usage" in r.json()["detail"]["code"]
+
+        # Verify step was NOT recorded
+        pending = store.get_pending_steps_runtime(token)
+        assert "emit_envelope" in (pending or [])
+
+    def test_runtime_emit_envelope_rejected_bool_input_tokens_rejected(self, app, daemon_state, monkeypatch):
+        """Runtime route: token_usage int fields must reject bool values."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint_runtime("runtime-emit")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {
+                    "envelope_version": 1,
+                    "token_usage": {"input_tokens": True},
+                },
+            },
+        )
+        assert r.status_code == 400
+        assert "invalid_token_usage" in r.json()["detail"]["code"]
+
+        # Verify step was NOT recorded
+        pending = store.get_pending_steps_runtime(token)
+        assert "emit_envelope" in (pending or [])
+
+    def test_runtime_emit_envelope_rejected_bool_both_fields_rejected(self, app, daemon_state, monkeypatch):
+        """Runtime route: covering another int field with bool to prove the check is generic."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint_runtime("runtime-emit")
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post(
+            "/api/v1/executors/runtime/conformance-checkin",
+            json={
+                "step_id": "emit_envelope",
+                "envelope": {
+                    "envelope_version": 1,
+                    "token_usage": {"output_tokens": False, "input_tokens": 1},
                 },
             },
         )
