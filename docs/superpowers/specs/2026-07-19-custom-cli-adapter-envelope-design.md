@@ -1,6 +1,69 @@
-# Custom-CLI Adapter Output-Envelope Contract — Design Spike
+# Standard Daemon↔CLI Interface: Adapter Contract for Custom CLIs — Design Spike
 
 **THR-107** | **2026-07-19** | **DESIGN ONLY — no production code, no protocol/ edits, no implementation PR**
+
+## Interface Model
+
+HappyRanch defines a **standard daemon↔CLI interface** with two halves:
+
+### INPUT (daemon → CLI)
+How the daemon hands over the prompt, timeout, and workspace to the CLI. This
+half is **declarative**: the registered `argv_template` — a list of strings
+with supported placeholders (`{prompt}`, `{timeout_seconds}`, `{workspace}`) —
+fully specifies the CLI invocation. A single generic executor
+(`GenericCliExecutor`, `runtime/orchestrator/executors.py:860`) substitutes
+these placeholders at `:905-909` and spawns the subprocess. **No CLI-side code
+is needed for input** — the daemon adapts declaratively via the template.
+
+### OUTPUT (CLI → daemon)
+How the CLI reports results back to the daemon: token usage, model identifier,
+session id, and final response text. This half is the **result-envelope**
+(§1) — a small, versioned JSON blob the CLI emits on stdout. One generic
+best-effort parser (`_parse_generic_cli_usage`, replacing `usage_parser=None`
+at `:920`) reads it — no per-CLI daemon-side code.
+
+### What is an "Adapter"?
+
+An **adapter** is whatever implements this interface for a given CLI:
+
+- **Bundled CLIs** (Claude, Codex, OpenCode, Pi): HappyRanch ships the adapter
+  **daemon-side**. Each built-in executor builds its own argv (the INPUT half
+  — known per-CLI argument conventions) and includes a hand-written output
+  parser (`_parse_{claude,codex,opencode,pi}_usage`) that extracts token usage
+  from each CLI's unique structured stdout format (the OUTPUT half). No CLI
+  modification was needed — the adapter lives entirely in the HappyRanch
+  runtime.
+
+- **Custom CLIs** (registered via `GenericCliExecutor`): the CLI implements the
+  contract itself **CLI-side**. The INPUT half needs no CLI work (the
+  `argv_template` is declarative and the daemon fills it). The OUTPUT half
+  requires the CLI to emit the result-envelope — a single structured JSON
+  blob. This is the spec a custom-CLI author implements.
+
+### Why INPUT/OUTPUT Asymmetry?
+
+The two interface halves are intentionally asymmetric because the **cost of
+conformance** differs:
+
+- **INPUT asymmetry (daemon adapts):** An existing CLI's argument parser is
+  fixed — you cannot force a new standard INPUT format on the Claude CLI or
+  the Codex CLI. Each has its own argv convention (`claude -p "<prompt>"`,
+  `codex exec "<prompt>"`, etc.). The daemon absorbs this complexity: the
+  `argv_template` is a thin per-CLI declaration, and the generic executor
+  fills it. **Bundled CLIs don't need the declarative template** because their
+  executors already know the argv shape; for custom CLIs the template is the
+  entire input-adapter story.
+
+- **OUTPUT asymmetry (CLI conforms):** Emitting one extra structured JSON blob
+  is cheap for a CLI to add — a few lines after the agent loop finishes. The
+  sentinel-delimited envelope (§2) is a minor stdout addition, not a rewrite
+  of the CLI's output format. So the CLI CAN conform on the OUTPUT half, and
+  the daemon-side parser stays generic (one function for all custom CLIs).
+
+This asymmetry is the core architectural insight: **the daemon adapts on
+input via a declarative template; the CLI adapts on output by emitting one
+structured envelope.** The envelope is the OUTPUT half of the standard
+interface; the `argv_template` is the INPUT half.
 
 ## Goal
 
@@ -12,15 +75,16 @@ Pi) each have a hand-written output parser that extracts token usage from the
 CLI's structured stdout. Custom CLIs cannot retrofit their output into those
 per-CLI shapes.
 
-This spec defines a **small, versioned JSON result-envelope** that any custom CLI
-**may** emit. One generic parser (`:920`, replacing `usage_parser=None`) reads it
-— no per-CLI adapter code. The envelope is **optional**; absence is harmless
+This spec defines the OUTPUT half of the standard daemon↔CLI interface — a
+**small, versioned JSON result-envelope** that any custom CLI **may** emit.
+One generic parser (`:920`, replacing `usage_parser=None`) reads it — no
+per-CLI daemon-side code. The envelope is **optional**; absence is harmless
 (current behavior). This upgrades custom CLIs to first-class spend visibility
 without bundling per-CLI logic.
 
 ---
 
-## 1. Result-Envelope Schema
+## 1. Output-Adapter Contract: Result-Envelope Schema
 
 The envelope is a single JSON object the CLI emits in its stdout (see §2 for
 transport). All fields except `envelope_version` are optional — the parser is
