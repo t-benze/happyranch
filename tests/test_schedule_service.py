@@ -20,10 +20,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _utc(h: int = 0, m: int = 0, day: int = 25, month: int = 7) -> datetime:
-    return datetime(2026, month, day, h, m, tzinfo=timezone.utc)
-
-
 # ── frozen-clock helpers (date-stable tests) ────────────────────────────
 
 _FROZEN_NOW = datetime(2026, 7, 22, 0, 0, tzinfo=timezone.utc)
@@ -60,7 +56,7 @@ def _record(**overrides) -> ScheduleRecord:
         agent_name="dev_agent",
         team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         timezone="Asia/Shanghai",
         normalized_brief="Send weekly report",
         source_instruction="Every Monday send the status report",
@@ -134,7 +130,7 @@ def test_create_weekly_success(tmp_path, frozen_clock):
 
 # ── capability gate ──────────────────────────────────────────────────────
 
-def test_create_rejects_when_scheduling_disabled(tmp_path):
+def test_create_rejects_when_scheduling_disabled(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -142,14 +138,14 @@ def test_create_rejects_when_scheduling_disabled(tmp_path):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.ONE_SHOT,
-            fire_at=_utc(day=28, h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="x",
             scheduling_enabled=False,
         )
 
 
-def test_create_rejects_when_scheduling_capability_omitted(tmp_path):
+def test_create_rejects_when_scheduling_capability_omitted(tmp_path, frozen_clock):
     """Omitted scheduling capability must default-deny (reviewer finding #1)."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -158,14 +154,14 @@ def test_create_rejects_when_scheduling_capability_omitted(tmp_path):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.ONE_SHOT,
-            fire_at=_utc(day=28, h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="x",
             # scheduling_enabled NOT passed
         )
 
 
-def test_create_rejects_when_scheduling_capability_none(tmp_path):
+def test_create_rejects_when_scheduling_capability_none(tmp_path, frozen_clock):
     """Explicit None scheduling capability must be rejected."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -174,14 +170,14 @@ def test_create_rejects_when_scheduling_capability_none(tmp_path):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.ONE_SHOT,
-            fire_at=_utc(day=28, h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="x",
             scheduling_enabled=None,
         )
 
 
-def test_create_rejects_blank_source_instruction(tmp_path):
+def test_create_rejects_blank_source_instruction(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -189,14 +185,14 @@ def test_create_rejects_blank_source_instruction(tmp_path):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.ONE_SHOT,
-            fire_at=_utc(day=28, h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="   ",
             scheduling_enabled=True,
         )
 
 
-def test_create_rejects_blank_normalized_brief(tmp_path):
+def test_create_rejects_blank_normalized_brief(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -204,7 +200,7 @@ def test_create_rejects_blank_normalized_brief(tmp_path):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.ONE_SHOT,
-            fire_at=_utc(day=28, h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="", source_instruction="x",
             scheduling_enabled=True,
@@ -247,7 +243,7 @@ def test_create_one_shot_rejects_past_fire_at(tmp_path, frozen_clock):
     assert len(svc.list()) == 0
 
 
-def test_create_rejects_invalid_weekly_recurrence(tmp_path):
+def test_create_rejects_invalid_weekly_recurrence(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -257,14 +253,14 @@ def test_create_rejects_invalid_weekly_recurrence(tmp_path):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.WEEKLY,
-            fire_at=_utc(day=26, h=1),
+            fire_at=_FROZEN_NOW + timedelta(days=4, hours=1),
             recurrence=bad_rec, timezone="UTC",
             normalized_brief="x", source_instruction="x",
             scheduling_enabled=True,
         )
 
 
-def test_create_rejects_unsupported_recurrence(tmp_path):
+def test_create_rejects_unsupported_recurrence(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -274,7 +270,7 @@ def test_create_rejects_unsupported_recurrence(tmp_path):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.WEEKLY,
-            fire_at=_utc(day=26, h=1),
+            fire_at=_FROZEN_NOW + timedelta(days=4, hours=1),
             recurrence=bad_rec, timezone="UTC",
             normalized_brief="x", source_instruction="x",
             scheduling_enabled=True,
@@ -298,7 +294,7 @@ def test_create_rejects_agent_cap_exceeded(tmp_path, frozen_clock):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.ONE_SHOT,
-            fire_at=_utc(day=28, h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="x",
             scheduling_enabled=True,
@@ -323,7 +319,7 @@ def test_create_rejects_org_cap_exceeded(tmp_path, frozen_clock):
         svc.create(
             agent_name="new_agent", team="engineering",
             kind=ScheduleKind.ONE_SHOT,
-            fire_at=_utc(day=28, h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence=None, timezone="UTC",
             normalized_brief="x", source_instruction="x",
             scheduling_enabled=True,
@@ -566,7 +562,7 @@ def test_edit_success_revalidates(tmp_path, frozen_clock):
     assert sorted(audit_rows[0]["payload"]["fields"]) == ["fire_at", "timezone"]
 
 
-def test_edit_rejects_terminal_state(tmp_path):
+def test_edit_rejects_terminal_state(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -577,10 +573,10 @@ def test_edit_rejects_terminal_state(tmp_path):
 
     with pytest.raises(ScheduleServiceError, match="cannot edit"):
         svc.edit("SCHEDULE-001", "dev_agent",
-                 fire_at=_utc(day=29, h=10))
+                 fire_at=_FROZEN_NOW + timedelta(days=7, hours=10))
 
 
-def test_edit_rejects_firing(tmp_path):
+def test_edit_rejects_firing(tmp_path, frozen_clock):
     """edit must reject FIRING state (reviewer finding #3)."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -592,7 +588,7 @@ def test_edit_rejects_firing(tmp_path):
 
     with pytest.raises(ScheduleServiceError, match="cannot edit"):
         svc.edit("SCHEDULE-001", "dev_agent",
-                 fire_at=_utc(day=29, h=10))
+                 fire_at=_FROZEN_NOW + timedelta(days=7, hours=10))
 
 
 def test_edit_rejects_invalid_after_edit(tmp_path, frozen_clock):
@@ -621,12 +617,12 @@ def test_edit_rejects_invalid_after_edit(tmp_path, frozen_clock):
     assert got.recurrence == {"day": "Mon", "time": "09:00", "tz": "UTC"}
 
 
-def test_edit_rejects_missing(tmp_path):
+def test_edit_rejects_missing(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     with pytest.raises(ScheduleServiceError, match="not found"):
-        svc.edit("SCHEDULE-999", "dev_agent", fire_at=_utc(day=29, h=10))
+        svc.edit("SCHEDULE-999", "dev_agent", fire_at=_FROZEN_NOW + timedelta(days=7, hours=10))
 
 
 # ── edit field allowlist (reviewer findings #4, #5) ───────────────────────
@@ -854,7 +850,7 @@ def test_edit_succeeds_from_paused(tmp_path, frozen_clock):
 
 # ── one-shot recurrence rejection (reviewer HIGH finding) ────────────
 
-def test_create_one_shot_rejects_non_null_recurrence_weekly_shape(tmp_path):
+def test_create_one_shot_rejects_non_null_recurrence_weekly_shape(tmp_path, frozen_clock):
     """One-shot with weekly-shaped recurrence must be rejected at create time."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -863,7 +859,7 @@ def test_create_one_shot_rejects_non_null_recurrence_weekly_shape(tmp_path):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.ONE_SHOT,
-            fire_at=_utc(day=28, h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence={"day": "Mon", "time": "09:00", "tz": "UTC"},
             timezone="UTC",
             normalized_brief="x", source_instruction="x",
@@ -871,7 +867,7 @@ def test_create_one_shot_rejects_non_null_recurrence_weekly_shape(tmp_path):
         )
 
 
-def test_create_one_shot_rejects_cron_recurrence(tmp_path):
+def test_create_one_shot_rejects_cron_recurrence(tmp_path, frozen_clock):
     """One-shot with cron/arbitrary recurrence must be rejected at create time."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
@@ -880,7 +876,7 @@ def test_create_one_shot_rejects_cron_recurrence(tmp_path):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.ONE_SHOT,
-            fire_at=_utc(day=28, h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
             recurrence={"cron": "* * * * *"},
             timezone="UTC",
             normalized_brief="x", source_instruction="x",
