@@ -1724,6 +1724,24 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/schedules/create": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/schedules/{schedule_id}": {
       "GET": {
         "params": [

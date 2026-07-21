@@ -400,6 +400,41 @@ separate from task-scoped token usage.
 - The spawn callback is the only fire path — no alternate trigger mechanisms
   exist.
 
+**Per-agent scheduling capability (Phase 4).** Schedule creation is
+default-deny: an agent can only create (arm) schedules when its name is
+listed in ``scheduling.enabled_agents`` in ``org/config.yaml``. Missing
+or empty config rejects creation with an actionable 403:
+
+```yaml
+scheduling:
+  enabled_agents:
+    - dev_agent
+```
+
+The capability gate is checked by the
+``POST /api/v1/orgs/{slug}/schedules/create`` route before delegating
+to ``ScheduleService.create``. This is a file-backed org-config flag;
+there is no web settings UI for it in Phase 4.
+
+**Agent create callback (Phase 4).** An enabled agent can invoke:
+
+```bash
+happyranch schedules create --org <slug> --from-file <path>
+```
+
+The JSON payload carries ``task_id``, ``session_id`` (for session proof),
+``kind``, ``fire_at``, ``recurrence``, ``timezone``,
+``normalized_brief``, and ``source_instruction``. The agent name and
+team are derived from the active session — the payload cannot choose
+them (self-target only). The callback is single-line-friendly and
+deterministic; it requires exactly the ``--from-file`` form (no inline
+multi-line bash).
+
+Agents should only call this when they have an explicit
+founder/operator instruction to arm a schedule, and they must
+normalize fields before arming — unsupported recurrence patterns
+should be surfaced as a blocking error rather than approximated.
+
 #### Mode 3: Persistent (Support Agent only)
 The Support Agent is the one exception. Tourists need real-time help and the response time target is under 5 minutes. Two approaches:
 

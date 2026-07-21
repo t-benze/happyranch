@@ -1,8 +1,8 @@
-"""Agent Todos — schedule management and fire-spawn callback (THR-105).
+"""Agent Todos — schedule management, creation, and fire-spawn callback (THR-105).
 
 Management surface (founder/operator): list, show, pause, cancel, edit.
-Fire path (agent callback): single-use record-scoped spawn that creates
-exactly one root task from the stored normalized_brief.
+Agent callback: create (Phase 4) — session-validated, capability-gated
+schedule arm; spawn (Phase 3) — single-use record-scoped fire.
 
 User-facing label: Todos.  Internal primitive: Schedule / SCHEDULE-NNN.
 """
@@ -23,6 +23,7 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.models import ScheduleKind, ScheduleStatus, TaskRecord
+from runtime.orchestrator.org_config import load_org_config, resolve_scheduling_enabled
 from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 from runtime.orchestrator.schedule_service import ScheduleService, ScheduleServiceError
 
@@ -52,6 +53,151 @@ def _schedule_to_dict(record) -> dict:
         "created_at": record.created_at.isoformat(),
         "updated_at": record.updated_at.isoformat(),
     }
+
+
+# ── create (agent callback, Phase 4) ───────────────────────────────────
+
+class ScheduleCreateBody(BaseModel):
+    """Agent-facing schedule creation payload.
+
+    The agent is derived from the active session (self-target only);
+    the payload does NOT carry an agent/team field.
+    """
+    model_config = {"extra": "forbid"}
+
+    task_id: str
+    session_id: str
+    kind: str = Field(description="one_shot or weekly")
+    fire_at: str | None = Field(
+        None, description="ISO-8601 fire time (required for one_shot; "
+        "for weekly, must match the next recurrence occurrence)"
+    )
+    recurrence: dict | None = Field(
+        None, description="Weekly recurrence: {day, time, tz}"
+    )
+    timezone: str = "UTC"
+    normalized_brief: str = Field(description="Normalized brief for the spawned task")
+    source_instruction: str = Field(description="The original instruction from founder/operator")
+
+
+@router.post("/schedules/create")
+def create_schedule(
+    slug: str,
+    body: ScheduleCreateBody,
+    org: OrgDep,
+    request: Request,
+) -> dict:
+    """Agent callback: create (arm) a new schedule.
+
+    Self-target only: the agent name is derived from the active session
+    (task_id + session_id), NOT from the payload.  Per-agent scheduling
+    capability is checked via org config before creation.
+    """
+    # ── 1. Validate session ────────────────────────────────────
+    task = org.db.get_task(body.task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "session_mismatch", "reason": "unknown_task"},
+        )
+    agent = task.assigned_agent
+    if agent is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "session_mismatch", "reason": "task_has_no_agent"},
+        )
+    active_sid = org.sessions.get_active(body.task_id, agent)
+    if active_sid is None or active_sid != body.session_id:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
+        )
+
+    # ── 2. Per-agent scheduling capability gate ────────────────
+    from runtime.orchestrator._paths import OrgPaths
+    org_cfg = load_org_config(OrgPaths(root=org.root))
+    if not resolve_scheduling_enabled(org_cfg, agent):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "scheduling_not_enabled",
+                "message": (
+                    f"agent {agent!r} does not have scheduling capability. "
+                    "Add the agent to scheduling.enabled_agents in org/config.yaml "
+                    "to enable."
+                ),
+            },
+        )
+
+    # ── 3. Resolve team ────────────────────────────────────────
+    registry = org.teams
+    if registry is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unknown_team", "valid": []},
+        )
+    team = registry.team_for_agent(agent) or registry.team_for_manager(agent)
+    if team is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "agent_team_unresolved", "agent": agent},
+        )
+
+    # ── 4. Parse kind ───────────────────────────────────────────
+    try:
+        kind = ScheduleKind(body.kind)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_kind",
+                "got": body.kind,
+                "valid": [k.value for k in ScheduleKind],
+            },
+        )
+
+    # ── 5. Parse fire_at ────────────────────────────────────────
+    fire_at: datetime | None = None
+    if body.fire_at is not None:
+        try:
+            fire_at = datetime.fromisoformat(body.fire_at)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_fire_at", "got": body.fire_at},
+            )
+
+    # ── 6. One-shot must have fire_at ────────────────────────
+    if kind == ScheduleKind.ONE_SHOT and fire_at is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "missing_fire_at",
+                "message": "fire_at is required for one-shot schedules",
+            },
+        )
+
+    # ── 7. Route through ScheduleService ────────────────────────
+    svc = ScheduleService(org.db)
+    try:
+        record = svc.create(
+            agent_name=agent,
+            team=team,
+            kind=kind,
+            fire_at=fire_at,
+            recurrence=body.recurrence,
+            timezone=body.timezone,
+            normalized_brief=body.normalized_brief,
+            source_instruction=body.source_instruction,
+            scheduling_enabled=True,
+        )
+    except ScheduleServiceError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "creation_rejected", "message": str(exc)},
+        )
+
+    return _schedule_to_dict(record)
 
 
 # ── list ────────────────────────────────────────────────────────────────

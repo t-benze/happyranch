@@ -171,6 +171,16 @@ class MemoryCompactionConfig:
 
 
 @dataclass(frozen=True)
+class AgentSchedulingConfig:
+    """THR-105 Phase 4: per-agent scheduling capability gate.
+
+    Default deny: ``enabled_agents`` is empty by default — no agent can
+    create schedules unless explicitly listed. The gate is checked by
+    the ``resolve_scheduling_enabled`` resolver."""
+    enabled_agents: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class OrgConfig:
     session_timeout_seconds: int | None = None
     # Org-wide local timezone. None (the default) means "inherit machine-local"
@@ -193,6 +203,8 @@ class OrgConfig:
     # of genuine revise cycles (worker-of-record re-delegations) before a
     # deliberate stop-with-best. 0 = disabled (today's behavior unchanged).
     max_revise_rounds: int = 0
+    # THR-105 Phase 4: agent scheduling capability gate.
+    agent_scheduling: AgentSchedulingConfig = field(default_factory=AgentSchedulingConfig)
 
     @classmethod
     def load_from_text(cls, text: str, path: str = "<text>") -> "OrgConfig":
@@ -910,6 +922,20 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
             ),
         )
 
+    # THR-105 Phase 4: agent scheduling capability gate.
+    sched_cfg = AgentSchedulingConfig()
+    sched_block = data.get("scheduling")
+    if sched_block is not None:
+        if not isinstance(sched_block, dict):
+            raise OrgConfigError(f"{path}: scheduling must be a mapping")
+        agents = sched_block.get("enabled_agents")
+        if agents is not None:
+            if not isinstance(agents, list) or not all(isinstance(a, str) for a in agents):
+                raise OrgConfigError(
+                    f"{path}: scheduling.enabled_agents must be a list of strings"
+                )
+            sched_cfg = AgentSchedulingConfig(enabled_agents=list(agents))
+
     # THR-107: the legacy per-org executor_profiles block is NO LONGER
     # parsed — custom executor profiles live exclusively in the
     # machine-global runtime store (runtime_executor_store.py). A lingering
@@ -925,6 +951,7 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
         max_revise_rounds=max_revise,
         memory_search=search_cfg,
         memory_compaction=comp_cfg,
+        agent_scheduling=sched_cfg,
         **threads_kwargs,
     )
 
@@ -1629,4 +1656,20 @@ def write_skill_eligibility_entry(
         except FileNotFoundError:
             pass
         raise
+
+
+# ── THR-105 Phase 4: per-agent scheduling capability resolver ─────────
+
+
+def resolve_scheduling_enabled(org_config: OrgConfig, agent_name: str) -> bool:
+    """Return True if *agent_name* is permitted to create schedules.
+
+    Default deny: an empty ``enabled_agents`` list (or missing
+    ``scheduling`` section) means no agent has scheduling capability.
+    The founder enables agents individually by adding them to
+    ``scheduling.enabled_agents`` in ``org/config.yaml``.
+    """
+    if not org_config.agent_scheduling.enabled_agents:
+        return False
+    return agent_name in org_config.agent_scheduling.enabled_agents
 

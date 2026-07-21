@@ -2241,7 +2241,7 @@ def test_schedules_spawn_parses_to_cmd_schedules_spawn():
         "--from-file", "/tmp/test.json",
     ])
     assert args.command == "schedules"
-    assert args.schedule_spawn_command == "spawn"
+    assert args.schedule_command == "spawn"
     assert args.org == "test-org"
     assert args.schedule_id == "SCHEDULE-001"
     assert args.from_file == "/tmp/test.json"
@@ -2341,3 +2341,45 @@ def test_schedule_runner_prompt_names_schedules_spawn():
     # The prompt must instruct the agent to call happyranch schedules spawn (not todos spawn)
     assert "happyranch schedules spawn" in prompt
     assert "happyranch todos spawn" not in prompt
+
+
+# ── THR-105 Phase 4: schedules create CLI ─────────────────────────────
+
+def test_schedules_create_parses_to_cmd_schedules_create():
+    """happyranch schedules create --from-file ... parses to cmd_schedules_create."""
+    from cli.commands.schedules import cmd_schedules_create
+
+    parser = build_parser()
+    args = parser.parse_args([
+        "schedules", "create",
+        "--org", "alpha",
+        "--from-file", "/tmp/create.json",
+    ])
+    assert args.command == "schedules"
+    assert args.schedule_command == "create"
+    assert args.org == "alpha"
+    assert args.from_file == "/tmp/create.json"
+    assert args.func is cmd_schedules_create
+
+
+def test_schedules_create_requires_from_file():
+    """happyranch schedules create must have --from-file."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["schedules", "create", "--org", "alpha"])
+
+
+def test_schedules_create_requires_org():
+    """happyranch schedules create must have --org."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["schedules", "create", "--from-file", "/tmp/create.json"])
+
+
+def test_schedules_create_not_under_todos():
+    """happyranch todos create does NOT exist; create is only under schedules."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["todos", "create", "--org", "x", "--from-file", "/f"])
+
+

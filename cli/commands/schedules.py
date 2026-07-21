@@ -1,8 +1,8 @@
-"""Agent Todos — CLI for schedule management and agent fire callback (THR-105).
+"""Agent Todos — CLI for schedule management, agent callback (THR-105).
 
 Founder/operator: list, show, pause, cancel, edit.
-Agent fire callback: spawn — single-line invocation that forwards a spawn
-payload to the daemon which creates the root task server-side.
+Agent callbacks: create (Phase 4) — arm a new schedule; spawn (Phase 3) —
+fire a schedule's root task.
 
 User-facing label: Todos.  Internal primitive: Schedule / SCHEDULE-NNN.
 """
@@ -125,6 +125,39 @@ def cmd_schedules_edit(args: argparse.Namespace) -> None:
     print(f"ok: {resp['schedule_id']} edited (status={resp['status']})")
 
 
+# ── agent create callback (Phase 4) ───────────────────────────────────
+
+def _create_payload_from_file(path: str) -> dict:
+    try:
+        body = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as exc:
+        print(f"Error reading {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(body, dict):
+        print("error: schedules create payload must be a JSON object", file=sys.stderr)
+        sys.exit(1)
+    return body
+
+
+def cmd_schedules_create(args: argparse.Namespace) -> None:
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
+    client = OpcClient.from_env()
+    body = _create_payload_from_file(args.from_file)
+    r = client.post(
+        f"/api/v1/orgs/{args.org}/schedules/create",
+        json=body,
+    )
+    if not _ok(r):
+        return
+    resp = r.json()
+    print(
+        f"ok: {resp['schedule_id']} armed (kind={resp['kind']} "
+        f"status={resp['status']} agent={resp['agent_name']})"
+    )
+
+
 # ── agent spawn callback ────────────────────────────────────────────────
 
 def _spawn_payload_from_file(path: str) -> dict:
@@ -196,12 +229,20 @@ def register(sub) -> None:
     p_edit.add_argument("--from-file", required=True)
     p_edit.set_defaults(func=cmd_schedules_edit)
 
-    # ── agent fire callback: schedules spawn ──────────────────────
+    # ── agent callbacks: schedules create / spawn ──────────────
     p_sched = sub.add_parser(
         "schedules",
-        help="Agent callback: spawn a schedule's root task",
+        help="Agent callbacks: create (arm) or spawn (fire) a schedule",
     )
-    sched_sub = p_sched.add_subparsers(dest="schedule_spawn_command", required=True)
+    sched_sub = p_sched.add_subparsers(dest="schedule_command", required=True)
+
+    p_create = sched_sub.add_parser(
+        "create", help="Create (arm) a new schedule",
+    )
+    p_create.add_argument("--org", required=True)
+    p_create.add_argument("--from-file", required=True)
+    p_create.set_defaults(func=cmd_schedules_create)
+
     p_spawn = sched_sub.add_parser(
         "spawn", help="Spawn a root task from a schedule fire",
     )

@@ -509,6 +509,36 @@ agent/org caps). A new Schedule enters in ARMED status with a computed
 ``fire_at``. The service does NOT enqueue or execute anything — it is a
 pure lifecycle-management surface.
 
+**Agent create callback (Phase 4).** An enabled agent, while handling an
+explicit founder/operator instruction, can invoke the
+``POST /api/v1/orgs/{slug}/schedules/create`` callback to arm a new
+Schedule:
+
+```bash
+happyranch schedules create --org <slug> --from-file <path>
+```
+
+The callback enforces:
+- **Self-target only** — the agent name is derived from the active session
+  (``task_id`` + ``session_id``), NOT from the payload. The caller cannot
+  choose the target agent or team.
+- **Default-deny capability gate** — the agent must be listed in
+  ``scheduling.enabled_agents`` in ``org/config.yaml``. Missing or empty
+  config rejects creation with an actionable 403.
+- **Session proof** — ``task_id`` + ``session_id`` must match the active
+  session for the creating agent. Mismatch returns 409.
+- **Mandatory normalization** — one-shot ``fire_at`` must be within 90 days
+  and in the future; weekly recurrence must have exactly one weekday +
+  HH:MM + valid timezone, with ``fire_at`` matching the next computed
+  occurrence.
+- **Audit** — a ``schedule_created`` audit row is written with
+  ``task_id=<SCHEDULE-NNN>``.
+- **Provenance** — ``normalized_brief`` and ``source_instruction`` are
+  stored as-is (stripped).
+
+The route delegates to ``ScheduleService.create`` with
+``scheduling_enabled=True`` after the session/capability gates pass.
+
 **Scheduler loop (Phase 3).** A 60-second daemon loop
 (``schedule_scheduler_loop`` in ``runtime/daemon/schedule_scheduler.py``)
 scans every org for ARMED rows whose ``fire_at <= now`` (one-shot) or
