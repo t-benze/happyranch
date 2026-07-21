@@ -282,8 +282,7 @@ export function AgentsPage(): JSX.Element {
         onCreated={(newId) => navigate(threadRoutes.detail(newId))}
         agents={agents}
         reflection={
-          startThreadPrefill?.recipients?.length === 1 &&
-          !startThreadPrefill?.forwarded_from_id
+          startThreadPrefill?.recipients?.length === 1
             ? { recipients: startThreadPrefill.recipients }
             : undefined
         }
