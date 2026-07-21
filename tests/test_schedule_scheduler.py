@@ -140,9 +140,10 @@ def test_utc_seconds_granularity_due(tmp_path):
 
 # ── weekly: no replay/backfill ──────────────────────────────────────────
 
-def test_weekly_no_replay(tmp_path):
-    """A weekly schedule whose UTC fire_at is hours in the past fires once,
-    not once per historical occurrence."""
+def test_weekly_stale_slot_not_enqueued(tmp_path):
+    """A weekly schedule whose fire_at is hours past (missed during daemon
+    downtime) must NOT be enqueued. Instead, fire_at must be advanced to the
+    next weekly occurrence. No job enqueued, no fire_count increment."""
     db = Database(tmp_path / "db.sqlite")
     now = _now()
     _schedule(
@@ -152,9 +153,74 @@ def test_weekly_no_replay(tmp_path):
         fire_at=now - timedelta(hours=5),
     )
     org = _FakeOrg(db)
-    assert schedule_due_schedules(org=org, now=now) == 1
-    # Second pass: already FIRING
     assert schedule_due_schedules(org=org, now=now) == 0
+    # No job enqueued
+    assert org.schedule_queue.size == 0
+    # Schedule still ARMED, fire_at advanced to next occurrence
+    record = db.schedules.get("SCHEDULE-001")
+    assert record.status == ScheduleStatus.ARMED
+    assert record.fire_at > now
+    assert record.fire_count == 0
+
+
+def test_weekly_stale_slot_expires_when_past_expiry(tmp_path):
+    """A stale weekly whose next occurrence exceeds expires_at expires
+    without enqueuing."""
+    db = Database(tmp_path / "db.sqlite")
+    now = _now()
+    # Set fire_at 5 hours in the past, expires_at to 1 hour in the past —
+    # the schedule should have expired already.
+    _schedule(
+        db,
+        kind=ScheduleKind.WEEKLY,
+        recurrence={"day": "Mon", "time": "09:00", "tz": "UTC"},
+        fire_at=now - timedelta(hours=5),
+        expires_at=now - timedelta(hours=1),
+    )
+    org = _FakeOrg(db)
+    assert schedule_due_schedules(org=org, now=now) == 0
+    assert org.schedule_queue.size == 0
+    record = db.schedules.get("SCHEDULE-001")
+    assert record.status == ScheduleStatus.EXPIRED
+    assert record.active == 0
+
+
+def test_weekly_on_time_fires_normally(tmp_path):
+    """A weekly schedule whose fire_at is within the tolerance window fires
+    normally (claimed + enqueued)."""
+    db = Database(tmp_path / "db.sqlite")
+    now = _now()
+    _schedule(
+        db,
+        kind=ScheduleKind.WEEKLY,
+        recurrence={"day": "Wed", "time": "12:00", "tz": "UTC"},
+        fire_at=now - timedelta(seconds=30),  # within tolerance
+    )
+    org = _FakeOrg(db)
+    assert schedule_due_schedules(org=org, now=now) == 1
+    assert org.schedule_queue.size == 1
+    record = db.schedules.get("SCHEDULE-001")
+    assert record.status == ScheduleStatus.FIRING
+
+
+def test_weekly_missed_slot_not_replayed_on_restart(tmp_path):
+    """Daemon restart after missing a weekly slot: no job enqueued, fire_at
+    advanced to next occurrence."""
+    db = Database(tmp_path / "db.sqlite")
+    now = _now()
+    _schedule(
+        db,
+        kind=ScheduleKind.WEEKLY,
+        recurrence={"day": "Mon", "time": "09:00", "tz": "UTC"},
+        fire_at=now - timedelta(days=2),  # missed by 2 days
+    )
+    org = _FakeOrg(db)
+    assert schedule_due_schedules(org=org, now=now) == 0
+    assert org.schedule_queue.size == 0
+    record = db.schedules.get("SCHEDULE-001")
+    assert record.status == ScheduleStatus.ARMED
+    assert record.fire_at > now
+    assert record.fire_count == 0
 
 
 # ── startup recovery ────────────────────────────────────────────────────

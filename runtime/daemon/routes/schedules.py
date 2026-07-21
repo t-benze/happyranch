@@ -303,6 +303,11 @@ async def spawn_schedule(
         spawned_task_ids = schedule.spawned_task_ids + created
         fire_count = schedule.fire_count + 1
 
+        # Terminal status returned to the caller after enqueue+audit.
+        # "completed" for one-shot / weekly re-arm; "expired" for weekly
+        # expiry paths that still enqueue the current fire's task.
+        return_status = "completed"
+
         if schedule.kind == ScheduleKind.ONE_SHOT:
             # One-shot: transition to fired (terminal).
             transcript_path = _write_schedule_transcript(
@@ -353,14 +358,8 @@ async def spawn_schedule(
                     action="schedule_expired",
                     payload={"reason": "no_next_occurrence"},
                 )
-                return {
-                    "schedule_id": schedule_id,
-                    "status": "expired",
-                    "spawned_task_ids": created,
-                }
-
-            # Check if next fire exceeds expires_at (when set and not indefinite)
-            if (
+                return_status = "expired"
+            elif (
                 schedule.expires_at is not None
                 and schedule.indefinite != 1
                 and next_fire > schedule.expires_at
@@ -381,28 +380,24 @@ async def spawn_schedule(
                     action="schedule_expired",
                     payload={"reason": "past_expires_at"},
                 )
-                return {
-                    "schedule_id": schedule_id,
-                    "status": "expired",
-                    "spawned_task_ids": created,
-                }
-
-            # Re-arm with next fire_at.
-            transcript_path = _write_schedule_transcript(
-                org.root, schedule_id, agent, body.summary, spawned_task_ids,
-            )
-            org.db.schedules.update(
-                schedule_id,
-                status=ScheduleStatus.ARMED,
-                active=1,
-                fire_at=next_fire,
-                spawned_task_ids=spawned_task_ids,
-                last_fired_at=now,
-                fire_count=fire_count,
-                session_id=None,
-                transcript_path=str(transcript_path),
-                updated_at=now,
-            )
+                return_status = "expired"
+            else:
+                # Re-arm with next fire_at.
+                transcript_path = _write_schedule_transcript(
+                    org.root, schedule_id, agent, body.summary, spawned_task_ids,
+                )
+                org.db.schedules.update(
+                    schedule_id,
+                    status=ScheduleStatus.ARMED,
+                    active=1,
+                    fire_at=next_fire,
+                    spawned_task_ids=spawned_task_ids,
+                    last_fired_at=now,
+                    fire_count=fire_count,
+                    session_id=None,
+                    transcript_path=str(transcript_path),
+                    updated_at=now,
+                )
 
     # Enqueue + audit outside the db lock.
     for task_id in created:
@@ -424,6 +419,6 @@ async def spawn_schedule(
 
     return {
         "schedule_id": schedule_id,
-        "status": "completed",
+        "status": return_status,
         "spawned_task_ids": created,
     }

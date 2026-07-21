@@ -496,6 +496,86 @@ verdict waste the delegation and burn a re-spawn round.
 
 ---
 
+### Agent Todos: internal Schedule fire mechanism (THR-105)
+
+Agent Todos use the internal ``schedules`` SQLite table (not the cron-like
+scheduled tasks described in ``05b-agent-runtime.md`` Mode 2). Every Schedule
+row represents one agent-owned recurring or one-shot work item.
+
+**Schedule lifecycle.** Schedules are created via the schedule service
+(``runtime/services/schedule_service.py``, Phase 1-2), which validates the
+v1 envelope (one-shot 90-day horizon, single-weekday weekly recurrence,
+agent/org caps). A new Schedule enters in ARMED status with a computed
+``fire_at``. The service does NOT enqueue or execute anything — it is a
+pure lifecycle-management surface.
+
+**Scheduler loop (Phase 3).** A 60-second daemon loop
+(``schedule_scheduler_loop`` in ``runtime/daemon/schedule_scheduler.py``)
+scans every org for ARMED rows whose ``fire_at <= now`` (one-shot) or
+``fire_at`` is within a 120-second tolerance window of ``now`` (weekly). For
+weekly schedules whose ``fire_at`` is stale (missed during daemon downtime),
+the scheduler advances ``fire_at`` to the next weekly occurrence via
+``next_weekly_occurrence`` or expires the schedule — **no replay/backfill**.
+Eligible rows are claimed: ARMED → FIRING, then enqueued as a ``ScheduleJob``
+into the org's ``ScheduleQueue``.
+
+**Runner + worker loop.** A dedicated ``schedule_worker_loop`` drains the
+``ScheduleQueue`` and invokes ``run_schedule`` (``schedule_runner.py``) for
+each job. The runner transitions FIRING → RUNNING, composes the schedule-fire
+prompt via ``build_schedule_prompt``, and invokes the owning agent's executor
+in its workspace. The fire prompt instructs the agent to call exactly one
+callback:
+
+```bash
+happyranch schedules spawn --org <slug> --schedule-id SCHEDULE-NNN --from-file <path>
+```
+
+**Spawn callback.** The ``/schedules/{id}/spawn`` route
+(``runtime/daemon/routes/schedules.py``) is the single-use, record-scoped
+fire endpoint:
+
+- Accepts only FIRING rows (409 on any other status).
+- Creates exactly one root task from the stored ``normalized_brief``, targeted
+  to the owning agent on its own team (self-targeted).
+- Records ``spawned_task_ids`` and increments ``fire_count``.
+- Resolves terminal state:
+  - **One-shot** → FIRED (terminal, ``active=0``).
+  - **Weekly** → re-armed (ARMED, ``active=1``) with the next ``fire_at``
+    computed via ``next_weekly_occurrence``, OR expired (EXPIRED, ``active=0``)
+    when the next occurrence exceeds ``expires_at`` and ``indefinite=0``.
+- Writes ``schedule_spawned``, ``schedule_completed``, and (when applicable)
+  ``schedule_expired`` audit log rows.
+- Enqueues the spawned task via ``enqueue_task``.
+- Writes a schedule transcript under ``<org_root>/schedules/SCHEDULE-NNN.md``.
+
+**Token usage.** Token usage for the schedule-fire executor session is stored
+in ``session_token_usage`` with ``scope_type="schedule"`` and
+``scope_id=<schedule_id>``.
+
+**Runner resolution.** After the executor returns, ``run_schedule`` checks the
+row's updated status. If the spawn callback drove it to FIRED (one-shot) or
+ARMED (weekly re-arm), the runner exits — the callback already handled
+terminal resolution. If the session returned successfully without calling
+spawn, the runner marks the row FAILED with error ``no_callback``. On executor
+failure or timeout, the row is marked FAILED or TIMEOUT respectively.
+
+**No hidden schedules.** Every Schedule is visible to the CLI ``list`` command
+and to the owning agent in the schedule-fire prompt. There is no mechanism for
+hidden or silent schedules.
+
+**No cross-agent scheduling.** Every Schedule targets a single agent on its
+own team. The spawn endpoint resolves the agent's team and creates the root
+task on that team — cross-team and cross-agent scheduling are not supported.
+
+**Distinct from cron-like scheduled tasks.** The Mode 2 cron-like scheduled
+tasks (documented in ``05b-agent-runtime.md``) are a separate mechanism using
+a different table and different triggers. Agent Todos are agent-owned,
+agent-driven Schedule records with a dedicated scheduler/runner/spawn-callback
+pipeline. The two systems coexist and do not share data or scheduling
+infrastructure.
+
+---
+
 ## 4. Runtime-Managed Skill Policy (CONTEXT/ADMISSION)
 
 The runtime-managed skill policy is an agent **context/admission** mechanism

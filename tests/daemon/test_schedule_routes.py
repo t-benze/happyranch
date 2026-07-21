@@ -293,3 +293,73 @@ def test_weekly_indefinite_skips_expiry(tmp_home, app, org_state, auth_headers, 
     record = org_state.db.schedules.get(sid)
     assert record.status == ScheduleStatus.ARMED
     assert record.active == 1
+
+
+# ── Blocker 1 regression: weekly expiry enqueues + audits ──────────────
+
+def test_weekly_expiry_enqueues_task_and_writes_audit(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+):
+    """When a weekly schedule expires on its current fire (next occurrence
+    past expires_at), the CURRENT fire's task MUST be enqueued, the spawned
+    task id must be recorded, schedule_spawned + schedule_completed audit
+    rows must exist, and the schedule must be EXPIRED."""
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+
+    now = _now()
+    monkeypatch.setattr(
+        "runtime.daemon.routes.schedules.datetime",
+        type("FakeDatetime", (object,), {
+            "now": staticmethod(lambda tz=None: now),
+            "timezone": timezone,
+            "timedelta": timedelta,
+        }),
+    )
+
+    recurrence = {"day": "Wed", "time": "09:00", "tz": "UTC"}
+    next_fire = next_weekly_occurrence("Wed", "09:00", "UTC", after=now)
+
+    sid = _insert_schedule(
+        org_state,
+        status=ScheduleStatus.FIRING,
+        kind=ScheduleKind.WEEKLY,
+        recurrence=recurrence,
+        fire_at=now - timedelta(hours=1),
+        expires_at=next_fire - timedelta(seconds=1),
+        indefinite=0,
+    )
+
+    status, body = _spawn(client, sid, auth_headers)
+    assert status == 200
+    assert body["status"] == "expired"
+    assert len(body["spawned_task_ids"]) == 1
+
+    # Schedule must be EXPIRED with the task recorded
+    record = org_state.db.schedules.get(sid)
+    assert record.status == ScheduleStatus.EXPIRED
+    assert record.active == 0
+    assert record.fire_count == 1
+    assert len(record.spawned_task_ids) == 1
+    assert body["spawned_task_ids"] == record.spawned_task_ids
+
+    # Task must exist
+    task_id = body["spawned_task_ids"][0]
+    task = org_state.db.get_task(task_id)
+    assert task is not None
+    assert task.assigned_agent == "dev_agent"
+
+    # Audit: schedule_spawned must exist for this fire
+    spawned = org_state.db.get_audit_logs_by_action("schedule_spawned")
+    spawned_for_schedule = [r for r in spawned if r["task_id"] == sid]
+    assert len(spawned_for_schedule) >= 1
+
+    # Audit: schedule_completed must exist for this fire
+    completed = org_state.db.get_audit_logs_by_action("schedule_completed")
+    completed_for_schedule = [r for r in completed if r["task_id"] == sid]
+    assert len(completed_for_schedule) >= 1
+
+    # Audit: schedule_expired must exist
+    expired = org_state.db.get_audit_logs_by_action("schedule_expired")
+    expired_for_schedule = [r for r in expired if r["task_id"] == sid]
+    assert len(expired_for_schedule) >= 1

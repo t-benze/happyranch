@@ -11,14 +11,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from runtime.daemon.metrics_store import maybe_persist_metrics_snapshot
 from runtime.daemon.schedule_queue import ScheduleJob
 from runtime.infrastructure.database import Database
-from runtime.models import ScheduleStatus
+from runtime.models import ScheduleKind, ScheduleStatus
+from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 
 logger = logging.getLogger(__name__)
+
+
+_WEEKLY_STALE_TOLERANCE = timedelta(seconds=120)
 
 
 def schedule_due_schedules(
@@ -29,9 +33,17 @@ def schedule_due_schedules(
 ) -> int:
     """Schedule due schedule fires for an org.
 
-    For each due schedule (armed, fire_at <= now): claim it (transition
-    armed → firing) so repeated scheduler ticks cannot spawn more than one
-    task for the same firing, then enqueue a ScheduleJob.
+    For each due one-shot schedule (armed, fire_at <= now): claim it
+    (transition armed → firing) so repeated scheduler ticks cannot spawn more
+    than one task for the same firing, then enqueue a ScheduleJob.
+
+    Weekly schedules are handled differently to prevent replay/backfill of
+    occurrences missed during daemon downtime. For a weekly schedule whose
+    fire_at is stale (more than ``_WEEKLY_STALE_TOLERANCE`` past ``now``),
+    the fire_at is advanced to the next weekly occurrence or the schedule
+    is expired (when the next occurrence exceeds expires_at). Only weekly
+    schedules within the tolerance window are claimed (armed → firing) and
+    enqueued.
 
     The claim-and-enqueue within the same tick is the duplicate-fire guard:
     the scheduler transitions to FIRING before enqueuing, so the next tick
@@ -48,6 +60,40 @@ def schedule_due_schedules(
     due_records = store.list_due(now)
     count = 0
     for record in due_records:
+        # Weekly no-replay/backfill: if fire_at is stale (missed during
+        # daemon downtime), advance to the next occurrence without firing.
+        if record.kind == ScheduleKind.WEEKLY and record.fire_at < now - _WEEKLY_STALE_TOLERANCE:
+            recurrence = record.recurrence
+            if recurrence is not None:
+                next_fire = next_weekly_occurrence(
+                    recurrence["day"], recurrence["time"], recurrence["tz"],
+                    after=now,
+                )
+                if next_fire is None or (
+                    record.expires_at is not None
+                    and record.indefinite != 1
+                    and next_fire > record.expires_at
+                ):
+                    store.update(
+                        record.id,
+                        status=ScheduleStatus.EXPIRED,
+                        active=0,
+                    )
+                else:
+                    store.update(
+                        record.id,
+                        fire_at=next_fire,
+                        status=ScheduleStatus.ARMED,
+                        active=1,
+                    )
+            else:
+                store.update(
+                    record.id,
+                    status=ScheduleStatus.EXPIRED,
+                    active=0,
+                )
+            continue
+
         # Claim the row: armed → firing. If the update fails (row already
         # claimed by a concurrent tick), skip it. The list_due query only
         # returns armed rows, so a race would mean it's no longer armed.
