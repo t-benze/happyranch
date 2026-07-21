@@ -25,6 +25,7 @@ from runtime.daemon.routes import (
     metrics,
     orgs,
     runtime,
+    schedules,
     skills,
     tasks,
     teams,
@@ -196,6 +197,21 @@ async def _lifespan(app: FastAPI):
     ]
     work_hours_scheduler_task = asyncio.create_task(work_hours_scheduler_loop(state))
 
+    # ── Schedule fire wiring (THR-105 Phase 3) ──
+    from runtime.daemon.schedule_scheduler import schedule_scheduler_loop
+    from runtime.daemon.schedule_queue import schedule_worker_loop
+
+    # Startup recovery: a schedule left `firing` when the daemon died can never
+    # receive its spawn callback, so mark it failed (mirrors recover_running).
+    for org in state.orgs.values():
+        org.db.schedules.recover_firing()
+
+    schedule_worker_tasks = [
+        asyncio.create_task(schedule_worker_loop(state, state.settings))
+        for _ in range(1)
+    ]
+    schedule_scheduler_task = asyncio.create_task(schedule_scheduler_loop(state))
+
     from runtime.daemon.zombie_reaper import zombie_reaper_loop
     zombie_reaper_task = asyncio.create_task(zombie_reaper_loop(state))
 
@@ -209,6 +225,9 @@ async def _lifespan(app: FastAPI):
             t.cancel()
         work_hours_scheduler_task.cancel()
         for t in wake_worker_tasks:
+            t.cancel()
+        schedule_scheduler_task.cancel()
+        for t in schedule_worker_tasks:
             t.cancel()
         zombie_reaper_task.cancel()
         from runtime.daemon.jobs_runner import terminate_all_inflight
