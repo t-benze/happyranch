@@ -23,7 +23,7 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.models import ScheduleKind, ScheduleStatus, TaskRecord
-from runtime.orchestrator.org_config import load_org_config, resolve_scheduling_enabled
+from runtime.orchestrator.agent_scheduling_capability import resolve_scheduling_enabled
 from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 from runtime.orchestrator.schedule_service import ScheduleService, ScheduleServiceError
 
@@ -114,9 +114,7 @@ def create_schedule(
         )
 
     # ── 2. Per-agent scheduling capability gate ────────────────
-    from runtime.orchestrator._paths import OrgPaths
-    org_cfg = load_org_config(OrgPaths(root=org.root))
-    if not resolve_scheduling_enabled(org_cfg, agent):
+    if not resolve_scheduling_enabled(org.root, agent):
         raise HTTPException(
             status_code=403,
             detail={
