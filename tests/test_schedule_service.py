@@ -12,6 +12,7 @@ import pytest
 
 from runtime.infrastructure.database import Database
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
+from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 from runtime.orchestrator.schedule_service import ScheduleService, ScheduleServiceError
 
 
@@ -21,6 +22,30 @@ def _now() -> datetime:
 
 def _utc(h: int = 0, m: int = 0, day: int = 25, month: int = 7) -> datetime:
     return datetime(2026, month, day, h, m, tzinfo=timezone.utc)
+
+
+# ── frozen-clock helpers (date-stable tests) ────────────────────────────
+
+_FROZEN_NOW = datetime(2026, 7, 22, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """Freeze the ScheduleService clock so weekly-occurrence tests
+    are date-stable — they compute expected fire_at from next_weekly_occurrence
+    with a fixed ``after`` instead of hard-coding July 2026 dates."""
+    monkeypatch.setattr(
+        "runtime.orchestrator.schedule_service._now",
+        lambda: _FROZEN_NOW,
+    )
+    return _FROZEN_NOW
+
+
+def _next_weekly_frozen(day: str, time_str: str, tz: str) -> datetime:
+    """Return the next weekly occurrence after _FROZEN_NOW."""
+    result = next_weekly_occurrence(day, time_str, tz, after=_FROZEN_NOW)
+    assert result is not None, f"no next occurrence for {day} {time_str} {tz}"
+    return result
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -76,12 +101,12 @@ def test_create_one_shot_success(tmp_path):
     assert a["payload"]["normalized_brief"] == "Follow up with customer"
 
 
-def test_create_weekly_success(tmp_path):
+def test_create_weekly_success(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     rec = {"day": "Sat", "time": "09:00", "tz": "Asia/Shanghai"}
-    fire_at = _utc(day=25, h=1)  # Sat 09:00 Asia/Shanghai = Sat 01:00 UTC
+    fire_at = _next_weekly_frozen("Sat", "09:00", "Asia/Shanghai")
     record = svc.create(
         agent_name="dev_agent",
         team="engineering",
@@ -233,7 +258,7 @@ def test_create_rejects_unsupported_recurrence(tmp_path):
         )
 
 
-def test_create_rejects_agent_cap_exceeded(tmp_path):
+def test_create_rejects_agent_cap_exceeded(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -242,7 +267,7 @@ def test_create_rejects_agent_cap_exceeded(tmp_path):
         db.schedules.insert(_record(
             id=f"SCHEDULE-{i + 1:03d}",
             agent_name="dev_agent",
-            fire_at=_utc(day=2 + i, h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=2 + i, hours=9),
         ))
     assert db.schedules.active_count_for_agent("dev_agent") == 20
 
@@ -257,7 +282,7 @@ def test_create_rejects_agent_cap_exceeded(tmp_path):
         )
 
 
-def test_create_rejects_org_cap_exceeded(tmp_path):
+def test_create_rejects_org_cap_exceeded(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
@@ -267,7 +292,7 @@ def test_create_rejects_org_cap_exceeded(tmp_path):
         db.schedules.insert(_record(
             id=f"SCHEDULE-{i + 1:03d}",
             agent_name=agent,
-            fire_at=_utc(day=1 + (i % 28), h=9),
+            fire_at=_FROZEN_NOW + timedelta(days=1 + (i % 28), hours=9),
         ))
     assert db.schedules.active_count_org() == 100
 
@@ -304,22 +329,23 @@ def test_get_returns_record(tmp_path):
     assert svc.get("SCHEDULE-999") is None
 
 
-def test_list_all_and_filtered(tmp_path):
+def test_list_all_and_filtered(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.ONE_SHOT,
-        fire_at=_utc(day=28, h=9),
+        fire_at=_FROZEN_NOW + timedelta(days=6, hours=9),
         recurrence=None, timezone="UTC",
         normalized_brief="a", source_instruction="a",
         scheduling_enabled=True,
     )
+    mon_fire = _next_weekly_frozen("Mon", "09:00", "UTC")
     svc.create(
         agent_name="qa_engineer", team="qa",
         kind=ScheduleKind.WEEKLY,
-        fire_at=_utc(day=27, h=9),
+        fire_at=mon_fire,
         recurrence={"day": "Mon", "time": "09:00", "tz": "UTC"},
         timezone="UTC",
         normalized_brief="b", source_instruction="b",
@@ -546,15 +572,16 @@ def test_edit_rejects_firing(tmp_path):
                  fire_at=_utc(day=29, h=10))
 
 
-def test_edit_rejects_invalid_after_edit(tmp_path):
+def test_edit_rejects_invalid_after_edit(tmp_path, frozen_clock):
     """Editing a weekly schedule to an invalid recurrence must be rejected."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
+    mon_fire = _next_weekly_frozen("Mon", "09:00", "UTC")
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.WEEKLY,
-        fire_at=_utc(day=27, h=9),
+        fire_at=mon_fire,
         recurrence={"day": "Mon", "time": "09:00", "tz": "UTC"},
         timezone="UTC",
         normalized_brief="x", source_instruction="x",
@@ -903,15 +930,16 @@ def test_edit_one_shot_accepts_null_recurrence(tmp_path):
 
 # ── expiry ───────────────────────────────────────────────────────────────
 
-def test_create_weekly_indefinite_skips_expiry(tmp_path):
+def test_create_weekly_indefinite_skips_expiry(tmp_path, frozen_clock):
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     rec = {"day": "Mon", "time": "09:00", "tz": "UTC"}
+    mon_fire = _next_weekly_frozen("Mon", "09:00", "UTC")
     record = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.WEEKLY,
-        fire_at=_utc(day=27, h=9),
+        fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -942,15 +970,15 @@ def test_create_one_shot_has_no_expiry(tmp_path):
 
 # ── create: weekly fire_at must match next_weekly_occurrence ──────────
 
-def test_create_weekly_rejects_past_fire_at(tmp_path):
+def test_create_weekly_rejects_past_fire_at(tmp_path, frozen_clock):
     """Reviewer finding #1: weekly create with a past fire_at must fail
     and the row must not appear in due/listed armed work."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     rec = {"day": "Wed", "time": "09:00", "tz": "UTC"}
-    # July 16 is definitely in the past relative to July 22
-    past = _utc(day=16, h=9)
+    # A past date relative to the frozen clock
+    past = _FROZEN_NOW - timedelta(days=7)
 
     with pytest.raises(ScheduleServiceError, match="fire_at must match"):
         svc.create(
@@ -964,23 +992,23 @@ def test_create_weekly_rejects_past_fire_at(tmp_path):
 
     # No row was inserted
     assert len(svc.list()) == 0
-    assert len(db.schedules.list_due(_now())) == 0
+    assert len(db.schedules.list_due(_FROZEN_NOW)) == 0
 
 
-def test_create_weekly_rejects_mismatched_weekday(tmp_path):
+def test_create_weekly_rejects_mismatched_weekday(tmp_path, frozen_clock):
     """Reviewer finding #1: weekly create rejects fire_at for the wrong weekday."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     rec = {"day": "Sat", "time": "09:00", "tz": "UTC"}
-    # Jul 27 is Monday — wrong weekday for Sat recurrence
-    wrong_weekday = _utc(day=27, h=9)
+    # A Tuesday (wrong weekday for Sat recurrence)
+    tue = _FROZEN_NOW + timedelta(days=6, hours=9)  # Jul 28 is Tuesday
 
     with pytest.raises(ScheduleServiceError, match="fire_at must match"):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.WEEKLY,
-            fire_at=wrong_weekday,
+            fire_at=tue,
             recurrence=rec, timezone="UTC",
             normalized_brief="x", source_instruction="x",
             scheduling_enabled=True,
@@ -989,21 +1017,21 @@ def test_create_weekly_rejects_mismatched_weekday(tmp_path):
     assert len(svc.list()) == 0
 
 
-def test_create_weekly_rejects_mismatched_time(tmp_path):
+def test_create_weekly_rejects_mismatched_time(tmp_path, frozen_clock):
     """Reviewer finding #1: weekly create rejects fire_at with the right
     weekday but wrong time."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     rec = {"day": "Mon", "time": "09:00", "tz": "UTC"}
-    # Jul 27 is Monday, but 10:00 UTC is wrong time
-    wrong_time = _utc(day=27, h=10)
+    # Monday 10:00 UTC is wrong time (should be 09:00)
+    mon_10 = _next_weekly_frozen("Mon", "09:00", "UTC") + timedelta(hours=1)
 
     with pytest.raises(ScheduleServiceError, match="fire_at must match"):
         svc.create(
             agent_name="dev_agent", team="engineering",
             kind=ScheduleKind.WEEKLY,
-            fire_at=wrong_time,
+            fire_at=mon_10,
             recurrence=rec, timezone="UTC",
             normalized_brief="x", source_instruction="x",
             scheduling_enabled=True,
@@ -1012,14 +1040,13 @@ def test_create_weekly_rejects_mismatched_time(tmp_path):
     assert len(svc.list()) == 0
 
 
-def test_create_weekly_accepts_normalized_fire_at(tmp_path):
+def test_create_weekly_accepts_normalized_fire_at(tmp_path, frozen_clock):
     """Weekly create succeeds when fire_at matches next_weekly_occurrence."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     rec = {"day": "Mon", "time": "09:00", "tz": "UTC"}
-    # Next Monday 09:00 UTC after Jul 22 = Jul 27 09:00 UTC
-    correct = _utc(day=27, h=9)
+    correct = _next_weekly_frozen("Mon", "09:00", "UTC")
 
     record = svc.create(
         agent_name="dev_agent", team="engineering",
@@ -1034,73 +1061,76 @@ def test_create_weekly_accepts_normalized_fire_at(tmp_path):
 
     # Must appear in due/listed armed work
     assert len(svc.list()) == 1
-    assert len(db.schedules.list_due(_now())) == 0  # fire_at is still future
+    assert len(db.schedules.list_due(_FROZEN_NOW)) == 0  # fire_at is still future
 
 
 # ── edit: weekly fire_at re-validated ─────────────────────────────────
 
-def test_edit_weekly_rejects_mismatched_fire_at(tmp_path):
+def test_edit_weekly_rejects_mismatched_fire_at(tmp_path, frozen_clock):
     """Reviewer finding #2: weekly edit with a mismatched fire_at must
     fail and leave the persisted row unchanged."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     rec = {"day": "Mon", "time": "09:00", "tz": "UTC"}
+    mon_fire = _next_weekly_frozen("Mon", "09:00", "UTC")
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.WEEKLY,
-        fire_at=_utc(day=27, h=9),
+        fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
     )
 
     # Try to set fire_at to Tuesday (wrong weekday)
-    wrong = _utc(day=28, h=9)  # Jul 28 is Tuesday
+    tue = _FROZEN_NOW + timedelta(days=6, hours=9)  # Jul 28 is Tuesday
     with pytest.raises(ScheduleServiceError, match="fire_at must match"):
-        svc.edit(r.id, "dev_agent", fire_at=wrong)
+        svc.edit(r.id, "dev_agent", fire_at=tue)
 
     # Row unchanged
     got = svc.get(r.id)
-    assert got.fire_at == _utc(day=27, h=9)
+    assert got.fire_at == mon_fire
     assert got.recurrence == rec
 
 
-def test_edit_weekly_accepts_valid_fire_at(tmp_path):
+def test_edit_weekly_accepts_valid_fire_at(tmp_path, frozen_clock):
     """Weekly edit succeeds when fire_at matches the next occurrence."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     rec = {"day": "Mon", "time": "09:00", "tz": "UTC"}
+    mon_fire = _next_weekly_frozen("Mon", "09:00", "UTC")
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.WEEKLY,
-        fire_at=_utc(day=27, h=9),
+        fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="old", source_instruction="old",
         scheduling_enabled=True,
     )
 
-    # Edit timezone only — fire_at stays the same and must still be valid.
+    # Edit timezone only — fire_at stays the same.
     # Provenance fields are immutable and unchanged.
-    edited = svc.edit(r.id, "dev_agent", timezone="Asia/Shanghai")
-    assert edited.timezone == "Asia/Shanghai"
-    assert edited.fire_at == _utc(day=27, h=9)
+    edited = svc.edit(r.id, "dev_agent", timezone="UTC")
+    assert edited.timezone == "UTC"
+    assert edited.fire_at == mon_fire
     assert edited.normalized_brief == "old"
     assert edited.source_instruction == "old"
 
 
-def test_edit_weekly_auto_derives_fire_at_on_recurrence_change(tmp_path):
+def test_edit_weekly_auto_derives_fire_at_on_recurrence_change(tmp_path, frozen_clock):
     """When only recurrence changes (no explicit fire_at), the service
     auto-derives the correct fire_at."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     rec = {"day": "Mon", "time": "09:00", "tz": "UTC"}
+    mon_fire = _next_weekly_frozen("Mon", "09:00", "UTC")
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.WEEKLY,
-        fire_at=_utc(day=27, h=9),
+        fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="x", source_instruction="x",
         scheduling_enabled=True,
@@ -1110,33 +1140,155 @@ def test_edit_weekly_auto_derives_fire_at_on_recurrence_change(tmp_path):
     new_rec = {"day": "Sat", "time": "09:00", "tz": "UTC"}
     edited = svc.edit(r.id, "dev_agent", recurrence=new_rec)
 
-    # Next Saturday 09:00 UTC after Jul 22 = Jul 25 09:00 UTC
     assert edited.recurrence == new_rec
-    assert edited.fire_at == _utc(day=25, h=9)
+    assert edited.fire_at == _next_weekly_frozen("Sat", "09:00", "UTC")
 
 
-def test_edit_weekly_past_fire_at_rejected_and_row_unchanged(tmp_path):
+def test_edit_weekly_past_fire_at_rejected_and_row_unchanged(tmp_path, frozen_clock):
     """Reviewer finding #2: weekly edit with a past fire_at must fail
     and the row must remain unchanged."""
     db = Database(tmp_path / "db.sqlite")
     svc = ScheduleService(db)
 
     rec = {"day": "Mon", "time": "09:00", "tz": "UTC"}
+    mon_fire = _next_weekly_frozen("Mon", "09:00", "UTC")
     r = svc.create(
         agent_name="dev_agent", team="engineering",
         kind=ScheduleKind.WEEKLY,
-        fire_at=_utc(day=27, h=9),
+        fire_at=mon_fire,
         recurrence=rec, timezone="UTC",
         normalized_brief="old", source_instruction="old",
         scheduling_enabled=True,
     )
 
     # Try to set fire_at to a past date
-    past = _utc(day=16, h=9)  # Jul 16 is past
+    past = _FROZEN_NOW - timedelta(days=7)
     with pytest.raises(ScheduleServiceError, match="fire_at must match"):
         svc.edit(r.id, "dev_agent", fire_at=past)
 
     # Row unchanged
     got = svc.get(r.id)
-    assert got.fire_at == _utc(day=27, h=9)
+    assert got.fire_at == mon_fire
     assert got.normalized_brief == "old"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Weekly timezone normalization — must not allow top-level timezone
+# to diverge from recurrence.tz for weekly schedules.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_create_weekly_rejects_divergent_timezone(tmp_path, frozen_clock):
+    """Top-level timezone must match recurrence.tz for weekly schedules.
+    Divergent payloads are rejected at create time."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    rec = {"day": "Mon", "time": "09:00", "tz": "Asia/Shanghai"}
+    fire_at = _next_weekly_frozen("Mon", "09:00", "Asia/Shanghai")
+
+    with pytest.raises(ScheduleServiceError, match="timezone.*must match"):
+        svc.create(
+            agent_name="dev_agent", team="engineering",
+            kind=ScheduleKind.WEEKLY,
+            fire_at=fire_at,
+            recurrence=rec,
+            timezone="UTC",  # diverges from recurrence["tz"]=Asia/Shanghai
+            normalized_brief="x", source_instruction="x",
+            scheduling_enabled=True,
+        )
+
+    # No row was inserted
+    assert len(svc.list()) == 0
+
+
+def test_create_weekly_derives_timezone_from_recurrence(tmp_path, frozen_clock):
+    """For weekly schedules the stored timezone is derived from recurrence.tz,
+    giving the founder one clear timezone to review."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    rec = {"day": "Mon", "time": "09:00", "tz": "Asia/Shanghai"}
+    fire_at = _next_weekly_frozen("Mon", "09:00", "Asia/Shanghai")
+    record = svc.create(
+        agent_name="dev_agent", team="engineering",
+        kind=ScheduleKind.WEEKLY,
+        fire_at=fire_at,
+        recurrence=rec,
+        timezone="Asia/Shanghai",
+        normalized_brief="x", source_instruction="x",
+        scheduling_enabled=True,
+    )
+    assert record.timezone == "Asia/Shanghai"
+    assert record.recurrence["tz"] == "Asia/Shanghai"
+
+
+def test_create_weekly_derives_timezone_when_omitted(tmp_path, frozen_clock):
+    """When top-level timezone is empty or omitted, it is still derived
+    from recurrence.tz for weekly schedules."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    rec = {"day": "Mon", "time": "09:00", "tz": "America/New_York"}
+    fire_at = _next_weekly_frozen("Mon", "09:00", "America/New_York")
+    record = svc.create(
+        agent_name="dev_agent", team="engineering",
+        kind=ScheduleKind.WEEKLY,
+        fire_at=fire_at,
+        recurrence=rec,
+        timezone="",  # empty
+        normalized_brief="x", source_instruction="x",
+        scheduling_enabled=True,
+    )
+    assert record.timezone == "America/New_York"
+
+
+def test_edit_weekly_rejects_divergent_timezone(tmp_path, frozen_clock):
+    """Edit must reject a timezone that diverges from recurrence.tz
+    for weekly schedules; the row is left unchanged."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    rec = {"day": "Mon", "time": "09:00", "tz": "Asia/Shanghai"}
+    mon_fire = _next_weekly_frozen("Mon", "09:00", "Asia/Shanghai")
+    r = svc.create(
+        agent_name="dev_agent", team="engineering",
+        kind=ScheduleKind.WEEKLY,
+        fire_at=mon_fire,
+        recurrence=rec, timezone="Asia/Shanghai",
+        normalized_brief="old", source_instruction="old",
+        scheduling_enabled=True,
+    )
+
+    with pytest.raises(ScheduleServiceError, match="timezone.*must match"):
+        svc.edit(r.id, "dev_agent", timezone="UTC")
+
+    # Row unchanged
+    got = svc.get(r.id)
+    assert got.timezone == "Asia/Shanghai"
+    assert got.normalized_brief == "old"
+
+
+def test_edit_weekly_derives_timezone_on_recurrence_tz_change(tmp_path, frozen_clock):
+    """When recurrence.tz changes during edit, the top-level timezone
+    is auto-derived from the new recurrence.tz."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    rec = {"day": "Mon", "time": "09:00", "tz": "UTC"}
+    mon_fire = _next_weekly_frozen("Mon", "09:00", "UTC")
+    r = svc.create(
+        agent_name="dev_agent", team="engineering",
+        kind=ScheduleKind.WEEKLY,
+        fire_at=mon_fire,
+        recurrence=rec, timezone="UTC",
+        normalized_brief="old", source_instruction="old",
+        scheduling_enabled=True,
+    )
+
+    # Change recurrence to a different tz
+    new_rec = {"day": "Mon", "time": "09:00", "tz": "America/New_York"}
+    edited = svc.edit(r.id, "dev_agent", recurrence=new_rec)
+
+    assert edited.recurrence["tz"] == "America/New_York"
+    assert edited.timezone == "America/New_York"
+    assert edited.fire_at == _next_weekly_frozen("Mon", "09:00", "America/New_York")

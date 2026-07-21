@@ -119,6 +119,15 @@ class ScheduleService:
                     f"({recurrence['day']} {recurrence['time']} {recurrence['tz']}); "
                     f"expected {expected.isoformat()}, got {fire_at.isoformat()}"
                 )
+            # Top-level timezone must match recurrence.tz for weekly schedules.
+            # Derive from the authoritative recurrence to keep the stored record
+            # founder-reviewable with one clear timezone.
+            if timezone and timezone != recurrence["tz"]:
+                raise ScheduleServiceError(
+                    f"timezone {timezone!r} must match recurrence tz "
+                    f"{recurrence['tz']!r} for weekly schedules"
+                )
+            timezone = recurrence["tz"]
         else:
             raise ScheduleServiceError(
                 f"unsupported schedule kind: {kind.value}. "
@@ -306,6 +315,17 @@ class ScheduleService:
             err = validate_weekly_recurrence(recurrence)
             if err:
                 raise ScheduleServiceError(err)
+            # Top-level timezone must match recurrence.tz for weekly schedules.
+            # Either reject divergent edits or auto-derive from the new
+            # recurrence tz.
+            if "timezone" in fields and fields["timezone"] != recurrence["tz"]:
+                raise ScheduleServiceError(
+                    f"timezone {fields['timezone']!r} must match recurrence tz "
+                    f"{recurrence['tz']!r} for weekly schedules"
+                )
+            if "recurrence" in fields:
+                # Recurrence changed — auto-derive timezone from new tz.
+                fields["timezone"] = recurrence["tz"]
             # Normalize fire_at against the (possibly updated) recurrence.
             # If the caller supplied fire_at it must match; if only recurrence
             # changed we auto-derive the correct fire_at.
