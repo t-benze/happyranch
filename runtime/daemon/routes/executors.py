@@ -308,6 +308,17 @@ def _validate_emit_envelope_step(body: ConformanceCheckinRequest) -> None:
                         "detail": "token_usage." + key + " must be int or null, got " + type(val).__name__ + ".",
                     },
                 )
+        # Validate string-key value types: must be str or None
+        for key in ("model", "usage_raw_json"):
+            val = token_usage.get(key)
+            if val is not None and not isinstance(val, str):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "invalid_token_usage",
+                        "detail": "token_usage." + key + " must be str or null, got " + type(val).__name__ + ".",
+                    },
+                )
 
 
 # ---------------------------------------------------------------------------

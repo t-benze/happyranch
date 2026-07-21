@@ -208,7 +208,8 @@ happyranch executors register \
 `--argv-template-json` is a single JSON-encoded array — leading-dash tokens
 like `--prompt-file` live safely inside it without shell-escaping issues.
 The verb auto-completes `workspace_access` and `loopback_reachable` (the
-candidate is running locally), then posts `cli_callback` and finally the
+candidate is running locally), then posts a sample `emit_envelope` check-in
+with a minimal valid envelope payload, then `cli_callback`, and finally the
 registration payload.
 
 ### Registration ≠ enrollment
