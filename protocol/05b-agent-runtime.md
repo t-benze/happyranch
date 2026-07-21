@@ -400,6 +400,35 @@ separate from task-scoped token usage.
 - The spawn callback is the only fire path — no alternate trigger mechanisms
   exist.
 
+**Arming (creating) schedules.** Agents create new schedules by calling the
+``happyranch schedules create`` callback — a single-line invocation that POSTs
+to ``/api/v1/orgs/{slug}/schedules``:
+
+   happyranch schedules create --org <slug> --from-file <path>
+
+The payload file is a JSON object with ``task_id``, ``session_id``, ``agent``,
+``source_instruction``, ``normalized_brief``, ``kind``, ``fire_at``, and
+optionally ``recurrence`` and ``timezone``.  The server enforces:
+
+- **Self-target only:** the creating agent is resolved server-side from the
+  active session (``task_id`` + ``session_id`` + ``agent`` validated against
+  the in-memory SessionTracker).  The payload cannot choose another agent.
+- **Explicit instruction only:** both ``source_instruction`` (the verbatim
+  NL instruction) and ``normalized_brief`` (the structured normalized brief)
+  are mandatory.  Natural-language-only arming (without normalization)
+  is refused.
+- **Capability gate (default-deny):** the agent must be listed in
+  ``scheduling.enabled_agents`` in ``org/config.yaml``.  Omission, empty
+  list, and missing key all reject with 409 ``scheduling_disabled``.
+- **Caps and defaults:** the 20-per-agent / 100-org-wide armed caps, 90-day
+  one-shot horizon, weekly shape validation (single weekday + HH:MM + IANA
+  timezone only), and 90-day recurring expiry are enforced at create time
+  by the ``ScheduleService``.
+
+Arming is fully autonomous — no pre-arming founder approval step — but the
+schedule is immediately visible in the founder/operator ``list`` and ``show``
+outputs and carries a ``schedule_created`` audit row with ``task_id=<SCHEDULE-NNN>``.
+
 #### Mode 3: Persistent (Support Agent only)
 The Support Agent is the one exception. Tourists need real-time help and the response time target is under 5 minutes. Two approaches:
 

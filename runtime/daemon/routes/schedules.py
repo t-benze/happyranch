@@ -23,6 +23,7 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.models import ScheduleKind, ScheduleStatus, TaskRecord
+from runtime.orchestrator.schedule_capability import is_scheduling_enabled
 from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 from runtime.orchestrator.schedule_service import ScheduleService, ScheduleServiceError
 
@@ -52,6 +53,138 @@ def _schedule_to_dict(record) -> dict:
         "created_at": record.created_at.isoformat(),
         "updated_at": record.updated_at.isoformat(),
     }
+
+
+# ── create ─────────────────────────────────────────────────────────────
+
+class ScheduleCreateBody(BaseModel):
+    """Payload for the agent schedule create callback.
+
+    The creating agent is bound server-side through session validation
+    (task_id + session_id + agent), not through payload fields.  The
+    payload must carry the explicit instruction and a normalized brief;
+    natural-language-only arming is refused.
+    """
+    model_config = {"extra": "forbid"}
+
+    task_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    agent: str = Field(min_length=1)
+    source_instruction: str = Field(min_length=1)
+    normalized_brief: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    fire_at: str = Field(min_length=1)
+    recurrence: dict | SkipJsonSchema[None] = Field(None)
+    timezone: str = Field(default="UTC")
+
+
+@router.post("/schedules")
+def create_schedule(
+    slug: str,
+    body: ScheduleCreateBody,
+    org: OrgDep,
+    request: Request,
+) -> dict:
+    """Create a new schedule (Todo) — agent autonomous arming callback.
+
+    Self-target only: the agent is resolved from the session context
+    (task_id + session_id + agent).  The payload cannot choose another
+    agent.  Scheduling is default-deny — the per-agent capability flag
+    must be enabled.
+    """
+    # ── self-target: session validation ──
+    expected_session = org.sessions.get_active(body.task_id, body.agent)
+    if expected_session is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "unknown_session",
+                "task_id": body.task_id,
+                "agent": body.agent,
+            },
+        )
+    if expected_session != body.session_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "session_mismatch",
+                "active": expected_session,
+                "got": body.session_id,
+            },
+        )
+
+    # ── capability gate ──
+    if not is_scheduling_enabled(org.root, body.agent):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "scheduling_disabled",
+                "agent": body.agent,
+                "message": (
+                    "scheduling is not enabled for this agent. "
+                    "Add the agent to scheduling.enabled_agents "
+                    "in org/config.yaml."
+                ),
+            },
+        )
+
+    # ── resolve team ──
+    registry = org.teams
+    if registry is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unknown_team", "valid": []},
+        )
+    team = registry.team_for_agent(body.agent) or registry.team_for_manager(body.agent)
+    if team is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "agent_team_unresolved", "agent": body.agent},
+        )
+
+    # ── parse kind ──
+    try:
+        kind = ScheduleKind(body.kind)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_kind",
+                "got": body.kind,
+                "valid": [k.value for k in ScheduleKind],
+            },
+        )
+
+    # ── parse fire_at ──
+    try:
+        fire_at = datetime.fromisoformat(body.fire_at)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_fire_at", "got": body.fire_at},
+        )
+
+    # ── call service ──
+    svc = ScheduleService(org.db)
+    try:
+        record = svc.create(
+            agent_name=body.agent,
+            team=team,
+            kind=kind,
+            fire_at=fire_at,
+            recurrence=body.recurrence,
+            timezone=body.timezone,
+            normalized_brief=body.normalized_brief,
+            source_instruction=body.source_instruction,
+            scheduling_enabled=True,  # already gated above
+        )
+    except ScheduleServiceError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "create_failed", "message": str(exc)},
+        )
+
+    return _schedule_to_dict(record)
 
 
 # ── list ────────────────────────────────────────────────────────────────
