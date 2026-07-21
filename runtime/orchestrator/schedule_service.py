@@ -90,6 +90,11 @@ class ScheduleService:
 
         # --- kind-specific validation ---
         if kind == ScheduleKind.ONE_SHOT:
+            if recurrence is not None:
+                raise ScheduleServiceError(
+                    "one-shot schedules must not have recurrence; "
+                    "recurrence must be null"
+                )
             err = validate_one_shot_horizon(fire_at, _now())
             if err:
                 raise ScheduleServiceError(err)
@@ -268,21 +273,25 @@ class ScheduleService:
             )
 
         # Validate mutable fields
-        kind = fields.get("kind", record.kind)
         recurrence = fields.get("recurrence", record.recurrence)
         fire_at = fields.get("fire_at", record.fire_at)
 
-        if kind == ScheduleKind.ONE_SHOT:
+        if record.kind == ScheduleKind.ONE_SHOT:
+            if "recurrence" in fields and fields["recurrence"] is not None:
+                raise ScheduleServiceError(
+                    "one-shot schedules must not have recurrence; "
+                    "recurrence must be null"
+                )
             err = validate_one_shot_horizon(fire_at, _now())
             if err:
                 raise ScheduleServiceError(err)
-        elif kind == ScheduleKind.WEEKLY:
+        elif record.kind == ScheduleKind.WEEKLY:
             err = validate_weekly_recurrence(recurrence)
             if err:
                 raise ScheduleServiceError(err)
         else:
             raise ScheduleServiceError(
-                f"unsupported schedule kind: {kind.value if hasattr(kind, 'value') else kind}. "
+                f"unsupported schedule kind: {record.kind.value}. "
                 "v1 supports one_shot and weekly only."
             )
 

@@ -840,6 +840,105 @@ def test_edit_succeeds_from_paused(tmp_path):
     assert edited.status == ScheduleStatus.PAUSED  # status unchanged by edit
 
 
+# ── one-shot recurrence rejection (reviewer HIGH finding) ────────────
+
+def test_create_one_shot_rejects_non_null_recurrence_weekly_shape(tmp_path):
+    """One-shot with weekly-shaped recurrence must be rejected at create time."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    with pytest.raises(ScheduleServiceError, match="one-shot"):
+        svc.create(
+            agent_name="dev_agent", team="engineering",
+            kind=ScheduleKind.ONE_SHOT,
+            fire_at=_utc(day=28, h=9),
+            recurrence={"day": "Mon", "time": "09:00", "tz": "UTC"},
+            timezone="UTC",
+            normalized_brief="x", source_instruction="x",
+            scheduling_enabled=True,
+        )
+
+
+def test_create_one_shot_rejects_cron_recurrence(tmp_path):
+    """One-shot with cron/arbitrary recurrence must be rejected at create time."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    with pytest.raises(ScheduleServiceError, match="one-shot"):
+        svc.create(
+            agent_name="dev_agent", team="engineering",
+            kind=ScheduleKind.ONE_SHOT,
+            fire_at=_utc(day=28, h=9),
+            recurrence={"cron": "* * * * *"},
+            timezone="UTC",
+            normalized_brief="x", source_instruction="x",
+            scheduling_enabled=True,
+        )
+
+
+def test_edit_one_shot_rejects_adding_recurrence(tmp_path):
+    """Edit must reject attaching recurrence to an existing one-shot schedule."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    r = svc.create(
+        agent_name="dev_agent", team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=_utc(day=28, h=9),
+        recurrence=None, timezone="UTC",
+        normalized_brief="x", source_instruction="x",
+        scheduling_enabled=True,
+    )
+
+    with pytest.raises(ScheduleServiceError, match="one-shot"):
+        svc.edit(r.id, "dev_agent", recurrence={"cron": "* * * * *"})
+
+
+def test_edit_one_shot_row_unchanged_after_rejected_recurrence(tmp_path):
+    """After a rejected recurrence edit, the one-shot row remains unchanged."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    r = svc.create(
+        agent_name="dev_agent", team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=_utc(day=28, h=9),
+        recurrence=None, timezone="UTC",
+        normalized_brief="x", source_instruction="x",
+        scheduling_enabled=True,
+    )
+
+    try:
+        svc.edit(r.id, "dev_agent", recurrence={"day": "Mon", "time": "09:00", "tz": "UTC"})
+    except ScheduleServiceError:
+        pass
+
+    got = svc.get(r.id)
+    assert got is not None
+    assert got.recurrence is None
+    assert got.kind == ScheduleKind.ONE_SHOT
+    assert got.fire_at == _utc(day=28, h=9)
+
+
+def test_edit_one_shot_accepts_null_recurrence(tmp_path):
+    """Setting recurrence=None on a one-shot is idempotent and accepted."""
+    db = Database(tmp_path / "db.sqlite")
+    svc = ScheduleService(db)
+
+    r = svc.create(
+        agent_name="dev_agent", team="engineering",
+        kind=ScheduleKind.ONE_SHOT,
+        fire_at=_utc(day=28, h=9),
+        recurrence=None, timezone="UTC",
+        normalized_brief="x", source_instruction="x",
+        scheduling_enabled=True,
+    )
+
+    edited = svc.edit(r.id, "dev_agent", recurrence=None)
+    assert edited.recurrence is None
+    assert edited.kind == ScheduleKind.ONE_SHOT
+
+
 # ── expiry ───────────────────────────────────────────────────────────────
 
 def test_create_weekly_indefinite_skips_expiry(tmp_path):
