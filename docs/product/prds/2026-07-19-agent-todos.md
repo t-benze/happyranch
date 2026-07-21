@@ -2,12 +2,12 @@
 
 | Field | Value |
 | --- | --- |
-| Status | draft |
+| Status | approved |
 | Owner | product_lead |
 | Date | 2026-07-19 |
-| Source Links | THR-105 messages 1-16; PR #464 design spike `docs/superpowers/specs/2026-07-18-agent-scheduled-work-design.md` |
-| Commitment Boundary | analysis-only |
-| Founder Decisions | Ruled: agents may fully autonomously create schedules for themselves from founder/operator instruction; user-facing label is Todos; v1 is scheduled commitments, not a general calendar; founder-visible management includes pause, cancel, and edit. Required: approve this PRD; confirm cap/horizon/expiry numbers. |
+| Source Links | THR-105 messages 1-19; PR #464 design spike `docs/superpowers/specs/2026-07-18-agent-scheduled-work-design.md`; KB `agent-todos-autonomous-scheduling-ruling` |
+| Commitment Boundary | product/source-of-truth PRD; implementation remains separately gated by normal engineering merge gates |
+| Founder Decisions | Approved 2026-07-21 (THR-105 seq19). Ratified: agents may fully autonomously create schedules for themselves from explicit founder/operator instruction; mandatory normalization before arming; user-facing label is Todos; v1 is scheduled commitments, not a general calendar; founder-visible management includes pause, cancel, and edit; defaults are 20 armed Todos per agent, 100 org-wide, 90-day one-shot horizon, and 90-day recurring review/expiry unless explicitly marked indefinite. |
 
 ## Problem
 
@@ -210,11 +210,11 @@ Important provenance rules:
 - Given the founder reviews the feature, no hidden, cross-agent, unbounded, or
   unsupported recurrence behavior exists in v1.
 
-## Open Questions And Risks
+## Resolved Decisions And Risks
 
-- Founder decision required: approve or adjust the proposed default control
-  numbers: 20 armed Todos per agent, 100 org-wide, 90-day horizon, 90-day
-  recurring review/expiry.
+- Founder approved the default control numbers: 20 armed Todos per agent, 100
+  org-wide, 90-day one-shot horizon, and 90-day recurring review/expiry unless
+  explicitly marked indefinite.
 - Product risk: "Todos" may create expectations for unscheduled task lists,
   priority, tags, and subtasks. The v1 UI copy must say scheduled Todos clearly.
 - Permission risk: autonomous scheduling is token-spend authority in the future.
