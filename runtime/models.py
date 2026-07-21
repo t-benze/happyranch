@@ -489,3 +489,54 @@ class JobRecord(BaseModel):
     # NULL when status='completed' or the job hasn't reached terminal yet.
     reason:           str | None = None
     created_at:       str
+
+
+class ScheduleKind(StrEnum):
+    """THR-105: v1 supports exactly one_shot and weekly recurrence."""
+    ONE_SHOT = "one_shot"
+    WEEKLY = "weekly"
+
+
+class ScheduleStatus(StrEnum):
+    """THR-105: Schedule lifecycle states.  armed → firing → fired (one-shot terminal)
+    or armed → firing → armed (weekly cycle).  paused / cancelled / expired / failed /
+    timeout are terminal or suspended states."""
+    ARMED = "armed"
+    FIRING = "firing"
+    FIRED = "fired"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+
+
+class ScheduleRecord(BaseModel):
+    """THR-105 Phase 1: a persisted, agent-owned scheduled work commitment.
+
+    Internal primitive is ``Schedule``; user-facing label is "Todos".
+    See docs/superpowers/specs/2026-07-18-agent-scheduled-work-design.md
+    and docs/product/prds/2026-07-19-agent-todos.md.
+    """
+    id: str
+    agent_name: str
+    team: str = "engineering"
+    kind: ScheduleKind
+    fire_at: datetime
+    recurrence: dict | None = None
+    timezone: str = "UTC"
+    normalized_brief: str
+    source_instruction: str
+    status: ScheduleStatus = ScheduleStatus.ARMED
+    active: int = 1
+    expires_at: datetime | None = None
+    indefinite: int = 0
+    spawned_task_ids: list[str] = Field(default_factory=list)
+    last_fired_at: datetime | None = None
+    fire_count: int = 0
+    # Fields needed by the later runner (Phase 2+), consistent with WorkHourRecord
+    session_id: str | None = None
+    error: str | None = None
+    transcript_path: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
