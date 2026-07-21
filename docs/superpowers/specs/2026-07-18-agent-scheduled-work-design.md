@@ -2,16 +2,18 @@
 
 **Date:** 2026-07-18
 **Status:** DESIGN-ONLY. **Founder signed off on this design on 2026-07-21
-at THR-105 seq19.** Implementation, schema migration, and permission-envelope
-behavior still land only through the normal engineering merge gates, and the
-boundaries below remain acceptance criteria for v1.
+at THR-105 seq19; product_lead ratified PRD #475 as source of truth at seq20.**
+Implementation, schema migration, and permission-envelope behavior still land
+only through the normal engineering merge gates, and the boundaries below
+remain acceptance criteria for v1.
 **Origin:** THR-105. Founder authorized the capability and the *fully-autonomous*
 arming posture at THR-105 seq9 (reversing the earlier founder-scheduled / one-shot
 v1 framing at seq4). Product and engineering framing settled seq5–seq8; founder
 approval at seq19 ratified the label Todos, autonomy-with-mandatory-normalization,
 the v1 no-list, and defaults of 20 armed Todos per agent, 100 org-wide, 90-day
 one-shot horizon, and 90-day recurring review/expiry unless explicitly marked
-indefinite.
+indefinite; product_lead seq20 confirmed the defaults and ratified PRD #475 as
+source of truth.
 **Author:** engineering_manager (design spike; founder is the reviewer/approver).
 **Relates to:**
 - `runtime/daemon/work_hours_scheduler.py`, `runtime/daemon/wake_queue.py`,
@@ -354,7 +356,8 @@ noun distinct from `tasks`.
 
 ## 13. Founder sign-off (resolved) and build gate
 
-Founder sign-off landed on 2026-07-21 at THR-105 seq19. The approved decisions:
+Founder sign-off landed on 2026-07-21 at THR-105 seq19; product_lead confirmed
+defaults and ratified PRD #475 at seq20. The approved decisions:
 
 1. **Permission envelope (§9) is the v1 acceptance bar** — this is the
    agent-permission-model change and the load-bearing gate. Concrete defaults:
