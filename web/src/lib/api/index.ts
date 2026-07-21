@@ -17,6 +17,7 @@ export * as tasks from './tasks';
 export * as teams from './teams';
 export * as threads from './threads';
 export * as tokens from './tokens';
+export * as schedules from './schedules';
 export * as workHours from './work-hours';
 export { ApiError, request, type RequestOptions } from './client';
 export { subscribeSSE, type SSEOptions } from './sse';

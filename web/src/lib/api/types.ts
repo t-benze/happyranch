@@ -738,3 +738,50 @@ export interface WorkHourListResponse {
 export interface WorkHourStatusResponse {
   recent: WorkHourRecord[];
 }
+
+// ---------------------------------------------------------------------------
+// Schedules (Agent Todos) — THR-105 Phase 3
+// ---------------------------------------------------------------------------
+
+export type ScheduleKind = 'one_shot' | 'weekly';
+
+export type ScheduleStatus =
+  | 'armed'
+  | 'firing'
+  | 'fired'
+  | 'paused'
+  | 'cancelled'
+  | 'expired'
+  | 'failed'
+  | 'timeout';
+
+export interface ScheduleRecord {
+  schedule_id: string;
+  agent_name: string;
+  team: string;
+  kind: ScheduleKind;
+  fire_at: string;
+  recurrence: Record<string, string> | null;
+  timezone: string;
+  normalized_brief: string;
+  source_instruction: string;
+  status: ScheduleStatus;
+  active: number;
+  expires_at: string | null;
+  indefinite: number;
+  spawned_task_ids: string[];
+  last_fired_at: string | null;
+  fire_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScheduleListResponse {
+  schedules: ScheduleRecord[];
+}
+
+export interface ScheduleEditFields {
+  fire_at?: string | null;
+  recurrence?: Record<string, string> | null;
+  timezone?: string | null;
+}
