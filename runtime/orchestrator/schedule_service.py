@@ -312,42 +312,41 @@ class ScheduleService:
             if err:
                 raise ScheduleServiceError(err)
         elif record.kind == ScheduleKind.WEEKLY:
-            err = validate_weekly_recurrence(recurrence)
+            # Build merged candidate from fields + stored record,
+            # then validate atomically before applying any change.
+            merged_recurrence = fields.get("recurrence", record.recurrence)
+            merged_timezone = fields.get("timezone", record.timezone)
+            merged_fire_at = fields.get("fire_at", record.fire_at)
+
+            err = validate_weekly_recurrence(merged_recurrence)
             if err:
                 raise ScheduleServiceError(err)
-            # Top-level timezone must match recurrence.tz for weekly schedules.
-            # Either reject divergent edits or auto-derive from the new
-            # recurrence tz.
-            if "timezone" in fields and fields["timezone"] != recurrence["tz"]:
+
+            # Top-level timezone must equal recurrence.tz.
+            if merged_timezone != merged_recurrence["tz"]:
                 raise ScheduleServiceError(
-                    f"timezone {fields['timezone']!r} must match recurrence tz "
-                    f"{recurrence['tz']!r} for weekly schedules"
+                    f"timezone {merged_timezone!r} must match recurrence tz "
+                    f"{merged_recurrence['tz']!r} for weekly schedules"
                 )
-            if "recurrence" in fields:
-                # Recurrence changed — auto-derive timezone from new tz.
-                fields["timezone"] = recurrence["tz"]
-            # Normalize fire_at against the (possibly updated) recurrence.
-            # If the caller supplied fire_at it must match; if only recurrence
-            # changed we auto-derive the correct fire_at.
+
+            # fire_at must be the next occurrence of the merged recurrence.
             now = _now()
             expected = next_weekly_occurrence(
-                recurrence["day"], recurrence["time"], recurrence["tz"],
+                merged_recurrence["day"], merged_recurrence["time"],
+                merged_recurrence["tz"],
                 after=now,
             )
             if expected is None:
                 raise ScheduleServiceError(
                     "could not compute next occurrence for weekly schedule"
                 )
-            if "fire_at" in fields:
-                if fields["fire_at"] != expected:
-                    raise ScheduleServiceError(
-                        f"fire_at must match the next weekly occurrence "
-                        f"({recurrence['day']} {recurrence['time']} {recurrence['tz']}); "
-                        f"expected {expected.isoformat()}, got {fields['fire_at'].isoformat()}"
-                    )
-            else:
-                # Derive fire_at from recurrence when not explicitly passed.
-                fields["fire_at"] = expected
+            if merged_fire_at != expected:
+                raise ScheduleServiceError(
+                    f"fire_at must match the next weekly occurrence "
+                    f"({merged_recurrence['day']} {merged_recurrence['time']} "
+                    f"{merged_recurrence['tz']}); "
+                    f"expected {expected.isoformat()}, got {merged_fire_at.isoformat()}"
+                )
         else:
             raise ScheduleServiceError(
                 f"unsupported schedule kind: {record.kind.value}. "
