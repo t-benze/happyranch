@@ -12,8 +12,25 @@ from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 
 
+_FROZEN_NOW = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+
+
 def _now() -> datetime:
-    return datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+    return _FROZEN_NOW
+
+
+@pytest.fixture(autouse=True)
+def frozen_clock(monkeypatch):
+    """Freeze the service and store clocks so all date-dependent
+    validations and DB timestamps in route tests are date-stable."""
+    monkeypatch.setattr(
+        "runtime.orchestrator.schedule_service._now",
+        lambda: _FROZEN_NOW,
+    )
+    monkeypatch.setattr(
+        "runtime.infrastructure.schedule_store._now",
+        lambda: _FROZEN_NOW,
+    )
 
 
 def _insert_schedule(org_state, **overrides) -> str:
@@ -396,7 +413,7 @@ def _create_payload(**overrides) -> dict:
         "source_instruction": "Test instruction: follow up in 48 hours.",
         "normalized_brief": "Follow up with customer re: issue #42",
         "kind": "one_shot",
-        "fire_at": "2026-08-01T09:00:00+00:00",
+        "fire_at": (_now() + timedelta(days=10)).isoformat(),
         "timezone": "UTC",
     }
     base.update(overrides)
@@ -698,12 +715,15 @@ def test_create_weekly_success(tmp_home, app, org_state, auth_headers):
     _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
-    # Next Saturday 09:00 Asia/Shanghai after 2026-07-22T12:00Z
-    # July 22 is Wednesday, so next Saturday is July 25
-    # 09:00 Asia/Shanghai = 01:00 UTC
+    # Compute the next Saturday 09:00 Asia/Shanghai after _FROZEN_NOW.
+    # July 22 is Wednesday, so next Saturday is July 25;
+    # 09:00 Asia/Shanghai = 01:00 UTC.
+    now = _now()
+    next_fire = next_weekly_occurrence("Sat", "09:00", "Asia/Shanghai", after=now)
+    assert next_fire is not None
     payload = _create_payload(
         kind="weekly",
-        fire_at="2026-07-25T01:00:00+00:00",
+        fire_at=next_fire.isoformat(),
         recurrence={"day": "Sat", "time": "09:00", "tz": "Asia/Shanghai"},
         timezone="Asia/Shanghai",
     )
@@ -736,19 +756,20 @@ def test_create_respects_agent_cap(tmp_home, app, org_state, auth_headers):
     _enable_scheduling(org_state)
     _register_session(org_state)
     client = TestClient(app)
+    now = _now()
 
-    # First create succeeds
-    for _ in range(20):
+    # First 20 creates succeed (each with a unique fire_at within the horizon)
+    for i in range(20):
         payload = _create_payload(
-            fire_at=f"2026-08-{_+1:02d}T09:00:00+00:00",
-            normalized_brief=f"Brief {_}",
+            fire_at=(now + timedelta(days=1, hours=i)).isoformat(),
+            normalized_brief=f"Brief {i}",
         )
         status, body = _post_create(client, payload, auth_headers)
-        assert status == 200, f"Create #{_} failed: {body}"
+        assert status == 200, f"Create #{i} failed: {body}"
 
     # 21st create should fail (cap=20)
     payload = _create_payload(
-        fire_at="2026-08-22T09:00:00+00:00",
+        fire_at=(now + timedelta(days=2)).isoformat(),
         normalized_brief="Brief overflow",
     )
     status, detail = _post_create(client, payload, auth_headers)
