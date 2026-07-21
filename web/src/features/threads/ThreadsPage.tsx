@@ -1223,7 +1223,7 @@ function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): 
           <circle cx="9" cy="7" r="3" />
           <path d="M22 21v-2a4 4 0 00-3-3.9" />
         </svg>
-        <span className="text-text-secondary truncate">{description}</span>
+        <span className="text-text-secondary">{description}</span>
         <span className="text-text-disabled shrink-0 whitespace-nowrap">· {S.systemEventLabel} event · broadcast to all</span>
       </span>
       <span aria-hidden="true" className="bg-border-subtle h-px flex-1" />

@@ -920,6 +920,27 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
       expect(screen.getByText(/TASK-555/)).toBeInTheDocument();
     });
   });
+
+  test('long system event description wraps fully and is not truncated with ellipsis', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const longText = 'very-long-agent-name-that-would-normally-be-truncated-with-ellipsis-but-should-now-wrap-to-show-the-full-text-in-the-system-event-row';
+    setupThreadWithMessages('THR-020', [
+      mkSystemMessage(1, 'agent_a', {
+        kind_tag: 'participant_added',
+        agent_name: longText,
+      }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-020`);
+    await waitFor(() => {
+      // The full agent name must be present — not ellipsized.
+      expect(screen.getByText(`added ${longText}`)).toBeInTheDocument();
+    });
+    // The description span must NOT carry the truncation class.
+    const descriptionSpan = screen.getByText(`added ${longText}`);
+    expect(descriptionSpan.classList).not.toContain('truncate');
+    // The suffix label must still be present.
+    expect(screen.getByText(/system event · broadcast to all/)).toBeInTheDocument();
+  });
 });
 
 /* ------------------------------------------------------------------ */
