@@ -84,6 +84,34 @@ export interface TaskRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Task attachments (THR-109)
+// ---------------------------------------------------------------------------
+
+export interface TaskAttachmentRef {
+  storage_key: string;
+  display_name?: string;
+}
+
+export interface TaskAttachmentRecord {
+  storage_key: string;
+  task_id: string;
+  ordinal: number;
+  display_name: string;
+  size_bytes: number | null;
+  content_type: string | null;
+  uploaded_by: string;
+  created_at: string;
+}
+
+export interface TaskAttachmentUploadResponse {
+  storage_key: string;
+  display_name: string;
+  size_bytes: number;
+  content_type: string | null;
+  uploaded_by: string;
+}
+
+// ---------------------------------------------------------------------------
 // Task events (SSE tail)
 // ---------------------------------------------------------------------------
 

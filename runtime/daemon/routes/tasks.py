@@ -1597,7 +1597,7 @@ def get_task_attachment(
     storage_key: str,
     org: OrgDep,
     request: Request,
-) -> "StreamingResponse":
+):
     """Download a task attachment's bytes.
 
     Authorization: the requester must be the owning task or a descendant.

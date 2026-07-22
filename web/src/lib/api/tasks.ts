@@ -4,13 +4,25 @@
  * POST /tasks/{id}/progress. See spec §2.
  */
 import { request } from './client';
-import type { TaskDetailResponse, TaskRecallNode, TaskRecord } from './types';
+import type {
+  TaskAttachmentRecord,
+  TaskAttachmentRef,
+  TaskAttachmentUploadResponse,
+  TaskDetailResponse,
+  TaskRecallNode,
+  TaskRecord,
+} from './types';
 
 export type TaskListItem = TaskRecord;
 
 export const submitTask = (
   slug: string,
-  body: { team?: string; brief: string; owner?: string },
+  body: {
+    team?: string;
+    brief: string;
+    owner?: string;
+    attachments?: TaskAttachmentRef[];
+  },
 ): Promise<TaskRecord> =>
   request(`/orgs/${slug}/tasks`, { method: 'POST', body });
 
@@ -75,3 +87,34 @@ export const cancelTask = (
 /** SSE path — pass to subscribeSSE. */
 export const taskEventsPath = (slug: string, taskId: string): string =>
   `/orgs/${slug}/tasks/${taskId}/events`;
+
+// ── Task attachments (THR-109) ───────────────────────────────────────────────
+
+export const uploadTaskAttachment = (
+  slug: string,
+  file: File,
+  agent: string = 'founder',
+): Promise<TaskAttachmentUploadResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request(`/orgs/${slug}/tasks/attachments?agent=${encodeURIComponent(agent)}`, {
+    method: 'POST',
+    body: formData,
+    headers: {},  // let browser set Content-Type with boundary
+  });
+};
+
+export const listTaskAttachments = (
+  slug: string,
+  taskId: string,
+): Promise<{ task_id: string; attachments: TaskAttachmentRecord[] }> =>
+  request(`/orgs/${slug}/tasks/${taskId}/attachments`);
+
+export const downloadTaskAttachment = (
+  slug: string,
+  taskId: string,
+  storageKey: string,
+): Promise<Blob> =>
+  request(`/orgs/${slug}/tasks/${taskId}/attachments/${storageKey}`, {
+    responseType: 'blob',
+  });
