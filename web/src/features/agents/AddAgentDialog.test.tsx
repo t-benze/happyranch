@@ -263,6 +263,174 @@ describe('AddAgentDialog', () => {
     expect(screen.getByRole('button', { name: /create/i })).toBeDisabled();
   });
 
+  test('non-four-name built-in executor (e.g. "gemini") with present=true is selectable and can be submitted', async () => {
+    vi.restoreAllMocks();
+    vi.spyOn(teamsApi, 'listTeams').mockResolvedValue({
+      teams: [{ name: 'engineering', manager: 'engineering_head', workers: [] }],
+    });
+    // A prereq executor whose name is NOT one of the historical four built-ins.
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: false, path: null, hint: 'Register Claude Code' },
+        { tool: 'gemini', present: true, path: '/opt/gemini/bin', hint: 'Register Gemini CLI' },
+      ],
+    });
+    vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
+      profiles: [],
+    });
+
+    const user = userEvent.setup();
+    const spy = vi.spyOn(agentsApi, 'createAgent').mockResolvedValue({
+      name: 'w1', team: 'engineering', role: 'worker',
+    });
+    renderDialog();
+
+    await waitFor(() => screen.getByRole('option', { name: 'engineering' }));
+
+    // "gemini" appears as a selectable built-in (not filtered by a hard-coded allow-list).
+    const geminiOpt = screen.getByRole('option', { name: 'gemini' }) as HTMLOptionElement;
+    expect(geminiOpt).toBeInTheDocument();
+    expect(geminiOpt.disabled).toBe(false);
+
+    // "claude" with present=false is in the unregistered section.
+    const claudeOpt = screen.getByRole('option', { name: 'claude (not registered)' }) as HTMLOptionElement;
+    expect(claudeOpt.disabled).toBe(true);
+
+    // Select gemini and submit.
+    await user.selectOptions(screen.getByLabelText(/executor/i), 'gemini');
+    await user.selectOptions(screen.getByLabelText(/team/i), 'engineering');
+    await user.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
+    await user.type(screen.getByLabelText(/description/i), 'desc');
+    await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    await waitFor(() =>
+      expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
+        executor: 'gemini',
+      })),
+    );
+  });
+
+  test('query-refetch transition: stale executor disappears, replacement auto-selects, stale value not submitted', async () => {
+    // Phase A: render with mocks where openclaw exists and is selectable.
+    const user = userEvent.setup();
+    vi.restoreAllMocks();
+    vi.spyOn(teamsApi, 'listTeams').mockResolvedValue({
+      teams: [{ name: 'engineering', manager: 'engineering_head', workers: [] }],
+    });
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: '' },
+      ],
+    });
+    vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
+      profiles: [
+        { name: 'openclaw', command: 'openclaw', adapter: 'pi', present: true, path: '/usr/bin/openclaw' },
+      ],
+    });
+
+    const { unmount } = renderDialog();
+    await waitFor(() => screen.getByRole('option', { name: 'openclaw (custom)' }));
+
+    // User selects openclaw — a stale value we'll later prove cannot be submitted.
+    await user.selectOptions(screen.getByLabelText(/executor/i), 'openclaw');
+    expect((screen.getByLabelText(/executor/i) as HTMLSelectElement).value).toBe('openclaw');
+
+    unmount();
+
+    // Phase B: fresh dialog with updated data — openclaw is gone, only claude remains.
+    vi.restoreAllMocks();
+    vi.spyOn(teamsApi, 'listTeams').mockResolvedValue({
+      teams: [{ name: 'engineering', manager: 'engineering_head', workers: [] }],
+    });
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: '' },
+      ],
+    });
+    vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
+      profiles: [], // openclaw unregistered
+    });
+
+    const spy = vi.spyOn(agentsApi, 'createAgent').mockResolvedValue({
+      name: 'w1', team: 'engineering', role: 'worker',
+    });
+    const user2 = userEvent.setup();
+    renderDialog();
+
+    await waitFor(() => screen.getByRole('option', { name: 'engineering' }));
+
+    // The effect auto-selected claude (only selectable option).
+    // openclaw (custom) is NOT in the selectable list.
+    expect(() => screen.getByRole('option', { name: 'openclaw (custom)' })).toThrow();
+    expect((screen.getByLabelText(/executor/i) as HTMLSelectElement).value).toBe('claude');
+
+    // Fill and submit — stale "openclaw" must never reach createAgent.
+    await user2.selectOptions(screen.getByLabelText(/team/i), 'engineering');
+    await user2.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
+    await user2.type(screen.getByLabelText(/description/i), 'desc');
+    await user2.type(screen.getByLabelText(/system prompt/i), 'prompt');
+    await user2.click(screen.getByRole('button', { name: /create/i }));
+
+    await waitFor(() =>
+      expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
+        executor: 'claude',
+      })),
+    );
+    // Prove openclaw was NEVER submitted.
+    const calls = spy.mock.calls as Array<[string, { executor: string }]>;
+    expect(calls.every(([_, body]) => body.executor !== 'openclaw')).toBe(true);
+  });
+
+  test('custom executor response appears in AgentSummary without type error', async () => {
+    // Verify the type-widening works: an AgentSummary with a custom executor
+    // name (not one of the 4 builtins) is accepted at runtime.
+    vi.restoreAllMocks();
+    vi.spyOn(teamsApi, 'listTeams').mockResolvedValue({
+      teams: [{ name: 'engineering', manager: 'engineering_head', workers: [] }],
+    });
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+      ],
+    });
+    // A custom profile with a non-four-name executor.
+    vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
+      profiles: [
+        { name: 'my-runner', command: 'my-runner', adapter: 'pi', present: false, path: null },
+      ],
+    });
+
+    const spy = vi.spyOn(agentsApi, 'createAgent').mockResolvedValue({
+      name: 'w1',
+      team: 'engineering',
+      role: 'worker',
+    });
+    const user = userEvent.setup();
+    renderDialog();
+
+    await waitFor(() => screen.getByRole('option', { name: 'engineering' }));
+
+    // The custom runner appears and is selectable.
+    const runnerOpt = screen.getByRole('option', { name: 'my-runner (custom)' }) as HTMLOptionElement;
+    expect(runnerOpt).toBeInTheDocument();
+    expect(runnerOpt.disabled).toBe(false);
+
+    // Select and submit the custom runner.
+    await user.selectOptions(screen.getByLabelText(/executor/i), 'my-runner');
+    await user.selectOptions(screen.getByLabelText(/team/i), 'engineering');
+    await user.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
+    await user.type(screen.getByLabelText(/description/i), 'desc');
+    await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    await waitFor(() =>
+      expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
+        executor: 'my-runner',
+      })),
+    );
+  });
+
   test('API-unavailable disables Create — no invented fallback', async () => {
     vi.restoreAllMocks();
     vi.spyOn(teamsApi, 'listTeams').mockResolvedValue({

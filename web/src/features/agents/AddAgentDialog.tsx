@@ -18,7 +18,7 @@
  * are not selectable. On API error, Create is disabled until the
  * registered list is known (no invented fallback).
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
 import {
@@ -37,9 +37,6 @@ import { useRuntimeProfiles } from '@/hooks/runtime-executors';
 import { useTeamsList } from '@/hooks/teams';
 
 const NAME_RE = /^[a-z][a-z0-9_]*$/;
-
-/** The four built-in executor profile names. */
-const BUILTIN_NAMES = new Set(['claude', 'codex', 'opencode', 'pi']);
 
 function defaultTeamForName(name: string): string {
   if (!name) return '';
@@ -100,15 +97,9 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
     const prereqs = prereqsQuery.data?.prereqs ?? [];
     const customProfiles = profilesQuery.data?.profiles ?? [];
 
-    // Built-ins from health/prereqs: present=true → selectable, false → unavail.
-    const builtins = prereqs
-      .filter((p) => BUILTIN_NAMES.has(p.tool))
-      .map((p) => ({
-        name: p.tool,
-        present: p.present,
-        kind: p.present ? 'builtin' as const : 'unregistered_builtin' as const,
-        hint: p.hint,
-      }));
+    // Names of all registered custom profiles — used to distinguish
+    // built-in-or-future-registry executors from known custom ones.
+    const customNameSet = new Set(customProfiles.map((p) => p.name));
 
     // Custom profiles from runtime/profiles are all registered by definition.
     const customs: ExecutorOption[] = customProfiles.map((p) => ({
@@ -117,6 +108,20 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
       kind: 'custom' as const,
       hint: null,
     }));
+
+    // Built-ins: every prereq whose name is NOT a known custom profile.
+    // Deduplicate against the custom set so a prereq that also appears as
+    // a custom profile is represented only once (as custom).
+    const builtins: ExecutorOption[] = [];
+    for (const p of prereqs) {
+      if (customNameSet.has(p.tool)) continue; // covered by the customs list
+      builtins.push({
+        name: p.tool,
+        present: p.present,
+        kind: p.present ? 'builtin' as const : 'unregistered_builtin' as const,
+        hint: p.hint,
+      });
+    }
 
     const selectable = [
       ...builtins.filter((b) => b.kind === 'builtin'),
@@ -130,12 +135,26 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
     return { selectable, unavailable, state: 'ready' };
   }, [prereqsQuery, profilesQuery]);
 
-  // Auto-select the first selectable executor when options first load.
-  const executorInitRef = useState(false);
-  if (executorOptions.state === 'ready' && !executorInitRef[0] && executorOptions.selectable.length > 0) {
-    setExecutor(executorOptions.selectable[0].name);
-    executorInitRef[1](true);
-  }
+  // When the selectable-name set changes (reload / refetch), keep a
+  // still-valid user selection, but clear or reset when a former value
+  // has disappeared from the live options.
+  const selectableNames = useMemo(
+    () => new Set(executorOptions.selectable.map((o) => o.name)),
+    [executorOptions.selectable],
+  );
+  useEffect(() => {
+    if (executorOptions.state !== 'ready') return;
+    if (selectableNames.has(executor)) return; // still valid
+    if (executorOptions.selectable.length > 0) {
+      setExecutor(executorOptions.selectable[0].name);
+    } else {
+      setExecutor('');
+    }
+    // Run only when the selectable set changes; the eslint-disable is
+    // intentional — adding executor to the deps would re-init on every
+    // selection change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectableNames, executorOptions.state, executorOptions.selectable]);
 
   const onNameChange = (next: string) => {
     setName(next);
@@ -159,7 +178,10 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
   };
 
   const nameOk = NAME_RE.test(name);
-  const executorOk = executorOptions.state === 'ready' && !!executor;
+  const executorOk =
+    executorOptions.state === 'ready' &&
+    !!executor &&
+    executorOptions.selectable.some((o) => o.name === executor);
   const fieldsOk =
     nameOk &&
     executorOk &&
