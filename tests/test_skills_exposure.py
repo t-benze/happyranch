@@ -582,6 +582,93 @@ class TestManageAgentManageRepoExposure:
 # ══════════════════════════════════════════════════════════════════════════
 
 
+class TestUniversalReflection:
+    """THR-106: reflection is org-wide universal via skills.org.allow.
+    Any agent, regardless of team or role, resolves reflection as exposed."""
+
+    def test_reflection_exposed_to_consultant_head_via_org_scope(self):
+        """consultant_head (not in engineering team, no agent-scoped allow)
+        resolves reflection via org-scoped allow."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        policy = {
+            "org": {"allow": ["hr:reflection"], "deny": []},
+        }
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org="happyranch", team="consultant", agent="consultant_head"
+        )
+
+        exposed_ids = {s.skill.id for s in exposed}
+        assert "hr:reflection" in exposed_ids, (
+            "reflection should be exposed to consultant_head via org-scoped allow"
+        )
+
+    def test_reflection_exposed_to_support_agent_via_org_scope(self):
+        """A support_agent on the cx team resolves reflection via org scope."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        policy = {
+            "org": {"allow": ["hr:reflection"], "deny": []},
+        }
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org="happyranch", team="cx", agent="support_agent"
+        )
+
+        exposed_ids = {s.skill.id for s in exposed}
+        assert "hr:reflection" in exposed_ids, (
+            "reflection should be exposed to support_agent via org-scoped allow"
+        )
+
+    def test_reflection_exposed_with_org_provenance(self):
+        """Exposed reflection carries org provenance when admitted via org scope."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        policy = {
+            "org": {"allow": ["hr:reflection"], "deny": []},
+        }
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org="happyranch", team="engineering", agent="dev_agent"
+        )
+
+        for s in exposed:
+            if s.skill.id == "hr:reflection":
+                assert len(s.allowed_by) > 0
+                assert any(r.scope == "org" and r.id == "happyranch" for r in s.allowed_by)
+                assert len(s.denied_by) == 0
+
+    def test_reflection_still_blocked_by_org_deny(self):
+        """Deny wins — org deny blocks reflection even when org allow also present."""
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.resolver import EligibilityResolver
+        from runtime.skills.exposure import resolve_exposed_skills
+
+        registry = SkillRegistry(skills_root=FIXTURES)
+        policy = {
+            "org": {"allow": ["hr:reflection"], "deny": ["hr:reflection"]},
+        }
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            registry, resolver, org="happyranch", team="engineering", agent="dev_agent"
+        )
+
+        exposed_ids = {s.skill.id for s in exposed}
+        assert "hr:reflection" not in exposed_ids, (
+            "reflection should NOT be exposed when org deny blocks it"
+        )
+
+
 class TestNegativeInvariants:
     """Security: eligibility must remain intact as the sole gate. No skill
     escapes to an agent who lacks explicit allow rules."""

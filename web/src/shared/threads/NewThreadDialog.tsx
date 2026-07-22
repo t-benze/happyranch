@@ -34,6 +34,11 @@ interface Prefill {
   forwarded_from_kind?: 'thread';
 }
 
+interface ReflectionTrigger {
+  /** If present and the dialog represents a single-agent recipient start, show a Reflection button. */
+  recipients: string[];
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -42,9 +47,11 @@ interface Props {
   onCreated: (threadId: string) => void;
   /** Agents list used for @-mention autocomplete in the body. */
   agents?: AgentSummary[];
+  /** When set, show a Reflection quick-start button for single-recipient starts. */
+  reflection?: ReflectionTrigger;
 }
 
-export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = [] }: Props): JSX.Element {
+export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = [], reflection }: Props): JSX.Element {
   const slug = useOrgSlug();
   const compose = useComposeThread();
   const [subject, setSubject] = useState('');
@@ -134,6 +141,35 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     }
   }, [subject, recipientsRaw, body, pendingAttachments, prefill, compose, slug, onCreated, onClose]);
 
+  const handleReflection = useCallback(async () => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setErrorMsg(null);
+
+    const agentName = reflection?.recipients?.[0];
+    if (!agentName) {
+      setErrorMsg('Reflection requires a single agent recipient.');
+      submittingRef.current = false;
+      return;
+    }
+
+    try {
+      const result = await compose.mutateAsync({
+        subject: `Reflection - ${agentName}`,
+        recipients: [agentName],
+        body_markdown:
+          `Run self-reflection (hr:reflection) on your recent work and post your opening reflection report.`,
+      });
+      onCreated(result.thread_id);
+      setPendingAttachments([]);
+      onClose();
+    } catch (err) {
+      setErrorMsg(
+        err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
+      );
+      submittingRef.current = false;
+    }
+  }, [reflection, compose, onCreated, onClose, slug]);
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
@@ -233,6 +269,15 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
           {errorMsg && <p className="text-feedback-danger text-xs">{errorMsg}</p>}
         </div>
         <DialogFooter>
+          {reflection ? (
+            <Button
+              variant="secondary"
+              onClick={handleReflection}
+              disabled={submittingRef.current || compose.isPending}
+            >
+              {submittingRef.current || compose.isPending ? 'Sending…' : 'Reflection'}
+            </Button>
+          ) : null}
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button onClick={submit} disabled={submittingRef.current || compose.isPending}>
             {submittingRef.current || compose.isPending ? 'Sending…' : 'Send'}

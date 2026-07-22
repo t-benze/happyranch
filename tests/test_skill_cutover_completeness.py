@@ -41,15 +41,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # list. It spans every eligibility class against the REAL in-repo
 # org/config.yaml and every executor adapter:
 #
-# Eligibility classes (from the real org/config.yaml shipped in Phase 2-3):
-#   A. reflection-eligible via team membership (engineering → hr:reflection)
+# Eligibility classes (from the real org/config.yaml on main):
+#   A. reflection-eligible via org-wide allow (skills.org.allow: [hr:reflection])
 #      — dev_agent, code_reviewer, qa_engineer, frontend_engineer
-#   B. reflection-eligible + manage-*-eligible via agent list
-#      — product_lead (hr:reflection + hr:manage-agent + hr:manage-repo)
-#   C. reflection-eligible via team + manage-*-eligible via agent list
-#      — engineering_manager (engineering team → hr:reflection; agent → hr:manage-*)
-#   D. NON-eligible — no team allow, no agent allow
-#      — consultant_head (gets NEITHER reflection NOR manage-*)
+#   B. reflection-eligible (org) + manage-*-eligible via agent list
+#      — product_lead (hr:manage-agent + hr:manage-repo)
+#   C. reflection-eligible (org) + manage-*-eligible via agent list
+#      — engineering_manager (org → hr:reflection; agent → hr:manage-*)
+#   D. reflection-eligible (org), NO manage-*
+#      — consultant_head (gets reflection via org, no manage-*)
 #
 # Executor adapter coverage:
 #   - claude: dev_agent, frontend_engineer, engineering_manager,
@@ -59,19 +59,20 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _REPRESENTATIVE_ROSTER: list[tuple[str, str, str, str, str]] = [
     # (name, team, role, executor, eligibility_class)
-    ("dev_agent", "engineering", "worker", "claude", "A — reflection via team"),
-    ("code_reviewer", "engineering", "worker", "codex", "A — reflection via team; exercises Codex adapter"),
-    ("qa_engineer", "engineering", "worker", "opencode", "A — reflection via team; exercises Opencode adapter"),
-    ("frontend_engineer", "engineering", "worker", "claude", "A — reflection via team"),
-    ("engineering_manager", "engineering", "manager", "claude", "C — reflection (team) + manage-* (agent)"),
-    ("product_lead", "product", "manager", "claude", "B — reflection + manage-* (agent)"),
-    ("consultant_head", "consultant", "manager", "claude", "D — NON-eligible"),
+    ("dev_agent", "engineering", "worker", "claude", "A — reflection via org"),
+    ("code_reviewer", "engineering", "worker", "codex", "A — reflection via org; exercises Codex adapter"),
+    ("qa_engineer", "engineering", "worker", "opencode", "A — reflection via org; exercises Opencode adapter"),
+    ("frontend_engineer", "engineering", "worker", "claude", "A — reflection via org"),
+    ("engineering_manager", "engineering", "manager", "claude", "C — reflection (org) + manage-* (agent)"),
+    ("product_lead", "product", "manager", "claude", "B — reflection (org) + manage-* (agent)"),
+    ("consultant_head", "consultant", "manager", "claude", "D — reflection (org), NO manage-*"),
 ]
 
 # Which agents are reflection-eligible per the real policy (derived from config.yaml)
+# Organ-wide universal: ALL agents receive hr:reflection
 _REFLECTION_ELIGIBLE: frozenset[str] = frozenset({
-    "dev_agent", "code_reviewer", "qa_engineer",
-    "frontend_engineer", "engineering_manager", "product_lead",
+    "dev_agent", "code_reviewer", "qa_engineer", "frontend_engineer",
+    "engineering_manager", "product_lead", "consultant_head",
 })
 
 
@@ -460,7 +461,7 @@ class TestContractCompletenessPostCutover:
                     # manage-agent / manage-repo: exposed for eligible managers (THR-055 seq 55)
                     # Per real org/config.yaml:
                     #   engineering_manager: allow [manage-agent, manage-repo]
-                    #   product_lead: allow [reflection, manage-agent, manage-repo]
+                    #   product_lead: allow [manage-agent, manage-repo]
                     #   All others: NO manage-* eligibility
                     is_manager = name in {"engineering_manager", "product_lead"}
                     for hi_skill in ("manage-agent", "manage-repo"):
