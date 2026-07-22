@@ -7,7 +7,6 @@ import { request } from './client';
 import type {
   TaskAttachmentRecord,
   TaskAttachmentRef,
-  TaskAttachmentUploadResponse,
   TaskDetailResponse,
   TaskRecallNode,
   TaskRecord,
@@ -90,31 +89,8 @@ export const taskEventsPath = (slug: string, taskId: string): string =>
 
 // ── Task attachments (THR-109) ───────────────────────────────────────────────
 
-export const uploadTaskAttachment = (
-  slug: string,
-  file: File,
-  agent: string = 'founder',
-): Promise<TaskAttachmentUploadResponse> => {
-  const formData = new FormData();
-  formData.append('file', file);
-  return request(`/orgs/${slug}/tasks/attachments?agent=${encodeURIComponent(agent)}`, {
-    method: 'POST',
-    body: formData,
-    headers: {},  // let browser set Content-Type with boundary
-  });
-};
-
 export const listTaskAttachments = (
   slug: string,
   taskId: string,
 ): Promise<{ task_id: string; attachments: TaskAttachmentRecord[] }> =>
   request(`/orgs/${slug}/tasks/${taskId}/attachments`);
-
-export const downloadTaskAttachment = (
-  slug: string,
-  taskId: string,
-  storageKey: string,
-): Promise<Blob> =>
-  request(`/orgs/${slug}/tasks/${taskId}/attachments/${storageKey}`, {
-    responseType: 'blob',
-  });
