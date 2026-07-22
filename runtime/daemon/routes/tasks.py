@@ -1483,7 +1483,7 @@ async def cancel_task(
 
 
 def _task_attachment_store(org: object) -> TaskAttachmentStore:
-    from runtime.runtime import OrgPaths
+    from runtime.orchestrator._paths import OrgPaths
     return TaskAttachmentStore(OrgPaths(org.root).task_attachments_dir)
 
 
