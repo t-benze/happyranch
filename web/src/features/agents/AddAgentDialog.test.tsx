@@ -27,6 +27,29 @@ function renderDialog(props: { open?: boolean; onOpenChange?: (v: boolean) => vo
   );
 }
 
+/** Like renderDialog but returns the QueryClient so callers can invalidate
+ *  and refetch queries on the SAME mounted instance for transition tests. */
+function renderDialogWithClient(props: { open?: boolean; onOpenChange?: (v: boolean) => void } = {}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const result = render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/orgs/test/agents']}>
+        <Routes>
+          <Route
+            path="/orgs/:slug/agents"
+            element={
+              <AppProvider client={qc}>
+                <AddAgentDialog open={props.open ?? true} onOpenChange={props.onOpenChange ?? (() => {})} />
+              </AppProvider>
+            }
+          />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return { ...result, qc };
+}
+
 /** Standard executor stubs for the happy path: one registered built-in
  *  (claude present=true), three unregistered built-ins, and one custom
  *  profile (openclaw, present=false — no binary registry entry). */
@@ -312,7 +335,7 @@ describe('AddAgentDialog', () => {
   });
 
   test('query-refetch transition: stale executor disappears, replacement auto-selects, stale value not submitted', async () => {
-    // Phase A: render with mocks where openclaw exists and is selectable.
+    // ONE dialog mount, ONE QueryClient — no unmount/remount.
     const user = userEvent.setup();
     vi.restoreAllMocks();
     vi.spyOn(teamsApi, 'listTeams').mockResolvedValue({
@@ -329,48 +352,46 @@ describe('AddAgentDialog', () => {
       ],
     });
 
-    const { unmount } = renderDialog();
+    const { qc } = renderDialogWithClient();
     await waitFor(() => screen.getByRole('option', { name: 'openclaw (custom)' }));
 
     // User selects openclaw — a stale value we'll later prove cannot be submitted.
     await user.selectOptions(screen.getByLabelText(/executor/i), 'openclaw');
     expect((screen.getByLabelText(/executor/i) as HTMLSelectElement).value).toBe('openclaw');
 
-    unmount();
-
-    // Phase B: fresh dialog with updated data — openclaw is gone, only claude remains.
-    vi.restoreAllMocks();
-    vi.spyOn(teamsApi, 'listTeams').mockResolvedValue({
-      teams: [{ name: 'engineering', manager: 'engineering_head', workers: [] }],
-    });
-    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+    // Phase B: update the mocks so openclaw disappears while claude remains.
+    // The dialog stays mounted — we invalidate the executor queries and refetch.
+    vi.mocked(healthApi.getPrereqs).mockResolvedValue({
       prereqs: [
         { tool: 'claude', present: true, path: '/usr/bin/claude', hint: '' },
       ],
     });
-    vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
+    vi.mocked(runtimeExecutorsApi.listRuntimeProfiles).mockResolvedValue({
       profiles: [], // openclaw unregistered
     });
 
     const spy = vi.spyOn(agentsApi, 'createAgent').mockResolvedValue({
       name: 'w1', team: 'engineering', role: 'worker',
     });
-    const user2 = userEvent.setup();
-    renderDialog();
 
-    await waitFor(() => screen.getByRole('option', { name: 'engineering' }));
+    // Refetch the executor data while the dialog is still mounted.
+    await qc.invalidateQueries({ queryKey: ['health', 'prereqs'] });
+    await qc.invalidateQueries({ queryKey: ['runtime-profiles'] });
 
-    // The effect auto-selected claude (only selectable option).
-    // openclaw (custom) is NOT in the selectable list.
+    // The effect should auto-select claude (the only remaining selectable option).
+    await waitFor(() => {
+      expect((screen.getByLabelText(/executor/i) as HTMLSelectElement).value).toBe('claude');
+    });
+
+    // openclaw (custom) is no longer in the selectable list.
     expect(() => screen.getByRole('option', { name: 'openclaw (custom)' })).toThrow();
-    expect((screen.getByLabelText(/executor/i) as HTMLSelectElement).value).toBe('claude');
 
-    // Fill and submit — stale "openclaw" must never reach createAgent.
-    await user2.selectOptions(screen.getByLabelText(/team/i), 'engineering');
-    await user2.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
-    await user2.type(screen.getByLabelText(/description/i), 'desc');
-    await user2.type(screen.getByLabelText(/system prompt/i), 'prompt');
-    await user2.click(screen.getByRole('button', { name: /create/i }));
+    // Fill remaining fields and submit.
+    await user.selectOptions(screen.getByLabelText(/team/i), 'engineering');
+    await user.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
+    await user.type(screen.getByLabelText(/description/i), 'desc');
+    await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
+    await user.click(screen.getByRole('button', { name: /create/i }));
 
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
