@@ -391,15 +391,13 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
     # tracker is the source of truth for "is this a real session". Unknown
     # comes first so an empty tracker can't silently accept a fabricated id.
     if expected is None:
-        # Idempotency short-circuit (TASK-3127): the tracker is empty because a
-        # PRIOR successful POST for this session already cleared it. If a
-        # task_result row exists for the EXACT (task_id, agent, session_id),
-        # this is a duplicate of a call that already succeeded — return 200
-        # "already recorded" instead of a misleading 409 unknown_session. Do
-        # NOT insert a second row; do NOT re-run decision side effects.
+        # Idempotency short-circuit (TASK-3127): clearing the tracker after a
+        # successful POST makes a duplicate of an exact persisted session reach
+        # this read-only idempotency branch, while an unpersisted (genuinely
+        # unknown / fabricated) session remains unknown_session.
         prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id)
         if prior is not None:
-            return {"ok": True, "idempotent": True}
+            return {"ok": True}
         # No persisted row for this session -> genuinely-unknown / fabricated
         # session. Preserve the security gate: STILL 409.
         raise HTTPException(

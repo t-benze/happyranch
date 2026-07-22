@@ -282,11 +282,11 @@ def test_completion_callback_plus_audit_logger_does_not_duplicate_row(
 def test_completion_duplicate_same_session_returns_200_idempotent(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    """A duplicate same-session completion POST returns 200 idempotent (TASK-3127).
+    """A duplicate same-session completion POST returns 200 {"ok": true} (TASK-3127).
     The first call succeeds and clears the tracker; the retry probes
     get_latest_task_result, finds the already-persisted row, and returns
-    {"ok": True, "idempotent": True} without inserting a second row or
-    re-running decision side effects."""
+    {"ok": true} without inserting a second row or re-running decision
+    side effects."""
     sub = TestClient(app).post(
         "/api/v1/orgs/alpha/tasks",
         json={"brief": "x"},
@@ -309,8 +309,7 @@ def test_completion_duplicate_same_session_returns_200_idempotent(
         f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers,
     )
     assert second.status_code == 200
-    assert second.json()["ok"] is True
-    assert second.json()["idempotent"] is True
+    assert second.json() == {"ok": True}
     # Exactly one task_results row for this session — no duplicate insert.
     rows = org_state.db.get_task_results(task_id)
     assert len([r for r in rows if r["session_id"] == "sess-1"]) == 1
