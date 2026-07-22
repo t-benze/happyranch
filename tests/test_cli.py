@@ -2341,3 +2341,27 @@ def test_schedule_runner_prompt_names_schedules_spawn():
     # The prompt must instruct the agent to call happyranch schedules spawn (not todos spawn)
     assert "happyranch schedules spawn" in prompt
     assert "happyranch todos spawn" not in prompt
+
+
+def test_schedules_create_parses_to_cmd_schedules_create():
+    """happyranch schedules create ... parses to cmd_schedules_create."""
+    from cli.commands.schedules import cmd_schedules_create
+
+    parser = build_parser()
+    args = parser.parse_args([
+        "schedules", "create",
+        "--org", "test-org",
+        "--from-file", "/tmp/create.json",
+    ])
+    assert args.command == "schedules"
+    assert args.schedule_spawn_command == "create"
+    assert args.org == "test-org"
+    assert args.from_file == "/tmp/create.json"
+    assert args.func is cmd_schedules_create
+
+
+def test_schedules_create_not_under_todos():
+    """happyranch todos create does NOT exist; create is only under schedules."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["todos", "create", "--org", "x", "--from-file", "/f"])

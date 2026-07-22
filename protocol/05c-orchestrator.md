@@ -509,6 +509,28 @@ agent/org caps). A new Schedule enters in ARMED status with a computed
 ``fire_at``. The service does NOT enqueue or execute anything — it is a
 pure lifecycle-management surface.
 
+**Arming (creating) schedules.** Agents create schedules autonomously via
+the ``POST /schedules`` callback route (``runtime/daemon/routes/schedules.py``).
+The CLI form is:
+
+  happyranch schedules create --org <slug> --from-file <path>
+
+The payload carries ``task_id``, ``session_id``, ``agent`` (self-target
+binding), ``source_instruction``, ``normalized_brief``, ``kind``, ``fire_at``,
+and optionally ``recurrence`` and ``timezone``.  Server-side enforcement:
+
+- **Self-target:** ``task_id`` + ``session_id`` + ``agent`` are validated
+  against the in-memory SessionTracker; the payload cannot pick another agent.
+- **Capability gate (default-deny):** ``scheduling.enabled_agents`` in
+  ``org/config.yaml`` must list the agent.  Omission → 409.
+- **Mandatory normalization:** both ``source_instruction`` and
+  ``normalized_brief`` must be non-blank; NL-only arming is refused.
+- **Envelope validation** (one-shot horizon, weekly shape, caps, expiry
+  default) is enforced by ``ScheduleService.create()``.
+
+Arming emits a ``schedule_created`` audit row with
+``task_id=<SCHEDULE-NNN>``.
+
 **Scheduler loop (Phase 3).** A 60-second daemon loop
 (``schedule_scheduler_loop`` in ``runtime/daemon/schedule_scheduler.py``)
 scans every org for ARMED rows whose ``fire_at <= now`` (one-shot) or

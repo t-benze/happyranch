@@ -378,6 +378,14 @@ auth/notification routing, a permission-generation surface, or adding a new
 top-level runtime, frontend, or CLI dependency must STOP and escalate (§4
 boundary).
 
+**Implementation status (2026-07-22):**
+
+- ✅ Persistence/validation (Phase 1): `schedule_rules.py`, `schedule_store.py`, `schedules` table
+- ✅ Lifecycle service/audit (Phase 2): `schedule_service.py` — create, list, get, pause, cancel, edit
+- ✅ Management surface (Phase 3 part 1): `routes/schedules.py` — list/show/pause/cancel/edit; CLI `happyranch todos`
+- ✅ Fire path (Phase 3 part 2): `schedule_scheduler.py`, `schedule_runner.py`, `schedule_queue.py`, spawn callback
+- ✅ Autonomous arming (Phase 4): `POST /schedules` create callback route, `schedules create` CLI, per-agent `scheduling.enabled_agents` capability gate in `org/config.yaml`, session-bound self-target validation
+
 ## 14. Non-goals (v1 no-list, consolidated)
 
 - No **agent-to-agent** scheduling (self-target only).
