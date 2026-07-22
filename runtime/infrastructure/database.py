@@ -3955,13 +3955,19 @@ class Database:
     def resolve_ancestor_attachments(
         self, task_id: str, max_hops: int = 20
     ) -> list[TaskAttachmentRecord]:
-        """Walk the parent_task_id chain and union all ancestor attachments.
+        """Walk the parent_task_id chain and union OWN + ancestor attachments.
 
-        Returns attachments from the nearest ancestor(s) up to the root.
+        Returns the spawning task's own attachments plus every ancestor's
+        attachments up to root, in deterministic order (own first, then
+        nearest ancestor to root). No rows are copied into child tasks.
         The owning task_id is preserved per record so callers know which
-        ancestor each attachment came from.
+        task each attachment came from.
         """
         result: list[TaskAttachmentRecord] = []
+        # 1. Own attachments first.
+        own = self.list_task_attachments(task_id)
+        result.extend(own)
+        # 2. Walk up to root, unioning ancestor attachments.
         seen: set[str] = {task_id}
         current_id = task_id
         for _ in range(max_hops):

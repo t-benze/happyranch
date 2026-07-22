@@ -11,12 +11,54 @@ from runtime.infrastructure.task_attachment_store import (
     TaskAttachmentStore,
     TaskAttachmentTooLarge,
     TaskAttachmentInvalidName,
+    TaskAttachmentInvalidStorageKey,
     TaskAttachmentUnsupportedType,
     TaskAttachmentNotFound,
     sanitize_display_name,
     resolve_content_type,
     is_allowed_content_type,
+    validate_storage_key,
 )
+
+
+class TestStorageKeyValidation:
+    def test_valid_keys(self):
+        validate_storage_key("ta-0001")
+        validate_storage_key("mockup.png-abc123def456")
+        validate_storage_key("file.txt-uuid")
+        validate_storage_key("a" * 256)
+
+    def test_rejects_empty(self):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            validate_storage_key("")
+
+    def test_rejects_too_long(self):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            validate_storage_key("a" * 257)
+
+    def test_rejects_dot(self):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            validate_storage_key(".")
+
+    def test_rejects_double_dot(self):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            validate_storage_key("..")
+
+    def test_rejects_slash(self):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            validate_storage_key("foo/bar")
+
+    def test_rejects_backslash(self):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            validate_storage_key("foo\\bar")
+
+    def test_rejects_null(self):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            validate_storage_key("key\x00name")
+
+    def test_rejects_space(self):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            validate_storage_key("key name")
 
 
 class TestDisplayNameSanitization:
@@ -123,7 +165,71 @@ class TestTaskAttachmentStore:
         assert store.read("ta-0001") == b"new"
 
     def test_put_to_subdirectory(self, store):
-        """Storage keys can contain path separators."""
+        """Storage keys must be flat safe tokens, not paths with separators."""
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.put("task/TASK-001/mockup.png", b"data")
+
+    def test_put_rejects_parent_traversal(self, store):
+        """Storage keys with .. must be rejected."""
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.put("../etc/passwd", b"data")
+
+    def test_put_rejects_absolute_path(self, store):
+        """Absolute-path storage keys must be rejected."""
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.put("/etc/passwd", b"data")
+
+    def test_put_rejects_dot_dot_prefix(self, store):
+        """Storage keys starting with .. must be rejected."""
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.put("..hidden", b"data")
+
+    def test_put_rejects_single_dot(self, store):
+        """Storage key of just '.' must be rejected."""
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.put(".", b"data")
+
+    def test_put_rejects_double_dot(self, store):
+        """Storage key of just '..' must be rejected."""
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.put("..", b"data")
+
+    def test_put_rejects_empty_key(self, store):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.put("", b"data")
+
+    def test_put_rejects_null_byte(self, store):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.put("key\x00name", b"data")
+
+    def test_validate_storage_key_rejects_backslash(self, store):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.put("key\\name", b"data")
+
+    def test_put_rejects_slash_in_key(self, store):
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.put("key/name", b"data")
+
+    def test_read_rejects_traversal_key(self, store):
+        """read path_for also validates."""
+        store.put("ta-0001", b"data")
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.read("../../ta-0001")
+
+    def test_delete_rejects_traversal_key(self, store):
+        """delete path_for also validates."""
+        store.put("ta-0001", b"data")
+        with pytest.raises(TaskAttachmentInvalidStorageKey):
+            store.delete("../ta-0001")
+
+    def test_accepts_valid_key(self, store):
+        """Normal safe tokens work."""
         content = b"data"
-        store.put("task/TASK-001/mockup.png", content)
-        assert store.read("task/TASK-001/mockup.png") == content
+        store.put("ta-0001", content)
+        assert store.read("ta-0001") == content
+
+    def test_accepts_key_with_dots(self, store):
+        """Keys with dots (like UUIDs) are fine."""
+        content = b"hello"
+        store.put("mockup.png-abc123def456", content)
+        assert store.read("mockup.png-abc123def456") == content

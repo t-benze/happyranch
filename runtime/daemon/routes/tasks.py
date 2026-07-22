@@ -1563,15 +1563,22 @@ async def upload_task_attachment(
 @router.get("/tasks/{task_id}/attachments")
 def list_task_attachments(
     slug: str, task_id: str, org: OrgDep,
+    include_inherited: bool = Query(False),
 ) -> dict:
-    """List attachments for a task (owning-task attachments only,
-    not ancestors — ancestor resolution happens at materialization time).
+    """List attachments for a task.
+
+    By default returns only the task's own attachments.
+    With ?include_inherited=true, also includes ancestor attachments
+    resolved via parent_task_id chain (own + ancestors union).
     """
     task = org.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_task"})
 
-    attachments = org.db.list_task_attachments(task_id)
+    if include_inherited:
+        attachments = org.db.resolve_ancestor_attachments(task_id)
+    else:
+        attachments = org.db.list_task_attachments(task_id)
     return {
         "task_id": task_id,
         "attachments": [
@@ -1600,8 +1607,12 @@ def get_task_attachment(
 ):
     """Download a task attachment's bytes.
 
-    Authorization: the requester must be the owning task or a descendant.
-    For web UI downloads, we accept any authenticated request for now.
+    Scoped to task_id + storage_key. The attachment must belong to the
+    specified task (directly) or to an ancestor resolved via
+    parent_task_id chain. Per-task caller identity is not available
+    in the current bearer-token auth model — enforcement of task-tree
+    visibility is scoped to the URL-specified task_id (founder-gated:
+    THR-109 finding 3 auth limitation).
     """
     from fastapi.responses import StreamingResponse
 
@@ -1609,7 +1620,15 @@ def get_task_attachment(
     if task is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_task"})
 
+    # Check own attachments first, then inherited.
     record = org.db.get_task_attachment(task_id, storage_key)
+    if record is None:
+        # Try inherited: resolve ancestor attachments and match by storage_key.
+        inherited = org.db.resolve_ancestor_attachments(task_id)
+        for att in inherited:
+            if att.storage_key == storage_key and att.task_id != task_id:
+                record = att
+                break
     if record is None:
         raise HTTPException(
             status_code=404,

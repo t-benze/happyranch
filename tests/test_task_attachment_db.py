@@ -104,10 +104,13 @@ class TestTaskAttachmentCRUD:
 
 
 class TestAncestorAttachmentResolution:
-    def test_no_ancestors(self, db):
+    def test_no_ancestors_shows_only_own(self, db):
         _make_task(db, "TASK-001")
+        _make_attachment(db, "TASK-001", ordinal=0, storage_key="ta-0001", display_name="only.png")
+
         attachments = db.resolve_ancestor_attachments("TASK-001")
-        assert attachments == []
+        assert len(attachments) == 1
+        assert attachments[0].display_name == "only.png"
 
     def test_parent_has_attachments(self, db):
         _make_task(db, "TASK-001")
@@ -129,27 +132,28 @@ class TestAncestorAttachmentResolution:
         assert len(attachments) == 1
         assert attachments[0].display_name == "grandparent.png"
 
-    def test_union_multiple_ancestors(self, db):
+    def test_union_own_and_multiple_ancestors(self, db):
         _make_task(db, "TASK-001")
         _make_attachment(db, "TASK-001", ordinal=0, storage_key="ta-0001", display_name="root.png")
         _make_task(db, "TASK-002", parent_id="TASK-001")
         _make_attachment(db, "TASK-002", ordinal=0, storage_key="ta-0002", display_name="middle.png")
         _make_task(db, "TASK-003", parent_id="TASK-002")
+        _make_attachment(db, "TASK-003", ordinal=0, storage_key="ta-0003", display_name="self.png")
 
         attachments = db.resolve_ancestor_attachments("TASK-003")
         names = {a.display_name for a in attachments}
-        assert names == {"root.png", "middle.png"}
+        assert names == {"self.png", "middle.png", "root.png"}
 
-    def test_root_task_gets_nothing(self, db):
+    def test_root_task_gets_own_attachments(self, db):
         _make_task(db, "TASK-001")
         _make_attachment(db, "TASK-001", ordinal=0, storage_key="ta-0001", display_name="self.png")
 
-        # Root task's own attachments are NOT included via resolve_ancestor_attachments
-        # (they are the task's own attachments, not inherited from ancestors).
+        # Root task's own attachments ARE included (finding 2: own + ancestors).
         attachments = db.resolve_ancestor_attachments("TASK-001")
-        assert attachments == []
+        assert len(attachments) == 1
+        assert attachments[0].display_name == "self.png"
 
-    def test_no_parent_no_attachments(self, db):
+    def test_no_parent_no_own_attachments(self, db):
         _make_task(db, "TASK-001")
         _make_task(db, "TASK-002")  # no parent, no attachments
         attachments = db.resolve_ancestor_attachments("TASK-002")

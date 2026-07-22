@@ -42,7 +42,11 @@ def cmd_run(args: argparse.Namespace) -> None:
     if args.owner:
         payload["owner"] = args.owner
     # Handle --attach references.
-    attachments_list = getattr(args, "attachments", None) or []
+    attachments_list = (
+        getattr(args, "attachments", None)
+        if hasattr(args, "attachments") and isinstance(getattr(args, "attachments", None), list)
+        else None
+    )
     if attachments_list:
         payload_attachments: list[dict] = []
         for ref in attachments_list:
@@ -924,6 +928,18 @@ def register(sub) -> None:
         "--brief-file",
         help="Path to a file whose contents become the task brief",
     )
+    p_run.add_argument(
+        "--attach",
+        action="append",
+        default=None,
+        metavar="STORAGE_KEY[:DISPLAY_NAME]",
+        help=(
+            "Reference a pre-uploaded task attachment by storage_key, "
+            "optionally overriding the display name with :NAME. "
+            "May be repeated."
+        ),
+        dest="attachments",
+    )
     p_run.set_defaults(func=cmd_run)
 
     p_details = sub.add_parser("details", help="Show task details")
@@ -1129,6 +1145,56 @@ def register(sub) -> None:
         ),
     )
     p_revisit.set_defaults(func=cmd_revisit)
+
+    # ── Task attachment commands (THR-109) ─────────────────────────────────
+
+    p_attach_upload = sub.add_parser(
+        "attach-upload",
+        help="Upload a file to the task-attachment private store",
+    )
+    p_attach_upload.add_argument(
+        "--org", default=None,
+        help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)",
+    )
+    p_attach_upload.add_argument(
+        "--file", required=True,
+        help="Path to the file to upload",
+    )
+    p_attach_upload.add_argument(
+        "--as-agent", default="founder",
+        help="Attribute the upload to this agent name",
+    )
+    p_attach_upload.set_defaults(func=cmd_attach_upload)
+
+    p_attach_show = sub.add_parser(
+        "attach-show",
+        help="List task attachments",
+    )
+    p_attach_show.add_argument(
+        "--org", default=None,
+        help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)",
+    )
+    p_attach_show.add_argument("task_id", help="Task ID (e.g. TASK-001)")
+    p_attach_show.set_defaults(func=cmd_attach_show)
+
+    p_attach_download = sub.add_parser(
+        "attach-download",
+        help="Download a task attachment's bytes",
+    )
+    p_attach_download.add_argument(
+        "--org", default=None,
+        help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)",
+    )
+    p_attach_download.add_argument("task_id", help="Task ID (e.g. TASK-001)")
+    p_attach_download.add_argument(
+        "storage_key",
+        help="Storage key returned by attach-upload (e.g. mockup_png-abc123)",
+    )
+    p_attach_download.add_argument(
+        "--output", "-o", default=None,
+        help="Output file path (default: storage_key last path component)",
+    )
+    p_attach_download.set_defaults(func=cmd_attach_download)
 
 
 # ── Task attachment commands (THR-109) ────────────────────────────────────────
