@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
 
@@ -18,7 +18,18 @@ from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
-from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.infrastructure.task_attachment_store import (
+    MAX_TASK_ATTACHMENTS_PER_TASK,
+    MAX_TASK_ATTACHMENT_BYTES,
+    TaskAttachmentNotFound,
+    TaskAttachmentStore,
+    TaskAttachmentTooLarge,
+    TaskAttachmentTooMany,
+    TaskAttachmentUnsupportedType,
+    resolve_content_type,
+    sanitize_display_name,
+)
+from runtime.models import BlockKind, TaskAttachmentRecord, TaskRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +86,17 @@ def _task_to_dict(t: TaskRecord) -> dict:
 MAX_OUTPUT_BYTES = 200 * 1024
 
 
+class TaskAttachmentRef(BaseModel):
+    """Reference to a previously uploaded task attachment."""
+    storage_key: str
+    display_name: str | None = None
+
+
 class SubmitTask(BaseModel):
     team: str | None = None
     brief: str
     owner: str | None = None  # assign a specific agent (default: team manager)
+    attachments: list[TaskAttachmentRef] | None = None
 
 
 @router.post("/tasks")
@@ -126,6 +144,51 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
         team = body.team or "engineering"
         _require_known_team(team)
         assigned = registry.manager_for_team(team).name
+    # Validate attachment refs if provided.
+    uploaded_by = request.headers.get("X-HappyRanch-Caller", "founder")
+    if body.attachments:
+        if len(body.attachments) > MAX_TASK_ATTACHMENTS_PER_TASK:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "too_many_attachments",
+                    "max": MAX_TASK_ATTACHMENTS_PER_TASK,
+                },
+            )
+        seen_keys: set[str] = set()
+        store = _task_attachment_store(org)
+        for ref in body.attachments:
+            if ref.storage_key in seen_keys:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "duplicate_attachment",
+                        "storage_key": ref.storage_key,
+                    },
+                )
+            seen_keys.add(ref.storage_key)
+            # Verify the storage_key exists in the file store.
+            path = store.path_for(ref.storage_key)
+            if not path.exists() or path.is_dir():
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "code": "task_attachment_not_found",
+                        "storage_key": ref.storage_key,
+                    },
+                )
+            # Reject if already claimed by another task.
+            existing = org.db.get_task_attachment_by_storage_key(ref.storage_key)
+            if existing is not None:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "attachment_already_claimed",
+                        "storage_key": ref.storage_key,
+                        "task_id": existing.task_id,
+                    },
+                )
+
     async with org.db_lock:
         task_id = org.db.next_task_id()
         org.db.insert_task(
@@ -136,6 +199,28 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
                 assigned_agent=assigned,
             )
         )
+        # Link pre-uploaded attachments to the new task.
+        if body.attachments:
+            store = _task_attachment_store(org)
+            for idx, ref in enumerate(body.attachments):
+                path = store.path_for(ref.storage_key)
+                if not path.exists():
+                    continue
+                size_bytes = path.stat().st_size
+                display_name = sanitize_display_name(
+                    ref.display_name or "attachment"
+                )
+                # Resolve content type from display name extension.
+                content_type = resolve_content_type(display_name, None)
+                org.db.insert_task_attachment(
+                    task_id=task_id,
+                    ordinal=idx,
+                    storage_key=ref.storage_key,
+                    display_name=display_name,
+                    size_bytes=size_bytes,
+                    content_type=content_type,
+                    uploaded_by=uploaded_by,
+                )
 
     enqueue_task(state, org.slug, task_id)
     return {"task_id": task_id, "team": team, "assigned_agent": assigned}
@@ -1392,3 +1477,182 @@ async def cancel_task(
         "cancelled": to_cancel,
         "killed": killed,
     }
+
+
+# ── Task attachment routes (THR-109) ─────────────────────────────────────────
+
+
+def _task_attachment_store(org: object) -> TaskAttachmentStore:
+    from runtime.runtime import OrgPaths
+    return TaskAttachmentStore(OrgPaths(org.root).task_attachments_dir)
+
+
+class TaskAttachmentUploadResponse(BaseModel):
+    storage_key: str
+    display_name: str
+    size_bytes: int
+    content_type: str | None = None
+    uploaded_by: str
+
+
+@router.post("/tasks/attachments")
+async def upload_task_attachment(
+    slug: str,
+    org: OrgDep,
+    request: Request,
+    file: UploadFile = File(...),
+    agent: str = Query("founder"),
+) -> dict:
+    """Upload a file to the task-attachment private store.
+
+    Returns a storage_key for reference on POST /tasks.
+    Does NOT create a task_attachments DB row — that happens on task create.
+    """
+    from fastapi import UploadFile
+    import mimetypes
+
+    content = await file.read(MAX_TASK_ATTACHMENT_BYTES + 1)
+    if len(content) > MAX_TASK_ATTACHMENT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "attachment_too_large",
+                "max_bytes": MAX_TASK_ATTACHMENT_BYTES,
+                "size_bytes": len(content),
+            },
+        )
+
+    display_name = file.filename or "attachment"
+    sanitize_display_name(display_name)
+
+    # Resolve content type from declared mime-type or file extension.
+    content_type = file.content_type or mimetypes.guess_type(display_name)[0]
+    if content_type and content_type not in _allowed_content_types_set():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "unsupported_attachment_type",
+                "content_type": content_type,
+            },
+        )
+
+    # Validate and resolve content type.
+    resolved_type = resolve_content_type(display_name, content_type)
+
+    import uuid
+    storage_key = _sanitize_storage_key(display_name) + "-" + uuid.uuid4().hex[:12]
+
+    store = _task_attachment_store(org)
+    try:
+        size_bytes = store.put(storage_key, content)
+    except TaskAttachmentTooLarge as exc:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "attachment_too_large", "detail": str(exc)},
+        )
+
+    return {
+        "storage_key": storage_key,
+        "display_name": display_name,
+        "size_bytes": size_bytes,
+        "content_type": resolved_type,
+        "uploaded_by": agent,
+    }
+
+
+@router.get("/tasks/{task_id}/attachments")
+def list_task_attachments(
+    slug: str, task_id: str, org: OrgDep,
+) -> dict:
+    """List attachments for a task (owning-task attachments only,
+    not ancestors — ancestor resolution happens at materialization time).
+    """
+    task = org.db.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_task"})
+
+    attachments = org.db.list_task_attachments(task_id)
+    return {
+        "task_id": task_id,
+        "attachments": [
+            {
+                "storage_key": a.storage_key,
+                "task_id": a.task_id,
+                "ordinal": a.ordinal,
+                "display_name": a.display_name,
+                "size_bytes": a.size_bytes,
+                "content_type": a.content_type,
+                "uploaded_by": a.uploaded_by,
+                "created_at": a.created_at,
+            }
+            for a in attachments
+        ],
+    }
+
+
+@router.get("/tasks/{task_id}/attachments/{storage_key}")
+def get_task_attachment(
+    slug: str,
+    task_id: str,
+    storage_key: str,
+    org: OrgDep,
+    request: Request,
+) -> "StreamingResponse":
+    """Download a task attachment's bytes.
+
+    Authorization: the requester must be the owning task or a descendant.
+    For web UI downloads, we accept any authenticated request for now.
+    """
+    from fastapi.responses import StreamingResponse
+
+    task = org.db.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_task"})
+
+    record = org.db.get_task_attachment(task_id, storage_key)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "task_attachment_not_found"},
+        )
+
+    store = _task_attachment_store(org)
+    try:
+        content = store.read(record.storage_key)
+    except TaskAttachmentNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "task_attachment_bytes_missing"},
+        )
+
+    media_type = record.content_type or "application/octet-stream"
+    return StreamingResponse(
+        iter([content]),
+        media_type=media_type,
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{record.display_name}"',
+        },
+    )
+
+
+# ── Content-type allowlist (lazy init to avoid circular imports) ─────────────
+
+_ALLOWED_CTS: frozenset[str] | None = None
+
+
+def _allowed_content_types_set() -> frozenset[str]:
+    global _ALLOWED_CTS
+    if _ALLOWED_CTS is None:
+        from runtime.infrastructure.task_attachment_store import \
+            _ALLOWED_CONTENT_TYPES
+        _ALLOWED_CTS = _ALLOWED_CONTENT_TYPES
+    return _ALLOWED_CTS
+
+
+def _sanitize_storage_key(display_name: str) -> str:
+    """Generate a safe prefix for the storage_key from the display_name."""
+    import re
+    base = Path(display_name).stem[:50]
+    base = re.sub(r'[^A-Za-z0-9._-]', '_', base)
+    return base or "file"

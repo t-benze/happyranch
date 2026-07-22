@@ -12,6 +12,7 @@ from runtime.models import (
     DreamKbCandidate,
     DreamRecord,
     DreamStatus,
+    TaskAttachmentRecord,
     TaskRecord,
     TaskStatus,
     ThreadAttachment,
@@ -722,6 +723,22 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_thread_scoped_attachments_thread
                 ON thread_scoped_attachments(thread_id);
+
+            CREATE TABLE IF NOT EXISTS task_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                storage_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES tasks(id),
+                UNIQUE(task_id, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_attachments_task
+                ON task_attachments(task_id);
 
             CREATE TABLE IF NOT EXISTS thread_invocations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3847,6 +3864,165 @@ class Database:
         )
         self._conn.commit()
         return cursor.rowcount > 0
+
+    # --- Task attachments (THR-109) ---
+
+    @_synchronized
+    def next_task_attachment_id(self) -> str:
+        cursor = self._conn.execute(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM task_attachments"
+        )
+        n = cursor.fetchone()[0]
+        return f"ta-{n:04d}"
+
+    @_synchronized
+    def insert_task_attachment(
+        self,
+        *,
+        task_id: str,
+        ordinal: int,
+        storage_key: str,
+        display_name: str,
+        size_bytes: int | None,
+        content_type: str | None,
+        uploaded_by: str,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO task_attachments "
+            "(task_id, ordinal, storage_key, display_name, size_bytes, "
+            "content_type, uploaded_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                task_id,
+                ordinal,
+                storage_key,
+                display_name,
+                size_bytes,
+                content_type,
+                uploaded_by,
+                _now().isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def get_task_attachment(
+        self, task_id: str, storage_key: str
+    ) -> TaskAttachmentRecord | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM task_attachments "
+            "WHERE task_id = ? AND storage_key = ?",
+            (task_id, storage_key),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return TaskAttachmentRecord(
+            id=row["id"],
+            task_id=row["task_id"],
+            ordinal=row["ordinal"],
+            storage_key=row["storage_key"],
+            display_name=row["display_name"],
+            size_bytes=row["size_bytes"],
+            content_type=row["content_type"],
+            uploaded_by=row["uploaded_by"],
+            created_at=row["created_at"],
+        )
+
+    @_synchronized
+    def list_task_attachments(self, task_id: str) -> list[TaskAttachmentRecord]:
+        cursor = self._conn.execute(
+            "SELECT * FROM task_attachments "
+            "WHERE task_id = ? ORDER BY ordinal",
+            (task_id,),
+        )
+        return [
+            TaskAttachmentRecord(
+                id=row["id"],
+                task_id=row["task_id"],
+                ordinal=row["ordinal"],
+                storage_key=row["storage_key"],
+                display_name=row["display_name"],
+                size_bytes=row["size_bytes"],
+                content_type=row["content_type"],
+                uploaded_by=row["uploaded_by"],
+                created_at=row["created_at"],
+            )
+            for row in cursor.fetchall()
+        ]
+
+    @_synchronized
+    def resolve_ancestor_attachments(
+        self, task_id: str, max_hops: int = 20
+    ) -> list[TaskAttachmentRecord]:
+        """Walk the parent_task_id chain and union all ancestor attachments.
+
+        Returns attachments from the nearest ancestor(s) up to the root.
+        The owning task_id is preserved per record so callers know which
+        ancestor each attachment came from.
+        """
+        result: list[TaskAttachmentRecord] = []
+        seen: set[str] = {task_id}
+        current_id = task_id
+        for _ in range(max_hops):
+            row = self._conn.execute(
+                "SELECT parent_task_id FROM tasks WHERE id = ?",
+                (current_id,),
+            ).fetchone()
+            if row is None:
+                break
+            parent_id = row["parent_task_id"]
+            if parent_id is None or parent_id in seen:
+                break
+            seen.add(parent_id)
+            # Collect attachments from this ancestor.
+            attachments = self.list_task_attachments(parent_id)
+            result.extend(attachments)
+            current_id = parent_id
+        return result
+
+    @_synchronized
+    def delete_task_attachment(
+        self, task_id: str, storage_key: str
+    ) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM task_attachments "
+            "WHERE task_id = ? AND storage_key = ?",
+            (task_id, storage_key),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    @_synchronized
+    def count_task_attachments(self, task_id: str) -> int:
+        cursor = self._conn.execute(
+            "SELECT COUNT(*) FROM task_attachments WHERE task_id = ?",
+            (task_id,),
+        )
+        return cursor.fetchone()[0]
+
+    @_synchronized
+    def get_task_attachment_by_storage_key(
+        self, storage_key: str
+    ) -> TaskAttachmentRecord | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM task_attachments WHERE storage_key = ?",
+            (storage_key,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return TaskAttachmentRecord(
+            id=row["id"],
+            task_id=row["task_id"],
+            ordinal=row["ordinal"],
+            storage_key=row["storage_key"],
+            display_name=row["display_name"],
+            size_bytes=row["size_bytes"],
+            content_type=row["content_type"],
+            uploaded_by=row["uploaded_by"],
+            created_at=row["created_at"],
+        )
 
     @_synchronized
     def mint_thread_invocation(
