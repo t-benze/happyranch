@@ -450,6 +450,7 @@ class Orchestrator:
             " CLI's abilities):",
         ]
 
+        materialized_keys: list[str] = []
         for att in attachments:
             try:
                 content = store.read(att.storage_key)
@@ -493,6 +494,7 @@ class Orchestrator:
                 )
                 continue
             target.write_bytes(content)
+            materialized_keys.append(att.storage_key)
 
             size_str = (
                 f"{att.size_bytes} bytes"
@@ -509,6 +511,20 @@ class Orchestrator:
         if len(lines) == 1:
             # Only the header, no attachments materialized.
             return ""
+
+        # Audit: attachments materialized for session spawn.
+        try:
+            self._audit.log_task_attachment_materialized(
+                task_id=task_id,
+                session_id=session_id,
+                count=len(materialized_keys),
+                materialized_keys=materialized_keys,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to audit attachment materialization for %s",
+                task_id, exc_info=True,
+            )
 
         return "\n".join(lines) + "\n"
 
@@ -807,6 +823,11 @@ class Orchestrator:
             token_usage=result.token_usage,
         )
 
+        # THR-109: clean up the regenerable per-session materialized
+        # attachment directory. Bytes of record live in the task-attachment
+        # private store; the materialized files are a cache.
+        _cleanup_session_attachments(workspace, session_id)
+
         report = self._read_completion_from_db(task_id, agent_name, session_id)
         return result, report
 
@@ -874,3 +895,28 @@ class Orchestrator:
         if report is None:
             return
         self._audit.log_completion_report(report=report)
+
+
+# ── Module-level helpers ──────────────────────────────────────────────────────
+
+
+def _cleanup_session_attachments(workspace: Path, session_id: str) -> None:
+    """Remove the per-session materialized task-attachment directory.
+
+    This is a regenerable cache — bytes of record live in the
+    task-attachment private store. Safe/idempotent for missing dirs
+    and errors. Only removes the exact session's attachment dir,
+    never the workspace itself, shared artifacts, or source private
+    store bytes.
+    """
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    if not session_dir.exists():
+        return
+    try:
+        import shutil
+        shutil.rmtree(session_dir)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to clean up session attachments dir: %s",
+            session_dir, exc_info=True,
+        )

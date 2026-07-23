@@ -146,7 +146,10 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
         _require_known_team(team)
         assigned = registry.manager_for_team(team).name
     # Validate attachment refs if provided.
+    # Every attachment reference is fully resolved/validated/normalized
+    # BEFORE task persistence so no invalid reference creates an orphan task.
     uploaded_by = request.headers.get("X-HappyRanch-Caller", "founder")
+    prevalidated_attachments: list[dict] = []
     if body.attachments:
         if len(body.attachments) > MAX_TASK_ATTACHMENTS_PER_TASK:
             raise HTTPException(
@@ -190,15 +193,29 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
                     },
                 )
             # Validate display name before durable task creation.
+            display_name = ref.display_name or "attachment"
             try:
-                sanitize_display_name(
-                    ref.display_name or "attachment"
-                )
+                sanitize_display_name(display_name)
             except TaskAttachmentInvalidName:
                 raise HTTPException(
                     status_code=422,
                     detail={"code": "invalid_attachment_display_name"},
                 )
+            # Resolve content type BEFORE durable task creation — an
+            # unsupported extension must not create an orphan task.
+            try:
+                content_type = resolve_content_type(display_name, None)
+            except TaskAttachmentUnsupportedType:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "unsupported_attachment_type"},
+                )
+            # Collect pre-validated attachment for atomic insertion.
+            prevalidated_attachments.append({
+                "ref": ref,
+                "display_name": display_name,
+                "content_type": content_type,
+            })
 
     async with org.db_lock:
         task_id = org.db.next_task_id()
@@ -211,25 +228,31 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
             )
         )
         # Link pre-uploaded attachments to the new task.
-        if body.attachments:
+        # All validation was done above — use pre-computed values only.
+        if prevalidated_attachments:
             store = _task_attachment_store(org)
-            for idx, ref in enumerate(body.attachments):
+            for idx, pva in enumerate(prevalidated_attachments):
+                ref = pva["ref"]
                 path = store.path_for(ref.storage_key)
                 if not path.exists():
                     continue
                 size_bytes = path.stat().st_size
-                display_name = sanitize_display_name(
-                    ref.display_name or "attachment"
-                )
-                # Resolve content type from display name extension.
-                content_type = resolve_content_type(display_name, None)
                 org.db.insert_task_attachment(
                     task_id=task_id,
                     ordinal=idx,
                     storage_key=ref.storage_key,
-                    display_name=display_name,
+                    display_name=pva["display_name"],
                     size_bytes=size_bytes,
-                    content_type=content_type,
+                    content_type=pva["content_type"],
+                    uploaded_by=uploaded_by,
+                )
+                # Audit: attachment linked to task.
+                from runtime.infrastructure.audit_logger import AuditLogger
+                AuditLogger(org.db).log_task_attachment_added(
+                    task_id=task_id,
+                    storage_key=ref.storage_key,
+                    display_name=pva["display_name"],
+                    content_type=pva["content_type"],
                     uploaded_by=uploaded_by,
                 )
 
@@ -1567,6 +1590,16 @@ async def upload_task_attachment(
             status_code=413,
             detail={"code": "attachment_too_large", "detail": str(exc)},
         )
+
+    # Audit: private-store upload.
+    from runtime.infrastructure.audit_logger import AuditLogger
+    AuditLogger(org.db).log_task_attachment_uploaded(
+        storage_key=storage_key,
+        display_name=display_name,
+        size_bytes=size_bytes,
+        content_type=resolved_type,
+        agent=agent,
+    )
 
     return {
         "storage_key": storage_key,

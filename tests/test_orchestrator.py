@@ -851,3 +851,179 @@ def test_materialize_sanitized_names_do_not_escape_dir(test_settings, test_runti
 
     # Block should be empty (no materialized attachments).
     assert block == "" or block.endswith("\n")
+
+
+def test_materialize_audits_on_success(test_settings, test_runtime):
+    """Successful materialization must emit task_attachment_materialized
+    audit with the expected org/task context."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+    db = Database(test_runtime.db_path)
+    now = datetime.now(timezone.utc)
+
+    # Task with one attachment.
+    db.insert_task(TaskRecord(
+        id="AUDIT-MAT", brief="test", team="engineering",
+        created_at=now, updated_at=now,
+    ))
+    db.insert_task_attachment(
+        task_id="AUDIT-MAT", ordinal=0,
+        storage_key="audit-key", display_name="report.pdf",
+        size_bytes=4, content_type="application/pdf", uploaded_by="founder",
+    )
+    store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+    store.put("audit-key", b"data")
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-audit"
+
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="AUDIT-MAT", session_id=session_id,
+    )
+    assert block != ""
+
+    # Verify audit row.
+    logs = db.get_audit_logs("AUDIT-MAT")
+    mat_logs = [l for l in logs if l["action"] == "task_attachment_materialized"]
+    assert len(mat_logs) == 1
+    log = mat_logs[0]
+    assert log["agent"] == "orchestrator"
+    payload = log["payload"]
+    assert payload["session_id"] == session_id
+    assert payload["count"] == 1
+    assert "audit-key" in payload["storage_keys"]
+
+
+def test_materialize_no_audit_when_no_attachments(test_settings, test_runtime):
+    """When no attachments exist, no audit is emitted."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+
+    db = Database(test_runtime.db_path)
+    now = datetime.now(timezone.utc)
+
+    db.insert_task(TaskRecord(
+        id="NOATT", brief="test", team="engineering",
+        created_at=now, updated_at=now,
+    ))
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-noatt"
+
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="NOATT", session_id=session_id,
+    )
+    assert block == ""
+
+    # No task_attachment_materialized audit should exist.
+    logs = db.get_audit_logs("NOATT")
+    mat_logs = [l for l in logs if l["action"] == "task_attachment_materialized"]
+    assert len(mat_logs) == 0
+
+
+def test_session_end_cleans_up_attachment_dir(test_settings, test_runtime):
+    """When the session ends, the materialized attachment directory is removed.
+
+    Verifies that:
+    1. Materialization creates the session attachment dir.
+    2. _cleanup_session_attachments removes it.
+    3. A different session's dir and the source private store remain intact.
+    """
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+    db = Database(test_runtime.db_path)
+    now = datetime.now(timezone.utc)
+
+    # Task with an attachment.
+    db.insert_task(TaskRecord(
+        id="CLEANUP-T1", brief="test", team="engineering",
+        created_at=now, updated_at=now,
+    ))
+    db.insert_task_attachment(
+        task_id="CLEANUP-T1", ordinal=0,
+        storage_key="clean-key", display_name="report.pdf",
+        size_bytes=4, content_type="application/pdf", uploaded_by="founder",
+    )
+    store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+    store.put("clean-key", b"data")
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-cleanup"
+    other_session_id = "sess-other"
+
+    # Materialize for session_id.
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="CLEANUP-T1", session_id=session_id,
+    )
+    assert block != ""
+
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    assert session_dir.exists(), f"Expected {session_dir} to exist after materialization"
+
+    # Create a "different session" dir to prove it survives cleanup.
+    other_dir = workspace / ".happyranch" / "attachments" / other_session_id
+    other_dir.mkdir(parents=True, exist_ok=True)
+    (other_dir / "dummy.txt").write_text("other")
+
+    # Record source store state.
+    source_path = store.path_for("clean-key")
+    assert source_path.exists()
+    source_bytes = source_path.read_bytes()
+
+    # Drive the terminal cleanup path.
+    from runtime.orchestrator.orchestrator import _cleanup_session_attachments
+    _cleanup_session_attachments(workspace, session_id)
+
+    # Verify: session_dir is removed.
+    assert not session_dir.exists(), (
+        f"Session attachment dir must be removed after cleanup: {session_dir}"
+    )
+
+    # Verify: other session's dir still exists.
+    assert other_dir.exists(), (
+        f"Other session's dir must survive cleanup: {other_dir}"
+    )
+
+    # Verify: source private-store bytes are intact.
+    assert source_path.exists()
+    assert source_path.read_bytes() == source_bytes
+
+    # Verify: cleanup is idempotent (calling twice doesn't error).
+    _cleanup_session_attachments(workspace, session_id)  # no exception
+
+
+def test_cleanup_noop_when_dir_missing(test_settings, test_runtime):
+    """_cleanup_session_attachments is a no-op when the session dir
+    doesn't exist (safe for sessions without attachments)."""
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-never-existed"
+
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    assert not session_dir.exists()
+
+    from runtime.orchestrator.orchestrator import _cleanup_session_attachments
+    _cleanup_session_attachments(workspace, session_id)  # no exception
