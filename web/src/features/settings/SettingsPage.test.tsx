@@ -803,12 +803,15 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     // The register step line is:
     // #    body {"command":"<your-cli>","argv_template":["<your-cli>","--flag","{prompt}"],"adapter":"pi"}
     const promptText = pre.textContent ?? '';
-    // command and argv_template[0] both reference the same CLI executable.
-    expect(promptText).toMatch(/"command":\s*"<your-cli>"/);
-    expect(promptText).toMatch(/"argv_template":\s*\["<your-cli>"/);
-    // argv_template includes the full invocation with placeholders.
-    expect(promptText).toContain('{prompt}');
-    expect(promptText).toContain('"adapter"');
+    // Extract the register request JSON, parse it, and directly assert
+    // command === argv_template[0] (same executable, the parity invariant).
+    const bodyMatch = promptText.match(/#\s+body\s+(\{.*"argv_template".*\})/);
+    expect(bodyMatch).not.toBeNull();
+    const body = JSON.parse(bodyMatch![1]);
+    expect(body.command).toBe(body.argv_template[0]);
+    // argv_template is the complete invocation (retains placeholder + full args).
+    expect(body.argv_template.join(' ')).toContain('{prompt}');
+    expect(body).toHaveProperty('adapter');
   });
 
   test('poll flips to the connected card, then Done collapses back to the refreshed list', async () => {
