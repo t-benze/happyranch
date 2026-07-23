@@ -181,36 +181,36 @@ either publishes. The write order is:
 ### Settings → Executors generator
 
 The founder initiates the flow from the Settings → Executors panel
-(`web/src/features/settings/sections/ExecutorsSection.tsx`). Fill in the
-candidate CLI's profile name, command, `argv_template`, and adapter. On
-"Generate", the SPA calls `POST /auth/registration-token` (loopback-only,
-master-bearer-authed) and renders two copy-paste blocks:
+(`web/src/features/settings/sections/ExecutorsSection.tsx`). The UI
+**collects only the candidate CLI's profile name** (the command,
+`argv_template`, and adapter are determined by the candidate, not the
+founder). On "Generate", the SPA calls
+``POST /api/v1/auth/registration-token/runtime`` (loopback-only,
+master-bearer-authed) and renders a generated prompt for the candidate to
+paste into their CLI.
 
-1. **Conformance prompt** — embeds the `hrreg_` token, the four conformance
-   steps with descriptions, and the exact `happyranch executors register`
-   command to run.
-2. **Config snippet** — the resulting profile entry the daemon will write
-   to the machine-global runtime store on successful registration.
+The generated prompt drives the candidate through:
 
-### Candidate CLI verb
+1. **Self-introduction** — the candidate works out their own `command`,
+   `argv_template` (with `{prompt}`, `{timeout_seconds}`, `{workspace}`
+   placeholders), and `adapter` (typically `pi`).
+2. **Conformance check-ins** — the candidate POSTs each step
+   (`workspace_access`, `loopback_reachable`, `cli_callback`,
+   `emit_envelope`) to `/api/v1/executors/runtime/conformance-checkin`
+   with the `hrreg_` token as a Bearer header.
+3. **Registration** — the candidate POSTs to
+   `/api/v1/executors/runtime/register` with a JSON body carrying
+   `command`, `argv_template`, and `adapter`. The daemon validates that
+   `command` and `argv_template[0]` resolve to the same executable on
+   PATH; a mismatch or unresolvable executable returns **422** at
+   registration time with an actionable error message. The token is
+   reserved before any durable write and released on failure, so the
+   candidate can retry within the unexpired TTL.
 
-The candidate pastes the prompt and runs:
-
-```bash
-happyranch executors register \
-  --org <slug> \
-  --token hrreg_... \
-  --exec-command <bin> \
-  --argv-template-json '<json-array-of-strings>' \
-  --adapter <claude|codex|opencode|pi>
-```
-
-`--argv-template-json` is a single JSON-encoded array — leading-dash tokens
-like `--prompt-file` live safely inside it without shell-escaping issues.
-The verb auto-completes `workspace_access` and `loopback_reachable` (the
-candidate is running locally), then posts a sample `emit_envelope` check-in
-with a minimal valid envelope payload, then `cli_callback`, and finally the
-registration payload.
+The UI does **not** collect `command`, `argv_template`, or `adapter`
+directly, and the generated prompt does **not** instruct the candidate
+to run `happyranch executors register --org` — the candidate drives the
+flow entirely via loopback HTTP calls to the runtime routes above.
 
 ### Registration ≠ enrollment
 
@@ -232,9 +232,12 @@ management reads/writes, not registration):
 
 - `GET /api/v1/executors/runtime/profiles` — lists every custom profile
   in the runtime store: `name`, `command`, `adapter`, plus a
-  `present`/`path` signal mirroring `/health/prereqs` (present only when
-  the machine-local binary registry holds a valid path for the profile
-  name — being on PATH is not sufficient).
+  `present`/`path` signal mirroring `/health/prereqs`. **Custom profiles**
+  derive `present`/`path` from the profile's declared `command`
+  resolvability on the daemon's PATH (via `shutil.which`) — no
+  `executors.json` entry is required. **Built-in** presence remains
+  registry-gated via `executors.json` and is not reflected in this
+  route (this route lists only custom profiles from the runtime store).
 - `DELETE /api/v1/executors/runtime/profiles/{name}` — removes one
   profile from BOTH surfaces, durable store first (source of truth),
   then the transient in-memory registry

@@ -252,3 +252,157 @@ def test_prereqs_uses_daemon_settings_not_global_settings(tmp_path: Path) -> Non
         assert {"claude", "opencode", "pi"}.issubset(tools)
     finally:
         del _os.environ["HAPPYRANCH_DAEMON_HOME"]
+
+
+# ── Issue #490: custom profile present/path from declared command ────
+
+
+def test_custom_profile_present_from_resolvable_command(tmp_path: Path) -> None:
+    """A custom profile with a resolvable command shows present=true
+    and path=resolved, WITHOUT any executors.json entry.
+    Issue #490: custom profiles derive present/path from their declared
+    command, not from the machine-local binary registry."""
+    import os as _os
+
+    _os.environ["HAPPYRANCH_DAEMON_HOME"] = str(tmp_path)
+
+    try:
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.config import Settings
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfile,
+            get_registry,
+            reset_registry,
+        )
+
+        reset_registry()
+        registry = get_registry()
+        registry.register_custom_profile(ExecutorProfile(
+            name="my-custom",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+        ))
+
+        app = create_app(DaemonState.idle(Settings()))
+        client = TestClient(app)
+        r = client.get("/api/v1/health/prereqs")
+        assert r.status_code == 200
+        body = r.json()
+
+        custom_entry = next(
+            (e for e in body["prereqs"] if e["tool"] == "my-custom"), None
+        )
+        assert custom_entry is not None, "custom profile must appear in prereqs"
+        assert custom_entry["present"] is True, (
+            f"custom profile with resolvable 'echo' command must be present, "
+            f"got present={custom_entry['present']}"
+        )
+        assert custom_entry["path"] is not None
+        assert "echo" in custom_entry["path"]
+        assert isinstance(custom_entry["hint"], str)
+        assert len(custom_entry["hint"]) > 0
+    finally:
+        reset_registry()
+        del _os.environ["HAPPYRANCH_DAEMON_HOME"]
+
+
+def test_custom_profile_absent_when_command_unresolvable(tmp_path: Path) -> None:
+    """A custom profile with an unresolvable command shows present=false,
+    path=None."""
+    import os as _os
+
+    _os.environ["HAPPYRANCH_DAEMON_HOME"] = str(tmp_path)
+
+    try:
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.config import Settings
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfile,
+            get_registry,
+            reset_registry,
+        )
+
+        reset_registry()
+        registry = get_registry()
+        registry.register_custom_profile(ExecutorProfile(
+            name="missing-cmd",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["definitely-not-found-xyzzy", "{prompt}"],
+            command="definitely-not-found-xyzzy",
+        ))
+
+        app = create_app(DaemonState.idle(Settings()))
+        client = TestClient(app)
+        r = client.get("/api/v1/health/prereqs")
+        assert r.status_code == 200
+        body = r.json()
+
+        custom_entry = next(
+            (e for e in body["prereqs"] if e["tool"] == "missing-cmd"), None
+        )
+        assert custom_entry is not None, "custom profile must appear in prereqs"
+        assert custom_entry["present"] is False, (
+            f"custom profile with unresolvable command must show present=false"
+        )
+        assert custom_entry["path"] is None
+        assert isinstance(custom_entry["hint"], str)
+        assert len(custom_entry["hint"]) > 0
+    finally:
+        reset_registry()
+        del _os.environ["HAPPYRANCH_DAEMON_HOME"]
+
+
+def test_builtins_stay_registry_gated_despite_custom_change(tmp_path: Path) -> None:
+    """Built-ins (claude/codex/opencode/pi) MUST still require an
+    executors.json entry even after custom profiles derive present from
+    their declared command. Issue #490 must NOT change built-in semantics."""
+    import os as _os
+
+    _os.environ["HAPPYRANCH_DAEMON_HOME"] = str(tmp_path)
+
+    try:
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.config import Settings
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfile,
+            get_registry,
+            reset_registry,
+        )
+
+        reset_registry()
+        registry = get_registry()
+        # Register a custom profile (which will be present via its command)
+        registry.register_custom_profile(ExecutorProfile(
+            name="my-custom",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+        ))
+
+        app = create_app(DaemonState.idle(Settings()))
+        client = TestClient(app)
+        r = client.get("/api/v1/health/prereqs")
+        assert r.status_code == 200
+        body = r.json()
+
+        # Built-ins must still require executors.json — they are present=false
+        for entry in body["prereqs"]:
+            if entry["tool"] in {"claude", "codex", "opencode", "pi"}:
+                assert entry["present"] is False, (
+                    f"built-in {entry['tool']} must stay registry-gated: "
+                    f"present must be False without executors.json entry"
+                )
+                assert entry["path"] is None
+    finally:
+        reset_registry()
+        del _os.environ["HAPPYRANCH_DAEMON_HOME"]

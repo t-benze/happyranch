@@ -141,12 +141,12 @@ def test_from_runtime_loads_good_profile_after_bad_profile(
     store_path.write_text(yaml.safe_dump({
         "bad-profile": {
             "command": "no-such-command-on-any-machine-xyzzy",
-            "argv_template": ["{prompt}"],
+            "argv_template": ["no-such-command-on-any-machine-xyzzy", "{prompt}"],
             "adapter": "pi",
         },
         "good-profile": {
             "command": "python3",
-            "argv_template": ["{prompt}"],
+            "argv_template": ["python3", "{prompt}"],
             "adapter": "pi",
         },
     }))

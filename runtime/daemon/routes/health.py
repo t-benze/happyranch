@@ -60,10 +60,13 @@ def _get_cli_binary(profile_name: str, settings: Settings) -> str:
 def _hint_for(profile_name: str) -> str:
     """Return a short registration hint for a known executor.
 
-    The machine-local registry (executor_binary_registry) is the source of
-    truth for whether an executor is 'registered' on this machine.
-    Registration happens via the onboarding prompt flow (copy-paste), not
-    by being on PATH.
+    - **Built-ins**: the machine-local registry (executor_binary_registry)
+      is the source of truth for whether an executor is 'registered' on
+      this machine. Registration happens via the onboarding prompt flow
+      (copy-paste), not by being on PATH.
+    - **Custom profiles**: the profile's declared ``command`` must be on
+      the daemon's PATH. Registration happens via the Settings → Executors
+      custom-connect flow.
     """
     hints: dict[str, str] = {
         "claude": "Register Claude Code via the onboarding prompt flow",
@@ -73,7 +76,7 @@ def _hint_for(profile_name: str) -> str:
     }
     return hints.get(
         profile_name,
-        f"Register the '{profile_name}' CLI via the onboarding prompt flow.",
+        f"Verify the '{profile_name}' command is on the daemon's PATH.",
     )
 
 
@@ -111,14 +114,20 @@ def health_prereqs(request: Request) -> PrereqsResponse:
     """Return per-executor CLI registration status.
 
     Enumerates the exact executors the registry knows (built-in +
-    org-registered custom profiles).  ``present`` = executor is registered
-    in the machine-local binary registry with a valid stored path;
-    ``path`` = the registered stored path or None; ``hint`` = short
-    instruction for registering the CLI.
+    org-registered custom profiles).
 
-    A CLI counts as 'connected/registered' ONLY after the user explicitly
-    registers it via the onboarding copy-paste prompt flow — being on PATH
-    is NOT sufficient.
+    - **Built-ins** (claude/codex/opencode/pi): ``present`` = executor has
+      an entry in the machine-local binary registry (``executors.json``)
+      with a valid stored path.  A built-in counts as 'connected' ONLY
+      after the user explicitly registers its binary via the onboarding
+      prompt flow — being on PATH is NOT sufficient.
+
+    - **Custom profiles**: ``present`` = the profile's declared ``command``
+      resolves to an executable on the daemon's PATH (via ``shutil.which``).
+      No ``executors.json`` entry is required for a custom profile to be
+      considered present — the profile's own ``command`` field IS the
+      executable declaration (issue #490).  ``path`` is the resolved
+      absolute path to the executable, or ``None`` when unresolved.
 
     Honesty fence: invents no badges, metrics, or fake status — just
     registered/not-registered + hint.
@@ -128,18 +137,33 @@ def health_prereqs(request: Request) -> PrereqsResponse:
     names = registry.list_profile_names()
     results: list[ExecutorPrereq] = []
     for name in names:
-        cli = _get_cli_binary(name, state.settings)
-        if not cli:
+        profile = registry.get_profile(name)
+        if profile is None:
             continue
-        # Check the machine-local executor binary registry, not PATH.
-        # A built-in is 'connected' only after the user registers it
-        # via the onboarding prompt flow.
-        stored = get_binary(name)
-        registered = stored is not None and is_binary_valid(stored)
-        results.append(ExecutorPrereq(
-            tool=name,
-            present=registered,
-            path=stored if registered else None,
-            hint=_hint_for(name),
-        ))
+        if profile.kind == "custom":
+            # Custom profile — derive present/path from the profile's
+            # declared ``command``, resolved via the same shutil.which
+            # semantics used at registration/validation time.
+            cmd = profile.command
+            resolved = _presence_checker(cmd) if cmd else None
+            present = resolved is not None
+            results.append(ExecutorPrereq(
+                tool=name,
+                present=present,
+                path=resolved if present else None,
+                hint=_hint_for(name),
+            ))
+        else:
+            # Built-in — requires an explicit executors.json entry.
+            cli = _get_cli_binary(name, state.settings)
+            if not cli:
+                continue
+            stored = get_binary(name)
+            registered = stored is not None and is_binary_valid(stored)
+            results.append(ExecutorPrereq(
+                tool=name,
+                present=registered,
+                path=stored if registered else None,
+                hint=_hint_for(name),
+            ))
     return PrereqsResponse(prereqs=results)

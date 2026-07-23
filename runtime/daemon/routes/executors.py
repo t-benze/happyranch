@@ -15,6 +15,7 @@ POST /api/v1/orgs/{slug}/executors/register
 """
 from __future__ import annotations
 
+import shutil
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -23,8 +24,6 @@ from pydantic import BaseModel, Field
 from runtime.daemon.auth import require_registration_token, require_token
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX
 from runtime.orchestrator.executor_binary_registry import (
-    get_binary,
-    is_binary_valid,
     set_binary,
     validate_binary,
 )
@@ -207,8 +206,16 @@ class ConformanceCheckinResponse(BaseModel):
 class ExecutorRegisterRequest(BaseModel):
     """Profile definition for a custom executor.
 
-    ``command`` is the executable name validated via ``shutil.which()``.
-    ``argv_template`` is the argument list with supported placeholders.
+    ``command`` is the DECLARED executable name — validated via
+    ``shutil.which()`` at registration and used by ``/health/prereqs``
+    to derive ``present``/``path`` for custom profiles.
+
+    ``argv_template`` is the COMPLETE invocation; element 0 MUST be the
+    SAME executable as ``command`` (the canonical validation proves they
+    resolve to the identical binary via PATH resolution + canonicalization).
+    ``GenericCliExecutor`` launches ``argv_template[0]`` directly — it does
+    NOT consult the ``command`` field at launch time.
+
     ``adapter`` must be one of claude/codex/opencode/pi.
 
     The ``name`` is not in the body — it comes from the registration
@@ -972,12 +979,16 @@ class RuntimeProfileEntry(BaseModel):
     present: bool = Field(
         False,
         description=(
-            "True when the machine-local binary registry holds a valid "
-            "path for this profile name — same signal as /health/prereqs"
+            "True when the profile's declared command resolves to an "
+            "executable on the daemon's PATH (via shutil.which). "
+            "Custom profiles derive presence from command resolvability — "
+            "the same observable readiness contract as /health/prereqs. "
+            "No executors.json entry is required for a custom profile to "
+            "be considered present."
         ),
     )
     path: str | None = Field(
-        None, description="The registered binary path when present, else None"
+        None, description="The resolved absolute path when present, else None"
     )
 
 
@@ -1000,10 +1011,19 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
     """List custom executor profiles from the machine-global runtime store.
 
     Reads ``load_runtime_profiles()`` — the durable source of truth — and
-    reports each profile's name, command, and adapter. ``present``/``path``
-    mirror the /health/prereqs signal: the machine-local executor binary
-    registry (a profile counts as connected only after its binary is
-    explicitly registered; being on PATH is NOT sufficient).
+    reports each profile's name, command, and adapter.
+
+    **Custom profiles** derive ``present``/``path`` from the profile's
+    declared ``command`` resolvability on the daemon's PATH (via
+    ``shutil.which``) — the same observable readiness contract as
+    ``/health/prereqs``. No ``executors.json`` entry is required for a
+    custom profile to be considered present.
+
+    **Built-in profiles** (claude/codex/opencode/pi) are not returned by
+    this route — it lists only custom profiles from the runtime store.
+    Built-in presence remains registry-gated via ``/health/prereqs``.
+
+    Malformed or missing ``command`` → present false, path null.
 
     Honesty fence: only real store data — no invented status.
     """
@@ -1013,14 +1033,22 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
         entry = stored[name]
         command = entry.get("command")
         adapter = entry.get("adapter")
-        bin_path = get_binary(name)
-        registered = bin_path is not None and is_binary_valid(bin_path)
+        # Custom profile — derive present/path from declared command
+        # resolvability, the same observable readiness contract as
+        # /health/prereqs. No executors.json entry is required.
+        if command and isinstance(command, str):
+            resolved = shutil.which(command)
+            present = resolved is not None
+            path = resolved if present else None
+        else:
+            present = False
+            path = None
         entries.append(RuntimeProfileEntry(
             name=name,
             command=command if isinstance(command, str) else None,
             adapter=adapter if isinstance(adapter, str) else None,
-            present=registered,
-            path=bin_path if registered else None,
+            present=present,
+            path=path,
         ))
     return RuntimeProfileList(profiles=entries)
 
