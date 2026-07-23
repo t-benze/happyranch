@@ -260,8 +260,10 @@ Concretely:
    been attached to an unrelated task tree, then writes `task_attachments` rows for the
    new task.
 3. Read surface: **`GET /tasks/{id}`** (or the task-detail route) returns the
-   `attachments` view for display/download/materialization by authorized task-tree
-   consumers only.
+   `attachments` view for display/download by any authenticated org-scoped bearer
+   (seq25) — no requester task/session identity is accepted or required.
+   Spawn-time materialization remains task-tree scoped (own + ancestors,
+   §7c).
 
 **Contract-drift call-out (MEM-094 / MEM-148):** adding/extending these daemon routes
 drifts **BOTH** contract surfaces — the Python OpenAPI snapshot

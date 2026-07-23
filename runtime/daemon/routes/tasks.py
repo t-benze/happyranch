@@ -21,6 +21,7 @@ from runtime.daemon.state import DaemonState
 from runtime.infrastructure.task_attachment_store import (
     MAX_TASK_ATTACHMENTS_PER_TASK,
     MAX_TASK_ATTACHMENT_BYTES,
+    TaskAttachmentInvalidName,
     TaskAttachmentNotFound,
     TaskAttachmentStore,
     TaskAttachmentTooLarge,
@@ -187,6 +188,16 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
                         "storage_key": ref.storage_key,
                         "task_id": existing.task_id,
                     },
+                )
+            # Validate display name before durable task creation.
+            try:
+                sanitize_display_name(
+                    ref.display_name or "attachment"
+                )
+            except TaskAttachmentInvalidName:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_attachment_display_name"},
                 )
 
     async with org.db_lock:
@@ -1523,7 +1534,13 @@ async def upload_task_attachment(
         )
 
     display_name = file.filename or "attachment"
-    sanitize_display_name(display_name)
+    try:
+        sanitize_display_name(display_name)
+    except TaskAttachmentInvalidName:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_attachment_display_name"},
+        )
 
     # Resolve content type from declared mime-type or file extension.
     content_type = file.content_type or mimetypes.guess_type(display_name)[0]

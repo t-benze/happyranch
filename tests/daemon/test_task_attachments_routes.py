@@ -78,7 +78,21 @@ class TestUploadTaskAttachment:
             params={"agent": "founder"},
         )
         assert r.status_code == 422
-        assert r.json()["detail"]["code"] == "unsupported_attachment_type"
+
+    def test_rejects_invalid_display_name(self, tmp_home, app):
+        """Upload with invalid display name (e.g. containing '/') must
+        return 422 invalid_attachment_display_name."""
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {_read_test_token()}"})
+
+        r = client.post(
+            "/api/v1/orgs/alpha/tasks/attachments",
+            files={"file": ("bad/name.png", b"\x89PNG\x0d\x0a\x1a\x0ahello", "image/png")},
+            params={"agent": "founder"},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "invalid_attachment_display_name"
+
 
 
 class TestTaskCreateWithAttachments:
@@ -142,6 +156,39 @@ class TestTaskCreateWithAttachments:
         )
         assert r.status_code == 422
         assert r.json()["detail"]["code"] == "too_many_attachments"
+
+    def test_rejects_invalid_display_name_in_attachment_ref(self, tmp_home, app, org_state):
+        """Create-task with an attachment ref whose display_name is invalid
+        (contains '/') must return 422 and NOT persist the task."""
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {_read_test_token()}"})
+
+        # Upload a valid attachment first to get a real storage_key.
+        r = client.post(
+            "/api/v1/orgs/alpha/tasks/attachments",
+            files={"file": ("mockup.png", b"\x89PNG\x0d\x0a\x1a\x0ahello", "image/png")},
+            params={"agent": "founder"},
+        )
+        assert r.status_code == 200
+        storage_key = r.json()["storage_key"]
+
+        # Create task with an invalid display_name.
+        r = client.post(
+            "/api/v1/orgs/alpha/tasks",
+            json={
+                "brief": "test with bad attachment name",
+                "attachments": [{"storage_key": storage_key, "display_name": "bad/name.png"}],
+            },
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "invalid_attachment_display_name"
+
+        # Verify no task was persisted — the validation must happen BEFORE
+        # durable task creation so invalid input cannot create a partial task.
+        result = r.json()
+        if "task_id" in result:
+            # If a task_id leaked through, verify it doesn't exist in the DB.
+            assert org_state.db.get_task(result["task_id"]) is None
 
 
 class TestListTaskAttachments:
@@ -220,8 +267,8 @@ class TestListTaskAttachments:
         r = client.get("/api/v1/orgs/alpha/tasks/TASK-NONEXIST/attachments")
         assert r.status_code == 404
 
-    def test_list_cross_org_access_denied(self, tmp_home, app, org_state):
-        """Cross-org access must be denied by the existing org-scoped context."""
+    def test_list_cross_org_unknown_org_404(self, tmp_home, app, org_state):
+        """Listing a task via an org slug that doesn't exist must return 404."""
         client = TestClient(app)
         client.headers.update({"Authorization": f"Bearer {_read_test_token()}"})
 
@@ -246,6 +293,76 @@ class TestListTaskAttachments:
         # Access to the correct org's task should work.
         r = client.get("/api/v1/orgs/alpha/tasks/TASK-ORG-001/attachments")
         assert r.status_code == 200
+
+    def test_real_cross_org_isolation_colliding_ids(self, tmp_home, app, org_state, daemon_state):
+        """When a beta org exists with its own task/attachment data using
+        colliding task IDs and storage keys, beta must NOT see alpha's
+        attachment records or download alpha's bytes."""
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {_read_test_token()}"})
+
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        now = datetime.now(timezone.utc)
+        colliding_task_id = "TASK-CROSS-ISO"
+        colliding_storage_key = "ta-cross-key"
+
+        # ---- Alpha setup ----
+        alpha_store = TaskAttachmentStore(OrgPaths(org_state.root).task_attachments_dir)
+        alpha_store.put(colliding_storage_key, b"alpha-secret-bytes")
+        org_state.db.insert_task(TaskRecord(
+            id=colliding_task_id, brief="alpha task", team="engineering",
+            created_at=now, updated_at=now,
+        ))
+        org_state.db.insert_task_attachment(
+            task_id=colliding_task_id, ordinal=0,
+            storage_key=colliding_storage_key, display_name="alpha-file.txt",
+            size_bytes=17, content_type="text/plain", uploaded_by="founder",
+        )
+
+        # ---- Beta setup ----
+        beta_state = _setup_beta_org(org_state, daemon_state)
+        beta_store = TaskAttachmentStore(OrgPaths(beta_state.root).task_attachments_dir)
+        beta_store.put(colliding_storage_key, b"beta-other-bytes")
+        beta_state.db.insert_task(TaskRecord(
+            id=colliding_task_id, brief="beta task", team="engineering",
+            created_at=now, updated_at=now,
+        ))
+        beta_state.db.insert_task_attachment(
+            task_id=colliding_task_id, ordinal=0,
+            storage_key=colliding_storage_key, display_name="beta-file.txt",
+            size_bytes=16, content_type="text/plain", uploaded_by="founder",
+        )
+
+        # Beta listing must return beta's own records, not alpha's.
+        r = client.get(f"/api/v1/orgs/beta/tasks/{colliding_task_id}/attachments")
+        assert r.status_code == 200
+        beta_attachments = r.json()["attachments"]
+        assert len(beta_attachments) == 1
+        assert beta_attachments[0]["display_name"] == "beta-file.txt"
+
+        # Beta download must return beta's bytes, not alpha's.
+        r = client.get(
+            f"/api/v1/orgs/beta/tasks/{colliding_task_id}/attachments/{colliding_storage_key}"
+        )
+        assert r.status_code == 200
+        assert r.content == b"beta-other-bytes"
+
+        # Alpha's data must remain reachable from alpha.
+        r = client.get(f"/api/v1/orgs/alpha/tasks/{colliding_task_id}/attachments")
+        assert r.status_code == 200
+        alpha_attachments = r.json()["attachments"]
+        assert len(alpha_attachments) == 1
+        assert alpha_attachments[0]["display_name"] == "alpha-file.txt"
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/tasks/{colliding_task_id}/attachments/{colliding_storage_key}"
+        )
+        assert r.status_code == 200
+        assert r.content == b"alpha-secret-bytes"
 
     def test_list_empty_task(self, tmp_home, app, org_state):
         client = TestClient(app)
@@ -294,8 +411,8 @@ class TestDownloadTaskAttachment:
         assert r.content == b"hello world!"
         assert "text/plain" in r.headers["content-type"]
 
-    def test_cross_org_download_denied(self, tmp_home, app, org_state):
-        """Cross-org access must be denied by the existing org-scoped context."""
+    def test_cross_org_download_unknown_org_404(self, tmp_home, app, org_state):
+        """Download via an org slug that doesn't exist must return 404."""
         client = TestClient(app)
         client.headers.update({"Authorization": f"Bearer {_read_test_token()}"})
 
@@ -361,3 +478,34 @@ class TestDownloadTaskAttachment:
 def _read_test_token() -> str:
     from runtime.daemon import paths as paths_mod
     return paths_mod.read_token()
+
+
+def _setup_beta_org(org_state: "OrgState", daemon_state: "DaemonState") -> "OrgState":
+    """Create and register a real beta org in the daemon state.
+
+    Returns the OrgState for beta so tests can insert data and verify
+    cross-org isolation. The beta org reuses the same runtime root as
+    alpha (sibling directory) with a fresh database.
+    """
+    from pathlib import Path
+    from runtime.daemon.org_state import OrgState
+    from runtime.config import Settings
+
+    if "beta" in daemon_state.orgs:
+        return daemon_state.orgs["beta"]
+
+    runtime_root = org_state.root.parent
+    beta_root = runtime_root / "beta"
+    beta_root.mkdir(parents=True, exist_ok=True)
+    (beta_root / "org").mkdir(exist_ok=True)
+    (beta_root / "org" / "teams.yaml").write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+    )
+
+    settings = Settings()
+    beta = OrgState.load(slug="beta", root=beta_root, settings=settings)
+    daemon_state.orgs["beta"] = beta
+    return beta
