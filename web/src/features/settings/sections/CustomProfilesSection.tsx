@@ -12,8 +12,9 @@
  *
  * HONESTY FENCE (THR-061 §D): only the fields the API actually returns are
  * rendered — name, command (executable), adapter, present, path. No invented
- * status columns. `present` is the server-computed /health/prereqs signal
- * (PATH alone is NOT present), mirrored here as the row's health pill.
+ * status columns. `present` is the server-computed command-resolvability
+ * signal (the same contract as /health/prereqs for custom profiles), mirrored
+ * here as the row's health pill.
  */
 import { useState } from 'react';
 import { CheckCircle2, Terminal, Trash2, XCircle } from 'lucide-react';
@@ -41,8 +42,9 @@ function errMessage(err: unknown, fallback: string): string {
 }
 
 /** Present/path health pill — mirrors ExecutorBinariesSection's ValidityPill.
- *  `present` is the same signal /health/prereqs uses (a registered, valid,
- *  machine-local binary path), so PATH-defined-but-absent reads as NOT present. */
+ *  `present` is the server-computed command-resolvability signal (same contract
+ *  as /health/prereqs for custom profiles), so PATH-defined-but-absent reads as
+ *  NOT present. */
 function HealthPill({ present }: { present: boolean }): JSX.Element {
   return (
     <span

@@ -67,10 +67,12 @@ export interface RuntimeProfileEntry {
   command: string | null;
   /** Workspace adapter id (claude/codex/opencode/pi), or null. */
   adapter: string | null;
-  /** True when the machine-local binary registry holds a valid path for
-   *  this profile name — same signal as /health/prereqs. */
+  /** True when the profile's declared command resolves to an executable
+   *  on the daemon's PATH — the same observable readiness contract as
+   *  /health/prereqs. Custom profiles derive presence from command
+   *  resolvability; no executors.json entry is required. */
   present: boolean;
-  /** The registered binary path when present, else null. */
+  /** The resolved absolute path when present, else null. */
   path: string | null;
 }
 

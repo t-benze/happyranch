@@ -234,9 +234,12 @@ management reads/writes, not registration):
 
 - `GET /api/v1/executors/runtime/profiles` — lists every custom profile
   in the runtime store: `name`, `command`, `adapter`, plus a
-  `present`/`path` signal mirroring `/health/prereqs` (present only when
-  the machine-local binary registry holds a valid path for the profile
-  name — being on PATH is not sufficient).
+  `present`/`path` signal mirroring `/health/prereqs`. **Custom profiles**
+  derive `present`/`path` from the profile's declared `command`
+  resolvability on the daemon's PATH (via `shutil.which`) — no
+  `executors.json` entry is required. **Built-in** presence remains
+  registry-gated via `executors.json` and is not reflected in this
+  route (this route lists only custom profiles from the runtime store).
 - `DELETE /api/v1/executors/runtime/profiles/{name}` — removes one
   profile from BOTH surfaces, durable store first (source of truth),
   then the transient in-memory registry

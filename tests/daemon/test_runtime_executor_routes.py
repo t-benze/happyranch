@@ -1132,27 +1132,54 @@ class TestRuntimeProfilesListRoute:
         alpha = profiles[0]
         assert alpha["command"] == "alpha-cli"
         assert alpha["adapter"] == "codex"
-        # No binary registered for this profile name — honest signal
+        # Non-resolvable command — honest signal: present false, path null
         assert alpha["present"] is False
         assert alpha["path"] is None
 
-    def test_list_present_path_from_binary_registry(self, client, tmp_home, tmp_path):
-        """present/path mirror the /health/prereqs signal: the machine-local
-        binary registry, NOT merely being on PATH."""
-        from runtime.orchestrator.executor_binary_registry import set_binary
-
-        save_runtime_profile("my-exec", _entry())
-        bin_path = tmp_path / "my-exec-cli"
-        bin_path.write_text("#!/bin/sh\n")
-        bin_path.chmod(0o755)
-        set_binary("my-exec", str(bin_path))
+    def test_list_present_path_from_command_resolvability(self, client, tmp_home):
+        """Custom profiles derive present/path from declared command
+        resolvability — the same observable readiness contract as
+        /health/prereqs. No executors.json entry is required."""
+        # 'true' is universally on PATH and resolves via shutil.which
+        save_runtime_profile("true-exec", _entry(command="true"))
 
         r = client.get("/api/v1/executors/runtime/profiles")
         assert r.status_code == 200
         (profile,) = r.json()["profiles"]
-        assert profile["name"] == "my-exec"
+        assert profile["name"] == "true-exec"
+        # Command 'true' resolves on PATH — present true with a path
         assert profile["present"] is True
-        assert profile["path"] == str(bin_path)
+        assert profile["path"] is not None
+        # The resolved path should be absolute
+        assert profile["path"].startswith("/")
+
+    def test_list_unresolvable_command_present_false(self, client, tmp_home):
+        """A custom profile whose declared command does not resolve on PATH
+        reports present false, path null."""
+        save_runtime_profile("ghost-exec", _entry(command="no-such-cli-xyzzy"))
+
+        r = client.get("/api/v1/executors/runtime/profiles")
+        assert r.status_code == 200
+        (profile,) = r.json()["profiles"]
+        assert profile["name"] == "ghost-exec"
+        assert profile["command"] == "no-such-cli-xyzzy"
+        assert profile["present"] is False
+        assert profile["path"] is None
+
+    def test_list_missing_command_present_false(self, client, tmp_home):
+        """A custom profile with no 'command' field in its stored entry
+        reports present false, path null (malformed store entry)."""
+        # Write a store entry that omits the command field entirely
+        from runtime.orchestrator.runtime_executor_store import save_runtime_profile
+        save_runtime_profile("no-cmd", {"adapter": "pi"})
+
+        r = client.get("/api/v1/executors/runtime/profiles")
+        assert r.status_code == 200
+        (profile,) = r.json()["profiles"]
+        assert profile["name"] == "no-cmd"
+        assert profile["command"] is None
+        assert profile["present"] is False
+        assert profile["path"] is None
 
     def test_list_requires_bearer_auth(self, app, tmp_home):
         unauth = TestClient(app)  # no Authorization header
