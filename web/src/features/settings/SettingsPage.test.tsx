@@ -798,13 +798,24 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     // Only the runtime route was hit; the legacy org-scoped route was not.
     expect(mintPaths).toEqual(['runtime']);
+
+    // The generated prompt contains the command/argv_template[0] parity JSON.
+    // The register step line is:
+    // #    body {"command":"<your-cli>","argv_template":["<your-cli>","--flag","{prompt}"],"adapter":"pi"}
+    const promptText = pre.textContent ?? '';
+    // command and argv_template[0] both reference the same CLI executable.
+    expect(promptText).toMatch(/"command":\s*"<your-cli>"/);
+    expect(promptText).toMatch(/"argv_template":\s*\["<your-cli>"/);
+    // argv_template includes the full invocation with placeholders.
+    expect(promptText).toContain('{prompt}');
+    expect(promptText).toContain('"adapter"');
   });
 
   test('poll flips to the connected card, then Done collapses back to the refreshed list', async () => {
     server.use(
       http.get('/api/v1/health/prereqs', () =>
         HttpResponse.json({
-          prereqs: [{ tool: 'my-cli', present: false, path: '/opt/bin/my-cli', hint: '' }],
+          prereqs: [{ tool: 'my-cli', present: true, path: '/opt/bin/my-cli', hint: '' }],
         }),
       ),
     );
@@ -822,7 +833,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(
       await screen.findByRole('heading', { name: /my-cli connected/i }),
     ).toBeInTheDocument();
-    // Register-real path from prereqs is shown (not fabricated).
+    // Register-real path from prereqs is shown (not fabricated);
+    // connected card consumes the present + path from server truth.
     expect(screen.getByText('/opt/bin/my-cli')).toBeInTheDocument();
     // Settings-appropriate subtitle — no circular "manage from Settings" clause.
     expect(screen.queryByText(/manage your CLIs anytime from Settings/i)).not.toBeInTheDocument();
@@ -853,7 +865,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     server.use(
       http.get('/api/v1/health/prereqs', () =>
         HttpResponse.json({
-          prereqs: [{ tool: 'my-cli', present: false, path: '/opt/bin/my-cli', hint: '' }],
+          prereqs: [{ tool: 'my-cli', present: true, path: '/opt/bin/my-cli', hint: '' }],
         }),
       ),
       http.get('/api/v1/executors/runtime/profiles', () => {

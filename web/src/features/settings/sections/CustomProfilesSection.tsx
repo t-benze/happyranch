@@ -43,8 +43,9 @@ function errMessage(err: unknown, fallback: string): string {
 
 /** Present/path health pill — mirrors ExecutorBinariesSection's ValidityPill.
  *  `present` is the server-computed command-resolvability signal (same contract
- *  as /health/prereqs for custom profiles), so PATH-defined-but-absent reads as
- *  NOT present. */
+ *  as /health/prereqs for custom profiles): a PATH-resolvable declared custom
+ *  command is present without an executors.json entry; unresolved or missing
+ *  command is false/null. Built-in profiles remain registry-gated. */
 function HealthPill({ present }: { present: boolean }): JSX.Element {
   return (
     <span
