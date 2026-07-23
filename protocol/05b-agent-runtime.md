@@ -137,10 +137,11 @@ directory is a regenerable cache — the bytes of record live in the task-attach
 private store.
 
 **Legacy rows.** Rows with non-`NULL` `legacy_status` (e.g. `duplicate_v1`) are
-included in ancestor resolution and materialization. Their `display_name` values
-differ, so the collision-safe materialized filename
-(`{storage_key}__{sanitized_display_name}`) produces distinct files — legitimate
-duplicate legacy attachments do not overwrite each other.
+included in ancestor resolution and materialization. The collision-safe
+materialized filename (`{storage_key}__{sanitized_display_name}__{id}`) uses
+the immutable `task_attachments.id` row identity to produce distinct per-row
+paths — legitimate duplicate legacy attachments do not overwrite each other
+even when they share both `storage_key` and `display_name`.
 
 ### Executor abstraction
 

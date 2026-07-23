@@ -410,8 +410,10 @@ class Orchestrator:
         no attachments were found.
 
         Uses deterministic collision-safe filenames:
-        ``{storage_key}__{sanitized_display_name}`` so that own and ancestor
-        attachments with the same display_name do not overwrite each other.
+        ``{storage_key}__{sanitized_display_name}__{id}`` where ``id`` is
+        the immutable ``task_attachments.id`` row identity. This guarantees
+        distinct per-row paths even when legacy duplicate rows share both
+        ``storage_key`` and ``display_name``.
         The display label in the prompt still shows the human-readable name.
         """
         from runtime.infrastructure.task_attachment_store import (
@@ -461,10 +463,10 @@ class Orchestrator:
                 )
                 continue
 
-            # Deterministic collision-safe filename:
-            # storage_key is globally unique, so suffixing with the
-            # sanitized display_name prevents same-name overwrites while
-            # keeping the filename human-readable.
+            # Deterministic collision-safe filename using the immutable
+            # task_attachments.id row identity as the disambiguator.
+            # This guarantees distinct per-row paths even for legacy
+            # duplicate rows sharing both storage_key and display_name.
             # Sanitization at the materialization boundary ensures
             # malformed DB display names cannot escape the session dir.
             try:
@@ -475,7 +477,9 @@ class Orchestrator:
                     att.storage_key, att.display_name,
                 )
                 continue
-            target = session_attachments_dir / f"{att.storage_key}__{safe_name}"
+            target = session_attachments_dir / (
+                f"{att.storage_key}__{safe_name}__{att.id}"
+            )
             # Containment guard: resolved path must stay inside the
             # session attachments directory.
             try:

@@ -467,6 +467,12 @@ class Database:
         existence check in insert_task_attachment and
         insert_task_with_attachments).
 
+        All preflight steps — additive legacy_status column creation,
+        duplicate detection/marking, and named index creation — run inside
+        a single SQLite BEGIN IMMEDIATE / COMMIT transaction. On any error
+        the entire preflight rolls back, leaving the database schema, data,
+        and indexes exactly as they were before this invocation.
+
         For clean databases a full UNIQUE index is created. For databases
         with legacy duplicates a partial UNIQUE index (WHERE
         legacy_status IS NULL) enforces uniqueness on new non-legacy claims.
@@ -491,51 +497,67 @@ class Database:
         if "idx_task_attachments_storage_key_unique" in existing_idx:
             return
 
-        # Additive: ensure legacy_status column exists.
-        cols = {
+        # Check whether legacy_status column already exists.
+        cols_before = {
             row[1]
             for row in self._conn.execute(
                 "PRAGMA table_info('task_attachments')"
             ).fetchall()
         }
-        if "legacy_status" not in cols:
-            self._conn.execute(
-                "ALTER TABLE task_attachments ADD COLUMN legacy_status TEXT"
-            )
+        has_legacy_col = "legacy_status" in cols_before
 
-        # Detect duplicate storage_key rows among non-legacy rows.
-        # These can only exist on databases created before the UNIQUE
-        # constraint was introduced (v1 pre-index schema).
-        dupes = self._conn.execute(
-            "SELECT storage_key FROM task_attachments "
-            "WHERE legacy_status IS NULL "
-            "GROUP BY storage_key HAVING COUNT(*) > 1"
-        ).fetchall()
+        # Single transaction: ALTER TABLE (if needed), duplicate detection,
+        # marking, and index creation all inside one BEGIN / COMMIT scope.
+        # On any error the entire preflight rolls back, leaving the database
+        # schema, data, and indexes exactly as they were before this call.
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
 
-        if dupes:
-            # Mark ALL rows sharing each duplicate key as legacy.
-            for (dup_key,) in dupes:
+            # Additive: ensure legacy_status column exists.
+            if not has_legacy_col:
                 self._conn.execute(
-                    "UPDATE task_attachments SET legacy_status = ? "
-                    "WHERE storage_key = ?",
-                    ("duplicate_v1", dup_key),
+                    "ALTER TABLE task_attachments "
+                    "ADD COLUMN legacy_status TEXT"
                 )
-            # Partial unique index: only non-legacy rows must be unique.
-            # Legacy duplicates are excluded from the unique guard — their
-            # keys are protected from new claims by pre-insert existence
-            # checks in the insert methods.
-            self._conn.execute(
-                "CREATE UNIQUE INDEX idx_task_attachments_storage_key_unique "
-                "ON task_attachments(storage_key) WHERE legacy_status IS NULL"
-            )
-        else:
-            # Full unique index for clean databases (v0 or clean v1).
-            self._conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS "
-                "idx_task_attachments_storage_key_unique "
-                "ON task_attachments(storage_key)"
-            )
-        self._conn.commit()
+
+            # Detect duplicate storage_key rows among non-legacy rows.
+            # These can only exist on databases created before the UNIQUE
+            # constraint was introduced (v1 pre-index schema).
+            dupes = self._conn.execute(
+                "SELECT storage_key FROM task_attachments "
+                "WHERE legacy_status IS NULL "
+                "GROUP BY storage_key HAVING COUNT(*) > 1"
+            ).fetchall()
+
+            if dupes:
+                # Mark ALL rows sharing each duplicate key as legacy.
+                for (dup_key,) in dupes:
+                    self._conn.execute(
+                        "UPDATE task_attachments SET legacy_status = ? "
+                        "WHERE storage_key = ?",
+                        ("duplicate_v1", dup_key),
+                    )
+                # Partial unique index: only non-legacy rows must be unique.
+                # Legacy duplicates are excluded from the unique guard — their
+                # keys are protected from new claims by pre-insert existence
+                # checks in the insert methods.
+                self._conn.execute(
+                    "CREATE UNIQUE INDEX "
+                    "idx_task_attachments_storage_key_unique "
+                    "ON task_attachments(storage_key) "
+                    "WHERE legacy_status IS NULL"
+                )
+            else:
+                # Full unique index for clean databases (v0 or clean v1).
+                self._conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "idx_task_attachments_storage_key_unique "
+                    "ON task_attachments(storage_key)"
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
 
     def _create_tables(self) -> None:

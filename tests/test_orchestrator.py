@@ -789,6 +789,166 @@ def test_materialize_collision_safe_filenames(test_settings, test_runtime):
     assert child_file.read_bytes() == b"hello"
 
 
+def test_materialize_legacy_duplicate_rows_distinct_paths(test_settings, test_runtime):
+    """Legacy duplicate rows sharing both storage_key and display_name
+    must produce distinct materialized paths using the immutable row id."""
+    import sqlite3
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+    now = datetime.now(timezone.utc)
+
+    # Build a pre-index v1 database with duplicate rows sharing both
+    # storage_key AND display_name. Use raw SQLite to bypass the UNIQUE
+    # constraint that Database init would enforce.
+    test_runtime.db_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_conn = sqlite3.connect(str(test_runtime.db_path))
+    raw_conn.execute("PRAGMA journal_mode=WAL")
+    raw_conn.execute("PRAGMA foreign_keys=ON")
+    raw_conn.executescript("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'pending',
+            assigned_agent TEXT,
+            team TEXT NOT NULL DEFAULT 'engineering',
+            brief TEXT NOT NULL,
+            task_type TEXT NOT NULL DEFAULT 'task',
+            revision_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            parent_task_id TEXT,
+            final_output_summary TEXT,
+            final_output_dir TEXT,
+            executor_pid INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS task_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            storage_key TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            size_bytes INTEGER,
+            content_type TEXT,
+            uploaded_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES tasks(id),
+            UNIQUE(task_id, ordinal)
+        );
+    """)
+    raw_conn.execute(
+        "INSERT INTO tasks (id, status, team, brief, parent_task_id, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("LEG-DUP-PARENT", "completed", "engineering", "parent", None,
+         now.isoformat(), now.isoformat()),
+    )
+    raw_conn.execute(
+        "INSERT INTO tasks (id, status, team, brief, parent_task_id, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("LEG-DUP-CHILD", "pending", "engineering", "child",
+         "LEG-DUP-PARENT", now.isoformat(), now.isoformat()),
+    )
+    # Insert two legacy rows with same storage_key AND same display_name.
+    raw_conn.execute(
+        "INSERT INTO task_attachments (task_id, ordinal, storage_key, "
+        "display_name, size_bytes, content_type, uploaded_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("LEG-DUP-PARENT", 0, "leg-dup-key", "same-name.png", 4,
+         "image/png", "founder", now.isoformat()),
+    )
+    raw_conn.execute(
+        "INSERT INTO task_attachments (task_id, ordinal, storage_key, "
+        "display_name, size_bytes, content_type, uploaded_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("LEG-DUP-PARENT", 1, "leg-dup-key", "same-name.png", 5,
+         "image/png", "founder", now.isoformat()),
+    )
+    raw_conn.commit()
+    raw_conn.close()
+
+    # Now open via Database — migration will detect the duplicates and mark
+    # them as legacy (legacy_status='duplicate_v1'), creating a partial
+    # UNIQUE index.
+    db = Database(test_runtime.db_path)
+
+    # Verify the legacy rows have been marked.
+    rows = db._conn.execute(
+        "SELECT id, storage_key, display_name, legacy_status "
+        "FROM task_attachments WHERE storage_key = ? ORDER BY id",
+        ("leg-dup-key",),
+    ).fetchall()
+    assert len(rows) == 2, "must have 2 legacy duplicate rows"
+    id_a, id_b = rows[0]["id"], rows[1]["id"]
+    assert id_a != id_b, "row IDs must differ"
+    assert rows[0]["legacy_status"] == "duplicate_v1"
+    assert rows[1]["legacy_status"] == "duplicate_v1"
+    assert rows[0]["display_name"] == "same-name.png"
+    assert rows[1]["display_name"] == "same-name.png"
+
+    # Write fixture bytes to the private store.
+    store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+    store.put("leg-dup-key", b"AAAA")
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-legdup"
+
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="LEG-DUP-CHILD", session_id=session_id,
+    )
+
+    # Both materialized files must exist with distinct paths using row IDs.
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    files = sorted(session_dir.iterdir())
+    assert len(files) == 2, (
+        f"Expected 2 materialized files for legacy duplicates, "
+        f"got {len(files)}: {[f.name for f in files]}"
+    )
+
+    # Each filename must embed its respective row id.
+    names = {f.name for f in files}
+    assert any(f"__{id_a}" in n for n in names), (
+        f"Row id_a={id_a} not found in filenames: {names}"
+    )
+    assert any(f"__{id_b}" in n for n in names), (
+        f"Row id_b={id_b} not found in filenames: {names}"
+    )
+
+    # Both files share the same storage_key and display_name prefix.
+    assert all("leg-dup-key__same-name.png" in n for n in names), (
+        f"Expected storage_key + display_name prefix in all names: {names}"
+    )
+
+    # File contents are correct (both read from the same store key).
+    for f in files:
+        assert f.read_bytes() == b"AAAA", (
+            f"File {f.name} must contain correct bytes"
+        )
+
+    # Prompt block must reference both distinct paths.
+    assert "same-name.png" in block
+    # Each prompt line must point to a distinct file path.
+    prompt_paths = [
+        line.split(" -> ")[-1].strip()
+        for line in block.splitlines()
+        if " -> " in line
+    ]
+    assert len(prompt_paths) == 2, (
+        f"Expected 2 prompt file references, got {len(prompt_paths)}"
+    )
+    assert prompt_paths[0] != prompt_paths[1], (
+        "Prompt paths must be distinct"
+    )
+    db._conn.close()
+
+
 def test_materialize_sanitized_names_do_not_escape_dir(test_settings, test_runtime):
     """Materialized filenames are sanitized so malformed DB display names
     (e.g., with path separators) cannot escape the session dir."""

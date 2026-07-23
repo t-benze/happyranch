@@ -527,7 +527,11 @@ Opening such a database under the constraint-enforcing code must not raise
 `sqlite3.IntegrityError` and make the daemon unavailable.
 
 **Policy.** The migration is an explicit, transactional, idempotent preflight that
-runs at `Database` init:
+runs at `Database` init. All preflight steps — `legacy_status` column creation,
+duplicate detection/marking, and named index creation — execute inside a single
+SQLite `BEGIN IMMEDIATE` / `COMMIT` transaction. On any error the entire preflight
+rolls back, leaving the legacy v1 schema, data, and indexes exactly as they were
+before this invocation:
 
 1. **Preserve, don't delete.** Every existing `task_attachments` row is kept intact.
    No bytes are rekeyed, copied, or rewritten.
@@ -546,10 +550,11 @@ runs at `Database` init:
    paths (`list_task_attachments`, `get_task_attachment`,
    `get_task_attachment_by_storage_key`, `resolve_ancestor_attachments`) and carry
    the `legacy_status` field. They cannot be altered or re-claimed.
-6. **Materialization-safe.** If legacy duplicate rows cause two materialized files
-   to target the same filename, the collision-safe naming scheme
-   (`{storage_key}__{sanitized_display_name}`) prevents overwrite because each row
-   has a distinct `display_name`.
+6. **Materialization-safe.** The collision-safe naming scheme
+   (`{storage_key}__{sanitized_display_name}__{id}`) uses the immutable
+   `task_attachments.id` row identity to guarantee distinct per-row paths.
+   Legacy duplicate rows sharing both `storage_key` and `display_name` each
+   produce a unique materialized file.
 
 **Column change.** An additive `legacy_status TEXT` column is added via `ALTER TABLE`
 (new databases get it in the `CREATE TABLE`). It is nullable; `NULL` means
