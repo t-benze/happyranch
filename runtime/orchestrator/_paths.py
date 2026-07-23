@@ -44,3 +44,7 @@ class OrgPaths:
     @property
     def threads_dir(self) -> Path:
         return self.root / "threads"
+
+    @property
+    def task_attachments_dir(self) -> Path:
+        return self.root / "task-attachments"

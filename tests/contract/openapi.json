@@ -2134,6 +2134,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/tasks/attachments": {
+      "POST": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/tasks/roots": {
       "GET": {
         "params": [
@@ -2181,6 +2203,54 @@
           ],
           [
             "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/tasks/{task_id}/attachments": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/tasks/{task_id}/attachments/{storage_key}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "storage_key",
             "path"
           ],
           [

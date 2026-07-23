@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -344,6 +345,7 @@ class Orchestrator:
         memory_digest: str | None = None,
         managed_skills_index: str = "",
         protocol_doc_manifest: str = "",
+        attachments_block: str = "",
     ) -> str:
         if provider == "codex":
             intro = (
@@ -390,9 +392,145 @@ class Orchestrator:
             f"  brief: {brief}\n"
             f"{role_guidance_block}"
             f"{digest_block}"
+            f"{attachments_block}"
             f"{skills_block}"
             f"{docs_block}"
         )
+
+    def _materialize_task_attachments(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        session_id: str,
+    ) -> str:
+        """Resolve inherited task attachments and materialize them.
+
+        Returns the Attachments block string for prompt injection, or "" if
+        no attachments were found.
+
+        Uses deterministic collision-safe filenames:
+        ``{storage_key}__{sanitized_display_name}__{id}`` where ``id`` is
+        the immutable ``task_attachments.id`` row identity. This guarantees
+        distinct per-row paths even when legacy duplicate rows share both
+        ``storage_key`` and ``display_name``.
+        The display label in the prompt still shows the human-readable name.
+        """
+        from runtime.infrastructure.task_attachment_store import (
+            TaskAttachmentStore,
+            sanitize_display_name,
+        )
+
+        # Resolve attachments up the parent_task_id chain.
+        try:
+            attachments = self._db.resolve_ancestor_attachments(task_id)
+        except Exception:
+            logger.warning(
+                "Failed to resolve ancestor attachments for %s", task_id,
+                exc_info=True,
+            )
+            return ""
+
+        if not attachments:
+            return ""
+
+        # Materialize: write each attachment to the per-session dir.
+        session_attachments_dir = (
+            workspace / ".happyranch" / "attachments" / session_id
+        )
+        # Clean stale files from prior sessions.
+        if session_attachments_dir.exists():
+            import shutil
+            shutil.rmtree(session_attachments_dir)
+        session_attachments_dir.mkdir(parents=True, exist_ok=True)
+
+        store = TaskAttachmentStore(self._paths.task_attachments_dir)
+
+        lines: list[str] = [
+            "Attachments (materialized to disk — load them by path with your"
+            " own tools; how much you extract from an image depends on this"
+            " CLI's abilities):",
+        ]
+
+        materialized_keys: list[str] = []
+        for att in attachments:
+            try:
+                content = store.read(att.storage_key)
+            except Exception:
+                logger.warning(
+                    "Failed to read attachment %s for task %s",
+                    att.storage_key, task_id, exc_info=True,
+                )
+                continue
+
+            # Deterministic collision-safe filename using the immutable
+            # task_attachments.id row identity as the disambiguator.
+            # This guarantees distinct per-row paths even for legacy
+            # duplicate rows sharing both storage_key and display_name.
+            # Sanitization at the materialization boundary ensures
+            # malformed DB display names cannot escape the session dir.
+            try:
+                safe_name = sanitize_display_name(att.display_name)
+            except Exception:
+                logger.warning(
+                    "Skipping attachment %s: invalid display name %r",
+                    att.storage_key, att.display_name,
+                )
+                continue
+            target = session_attachments_dir / (
+                f"{att.storage_key}__{safe_name}__{att.id}"
+            )
+            # Containment guard: resolved path must stay inside the
+            # session attachments directory.
+            try:
+                resolved_dir = session_attachments_dir.resolve()
+                resolved_target = target.resolve()
+            except (ValueError, OSError):
+                logger.warning(
+                    "Attachment path resolution failed for %s",
+                    att.storage_key,
+                )
+                continue
+            if not str(resolved_target).startswith(str(resolved_dir) + os.sep) \
+                    and resolved_target != resolved_dir:
+                logger.warning(
+                    "Attachment path escapes session dir: %s", target,
+                )
+                continue
+            target.write_bytes(content)
+            materialized_keys.append(att.storage_key)
+
+            size_str = (
+                f"{att.size_bytes} bytes"
+                if att.size_bytes
+                else "unknown size"
+            )
+            ct = att.content_type or "application/octet-stream"
+            # Prompt shows the original display_name for readability.
+            lines.append(
+                f"- {att.display_name} ({ct}, {size_str})"
+                f" -> {target}"
+            )
+
+        if len(lines) == 1:
+            # Only the header, no attachments materialized.
+            return ""
+
+        # Audit: attachments materialized for session spawn.
+        try:
+            self._audit.log_task_attachment_materialized(
+                task_id=task_id,
+                session_id=session_id,
+                count=len(materialized_keys),
+                materialized_keys=materialized_keys,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to audit attachment materialization for %s",
+                task_id, exc_info=True,
+            )
+
+        return "\n".join(lines) + "\n"
 
     def _read_completion_from_db(
         self, task_id: str, agent: str, session_id: str,
@@ -625,6 +763,14 @@ class Orchestrator:
         # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
         protocol_doc_manifest = resolve_protocol_doc_manifest(settings=self._settings)
 
+        # THR-109: resolve inherited task attachments and materialize them
+        # into the per-session attachment directory.
+        attachments_block = self._materialize_task_attachments(
+            workspace=workspace,
+            task_id=task_id,
+            session_id=session_id,
+        )
+
         full_prompt = self._build_agent_prompt(
             provider,
             agent_name,
@@ -635,6 +781,7 @@ class Orchestrator:
             memory_digest=memory_digest,
             managed_skills_index=managed_skills_index,
             protocol_doc_manifest=protocol_doc_manifest,
+            attachments_block=attachments_block,
         )
 
         if self._sessions is not None:
@@ -679,6 +826,11 @@ class Orchestrator:
             duration_seconds=result.duration_seconds,
             token_usage=result.token_usage,
         )
+
+        # THR-109: clean up the regenerable per-session materialized
+        # attachment directory. Bytes of record live in the task-attachment
+        # private store; the materialized files are a cache.
+        _cleanup_session_attachments(workspace, session_id)
 
         report = self._read_completion_from_db(task_id, agent_name, session_id)
         return result, report
@@ -747,3 +899,28 @@ class Orchestrator:
         if report is None:
             return
         self._audit.log_completion_report(report=report)
+
+
+# ── Module-level helpers ──────────────────────────────────────────────────────
+
+
+def _cleanup_session_attachments(workspace: Path, session_id: str) -> None:
+    """Remove the per-session materialized task-attachment directory.
+
+    This is a regenerable cache — bytes of record live in the
+    task-attachment private store. Safe/idempotent for missing dirs
+    and errors. Only removes the exact session's attachment dir,
+    never the workspace itself, shared artifacts, or source private
+    store bytes.
+    """
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    if not session_dir.exists():
+        return
+    try:
+        import shutil
+        shutil.rmtree(session_dir)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to clean up session attachments dir: %s",
+            session_dir, exc_info=True,
+        )

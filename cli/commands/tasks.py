@@ -41,6 +41,23 @@ def cmd_run(args: argparse.Namespace) -> None:
         payload["team"] = args.team
     if args.owner:
         payload["owner"] = args.owner
+    # Handle --attach references.
+    attachments_list = (
+        getattr(args, "attachments", None)
+        if hasattr(args, "attachments") and isinstance(getattr(args, "attachments", None), list)
+        else None
+    )
+    if attachments_list:
+        payload_attachments: list[dict] = []
+        for ref in attachments_list:
+            parts = ref.split(":", 1)
+            storage_key = parts[0]
+            display_name = parts[1] if len(parts) > 1 else None
+            item = {"storage_key": storage_key}
+            if display_name:
+                item["display_name"] = display_name
+            payload_attachments.append(item)
+        payload["attachments"] = payload_attachments
     r = client.post(f"/api/v1/orgs/{slug}/tasks", json=payload)
     if not _ok(r):
         return
@@ -911,6 +928,18 @@ def register(sub) -> None:
         "--brief-file",
         help="Path to a file whose contents become the task brief",
     )
+    p_run.add_argument(
+        "--attach",
+        action="append",
+        default=None,
+        metavar="STORAGE_KEY[:DISPLAY_NAME]",
+        help=(
+            "Reference a pre-uploaded task attachment by storage_key, "
+            "optionally overriding the display name with :NAME. "
+            "May be repeated."
+        ),
+        dest="attachments",
+    )
     p_run.set_defaults(func=cmd_run)
 
     p_details = sub.add_parser("details", help="Show task details")
@@ -1116,3 +1145,143 @@ def register(sub) -> None:
         ),
     )
     p_revisit.set_defaults(func=cmd_revisit)
+
+    # ── Task attachment commands (THR-109) ─────────────────────────────────
+
+    p_attach_upload = sub.add_parser(
+        "attach-upload",
+        help="Upload a file to the task-attachment private store",
+    )
+    p_attach_upload.add_argument(
+        "--org", default=None,
+        help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)",
+    )
+    p_attach_upload.add_argument(
+        "--file", required=True,
+        help="Path to the file to upload",
+    )
+    p_attach_upload.add_argument(
+        "--as-agent", default="founder",
+        help="Attribute the upload to this agent name",
+    )
+    p_attach_upload.set_defaults(func=cmd_attach_upload)
+
+    p_attach_show = sub.add_parser(
+        "attach-show",
+        help="List task attachments",
+    )
+    p_attach_show.add_argument(
+        "--org", default=None,
+        help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)",
+    )
+    p_attach_show.add_argument("task_id", help="Task ID (e.g. TASK-001)")
+    p_attach_show.set_defaults(func=cmd_attach_show)
+
+    p_attach_download = sub.add_parser(
+        "attach-download",
+        help="Download a task attachment's bytes",
+    )
+    p_attach_download.add_argument(
+        "--org", default=None,
+        help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)",
+    )
+    p_attach_download.add_argument("task_id", help="Task ID (e.g. TASK-001)")
+    p_attach_download.add_argument(
+        "storage_key",
+        help="Storage key returned by attach-upload (e.g. mockup_png-abc123)",
+    )
+    p_attach_download.add_argument(
+        "--output", "-o", default=None,
+        help="Output file path (default: storage_key last path component)",
+    )
+    p_attach_download.set_defaults(func=cmd_attach_download)
+
+
+# ── Task attachment commands (THR-109) ────────────────────────────────────────
+
+
+def cmd_attach_upload(args: argparse.Namespace) -> None:
+    import mimetypes
+
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+
+    file_path = Path(args.file).expanduser()
+    if not file_path.is_file():
+        print(f"Error: {args.file} is not a regular file")
+        sys.exit(1)
+
+    content = file_path.read_bytes()
+    content_type = mimetypes.guess_type(str(file_path))[0]
+    filename = file_path.name
+
+    files = {"file": (filename, content, content_type or "application/octet-stream")}
+    r = client.request(
+        "POST",
+        f"/api/v1/orgs/{slug}/tasks/attachments",
+        files=files,
+        params={"agent": args.as_agent},
+    )
+    if not _ok(r):
+        return
+    body = r.json()
+    print(f"Uploaded {filename}")
+    print(f"  storage_key: {body['storage_key']}")
+    print(f"  display_name: {body['display_name']}")
+    print(f"  size_bytes: {body['size_bytes']}")
+    print(f"  content_type: {body['content_type']}")
+
+
+def cmd_attach_show(args: argparse.Namespace) -> None:
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+
+    r = client.get(f"/api/v1/orgs/{slug}/tasks/{args.task_id}/attachments")
+    if not _ok(r):
+        return
+    body = r.json()
+    attachments = body.get("attachments", [])
+    if not attachments:
+        print("No attachments.")
+        return
+    for a in attachments:
+        print(
+            f"  [{a['storage_key']}] {a['display_name']} "
+            f"({a.get('content_type', '?')}, {a.get('size_bytes', '?')} bytes)"
+        )
+
+
+def cmd_attach_download(args: argparse.Namespace) -> None:
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+
+    r = client.get(
+        f"/api/v1/orgs/{slug}/tasks/{args.task_id}/attachments/{args.storage_key}"
+    )
+    if not _ok(r):
+        return
+    output = Path(args.output) if args.output else Path(args.storage_key.split("/")[-1])
+    output = output.expanduser()
+    output.write_bytes(r.content)
+    print(f"Downloaded to {output}")

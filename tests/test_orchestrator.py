@@ -710,3 +710,480 @@ def test_orchestrator_notify_does_not_block_synchronous_caller(tmp_path, test_se
     assert started.wait(timeout=2.0), "background notifier never ran"
     finish.set()
     assert finished.wait(timeout=2.0)
+
+
+# ── Task attachment materialization tests (THR-109) ──────────────────────
+
+
+def test_materialize_collision_safe_filenames(test_settings, test_runtime):
+    """When own and ancestor attachments share a display_name,
+    materialized filenames must be collision-safe via storage_key prefix."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+    db = Database(test_runtime.db_path)
+    now = datetime.now(timezone.utc)
+
+    # Root task with attachment "shared.png".
+    db.insert_task(TaskRecord(
+        id="COL-ROOT", brief="root", team="engineering",
+        created_at=now, updated_at=now,
+    ))
+    db.insert_task_attachment(
+        task_id="COL-ROOT", ordinal=0,
+        storage_key="col-root-key", display_name="shared.png",
+        size_bytes=3, content_type="image/png", uploaded_by="founder",
+    )
+    # Child task with its own attachment also named "shared.png".
+    db.insert_task(TaskRecord(
+        id="COL-CHILD", brief="child", team="engineering",
+        parent_task_id="COL-ROOT", created_at=now, updated_at=now,
+    ))
+    db.insert_task_attachment(
+        task_id="COL-CHILD", ordinal=0,
+        storage_key="col-child-key", display_name="shared.png",
+        size_bytes=5, content_type="image/png", uploaded_by="founder",
+    )
+
+    # Write bytes to the store.
+    store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+    store.put("col-root-key", b"abc")
+    store.put("col-child-key", b"hello")
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-collision"
+
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="COL-CHILD", session_id=session_id,
+    )
+
+    # Both files must exist (no overwrite).
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    files = sorted(session_dir.iterdir())
+    assert len(files) == 2, f"Expected 2 files, got: {[f.name for f in files]}"
+
+    # Files must be named with storage_key prefix (collision-safe).
+    names = {f.name for f in files}
+    assert any("col-root-key" in n for n in names), (
+        f"Root attachment not found in: {names}"
+    )
+    assert any("col-child-key" in n for n in names), (
+        f"Child attachment not found in: {names}"
+    )
+
+    # Both display names must appear in the prompt block.
+    assert "shared.png" in block
+
+    # File contents must be correct.
+    root_file = next(f for f in files if "col-root-key" in f.name)
+    child_file = next(f for f in files if "col-child-key" in f.name)
+    assert root_file.read_bytes() == b"abc"
+    assert child_file.read_bytes() == b"hello"
+
+
+def test_materialize_legacy_duplicate_rows_distinct_paths(test_settings, test_runtime):
+    """Legacy duplicate rows sharing both storage_key and display_name
+    must produce distinct materialized paths using the immutable row id."""
+    import sqlite3
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+    now = datetime.now(timezone.utc)
+
+    # Build a pre-index v1 database with duplicate rows sharing both
+    # storage_key AND display_name. Use raw SQLite to bypass the UNIQUE
+    # constraint that Database init would enforce.
+    test_runtime.db_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_conn = sqlite3.connect(str(test_runtime.db_path))
+    raw_conn.execute("PRAGMA journal_mode=WAL")
+    raw_conn.execute("PRAGMA foreign_keys=ON")
+    raw_conn.executescript("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'pending',
+            assigned_agent TEXT,
+            team TEXT NOT NULL DEFAULT 'engineering',
+            brief TEXT NOT NULL,
+            task_type TEXT NOT NULL DEFAULT 'task',
+            revision_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            parent_task_id TEXT,
+            final_output_summary TEXT,
+            final_output_dir TEXT,
+            executor_pid INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS task_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            storage_key TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            size_bytes INTEGER,
+            content_type TEXT,
+            uploaded_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES tasks(id),
+            UNIQUE(task_id, ordinal)
+        );
+    """)
+    raw_conn.execute(
+        "INSERT INTO tasks (id, status, team, brief, parent_task_id, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("LEG-DUP-PARENT", "completed", "engineering", "parent", None,
+         now.isoformat(), now.isoformat()),
+    )
+    raw_conn.execute(
+        "INSERT INTO tasks (id, status, team, brief, parent_task_id, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("LEG-DUP-CHILD", "pending", "engineering", "child",
+         "LEG-DUP-PARENT", now.isoformat(), now.isoformat()),
+    )
+    # Insert two legacy rows with same storage_key AND same display_name.
+    raw_conn.execute(
+        "INSERT INTO task_attachments (task_id, ordinal, storage_key, "
+        "display_name, size_bytes, content_type, uploaded_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("LEG-DUP-PARENT", 0, "leg-dup-key", "same-name.png", 4,
+         "image/png", "founder", now.isoformat()),
+    )
+    raw_conn.execute(
+        "INSERT INTO task_attachments (task_id, ordinal, storage_key, "
+        "display_name, size_bytes, content_type, uploaded_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("LEG-DUP-PARENT", 1, "leg-dup-key", "same-name.png", 5,
+         "image/png", "founder", now.isoformat()),
+    )
+    raw_conn.commit()
+    raw_conn.close()
+
+    # Now open via Database — migration will detect the duplicates and mark
+    # them as legacy (legacy_status='duplicate_v1'), creating a partial
+    # UNIQUE index.
+    db = Database(test_runtime.db_path)
+
+    # Verify the legacy rows have been marked.
+    rows = db._conn.execute(
+        "SELECT id, storage_key, display_name, legacy_status "
+        "FROM task_attachments WHERE storage_key = ? ORDER BY id",
+        ("leg-dup-key",),
+    ).fetchall()
+    assert len(rows) == 2, "must have 2 legacy duplicate rows"
+    id_a, id_b = rows[0]["id"], rows[1]["id"]
+    assert id_a != id_b, "row IDs must differ"
+    assert rows[0]["legacy_status"] == "duplicate_v1"
+    assert rows[1]["legacy_status"] == "duplicate_v1"
+    assert rows[0]["display_name"] == "same-name.png"
+    assert rows[1]["display_name"] == "same-name.png"
+
+    # Write fixture bytes to the private store.
+    store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+    store.put("leg-dup-key", b"AAAA")
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-legdup"
+
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="LEG-DUP-CHILD", session_id=session_id,
+    )
+
+    # Both materialized files must exist with distinct paths using row IDs.
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    files = sorted(session_dir.iterdir())
+    assert len(files) == 2, (
+        f"Expected 2 materialized files for legacy duplicates, "
+        f"got {len(files)}: {[f.name for f in files]}"
+    )
+
+    # Each filename must embed its respective row id.
+    names = {f.name for f in files}
+    assert any(f"__{id_a}" in n for n in names), (
+        f"Row id_a={id_a} not found in filenames: {names}"
+    )
+    assert any(f"__{id_b}" in n for n in names), (
+        f"Row id_b={id_b} not found in filenames: {names}"
+    )
+
+    # Both files share the same storage_key and display_name prefix.
+    assert all("leg-dup-key__same-name.png" in n for n in names), (
+        f"Expected storage_key + display_name prefix in all names: {names}"
+    )
+
+    # File contents are correct (both read from the same store key).
+    for f in files:
+        assert f.read_bytes() == b"AAAA", (
+            f"File {f.name} must contain correct bytes"
+        )
+
+    # Prompt block must reference both distinct paths.
+    assert "same-name.png" in block
+    # Each prompt line must point to a distinct file path.
+    prompt_paths = [
+        line.split(" -> ")[-1].strip()
+        for line in block.splitlines()
+        if " -> " in line
+    ]
+    assert len(prompt_paths) == 2, (
+        f"Expected 2 prompt file references, got {len(prompt_paths)}"
+    )
+    assert prompt_paths[0] != prompt_paths[1], (
+        "Prompt paths must be distinct"
+    )
+    db._conn.close()
+
+
+def test_materialize_sanitized_names_do_not_escape_dir(test_settings, test_runtime):
+    """Materialized filenames are sanitized so malformed DB display names
+    (e.g., with path separators) cannot escape the session dir."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentInvalidName
+
+    db = Database(test_runtime.db_path)
+    now = datetime.now(timezone.utc)
+
+    # Task with a display_name that contains a path separator.
+    # This would have been rejected at upload, but we test the
+    # materialization boundary defense-in-depth.
+    db.insert_task(TaskRecord(
+        id="MALNAME", brief="test", team="engineering",
+        created_at=now, updated_at=now,
+    ))
+    # Bypassing the API to insert a malformed name directly into DB.
+    db._conn.execute(
+        "INSERT INTO task_attachments "
+        "(task_id, ordinal, storage_key, display_name, size_bytes, "
+        "content_type, uploaded_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("MALNAME", 0, "safe-key", "../../../etc/passwd", 10,
+         "text/plain", "founder", now.isoformat()),
+    )
+    db._conn.commit()
+
+    store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+    store.put("safe-key", b"safe data")
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-malname"
+
+    # sanitize_display_name should reject the traversal name,
+    # causing the materialization to skip this attachment.
+    # (The log will have a warning; the session dir should be empty.)
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="MALNAME", session_id=session_id,
+    )
+
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    # The sanitize_display_name inside _materialize_task_attachments
+    # should catch the malformed name and raise,
+    # but the call is in a try/except loop so it skips gracefully.
+    # The session dir may exist but should be empty.
+    if session_dir.exists():
+        files = list(session_dir.iterdir())
+        assert len(files) == 0, (
+            f"Malformed name must not produce files: {[f.name for f in files]}"
+        )
+
+    # Block should be empty (no materialized attachments).
+    assert block == "" or block.endswith("\n")
+
+
+def test_materialize_audits_on_success(test_settings, test_runtime):
+    """Successful materialization must emit task_attachment_materialized
+    audit with the expected org/task context."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+    db = Database(test_runtime.db_path)
+    now = datetime.now(timezone.utc)
+
+    # Task with one attachment.
+    db.insert_task(TaskRecord(
+        id="AUDIT-MAT", brief="test", team="engineering",
+        created_at=now, updated_at=now,
+    ))
+    db.insert_task_attachment(
+        task_id="AUDIT-MAT", ordinal=0,
+        storage_key="audit-key", display_name="report.pdf",
+        size_bytes=4, content_type="application/pdf", uploaded_by="founder",
+    )
+    store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+    store.put("audit-key", b"data")
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-audit"
+
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="AUDIT-MAT", session_id=session_id,
+    )
+    assert block != ""
+
+    # Verify audit row.
+    logs = db.get_audit_logs("AUDIT-MAT")
+    mat_logs = [l for l in logs if l["action"] == "task_attachment_materialized"]
+    assert len(mat_logs) == 1
+    log = mat_logs[0]
+    assert log["agent"] == "orchestrator"
+    payload = log["payload"]
+    assert payload["session_id"] == session_id
+    assert payload["count"] == 1
+    assert "audit-key" in payload["storage_keys"]
+
+
+def test_materialize_no_audit_when_no_attachments(test_settings, test_runtime):
+    """When no attachments exist, no audit is emitted."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+
+    db = Database(test_runtime.db_path)
+    now = datetime.now(timezone.utc)
+
+    db.insert_task(TaskRecord(
+        id="NOATT", brief="test", team="engineering",
+        created_at=now, updated_at=now,
+    ))
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-noatt"
+
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="NOATT", session_id=session_id,
+    )
+    assert block == ""
+
+    # No task_attachment_materialized audit should exist.
+    logs = db.get_audit_logs("NOATT")
+    mat_logs = [l for l in logs if l["action"] == "task_attachment_materialized"]
+    assert len(mat_logs) == 0
+
+
+def test_session_end_cleans_up_attachment_dir(test_settings, test_runtime):
+    """When the session ends, the materialized attachment directory is removed.
+
+    Verifies that:
+    1. Materialization creates the session attachment dir.
+    2. _cleanup_session_attachments removes it.
+    3. A different session's dir and the source private store remain intact.
+    """
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+    db = Database(test_runtime.db_path)
+    now = datetime.now(timezone.utc)
+
+    # Task with an attachment.
+    db.insert_task(TaskRecord(
+        id="CLEANUP-T1", brief="test", team="engineering",
+        created_at=now, updated_at=now,
+    ))
+    db.insert_task_attachment(
+        task_id="CLEANUP-T1", ordinal=0,
+        storage_key="clean-key", display_name="report.pdf",
+        size_bytes=4, content_type="application/pdf", uploaded_by="founder",
+    )
+    store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+    store.put("clean-key", b"data")
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-cleanup"
+    other_session_id = "sess-other"
+
+    # Materialize for session_id.
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="CLEANUP-T1", session_id=session_id,
+    )
+    assert block != ""
+
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    assert session_dir.exists(), f"Expected {session_dir} to exist after materialization"
+
+    # Create a "different session" dir to prove it survives cleanup.
+    other_dir = workspace / ".happyranch" / "attachments" / other_session_id
+    other_dir.mkdir(parents=True, exist_ok=True)
+    (other_dir / "dummy.txt").write_text("other")
+
+    # Record source store state.
+    source_path = store.path_for("clean-key")
+    assert source_path.exists()
+    source_bytes = source_path.read_bytes()
+
+    # Drive the terminal cleanup path.
+    from runtime.orchestrator.orchestrator import _cleanup_session_attachments
+    _cleanup_session_attachments(workspace, session_id)
+
+    # Verify: session_dir is removed.
+    assert not session_dir.exists(), (
+        f"Session attachment dir must be removed after cleanup: {session_dir}"
+    )
+
+    # Verify: other session's dir still exists.
+    assert other_dir.exists(), (
+        f"Other session's dir must survive cleanup: {other_dir}"
+    )
+
+    # Verify: source private-store bytes are intact.
+    assert source_path.exists()
+    assert source_path.read_bytes() == source_bytes
+
+    # Verify: cleanup is idempotent (calling twice doesn't error).
+    _cleanup_session_attachments(workspace, session_id)  # no exception
+
+
+def test_cleanup_noop_when_dir_missing(test_settings, test_runtime):
+    """_cleanup_session_attachments is a no-op when the session dir
+    doesn't exist (safe for sessions without attachments)."""
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-never-existed"
+
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    assert not session_dir.exists()
+
+    from runtime.orchestrator.orchestrator import _cleanup_session_attachments
+    _cleanup_session_attachments(workspace, session_id)  # no exception
