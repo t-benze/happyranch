@@ -260,7 +260,7 @@ class TestRuntimeRegisterRoute:
             "/api/v1/executors/runtime/register",
             json={
                 "command": "echo",
-                "argv_template": ["{prompt}"],
+                "argv_template": ["echo", "{prompt}"],
                 "adapter": "pi",
             },
             headers=headers,
@@ -287,7 +287,7 @@ class TestRuntimeRegisterRoute:
             "/api/v1/executors/runtime/register",
             json={
                 "command": "echo",
-                "argv_template": ["{prompt}"],
+                "argv_template": ["echo", "{prompt}"],
                 "adapter": "pi",
             },
             headers={"Authorization": f"Bearer {token}"},
@@ -306,7 +306,7 @@ class TestRuntimeRegisterRoute:
             "/api/v1/executors/runtime/register",
             json={
                 "command": "echo",
-                "argv_template": ["{prompt}"],
+                "argv_template": ["echo", "{prompt}"],
                 "adapter": "pi",
             },
             headers={"Authorization": f"Bearer {token}"},
@@ -320,7 +320,7 @@ class TestRuntimeRegisterRoute:
             "/api/v1/executors/runtime/register",
             json={
                 "command": "echo",
-                "argv_template": ["{prompt}"],
+                "argv_template": ["echo", "{prompt}"],
                 "adapter": "pi",
             },
             headers={"Authorization": f"Bearer {token}"},
@@ -355,7 +355,7 @@ class TestRuntimeRegisterRoute:
             "/api/v1/executors/runtime/register",
             json={
                 "command": "echo",
-                "argv_template": ["{prompt}"],
+                "argv_template": ["echo", "{prompt}"],
                 "adapter": "pi",
             },
             headers=headers,
@@ -388,7 +388,7 @@ class TestRuntimeRegisterRoute:
             "/api/v1/executors/runtime/register",
             json={
                 "command": "echo",
-                "argv_template": ["{prompt}"],
+                "argv_template": ["echo", "{prompt}"],
                 "adapter": "invalid-adapter",
             },
             headers=headers,
@@ -421,7 +421,7 @@ class TestRuntimeRegisterRoute:
             "/api/v1/executors/runtime/register",
             json={
                 "command": "this-command-does-not-exist-anywhere",
-                "argv_template": ["{prompt}"],
+                "argv_template": ["echo", "{prompt}"],
                 "adapter": "pi",
             },
             headers=headers,
@@ -479,7 +479,7 @@ class TestRuntimeRegisterAudit:
             "/api/v1/executors/runtime/register",
             json={
                 "command": "echo",
-                "argv_template": ["{prompt}"],
+                "argv_template": ["echo", "{prompt}"],
                 "adapter": "pi",
             },
             headers=headers,
@@ -504,7 +504,7 @@ class TestRuntimeRegisterAudit:
 
             payload = row["payload"]
             assert payload["command"] == "echo"
-            assert payload["argv_template"] == ["{prompt}"]
+            assert payload["argv_template"] == ["echo", "{prompt}"]
             assert payload["adapter"] == "pi"
         finally:
             audit_db.close()
@@ -529,7 +529,7 @@ class TestRuntimeRegisterAudit:
             "/api/v1/executors/runtime/register",
             json={
                 "command": "echo",
-                "argv_template": ["{prompt}"],
+                "argv_template": ["echo", "{prompt}"],
                 "adapter": "pi",
             },
             headers={"Authorization": f"Bearer {token}"},
@@ -561,7 +561,7 @@ class TestStartupProfileLoading:
 
         entry = {
             "command": "echo",
-            "argv_template": ["{prompt}"],
+            "argv_template": ["echo", "{prompt}"],
             "adapter": "pi",
         }
         save_runtime_profile("my-executor", entry)
@@ -763,7 +763,7 @@ class TestRuntimeRegisterBinaryRoute:
             "/api/v1/executors/runtime/register",
             json={
                 "command": "echo",
-                "argv_template": ["{prompt}"],
+                "argv_template": ["echo", "{prompt}"],
                 "adapter": "pi",
             },
             headers=headers,
@@ -1108,7 +1108,7 @@ class TestRuntimeRegisterBinaryRoute:
 def _entry(command: str = "echo", adapter: str = "pi") -> dict:
     return {
         "command": command,
-        "argv_template": ["{prompt}"],
+        "argv_template": ["echo", "{prompt}"],
         "adapter": adapter,
     }
 
@@ -1196,7 +1196,7 @@ class TestRuntimeProfileDeleteRoute:
             kind="custom",
             adapter_id="pi",
             readiness_marker_fragment="AGENTS.md",
-            argv_template=["{prompt}"],
+            argv_template=["echo", "{prompt}"],
             command="echo",
         ))
         assert registry.is_registered("both-exec")
@@ -1242,7 +1242,7 @@ class TestRuntimeProfileDeleteRoute:
             assert row["agent"] == "founder"
             payload = row["payload"]
             assert payload["command"] == "audit-cli"
-            assert payload["argv_template"] == ["{prompt}"]
+            assert payload["argv_template"] == ["echo", "{prompt}"]
             assert payload["adapter"] == "pi"
         finally:
             audit_db.close()

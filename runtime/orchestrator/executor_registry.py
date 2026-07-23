@@ -302,13 +302,47 @@ class ExecutorRegistry:
             raise ValueError(
                 f"executor_profiles.{name}.command must be a string"
             )
+        resolved_command: str | None = None
         if command is not None:
-            resolved = shutil.which(command)
-            if resolved is None:
+            resolved_command = shutil.which(command)
+            if resolved_command is None:
                 raise ValueError(
                     f"executor_profiles.{name}: command {command!r} "
                     f"not found on PATH"
                 )
+            # Canonicalize to resolve symlinks/aliases for parity check
+            resolved_command = str(Path(resolved_command).resolve())
+
+        # Validate argv_template[0] resolves to the same executable as command.
+        # ``command`` is the DECLARED executable; ``argv_template[0]`` is the
+        # executable GenericCliExecutor actually launches. They must be the
+        # same binary — otherwise the executor will launch something different
+        # from what the profile's ``command`` declares (issue #490).
+        argv0 = [str(e) for e in argv_template][0]
+        if command is not None and argv0:
+            resolved_argv0 = shutil.which(argv0)
+            if resolved_argv0 is None:
+                raise ValueError(
+                    f"executor_profiles.{name}: argv_template[0] {argv0!r} "
+                    f"not found on PATH. The first element of argv_template "
+                    f"must be a launchable executable matching 'command'."
+                )
+            resolved_argv0 = str(Path(resolved_argv0).resolve())
+            if resolved_command != resolved_argv0:
+                raise ValueError(
+                    f"executor_profiles.{name}: command {command!r} resolves "
+                    f"to {resolved_command!r} but argv_template[0] {argv0!r} "
+                    f"resolves to {resolved_argv0!r}. They must be the same "
+                    f"executable — 'command' is the declared name, "
+                    f"argv_template[0] is the binary actually launched by "
+                    f"GenericCliExecutor. See issue #490."
+                )
+        elif command is not None and not argv0:
+            raise ValueError(
+                f"executor_profiles.{name}: argv_template[0] is empty. "
+                f"The first element must be the executable name matching "
+                f"'command'."
+            )
         marker = "AGENTS.md" if adapter in {"codex", "opencode", "pi"} else ".claude/skills/start-task/SKILL.md"
         return ExecutorProfile(
             name=name,

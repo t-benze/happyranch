@@ -97,7 +97,9 @@ export function buildConnectPrompt(
       : [
           `# 3. Register — POST to`,
           `#    ${base}/executors/runtime/register`,
-          `#    body {"command":"<your-cli>","argv_template":[...,"{prompt}",...],"adapter":"pi"}`,
+          `#    body {"command":"<your-cli>","argv_template":["<your-cli>","--flag","{prompt}"],"adapter":"pi"}`,
+          `#    Note: 'command' is the declared executable; argv_template[0]`,
+          `#    must be the SAME executable (the one GenericCliExecutor launches).`,
         ];
   return [
     ...intro,

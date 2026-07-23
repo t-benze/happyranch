@@ -183,8 +183,10 @@ either publishes. The write order is:
 The founder initiates the flow from the Settings → Executors panel
 (`web/src/features/settings/sections/ExecutorsSection.tsx`). Fill in the
 candidate CLI's profile name, command, `argv_template`, and adapter. On
-"Generate", the SPA calls `POST /auth/registration-token` (loopback-only,
-master-bearer-authed) and renders two copy-paste blocks:
+"Generate", the SPA calls ``POST /auth/registration-token`` for org-scoped
+flows or ``POST /api/v1/auth/registration-token/runtime`` for runtime
+(custom-profile) flows (both loopback-only, master-bearer-authed) and
+renders two copy-paste blocks:
 
 1. **Conformance prompt** — embeds the `hrreg_` token, the four conformance
    steps with descriptions, and the exact `happyranch executors register`

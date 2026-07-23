@@ -207,8 +207,16 @@ class ConformanceCheckinResponse(BaseModel):
 class ExecutorRegisterRequest(BaseModel):
     """Profile definition for a custom executor.
 
-    ``command`` is the executable name validated via ``shutil.which()``.
-    ``argv_template`` is the argument list with supported placeholders.
+    ``command`` is the DECLARED executable name — validated via
+    ``shutil.which()`` at registration and used by ``/health/prereqs``
+    to derive ``present``/``path`` for custom profiles.
+
+    ``argv_template`` is the COMPLETE invocation; element 0 MUST be the
+    SAME executable as ``command`` (the canonical validation proves they
+    resolve to the identical binary via PATH resolution + canonicalization).
+    ``GenericCliExecutor`` launches ``argv_template[0]`` directly — it does
+    NOT consult the ``command`` field at launch time.
+
     ``adapter`` must be one of claude/codex/opencode/pi.
 
     The ``name`` is not in the body — it comes from the registration
