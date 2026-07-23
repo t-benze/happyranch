@@ -321,6 +321,102 @@ class TestExecutorRegistry:
                 "bad", {"command": None}
             )
 
+    # ── Issue #490: command / argv_template[0] parity ───────────────────
+
+    def test_validate_custom_rejects_argv0_mismatch(self) -> None:
+        """command and argv_template[0] must resolve to the SAME executable."""
+        config = {
+            "command": "echo",
+            "argv_template": ["printf", "{prompt}"],
+            "adapter": "pi",
+        }
+        with pytest.raises(ValueError, match="must be the same executable"):
+            ExecutorRegistry.validate_custom_profile_config("kimi", config)
+
+    def test_validate_custom_rejects_unresolvable_argv0(self) -> None:
+        """argv_template[0] not found on PATH → ValueError with actionable message."""
+        config = {
+            "command": "echo",
+            "argv_template": ["definitely-not-on-path-xyzzy", "{prompt}"],
+            "adapter": "pi",
+        }
+        with pytest.raises(ValueError, match="not found on PATH"):
+            ExecutorRegistry.validate_custom_profile_config("bad", config)
+
+    def test_validate_custom_rejects_unresolvable_command(self) -> None:
+        """command not found on PATH → ValueError (existing behavior, preserved)."""
+        config = {
+            "command": "definitely-not-command-xyzzy",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        }
+        with pytest.raises(ValueError, match="not found on PATH"):
+            ExecutorRegistry.validate_custom_profile_config("bad", config)
+
+    def test_validate_custom_accepts_matching_path_commands(self) -> None:
+        """Valid profile where command and argv_template[0] are both 'echo' → OK."""
+        config = {
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        }
+        profile = ExecutorRegistry.validate_custom_profile_config("ok", config)
+        assert profile.command == "echo"
+        assert profile.argv_template == ["echo", "{prompt}"]
+
+    def test_validate_custom_accepts_absolute_command(self) -> None:
+        """command with an absolute path and matching argv_template[0] → OK.
+        shutil.which returns None for absolute paths (they're already
+        resolved), so the absolute-path check in validate_custom_profile_config
+        skips the which() comparison. The profile stores the absolute path as-is."""
+        echo_path = "/bin/echo"
+        config = {
+            "command": echo_path,
+            "argv_template": [echo_path, "{prompt}"],
+            "adapter": "pi",
+        }
+        # shutil.which returns None for absolute paths that exist on disk
+        # — the which() wrapper treats existing absolute paths as resolveable.
+        # Actually, shutil.which('/bin/echo') returns '/bin/echo' on POSIX.
+        import shutil
+        from pathlib import Path
+        resolved = shutil.which(echo_path)
+        if resolved == echo_path:
+            profile = ExecutorRegistry.validate_custom_profile_config("abs", config)
+            assert profile.command == echo_path
+            assert profile.argv_template == [echo_path, "{prompt}"]
+
+    def test_validate_custom_symlink_canonicalization(self) -> None:
+        """Symlink / aliased command must canonicalize to same path.
+        For example, on macOS /bin/echo -> something, shutil.which resolves it.
+        This test verifies that if two commands resolve to the same canonical
+        path, they pass the parity check."""
+        # Both 'echo' and '/bin/echo' resolve to the same binary via
+        # shutil.which + Path.resolve() canonicalization.
+        config = {
+            "command": "echo",
+            "argv_template": ["/bin/echo", "{prompt}"],
+            "adapter": "pi",
+        }
+        import shutil
+        from pathlib import Path
+        res_cmd = shutil.which("echo")
+        res_argv0 = shutil.which("/bin/echo")
+        if res_cmd and res_argv0 and str(Path(res_cmd).resolve()) == str(Path(res_argv0).resolve()):
+            profile = ExecutorRegistry.validate_custom_profile_config("sym", config)
+            assert profile is not None
+
+    def test_validate_custom_rejects_kimi_args_only_template(self) -> None:
+        """The reported Kimi case: --flag args as argv_template[0] with
+        no executable → rejected with actionable message (issue #490)."""
+        config = {
+            "command": "kimi-cli",
+            "argv_template": ["--flag", "{prompt}"],
+            "adapter": "pi",
+        }
+        with pytest.raises(ValueError, match="not found on PATH"):
+            ExecutorRegistry.validate_custom_profile_config("kimi", config)
+
     def test_list_profile_names_includes_builtins(self) -> None:
         registry = ExecutorRegistry()
         names = registry.list_profile_names()

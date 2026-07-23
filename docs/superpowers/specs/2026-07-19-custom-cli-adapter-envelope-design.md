@@ -54,6 +54,22 @@ conformance** differs:
   executors already know the argv shape; for custom CLIs the template is the
   entire input-adapter story.
 
+  **Issue #490 / THR-107 seq71: command/template parity.** The profile
+  declares TWO names for the executable:
+  - ``command`` — the declared name, validated via ``shutil.which()`` at
+    registration and used by ``/health/prereqs`` to derive ``present``
+    status for custom profiles.
+  - ``argv_template[0]`` — the executable ``GenericCliExecutor`` ACTUALLY
+    launches as ``subprocess.Popen(cmd)[0]``.
+  The canonical validation (``ExecutorRegistry.validate_custom_profile_config``)
+  proves BOTH resolve to the identical canonical binary (PATH resolution +
+  symlink/alias canonicalization). A mismatch or an unresolvable element 0
+  is rejected with a clear ``ValueError`` → 4xx before any durable/audit
+  side effect. The profile author must use the same executable name in both
+  fields, e.g. ``{"command":"<your-cli>","argv_template":["<your-cli>",
+  "--flag","{prompt}"],"adapter":"pi"}``. No auto-prepend, no automatic
+  mutation of stored argv templates.
+
 - **OUTPUT asymmetry (CLI conforms):** Emitting one extra structured JSON blob
   is cheap for a CLI to add — a few lines after the agent loop finishes. The
   sentinel-delimited envelope (§2) is a minor stdout addition, not a rewrite

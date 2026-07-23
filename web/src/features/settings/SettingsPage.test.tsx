@@ -798,13 +798,27 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     // Only the runtime route was hit; the legacy org-scoped route was not.
     expect(mintPaths).toEqual(['runtime']);
+
+    // The generated prompt contains the command/argv_template[0] parity JSON.
+    // The register step line is:
+    // #    body {"command":"<your-cli>","argv_template":["<your-cli>","--flag","{prompt}"],"adapter":"pi"}
+    const promptText = pre.textContent ?? '';
+    // Extract the register request JSON, parse it, and directly assert
+    // command === argv_template[0] (same executable, the parity invariant).
+    const bodyMatch = promptText.match(/#\s+body\s+(\{.*"argv_template".*\})/);
+    expect(bodyMatch).not.toBeNull();
+    const body = JSON.parse(bodyMatch![1]);
+    expect(body.command).toBe(body.argv_template[0]);
+    // argv_template is the complete invocation (retains placeholder + full args).
+    expect(body.argv_template.join(' ')).toContain('{prompt}');
+    expect(body).toHaveProperty('adapter');
   });
 
   test('poll flips to the connected card, then Done collapses back to the refreshed list', async () => {
     server.use(
       http.get('/api/v1/health/prereqs', () =>
         HttpResponse.json({
-          prereqs: [{ tool: 'my-cli', present: false, path: '/opt/bin/my-cli', hint: '' }],
+          prereqs: [{ tool: 'my-cli', present: true, path: '/opt/bin/my-cli', hint: '' }],
         }),
       ),
     );
@@ -822,7 +836,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(
       await screen.findByRole('heading', { name: /my-cli connected/i }),
     ).toBeInTheDocument();
-    // Register-real path from prereqs is shown (not fabricated).
+    // Register-real path from prereqs is shown (not fabricated);
+    // connected card consumes the present + path from server truth.
     expect(screen.getByText('/opt/bin/my-cli')).toBeInTheDocument();
     // Settings-appropriate subtitle — no circular "manage from Settings" clause.
     expect(screen.queryByText(/manage your CLIs anytime from Settings/i)).not.toBeInTheDocument();
@@ -853,7 +868,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     server.use(
       http.get('/api/v1/health/prereqs', () =>
         HttpResponse.json({
-          prereqs: [{ tool: 'my-cli', present: false, path: '/opt/bin/my-cli', hint: '' }],
+          prereqs: [{ tool: 'my-cli', present: true, path: '/opt/bin/my-cli', hint: '' }],
         }),
       ),
       http.get('/api/v1/executors/runtime/profiles', () => {
