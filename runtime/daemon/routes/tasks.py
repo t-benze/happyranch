@@ -5,6 +5,7 @@ import json as _json
 import logging
 import os
 import signal
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -219,42 +220,68 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
 
     async with org.db_lock:
         task_id = org.db.next_task_id()
-        org.db.insert_task(
-            TaskRecord(
-                id=task_id,
-                brief=body.brief,
-                team=team,
-                assigned_agent=assigned,
-            )
-        )
-        # Link pre-uploaded attachments to the new task.
-        # All validation was done above — use pre-computed values only.
+
+        # Re-check claimability INSIDE the lock — the pre-validation outside
+        # is a fast-path hint; the authoritative claim gate is the
+        # UNIQUE(storage_key) constraint enforced during the single
+        # transaction below.
         if prevalidated_attachments:
             store = _task_attachment_store(org)
+            attachment_params: list[dict] = []
             for idx, pva in enumerate(prevalidated_attachments):
                 ref = pva["ref"]
                 path = store.path_for(ref.storage_key)
                 if not path.exists():
-                    continue
+                    # File disappeared between upload and link — reject.
+                    raise HTTPException(
+                        status_code=404,
+                        detail={
+                            "code": "task_attachment_not_found",
+                            "storage_key": ref.storage_key,
+                        },
+                    )
                 size_bytes = path.stat().st_size
-                org.db.insert_task_attachment(
-                    task_id=task_id,
-                    ordinal=idx,
-                    storage_key=ref.storage_key,
-                    display_name=pva["display_name"],
-                    size_bytes=size_bytes,
-                    content_type=pva["content_type"],
+                attachment_params.append({
+                    "ordinal": idx,
+                    "storage_key": ref.storage_key,
+                    "display_name": pva["display_name"],
+                    "size_bytes": size_bytes,
+                    "content_type": pva["content_type"],
+                })
+
+            try:
+                org.db.insert_task_with_attachments(
+                    TaskRecord(
+                        id=task_id,
+                        brief=body.brief,
+                        team=team,
+                        assigned_agent=assigned,
+                    ),
+                    attachments=attachment_params,
                     uploaded_by=uploaded_by,
                 )
-                # Audit: attachment linked to task.
-                from runtime.infrastructure.audit_logger import AuditLogger
-                AuditLogger(org.db).log_task_attachment_added(
-                    task_id=task_id,
-                    storage_key=ref.storage_key,
-                    display_name=pva["display_name"],
-                    content_type=pva["content_type"],
-                    uploaded_by=uploaded_by,
+            except sqlite3.IntegrityError:
+                # UNIQUE(storage_key) violation — another concurrent request
+                # claimed this key within the serialized boundary.
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "attachment_already_claimed",
+                        "message": (
+                            "One or more attachments were claimed by another "
+                            "task after validation. Retry with a fresh upload."
+                        ),
+                    },
                 )
+        else:
+            org.db.insert_task(
+                TaskRecord(
+                    id=task_id,
+                    brief=body.brief,
+                    team=team,
+                    assigned_agent=assigned,
+                )
+            )
 
     enqueue_task(state, org.slug, task_id)
     return {"task_id": task_id, "team": team, "assigned_agent": assigned}

@@ -129,6 +129,7 @@ class Database:
         self._migrate_jobs_table_if_needed()
         self._migrate_drop_talk_surface_if_needed()
         self._create_tables()
+        self._ensure_task_attachments_storage_key_unique()
         # Working-hours CRUD lives in its own module but shares THIS connection
         # and lock so the single-connection serialization invariant (see
         # `_synchronized`) is preserved across both surfaces.
@@ -456,6 +457,29 @@ class Database:
             self._conn.rollback()
             raise
 
+    def _ensure_task_attachments_storage_key_unique(self) -> None:
+        """Add UNIQUE(storage_key) index on task_attachments if absent.
+
+        Idempotent: CREATE UNIQUE INDEX IF NOT EXISTS is a no-op when the
+        index already exists. This covers databases created by earlier
+        versions of this branch before the constraint was added to the
+        CREATE TABLE statement.
+        """
+        existing = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "task_attachments" not in existing:
+            return
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_task_attachments_storage_key "
+            "ON task_attachments(storage_key)"
+        )
+        self._conn.commit()
+
 
     def _create_tables(self) -> None:
         self._conn.executescript("""
@@ -735,7 +759,8 @@ class Database:
                 uploaded_by TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (task_id) REFERENCES tasks(id),
-                UNIQUE(task_id, ordinal)
+                UNIQUE(task_id, ordinal),
+                UNIQUE(storage_key)
             );
             CREATE INDEX IF NOT EXISTS idx_task_attachments_task
                 ON task_attachments(task_id);
@@ -3904,6 +3929,95 @@ class Database:
             ),
         )
         self._conn.commit()
+
+    @_synchronized
+    def insert_task_with_attachments(
+        self,
+        task: "TaskRecord",
+        attachments: list[dict],
+        uploaded_by: str,
+    ) -> None:
+        """Atomically insert a task + its private attachment links + audit rows.
+
+        Everything within one BEGIN IMMEDIATE / COMMIT transaction so a
+        duplicate-storage-key UNIQUE violation, a link-write error, or an
+        audit-write error rolls back the task row and every prior link.
+
+        Caller MUST hold ``org.db_lock`` — the claimability re-check
+        (SELECT by storage_key) runs inside the same serialized boundary.
+
+        Raises ``sqlite3.IntegrityError`` when a storage_key has already
+        been claimed by another task — the caller must translate this to a
+        conflict response.
+        """
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute(
+                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                   revision_count, created_at, updated_at, completed_at, parent_task_id,
+                   revisit_of_task_id, dispatched_from_thread_id,
+                   block_kind, note,
+                   orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
+                   current_session_id, zombie_flagged_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    task.id,
+                    task.status.value,
+                    task.assigned_agent,
+                    task.team,
+                    task.brief,
+                    task.revision_count,
+                    task.created_at.isoformat(),
+                    task.updated_at.isoformat(),
+                    task.completed_at.isoformat() if task.completed_at else None,
+                    task.parent_task_id,
+                    task.revisit_of_task_id,
+                    task.dispatched_from_thread_id,
+                    task.block_kind.value if task.block_kind else None,
+                    task.note,
+                    task.orchestration_step_count,
+                    task.session_timeout_seconds,
+                    task.task_type,
+                    task.active_fanout,
+                    task.current_session_id,
+                    task.zombie_flagged_at.isoformat() if task.zombie_flagged_at else None,
+                ),
+            )
+            for att in attachments:
+                self._conn.execute(
+                    "INSERT INTO task_attachments "
+                    "(task_id, ordinal, storage_key, display_name, size_bytes, "
+                    "content_type, uploaded_by, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        task.id,
+                        att["ordinal"],
+                        att["storage_key"],
+                        att["display_name"],
+                        att["size_bytes"],
+                        att["content_type"],
+                        uploaded_by,
+                        now,
+                    ),
+                )
+                # Audit row for each linked attachment.
+                audit_ts = _now().isoformat()
+                audit_payload = json.dumps({
+                    "storage_key": att["storage_key"],
+                    "display_name": att["display_name"],
+                    "content_type": att["content_type"],
+                    "uploaded_by": uploaded_by,
+                })
+                self._conn.execute(
+                    "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (task.id, uploaded_by, "task_attachment_added", audit_payload, audit_ts),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def get_task_attachment(
