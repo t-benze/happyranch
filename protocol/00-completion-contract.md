@@ -53,6 +53,10 @@ For review/QA-type workers, optionally include a structured verdict:
 
 Use `"status": "blocked"` when you cannot finish and need the orchestrator to route around you. Set `"confidence": 0` and put the blocker reason in `summary` — the orchestrator reads it verbatim when deciding the next step.
 
+## Idempotent retry semantics
+
+`POST /tasks/{id}/completion` is safe to retry for the *same session*. If a result for the exact `(task_id, agent, session_id)` was already recorded, the route returns `200 {"ok": true}` ("already recorded") instead of `409 unknown_session`, even though the in-memory session tracker was cleared by the first successful call. A retry whose `session_id` was **never** persisted still receives `409 unknown_session` — the `(task_id, agent, session_id)` triple is the authenticator, and all three must match a persisted result. Agents MUST treat a `200` (including an idempotent 200) as "landed" and MUST NOT record the callback as orphaned. A terminal task still returns `409 task_not_active`; verify task status in the DB before treating that as a failure.
+
 ## Manager decision field (manager-only)
 
 Team-manager sessions must additionally include a structured `decision` object alongside the prose `summary`. The orchestrator parses `decision` directly via the `NextStep` pydantic model — it never infers intent from prose. Workers omit `decision` entirely.

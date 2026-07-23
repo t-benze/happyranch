@@ -279,12 +279,14 @@ def test_completion_callback_plus_audit_logger_does_not_duplicate_row(
     assert len(org_state.db.get_task_results(task_id)) == 1
 
 
-def test_completion_clears_session_so_duplicate_rejected(
+def test_completion_duplicate_same_session_returns_200_idempotent(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    """After a successful completion POST, the tracker must be cleared so that a
-    second POST with the same session id is rejected as unknown_session rather
-    than silently persisting a duplicate row."""
+    """A duplicate same-session completion POST returns 200 {"ok": true} (TASK-3127).
+    The first call succeeds and clears the tracker; the retry probes
+    get_latest_task_result, finds the already-persisted row, and returns
+    {"ok": true} without inserting a second row or re-running decision
+    side effects."""
     sub = TestClient(app).post(
         "/api/v1/orgs/alpha/tasks",
         json={"brief": "x"},
@@ -301,15 +303,18 @@ def test_completion_clears_session_so_duplicate_rejected(
         f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers,
     )
     assert first.status_code == 200
+    assert first.json() == {"ok": True}
 
     second = TestClient(app).post(
         f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers,
     )
-    assert second.status_code == 409
-    assert second.json()["detail"]["code"] == "unknown_session"
-    # And the second POST did not persist a duplicate row.
+    assert second.status_code == 200
+    assert second.json() == {"ok": True}
+    # Exactly one task_results row for this session — no duplicate insert.
     rows = org_state.db.get_task_results(task_id)
     assert len([r for r in rows if r["session_id"] == "sess-1"]) == 1
+    # Tracker is cleared after the first call — the second found no tracker.
+    assert org_state.sessions.get_active(task_id, "dev_agent") is None
 
 
 def test_completion_preserves_empty_risks_flagged(

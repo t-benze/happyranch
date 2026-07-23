@@ -366,6 +366,18 @@ NOTE: `os.kill(pid, 0)` carries a pid-recycle caveat — a recycled pid could
 read as falsely-alive. A falsely-alive false-positive is acceptable relative
 to the risk of duplicate runs from a false-negative.
 
+**Duplicate live callback (TASK-3127).** Independently of restart recovery,
+the `/completion` route itself short-circuits a duplicate POST of an
+already-succeeded call: on a tracker miss it probes
+`get_latest_task_result(task_id, agent, session_id)` and returns an
+idempotent `200` when the row exists (the same probe the boot sweep and
+ongoing reaper use, §Ongoing zombie reaper). This closes the false-orphan
+class where a lost HTTP response drove a duplicate POST into
+`409 unknown_session`. It does **not** add a new transition edge and does
+**not** re-consume the decision — the terminal-status idempotence guard
+(`_is_already_terminal`) remains the single point that applies a decision
+at most once across the inline, boot-sweep, and reaper paths.
+
 #### Ongoing zombie reaper (THR-090 Track B)
 
 The daemon runs a periodic zombie reaper loop (``zombie_reaper_loop``,
