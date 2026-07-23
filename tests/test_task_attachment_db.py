@@ -171,3 +171,272 @@ class TestAncestorAttachmentResolution:
         # Should resolve without infinite loop (max_hops bounds it).
         attachments = db.resolve_ancestor_attachments("TASK-002", max_hops=2)
         assert len(attachments) >= 0  # just doesn't crash
+
+
+class TestLegacyMigration:
+    """Prove the storage_key uniqueness migration handles legacy databases."""
+
+    def test_v0_no_task_attachments_init_succeeds(self):
+        """Fresh database with no task_attachments table initializes cleanly."""
+        import tempfile
+        from pathlib import Path
+        from runtime.infrastructure.database import Database
+
+        d = Database(Path(tempfile.mkdtemp()) / "test.db")
+        # Table exists after init.
+        tables = {
+            row[0] for row in d._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "task_attachments" in tables
+        # Legacy column present.
+        cols = {
+            row[1] for row in d._conn.execute(
+                "PRAGMA table_info('task_attachments')"
+            ).fetchall()
+        }
+        assert "legacy_status" in cols
+        # UNIQUE guard is in place (either table-level or index).
+        indexes = {
+            row[0] for row in d._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND tbl_name='task_attachments'"
+            ).fetchall()
+        }
+        assert "idx_task_attachments_storage_key_unique" in indexes
+        d._conn.close()
+
+    def test_clean_v1_upgrade_enforces_future_duplicate_rejection(self):
+        """A clean v1 pre-index table (no UNIQUE, no duplicates) upgrades
+        successfully and blocks a subsequent duplicate claim."""
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from runtime.infrastructure.database import Database
+
+        db_path = Path(tempfile.mkdtemp()) / "test.db"
+        # Simulate a pre-index v1 table: no UNIQUE(storage_key).
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'pending',
+                assigned_agent TEXT,
+                team TEXT NOT NULL DEFAULT 'engineering',
+                brief TEXT NOT NULL,
+                task_type TEXT NOT NULL DEFAULT 'task',
+                revision_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                parent_task_id TEXT,
+                final_output_summary TEXT,
+                final_output_dir TEXT,
+                executor_pid INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS task_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                storage_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES tasks(id),
+                UNIQUE(task_id, ordinal)
+            );
+        """)
+        conn.close()
+
+        # Now open via Database — migration must succeed.
+        d = Database(db_path)
+        cols = {
+            row[1] for row in d._conn.execute(
+                "PRAGMA table_info('task_attachments')"
+            ).fetchall()
+        }
+        assert "legacy_status" in cols
+        # Full UNIQUE index created.
+        indexes = {
+            row[0] for row in d._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND tbl_name='task_attachments'"
+            ).fetchall()
+        }
+        assert "idx_task_attachments_storage_key_unique" in indexes
+
+        # Insert a task + attachment.
+        from runtime.models import TaskRecord
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        d.insert_task(TaskRecord(
+            id="TASK-CLEAN-V1", brief="clean v1", team="engineering",
+            created_at=now, updated_at=now,
+        ))
+        d.insert_task_attachment(
+            task_id="TASK-CLEAN-V1", ordinal=0,
+            storage_key="ta-clean-key", display_name="clean.png",
+            size_bytes=100, content_type="image/png", uploaded_by="founder",
+        )
+
+        # Duplicate claim must be rejected.
+        d.insert_task(TaskRecord(
+            id="TASK-CLEAN-V2", brief="second", team="engineering",
+            created_at=now, updated_at=now,
+        ))
+        with pytest.raises(sqlite3.IntegrityError):
+            d.insert_task_attachment(
+                task_id="TASK-CLEAN-V2", ordinal=0,
+                storage_key="ta-clean-key", display_name="clean.png",
+                size_bytes=100, content_type="image/png", uploaded_by="founder",
+            )
+        d._conn.close()
+
+    def test_duplicate_v1_upgrade_preserves_and_blocks_reclaim(self):
+        """A v1 table with duplicate storage_key rows must:
+        - upgrade without daemon startup failure
+        - preserve every legacy row (readable)
+        - mark all duplicate-shared rows with legacy_status='duplicate_v1'
+        - block a new claim to the duplicate key
+        """
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from runtime.infrastructure.database import Database
+
+        db_path = Path(tempfile.mkdtemp()) / "test.db"
+        # Simulate v1 pre-index table with duplicate storage_key rows.
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'pending',
+                assigned_agent TEXT,
+                team TEXT NOT NULL DEFAULT 'engineering',
+                brief TEXT NOT NULL,
+                task_type TEXT NOT NULL DEFAULT 'task',
+                revision_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                parent_task_id TEXT,
+                final_output_summary TEXT,
+                final_output_dir TEXT,
+                executor_pid INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS task_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                storage_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES tasks(id),
+                UNIQUE(task_id, ordinal)
+            );
+        """)
+        # Insert two rows with the SAME storage_key (pre-constraint duplicates).
+        conn.execute(
+            "INSERT INTO tasks (id, status, team, brief, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("TASK-DUP-1", "completed", "engineering", "dup task 1",
+             "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, status, team, brief, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("TASK-DUP-2", "completed", "engineering", "dup task 2",
+             "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO task_attachments (task_id, ordinal, storage_key, "
+            "display_name, size_bytes, content_type, uploaded_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("TASK-DUP-1", 0, "ta-dup-key", "mockup.png", 100,
+             "image/png", "founder", "2026-01-01T00:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO task_attachments (task_id, ordinal, storage_key, "
+            "display_name, size_bytes, content_type, uploaded_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("TASK-DUP-2", 0, "ta-dup-key", "mockup-v2.png", 200,
+             "image/png", "founder", "2026-01-02T00:00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Open via Database — migration must NOT raise IntegrityError.
+        d = Database(db_path)
+
+        # Both legacy rows preserved with legacy_status='duplicate_v1'.
+        rows = d._conn.execute(
+            "SELECT * FROM task_attachments WHERE storage_key = ?",
+            ("ta-dup-key",),
+        ).fetchall()
+        assert len(rows) == 2, "both legacy duplicate rows must be preserved"
+        for row in rows:
+            assert row["legacy_status"] == "duplicate_v1", (
+                f"row {row['id']} must be marked duplicate_v1"
+            )
+
+        # Both rows are readable via standard methods.
+        att1 = d.get_task_attachment("TASK-DUP-1", "ta-dup-key")
+        assert att1 is not None
+        assert att1.display_name == "mockup.png"
+        assert att1.legacy_status == "duplicate_v1"
+        att2 = d.get_task_attachment("TASK-DUP-2", "ta-dup-key")
+        assert att2 is not None
+        assert att2.display_name == "mockup-v2.png"
+        assert att2.legacy_status == "duplicate_v1"
+
+        # get_task_attachment_by_storage_key returns one of the legacy rows.
+        global_att = d.get_task_attachment_by_storage_key("ta-dup-key")
+        assert global_att is not None
+        assert global_att.legacy_status == "duplicate_v1"
+
+        # A new claim to the duplicate key must be REJECTED.
+        from runtime.models import TaskRecord
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        d.insert_task(TaskRecord(
+            id="TASK-DUP-NEW", brief="new claim attempt", team="engineering",
+            created_at=now, updated_at=now,
+        ))
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+            d.insert_task_attachment(
+                task_id="TASK-DUP-NEW", ordinal=0,
+                storage_key="ta-dup-key", display_name="new.png",
+                size_bytes=300, content_type="image/png", uploaded_by="founder",
+            )
+
+        # Also verify through the composite method.
+        d.insert_task(TaskRecord(
+            id="TASK-DUP-NEW2", brief="composite claim attempt", team="engineering",
+            created_at=now, updated_at=now,
+        ))
+        with pytest.raises(sqlite3.IntegrityError):
+            d.insert_task_with_attachments(
+                TaskRecord(
+                    id="TASK-DUP-NEW3", brief="composite test", team="engineering",
+                    created_at=now, updated_at=now,
+                ),
+                attachments=[{
+                    "ordinal": 0, "storage_key": "ta-dup-key",
+                    "display_name": "composite.png", "size_bytes": 400,
+                    "content_type": "image/png",
+                }],
+                uploaded_by="founder",
+            )
+        # Verify no task was persisted.
+        assert d.get_task("TASK-DUP-NEW3") is None
+        d._conn.close()

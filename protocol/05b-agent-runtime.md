@@ -136,6 +136,12 @@ depends on the executor CLI's own abilities. The materialized per-session
 directory is a regenerable cache — the bytes of record live in the task-attachment
 private store.
 
+**Legacy rows.** Rows with non-`NULL` `legacy_status` (e.g. `duplicate_v1`) are
+included in ancestor resolution and materialization. Their `display_name` values
+differ, so the collision-safe materialized filename
+(`{storage_key}__{sanitized_display_name}`) produces distinct files — legitimate
+duplicate legacy attachments do not overwrite each other.
+
 ### Executor abstraction
 
 The executor interface supports multiple backends. Four built-in adapters are

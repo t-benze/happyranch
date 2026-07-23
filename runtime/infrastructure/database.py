@@ -458,26 +458,83 @@ class Database:
             raise
 
     def _ensure_task_attachments_storage_key_unique(self) -> None:
-        """Add UNIQUE(storage_key) index on task_attachments if absent.
+        """Idempotent, transactional preflight: enforce storage_key uniqueness.
 
-        Idempotent: CREATE UNIQUE INDEX IF NOT EXISTS is a no-op when the
-        index already exists. This covers databases created by earlier
-        versions of this branch before the constraint was added to the
-        CREATE TABLE statement.
+        Handles legacy v1 task_attachments tables where the pre-constraint
+        schema allowed duplicate storage_key rows. Legacy duplicates are
+        preserved for readability — marked with legacy_status='duplicate_v1'
+        — and their keys cannot be newly claimed (guarded by a pre-insert
+        existence check in insert_task_attachment and
+        insert_task_with_attachments).
+
+        For clean databases a full UNIQUE index is created. For databases
+        with legacy duplicates a partial UNIQUE index (WHERE
+        legacy_status IS NULL) enforces uniqueness on new non-legacy claims.
         """
-        existing = {
+        existing_tables = {
             row[0]
             for row in self._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        if "task_attachments" not in existing:
+        if "task_attachments" not in existing_tables:
             return
-        self._conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS "
-            "idx_task_attachments_storage_key "
-            "ON task_attachments(storage_key)"
-        )
+
+        # Idempotence: if our named index already exists, migration is done.
+        existing_idx = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND tbl_name='task_attachments'"
+            ).fetchall()
+        }
+        if "idx_task_attachments_storage_key_unique" in existing_idx:
+            return
+
+        # Additive: ensure legacy_status column exists.
+        cols = {
+            row[1]
+            for row in self._conn.execute(
+                "PRAGMA table_info('task_attachments')"
+            ).fetchall()
+        }
+        if "legacy_status" not in cols:
+            self._conn.execute(
+                "ALTER TABLE task_attachments ADD COLUMN legacy_status TEXT"
+            )
+
+        # Detect duplicate storage_key rows among non-legacy rows.
+        # These can only exist on databases created before the UNIQUE
+        # constraint was introduced (v1 pre-index schema).
+        dupes = self._conn.execute(
+            "SELECT storage_key FROM task_attachments "
+            "WHERE legacy_status IS NULL "
+            "GROUP BY storage_key HAVING COUNT(*) > 1"
+        ).fetchall()
+
+        if dupes:
+            # Mark ALL rows sharing each duplicate key as legacy.
+            for (dup_key,) in dupes:
+                self._conn.execute(
+                    "UPDATE task_attachments SET legacy_status = ? "
+                    "WHERE storage_key = ?",
+                    ("duplicate_v1", dup_key),
+                )
+            # Partial unique index: only non-legacy rows must be unique.
+            # Legacy duplicates are excluded from the unique guard — their
+            # keys are protected from new claims by pre-insert existence
+            # checks in the insert methods.
+            self._conn.execute(
+                "CREATE UNIQUE INDEX idx_task_attachments_storage_key_unique "
+                "ON task_attachments(storage_key) WHERE legacy_status IS NULL"
+            )
+        else:
+            # Full unique index for clean databases (v0 or clean v1).
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "idx_task_attachments_storage_key_unique "
+                "ON task_attachments(storage_key)"
+            )
         self._conn.commit()
 
 
@@ -758,6 +815,7 @@ class Database:
                 content_type TEXT,
                 uploaded_by TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                legacy_status TEXT,
                 FOREIGN KEY (task_id) REFERENCES tasks(id),
                 UNIQUE(task_id, ordinal),
                 UNIQUE(storage_key)
@@ -3912,6 +3970,14 @@ class Database:
         content_type: str | None,
         uploaded_by: str,
     ) -> None:
+        # Reject if storage_key is already claimed — including by legacy
+        # duplicate rows that were excluded from the partial unique index.
+        existing = self.get_task_attachment_by_storage_key(storage_key)
+        if existing is not None:
+            raise sqlite3.IntegrityError(
+                f"UNIQUE constraint failed: task_attachments.storage_key: "
+                f"{storage_key}"
+            )
         self._conn.execute(
             "INSERT INTO task_attachments "
             "(task_id, ordinal, storage_key, display_name, size_bytes, "
@@ -3985,6 +4051,17 @@ class Database:
                 ),
             )
             for att in attachments:
+                # Reject if storage_key is already claimed — including by
+                # legacy duplicate rows excluded from the partial unique index.
+                existing = self._conn.execute(
+                    "SELECT 1 FROM task_attachments WHERE storage_key = ?",
+                    (att["storage_key"],),
+                ).fetchone()
+                if existing is not None:
+                    raise sqlite3.IntegrityError(
+                        "UNIQUE constraint failed: "
+                        f"task_attachments.storage_key: {att['storage_key']}"
+                    )
                 self._conn.execute(
                     "INSERT INTO task_attachments "
                     "(task_id, ordinal, storage_key, display_name, size_bytes, "
@@ -4041,6 +4118,7 @@ class Database:
             content_type=row["content_type"],
             uploaded_by=row["uploaded_by"],
             created_at=row["created_at"],
+            legacy_status=row["legacy_status"] if "legacy_status" in row.keys() else None,
         )
 
     @_synchronized
@@ -4061,6 +4139,7 @@ class Database:
                 content_type=row["content_type"],
                 uploaded_by=row["uploaded_by"],
                 created_at=row["created_at"],
+                legacy_status=row["legacy_status"] if "legacy_status" in row.keys() else None,
             )
             for row in cursor.fetchall()
         ]
@@ -4142,6 +4221,7 @@ class Database:
             content_type=row["content_type"],
             uploaded_by=row["uploaded_by"],
             created_at=row["created_at"],
+            legacy_status=row["legacy_status"] if "legacy_status" in row.keys() else None,
         )
 
     @_synchronized

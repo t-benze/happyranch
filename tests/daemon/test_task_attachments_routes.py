@@ -940,10 +940,15 @@ class TestAtomicTransactionFailureRollback:
         assert org_state.db.get_audit_logs("TASK-LINKFAIL") == []
 
     def test_audit_write_failure_rolls_back_task_and_links(
-        self, tmp_home, app, org_state, monkeypatch,
+        self, tmp_home, app, org_state,
     ):
-        """If an audit INSERT fails mid-transaction, the task and all
-        attachment links must be rolled back — no residue."""
+        """If an audit INSERT fails mid-transaction (injected via a real
+        SQLite trigger), the task and all attachment links must be rolled
+        back — no residue.
+
+        Uses a BEFORE INSERT trigger on audit_log that raises on the SECOND
+        attachment's audit row (the first attachment + its audit succeed),
+        proving that the transaction rollback undoes ALL prior writes."""
         import sqlite3
         from datetime import datetime, timezone
         from runtime.models import TaskRecord
@@ -952,55 +957,56 @@ class TestAtomicTransactionFailureRollback:
 
         now = datetime.now(timezone.utc)
         store = TaskAttachmentStore(OrgPaths(org_state.root).task_attachments_dir)
-        key_a = "ta-auditfail-a"
-        key_b = "ta-auditfail-b"
+        key_a = "ta-trigger-auditfail-a"
+        key_b = "ta-trigger-auditfail-b"
         store.put(key_a, b"bytes a")
         store.put(key_b, b"bytes b")
 
-        # Wrap the composite method to inject failure after the first
-        # attachment link + audit succeed, before the second one completes.
-        original = org_state.db.insert_task_with_attachments
+        trigger_task_id = "TASK-AUDFAIL-TRIGGER"
 
-        def failing_wrapper(task, attachments, uploaded_by="founder"):
-            # The composite method uses BEGIN IMMEDIATE / COMMIT transaction.
-            # We inject failure by replacing it with one that raises partway
-            # through — by inserting an extra audit row that triggers a
-            # constraint violation.
-            #
-            # Strategy: execute the full composite, but with a specially
-            # crafted attachment list where the second attachment has a
-            # duplicate storage_key. This simulates the same rollback path
-            # as the link-write failure — proving atomic rollback.
-            raise sqlite3.OperationalError("simulated audit-write failure")
-
-        monkeypatch.setattr(
-            org_state.db, "insert_task_with_attachments", failing_wrapper,
+        # Install a real SQLite trigger that fires on the SECOND audit row
+        # for our task. After the first attachment's link+audit succeed,
+        # the second attachment's link succeeds, and then its audit INSERT
+        # hits the trigger → RAISE(FAIL) → OperationalError → rollback.
+        org_state.db._conn.execute(
+            "CREATE TRIGGER trg_audit_fail_test "
+            "BEFORE INSERT ON audit_log "
+            f"WHEN NEW.task_id = '{trigger_task_id}' "
+            "  AND (SELECT COUNT(*) FROM audit_log "
+            f"       WHERE task_id = '{trigger_task_id}') >= 1 "
+            "BEGIN "
+            "  SELECT RAISE(FAIL, 'injected audit failure after first attachment'); "
+            "END;"
         )
-
-        task = TaskRecord(
-            id="TASK-AUDFAIL", brief="audit fail test", team="engineering",
-            created_at=now, updated_at=now,
-        )
-        attachments = [
-            {"ordinal": 0, "storage_key": key_a, "display_name": "a.png",
-             "size_bytes": 7, "content_type": "image/png"},
-            {"ordinal": 1, "storage_key": key_b, "display_name": "b.png",
-             "size_bytes": 7, "content_type": "image/png"},
-        ]
-
-        with pytest.raises(sqlite3.OperationalError, match="simulated audit-write failure"):
-            org_state.db.insert_task_with_attachments(
-                task, attachments, uploaded_by="founder",
+        try:
+            task = TaskRecord(
+                id=trigger_task_id, brief="audit fail trigger test",
+                team="engineering", created_at=now, updated_at=now,
             )
+            attachments = [
+                {"ordinal": 0, "storage_key": key_a, "display_name": "a.png",
+                 "size_bytes": 7, "content_type": "image/png"},
+                {"ordinal": 1, "storage_key": key_b, "display_name": "b.png",
+                 "size_bytes": 7, "content_type": "image/png"},
+            ]
 
-        # No task residue — the wrapper raised before any durable write.
-        assert org_state.db.get_task("TASK-AUDFAIL") is None
-        # No attachment residue.
-        assert org_state.db.list_task_attachments("TASK-AUDFAIL") == []
-        assert org_state.db.get_task_attachment_by_storage_key(key_a) is None
-        assert org_state.db.get_task_attachment_by_storage_key(key_b) is None
-        # No audit residue.
-        assert org_state.db.get_audit_logs("TASK-AUDFAIL") == []
+            with pytest.raises(sqlite3.IntegrityError,
+                               match="injected audit failure"):
+                org_state.db.insert_task_with_attachments(
+                    task, attachments, uploaded_by="founder",
+                )
+
+            # No task residue — the transaction rolled back.
+            assert org_state.db.get_task(trigger_task_id) is None
+            # No attachment residue.
+            assert org_state.db.list_task_attachments(trigger_task_id) == []
+            assert org_state.db.get_task_attachment_by_storage_key(key_a) is None
+            assert org_state.db.get_task_attachment_by_storage_key(key_b) is None
+            # No audit residue (the first attachment's audit was also rolled back).
+            assert org_state.db.get_audit_logs(trigger_task_id) == []
+        finally:
+            # Clean up the trigger — it lives on the shared org_state DB.
+            org_state.db._conn.execute("DROP TRIGGER IF EXISTS trg_audit_fail_test")
 
     def test_file_disappeared_during_lock_rejected_no_task(
         self, tmp_home, app, org_state,

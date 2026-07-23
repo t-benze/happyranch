@@ -101,6 +101,7 @@ export interface TaskAttachmentRecord {
   content_type: string | null;
   uploaded_by: string;
   created_at: string;
+  legacy_status: string | null;
 }
 
 export interface TaskAttachmentUploadResponse {

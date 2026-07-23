@@ -517,3 +517,41 @@ path — §1 invariant) must STOP and escalate (§4 / §10 boundary).
   (follow-up); only the regenerable per-session materialized dir is cleaned (§9).
 - No **file previews / virus scanning / content extraction** (matches the thread-spec
   non-goals).
+
+## 15. Legacy data migration policy (build addendum, THR-109 fix-forward)
+
+**Context.** The `UNIQUE(storage_key)` constraint on `task_attachments` was added
+incrementally during the THR-109 build. A v1 database created by an intermediate
+build without the constraint may contain rows with duplicate `storage_key` values.
+Opening such a database under the constraint-enforcing code must not raise
+`sqlite3.IntegrityError` and make the daemon unavailable.
+
+**Policy.** The migration is an explicit, transactional, idempotent preflight that
+runs at `Database` init:
+
+1. **Preserve, don't delete.** Every existing `task_attachments` row is kept intact.
+   No bytes are rekeyed, copied, or rewritten.
+2. **Mark legacy duplicates.** When two or more non-legacy rows share the same
+   `storage_key`, ALL rows sharing that key are marked `legacy_status='duplicate_v1'`.
+3. **Partial unique guard.** The unique constraint is enforced via a *partial* index:
+   `CREATE UNIQUE INDEX idx_task_attachments_storage_key_unique ON
+   task_attachments(storage_key) WHERE legacy_status IS NULL`. Clean databases (no
+   legacy rows) get the full unique index.
+4. **Legacy keys are burned.** Both `insert_task_attachment` and
+   `insert_task_with_attachments` perform a pre-insert existence check that rejects
+   any `storage_key` already present in the table — including legacy duplicate rows
+   excluded from the partial unique index. A key that exists only as a legacy
+   duplicate cannot be newly claimed.
+5. **Readable, not writable.** Legacy rows are fully readable via all standard read
+   paths (`list_task_attachments`, `get_task_attachment`,
+   `get_task_attachment_by_storage_key`, `resolve_ancestor_attachments`) and carry
+   the `legacy_status` field. They cannot be altered or re-claimed.
+6. **Materialization-safe.** If legacy duplicate rows cause two materialized files
+   to target the same filename, the collision-safe naming scheme
+   (`{storage_key}__{sanitized_display_name}`) prevents overwrite because each row
+   has a distinct `display_name`.
+
+**Column change.** An additive `legacy_status TEXT` column is added via `ALTER TABLE`
+(new databases get it in the `CREATE TABLE`). It is nullable; `NULL` means
+normal/current, non-`NULL` marks a legacy row. No existing column is altered or
+dropped.
