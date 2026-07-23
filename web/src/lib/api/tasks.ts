@@ -135,11 +135,8 @@ export const uploadTaskAttachment = async (
 export const listTaskAttachments = (
   slug: string,
   taskId: string,
-  includeInherited: boolean = false,
 ): Promise<{ task_id: string; attachments: TaskAttachmentRecord[] }> =>
-  request(`/orgs/${slug}/tasks/${taskId}/attachments`, {
-    params: includeInherited ? { include_inherited: true } : undefined,
-  });
+  request(`/orgs/${slug}/tasks/${taskId}/attachments`);
 
 export const downloadTaskAttachmentUrl = (
   slug: string,

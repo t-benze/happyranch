@@ -1563,22 +1563,21 @@ async def upload_task_attachment(
 @router.get("/tasks/{task_id}/attachments")
 def list_task_attachments(
     slug: str, task_id: str, org: OrgDep,
-    include_inherited: bool = Query(False),
 ) -> dict:
-    """List attachments for a task.
+    """List attachments for a task (THR-109 seq25 org-scoped bearer read).
 
-    By default returns only the task's own attachments.
-    With ?include_inherited=true, also includes ancestor attachments
-    resolved via parent_task_id chain (own + ancestors union).
+    Any authenticated caller in the same org may list attachments for an
+    extant task. Returns the task's own attachments plus inherited
+    ancestor attachments resolved via the parent_task_id chain (own +
+    ancestors union, deterministic order).
+
+    Cross-org access is denied by the existing org-scoped context.
     """
     task = org.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_task"})
 
-    if include_inherited:
-        attachments = org.db.resolve_ancestor_attachments(task_id)
-    else:
-        attachments = org.db.list_task_attachments(task_id)
+    attachments = org.db.resolve_ancestor_attachments(task_id)
     return {
         "task_id": task_id,
         "attachments": [
@@ -1605,14 +1604,14 @@ def get_task_attachment(
     org: OrgDep,
     request: Request,
 ):
-    """Download a task attachment's bytes.
+    """Download a task attachment's bytes (THR-109 seq25 org-scoped bearer read).
 
-    Scoped to task_id + storage_key. The attachment must belong to the
-    specified task (directly) or to an ancestor resolved via
-    parent_task_id chain. Per-task caller identity is not available
-    in the current bearer-token auth model — enforcement of task-tree
-    visibility is scoped to the URL-specified task_id (founder-gated:
-    THR-109 finding 3 auth limitation).
+    Any authenticated caller in the same org may download attachment bytes
+    for an extant task. The attachment is resolved from the task's own
+    attachments or inherited from ancestors via the parent_task_id chain.
+
+    Cross-org access is denied by the existing org-scoped context.
+    No requester task/session identity is accepted or required.
     """
     from fastapi.responses import StreamingResponse
 

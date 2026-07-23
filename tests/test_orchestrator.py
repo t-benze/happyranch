@@ -710,3 +710,144 @@ def test_orchestrator_notify_does_not_block_synchronous_caller(tmp_path, test_se
     assert started.wait(timeout=2.0), "background notifier never ran"
     finish.set()
     assert finished.wait(timeout=2.0)
+
+
+# ── Task attachment materialization tests (THR-109) ──────────────────────
+
+
+def test_materialize_collision_safe_filenames(test_settings, test_runtime):
+    """When own and ancestor attachments share a display_name,
+    materialized filenames must be collision-safe via storage_key prefix."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+    db = Database(test_runtime.db_path)
+    now = datetime.now(timezone.utc)
+
+    # Root task with attachment "shared.png".
+    db.insert_task(TaskRecord(
+        id="COL-ROOT", brief="root", team="engineering",
+        created_at=now, updated_at=now,
+    ))
+    db.insert_task_attachment(
+        task_id="COL-ROOT", ordinal=0,
+        storage_key="col-root-key", display_name="shared.png",
+        size_bytes=3, content_type="image/png", uploaded_by="founder",
+    )
+    # Child task with its own attachment also named "shared.png".
+    db.insert_task(TaskRecord(
+        id="COL-CHILD", brief="child", team="engineering",
+        parent_task_id="COL-ROOT", created_at=now, updated_at=now,
+    ))
+    db.insert_task_attachment(
+        task_id="COL-CHILD", ordinal=0,
+        storage_key="col-child-key", display_name="shared.png",
+        size_bytes=5, content_type="image/png", uploaded_by="founder",
+    )
+
+    # Write bytes to the store.
+    store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+    store.put("col-root-key", b"abc")
+    store.put("col-child-key", b"hello")
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-collision"
+
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="COL-CHILD", session_id=session_id,
+    )
+
+    # Both files must exist (no overwrite).
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    files = sorted(session_dir.iterdir())
+    assert len(files) == 2, f"Expected 2 files, got: {[f.name for f in files]}"
+
+    # Files must be named with storage_key prefix (collision-safe).
+    names = {f.name for f in files}
+    assert any("col-root-key" in n for n in names), (
+        f"Root attachment not found in: {names}"
+    )
+    assert any("col-child-key" in n for n in names), (
+        f"Child attachment not found in: {names}"
+    )
+
+    # Both display names must appear in the prompt block.
+    assert "shared.png" in block
+
+    # File contents must be correct.
+    root_file = next(f for f in files if "col-root-key" in f.name)
+    child_file = next(f for f in files if "col-child-key" in f.name)
+    assert root_file.read_bytes() == b"abc"
+    assert child_file.read_bytes() == b"hello"
+
+
+def test_materialize_sanitized_names_do_not_escape_dir(test_settings, test_runtime):
+    """Materialized filenames are sanitized so malformed DB display names
+    (e.g., with path separators) cannot escape the session dir."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentInvalidName
+
+    db = Database(test_runtime.db_path)
+    now = datetime.now(timezone.utc)
+
+    # Task with a display_name that contains a path separator.
+    # This would have been rejected at upload, but we test the
+    # materialization boundary defense-in-depth.
+    db.insert_task(TaskRecord(
+        id="MALNAME", brief="test", team="engineering",
+        created_at=now, updated_at=now,
+    ))
+    # Bypassing the API to insert a malformed name directly into DB.
+    db._conn.execute(
+        "INSERT INTO task_attachments "
+        "(task_id, ordinal, storage_key, display_name, size_bytes, "
+        "content_type, uploaded_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("MALNAME", 0, "safe-key", "../../../etc/passwd", 10,
+         "text/plain", "founder", now.isoformat()),
+    )
+    db._conn.commit()
+
+    store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+    store.put("safe-key", b"safe data")
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=test_runtime, slug="test", teams=teams,
+    )
+
+    workspace = test_runtime.workspaces_dir / "test-agent"
+    session_id = "sess-malname"
+
+    # sanitize_display_name should reject the traversal name,
+    # causing the materialization to skip this attachment.
+    # (The log will have a warning; the session dir should be empty.)
+    block = orch._materialize_task_attachments(
+        workspace=workspace, task_id="MALNAME", session_id=session_id,
+    )
+
+    session_dir = workspace / ".happyranch" / "attachments" / session_id
+    # The sanitize_display_name inside _materialize_task_attachments
+    # should catch the malformed name and raise,
+    # but the call is in a try/except loop so it skips gracefully.
+    # The session dir may exist but should be empty.
+    if session_dir.exists():
+        files = list(session_dir.iterdir())
+        assert len(files) == 0, (
+            f"Malformed name must not produce files: {[f.name for f in files]}"
+        )
+
+    # Block should be empty (no materialized attachments).
+    assert block == "" or block.endswith("\n")

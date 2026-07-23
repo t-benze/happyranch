@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -407,9 +408,15 @@ class Orchestrator:
 
         Returns the Attachments block string for prompt injection, or "" if
         no attachments were found.
+
+        Uses deterministic collision-safe filenames:
+        ``{storage_key}__{sanitized_display_name}`` so that own and ancestor
+        attachments with the same display_name do not overwrite each other.
+        The display label in the prompt still shows the human-readable name.
         """
         from runtime.infrastructure.task_attachment_store import (
             TaskAttachmentStore,
+            sanitize_display_name,
         )
 
         # Resolve attachments up the parent_task_id chain.
@@ -453,8 +460,38 @@ class Orchestrator:
                 )
                 continue
 
-            # Write to the session dir.
-            target = session_attachments_dir / att.display_name
+            # Deterministic collision-safe filename:
+            # storage_key is globally unique, so suffixing with the
+            # sanitized display_name prevents same-name overwrites while
+            # keeping the filename human-readable.
+            # Sanitization at the materialization boundary ensures
+            # malformed DB display names cannot escape the session dir.
+            try:
+                safe_name = sanitize_display_name(att.display_name)
+            except Exception:
+                logger.warning(
+                    "Skipping attachment %s: invalid display name %r",
+                    att.storage_key, att.display_name,
+                )
+                continue
+            target = session_attachments_dir / f"{att.storage_key}__{safe_name}"
+            # Containment guard: resolved path must stay inside the
+            # session attachments directory.
+            try:
+                resolved_dir = session_attachments_dir.resolve()
+                resolved_target = target.resolve()
+            except (ValueError, OSError):
+                logger.warning(
+                    "Attachment path resolution failed for %s",
+                    att.storage_key,
+                )
+                continue
+            if not str(resolved_target).startswith(str(resolved_dir) + os.sep) \
+                    and resolved_target != resolved_dir:
+                logger.warning(
+                    "Attachment path escapes session dir: %s", target,
+                )
+                continue
             target.write_bytes(content)
 
             size_str = (
@@ -463,6 +500,7 @@ class Orchestrator:
                 else "unknown size"
             )
             ct = att.content_type or "application/octet-stream"
+            # Prompt shows the original display_name for readability.
             lines.append(
                 f"- {att.display_name} ({ct}, {size_str})"
                 f" -> {target}"

@@ -208,8 +208,13 @@ CREATE INDEX IF NOT EXISTS idx_task_attachments_task ON task_attachments(task_id
   `<runtime>/orgs/<slug>/task-attachments/` (exact path/module deferred to build).
   Recommended keys:
   `task-attachments/<owning-task-id>/<uuid-or-content-key>/<sanitized-basename>`.
-  Access is task-tree scoped: only the owning task and descendants resolving through
-  `parent_task_id` may have the bytes materialized into their worker session.
+  **Read access (seq25, founder-ruled):** any authenticated caller in the same org
+  may list/download task attachments via the task-attachment API. No requester
+  task/session identity is accepted or required; access is authenticated org-scoped
+  bearer. **Materialization at session spawn** resolves own + ancestor attachments
+  via `parent_task_id` (task-tree scoped); materialized files are written into the
+  spawning task's per-session attachment directory. Cross-org access is denied by
+  the existing org-scoped context.
 - **Org artifact store boundary.** `<runtime>/orgs/<slug>/artifacts/` remains the
   shared cross-task artifact store used by `happyranch artifacts ...`; it is not the
   durable backing for private task-brief attachments.
@@ -265,33 +270,29 @@ drifts **BOTH** contract surfaces — the Python OpenAPI snapshot
 mirror in `web/src/lib/api/`, MEM-354). Build must regenerate both **in the same PR**,
 or the contract tests go red / the coverage test is a false-green.
 
-**Open decision (§10):** whether the new task-attachment upload route/CLI can reuse the
-existing daemon bearer auth and baseline `happyranch` permission posture unchanged. If
-it needs an auth/bearer-token change or a permission-generation change, that is
-**founder-gated and out of scope** — STOP.
-
 ### 7c. Spawn-time materialization seam (the load-bearing bit)
 
 At **session spawn**, for the task being spawned:
 
-1. **Resolve** the task's (inherited, §8) attachment set.
+1. **Resolve** the task's (inherited, §8) attachment set (own + ancestors union).
 2. **Materialize**: for each attachment, read bytes from the task-attachment private
-   store and write the file into a **new per-task/session attachment dir** the executor
-   can `Read`. A per-task dir **must be introduced** — cwd today is the shared
-   `workspaces_dir/<agent_name>` (~L526), which is wrong for task-scoped files.
-   Proposed target (illustrative):
-   `workspaces_dir/<agent_name>/.happyranch/attachments/<task_id>/<display_name>` (a
-   dot-dir the agent won't confuse with work product), or a session-scoped temp dir
-   cleaned on session end (§9 cleanup). Final path is an implementation detail gated on
-   sign-off.
+   store and write the file into a **new per-session attachment dir** the executor
+   can `Read`. Target:
+   `<workspace>/.happyranch/attachments/<session_id>/<storage_key>__<sanitized_name>`.
+   The filename uses a **deterministic collision-safe pattern**
+   (`{storage_key}__{sanitized_display_name}`) so that own and ancestor attachments
+   with the same display_name do not overwrite each other. Display names are
+   sanitized at the materialization boundary to prevent malformed DB names from
+   escaping the session directory. The prompt `Attachments:` block still shows the
+   original human-readable display_name.
 3. **Inject** an `Attachments:` block into the brief prompt (in `_build_prompt`,
    alongside the `brief: {brief}` line, ~L389), naming each file + its materialized
-   absolute path + size + content-type hint, mirroring the thread-prompt format:
+   absolute path + size + content-type hint:
 
    ```text
    Attachments (materialized to disk — load them by path with your own tools; how much
    you extract from an image depends on this CLI's abilities):
-   - mockup.png (image/png, 124033 bytes) -> /…/.happyranch/attachments/TASK-XXX/mockup.png
+   - mockup.png (image/png, 124033 bytes) -> /…/.happyranch/attachments/sess-XXX/key__mockup.png
    ```
 
 **This CHANGES what is materialized into a worker session at spawn.** Therefore the
@@ -311,8 +312,12 @@ the delta is specified here only:
 
 The founder (and agents) can view/download a task's attachments on the task-detail
 view (web §12) and via CLI (`happyranch tasks show <id>` prints attachment lines).
-Download/read APIs must enforce the same task-tree visibility as spawn-time
-materialization; private task-brief bytes are not browseable as org-wide artifacts.
+Download/read APIs use the existing authenticated org-scoped bearer model (seq25):
+any authenticated caller in the same org may list/download task attachments for an
+extant task. Inherited entries (own + ancestors) are resolved via the
+`parent_task_id` chain. Cross-org access is denied by the existing org-scoped
+context. Private task-brief bytes remain isolated from the org-wide artifact store
+(see §4).
 
 ## 8. Task-tree inheritance — RECOMMENDED: resolve-UP the tree at materialization
 
@@ -373,22 +378,41 @@ if the founder wants nearest-only semantics.
    content-type → `422 unsupported_attachment_type`; invalid display name (must be
    non-empty, ≤ 200 chars, no `/ \` or control chars) → `422
    invalid_attachment_display_name`.
+6. **Materialization collision safety.** If the spawning task and an ancestor have
+   attachments with the same display_name, the materialized filenames must be
+   deterministic and collision-safe. Use the pattern
+   ``{storage_key}__{sanitized_display_name}`` so the globally-unique storage_key
+   prevents overwrites. Sanitize display_name at the materialization boundary so
+   malformed DB names cannot escape the session attachments directory.
+7. **Storage-key path containment.** `storage_key` is validated as a safe-token
+   (regex `^[A-Za-z0-9._@+-]+$`, no `..`, `/`, `\`, null bytes). Store lookups
+   use `path_for()` which resolves against the task-attachment root with an in-root
+   containment check. The same containment check guards materialized filenames.
 
-## 10. Open auth / permission decisions (surfaced, not guessed)
+## 10. Auth / permission decisions (settled)
 
 Founder ruling seq14/15 settles storage: task-brief attachments need a dedicated
-private store/root. It does **not** authorize auth or permission-model changes. The
-following remain open founder-gated boundaries:
+private store/root.
 
-- **Web auth:** can the new task-attachment multipart/upload route use the existing
-  daemon bearer-token flow unchanged? If not, STOP and escalate.
-- **Agent CLI permissions:** can agent-originated uploads use the existing baseline
+Founder ruling seq25 settles BROWSER/CLI read access: any authenticated caller in
+the same org may list/download task attachments from the dedicated task-attachment
+store. This loosens the prior task-tree-only read restriction for the list/download
+routes. No requester task/session identity is accepted or required; cross-org access
+remains denied by the existing org-scoped context.
+
+Spawn-time materialization remains task-tree scoped (own + ancestors via
+`parent_task_id`), as does upload/reference.
+
+Closed boundaries (no auth/permission-model change needed):
+
+- **Web auth:** the task-attachment upload/list/download routes use the existing
+  daemon bearer-token flow unchanged. No new auth surface.
+- **Agent CLI permissions:** agent-originated uploads use the existing baseline
   `happyranch` CLI allowance without modifying Claude `--allowedTools`, Codex sandbox
-  flags, opencode `permission.bash`, or the generated allow-rule surface? If not, STOP
-  and escalate.
-- **Host-path boundary:** explicit upload of a user/agent-selected file is allowed by
-  this design; granting broad arbitrary host-path reads is not. If the implementation
-  requires widening host-disk reach, STOP and escalate.
+  flags, opencode `permission.bash`, or the generated allow-rule surface.
+- **Host-path boundary:** explicit upload of a user/agent-selected file is done
+  through the task-attachment upload path; no broad arbitrary host-path reads are
+  granted.
 
 ## 11. Audit actions (scope-prefix convention preserved)
 
@@ -414,7 +438,8 @@ uploads; no scope-prefix semantics change.
   behavior, verbatim).
 - **Task-detail view:** surface the task's (inherited) attachments as chips/compact
   cards with a download action calling the task-attachment download route —
-  read/download only, task-tree scoped.
+  read/download only, org-scoped bearer (seq25) — any authenticated org member may
+  list/download; inherited attachments are resolved own + ancestors.
 - **Design-token compliant**, reusing existing components (no bespoke calendar/complex
   UI). This is a straightforward FE slice.
 - Adding the daemon route(s) drifts OpenAPI + `openapi-coverage.test.ts` — regenerate
