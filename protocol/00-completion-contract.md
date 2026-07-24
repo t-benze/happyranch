@@ -146,6 +146,124 @@ Cross-team validation runs on every leg at decision-parse time; any off-team age
 
 See `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.
 
+### Task attachments in decisions (THR-109)
+
+A manager may attach pre-uploaded task-attachment-store refs to spawned children via the optional `attachments` field. This field is available on:
+
+- **Direct delegate:** `decision.attachments` — refs become the spawned child's own links.
+- **Inline chain leg:** `decision.then[].attachments` — applied when the orchestrator auto-advances and spawns that leg.
+- **Fanout child / pipeline carrier:** `decision.children[].attachments` — refs become the spawned child's own links. A pipeline carrier owns its declared refs; its spawned first leg receives them only through normal ancestor inheritance (never a duplicate link/claim).
+
+**Shape:** `attachments: [{storage_key, display_name?}]`. The `storage_key` MUST reference a key previously uploaded via `happyranch tasks attach-upload --file <path>`. No ambient paths, upload-on-decision route, or public store exists.
+
+**Security boundary:** the orchestrator only references keys that already exist in the private task-attachment store. It never accepts host paths, URL references, or inline file content in the decision contract.
+
+**One-time claim semantics:** every `storage_key` is globally claimed at first link time. A duplicate, already-claimed, or missing key rejects the ENTIRE decision before any child is spawned, any parent park, any active_chain/active_fanout metadata, any link, any audit row, or any queue entry.
+
+**Sibling duplicate rejection:** for fan-out, all refs across ALL children (including pipeline carriers) are validated together. Duplicate storage keys across siblings are a single invalid fanout.
+
+**Validation reuse:** the orchestrator and the POST /tasks daemon route share the same validation semantics (count limit, duplicate detection, key existence, claim check, display-name sanitisation, content-type resolution).
+
+**Inheritance:** existing parent→child attachment inheritance via `resolve_ancestor_attachments` is unchanged. Decision attachments are the child's OWN records, materialized at session spawn alongside inherited ancestor attachments.
+
+**Example — direct delegate with attachment:**
+
+```json
+{
+  "task_id": "...",
+  "session_id": "...",
+  "agent": "engineering_head",
+  "status": "completed",
+  "summary": "Dispatching with mockup attachment.",
+  "decision": {
+    "action": "delegate",
+    "agent": "dev_agent",
+    "prompt": "Implement the dashboard per the attached mockup.",
+    "attachments": [
+      {"storage_key": "upload-abc123", "display_name": "dashboard-mockup.png"}
+    ]
+  }
+}
+```
+
+**Example — inline chain with later-leg attachment:**
+
+```json
+{
+  "decision": {
+    "action": "delegate",
+    "agent": "dev_agent",
+    "prompt": "Build feature X.",
+    "then": [
+      {
+        "agent": "code_reviewer",
+        "prompt": "Review the PR.",
+        "expect_verdict": "APPROVE"
+      },
+      {
+        "agent": "qa_engineer",
+        "prompt": "QA the feature.",
+        "expect_verdict": "PASS",
+        "attachments": [
+          {"storage_key": "upload-def456", "display_name": "test-plan.md"}
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Example — fanout with sibling attachment uniqueness:**
+
+```json
+{
+  "decision": {
+    "action": "fanout",
+    "children": [
+      {
+        "agent": "dev_agent",
+        "prompt": "Implement module A.",
+        "attachments": [
+          {"storage_key": "upload-aaa", "display_name": "spec-a.png"}
+        ]
+      },
+      {
+        "agent": "qa_engineer",
+        "prompt": "Test module A.",
+        "attachments": [
+          {"storage_key": "upload-bbb", "display_name": "spec-b.png"}
+        ]
+      }
+    ],
+    "width_cap_ack": 2
+  }
+}
+```
+
+**Example — pipeline carrier (attachment on carrier, inherited by first leg):**
+
+```json
+{
+  "decision": {
+    "action": "fanout",
+    "children": [
+      {
+        "agent": "senior_dev",
+        "prompt": "Review and QA the feature.",
+        "expect_verdict": "APPROVE",
+        "then": [
+          {"agent": "qa_engineer", "prompt": "QA pass.", "expect_verdict": "PASS"}
+        ],
+        "attachments": [
+          {"storage_key": "upload-ccc", "display_name": "review-checklist.md"}
+        ]
+      }
+    ],
+    "width_cap_ack": 1
+  }
+}
+```
+
 ### Fan-out (parallel delegation, Phase 1)
 
 A manager can spawn N child tasks in parallel:

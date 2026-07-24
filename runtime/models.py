@@ -131,6 +131,16 @@ class TaskRecord(BaseModel):
     zombie_flagged_at: datetime | None = None
 
 
+class TaskAttachmentRef(BaseModel):
+    """Reference to a previously uploaded task attachment.
+
+    The canonical model lives here so the orchestrator and daemon share
+    the exact same shape without importing daemon route internals.
+    """
+    storage_key: str
+    display_name: str | None = None
+
+
 class ChainLeg(BaseModel):
     """One leg of an inline delegation chain. The manager declares legs 2..N in
     NextStep.then; the first leg is the existing delegate payload (agent +
@@ -139,6 +149,10 @@ class ChainLeg(BaseModel):
     agent: str
     prompt: str
     expect_verdict: str | None = None
+    # THR-109: per-leg task attachments. Only referenced when this leg is
+    # auto-advanced and the orchestrator spawns the next child task.
+    # Keys must have been pre-uploaded via `happyranch tasks attach-upload`.
+    attachments: list[TaskAttachmentRef] | None = None
 
 
 class FanoutChild(BaseModel):
@@ -151,6 +165,10 @@ class FanoutChild(BaseModel):
     # Phase 1 rejects these fields — they exist only for Phase 2+ forward compat.
     then: list[ChainLeg] = Field(default_factory=list)
     expect_verdict: str | None = None
+    # THR-109: per-child task attachments. A pipeline carrier owns its
+    # declared refs; its spawned first leg receives them only through
+    # normal ancestor inheritance, never a duplicate link/claim.
+    attachments: list[TaskAttachmentRef] | None = None
 
 
 class NextStep(BaseModel):
@@ -166,6 +184,10 @@ class NextStep(BaseModel):
     # carries the failed child's task id so the orchestrator can track
     # per-slice retry count from existing DB lineage (no schema migration).
     revisit_of_task_id: str | None = None
+    # THR-109: direct delegate attachments. Keys must have been pre-uploaded
+    # via `happyranch tasks attach-upload`; no ambient paths or upload-on-
+    # decision route exists.
+    attachments: list[TaskAttachmentRef] | None = None
 
     @field_validator('action')
     @classmethod

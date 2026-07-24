@@ -160,11 +160,19 @@ Parameters:
      empty brief. Managers can declare a multi-leg workflow chain inline by
      adding `"then": [...]` to a delegate decision. The orchestrator
      auto-advances routine legs without consuming orchestration steps.
+     Optional `"attachments"`: a list of `{storage_key, display_name?}` refs
+     to pre-uploaded task-attachment-store keys (upload-only, no path or URL).
+     These become the spawned child's own attachment links.
+     Each `"then"` leg may also carry its own `"attachments"`, persisted
+     when the orchestrator auto-advances to that leg.
    - `fanout` (the `parallel` alias is also accepted) — spawn N child tasks in parallel (2 ≤ N ≤ 8,
      Phase 2). Requires `children` (array of `{agent, prompt}` objects)
      and `width_cap_ack` (must exactly equal the child count). Optional `join_summary`
      (prose directive for the join prompt). Per-child `then`/`expect_verdict`
      are accepted as a *pipeline carrier* — the child runs its own inline delegation chain.
+     Each child may have optional `"attachments"` (same shape). Pipeline
+     carriers own their declared refs; the first leg inherits by ancestry.
+     Duplicate storage keys across siblings are a single invalid fanout.
      Children targeted at a **team manager** are decision-capable (mutating fan-out);
      children targeted at regular **workers** are read-only (structured decisions ignored,
      complete with a summary). NO fan-out review gate at any width — the width cap (8)
@@ -190,6 +198,86 @@ Parameters:
      "confidence": 90,
      "summary": "Triaged and staged implementation for the worker.",
      "decision": {"action": "delegate", "agent": "<worker_agent_name>", "prompt": "..."}
+   }
+   ```
+
+   Example (delegation with attachment):
+
+   ```json
+   {
+     "decision": {
+       "action": "delegate",
+       "agent": "dev_agent",
+       "prompt": "Implement the dashboard per the attached mockup.",
+       "attachments": [
+         {"storage_key": "upload-abc123", "display_name": "dashboard-mockup.png"}
+       ]
+     }
+   }
+   ```
+
+   Example (inline chain with later-leg attachment):
+
+   ```json
+   {
+     "decision": {
+       "action": "delegate",
+       "agent": "dev_agent",
+       "prompt": "Build feature X.",
+       "then": [
+         {"agent": "code_reviewer", "prompt": "Review the PR.", "expect_verdict": "APPROVE"},
+         {
+           "agent": "qa_engineer", "prompt": "QA the feature.", "expect_verdict": "PASS",
+           "attachments": [
+             {"storage_key": "upload-def456", "display_name": "test-plan.md"}
+           ]
+         }
+       ]
+     }
+   }
+   ```
+
+   Example (fanout with per-child attachments — sibling keys must be unique):
+
+   ```json
+   {
+     "decision": {
+       "action": "fanout",
+       "children": [
+         {
+           "agent": "dev_agent", "prompt": "Implement module A.",
+           "attachments": [{"storage_key": "upload-aaa", "display_name": "spec-a.png"}]
+         },
+         {
+           "agent": "qa_engineer", "prompt": "Test module A.",
+           "attachments": [{"storage_key": "upload-bbb", "display_name": "spec-b.png"}]
+         }
+       ],
+       "width_cap_ack": 2
+     }
+   }
+   ```
+
+   Example (pipeline carrier — carrier owns refs, first leg inherits):
+
+   ```json
+   {
+     "decision": {
+       "action": "fanout",
+       "children": [
+         {
+           "agent": "senior_dev", "prompt": "Review and QA the feature.",
+           "expect_verdict": "APPROVE",
+           "then": [
+             {"agent": "qa_engineer", "prompt": "QA pass.", "expect_verdict": "PASS"}
+           ],
+           "attachments": [
+             {"storage_key": "upload-ccc", "display_name": "review-checklist.md"}
+           ]
+         }
+       ],
+       "width_cap_ack": 1
+     }
    }
    ```
 

@@ -725,6 +725,30 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
             # from existing DB lineage (no schema migration).
             revisit_of_task_id=decision.revisit_of_task_id,
         )
+
+        # THR-109: validate and prepare decision attachments.
+        # Run validation when ANY leg (direct or chain) declares attachments.
+        delegate_attachment_params: list[dict] | None = None
+        has_any_decision_att = bool(decision.attachments) or any(
+            getattr(leg, 'attachments', None) for leg in (decision.then or [])
+        )
+        if has_any_decision_att:
+            try:
+                prevalidated = _validate_decision_attachments(orch, decision)
+                if prevalidated:
+                    delegate_attachment_params = _prepare_attachment_params(
+                        orch, prevalidated,
+                    )
+            except ValueError as e:
+                note = f"invalid decision attachments: {e}"
+                _fail(orch, task_id, note=note)
+                _enqueue_parent_if_waiting(orch, task_id)
+                _maybe_post_thread_followup(
+                    orch, task_id,
+                    status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                )
+                return
+
         # Atomic CAS: insert child + transition parent to IN_PROGRESS(DELEGATED)
         # under the same RLock acquisition. Serializes against /cancel via
         # Database RLock — closes the spawn-new-work race (Codex P1 on PR #34).
@@ -734,12 +758,15 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
         if not db.try_delegate(
             task_id, child,
             parent_note=f"Delegated to {decision.agent} (child={child_id})",
+            attachments=delegate_attachment_params,
+            uploaded_by=agent,
         ):
             logger.debug(
                 "run_step %s: cancelled between re-check and delegate, dropping",
                 task_id,
             )
             return
+        logger.debug("run_step %s: try_delegate SUCCEEDED, child=%s", task_id, child_id)
         # Persist the chain on the parent so child terminals can auto-advance
         # via _enqueue_parent_if_waiting (Task 8). Skip if neither `then` nor
         # `expect_verdict` is set — that's a plain single-leg delegate.
@@ -784,6 +811,95 @@ def _validate_one_leg(orch: "Orchestrator", *, agent: str | None, where: str) ->
             return f"no workspace for agent {agent!r}"
         return f"chain leg {where}: no workspace for agent {agent!r}"
     return None
+
+
+def _prepare_attachment_params(
+    orch: "Orchestrator",
+    prevalidated: list[dict],
+) -> list[dict]:
+    """Build attachment param dicts from prevalidated refs for DB insertion.
+
+    Re-checks file existence and reads size_bytes. Caller must already have
+    validated the refs via ``validate_task_attachment_refs``.
+
+    Returns a list of dicts with keys: ordinal, storage_key, display_name,
+    size_bytes, content_type.
+    """
+    import json as _json
+    from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+    store = TaskAttachmentStore(orch._paths.task_attachments_dir)
+    params: list[dict] = []
+    for idx, pva in enumerate(prevalidated):
+        path = store.path_for(pva["storage_key"])
+        if not path.exists():
+            raise ValueError(_json.dumps({
+                "code": "task_attachment_not_found",
+                "storage_key": pva["storage_key"],
+            }))
+        size_bytes = path.stat().st_size
+        params.append({
+            "ordinal": idx,
+            "storage_key": pva["storage_key"],
+            "display_name": pva["display_name"],
+            "size_bytes": size_bytes,
+            "content_type": pva["content_type"],
+        })
+    return params
+
+
+def _validate_decision_attachments(
+    orch: "Orchestrator",
+    decision,
+) -> list[dict] | None:
+    """Validate all attachment refs across a delegate decision (direct +
+    chain legs). Returns prevalidated attachment params for the direct
+    delegate leg, or None if no attachments in any leg.
+
+    Chain leg attachments are validated for early detection but their
+    params are not returned here — they're re-validated when the leg spawns.
+    The direct leg's prevalidated params ARE returned for immediate use.
+
+    Always validates all legs — even when the direct leg has zero attachments
+    but a later chain leg declares refs. This ensures whole-decision prevalidation:
+    an invalid later-leg ref rejects the decision before any child is spawned,
+    any parent parks, any active_chain is written, or any queue entry is created.
+
+    Raises ValueError (JSON-encoded error) on validation failure, causing
+    the orchestrator to fail the task with an informative note.
+    """
+    from runtime.infrastructure.task_attachment_store import (
+        TaskAttachmentStore,
+        validate_task_attachment_refs,
+    )
+    store = TaskAttachmentStore(orch._paths.task_attachments_dir)
+    db = orch._db
+
+    has_direct = bool(decision.attachments)
+    has_chain = any(
+        getattr(leg, 'attachments', None) for leg in (decision.then or [])
+    )
+    if not has_direct and not has_chain:
+        return None
+
+    # Validate direct delegate attachments.
+    direct_refs = list(decision.attachments) if decision.attachments else []
+    prevalidated = None
+    if direct_refs:
+        prevalidated = validate_task_attachment_refs(
+            store=store, db=db, refs=direct_refs,
+        )
+
+    # Validate chain leg attachments (early detection — always run, even
+    # when direct attachments are absent).
+    if decision.then:
+        for i, leg in enumerate(decision.then):
+            leg_refs = list(leg.attachments) if leg.attachments else []
+            if leg_refs:
+                validate_task_attachment_refs(
+                    store=store, db=db, refs=leg_refs,
+                )
+
+    return prevalidated
 
 
 def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
@@ -1494,30 +1610,62 @@ def _advance_chain_for_completed_child(
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
 
-    # Advance: bump chain state FIRST so a crash between this and insert_task
-    # leaves a recoverable "stuck delegated waiting for missing child"
-    # rather than a silently-mis-routed chain on the next terminal.
-    next_child_id = orch._db.next_task_id()
-    chain.step_index = action.next_step_index
-    orch._db.update_task_active_chain(parent_task_id, chain.serialize())
-
-    # Now spawn the next-leg child task.
+    # THR-109: validate attachments FIRST, before any state change.
+    # If validation fails the chain is cleared and parent wakes — no
+    # child, no link/audit, no queue entry, no advanced active_chain.
     prior_context = build_prior_leg_context(
         child_task_id=child_task_id, report=report,
     )
     full_brief = action.next_leg.prompt + prior_context
-    orch._db.insert_task(
-        TaskRecord(
-            id=next_child_id,
-            team=parent.team,
-            brief=full_brief,
-            parent_task_id=parent_task_id,
-            assigned_agent=action.next_leg.agent,
-            status=TaskStatus.PENDING,
-            session_timeout_seconds=parent.session_timeout_seconds,
-            task_type="subtask",
+
+    chain_att_params: list[dict] | None = None
+    if action.next_leg.attachments:
+        from runtime.infrastructure.task_attachment_store import (
+            TaskAttachmentStore,
+            validate_task_attachment_refs,
         )
+        store = TaskAttachmentStore(orch._paths.task_attachments_dir)
+        try:
+            prevalidated = validate_task_attachment_refs(
+                store=store, db=orch._db, refs=list(action.next_leg.attachments),
+            )
+            if prevalidated:
+                chain_att_params = _prepare_attachment_params(orch, prevalidated)
+        except ValueError:
+            # Attachment validation failed — do NOT spawn the leg.
+            # Clear the chain so the parent can wake and handle the failure.
+            orch._db.update_task_active_chain(parent_task_id, None)
+            return "wake"
+
+    # Advance chain state NOW — after validation, before child insert.
+    # If the child insert/link/audit fails below we clear the chain to
+    # leave no advanced state without a spawned child.
+    next_child_id = orch._db.next_task_id()
+    chain.step_index = action.next_step_index
+    orch._db.update_task_active_chain(parent_task_id, chain.serialize())
+
+    next_child = TaskRecord(
+        id=next_child_id,
+        team=parent.team,
+        brief=full_brief,
+        parent_task_id=parent_task_id,
+        assigned_agent=action.next_leg.agent,
+        status=TaskStatus.PENDING,
+        session_timeout_seconds=parent.session_timeout_seconds,
+        task_type="subtask",
     )
+    try:
+        if chain_att_params:
+            orch._db.insert_task_with_attachments(
+                next_child, chain_att_params, uploaded_by="orchestrator",
+            )
+        else:
+            orch._db.insert_task(next_child)
+    except Exception:
+        # Child insert/link/audit failed — clear advanced chain state so
+        # the parent can wake and no partial advance is left behind.
+        orch._db.update_task_active_chain(parent_task_id, None)
+        return "wake"
 
     orch._audit.log_chain_auto_advance(
         parent_task_id=parent_task_id,
@@ -2565,6 +2713,84 @@ def _spawn_fanout_children(
             task_type=child_task_type,
         ))
 
+    # THR-109: validate attachment refs per-child (count limit, per-child
+    # duplicates) and globally (cross-sibling duplicate keys, existence,
+    # claim status). Pipeline carriers own their declared refs; their first
+    # legs inherit.
+    #
+    # Two-pass validation:
+    # 1. Per-child: validate each child's refs normally (count ≤ 5, no
+    #    intra-child duplicates, file exists, not claimed).
+    # 2. Cross-sibling: detect duplicate storage keys across children.
+    #    The per-child pass already validates existence and claim status
+    #    for every key — no second existence/claim pass is needed.
+    children_att_params: list[list[dict] | None] = []
+    has_any_attachments = any(
+        child_info.get("attachments") for child_info in children
+    )
+    if has_any_attachments:
+        import json
+        from runtime.infrastructure.task_attachment_store import (
+            TaskAttachmentStore,
+            validate_task_attachment_refs,
+        )
+        from runtime.models import TaskAttachmentRef
+        store = TaskAttachmentStore(orch._paths.task_attachments_dir)
+
+        # Pass 1: per-child validation (count, intra-child duplicates,
+        # existence, claim status).
+        per_child_prevalidated: list[list[dict]] = []
+        all_keys: set[str] = set()
+        try:
+            for child_info in children:
+                child_refs_raw = child_info.get("attachments") or []
+                if not child_refs_raw:
+                    per_child_prevalidated.append([])
+                    continue
+                refs = [TaskAttachmentRef(
+                    storage_key=r["storage_key"],
+                    display_name=r.get("display_name"),
+                ) for r in child_refs_raw]
+                # Per-child count limit + intra-child duplicates + existence
+                # + claim status are all checked here.
+                child_pv = validate_task_attachment_refs(
+                    store=store, db=db, refs=refs,
+                )
+                per_child_prevalidated.append(child_pv)
+                # Track keys for cross-sibling duplicate detection.
+                for ref in refs:
+                    if ref.storage_key in all_keys:
+                        raise ValueError(json.dumps({
+                            "code": "duplicate_attachment",
+                            "storage_key": ref.storage_key,
+                        }))
+                    all_keys.add(ref.storage_key)
+        except ValueError as e:
+            import json as _json
+            error_detail = _json.loads(str(e))
+            note = (
+                f"fanout attachment validation failed: "
+                f"{error_detail.get('code', 'unknown')} "
+                f"({error_detail.get('storage_key', '')})"
+            )
+            _fail(orch, task_id, note=note)
+            _enqueue_parent_if_waiting(orch, task_id)
+            _maybe_post_thread_followup(
+                orch, task_id,
+                status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            )
+            return
+
+        # Build per-child params from the per-child prevalidated lists.
+        for child_pv in per_child_prevalidated:
+            if not child_pv:
+                children_att_params.append(None)
+            else:
+                child_params = _prepare_attachment_params(orch, child_pv)
+                children_att_params.append(child_params)
+    else:
+        children_att_params = [None] * len(children)
+
     # Build FanoutState BEFORE the atomic insert so it's ready to persist.
     fanout_state = FanoutState(
         children_ids=children_ids,
@@ -2582,13 +2808,73 @@ def _spawn_fanout_children(
         )
     )
 
+    # Build pipeline carrier chain data BEFORE the atomic transaction.
+    # Carrier chains are materialized inside try_delegate_many so active_chain
+    # + first leg are atomic with the fanout spawn — no partial carrier state.
+    carrier_chains_data: list[dict] | None = None
+    pipeline_indices: set[int] = set()
+    # First leg IDs start after the last child ID. Use base_num + len(children)
+    # (not another next_task_id() call — children aren't inserted yet so MAX
+    # hasn't moved).
+    carrier_leg_offset = 0
+    for i, child_info in enumerate(children):
+        has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
+        if not has_pipeline:
+            continue
+        pipeline_indices.add(i)
+        # Build the carrier chain and first leg data.
+        from runtime.orchestrator.chain import ChainState
+        from runtime.models import ChainLeg, TaskAttachmentRef
+        then_legs = [
+            ChainLeg(
+                agent=leg["agent"], prompt=leg["prompt"],
+                expect_verdict=leg.get("expect_verdict"),
+                attachments=[TaskAttachmentRef(
+                    storage_key=a["storage_key"],
+                    display_name=a.get("display_name"),
+                ) for a in leg.get("attachments", []) or []],
+            )
+            for leg in child_info.get("then", []) or []
+        ]
+        carrier_chain = ChainState(
+            step_index=0,
+            first_leg_expect_verdict=child_info.get("expect_verdict"),
+            legs=then_legs,
+            step_audit_id=step_audit_id or 0,
+        )
+        first_leg_id = f"TASK-{base_num + len(children) + carrier_leg_offset:03d}"
+        carrier_leg_offset += 1
+        first_leg_data = {
+            "id": first_leg_id,
+            "team": parent.team,
+            "brief": child_info["prompt"] or "",
+            "assigned_agent": child_info["agent"],
+            "status": TaskStatus.PENDING,
+            "session_timeout_seconds": parent.session_timeout_seconds,
+            "task_type": "subtask",
+            "revision_count": 0,
+            "orchestration_step_count": 0,
+        }
+        if carrier_chains_data is None:
+            carrier_chains_data = []
+        carrier_chains_data.append({
+            "child_index": i,
+            "active_chain_json": carrier_chain.serialize(),
+            "first_leg": first_leg_data,
+            "first_leg_id": first_leg_id,
+        })
+
     # Atomic insert-N + parent transition under a single explicit SQL
-    # transaction. active_fanout is written in the same transaction as
-    # child inserts + parent park — no crash gap between spawn and
-    # metadata persistence.
+    # transaction. active_fanout, carrier active_chain, and first-leg inserts
+    # are all written in the same transaction as child inserts + parent park +
+    # attachment links/audit — no crash gap between spawn and metadata
+    # persistence. Any failure rolls back everything.
     if not db.try_delegate_many(
         task_id, child_records, parent_note=parent_note,
         active_fanout_json=fanout_state.serialize(),
+        children_attachments=children_att_params,
+        carrier_chains=carrier_chains_data,
+        uploaded_by=manager_agent,
     ):
         logger.debug(
             "run_step %s: cancelled between re-check and fanout spawn, dropping",
@@ -2603,55 +2889,20 @@ def _spawn_fanout_children(
         children_ids=children_ids,
     )
 
-    # Post-insert: materialize carrier chains for pipeline children.
-    # MUST happen BEFORE enqueueing any first leg — a fast worker could
-    # otherwise complete and reach _enqueue_parent_if_waiting while the
-    # carrier's active_chain is still NULL (same race as inline chains).
+    # Enqueue: plain children go directly to the queue; pipeline carriers'
+    # first legs are enqueued instead (carriers themselves never run sessions).
     for i, child_info in enumerate(children):
         cid = children_ids[i]
-        has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
+        has_pipeline = i in pipeline_indices
         if not has_pipeline:
-            # Plain child: enqueue directly (Phase 1 behavior, unchanged).
             if orch._queue is not None:
                 orch._queue.put_nowait(orch._slug, cid)
             continue
-
-        # Pipeline carrier: materialize chain on the child.
-        # Reuses the same ChainState builder as inline delegate chains (~:718-740).
-        from runtime.orchestrator.chain import ChainState
-        from runtime.models import ChainLeg
-        then_legs = [
-            ChainLeg(
-                agent=leg["agent"], prompt=leg["prompt"],
-                expect_verdict=leg.get("expect_verdict"),
-            )
-            for leg in child_info.get("then", []) or []
-        ]
-        carrier_chain = ChainState(
-            step_index=0,
-            first_leg_expect_verdict=child_info.get("expect_verdict"),
-            legs=then_legs,
-            step_audit_id=step_audit_id or 0,
-        )
-        db.update_task_active_chain(cid, carrier_chain.serialize())
-
-        # Create and insert the first leg of the carrier's chain.
-        first_leg_id = db.next_task_id()
-        first_leg = TaskRecord(
-            id=first_leg_id,
-            team=parent.team,
-            brief=child_info["prompt"] or "",
-            assigned_agent=child_info["agent"],
-            parent_task_id=cid,
-            status=TaskStatus.PENDING,
-            session_timeout_seconds=parent.session_timeout_seconds,
-            task_type="subtask",
-        )
-        db.insert_task(first_leg)
-
-        # Enqueue the first leg (NOT the carrier itself).
-        if orch._queue is not None:
-            orch._queue.put_nowait(orch._slug, first_leg_id)
+        # Find the carrier's first leg id from the pre-allocated data.
+        for cc in (carrier_chains_data or []):
+            if cc["child_index"] == i:
+                if orch._queue is not None:
+                    orch._queue.put_nowait(orch._slug, cc["first_leg_id"])
 
 
 def _inject_fanout_join_context(

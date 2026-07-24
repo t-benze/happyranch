@@ -1554,7 +1554,7 @@ def test_run_step_delegate_atomic_against_cancel_between_recheck_and_cas(
     # re-checks but BEFORE the CAS write. The atomic SELECT inside try_delegate
     # should observe the cancel and return False.
     real_try_delegate = db.try_delegate
-    def racy_try_delegate(parent_id, child, *, parent_note):
+    def racy_try_delegate(parent_id, child, *, parent_note, attachments=None, uploaded_by="orchestrator"):
         # Simulate founder cancel landing just before the CAS SELECT.
         now = datetime.now(timezone.utc).isoformat()
         db.update_task(
@@ -1563,7 +1563,8 @@ def test_run_step_delegate_atomic_against_cancel_between_recheck_and_cas(
             note="cancelled by founder: stop",
             cancelled_at=now, completed_at=now,
         )
-        return real_try_delegate(parent_id, child, parent_note=parent_note)
+        return real_try_delegate(parent_id, child, parent_note=parent_note,
+                                  attachments=attachments, uploaded_by=uploaded_by)
     monkeypatch.setattr(db, "try_delegate", racy_try_delegate)
 
     orch.run_step("T-RACE2")

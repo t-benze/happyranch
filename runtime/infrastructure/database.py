@@ -1956,23 +1956,40 @@ class Database:
     def try_delegate_many(
         self, parent_id: str, children: list, *, parent_note: str,
         active_fanout_json: str | None = None,
+        children_attachments: list[list[dict] | None] | None = None,
+        carrier_chains: list[dict] | None = None,
+        uploaded_by: str = "orchestrator",
     ) -> bool:
         """Atomic CAS: insert N child tasks + transition parent to
         IN_PROGRESS(DELEGATED) under a single explicit SQL transaction.
 
         All child inserts, parent status/block_kind/active_fanout update,
-        and note write happen in one transaction. On any exception the
-        transaction rolls back — no partial children, no orphan rows.
+        note write, attachment links/audit rows, and pipeline carrier chain
+        materialization (active_chain + first leg insert) happen in one
+        transaction. On any exception the transaction rolls back — no partial
+        children, no orphan rows, no orphan attachment links, no orphan
+        carrier state.
 
         Same cancel-race semantics as try_delegate (single-child): if the
         parent is cancelled or already terminal at the time of the guarded
         SELECT, no children are inserted and the parent is not overwritten.
 
-        On True: all children exist and parent has transitioned.
-        On False: no DB changes were made.
+        When ``children_attachments`` is provided, it must be a list of the
+        same length as ``children``; each element is either a list of
+        attachment param dicts for that child, or None/empty.
+
+        When ``carrier_chains`` is provided, it must be a list of dicts with
+        keys ``child_index`` (int), ``active_chain_json`` (str), and
+        ``first_leg`` (dict with keys: id, team, brief, assigned_agent,
+        status, session_timeout_seconds, task_type). The first leg is
+        inserted as a child of the carrier within the same transaction.
+
+        On True: all children (and carrier first legs) exist and parent has
+        transitioned.  On False: no DB changes were made.
 
         Children must already have their IDs allocated (caller calls
-        next_task_id() N times before invoking this method).
+        next_task_id() N times before invoking this method). Carrier first
+        leg IDs must also be pre-allocated.
         """
         cursor = self._conn.execute(
             "SELECT status, cancelled_at FROM tasks WHERE id = ?", (parent_id,)
@@ -1988,7 +2005,7 @@ class Database:
         try:
             # One explicit transaction: all child inserts + parent transition.
             self._conn.execute("BEGIN IMMEDIATE")
-            for child in children:
+            for i, child in enumerate(children):
                 self._conn.execute(
                     """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                        revision_count, created_at, updated_at, completed_at, parent_task_id,
@@ -2017,6 +2034,55 @@ class Database:
                         child.active_fanout,
                     ),
                 )
+                # Insert attachment links for this child if present.
+                child_atts = None
+                if children_attachments and i < len(children_attachments):
+                    child_atts = children_attachments[i]
+                if child_atts:
+                    self._insert_task_attachments_txn(
+                        child.id, child_atts, uploaded_by,
+                    )
+            # Materialize pipeline carrier chains within the same transaction.
+            # active_chain on the carrier + first leg insert as child of carrier
+            # are atomic with the fanout spawn — no partial carrier state.
+            if carrier_chains:
+                for cc in carrier_chains:
+                    ci = cc["child_index"]
+                    cid = children[ci].id
+                    self._conn.execute(
+                        "UPDATE tasks SET active_chain = ? WHERE id = ?",
+                        (cc["active_chain_json"], cid),
+                    )
+                    fl = cc["first_leg"]
+                    self._conn.execute(
+                        """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                           revision_count, created_at, updated_at, completed_at,
+                           parent_task_id, revisit_of_task_id, dispatched_from_thread_id,
+                           block_kind, note,
+                           orchestration_step_count, session_timeout_seconds, task_type,
+                           active_fanout)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            fl["id"],
+                            fl["status"].value if isinstance(fl["status"], TaskStatus) else fl["status"],
+                            fl["assigned_agent"],
+                            fl["team"],
+                            fl["brief"],
+                            fl.get("revision_count", 0),
+                            fl.get("created_at", now),
+                            fl.get("updated_at", now),
+                            None,
+                            cid,
+                            None,
+                            None,
+                            None,
+                            None,
+                            fl.get("orchestration_step_count", 0),
+                            fl.get("session_timeout_seconds", 0),
+                            fl.get("task_type", "subtask"),
+                            None,
+                        ),
+                    )
             self._conn.execute(
                 """UPDATE tasks
                    SET status = ?, block_kind = ?, note = ?, active_fanout = ?, updated_at = ?
@@ -2198,6 +2264,8 @@ class Database:
     @_synchronized
     def try_delegate(
         self, parent_id: str, child: TaskRecord, *, parent_note: str,
+        attachments: list[dict] | None = None,
+        uploaded_by: str = "orchestrator",
     ) -> bool:
         """Atomic CAS: insert child task + transition parent to
         IN_PROGRESS(DELEGATED) (Path B: a parent waiting on its own children is
@@ -2214,6 +2282,10 @@ class Database:
         - us before cancel: cancel sees parent in in_progress(delegated), transitions
           to FAILED, and its cascade walks our newly-inserted child for cleanup
 
+        When ``attachments`` is provided, attachment links + audit rows
+        are inserted in the same transaction as the child task. A duplicate
+        storage_key raises sqlite3.IntegrityError (rolled back by caller).
+
         On True: parent has transitioned and child exists.
         On False: no DB changes were made (no orphan child, no parent overwrite).
         """
@@ -2227,20 +2299,57 @@ class Database:
             "completed", "failed", "superseded",
         ):
             return False
-        # Both writes under same RLock — atomic vs cancel route.
-        # insert_task() commits, but the lock is still held until this method
-        # returns, so no other writer can interleave between insert and update.
-        self.insert_task(child)
-        now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            """UPDATE tasks
-               SET status = ?, block_kind = ?, note = ?, updated_at = ?
-               WHERE id = ?""",
-            (TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value, parent_note,
-             now, parent_id),
-        )
-        self._conn.commit()
-        return True
+        # Single transaction: child insert + attachment links/audit + parent update.
+        try:
+            now_ts = datetime.now(timezone.utc).isoformat()
+            self._conn.execute(
+                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                   revision_count, created_at, updated_at, completed_at, parent_task_id,
+                   revisit_of_task_id, dispatched_from_thread_id,
+                   block_kind, note,
+                   orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
+                   current_session_id, zombie_flagged_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    child.id,
+                    child.status.value,
+                    child.assigned_agent,
+                    child.team,
+                    child.brief,
+                    child.revision_count,
+                    child.created_at.isoformat(),
+                    child.updated_at.isoformat(),
+                    child.completed_at.isoformat() if child.completed_at else None,
+                    child.parent_task_id,
+                    child.revisit_of_task_id,
+                    child.dispatched_from_thread_id,
+                    child.block_kind.value if child.block_kind else None,
+                    child.note,
+                    child.orchestration_step_count,
+                    child.session_timeout_seconds,
+                    child.task_type,
+                    child.active_fanout,
+                    child.current_session_id,
+                    child.zombie_flagged_at.isoformat() if child.zombie_flagged_at else None,
+                ),
+            )
+            if attachments:
+                self._insert_task_attachments_txn(
+                    child.id, attachments, uploaded_by,
+                )
+            now = datetime.now(timezone.utc).isoformat()
+            self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = ?, note = ?, updated_at = ?
+                   WHERE id = ?""",
+                (TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value, parent_note,
+                 now, parent_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def increment_revision_count(self, task_id: str) -> None:
@@ -4117,6 +4226,57 @@ class Database:
         except Exception:
             self._conn.rollback()
             raise
+
+    def _insert_task_attachments_txn(
+        self, task_id: str, attachments: list[dict], uploaded_by: str,
+    ) -> None:
+        """Insert attachment links + audit rows within an existing transaction.
+
+        Caller MUST have already started a transaction (BEGIN IMMEDIATE) and
+        MUST be holding the @_synchronized lock. Does NOT commit — the caller
+        owns the transaction lifecycle.
+
+        Raises sqlite3.IntegrityError on duplicate storage_key.
+        """
+        now = _now().isoformat()
+        for att in attachments:
+            existing = self._conn.execute(
+                "SELECT 1 FROM task_attachments WHERE storage_key = ?",
+                (att["storage_key"],),
+            ).fetchone()
+            if existing is not None:
+                raise sqlite3.IntegrityError(
+                    "UNIQUE constraint failed: "
+                    f"task_attachments.storage_key: {att['storage_key']}"
+                )
+            self._conn.execute(
+                "INSERT INTO task_attachments "
+                "(task_id, ordinal, storage_key, display_name, size_bytes, "
+                "content_type, uploaded_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    task_id,
+                    att["ordinal"],
+                    att["storage_key"],
+                    att["display_name"],
+                    att["size_bytes"],
+                    att["content_type"],
+                    uploaded_by,
+                    now,
+                ),
+            )
+            audit_ts = _now().isoformat()
+            audit_payload = json.dumps({
+                "storage_key": att["storage_key"],
+                "display_name": att["display_name"],
+                "content_type": att["content_type"],
+                "uploaded_by": uploaded_by,
+            })
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (task_id, uploaded_by, "task_attachment_added", audit_payload, audit_ts),
+            )
 
     @_synchronized
     def get_task_attachment(
