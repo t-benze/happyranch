@@ -9,6 +9,7 @@ through parent_task_id may have the bytes materialized.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -232,3 +233,103 @@ class TaskAttachmentStore:
         path = self.path_for(storage_key)
         if path.exists() and not path.is_dir():
             path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Shared validation helper — used by both the daemon POST /tasks route and
+# the orchestrator's decision-attachment paths (delegate / chain / fanout).
+# ---------------------------------------------------------------------------
+
+
+def validate_task_attachment_refs(
+    *,
+    store: TaskAttachmentStore,
+    db,  # Database (protocol: .get_task_attachment_by_storage_key(str) -> Record|None)
+    refs: list,
+    skip_count_check: bool = False,
+    external_seen_keys: set[str] | None = None,
+) -> list[dict]:
+    """Validate a list of attachment refs for a decision-attachment path.
+
+    Reuses the same semantics as POST /tasks (THR-109):
+    - Count limit (skipped when ``skip_count_check=True`` — caller handles
+      per-child count separately, e.g. fanout validation)
+    - Duplicate storage_key within the batch, AND vs. ``external_seen_keys``
+      when provided (enables decision-wide / fanout-wide duplicate detection)
+    - File existence on disk
+    - Not already claimed in the DB
+    - Display name sanitisation
+    - Content type resolution
+
+    Returns a list of prevalidated attachment param dicts with keys
+    ``{storage_key, display_name, content_type}``. File size is NOT
+    populated here — the re-check inside the transactional claim step
+    reads it at persist time.
+
+    Raises ValueError with a JSON-encoded error dict on any validation
+    failure (same structured error shape as the daemon route).
+
+    Caller is responsible for atomic claim+persist across all refs within
+    a single transaction.
+    """
+    if not refs:
+        return []
+
+    if not skip_count_check and len(refs) > MAX_TASK_ATTACHMENTS_PER_TASK:
+        raise ValueError(json.dumps({
+            "code": "too_many_attachments",
+            "max": MAX_TASK_ATTACHMENTS_PER_TASK,
+        }))
+
+    seen_keys: set[str] = set(external_seen_keys) if external_seen_keys else set()
+    prevalidated: list[dict] = []
+
+    for ref in refs:
+        if ref.storage_key in seen_keys:
+            raise ValueError(json.dumps({
+                "code": "duplicate_attachment",
+                "storage_key": ref.storage_key,
+            }))
+        seen_keys.add(ref.storage_key)
+
+        # Verify the storage_key exists in the file store.
+        path = store.path_for(ref.storage_key)
+        if not path.exists() or path.is_dir():
+            raise ValueError(json.dumps({
+                "code": "task_attachment_not_found",
+                "storage_key": ref.storage_key,
+            }))
+
+        # Reject if already claimed by another task.
+        existing = db.get_task_attachment_by_storage_key(ref.storage_key)
+        if existing is not None:
+            raise ValueError(json.dumps({
+                "code": "attachment_already_claimed",
+                "storage_key": ref.storage_key,
+                "task_id": existing.task_id,
+            }))
+
+        # Validate display name.
+        display_name = ref.display_name or "attachment"
+        try:
+            sanitize_display_name(display_name)
+        except TaskAttachmentInvalidName:
+            raise ValueError(json.dumps({
+                "code": "invalid_attachment_display_name",
+            }))
+
+        # Resolve content type.
+        try:
+            content_type = resolve_content_type(display_name, None)
+        except TaskAttachmentUnsupportedType:
+            raise ValueError(json.dumps({
+                "code": "unsupported_attachment_type",
+            }))
+
+        prevalidated.append({
+            "storage_key": ref.storage_key,
+            "display_name": display_name,
+            "content_type": content_type,
+        })
+
+    return prevalidated

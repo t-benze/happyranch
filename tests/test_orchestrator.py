@@ -1,3 +1,4 @@
+import json
 import re
 from unittest.mock import MagicMock, patch
 
@@ -1187,3 +1188,1349 @@ def test_cleanup_noop_when_dir_missing(test_settings, test_runtime):
 
     from runtime.orchestrator.orchestrator import _cleanup_session_attachments
     _cleanup_session_attachments(workspace, session_id)  # no exception
+
+
+# ── THR-109 decision attachment tests ──────────────────────────────────
+
+_ENGINEERING_TEAMS = (
+    "teams:\n"
+    "  engineering:\n"
+    "    manager: engineering_head\n"
+    "    workers: [product_manager, dev_agent, payment_agent, qa_engineer, senior_dev]\n"
+)
+
+
+def _ensure_teams(test_runtime) -> None:
+    test_runtime.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    test_runtime.teams_config_path.write_text(_ENGINEERING_TEAMS)
+
+
+def _setup_orch(test_runtime, db, settings):
+    """Create an Orchestrator ready for run_step testing."""
+    import asyncio
+    from runtime.orchestrator.teams import TeamsRegistry
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _ensure_teams(test_runtime)
+    for name in ("engineering_head", "dev_agent", "qa_engineer", "senior_dev"):
+        (test_runtime.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
+
+    teams = TeamsRegistry.load(test_runtime.root)
+    orch = Orchestrator(db=db, settings=settings, paths=test_runtime, slug="test", teams=teams)
+
+    class Q:
+        def __init__(self): self._q = asyncio.Queue()
+        def put_nowait(self, s, t): self._q.put_nowait((s, t))
+    orch._queue = Q()
+    return orch
+
+
+class TestDecisionAttachments:
+    """Tests for THR-109 manager-originated task attachments in decisions."""
+
+    def test_delegate_attachment_persists(self, test_settings, test_runtime):
+        """Direct delegate ref persists as child's own link."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, NextStep
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+        from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-DEL-ATT"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("da-key", b"data")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+        scripted = ScriptedRunAgent()
+        orch._run_agent = scripted
+
+        decision = NextStep(action="delegate", agent="dev_agent", prompt="build",
+                           attachments=[{"storage_key": "da-key", "display_name": "spec.png"}])
+        scripted.enqueue("engineering_head", decision=decision, summary="delegating")
+        scripted.enqueue("dev_agent", summary="done")
+        scripted.enqueue("engineering_head",
+                        decision=NextStep(action="done", summary="all done"),
+                        summary="wrap up")
+
+        run_task_to_completion(orch, task_id=pid)
+        children = db.get_children(pid)
+        assert len(children) >= 1
+        child_id = children[0]
+        att = db.get_task_attachment(child_id, "da-key")
+        assert att is not None, "Child should have its own attachment link"
+
+    def test_missing_attachment_rejects_no_child(self, test_settings, test_runtime):
+        """Invalid attachment ref rejects entire decision before child spawn."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, NextStep
+        from runtime.infrastructure.database import Database
+        from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-INV-ATT"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        orch = _setup_orch(test_runtime, db, test_settings)
+        scripted = ScriptedRunAgent()
+        orch._run_agent = scripted
+
+        decision = NextStep(action="delegate", agent="dev_agent", prompt="build",
+                           attachments=[{"storage_key": "nonexistent"}])
+        scripted.enqueue("engineering_head", decision=decision, summary="wont work")
+
+        run_task_to_completion(orch, task_id=pid)
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert len(db.get_children(pid)) == 0
+
+    def test_delegate_no_attachments_still_works(self, test_settings, test_runtime):
+        """Delegation without attachments works identically to before."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, NextStep
+        from runtime.infrastructure.database import Database
+        from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-NOATT"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        orch = _setup_orch(test_runtime, db, test_settings)
+        scripted = ScriptedRunAgent()
+        orch._run_agent = scripted
+
+        decision = NextStep(action="delegate", agent="dev_agent", prompt="build")
+        scripted.enqueue("engineering_head", decision=decision, summary="delegating")
+        scripted.enqueue("dev_agent", summary="done")
+        scripted.enqueue("engineering_head",
+                        decision=NextStep(action="done", summary="all done"),
+                        summary="wrap up")
+
+        run_task_to_completion(orch, task_id=pid)
+        children = db.get_children(pid)
+        assert len(children) == 1
+        assert len(db.list_task_attachments(children[0])) == 0
+
+    def test_try_delegate_atomic_rollback_on_dup_attachment(self, test_settings, test_runtime):
+        """Duplicate storage_key in try_delegate rolls back child + attachments."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+
+        pid = "T-ATOMIC"
+        db.insert_task(TaskRecord(id=pid, brief="root", team="engineering",
+                                   created_at=now, updated_at=now))
+        # Pre-claim the key
+        other_id = "T-OTHER"
+        db.insert_task(TaskRecord(id=other_id, brief="other", team="engineering",
+                                   created_at=now, updated_at=now))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("atom-dup", b"x")
+        db.insert_task_attachment(task_id=other_id, ordinal=0, storage_key="atom-dup",
+                                   display_name="x.png", size_bytes=1,
+                                   content_type="image/png", uploaded_by="founder")
+
+        child = TaskRecord(id="T-ATOMIC-C", team="engineering", brief="child",
+                           assigned_agent="dev_agent", parent_task_id=pid,
+                           status=TaskStatus.PENDING, created_at=now, updated_at=now)
+        try:
+            db.try_delegate(pid, child, parent_note="test",
+                          attachments=[{"ordinal": 0, "storage_key": "atom-dup",
+                                       "display_name": "x.png", "size_bytes": 1,
+                                       "content_type": "image/png"}],
+                          uploaded_by="test")
+        except Exception:
+            pass
+        assert db.get_task("T-ATOMIC-C") is None, "Child must not exist after rollback"
+        assert db.get_task(pid).status == TaskStatus.PENDING
+
+    def test_chain_leg_attachment_persists(self, test_settings, test_runtime):
+        """Chain leg attachments persist when auto-advancing."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, ChainLeg
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+        from runtime.orchestrator.chain import ChainState
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-CHN-ATT"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("chain-key", b"ck")
+        _ensure_teams(test_runtime)
+
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.orchestrator import Orchestrator
+        teams = TeamsRegistry.load(test_runtime.root)
+        orch = Orchestrator(db=db, settings=test_settings, paths=test_runtime,
+                           slug="test", teams=teams)
+
+        # Simulate chain state: first leg (step_index=0) just completed.
+        # The completed child has verdict APPROVE matching first_leg_expect_verdict.
+        chain = ChainState(
+            step_index=0, first_leg_expect_verdict="APPROVE",
+            legs=[ChainLeg(agent="qa_engineer", prompt="review",
+                          expect_verdict="PASS",
+                          attachments=[{"storage_key": "chain-key", "display_name": "review.md"}])],
+            step_audit_id=1,
+        )
+        db.update_task_active_chain(pid, chain.serialize())
+        child1_id = "T-CHN-C1"
+        db.insert_task(TaskRecord(
+            id=child1_id, brief="first leg", team="engineering",
+            assigned_agent="senior_dev", parent_task_id=pid,
+            status=TaskStatus.COMPLETED, created_at=now, updated_at=now,
+        ))
+        db.insert_task_result(task_id=child1_id, agent="senior_dev", session_id="s1",
+                              status="completed", confidence_score=90,
+                              output_summary="done", verdict="APPROVE")
+
+        from runtime.orchestrator.run_step import _advance_chain_for_completed_child
+        result = _advance_chain_for_completed_child(orch=orch, parent_task_id=pid,
+                                                     child_task_id=child1_id)
+        assert result == "advance"
+        children = db.get_children(pid)
+        assert len(children) == 2
+        child2_id = [c for c in children if c != child1_id][0]
+        att = db.get_task_attachment(child2_id, "chain-key")
+        assert att is not None, "Chain leg child should have its own attachment link"
+
+    def test_fanout_child_attachments_persist(self, test_settings, test_runtime):
+        """Fanout children persist their declared attachments."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-FAN-ATT"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("fan-k1", b"f1")
+        store.put("fan-k2", b"f2")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+
+        from runtime.orchestrator.run_step import _spawn_fanout_children
+        children_payload = [
+            {"agent": "dev_agent", "prompt": "task A",
+             "attachments": [{"storage_key": "fan-k1", "display_name": "a.png"}]},
+            {"agent": "qa_engineer", "prompt": "task B",
+             "attachments": [{"storage_key": "fan-k2", "display_name": "b.png"}]},
+        ]
+        _spawn_fanout_children(orch, parent=db.get_task(pid),
+                               task_id=pid, next_count=1,
+                               children=children_payload, width=2,
+                               manager_agent="engineering_head")
+
+        children = db.get_children(pid)
+        assert len(children) == 2
+        assert db.get_task_attachment(children[0], "fan-k1") is not None
+        assert db.get_task_attachment(children[1], "fan-k2") is not None
+
+    def test_fanout_duplicate_keys_across_siblings_rejected(self, test_settings, test_runtime):
+        """Duplicate storage keys across fanout siblings reject entire fanout."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-FAN-DUP"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("fan-dup-key", b"dup")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+
+        from runtime.orchestrator.run_step import _spawn_fanout_children
+        children_payload = [
+            {"agent": "dev_agent", "prompt": "task A",
+             "attachments": [{"storage_key": "fan-dup-key", "display_name": "a.png"}]},
+            {"agent": "qa_engineer", "prompt": "task B",
+             "attachments": [{"storage_key": "fan-dup-key", "display_name": "b.png"}]},
+        ]
+        _spawn_fanout_children(orch, parent=db.get_task(pid),
+                               task_id=pid, next_count=1,
+                               children=children_payload, width=2,
+                               manager_agent="engineering_head")
+
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert parent.active_fanout is None
+        assert len(db.get_children(pid)) == 0
+
+    def test_pipeline_carrier_attachment_inheritance(self, test_settings, test_runtime):
+        """Pipeline carrier owns refs; first leg inherits via ancestor resolution."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-PIPE"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("pipe-key", b"pk")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+
+        from runtime.orchestrator.run_step import _spawn_fanout_children
+        children_payload = [
+            {"agent": "senior_dev", "prompt": "review",
+             "expect_verdict": "APPROVE",
+             "then": [{"agent": "qa_engineer", "prompt": "qa", "expect_verdict": "PASS"}],
+             "attachments": [{"storage_key": "pipe-key", "display_name": "spec.md"}]},
+        ]
+        _spawn_fanout_children(orch, parent=db.get_task(pid),
+                               task_id=pid, next_count=1,
+                               children=children_payload, width=1,
+                               manager_agent="engineering_head")
+
+        children = db.get_children(pid)
+        assert len(children) == 1
+        carrier_id = children[0]
+        assert db.get_task_attachment(carrier_id, "pipe-key") is not None
+
+        # First leg must NOT have its own duplicate link
+        carrier_children = db.get_children(carrier_id)
+        assert len(carrier_children) == 1
+        first_leg_id = carrier_children[0]
+        assert db.get_task_attachment(first_leg_id, "pipe-key") is None
+
+        # But ancestor resolution should include the carrier's attachment
+        ancestor_keys = [a.storage_key for a in db.resolve_ancestor_attachments(first_leg_id)]
+        assert "pipe-key" in ancestor_keys
+
+    def test_parent_inheritance_unchanged(self, test_settings, test_runtime):
+        """Existing parent attachment inheritance is unchanged."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        for tid, pt in [("T-INH-R", None), ("T-INH-P", "T-INH-R"), ("T-INH-C", "T-INH-P")]:
+            db.insert_task(TaskRecord(id=tid, brief=tid, team="engineering",
+                                       parent_task_id=pt, created_at=now, updated_at=now))
+
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("inh-key", b"inh")
+        db.insert_task_attachment(task_id="T-INH-R", ordinal=0, storage_key="inh-key",
+                                   display_name="root.png", size_bytes=3,
+                                   content_type="image/png", uploaded_by="founder")
+
+        ancestor_keys = [a.storage_key for a in db.resolve_ancestor_attachments("T-INH-C")]
+        assert "inh-key" in ancestor_keys
+
+    # --- Reviewer-requested regression tests (TASK-3325) ---
+
+    def test_invalid_later_chain_ref_with_empty_direct_leaves_zero_state(
+        self, test_settings, test_runtime,
+    ):
+        """Chain with empty direct attachments but invalid later-leg ref
+        must reject before spawning first child / parking parent / writing
+        active_chain. Zero state is left behind."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, NextStep
+        from runtime.infrastructure.database import Database
+        from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-LATE-INV"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        orch = _setup_orch(test_runtime, db, test_settings)
+        scripted = ScriptedRunAgent()
+        orch._run_agent = scripted
+
+        # Direct leg has NO attachments, but later chain leg references
+        # a nonexistent key. The whole decision must be rejected before
+        # anything is spawned.
+        from runtime.models import ChainLeg
+        decision = NextStep(
+            action="delegate", agent="dev_agent", prompt="build",
+            then=[
+                ChainLeg(agent="qa_engineer", prompt="qa",
+                         attachments=[{"storage_key": "nonexistent-chain"}]),
+            ],
+        )
+        scripted.enqueue("engineering_head", decision=decision, summary="delegating")
+
+        run_task_to_completion(orch, task_id=pid)
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert parent.active_chain is None
+        assert len(db.get_children(pid)) == 0
+
+    def test_chain_attachment_claim_failure_rolls_back_advanced_state(
+        self, test_settings, test_runtime,
+    ):
+        """Chain advancer with validation-passing but claim-failing
+        attachments must clear advanced chain state — no child, no link,
+        no audit, no queue entry."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, ChainLeg
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+        from runtime.orchestrator.chain import ChainState
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-CHN-CLM"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("chn-claim", b"cc")
+        # Pre-claim the key so the chain leg insert fails on UNIQUE.
+        other_id = "T-CHN-OTH"
+        db.insert_task(TaskRecord(id=other_id, brief="other", team="engineering",
+                                   created_at=now, updated_at=now))
+        db.insert_task_attachment(task_id=other_id, ordinal=0, storage_key="chn-claim",
+                                   display_name="x.png", size_bytes=2,
+                                   content_type="image/png", uploaded_by="founder")
+        _ensure_teams(test_runtime)
+
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.orchestrator import Orchestrator
+        teams = TeamsRegistry.load(test_runtime.root)
+        orch = Orchestrator(db=db, settings=test_settings, paths=test_runtime,
+                           slug="test", teams=teams)
+
+        # Set up chain with a leg that has a pre-claimed attachment.
+        chain = ChainState(
+            step_index=0, first_leg_expect_verdict="APPROVE",
+            legs=[ChainLeg(agent="qa_engineer", prompt="review",
+                          expect_verdict="PASS",
+                          attachments=[{"storage_key": "chn-claim",
+                                        "display_name": "x.png"}])],
+            step_audit_id=1,
+        )
+        db.update_task_active_chain(pid, chain.serialize())
+        child1_id = "T-CHN-C1"
+        db.insert_task(TaskRecord(
+            id=child1_id, brief="first leg", team="engineering",
+            assigned_agent="senior_dev", parent_task_id=pid,
+            status=TaskStatus.COMPLETED, created_at=now, updated_at=now,
+        ))
+        db.insert_task_result(task_id=child1_id, agent="senior_dev", session_id="s1",
+                              status="completed", confidence_score=90,
+                              output_summary="done", verdict="APPROVE")
+
+        from runtime.orchestrator.run_step import _advance_chain_for_completed_child
+        result = _advance_chain_for_completed_child(orch=orch, parent_task_id=pid,
+                                                     child_task_id=child1_id)
+        # Validation passes (file exists), but insert_task_with_attachments
+        # fails on duplicate storage_key. Chain is cleared, child not created.
+        assert result == "wake"
+        parent_after = db.get_task(pid)
+        assert parent_after.active_chain is None
+        children = db.get_children(pid)
+        assert len(children) == 1  # only the completed first child
+
+    def test_pipeline_later_leg_refs_persist(self, test_settings, test_runtime):
+        """Pipeline carrier chain leg attachments are preserved in the
+        serialized chain state so later legs receive their own declared refs."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-PIPE-LT"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("pipe-carrier-key", b"pk")
+        store.put("pipe-later-key", b"pl")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+
+        from runtime.orchestrator.run_step import _spawn_fanout_children
+        children_payload = [
+            {"agent": "senior_dev", "prompt": "review",
+             "expect_verdict": "APPROVE",
+             "then": [
+                 {"agent": "qa_engineer", "prompt": "qa", "expect_verdict": "PASS",
+                  "attachments": [{"storage_key": "pipe-later-key",
+                                   "display_name": "qa-checklist.md"}]},
+             ],
+             "attachments": [{"storage_key": "pipe-carrier-key",
+                              "display_name": "spec.md"}]},
+        ]
+        _spawn_fanout_children(orch, parent=db.get_task(pid),
+                               task_id=pid, next_count=1,
+                               children=children_payload, width=1,
+                               manager_agent="engineering_head")
+
+        children = db.get_children(pid)
+        assert len(children) == 1
+        carrier_id = children[0]
+        # Carrier owns its declared ref.
+        assert db.get_task_attachment(carrier_id, "pipe-carrier-key") is not None
+
+        # The serialized chain must contain the later leg's attachment ref.
+        carrier = db.get_task(carrier_id)
+        assert carrier.active_chain is not None
+        chain_data = json.loads(carrier.active_chain)
+        assert len(chain_data["legs"]) == 1
+        leg_0 = chain_data["legs"][0]
+        assert leg_0.get("attachments") is not None
+        assert len(leg_0["attachments"]) == 1
+        assert leg_0["attachments"][0]["storage_key"] == "pipe-later-key"
+
+    def test_valid_multi_child_fanout_per_child_count(self, test_settings, test_runtime):
+        """Fanout with two children each having 3 distinct refs must succeed —
+        per-child count limit (5) applies, not global sum."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-FAN-MANY"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        # 6 distinct keys, 3 per child — per-child count is 3 (≤ 5), global
+        # sum is 6 (> 5 if global limit were enforced).
+        keys = ["fam-a1", "fam-a2", "fam-a3", "fam-b1", "fam-b2", "fam-b3"]
+        for k in keys:
+            store.put(k, b"x")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+
+        from runtime.orchestrator.run_step import _spawn_fanout_children
+        children_payload = [
+            {"agent": "dev_agent", "prompt": "task A",
+             "attachments": [
+                 {"storage_key": "fam-a1", "display_name": "a1.png"},
+                 {"storage_key": "fam-a2", "display_name": "a2.png"},
+                 {"storage_key": "fam-a3", "display_name": "a3.png"},
+             ]},
+            {"agent": "qa_engineer", "prompt": "task B",
+             "attachments": [
+                 {"storage_key": "fam-b1", "display_name": "b1.png"},
+                 {"storage_key": "fam-b2", "display_name": "b2.png"},
+                 {"storage_key": "fam-b3", "display_name": "b3.png"},
+             ]},
+        ]
+        _spawn_fanout_children(orch, parent=db.get_task(pid),
+                               task_id=pid, next_count=1,
+                               children=children_payload, width=2,
+                               manager_agent="engineering_head")
+
+        parent_after = db.get_task(pid)
+        assert parent_after.status == TaskStatus.IN_PROGRESS
+        assert parent_after.active_fanout is not None
+        children = db.get_children(pid)
+        assert len(children) == 2
+        # Each child has its own 3 attachments.
+        for i in range(2):
+            child_atts = db.list_task_attachments(children[i])
+            assert len(child_atts) == 3
+
+    def test_pipeline_carrier_first_leg_collision_rolls_back(
+        self, test_settings, test_runtime,
+    ):
+        """When a pipeline carrier's first-leg INSERT collides with an
+        existing task id, the entire fanout transaction (child, links,
+        parent park, carrier chain) rolls back atomically.
+        Tested via direct try_delegate_many call with carrier_chains."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, TaskStatus, BlockKind
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-PIPE-FL"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("pipe-fl-key", b"pf")
+
+        # Allocate IDs directly. next_task_id() returns MAX+1, so child
+        # gets base_num, first leg gets base_num+1.
+        child_id = db.next_task_id()
+        base_num = int(child_id.split("-")[-1])
+        carrier_id = f"TASK-{base_num:03d}"
+        first_leg_id = f"TASK-{base_num + 1:03d}"
+        child = TaskRecord(
+            id=carrier_id, team="engineering", brief="review",
+            assigned_agent="senior_dev", parent_task_id=pid,
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+            session_timeout_seconds=300, task_type="subtask",
+            created_at=now, updated_at=now,
+        )
+
+        # Pre-insert the first leg ID to force a collision.
+        db._conn.execute(
+            "INSERT INTO tasks (id, status, team, brief, created_at, updated_at) "
+            "VALUES (?, 'pending', 'engineering', 'collision', ?, ?)",
+            (first_leg_id, now.isoformat(), now.isoformat()),
+        )
+        db._conn.commit()
+
+        # Build carrier chain data with the colliding first leg ID.
+        from runtime.orchestrator.chain import ChainState
+        from runtime.models import ChainLeg, TaskAttachmentRef
+        then_legs = [
+            ChainLeg(agent="qa_engineer", prompt="qa", expect_verdict="PASS",
+                     attachments=[TaskAttachmentRef(storage_key="pipe-fl-key",
+                                                    display_name="spec.md")]),
+        ]
+        carrier_chain = ChainState(
+            step_index=0,
+            first_leg_expect_verdict="APPROVE",
+            legs=then_legs,
+            step_audit_id=1,
+        )
+        carrier_chains = [{
+            "child_index": 0,
+            "active_chain_json": carrier_chain.serialize(),
+            "first_leg": {
+                "id": first_leg_id,
+                "team": "engineering",
+                "brief": "review",
+                "assigned_agent": "senior_dev",
+                "status": TaskStatus.PENDING,
+                "session_timeout_seconds": 300,
+                "task_type": "subtask",
+                "revision_count": 0,
+                "orchestration_step_count": 0,
+            },
+            "first_leg_id": first_leg_id,
+        }]
+
+        # Build attachment params.
+        prevalidated = [{"storage_key": "pipe-fl-key", "display_name": "spec.md",
+                          "content_type": "text/markdown"}]
+        from runtime.orchestrator.run_step import _prepare_attachment_params
+        orch = _setup_orch(test_runtime, db, test_settings)
+        child_atts = _prepare_attachment_params(orch, prevalidated)
+
+        # Call try_delegate_many — the first leg INSERT should collide and
+        # the entire transaction should roll back.
+        import sqlite3
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint"):
+            db.try_delegate_many(
+                pid, [child], parent_note="test",
+                children_attachments=[child_atts],
+                carrier_chains=carrier_chains,
+                uploaded_by="test",
+            )
+
+        # Verify nothing was committed.
+        parent_after = db.get_task(pid)
+        assert parent_after.status == TaskStatus.PENDING, \
+            f"Parent should still be PENDING, got {parent_after.status}"
+        assert parent_after.active_fanout is None
+        assert db.get_task(carrier_id) is None
+        # Our pre-inserted row still exists (was committed before the test).
+        assert db.get_task(first_leg_id) is not None
+        # Attachment link must not exist.
+        assert db.get_task_attachment_by_storage_key("pipe-fl-key") is None
+
+    # --- TASK-3333 regression tests: decision-wide validation ---
+
+    def test_direct_and_later_leg_duplicate_key_rejects_entire_decision(
+        self, test_settings, test_runtime,
+    ):
+        """A key in decision.attachments AND decision.then[i].attachments
+        must be caught by decision-wide duplicate detection and reject
+        before any child/spawn/park/chain/queue."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, NextStep, ChainLeg
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+        from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-DIR-DUP"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("dup-key", b"data")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+        scripted = ScriptedRunAgent()
+        orch._run_agent = scripted
+
+        # Same key in both direct and later leg — must reject whole decision.
+        decision = NextStep(
+            action="delegate", agent="dev_agent", prompt="build",
+            attachments=[{"storage_key": "dup-key", "display_name": "a.png"}],
+            then=[
+                ChainLeg(agent="qa_engineer", prompt="qa",
+                         attachments=[{"storage_key": "dup-key", "display_name": "a.png"}]),
+            ],
+        )
+        scripted.enqueue("engineering_head", decision=decision, summary="delegating")
+
+        run_task_to_completion(orch, task_id=pid)
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert parent.active_chain is None
+        assert len(db.get_children(pid)) == 0
+
+    def test_two_later_legs_duplicate_key_rejects_entire_decision(
+        self, test_settings, test_runtime,
+    ):
+        """Same key in two different chain legs rejects before any state."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, NextStep, ChainLeg
+        from runtime.infrastructure.database import Database
+        from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-CHN-DUP"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+        scripted = ScriptedRunAgent()
+        orch._run_agent = scripted
+
+        decision = NextStep(
+            action="delegate", agent="dev_agent", prompt="build",
+            then=[
+                ChainLeg(agent="qa_engineer", prompt="qa",
+                         attachments=[{"storage_key": "leg-key"}]),
+                ChainLeg(agent="code_reviewer", prompt="review",
+                         attachments=[{"storage_key": "leg-key"}]),
+            ],
+        )
+        scripted.enqueue("engineering_head", decision=decision, summary="delegating")
+
+        run_task_to_completion(orch, task_id=pid)
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert parent.active_chain is None
+        assert len(db.get_children(pid)) == 0
+
+    def test_later_leg_missing_attachment_rejects_entire_decision(
+        self, test_settings, test_runtime,
+    ):
+        """A nonexistent key in a chain leg rejects before first child spawn."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, NextStep, ChainLeg
+        from runtime.infrastructure.database import Database
+        from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-CHN-MIS"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+        scripted = ScriptedRunAgent()
+        orch._run_agent = scripted
+
+        decision = NextStep(
+            action="delegate", agent="dev_agent", prompt="build",
+            then=[
+                ChainLeg(agent="qa_engineer", prompt="qa",
+                         attachments=[{"storage_key": "nonexistent-leg"}]),
+            ],
+        )
+        scripted.enqueue("engineering_head", decision=decision, summary="delegating")
+
+        run_task_to_completion(orch, task_id=pid)
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert parent.active_chain is None
+        assert len(db.get_children(pid)) == 0
+
+    def test_later_leg_already_claimed_key_rejects_entire_decision(
+        self, test_settings, test_runtime,
+    ):
+        """An already-claimed key in a chain leg rejects before any child
+        or parent park/chain state."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, NextStep, ChainLeg
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+        from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-CHN-CLM"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("claimed-later", b"cl")
+        # Pre-claim the key
+        other_id = "T-OTHER-CL"
+        db.insert_task(TaskRecord(id=other_id, brief="other", team="engineering",
+                                   created_at=now, updated_at=now))
+        db.insert_task_attachment(task_id=other_id, ordinal=0, storage_key="claimed-later",
+                                   display_name="x.png", size_bytes=1,
+                                   content_type="image/png", uploaded_by="founder")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+        scripted = ScriptedRunAgent()
+        orch._run_agent = scripted
+
+        # Later leg references an already-claimed key — must reject before child.
+        decision = NextStep(
+            action="delegate", agent="dev_agent", prompt="build",
+            then=[
+                ChainLeg(agent="qa_engineer", prompt="qa",
+                         attachments=[{"storage_key": "claimed-later",
+                                        "display_name": "x.png"}]),
+            ],
+        )
+        scripted.enqueue("engineering_head", decision=decision, summary="delegating")
+
+        run_task_to_completion(orch, task_id=pid)
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert parent.active_chain is None
+        assert len(db.get_children(pid)) == 0
+
+    # --- TASK-3333 regression tests: fanout pipeline nested validation ---
+
+    def test_pipeline_nested_later_leg_missing_attachment_rejects_fanout(
+        self, test_settings, test_runtime,
+    ):
+        """A missing attachment in a pipeline carrier's nested chain leg
+        must reject the entire fanout before child/parent park/queue."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-PIPE-MIS"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+
+        from runtime.orchestrator.run_step import _spawn_fanout_children
+        children_payload = [
+            {"agent": "senior_dev", "prompt": "review",
+             "expect_verdict": "APPROVE",
+             "then": [
+                 {"agent": "qa_engineer", "prompt": "qa",
+                  "attachments": [{"storage_key": "nonexistent-pipe-nested"}]},
+             ]},
+        ]
+        _spawn_fanout_children(orch, parent=db.get_task(pid),
+                               task_id=pid, next_count=1,
+                               children=children_payload, width=1,
+                               manager_agent="engineering_head")
+
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert parent.active_fanout is None
+        assert len(db.get_children(pid)) == 0
+
+    def test_pipeline_nested_later_leg_already_claimed_key_rejects_fanout(
+        self, test_settings, test_runtime,
+    ):
+        """An already-claimed key in a pipeline carrier's nested leg
+        rejects the entire fanout before state."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-PIPE-CLM"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("pipe-claimed", b"pc")
+        # Pre-claim the key
+        other_id = "T-PIPE-OTH"
+        db.insert_task(TaskRecord(id=other_id, brief="other", team="engineering",
+                                   created_at=now, updated_at=now))
+        db.insert_task_attachment(task_id=other_id, ordinal=0, storage_key="pipe-claimed",
+                                   display_name="x.png", size_bytes=2,
+                                   content_type="image/png", uploaded_by="founder")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+
+        from runtime.orchestrator.run_step import _spawn_fanout_children
+        children_payload = [
+            {"agent": "senior_dev", "prompt": "review",
+             "expect_verdict": "APPROVE",
+             "then": [
+                 {"agent": "qa_engineer", "prompt": "qa",
+                  "attachments": [{"storage_key": "pipe-claimed",
+                                   "display_name": "x.png"}]},
+             ]},
+        ]
+        _spawn_fanout_children(orch, parent=db.get_task(pid),
+                               task_id=pid, next_count=1,
+                               children=children_payload, width=1,
+                               manager_agent="engineering_head")
+
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert parent.active_fanout is None
+        assert len(db.get_children(pid)) == 0
+
+    def test_pipeline_nested_duplicate_with_carrier_rejects_fanout(
+        self, test_settings, test_runtime,
+    ):
+        """Same key in carrier top-level and nested later leg rejects
+        the fanout (carrier-to-nested duplicate)."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-CARRDUP"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("car-dup", b"cd")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+
+        from runtime.orchestrator.run_step import _spawn_fanout_children
+        children_payload = [
+            {"agent": "senior_dev", "prompt": "review",
+             "expect_verdict": "APPROVE",
+             "attachments": [{"storage_key": "car-dup", "display_name": "spec.md"}],
+             "then": [
+                 {"agent": "qa_engineer", "prompt": "qa",
+                  "attachments": [{"storage_key": "car-dup",
+                                   "display_name": "spec.md"}]},
+             ]},
+        ]
+        _spawn_fanout_children(orch, parent=db.get_task(pid),
+                               task_id=pid, next_count=1,
+                               children=children_payload, width=1,
+                               manager_agent="engineering_head")
+
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert parent.active_fanout is None
+        assert len(db.get_children(pid)) == 0
+
+    def test_pipeline_nested_duplicate_with_sibling_nested_rejects_fanout(
+        self, test_settings, test_runtime,
+    ):
+        """Same key in nested legs of two different pipeline carriers
+        (cross-sibling nested duplicate) rejects the fanout."""
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-XNEST"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("xnest-key", b"xn")
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+
+        from runtime.orchestrator.run_step import _spawn_fanout_children
+        children_payload = [
+            {"agent": "senior_dev", "prompt": "review",
+             "expect_verdict": "APPROVE",
+             "then": [
+                 {"agent": "qa_engineer", "prompt": "qa",
+                  "attachments": [{"storage_key": "xnest-key",
+                                   "display_name": "x.png"}]},
+             ]},
+            {"agent": "dev_agent", "prompt": "other",
+             "then": [
+                 {"agent": "qa_engineer", "prompt": "qa2",
+                  "attachments": [{"storage_key": "xnest-key",
+                                   "display_name": "x.png"}]},
+             ]},
+        ]
+        _spawn_fanout_children(orch, parent=db.get_task(pid),
+                               task_id=pid, next_count=1,
+                               children=children_payload, width=2,
+                               manager_agent="engineering_head")
+
+        parent = db.get_task(pid)
+        assert parent.status == TaskStatus.FAILED
+        assert parent.active_fanout is None
+        assert len(db.get_children(pid)) == 0
+
+    # --- TASK-3338 regression tests: real-transaction atomic rollback ---
+
+    def test_initial_direct_chain_transaction_failure_rolls_back(
+        self, test_settings, test_runtime,
+    ):
+        """Inject a real SQLite failure inside try_delegate's transaction
+        AFTER the child INSERT and attachment link have been written.
+        The abort trigger fires on the audit_log INSERT inside
+        _insert_task_attachments_txn, which runs inside try_delegate's
+        transaction — proving the actual DB write path is hit and rolled
+        back atomically.
+
+        Verifies zero partial state: no child, no parent delegated/chain
+        state, no attachment link/audit/claim, no queue entry."""
+        import sqlite3
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, TaskStatus, BlockKind, NextStep, ChainLeg
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+        from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-CHAIN-FL"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        # Two DISTINCT, individually valid keys — so prevalidation passes.
+        store.put("chain-fl-direct", b"fk")
+        store.put("chain-fl-later", b"fl")
+
+        # Install a Python-side counter + abort trigger on audit_log so a
+        # real SQLite failure is injected inside try_delegate's transaction
+        # AFTER the child INSERT and task_attachments INSERT, but before
+        # commit.  The Python counter survives the SQLite rollback.
+        trigger_counter = [0]
+        def _inc_t1():
+            trigger_counter[0] += 1
+        db._conn.create_function("_t3338_t1_inc", 0, _inc_t1)
+        db._conn.execute(
+            "CREATE TEMP TRIGGER _t3338_t1_abort "
+            "BEFORE INSERT ON audit_log "
+            "WHEN NEW.action = 'task_attachment_added' "
+            "BEGIN "
+            "    SELECT _t3338_t1_inc(); "
+            "    SELECT RAISE(ABORT, 'injected transaction failure'); "
+            "END"
+        )
+
+        orch = _setup_orch(test_runtime, db, test_settings)
+        scripted = ScriptedRunAgent()
+        orch._run_agent = scripted
+
+        decision = NextStep(
+            action="delegate", agent="dev_agent", prompt="build",
+            attachments=[{"storage_key": "chain-fl-direct",
+                          "display_name": "f.png"}],
+            then=[
+                ChainLeg(agent="qa_engineer", prompt="qa",
+                         attachments=[{"storage_key": "chain-fl-later",
+                                       "display_name": "l.png"}]),
+            ],
+        )
+        scripted.enqueue("engineering_head", decision=decision, summary="delegating")
+
+        # try_delegate catches the ABORT, rolls back, and re-raises.
+        # The exception propagates out of run_step_impl → run_step.
+        error_raised = False
+        try:
+            run_task_to_completion(orch, task_id=pid)
+        except Exception:
+            error_raised = True
+        assert error_raised, \
+            "Expected db.try_delegate to raise after trigger ABORT"
+
+        # Verify the trigger fired — proves the real DB write path was
+        # reached (child + link INSERT happened before the abort).
+        assert trigger_counter[0] >= 1, \
+            f"Trigger must fire at least once, got count={trigger_counter[0]}"
+
+        # Transaction was rolled back: no child, no chain, no claims,
+        # no delegated parent state.
+        parent = db.get_task(pid)
+        assert parent.active_chain is None, \
+            "active_chain must be clean after transaction rollback"
+        # Parent must NOT be parked in a delegated state (the transaction
+        # that would have set block_kind=delegated was rolled back). The
+        # parent may be IN_PROGRESS (that's the legitimate step-claim
+        # state set by try_claim_for_step before the delegate path runs),
+        # but it must carry no DELEGATED discriminator.
+        assert parent.block_kind != BlockKind.DELEGATED, \
+            f"Parent block_kind must not be DELEGATED after rollback, got {parent.block_kind}"
+        assert parent.note is None or "Delegated" not in (parent.note or ""), \
+            f"Parent must not have a delegated note after rollback, got {parent.note!r}"
+
+        children = db.get_children(pid)
+        assert len(children) == 0, \
+            f"No children should exist after transaction rollback, got {children}"
+
+        # Queue: no spawned child was enqueued after transaction abort.
+        assert orch._queue._q.empty(), \
+            "Queue must be empty after transaction rollback — no child enqueued"
+
+        # No task-attachment row for either key.
+        assert db.get_task_attachment_by_storage_key("chain-fl-direct") is None, \
+            "Direct attachment key must not be claimed after rollback"
+        assert db.get_task_attachment_by_storage_key("chain-fl-later") is None, \
+            "Later-leg attachment key must not be claimed after rollback"
+
+        # No 'task_attachment_added' audit rows survived — query globally by
+        # action because attachments are child-scoped (the audit row is
+        # written with the spawned child's task_id, not the parent's).
+        att_added_global = db.get_audit_logs_by_action("task_attachment_added")
+        leaked = [l for l in att_added_global
+                  if l.get("payload", {}).get("storage_key")
+                  in ("chain-fl-direct", "chain-fl-later")]
+        assert len(leaked) == 0, \
+            f"No task_attachment_added audit rows after rollback for either key, got {leaked}"
+
+    def test_auto_advance_chain_transaction_failure_rolls_back(
+        self, test_settings, test_runtime,
+    ):
+        """Inject a real SQLite failure inside try_advance_chain's explicit
+        transaction AFTER the parent active_chain UPDATE and child INSERT.
+        The abort trigger fires on the audit_log INSERT inside
+        _insert_task_attachments_txn, which runs inside try_advance_chain's
+        BEGIN IMMEDIATE block.
+
+        Verifies: try_advance_chain returns False, the method takes the
+        wake/failure branch, zero partial state (no second child, chain
+        not advanced past original snapshot, no new attachment link/audit,
+        no chain_auto_advance audit, no new queue entry)."""
+        import sqlite3
+        from datetime import datetime, timezone
+        from runtime.models import TaskRecord, ChainLeg
+        from runtime.infrastructure.database import Database
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
+        from runtime.orchestrator.chain import ChainState
+
+        db = Database(test_runtime.db_path)
+        now = datetime.now(timezone.utc)
+        pid = "T-ADV-FL"
+        db.insert_task(TaskRecord(
+            id=pid, brief="root", team="engineering",
+            assigned_agent="engineering_head", task_type="task",
+            created_at=now, updated_at=now,
+        ))
+        store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
+        store.put("adv-fl-k", b"af")
+        _ensure_teams(test_runtime)
+
+        import asyncio
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.orchestrator import Orchestrator
+        teams = TeamsRegistry.load(test_runtime.root)
+        orch = Orchestrator(db=db, settings=test_settings, paths=test_runtime,
+                           slug="test", teams=teams)
+
+        # Wire a deterministic queue so we can prove no next-child entry
+        # survived the rolled-back transaction.
+        class _Q:
+            def __init__(self): self._q = asyncio.Queue()
+            def put_nowait(self, s, t): self._q.put_nowait((s, t))
+        orch._queue = _Q()
+
+        # Set up chain with a leg that has a valid attachment.
+        chain = ChainState(
+            step_index=0, first_leg_expect_verdict="APPROVE",
+            legs=[ChainLeg(agent="qa_engineer", prompt="review",
+                          expect_verdict="PASS",
+                          attachments=[{"storage_key": "adv-fl-k",
+                                        "display_name": "af.png"}])],
+            step_audit_id=1,
+        )
+        original_chain_json = chain.serialize()
+        db.update_task_active_chain(pid, original_chain_json)
+        child1_id = "T-ADV-C1"
+        db.insert_task(TaskRecord(
+            id=child1_id, brief="first leg", team="engineering",
+            assigned_agent="senior_dev", parent_task_id=pid,
+            status=TaskStatus.COMPLETED, created_at=now, updated_at=now,
+        ))
+        db.insert_task_result(task_id=child1_id, agent="senior_dev", session_id="s1",
+                              status="completed", confidence_score=90,
+                              output_summary="done", verdict="APPROVE")
+
+        # Count existing children so we can assert no new child was added.
+        pre_children = db.get_children(pid)
+        assert len(pre_children) == 1
+        # Snapshot pre-existing chain_auto_advance audit rows for the parent
+        # so we can prove none were added by the failed transaction.
+        pre_chain_audit = len(db.get_audit_logs_by_action("chain_auto_advance"))
+
+        # Install a Python-side counter + abort trigger on audit_log so a
+        # real SQLite failure is injected inside try_advance_chain's
+        # explicit BEGIN IMMEDIATE transaction AFTER the parent
+        # active_chain UPDATE + child INSERT, but before commit.
+        trigger_counter = [0]
+        def _inc_t2():
+            trigger_counter[0] += 1
+        db._conn.create_function("_t3338_t2_inc", 0, _inc_t2)
+        db._conn.execute(
+            "CREATE TEMP TRIGGER _t3338_t2_abort "
+            "BEFORE INSERT ON audit_log "
+            "WHEN NEW.action = 'task_attachment_added' "
+            "BEGIN "
+            "    SELECT _t3338_t2_inc(); "
+            "    SELECT RAISE(ABORT, 'injected transaction failure'); "
+            "END"
+        )
+
+        from runtime.orchestrator.run_step import _advance_chain_for_completed_child
+        result = _advance_chain_for_completed_child(orch=orch, parent_task_id=pid,
+                                                     child_task_id=child1_id)
+
+        # try_advance_chain catches the ABORT, rolls back, returns False.
+        # _advance_chain_for_completed_child returns "wake" for the caller.
+        assert result == "wake", (
+            f"Expected 'wake' after try_advance_chain rollback, got {result!r}"
+        )
+
+        # Verify the trigger fired — proves the real DB write path was
+        # reached (parent chain UPDATE + child INSERT happened before abort).
+        assert trigger_counter[0] >= 1, \
+            f"Trigger must fire at least once, got count={trigger_counter[0]}"
+
+        # Parent chain: must be IDENTICAL to the original snapshot (not
+        # advanced to a later step_index), not merely non-None.
+        parent_after = db.get_task(pid)
+        assert parent_after.active_chain is not None, \
+            "Parent active_chain must still be present after rollback"
+        restored_chain = ChainState.deserialize(parent_after.active_chain)
+        assert restored_chain.step_index == chain.step_index, (
+            f"Chain step_index must not advance; was {chain.step_index}, "
+            f"got {restored_chain.step_index}"
+        )
+
+        # No second child was created (transaction rolled back).
+        post_children = db.get_children(pid)
+        assert len(post_children) == 1, (
+            f"No new children after rollback, expected 1 got {post_children}"
+        )
+        assert post_children[0] == child1_id, \
+            "Original child must still be the only child"
+
+        # Queue: no next-child entry survived the rolled-back transaction.
+        assert orch._queue._q.empty(), \
+            "Queue must be empty after transaction rollback — no next child enqueued"
+
+        # No task-attachment row for the advance key was created.
+        assert db.get_task_attachment_by_storage_key("adv-fl-k") is None, \
+            "Attachment key must not be claimed after rollback"
+
+        # No task_attachment_added audit for the advance key survived —
+        # query globally by action because the audit row is child-scoped
+        # (written with the next child's task_id, not the parent's).
+        att_added_global = db.get_audit_logs_by_action("task_attachment_added")
+        leaked = [l for l in att_added_global
+                  if l.get("payload", {}).get("storage_key") == "adv-fl-k"]
+        assert len(leaked) == 0, \
+            f"No task_attachment_added audit for adv-fl-k after rollback, got {leaked}"
+
+        # No chain_auto_advance audit was written — query globally by action.
+        post_chain_audit = len(db.get_audit_logs_by_action("chain_auto_advance"))
+        assert post_chain_audit == pre_chain_audit, (
+            f"No new chain_auto_advance audit rows after rollback; "
+            f"pre={pre_chain_audit}, post={post_chain_audit}"
+        )

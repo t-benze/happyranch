@@ -31,7 +31,7 @@ from runtime.infrastructure.task_attachment_store import (
     resolve_content_type,
     sanitize_display_name,
 )
-from runtime.models import BlockKind, TaskAttachmentRecord, TaskRecord, TaskStatus
+from runtime.models import BlockKind, TaskAttachmentRecord, TaskAttachmentRef, TaskRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +86,6 @@ def _task_to_dict(t: TaskRecord) -> dict:
 # Outputs are fully inlined into the recall response when an agent asks for
 # them, so cap the total to keep one recall under a comfortable prompt budget.
 MAX_OUTPUT_BYTES = 200 * 1024
-
-
-class TaskAttachmentRef(BaseModel):
-    """Reference to a previously uploaded task attachment."""
-    storage_key: str
-    display_name: str | None = None
 
 
 class SubmitTask(BaseModel):

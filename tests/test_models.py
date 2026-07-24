@@ -246,9 +246,11 @@ def test_chain_leg_roundtrip():
         "agent": "senior_dev",
         "prompt": "review",
         "expect_verdict": "APPROVE",
+        "attachments": None,
     }
     leg2 = ChainLeg(agent="qa_engineer", prompt="qa")
     assert leg2.expect_verdict is None
+    assert leg2.attachments is None
 
 
 def test_next_step_accepts_then_and_expect_verdict():
