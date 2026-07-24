@@ -2277,7 +2277,7 @@ class TestDecisionAttachments:
         state, no attachment link/audit/claim, no queue entry."""
         import sqlite3
         from datetime import datetime, timezone
-        from runtime.models import TaskRecord, NextStep, ChainLeg
+        from runtime.models import TaskRecord, TaskStatus, BlockKind, NextStep, ChainLeg
         from runtime.infrastructure.database import Database
         from runtime.orchestrator._paths import OrgPaths
         from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
@@ -2345,24 +2345,44 @@ class TestDecisionAttachments:
         assert trigger_counter[0] >= 1, \
             f"Trigger must fire at least once, got count={trigger_counter[0]}"
 
-        # Transaction was rolled back: no child, no chain, no claims.
+        # Transaction was rolled back: no child, no chain, no claims,
+        # no delegated parent state.
         parent = db.get_task(pid)
         assert parent.active_chain is None, \
             "active_chain must be clean after transaction rollback"
+        # Parent must NOT be parked in a delegated state (the transaction
+        # that would have set block_kind=delegated was rolled back). The
+        # parent may be IN_PROGRESS (that's the legitimate step-claim
+        # state set by try_claim_for_step before the delegate path runs),
+        # but it must carry no DELEGATED discriminator.
+        assert parent.block_kind != BlockKind.DELEGATED, \
+            f"Parent block_kind must not be DELEGATED after rollback, got {parent.block_kind}"
+        assert parent.note is None or "Delegated" not in (parent.note or ""), \
+            f"Parent must not have a delegated note after rollback, got {parent.note!r}"
+
         children = db.get_children(pid)
         assert len(children) == 0, \
             f"No children should exist after transaction rollback, got {children}"
+
+        # Queue: no spawned child was enqueued after transaction abort.
+        assert orch._queue._q.empty(), \
+            "Queue must be empty after transaction rollback — no child enqueued"
+
         # No task-attachment row for either key.
         assert db.get_task_attachment_by_storage_key("chain-fl-direct") is None, \
             "Direct attachment key must not be claimed after rollback"
         assert db.get_task_attachment_by_storage_key("chain-fl-later") is None, \
             "Later-leg attachment key must not be claimed after rollback"
-        # No 'task_attachment_added' audit rows survived.
-        audit_logs = db.get_audit_logs(pid)
-        att_added = [l for l in audit_logs
-                     if l.get("action") == "task_attachment_added"]
-        assert len(att_added) == 0, \
-            f"No task_attachment_added audit rows after rollback, got {att_added}"
+
+        # No 'task_attachment_added' audit rows survived — query globally by
+        # action because attachments are child-scoped (the audit row is
+        # written with the spawned child's task_id, not the parent's).
+        att_added_global = db.get_audit_logs_by_action("task_attachment_added")
+        leaked = [l for l in att_added_global
+                  if l.get("payload", {}).get("storage_key")
+                  in ("chain-fl-direct", "chain-fl-later")]
+        assert len(leaked) == 0, \
+            f"No task_attachment_added audit rows after rollback for either key, got {leaked}"
 
     def test_auto_advance_chain_transaction_failure_rolls_back(
         self, test_settings, test_runtime,
@@ -2397,11 +2417,19 @@ class TestDecisionAttachments:
         store.put("adv-fl-k", b"af")
         _ensure_teams(test_runtime)
 
+        import asyncio
         from runtime.orchestrator.teams import TeamsRegistry
         from runtime.orchestrator.orchestrator import Orchestrator
         teams = TeamsRegistry.load(test_runtime.root)
         orch = Orchestrator(db=db, settings=test_settings, paths=test_runtime,
                            slug="test", teams=teams)
+
+        # Wire a deterministic queue so we can prove no next-child entry
+        # survived the rolled-back transaction.
+        class _Q:
+            def __init__(self): self._q = asyncio.Queue()
+            def put_nowait(self, s, t): self._q.put_nowait((s, t))
+        orch._queue = _Q()
 
         # Set up chain with a leg that has a valid attachment.
         chain = ChainState(
@@ -2427,8 +2455,9 @@ class TestDecisionAttachments:
         # Count existing children so we can assert no new child was added.
         pre_children = db.get_children(pid)
         assert len(pre_children) == 1
-        # Count existing audit rows for pid.
-        pre_audit_count = len(db.get_audit_logs(pid))
+        # Snapshot pre-existing chain_auto_advance audit rows for the parent
+        # so we can prove none were added by the failed transaction.
+        pre_chain_audit = len(db.get_audit_logs_by_action("chain_auto_advance"))
 
         # Install a Python-side counter + abort trigger on audit_log so a
         # real SQLite failure is injected inside try_advance_chain's
@@ -2482,14 +2511,26 @@ class TestDecisionAttachments:
         assert post_children[0] == child1_id, \
             "Original child must still be the only child"
 
+        # Queue: no next-child entry survived the rolled-back transaction.
+        assert orch._queue._q.empty(), \
+            "Queue must be empty after transaction rollback — no next child enqueued"
+
         # No task-attachment row for the advance key was created.
         assert db.get_task_attachment_by_storage_key("adv-fl-k") is None, \
             "Attachment key must not be claimed after rollback"
 
-        # No new audit rows (task_attachment_added or chain_auto_advance)
-        # were persisted for the parent.
-        post_audit_logs = db.get_audit_logs(pid)
-        assert len(post_audit_logs) == pre_audit_count, (
-            f"No new audit rows after rollback; "
-            f"pre={pre_audit_count}, post={len(post_audit_logs)}"
+        # No task_attachment_added audit for the advance key survived —
+        # query globally by action because the audit row is child-scoped
+        # (written with the next child's task_id, not the parent's).
+        att_added_global = db.get_audit_logs_by_action("task_attachment_added")
+        leaked = [l for l in att_added_global
+                  if l.get("payload", {}).get("storage_key") == "adv-fl-k"]
+        assert len(leaked) == 0, \
+            f"No task_attachment_added audit for adv-fl-k after rollback, got {leaked}"
+
+        # No chain_auto_advance audit was written — query globally by action.
+        post_chain_audit = len(db.get_audit_logs_by_action("chain_auto_advance"))
+        assert post_chain_audit == pre_chain_audit, (
+            f"No new chain_auto_advance audit rows after rollback; "
+            f"pre={pre_chain_audit}, post={post_chain_audit}"
         )
