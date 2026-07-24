@@ -123,16 +123,28 @@ TARGET (this spec):
 ### 2.2 Adapter Result Contract (what EVERY adapter returns)
 
 ```jsonc
-// AdapterOutput — normative type example (extends current ExecutorResult)
+// AdapterOutput — normative type example (wire shape the adapter produces;
+// the daemon-side adapter maps this INTO the existing ExecutorResult).
+// NOTE: stdout_tail and stderr_tail are TOP-LEVEL ExecutorResult fields
+// consumed directly by run_step (failure classification, retry/audit paths)
+// and thread_runner (including session recovery). They MUST NOT be nested.
 {
   "success": true,                           // bool, required. Did the subprocess exit 0?
   "duration_seconds": 42,                    // int, required. Wall-clock duration.
   "session_id": "sess-<uuid>",               // string, required. Echo back the invocation id.
   "returncode": 0,                           // int | null. Subprocess exit code (null on timeout).
+  "stdout_tail": "<last 2000 bytes>",        // string, required. Top-level, per ExecutorResult.
+                                             // Consumed by run_step:1850/1923/2490 and
+                                             // thread_runner:294 for failure forensics.
+                                             // MUST NOT be nested — see §2.5.
+  "stderr_tail": "<last 2000 bytes>",        // string, required. Top-level, per ExecutorResult.
+                                             // Consumed by run_step:1852/1922/2489 and
+                                             // thread_runner:58/293 for failure forensics.
+                                             // MUST NOT be nested — see §2.5.
   "result": {
-    "text": "<agent's final response>",       // string | null. The agent's output text (stdout, trimmed).
-    "stdout_tail": "<last 2000 bytes>",       // string. For audit forensics.
-    "stderr_tail": "<last 2000 bytes>"        // string. For audit forensics.
+    "text": "<agent's final response>"        // string | null. ADDITIVE field. The agent's
+                                             // output text (stdout, trimmed). Consumers
+                                             // read this as result.result.text.
   },
   "token_usage": {                           // object | null. Maps 1:1 to TokenUsage model
                                              // (runtime/models.py:302). Every field nullable.
@@ -147,7 +159,7 @@ TARGET (this spec):
   "error": "Session timed out",              // string | null. Human-readable error.
   "agent_session_id": "abc123",               // string | null. The agent CLI's own session id (for resume).
   "rate_limited": false,                     // bool. Did the provider rate-limit this attempt?
-  "adapter_metadata": {                      // object, required.
+  "adapter_metadata": {                      // object, required. ADDITIVE field.
     "adapter": "happyranch-claude-adapter",   // string. Adapter implementation identity.
     "adapter_version": "1.0.0",              // string. Version of the adapter implementation.
     "contract_version": 1                    // int. Version of THIS result contract.
@@ -167,12 +179,53 @@ unchanged:
 3. **Nullable tolerance** (`models.py:306-312`): every field is `int | None`. Partial parse success still writes a forensic row.
 4. **`cache_read` / `cache_creation` split preserved**: the two fields stay separate.
 
-No new token fields are introduced. The result contract above is **exactly**
-the current `ExecutorResult` (`executors.py:24-56`) with the addition of
-`result.text` and `adapter_metadata` — both are additive and would not break
-existing consumers.
+No new token fields are introduced. The result contract above preserves the
+current `ExecutorResult` (`executors.py:24-56`) top-level fields unchanged:
+`stdout_tail` and `stderr_tail` remain at top level (not nested) because
+they are consumed directly by `run_step` (failure classification at
+`run_step.py:1850-1852`, retry/audit paths at `run_step.py:1922-1928`, and
+`run_step.py:2489-2490`) and `thread_runner` (session recovery at
+`thread_runner.py:58`, invocation error formatting at
+`thread_runner.py:293-294`). The two truly additive fields are `result.text`
+and `adapter_metadata` — neither existing consumer reads them, so they would
+not break existing consumers.
 
-### 2.4 Mapping the Existing v1 Envelope
+### 2.5 Nested-Result Field Policy (D12 resolution for compatibility)
+
+The `result.text` field is **additive** — it is a new field on the
+`ExecutorResult` that lives under a nested `result` object. No existing
+consumer reads `result.text`, so it is safe to introduce.
+
+**`stdout_tail` and `stderr_tail` MUST stay top-level.** Moving them into a
+nested `result` object would be a breaking relocation — every consumer that
+reads `getattr(result, "stdout_tail", "")` or `getattr(result, "stderr_tail", "")`
+would silently read empty strings. The current consumer sites are:
+
+| Site | Field | Purpose |
+|---|---|---|
+| `run_step.py:1087-1091` | `stderr_tail` / `stdout_tail` (from error dicts) | Session-failed note enrichment |
+| `run_step.py:1850-1852` | `stdout_tail` + `stderr_tail` | Rate-limit string-heuristic (legacy fallback) |
+| `run_step.py:1922-1928` | `stderr_tail` + `stdout_tail` | Failure audit note (truncated tails) |
+| `run_step.py:2489-2490` | `stderr_tail` + `stdout_tail` | Error-summary formatting |
+| `thread_runner.py:58` | `stderr_tail` | Thread invocation error message |
+| `thread_runner.py:293-294` | `stderr_tail` + `stdout_tail` | Wake/schedule/dream error formatting |
+
+If a future version of this spec wishes to normalize *all* output fields
+under a nested `result` object (including `stdout_tail` and `stderr_tail`),
+that change requires:
+
+1. **A separately approved compatibility adapter/migration** — never a
+   behavior-preserving extraction.
+2. **Consumer proof** — every `getattr(result, "stdout_tail", "")` site must
+   be migrated or dual-read, confirmed by grep.
+3. **Founder authorization** — changing the stable `ExecutorResult` contract
+   surface is founder-gated (see decision D12).
+
+The daemon-side adapter is responsible for mapping wire data (from custom
+adapter executables or envelope JSON) into the existing `ExecutorResult`
+shape **without moving existing top-level fields**.
+
+### 2.6 Mapping the Existing v1 Envelope
 
 The Phase-1 custom-CLI envelope (defined in
 `docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md`)
@@ -721,7 +774,7 @@ invented:
 | Vendor | Unknown |
 |---|---|
 | Claude | Whether `--output-format json` will remain stable; whether Claude Code's stdout format will change |
-| Codex | Whether `exec --json -` will continue to produce JSONL with `{"type":"usage",...}` events; whether the sandbox flag names will change |
+| Codex | Whether `exec --json -` will continue to emit `{"type":"turn.completed"}` as the terminal event carrying the cumulative `usage` object (confirmed against codex-cli 0.137.0/0.139.0); whether the sandbox flag names will change |
 | OpenCode | Whether `--format json` output shape is stable; whether `--dir` flag behavior is consistent across versions |
 | Pi | Whether `--mode json` will remain the structured output flag; whether output fields will change |
 | Kimi-like custom CLI | Whether it can emit the current v1 sentinel envelope; whether it reports session ids; whether `--resume` is supported |
@@ -778,6 +831,7 @@ not the orchestration layer.
 | **D9** | Approve the `command_adapter` field on custom profiles as opt-in (Phase 3)? | §7.1 Phase 3 | Adds a new profile field; gates on how custom executors are invoked. |
 | **D10** | Approve removal of the `if/elif` chain in `build_executor()` after all adapters are validated (Phase 4)? | §7.1 Phase 4 | Removes dead code; the chain is the current primary path. |
 | **D11** | Approve rollout/rollback authority: who can trigger Phase 4 (default change)? | §7.1 Phase 4, §7.4 | Rollback across all registered profiles requires founder authorization. |
+| **D12** | Approve any protocol/05b or 05c rewrite, or any `ExecutorResult` contract-surface change? | §2.5, §8.2 footnote, Appendix C | `AdapterInput`/`AdapterOutput` are proposed **internal architecture contracts** only. No rewrite of protocol/05b or 05c, no public/stable external contract, and no `ExecutorResult` behavior implementation follows unless founder explicitly authorizes that later change. This spec and the current PR ship no protocol edits. |
 
 ---
 
@@ -844,9 +898,10 @@ Full raw impact output is preserved in the task session. Summary:
 
 ## Appendix D: Scope Verification
 
-This task is DESIGN ONLY. The deliverable is exactly:
+This task is DESIGN ONLY. The deliverable is exactly two files:
 
 1. This spec file: `docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md`
+2. A narrow 15-line cross-link addition in `docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md` that references this unified architecture spec. The cross-link makes **no normative Phase-1 change** — it adds only a contextual preface pointing to the superset unified-adapter doc while preserving all existing envelope-spec content unchanged.
 
 No production code, protocol doc, schema, auth, permission, profile migration,
 plugin loader, or test file is modified. The spec explicitly labels itself
