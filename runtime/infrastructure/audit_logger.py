@@ -470,6 +470,70 @@ class AuditLogger:
             payload={"name": name},
         )
 
+    # ── Task attachment audit actions (THR-109) ──────────────────────────────
+
+    def log_task_attachment_uploaded(
+        self, storage_key: str, display_name: str,
+        size_bytes: int, content_type: str | None, agent: str,
+    ) -> None:
+        """Record a private-store upload (pre-task-creation).
+
+        Uses a namespaced task_id so rows don't collide with TASK-/JOB- ids
+        in get_audit_logs(task_id). Payload carries only metadata — never
+        attachment bytes or local file paths.
+        """
+        self._db.insert_audit_log(
+            task_id=f"task-attachment:{storage_key}",
+            agent=agent,
+            action="task_attachment_uploaded",
+            payload={
+                "storage_key": storage_key,
+                "display_name": display_name,
+                "size_bytes": size_bytes,
+                "content_type": content_type,
+            },
+        )
+
+    def log_task_attachment_added(
+        self, task_id: str, storage_key: str, display_name: str,
+        content_type: str | None, uploaded_by: str,
+    ) -> None:
+        """Record that an attachment was linked to a task on creation.
+
+        Uses the concrete task_id — the ordinary primary use of the column.
+        Payload carries metadata only; never bytes or local paths.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=uploaded_by,
+            action="task_attachment_added",
+            payload={
+                "storage_key": storage_key,
+                "display_name": display_name,
+                "content_type": content_type,
+            },
+        )
+
+    def log_task_attachment_materialized(
+        self, task_id: str, session_id: str,
+        count: int, materialized_keys: list[str],
+    ) -> None:
+        """Record that attachments were materialized for a session spawn.
+
+        Uses the spawning task's id. Payload carries the session id and
+        storage_key list — never bytes or local file paths.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="orchestrator",
+            action="task_attachment_materialized",
+            payload={
+                "session_id": session_id,
+                "count": count,
+                "storage_keys": materialized_keys,
+            },
+        )
+
     def log_agent_managed(
         self,
         *,

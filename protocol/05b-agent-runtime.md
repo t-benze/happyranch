@@ -122,6 +122,27 @@ Write restrictions are role-based but minimal:
 - Product Manager: writes specs to workspace, no code commits
 - Engineering Head: reviews only, no direct code changes
 
+### Task attachment materialization at session spawn (THR-109)
+
+When a task (or an ancestor it inherits from) has file attachments, the runtime
+resolves them at session spawn by walking up the `parent_task_id` chain, unioning
+any `task_attachments` rows found. The durable bytes are read from the private
+task-attachment store (separate from the org-wide shared artifact store) and
+written into a per-task session attachment directory under the agent's workspace
+(`workspace/.happyranch/attachments/<session_id>/`). An `Attachments:` block is
+injected into the brief prompt naming each file, its on-disk path, size, and
+content-type hint. Delivery is by-path for all executors; image perception
+depends on the executor CLI's own abilities. The materialized per-session
+directory is a regenerable cache — the bytes of record live in the task-attachment
+private store.
+
+**Legacy rows.** Rows with non-`NULL` `legacy_status` (e.g. `duplicate_v1`) are
+included in ancestor resolution and materialization. The collision-safe
+materialized filename (`{storage_key}__{sanitized_display_name}__{id}`) uses
+the immutable `task_attachments.id` row identity to produce distinct per-row
+paths — legitimate duplicate legacy attachments do not overwrite each other
+even when they share both `storage_key` and `display_name`.
+
 ### Executor abstraction
 
 The executor interface supports multiple backends. Four built-in adapters are

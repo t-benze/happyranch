@@ -392,6 +392,29 @@ class ThreadScopedAttachment(BaseModel):
     created_at: str = ""
 
 
+class TaskAttachmentRecord(BaseModel):
+    """A file attached to a task, stored in the private task-attachment store.
+
+    Attachments are owned by the task they were uploaded to (owning ancestor).
+    Descendant tasks resolve them via parent_task_id walk at spawn time.
+
+    legacy_status is None for normal rows; non-None (e.g. 'duplicate_v1')
+    marks rows that were preserved from a legacy pre-constraint schema where
+    duplicate storage_key values were permitted. These rows are readable but
+    their keys cannot be newly claimed.
+    """
+    id: int | None = None
+    task_id: str
+    ordinal: int
+    storage_key: str
+    display_name: str
+    size_bytes: int | None = None
+    content_type: str | None = None
+    uploaded_by: str
+    created_at: str = ""
+    legacy_status: str | None = None
+
+
 class ThreadMessage(BaseModel):
     id: int | None = None
     thread_id: str

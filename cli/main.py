@@ -68,6 +68,9 @@ from cli.commands.assistant import (  # noqa: F401  (re-export for back-compat)
 from cli.commands.tasks import (  # noqa: F401  (re-export for back-compat)
     _completion_payload_from_file,
     _stream_task_events,
+    cmd_attach_download,
+    cmd_attach_show,
+    cmd_attach_upload,
     cmd_audit,
     cmd_cancel,
     cmd_details,

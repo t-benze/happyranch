@@ -12,6 +12,7 @@ from runtime.models import (
     DreamKbCandidate,
     DreamRecord,
     DreamStatus,
+    TaskAttachmentRecord,
     TaskRecord,
     TaskStatus,
     ThreadAttachment,
@@ -128,6 +129,7 @@ class Database:
         self._migrate_jobs_table_if_needed()
         self._migrate_drop_talk_surface_if_needed()
         self._create_tables()
+        self._ensure_task_attachments_storage_key_unique()
         # Working-hours CRUD lives in its own module but shares THIS connection
         # and lock so the single-connection serialization invariant (see
         # `_synchronized`) is preserved across both surfaces.
@@ -455,6 +457,108 @@ class Database:
             self._conn.rollback()
             raise
 
+    def _ensure_task_attachments_storage_key_unique(self) -> None:
+        """Idempotent, transactional preflight: enforce storage_key uniqueness.
+
+        Handles legacy v1 task_attachments tables where the pre-constraint
+        schema allowed duplicate storage_key rows. Legacy duplicates are
+        preserved for readability — marked with legacy_status='duplicate_v1'
+        — and their keys cannot be newly claimed (guarded by a pre-insert
+        existence check in insert_task_attachment and
+        insert_task_with_attachments).
+
+        All preflight steps — additive legacy_status column creation,
+        duplicate detection/marking, and named index creation — run inside
+        a single SQLite BEGIN IMMEDIATE / COMMIT transaction. On any error
+        the entire preflight rolls back, leaving the database schema, data,
+        and indexes exactly as they were before this invocation.
+
+        For clean databases a full UNIQUE index is created. For databases
+        with legacy duplicates a partial UNIQUE index (WHERE
+        legacy_status IS NULL) enforces uniqueness on new non-legacy claims.
+        """
+        existing_tables = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "task_attachments" not in existing_tables:
+            return
+
+        # Idempotence: if our named index already exists, migration is done.
+        existing_idx = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND tbl_name='task_attachments'"
+            ).fetchall()
+        }
+        if "idx_task_attachments_storage_key_unique" in existing_idx:
+            return
+
+        # Check whether legacy_status column already exists.
+        cols_before = {
+            row[1]
+            for row in self._conn.execute(
+                "PRAGMA table_info('task_attachments')"
+            ).fetchall()
+        }
+        has_legacy_col = "legacy_status" in cols_before
+
+        # Single transaction: ALTER TABLE (if needed), duplicate detection,
+        # marking, and index creation all inside one BEGIN / COMMIT scope.
+        # On any error the entire preflight rolls back, leaving the database
+        # schema, data, and indexes exactly as they were before this call.
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+
+            # Additive: ensure legacy_status column exists.
+            if not has_legacy_col:
+                self._conn.execute(
+                    "ALTER TABLE task_attachments "
+                    "ADD COLUMN legacy_status TEXT"
+                )
+
+            # Detect duplicate storage_key rows among non-legacy rows.
+            # These can only exist on databases created before the UNIQUE
+            # constraint was introduced (v1 pre-index schema).
+            dupes = self._conn.execute(
+                "SELECT storage_key FROM task_attachments "
+                "WHERE legacy_status IS NULL "
+                "GROUP BY storage_key HAVING COUNT(*) > 1"
+            ).fetchall()
+
+            if dupes:
+                # Mark ALL rows sharing each duplicate key as legacy.
+                for (dup_key,) in dupes:
+                    self._conn.execute(
+                        "UPDATE task_attachments SET legacy_status = ? "
+                        "WHERE storage_key = ?",
+                        ("duplicate_v1", dup_key),
+                    )
+                # Partial unique index: only non-legacy rows must be unique.
+                # Legacy duplicates are excluded from the unique guard — their
+                # keys are protected from new claims by pre-insert existence
+                # checks in the insert methods.
+                self._conn.execute(
+                    "CREATE UNIQUE INDEX "
+                    "idx_task_attachments_storage_key_unique "
+                    "ON task_attachments(storage_key) "
+                    "WHERE legacy_status IS NULL"
+                )
+            else:
+                # Full unique index for clean databases (v0 or clean v1).
+                self._conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "idx_task_attachments_storage_key_unique "
+                    "ON task_attachments(storage_key)"
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
 
     def _create_tables(self) -> None:
         self._conn.executescript("""
@@ -722,6 +826,24 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_thread_scoped_attachments_thread
                 ON thread_scoped_attachments(thread_id);
+
+            CREATE TABLE IF NOT EXISTS task_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                storage_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                legacy_status TEXT,
+                FOREIGN KEY (task_id) REFERENCES tasks(id),
+                UNIQUE(task_id, ordinal),
+                UNIQUE(storage_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_attachments_task
+                ON task_attachments(task_id);
 
             CREATE TABLE IF NOT EXISTS thread_invocations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3847,6 +3969,282 @@ class Database:
         )
         self._conn.commit()
         return cursor.rowcount > 0
+
+    # --- Task attachments (THR-109) ---
+
+    @_synchronized
+    def next_task_attachment_id(self) -> str:
+        cursor = self._conn.execute(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM task_attachments"
+        )
+        n = cursor.fetchone()[0]
+        return f"ta-{n:04d}"
+
+    @_synchronized
+    def insert_task_attachment(
+        self,
+        *,
+        task_id: str,
+        ordinal: int,
+        storage_key: str,
+        display_name: str,
+        size_bytes: int | None,
+        content_type: str | None,
+        uploaded_by: str,
+    ) -> None:
+        # Reject if storage_key is already claimed — including by legacy
+        # duplicate rows that were excluded from the partial unique index.
+        existing = self.get_task_attachment_by_storage_key(storage_key)
+        if existing is not None:
+            raise sqlite3.IntegrityError(
+                f"UNIQUE constraint failed: task_attachments.storage_key: "
+                f"{storage_key}"
+            )
+        self._conn.execute(
+            "INSERT INTO task_attachments "
+            "(task_id, ordinal, storage_key, display_name, size_bytes, "
+            "content_type, uploaded_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                task_id,
+                ordinal,
+                storage_key,
+                display_name,
+                size_bytes,
+                content_type,
+                uploaded_by,
+                _now().isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def insert_task_with_attachments(
+        self,
+        task: "TaskRecord",
+        attachments: list[dict],
+        uploaded_by: str,
+    ) -> None:
+        """Atomically insert a task + its private attachment links + audit rows.
+
+        Everything within one BEGIN IMMEDIATE / COMMIT transaction so a
+        duplicate-storage-key UNIQUE violation, a link-write error, or an
+        audit-write error rolls back the task row and every prior link.
+
+        Caller MUST hold ``org.db_lock`` — the claimability re-check
+        (SELECT by storage_key) runs inside the same serialized boundary.
+
+        Raises ``sqlite3.IntegrityError`` when a storage_key has already
+        been claimed by another task — the caller must translate this to a
+        conflict response.
+        """
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute(
+                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                   revision_count, created_at, updated_at, completed_at, parent_task_id,
+                   revisit_of_task_id, dispatched_from_thread_id,
+                   block_kind, note,
+                   orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
+                   current_session_id, zombie_flagged_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    task.id,
+                    task.status.value,
+                    task.assigned_agent,
+                    task.team,
+                    task.brief,
+                    task.revision_count,
+                    task.created_at.isoformat(),
+                    task.updated_at.isoformat(),
+                    task.completed_at.isoformat() if task.completed_at else None,
+                    task.parent_task_id,
+                    task.revisit_of_task_id,
+                    task.dispatched_from_thread_id,
+                    task.block_kind.value if task.block_kind else None,
+                    task.note,
+                    task.orchestration_step_count,
+                    task.session_timeout_seconds,
+                    task.task_type,
+                    task.active_fanout,
+                    task.current_session_id,
+                    task.zombie_flagged_at.isoformat() if task.zombie_flagged_at else None,
+                ),
+            )
+            for att in attachments:
+                # Reject if storage_key is already claimed — including by
+                # legacy duplicate rows excluded from the partial unique index.
+                existing = self._conn.execute(
+                    "SELECT 1 FROM task_attachments WHERE storage_key = ?",
+                    (att["storage_key"],),
+                ).fetchone()
+                if existing is not None:
+                    raise sqlite3.IntegrityError(
+                        "UNIQUE constraint failed: "
+                        f"task_attachments.storage_key: {att['storage_key']}"
+                    )
+                self._conn.execute(
+                    "INSERT INTO task_attachments "
+                    "(task_id, ordinal, storage_key, display_name, size_bytes, "
+                    "content_type, uploaded_by, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        task.id,
+                        att["ordinal"],
+                        att["storage_key"],
+                        att["display_name"],
+                        att["size_bytes"],
+                        att["content_type"],
+                        uploaded_by,
+                        now,
+                    ),
+                )
+                # Audit row for each linked attachment.
+                audit_ts = _now().isoformat()
+                audit_payload = json.dumps({
+                    "storage_key": att["storage_key"],
+                    "display_name": att["display_name"],
+                    "content_type": att["content_type"],
+                    "uploaded_by": uploaded_by,
+                })
+                self._conn.execute(
+                    "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (task.id, uploaded_by, "task_attachment_added", audit_payload, audit_ts),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def get_task_attachment(
+        self, task_id: str, storage_key: str
+    ) -> TaskAttachmentRecord | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM task_attachments "
+            "WHERE task_id = ? AND storage_key = ?",
+            (task_id, storage_key),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return TaskAttachmentRecord(
+            id=row["id"],
+            task_id=row["task_id"],
+            ordinal=row["ordinal"],
+            storage_key=row["storage_key"],
+            display_name=row["display_name"],
+            size_bytes=row["size_bytes"],
+            content_type=row["content_type"],
+            uploaded_by=row["uploaded_by"],
+            created_at=row["created_at"],
+            legacy_status=row["legacy_status"] if "legacy_status" in row.keys() else None,
+        )
+
+    @_synchronized
+    def list_task_attachments(self, task_id: str) -> list[TaskAttachmentRecord]:
+        cursor = self._conn.execute(
+            "SELECT * FROM task_attachments "
+            "WHERE task_id = ? ORDER BY ordinal",
+            (task_id,),
+        )
+        return [
+            TaskAttachmentRecord(
+                id=row["id"],
+                task_id=row["task_id"],
+                ordinal=row["ordinal"],
+                storage_key=row["storage_key"],
+                display_name=row["display_name"],
+                size_bytes=row["size_bytes"],
+                content_type=row["content_type"],
+                uploaded_by=row["uploaded_by"],
+                created_at=row["created_at"],
+                legacy_status=row["legacy_status"] if "legacy_status" in row.keys() else None,
+            )
+            for row in cursor.fetchall()
+        ]
+
+    @_synchronized
+    def resolve_ancestor_attachments(
+        self, task_id: str, max_hops: int = 20
+    ) -> list[TaskAttachmentRecord]:
+        """Walk the parent_task_id chain and union OWN + ancestor attachments.
+
+        Returns the spawning task's own attachments plus every ancestor's
+        attachments up to root, in deterministic order (own first, then
+        nearest ancestor to root). No rows are copied into child tasks.
+        The owning task_id is preserved per record so callers know which
+        task each attachment came from.
+        """
+        result: list[TaskAttachmentRecord] = []
+        # 1. Own attachments first.
+        own = self.list_task_attachments(task_id)
+        result.extend(own)
+        # 2. Walk up to root, unioning ancestor attachments.
+        seen: set[str] = {task_id}
+        current_id = task_id
+        for _ in range(max_hops):
+            row = self._conn.execute(
+                "SELECT parent_task_id FROM tasks WHERE id = ?",
+                (current_id,),
+            ).fetchone()
+            if row is None:
+                break
+            parent_id = row["parent_task_id"]
+            if parent_id is None or parent_id in seen:
+                break
+            seen.add(parent_id)
+            # Collect attachments from this ancestor.
+            attachments = self.list_task_attachments(parent_id)
+            result.extend(attachments)
+            current_id = parent_id
+        return result
+
+    @_synchronized
+    def delete_task_attachment(
+        self, task_id: str, storage_key: str
+    ) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM task_attachments "
+            "WHERE task_id = ? AND storage_key = ?",
+            (task_id, storage_key),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    @_synchronized
+    def count_task_attachments(self, task_id: str) -> int:
+        cursor = self._conn.execute(
+            "SELECT COUNT(*) FROM task_attachments WHERE task_id = ?",
+            (task_id,),
+        )
+        return cursor.fetchone()[0]
+
+    @_synchronized
+    def get_task_attachment_by_storage_key(
+        self, storage_key: str
+    ) -> TaskAttachmentRecord | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM task_attachments WHERE storage_key = ?",
+            (storage_key,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return TaskAttachmentRecord(
+            id=row["id"],
+            task_id=row["task_id"],
+            ordinal=row["ordinal"],
+            storage_key=row["storage_key"],
+            display_name=row["display_name"],
+            size_bytes=row["size_bytes"],
+            content_type=row["content_type"],
+            uploaded_by=row["uploaded_by"],
+            created_at=row["created_at"],
+            legacy_status=row["legacy_status"] if "legacy_status" in row.keys() else None,
+        )
 
     @_synchronized
     def mint_thread_invocation(

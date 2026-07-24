@@ -2365,3 +2365,137 @@ def test_schedules_create_not_under_todos():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["todos", "create", "--org", "x", "--from-file", "/f"])
+
+
+# ── Task attachment CLI parser tests (THR-109) ───────────────────────────────
+
+
+def test_attach_upload_parser():
+    """happyranch attach-upload parses correctly."""
+    parser = build_parser()
+    args = parser.parse_args([
+        "attach-upload",
+        "--org", "test-org",
+        "--file", "/tmp/mockup.png",
+        "--as-agent", "dev_agent",
+    ])
+    assert args.command == "attach-upload"
+    assert args.org == "test-org"
+    assert args.file == "/tmp/mockup.png"
+    assert args.as_agent == "dev_agent"
+
+
+def test_attach_upload_routes_to_cmd():
+    """attach-upload dispatch routes to cmd_attach_upload."""
+    from cli.commands.tasks import cmd_attach_upload
+    parser = build_parser()
+    args = parser.parse_args([
+        "attach-upload",
+        "--file", "/tmp/test.png",
+    ])
+    assert args.func is cmd_attach_upload
+
+
+def test_attach_show_parser():
+    """happyranch attach-show parses correctly."""
+    parser = build_parser()
+    args = parser.parse_args([
+        "attach-show",
+        "--org", "test-org",
+        "TASK-001",
+    ])
+    assert args.command == "attach-show"
+    assert args.org == "test-org"
+    assert args.task_id == "TASK-001"
+
+
+def test_attach_show_routes_to_cmd():
+    """attach-show dispatch routes to cmd_attach_show."""
+    from cli.commands.tasks import cmd_attach_show
+    parser = build_parser()
+    args = parser.parse_args(["attach-show", "TASK-001"])
+    assert args.func is cmd_attach_show
+
+
+def test_attach_download_parser():
+    """happyranch attach-download parses correctly."""
+    parser = build_parser()
+    args = parser.parse_args([
+        "attach-download",
+        "--org", "test-org",
+        "TASK-001",
+        "ta-0001",
+        "--output", "/tmp/out.png",
+    ])
+    assert args.command == "attach-download"
+    assert args.org == "test-org"
+    assert args.task_id == "TASK-001"
+    assert args.storage_key == "ta-0001"
+    assert args.output == "/tmp/out.png"
+
+
+def test_attach_download_routes_to_cmd():
+    """attach-download dispatch routes to cmd_attach_download."""
+    from cli.commands.tasks import cmd_attach_download
+    parser = build_parser()
+    args = parser.parse_args(["attach-download", "TASK-001", "ta-0001"])
+    assert args.func is cmd_attach_download
+
+
+def test_run_with_attach_arg():
+    """happyranch run --brief \"x\" --attach <storage_key>[:name] parses correctly."""
+    parser = build_parser()
+    args = parser.parse_args([
+        "run",
+        "--brief", "test brief",
+        "--attach", "ta-0001:mockup.png",
+        "--attach", "ta-0002",
+    ])
+    assert args.attachments == ["ta-0001:mockup.png", "ta-0002"]
+
+
+def test_run_without_attach_defaults_none():
+    """happyranch run --brief \"x\" without --attach leaves attachments=None."""
+    parser = build_parser()
+    args = parser.parse_args(["run", "--brief", "test brief"])
+    assert args.attachments is None
+
+
+def test_attach_upload_sends_multipart(capsys):
+    """attach-upload sends a multipart upload and prints the storage_key."""
+    from pathlib import Path
+    import tempfile
+    from cli.main import cmd_attach_upload
+
+    fake = MagicMock()
+    fake.request.return_value.status_code = 200
+    fake.request.return_value.json.return_value = {
+        "storage_key": "mockup_png-abc123",
+        "display_name": "mockup.png",
+        "size_bytes": 1024,
+        "content_type": "image/png",
+        "uploaded_by": "dev_agent",
+    }
+
+    # Create a real fixture file.
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        tf.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        fixture_path = tf.name
+
+    try:
+        with patch("cli.main.OpcClient.from_env", return_value=fake), \
+             patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+            args = MagicMock(
+                org=None, file=str(fixture_path), as_agent="dev_agent",
+            )
+            cmd_attach_upload(args)
+
+        fake.request.assert_called_once()
+        call_args, call_kwargs = fake.request.call_args
+        assert call_args[0] == "POST"
+        assert "/tasks/attachments" in call_args[1]
+        assert "file" in call_kwargs.get("files", {})
+        out = capsys.readouterr().out
+        assert "storage_key: mockup_png-abc123" in out
+    finally:
+        Path(fixture_path).unlink(missing_ok=True)
