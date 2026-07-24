@@ -213,6 +213,7 @@ Traps:
 - Dispatcher identity comes from the `task_dispatched` audit row.
 - Cross-thread enqueue uses `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`.
 - Terminal gate is completion/failed **plus** `superseded` (completion-class → `task_completed` kind). A thread-originated task auto-resolved by a continuation must still emit its followup; missing this terminal silently drops the superseded state from the thread lifecycle.
+- **Daemon lifespan ordering (THR-109).** `_attach_thread_queue_wiring` must run before `ensure_workers_started` so the orchestrator's `_thread_queue` and `_main_loop` references are populated before any task worker can execute a step. Without this ordering, a rapid terminal task fires `_append_followup_system_and_reinvoke` while those references are still `None`, producing `enqueue_unavailable` and stranding the invocation as permanently pending. The blocked-on-job recovery after wiring still has a wired queue (THR-109 PR).
 
 ## Dreams
 

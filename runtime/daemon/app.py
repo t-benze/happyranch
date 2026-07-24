@@ -89,6 +89,14 @@ async def _lifespan(app: FastAPI):
     from runtime.daemon.thread_queue import thread_worker_loop
 
     state: DaemonState = app.state.daemon
+
+    # THR-109: wire the ThreadQueue + main loop BEFORE task workers start.
+    # Before this fix, ensure_workers_started was called first, and a rapid
+    # terminal task could execute _append_followup_system_and_reinvoke while
+    # orch._thread_queue and _main_loop were still None, producing
+    # enqueue_unavailable and stranding the TASK_FOLLOWUP as pending.
+    _main_loop = asyncio.get_running_loop()
+    _attach_thread_queue_wiring(state, _main_loop)
     ensure_workers_started(state)
 
     # Recover any jobs left in 'running' state from a previous daemon process.
@@ -140,8 +148,10 @@ async def _lifespan(app: FastAPI):
                 len(recovered), org.slug, recovered,
             )
 
-    _main_loop = asyncio.get_running_loop()
-    _attach_thread_queue_wiring(state, _main_loop)
+    # _attach_thread_queue_wiring was called above (before workers).
+    # The second call at the original location is now a no-op for
+    # the wiring; the subsequent jobs_resume_main_loop + blocked-on-job
+    # recovery still follow the same order relative to wiring.
     from runtime.daemon.jobs_runner import attach_jobs_resume_main_loop as _wire_jobs
     _wire_jobs(
         _main_loop,
