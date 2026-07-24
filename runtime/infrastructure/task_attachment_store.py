@@ -247,13 +247,15 @@ def validate_task_attachment_refs(
     db,  # Database (protocol: .get_task_attachment_by_storage_key(str) -> Record|None)
     refs: list,
     skip_count_check: bool = False,
+    external_seen_keys: set[str] | None = None,
 ) -> list[dict]:
     """Validate a list of attachment refs for a decision-attachment path.
 
     Reuses the same semantics as POST /tasks (THR-109):
     - Count limit (skipped when ``skip_count_check=True`` — caller handles
       per-child count separately, e.g. fanout validation)
-    - Duplicate storage_key within the batch
+    - Duplicate storage_key within the batch, AND vs. ``external_seen_keys``
+      when provided (enables decision-wide / fanout-wide duplicate detection)
     - File existence on disk
     - Not already claimed in the DB
     - Display name sanitisation
@@ -279,7 +281,7 @@ def validate_task_attachment_refs(
             "max": MAX_TASK_ATTACHMENTS_PER_TASK,
         }))
 
-    seen_keys: set[str] = set()
+    seen_keys: set[str] = set(external_seen_keys) if external_seen_keys else set()
     prevalidated: list[dict] = []
 
     for ref in refs:

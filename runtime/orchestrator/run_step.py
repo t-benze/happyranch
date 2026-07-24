@@ -755,25 +755,12 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
         # If False: cancel landed between Guard B's re-fetch and here. No child
         # was inserted, no parent overwrite, no enqueue. The founder's terminal
         # state wins. Drop silently — the founder cancelled deliberately.
-        if not db.try_delegate(
-            task_id, child,
-            parent_note=f"Delegated to {decision.agent} (child={child_id})",
-            attachments=delegate_attachment_params,
-            uploaded_by=agent,
-        ):
-            logger.debug(
-                "run_step %s: cancelled between re-check and delegate, dropping",
-                task_id,
-            )
-            return
-        logger.debug("run_step %s: try_delegate SUCCEEDED, child=%s", task_id, child_id)
-        # Persist the chain on the parent so child terminals can auto-advance
-        # via _enqueue_parent_if_waiting (Task 8). Skip if neither `then` nor
-        # `expect_verdict` is set — that's a plain single-leg delegate.
-        # MUST happen BEFORE enqueueing the child: a fast worker can otherwise
-        # complete and reach `_enqueue_parent_if_waiting` while active_chain is
-        # still NULL, missing the auto-advance gate and waking the parent as a
-        # plain delegation.
+        #
+        # THR-109: active_chain is written inside try_delegate in the SAME
+        # transaction as child insert + parent update + attachment links/audit.
+        # A crash or write failure rolls back everything atomically — no
+        # orphan chain state, no orphan child, no broken parent state.
+        chain_json: str | None = None
         if decision.then or decision.expect_verdict is not None:
             from runtime.orchestrator.chain import ChainState
             chain = ChainState(
@@ -782,7 +769,20 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                 legs=list(decision.then),
                 step_audit_id=_step_audit_id,
             )
-            db.update_task_active_chain(task_id, chain.serialize())
+            chain_json = chain.serialize()
+        if not db.try_delegate(
+            task_id, child,
+            parent_note=f"Delegated to {decision.agent} (child={child_id})",
+            attachments=delegate_attachment_params,
+            active_chain_json=chain_json,
+            uploaded_by=agent,
+        ):
+            logger.debug(
+                "run_step %s: cancelled between re-check and delegate, dropping",
+                task_id,
+            )
+            return
+        logger.debug("run_step %s: try_delegate SUCCEEDED, child=%s", task_id, child_id)
         if orch._queue is not None:
             orch._queue.put_nowait(orch._slug, child_id)
         return
@@ -864,6 +864,11 @@ def _validate_decision_attachments(
     an invalid later-leg ref rejects the decision before any child is spawned,
     any parent parks, any active_chain is written, or any queue entry is created.
 
+    Duplicate detection is DECISION-WIDE: a storage_key used in both
+    ``decision.attachments`` and ``decision.then[i].attachments``, or in two
+    different chain legs, is rejected before any child/spawn/park/chain state.
+    One shared key ledger covers every declared ref in the decision.
+
     Raises ValueError (JSON-encoded error) on validation failure, causing
     the orchestrator to fail the task with an informative note.
     """
@@ -881,23 +886,33 @@ def _validate_decision_attachments(
     if not has_direct and not has_chain:
         return None
 
+    # One decision-wide key ledger for duplicate detection across all legs.
+    seen_keys: set[str] = set()
+
     # Validate direct delegate attachments.
     direct_refs = list(decision.attachments) if decision.attachments else []
     prevalidated = None
     if direct_refs:
         prevalidated = validate_task_attachment_refs(
             store=store, db=db, refs=direct_refs,
+            external_seen_keys=seen_keys,
         )
+        for pva in prevalidated:
+            seen_keys.add(pva["storage_key"])
 
     # Validate chain leg attachments (early detection — always run, even
-    # when direct attachments are absent).
+    # when direct attachments are absent). Each leg's keys are checked
+    # against the accumulating decision-wide seen_keys for duplicates.
     if decision.then:
         for i, leg in enumerate(decision.then):
             leg_refs = list(leg.attachments) if leg.attachments else []
             if leg_refs:
-                validate_task_attachment_refs(
+                leg_pv = validate_task_attachment_refs(
                     store=store, db=db, refs=leg_refs,
+                    external_seen_keys=seen_keys,
                 )
+                for pva in leg_pv:
+                    seen_keys.add(pva["storage_key"])
 
     return prevalidated
 
@@ -1637,12 +1652,13 @@ def _advance_chain_for_completed_child(
             orch._db.update_task_active_chain(parent_task_id, None)
             return "wake"
 
-    # Advance chain state NOW — after validation, before child insert.
-    # If the child insert/link/audit fails below we clear the chain to
-    # leave no advanced state without a spawned child.
+    # Atomic chain advance: update parent active_chain + insert next child +
+    # attachment links/audit in a single transaction. A crash or write failure
+    # rolls back everything — no orphan chain state, no orphan child, no
+    # orphan link/audit/claim, no queue side effect.
     next_child_id = orch._db.next_task_id()
     chain.step_index = action.next_step_index
-    orch._db.update_task_active_chain(parent_task_id, chain.serialize())
+    chain_json = chain.serialize()
 
     next_child = TaskRecord(
         id=next_child_id,
@@ -1654,17 +1670,15 @@ def _advance_chain_for_completed_child(
         session_timeout_seconds=parent.session_timeout_seconds,
         task_type="subtask",
     )
-    try:
-        if chain_att_params:
-            orch._db.insert_task_with_attachments(
-                next_child, chain_att_params, uploaded_by="orchestrator",
-            )
-        else:
-            orch._db.insert_task(next_child)
-    except Exception:
-        # Child insert/link/audit failed — clear advanced chain state so
-        # the parent can wake and no partial advance is left behind.
-        orch._db.update_task_active_chain(parent_task_id, None)
+    if not orch._db.try_advance_chain(
+        parent_id=parent_task_id,
+        active_chain_json=chain_json,
+        next_child=next_child,
+        attachments=chain_att_params,
+        uploaded_by="orchestrator",
+    ):
+        # Chain advance + child insert failed — transaction rolled back.
+        # No partial state remains; parent wakes normally.
         return "wake"
 
     orch._audit.log_chain_auto_advance(
@@ -2718,15 +2732,21 @@ def _spawn_fanout_children(
     # claim status). Pipeline carriers own their declared refs; their first
     # legs inherit.
     #
-    # Two-pass validation:
-    # 1. Per-child: validate each child's refs normally (count ≤ 5, no
-    #    intra-child duplicates, file exists, not claimed).
-    # 2. Cross-sibling: detect duplicate storage keys across children.
-    #    The per-child pass already validates existence and claim status
-    #    for every key — no second existence/claim pass is needed.
+    # Decision-wide validation:
+    # 1. Per-child/per-leg: validate each child's top-level refs AND each
+    #    pipeline child's nested then[].attachments (count ≤ 5 per leg,
+    #    intra-leg duplicates, file exists, not claimed).
+    # 2. Cross-sibling global: one shared key ledger (all_keys) catches
+    #    duplicates across top-level-to-top-level, carrier-to-nested,
+    #    nested-to-nested, and cross-sibling keys. A duplicate, missing,
+    #    or already-claimed key anywhere rejects the entire fanout before
+    #    child, parent park, active_fanout, link/audit, claim, or queue.
     children_att_params: list[list[dict] | None] = []
     has_any_attachments = any(
-        child_info.get("attachments") for child_info in children
+        child_info.get("attachments") or any(
+            leg.get("attachments") for leg in (child_info.get("then") or [])
+        )
+        for child_info in children
     )
     if has_any_attachments:
         import json
@@ -2737,34 +2757,44 @@ def _spawn_fanout_children(
         from runtime.models import TaskAttachmentRef
         store = TaskAttachmentStore(orch._paths.task_attachments_dir)
 
-        # Pass 1: per-child validation (count, intra-child duplicates,
-        # existence, claim status).
+        # One fanout-wide key ledger for all declared refs.
         per_child_prevalidated: list[list[dict]] = []
         all_keys: set[str] = set()
         try:
             for child_info in children:
                 child_refs_raw = child_info.get("attachments") or []
-                if not child_refs_raw:
-                    per_child_prevalidated.append([])
-                    continue
                 refs = [TaskAttachmentRef(
                     storage_key=r["storage_key"],
                     display_name=r.get("display_name"),
                 ) for r in child_refs_raw]
                 # Per-child count limit + intra-child duplicates + existence
-                # + claim status are all checked here.
+                # + claim status, AND global duplicate vs all_keys.
                 child_pv = validate_task_attachment_refs(
                     store=store, db=db, refs=refs,
+                    external_seen_keys=all_keys,
                 )
+                for pva in child_pv:
+                    all_keys.add(pva["storage_key"])
+
+                # Validate pipeline nested attachments (each then[].attachments
+                # leg individually, with global duplicate detection).
+                pipeline_nested_refs: list[list] = []
+                for leg in child_info.get("then") or []:
+                    leg_refs_raw = leg.get("attachments") or []
+                    if not leg_refs_raw:
+                        continue
+                    leg_refs = [TaskAttachmentRef(
+                        storage_key=r["storage_key"],
+                        display_name=r.get("display_name"),
+                    ) for r in leg_refs_raw]
+                    leg_pv = validate_task_attachment_refs(
+                        store=store, db=db, refs=leg_refs,
+                        external_seen_keys=all_keys,
+                    )
+                    for pva in leg_pv:
+                        all_keys.add(pva["storage_key"])
+
                 per_child_prevalidated.append(child_pv)
-                # Track keys for cross-sibling duplicate detection.
-                for ref in refs:
-                    if ref.storage_key in all_keys:
-                        raise ValueError(json.dumps({
-                            "code": "duplicate_attachment",
-                            "storage_key": ref.storage_key,
-                        }))
-                    all_keys.add(ref.storage_key)
         except ValueError as e:
             import json as _json
             error_detail = _json.loads(str(e))

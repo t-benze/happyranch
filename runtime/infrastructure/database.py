@@ -2265,6 +2265,7 @@ class Database:
     def try_delegate(
         self, parent_id: str, child: TaskRecord, *, parent_note: str,
         attachments: list[dict] | None = None,
+        active_chain_json: str | None = None,
         uploaded_by: str = "orchestrator",
     ) -> bool:
         """Atomic CAS: insert child task + transition parent to
@@ -2285,6 +2286,11 @@ class Database:
         When ``attachments`` is provided, attachment links + audit rows
         are inserted in the same transaction as the child task. A duplicate
         storage_key raises sqlite3.IntegrityError (rolled back by caller).
+
+        When ``active_chain_json`` is provided, it is written to the parent's
+        active_chain column in the same transaction as the child insert +
+        parent status update. A crash or write failure rolls back everything
+        — no orphan chain state, no orphan child, no broken parent state.
 
         On True: parent has transitioned and child exists.
         On False: no DB changes were made (no orphan child, no parent overwrite).
@@ -2337,6 +2343,13 @@ class Database:
                 self._insert_task_attachments_txn(
                     child.id, attachments, uploaded_by,
                 )
+            # Write active_chain within the same transaction so a crash or
+            # write failure rolls back child + parent + chain atomically.
+            if active_chain_json is not None:
+                self._conn.execute(
+                    "UPDATE tasks SET active_chain = ? WHERE id = ?",
+                    (active_chain_json, parent_id),
+                )
             now = datetime.now(timezone.utc).isoformat()
             self._conn.execute(
                 """UPDATE tasks
@@ -2350,6 +2363,74 @@ class Database:
         except Exception:
             self._conn.rollback()
             raise
+
+    @_synchronized
+    def try_advance_chain(
+        self,
+        parent_id: str,
+        active_chain_json: str,
+        next_child: "TaskRecord",
+        *,
+        attachments: list[dict] | None = None,
+        uploaded_by: str = "orchestrator",
+    ) -> bool:
+        """Atomically update parent active_chain + insert next child +
+        attachment links/audit in a single explicit transaction.
+
+        Replaces the prior two-step pattern (update_task_active_chain +
+        insert_task_with_attachments) with a single transaction so a crash
+        or child/link/audit write failure rolls back the chain advance.
+
+        Returns True on success (parent chain advanced, child exists,
+        attachments linked). Returns False and rolls back on any failure.
+        """
+        now_ts = datetime.now(timezone.utc).isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute(
+                "UPDATE tasks SET active_chain = ? WHERE id = ?",
+                (active_chain_json, parent_id),
+            )
+            self._conn.execute(
+                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                   revision_count, created_at, updated_at, completed_at, parent_task_id,
+                   revisit_of_task_id, dispatched_from_thread_id,
+                   block_kind, note,
+                   orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
+                   current_session_id, zombie_flagged_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    next_child.id,
+                    next_child.status.value,
+                    next_child.assigned_agent,
+                    next_child.team,
+                    next_child.brief,
+                    next_child.revision_count,
+                    next_child.created_at.isoformat(),
+                    next_child.updated_at.isoformat(),
+                    next_child.completed_at.isoformat() if next_child.completed_at else None,
+                    next_child.parent_task_id,
+                    next_child.revisit_of_task_id,
+                    next_child.dispatched_from_thread_id,
+                    next_child.block_kind.value if next_child.block_kind else None,
+                    next_child.note,
+                    next_child.orchestration_step_count,
+                    next_child.session_timeout_seconds,
+                    next_child.task_type,
+                    next_child.active_fanout,
+                    next_child.current_session_id,
+                    next_child.zombie_flagged_at.isoformat() if next_child.zombie_flagged_at else None,
+                ),
+            )
+            if attachments:
+                self._insert_task_attachments_txn(
+                    next_child.id, attachments, uploaded_by,
+                )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            return False
 
     @_synchronized
     def increment_revision_count(self, task_id: str) -> None:
