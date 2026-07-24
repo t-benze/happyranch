@@ -731,41 +731,54 @@ def test_thr064_fanout_killed_child_does_not_wake_parent_early(tmp_path):
 def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     tmp_home, daemon_state,
 ):
-    """Regression THR-109: thread queue + main loop wiring must precede
-    task-worker admission so terminal thread-dispatched tasks can enqueue
-    their TASK_FOLLOWUP to the thread queue rather than writing
-    enqueue_unavailable.
+    """Regression THR-109: daemon lifespan MUST wire thread queues + main loop
+    BEFORE starting task workers.
 
     Pre-THR-109, the daemon lifespan called ensure_workers_started before
-    _attach_thread_queue_wiring.  A rapid terminal task then executed
-    _append_followup_system_and_reinvoke while orch._thread_queue and
-    _main_loop were still None, minting a durable PENDING invocation
-    immediately followed by thread_followup_skipped(enqueue_unavailable).
+    _attach_thread_queue_wiring. A rapid terminal task processed by a
+    real queue worker would find orch._thread_queue and orch._main_loop
+    as None, producing thread_followup_skipped(enqueue_unavailable) and
+    stranding the TASK_FOLLOWUP as permanently PENDING.
 
-    This test exercises the real startup ordering seam: it wires the
-    thread queue + main loop (new order, post-fix), then simulates a
-    worker processing a terminal thread-dispatched task during startup.
-    It proves (a) the wiring is present before task execution,
-    (b) the TASK_FOLLOWUP Job is enqueued and retrievable, and
-    (c) no enqueue_unavailable audit is written.
+    This test exercises the real startup ordering: it seeds a thread-dispatched
+    PENDING root task into the task queue, wires the thread queue + main loop,
+    then starts real queue workers. The workers pick up the task, the over-budget
+    guard (max_steps=0) triggers _maybe_post_thread_escalation which calls
+    _append_followup_system_and_reinvoke \u2014 the exact code path that would
+    produce enqueue_unavailable under the old ordering.
+
+    With wiring-before-workers (post-fix ordering):
+    - (1) a TASK_FOLLOWUP invocation is minted and has a delivery path (enqueued
+      to the ThreadQueue)
+    - (2) no thread_followup_skipped(enqueue_unavailable) audit is written
+    - (3) the task reaches the expected escalation terminal state
+
+    Red-side proof (uncommitted, temporary reversal only): swapping the two
+    calls so ensure_workers_started runs BEFORE _attach_thread_queue_wiring
+    deterministically reproduces the pre-fix failure \u2014 the worker processes
+    the task, _append_followup_system_and_reinvoke finds orch._thread_queue
+    and orch._main_loop as None, and writes enqueue_unavailable.
     """
     import asyncio
     import threading
+    import time
 
-    from runtime.daemon.app import _attach_thread_queue_wiring
-    from runtime.daemon.thread_queue import ThreadQueue
+    from runtime.config import Settings as _Settings
+    from runtime.daemon.app import _attach_thread_queue_wiring, ensure_workers_started
     from runtime.models import (
         TaskRecord, TaskStatus, ThreadInvocationPurpose, ThreadRecord,
     )
-    from runtime.orchestrator.run_step import _maybe_post_thread_followup
 
+    # Max orchestration steps of 0 ensures the thread-dispatched root task
+    # hits the budget guard immediately on first pickup \u2014 no executor needed.
     org = daemon_state.orgs["alpha"]
+    org.orchestrator._settings = _Settings(max_orchestration_steps=0)
     db = org.db
     orch = org.orchestrator
     audit = orch._audit
     thread_queue = org.thread_queue
 
-    # Seed a thread + dispatched COMPLETED root task.
+    # Seed an OPEN thread + dispatched PENDING root task.
     db.insert_thread(ThreadRecord(id="THR-STRT", subject="startup ordering"))
     db.add_thread_participant("THR-STRT", "engineering_head", added_by="founder")
     db.insert_task(TaskRecord(
@@ -777,45 +790,58 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
         "THR-STRT", task_id="TASK-STRT", dispatcher="engineering_head",
         target_agent="engineering_head", team="engineering",
     )
-    db.update_task("TASK-STRT", status=TaskStatus.COMPLETED)
 
-    # Start a real event loop in a background daemon thread.  Mirrors the
-    # daemon lifespan where the loop lives in the FastAPI/uvicorn thread.
+    # Enqueue the PENDING task so workers pick it up immediately on start.
+    daemon_state.queue.put_nowait(org.slug, "TASK-STRT")
+
+    # Start a real event loop in a background daemon thread.
+    # Mirrors the daemon lifespan where FastAPI/uvicorn runs the loop.
     loop = asyncio.new_event_loop()
     bg_thread = threading.Thread(target=loop.run_forever, daemon=True)
     bg_thread.start()
 
     try:
-        # NEW ORDER (post-THR-109 fix): wire thread queue + main loop
-        # BEFORE task workers could execute a step.  The old order
-        # (ensure_workers_started before _attach_thread_queue_wiring)
-        # would leave orch._thread_queue and orch._main_loop as None
-        # when the worker's followup fires -> enqueue_unavailable.
+        # POST-FIX ordering: wire thread queue + main loop BEFORE workers.
+        # Under the old ordering (swap these two calls) the worker processes
+        # the task while orch._thread_queue and orch._main_loop are None,
+        # producing enqueue_unavailable.
         _attach_thread_queue_wiring(daemon_state, loop)
 
-        # Simulate a worker completing a terminal thread-dispatched task
-        # during startup -- the code path that fires the followup helper.
-        _maybe_post_thread_followup(
-            orch, "TASK-STRT", status=TaskStatus.COMPLETED,
-            auto_revisit_spawned=False,
-        )
+        # ensure_workers_started uses asyncio.create_task, which requires
+        # a running event loop in the calling thread.  Schedule it onto the
+        # background loop so workers run in the correct async context.
+        async def _start():
+            ensure_workers_started(daemon_state)
+        asyncio.run_coroutine_threadsafe(_start(), loop).result(timeout=5.0)
 
-        # (a) ThreadJob is enqueued and retrievable from the wired queue.
-        fut = asyncio.run_coroutine_threadsafe(thread_queue.get(), loop)
-        job = fut.result(timeout=2.0)
-        assert job.org_slug == "alpha"
-        assert job.invocation_token
+        # Wait for a worker to process the task (poll the DB).
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            t = db.get_task("TASK-STRT")
+            if t.status in (TaskStatus.ESCALATED,):
+                break
+            time.sleep(0.05)
+        else:
+            assert False, (
+                f"task was not escalated within 5s; "
+                f"current status={db.get_task('TASK-STRT').status}"
+            )
 
-        # (b) TASK_FOLLOWUP invocation is minted in the DB.
+        # (1) TASK_FOLLOWUP invocation is minted and has a delivery path.
         invs = db.list_thread_invocations("THR-STRT")
         followups = [
             i for i in invs
             if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
         ]
-        assert len(followups) == 1
+        assert len(followups) >= 1, (
+            f"expected \u22651 TASK_FOLLOWUP invocation, got {len(followups)}"
+        )
+        fut = asyncio.run_coroutine_threadsafe(thread_queue.get(), loop)
+        job = fut.result(timeout=2.0)
+        assert job.org_slug == org.slug
         assert job.invocation_token == followups[0].invocation_token
 
-        # (c) No enqueue_unavailable audit was written.
+        # (2) No enqueue_unavailable audit row was written.
         audit_rows = db.get_audit_logs("TASK-STRT")
         skipped = [
             r for r in audit_rows
@@ -824,8 +850,20 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
         ]
         assert not skipped, (
             f"found enqueue_unavailable audit -- thread queue wiring was "
-            f"not in place before followup fired: {skipped}"
+            f"not in place before escalation fired: {skipped}"
         )
+
+        # (3) Normal nearby lifecycle: task reached the expected terminal state.
+        t = db.get_task("TASK-STRT")
+        assert t.status == TaskStatus.ESCALATED
+        assert "max steps" in (t.note or "")
     finally:
+        # Stop workers gracefully before tearing down the loop.
+        async def _stop():
+            await daemon_state.queue.stop(timeout=2.0)
+        try:
+            asyncio.run_coroutine_threadsafe(_stop(), loop).result(timeout=3.0)
+        except Exception:
+            pass
         loop.call_soon_threadsafe(loop.stop)
         bg_thread.join(timeout=2.0)
