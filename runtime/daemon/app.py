@@ -80,6 +80,23 @@ def _attach_thread_queue_wiring(state: DaemonState, loop) -> None:
         org.orchestrator.attach_thread_queue(org.thread_queue, loop)
 
 
+def _wire_then_start_workers(state: DaemonState, loop) -> None:
+    """Wire ThreadQueue + main loop into each Orchestrator, then start workers.
+
+    Ordering is critical: the thread queue and main loop MUST be wired before
+    task workers start.  Workers that execute before wiring will find
+    ``orch._thread_queue`` and ``orch._main_loop`` as ``None``, producing
+    ``enqueue_unavailable`` and stranding any TASK_FOLLOWUP invocation as
+    permanently pending.
+
+    This helper is the single atomic call used by both ``_lifespan`` (the
+    production startup path) and the THR-109 regression test, so the same
+    ordering is exercised and verified in both contexts.
+    """
+    _attach_thread_queue_wiring(state, loop)
+    ensure_workers_started(state)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
@@ -91,13 +108,11 @@ async def _lifespan(app: FastAPI):
     state: DaemonState = app.state.daemon
 
     # THR-109: wire the ThreadQueue + main loop BEFORE task workers start.
-    # Before this fix, ensure_workers_started was called first, and a rapid
-    # terminal task could execute _append_followup_system_and_reinvoke while
-    # orch._thread_queue and _main_loop were still None, producing
-    # enqueue_unavailable and stranding the TASK_FOLLOWUP as pending.
+    # Uses _wire_then_start_workers to enforce ordering: wiring must precede
+    # ensure_workers_started so a rapid terminal thread-dispatched task can
+    # enqueue its TASK_FOLLOWUP via asyncio.run_coroutine_threadsafe.
     _main_loop = asyncio.get_running_loop()
-    _attach_thread_queue_wiring(state, _main_loop)
-    ensure_workers_started(state)
+    _wire_then_start_workers(state, _main_loop)
 
     # Recover any jobs left in 'running' state from a previous daemon process.
     _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

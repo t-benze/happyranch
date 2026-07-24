@@ -734,43 +734,58 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     """Regression THR-109: daemon lifespan MUST wire thread queues + main loop
     BEFORE starting task workers.
 
-    Pre-THR-109, the daemon lifespan called ensure_workers_started before
-    _attach_thread_queue_wiring. A rapid terminal task processed by a
-    real queue worker would find orch._thread_queue and orch._main_loop
-    as None, producing thread_followup_skipped(enqueue_unavailable) and
-    stranding the TASK_FOLLOWUP as permanently PENDING.
+    This test exercises two complementary verification surfaces:
 
-    This test exercises the real startup ordering: it seeds a thread-dispatched
-    PENDING root task into the task queue, wires the thread queue + main loop,
-    then starts real queue workers. The workers pick up the task, the over-budget
-    guard (max_steps=0) triggers _maybe_post_thread_escalation which calls
-    _append_followup_system_and_reinvoke \u2014 the exact code path that would
-    produce enqueue_unavailable under the old ordering.
+    **A. Source-order guard (deterministic).** Uses ``inspect.getsource``
+    to verify the two statements inside ``_wire_then_start_workers``
+    appear in the correct order: ``_attach_thread_queue_wiring`` before
+    ``ensure_workers_started``.  This is a pure code-level check that
+    fails immediately if the helper's internal ordering is ever reversed —
+    no runtime race, no sleep, no non-determinism.
 
-    With wiring-before-workers (post-fix ordering):
-    - (1) a TASK_FOLLOWUP invocation is minted and has a delivery path (enqueued
-      to the ThreadQueue)
+    **B. Behavioural regression (runtime).** Calls the SAME production
+    helper that ``_lifespan`` invokes via a background event loop.  Real
+    queue workers pick up a pre-seeded terminal task, exercise the exact
+    ``_maybe_post_thread_escalation`` →
+    ``_append_followup_system_and_reinvoke`` code path, and the test
+    asserts the post-fix outcomes.
+
+    With the post-fix helper ordering (wiring before workers):
+    - (1) a TASK_FOLLOWUP invocation is minted and has a delivery path
+      (enqueued to the ThreadQueue)
     - (2) no thread_followup_skipped(enqueue_unavailable) audit is written
     - (3) the task reaches the expected escalation terminal state
 
-    Red-side proof (uncommitted, temporary reversal only): swapping the two
-    calls so ensure_workers_started runs BEFORE _attach_thread_queue_wiring
-    deterministically reproduces the pre-fix failure \u2014 the worker processes
-    the task, _append_followup_system_and_reinvoke finds orch._thread_queue
-    and orch._main_loop as None, and writes enqueue_unavailable.
+    Red-side proof (uncommitted, temporary): swap the two calls inside
+    ``_wire_then_start_workers``.  The source-order guard catches it
+    deterministically — no runtime execution required.
     """
     import asyncio
+    import inspect
     import threading
     import time
 
     from runtime.config import Settings as _Settings
-    from runtime.daemon.app import _attach_thread_queue_wiring, ensure_workers_started
+    from runtime.daemon.app import _wire_then_start_workers
     from runtime.models import (
         TaskRecord, TaskStatus, ThreadInvocationPurpose, ThreadRecord,
     )
 
+    # ── A. Source-order guard (deterministic) ──
+    src = inspect.getsource(_wire_then_start_workers)
+    wire_idx = src.index("_attach_thread_queue_wiring")
+    workers_idx = src.index("ensure_workers_started")
+    assert wire_idx < workers_idx, (
+        f"_wire_then_start_workers: _attach_thread_queue_wiring "
+        f"(idx {wire_idx}) must precede ensure_workers_started "
+        f"(idx {workers_idx}); ordering is reversed — TASK_FOLLOWUP "
+        f"invocations will strand with enqueue_unavailable"
+    )
+
+    # ── B. Behavioural regression (runtime) ──
+
     # Max orchestration steps of 0 ensures the thread-dispatched root task
-    # hits the budget guard immediately on first pickup \u2014 no executor needed.
+    # hits the budget guard immediately on first pickup — no executor needed.
     org = daemon_state.orgs["alpha"]
     org.orchestrator._settings = _Settings(max_orchestration_steps=0)
     db = org.db
@@ -801,24 +816,16 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     bg_thread.start()
 
     try:
-        # POST-FIX ordering: wire thread queue + main loop BEFORE workers.
-        # Under the old ordering (swap these two calls) the worker processes
-        # the task while orch._thread_queue and orch._main_loop are None,
-        # producing enqueue_unavailable.
-        _attach_thread_queue_wiring(daemon_state, loop)
-
-        # ensure_workers_started uses asyncio.create_task, which requires
-        # a running event loop in the calling thread.  Schedule it onto the
-        # background loop so workers run in the correct async context.
+        # Call the same production helper that _lifespan uses.
         async def _start():
-            ensure_workers_started(daemon_state)
+            _wire_then_start_workers(daemon_state, loop)
         asyncio.run_coroutine_threadsafe(_start(), loop).result(timeout=5.0)
 
         # Wait for a worker to process the task (poll the DB).
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             t = db.get_task("TASK-STRT")
-            if t.status in (TaskStatus.ESCALATED,):
+            if t.status is TaskStatus.ESCALATED:
                 break
             time.sleep(0.05)
         else:
