@@ -2261,14 +2261,21 @@ class TestDecisionAttachments:
         assert parent.active_fanout is None
         assert len(db.get_children(pid)) == 0
 
-    # --- TASK-3333 regression tests: atomic chain transaction failures ---
+    # --- TASK-3338 regression tests: real-transaction atomic rollback ---
 
     def test_initial_direct_chain_transaction_failure_rolls_back(
-        self, test_settings, test_runtime, monkeypatch,
+        self, test_settings, test_runtime,
     ):
-        """Inject a write failure inside try_delegate after the child INSERT
-        but before commit. Assert zero partial state: no child, no parent
-        delegated/chain state, no attachment link/audit/claim, no queue."""
+        """Inject a real SQLite failure inside try_delegate's transaction
+        AFTER the child INSERT and attachment link have been written.
+        The abort trigger fires on the audit_log INSERT inside
+        _insert_task_attachments_txn, which runs inside try_delegate's
+        transaction — proving the actual DB write path is hit and rolled
+        back atomically.
+
+        Verifies zero partial state: no child, no parent delegated/chain
+        state, no attachment link/audit/claim, no queue entry."""
+        import sqlite3
         from datetime import datetime, timezone
         from runtime.models import TaskRecord, NextStep, ChainLeg
         from runtime.infrastructure.database import Database
@@ -2285,58 +2292,92 @@ class TestDecisionAttachments:
             created_at=now, updated_at=now,
         ))
         store = TaskAttachmentStore(OrgPaths(test_runtime.root).task_attachments_dir)
-        store.put("chain-fl-k", b"fk")
+        # Two DISTINCT, individually valid keys — so prevalidation passes.
+        store.put("chain-fl-direct", b"fk")
+        store.put("chain-fl-later", b"fl")
+
+        # Install a Python-side counter + abort trigger on audit_log so a
+        # real SQLite failure is injected inside try_delegate's transaction
+        # AFTER the child INSERT and task_attachments INSERT, but before
+        # commit.  The Python counter survives the SQLite rollback.
+        trigger_counter = [0]
+        def _inc_t1():
+            trigger_counter[0] += 1
+        db._conn.create_function("_t3338_t1_inc", 0, _inc_t1)
+        db._conn.execute(
+            "CREATE TEMP TRIGGER _t3338_t1_abort "
+            "BEFORE INSERT ON audit_log "
+            "WHEN NEW.action = 'task_attachment_added' "
+            "BEGIN "
+            "    SELECT _t3338_t1_inc(); "
+            "    SELECT RAISE(ABORT, 'injected transaction failure'); "
+            "END"
+        )
 
         orch = _setup_orch(test_runtime, db, test_settings)
         scripted = ScriptedRunAgent()
         orch._run_agent = scripted
 
-        # Monkey-patch try_delegate to fail mid-transaction after the
-        # child INSERT but before parent UPDATE + commit.
-        real_try_delegate = db.try_delegate
-        call_count = [0]
-        def failing_try_delegate(parent_id, child, *, parent_note,
-                                  attachments=None, active_chain_json=None,
-                                  uploaded_by="orchestrator"):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise RuntimeError("injected write failure")
-            return real_try_delegate(
-                parent_id, child, parent_note=parent_note,
-                attachments=attachments, active_chain_json=active_chain_json,
-                uploaded_by=uploaded_by,
-            )
-        monkeypatch.setattr(db, "try_delegate", failing_try_delegate)
-
         decision = NextStep(
             action="delegate", agent="dev_agent", prompt="build",
-            attachments=[{"storage_key": "chain-fl-k", "display_name": "f.png"}],
+            attachments=[{"storage_key": "chain-fl-direct",
+                          "display_name": "f.png"}],
             then=[
                 ChainLeg(agent="qa_engineer", prompt="qa",
-                         attachments=[{"storage_key": "chain-fl-k",
-                                        "display_name": "f.png"}]),
+                         attachments=[{"storage_key": "chain-fl-later",
+                                       "display_name": "l.png"}]),
             ],
         )
         scripted.enqueue("engineering_head", decision=decision, summary="delegating")
 
-        run_task_to_completion(orch, task_id=pid)
+        # try_delegate catches the ABORT, rolls back, and re-raises.
+        # The exception propagates out of run_step_impl → run_step.
+        error_raised = False
+        try:
+            run_task_to_completion(orch, task_id=pid)
+        except Exception:
+            error_raised = True
+        assert error_raised, \
+            "Expected db.try_delegate to raise after trigger ABORT"
+
+        # Verify the trigger fired — proves the real DB write path was
+        # reached (child + link INSERT happened before the abort).
+        assert trigger_counter[0] >= 1, \
+            f"Trigger must fire at least once, got count={trigger_counter[0]}"
+
+        # Transaction was rolled back: no child, no chain, no claims.
         parent = db.get_task(pid)
-        # Parent should be FAILED (or PENDING if error was caught higher up).
-        # The key assertion: no child, no active_chain, no attachment claim.
         assert parent.active_chain is None, \
-            "active_chain must be clean after transaction failure"
+            "active_chain must be clean after transaction rollback"
         children = db.get_children(pid)
         assert len(children) == 0, \
-            f"No children should exist after transaction failure, got {children}"
-        assert db.get_task_attachment_by_storage_key("chain-fl-k") is None, \
-            "Attachment must not be claimed after transaction failure"
+            f"No children should exist after transaction rollback, got {children}"
+        # No task-attachment row for either key.
+        assert db.get_task_attachment_by_storage_key("chain-fl-direct") is None, \
+            "Direct attachment key must not be claimed after rollback"
+        assert db.get_task_attachment_by_storage_key("chain-fl-later") is None, \
+            "Later-leg attachment key must not be claimed after rollback"
+        # No 'task_attachment_added' audit rows survived.
+        audit_logs = db.get_audit_logs(pid)
+        att_added = [l for l in audit_logs
+                     if l.get("action") == "task_attachment_added"]
+        assert len(att_added) == 0, \
+            f"No task_attachment_added audit rows after rollback, got {att_added}"
 
     def test_auto_advance_chain_transaction_failure_rolls_back(
-        self, test_settings, test_runtime, monkeypatch,
+        self, test_settings, test_runtime,
     ):
-        """Inject a write failure in try_advance_chain. Assert zero partial
-        state: no advanced chain, no child, no attachment link/audit/claim,
-        no queue entry."""
+        """Inject a real SQLite failure inside try_advance_chain's explicit
+        transaction AFTER the parent active_chain UPDATE and child INSERT.
+        The abort trigger fires on the audit_log INSERT inside
+        _insert_task_attachments_txn, which runs inside try_advance_chain's
+        BEGIN IMMEDIATE block.
+
+        Verifies: try_advance_chain returns False, the method takes the
+        wake/failure branch, zero partial state (no second child, chain
+        not advanced past original snapshot, no new attachment link/audit,
+        no chain_auto_advance audit, no new queue entry)."""
+        import sqlite3
         from datetime import datetime, timezone
         from runtime.models import TaskRecord, ChainLeg
         from runtime.infrastructure.database import Database
@@ -2371,7 +2412,8 @@ class TestDecisionAttachments:
                                         "display_name": "af.png"}])],
             step_audit_id=1,
         )
-        db.update_task_active_chain(pid, chain.serialize())
+        original_chain_json = chain.serialize()
+        db.update_task_active_chain(pid, original_chain_json)
         child1_id = "T-ADV-C1"
         db.insert_task(TaskRecord(
             id=child1_id, brief="first leg", team="engineering",
@@ -2382,30 +2424,72 @@ class TestDecisionAttachments:
                               status="completed", confidence_score=90,
                               output_summary="done", verdict="APPROVE")
 
-        # Monkey-patch try_advance_chain to return False (simulating a
-        # write failure inside the transaction, which rolls back and
-        # returns False — not raising through to the caller).
-        real_advance = db.try_advance_chain
-        def failing_advance(parent_id, active_chain_json, next_child, *,
-                            attachments=None, uploaded_by="orchestrator"):
-            return False
-        monkeypatch.setattr(db, "try_advance_chain", failing_advance)
+        # Count existing children so we can assert no new child was added.
+        pre_children = db.get_children(pid)
+        assert len(pre_children) == 1
+        # Count existing audit rows for pid.
+        pre_audit_count = len(db.get_audit_logs(pid))
+
+        # Install a Python-side counter + abort trigger on audit_log so a
+        # real SQLite failure is injected inside try_advance_chain's
+        # explicit BEGIN IMMEDIATE transaction AFTER the parent
+        # active_chain UPDATE + child INSERT, but before commit.
+        trigger_counter = [0]
+        def _inc_t2():
+            trigger_counter[0] += 1
+        db._conn.create_function("_t3338_t2_inc", 0, _inc_t2)
+        db._conn.execute(
+            "CREATE TEMP TRIGGER _t3338_t2_abort "
+            "BEFORE INSERT ON audit_log "
+            "WHEN NEW.action = 'task_attachment_added' "
+            "BEGIN "
+            "    SELECT _t3338_t2_inc(); "
+            "    SELECT RAISE(ABORT, 'injected transaction failure'); "
+            "END"
+        )
 
         from runtime.orchestrator.run_step import _advance_chain_for_completed_child
         result = _advance_chain_for_completed_child(orch=orch, parent_task_id=pid,
                                                      child_task_id=child1_id)
-        # Should return "wake" — the exception is caught by the
-        # pre-existing exception handling in _advance_chain_for_completed_child.
-        # Wait, the new code uses try_advance_chain which returns False on failure,
-        # so the caller sees False and returns "wake".
-        assert result == "wake"
+
+        # try_advance_chain catches the ABORT, rolls back, returns False.
+        # _advance_chain_for_completed_child returns "wake" for the caller.
+        assert result == "wake", (
+            f"Expected 'wake' after try_advance_chain rollback, got {result!r}"
+        )
+
+        # Verify the trigger fired — proves the real DB write path was
+        # reached (parent chain UPDATE + child INSERT happened before abort).
+        assert trigger_counter[0] >= 1, \
+            f"Trigger must fire at least once, got count={trigger_counter[0]}"
+
+        # Parent chain: must be IDENTICAL to the original snapshot (not
+        # advanced to a later step_index), not merely non-None.
         parent_after = db.get_task(pid)
         assert parent_after.active_chain is not None, \
-            "After try_advance_chain returns False, the chain is NOT advanced " \
-            "(the old chain value remains — the advance attempt didn't succeed)"
-        # Actually: since we didn't advance the chain, the parent's active_chain
-        # still points to the old (step_index=0) value. The caller returns "wake"
-        # which triggers the parent-wake path, not another auto-advance.
-        # No children beyond the completed first leg.
-        children = db.get_children(pid)
-        assert len(children) == 1  # only child1_id
+            "Parent active_chain must still be present after rollback"
+        restored_chain = ChainState.deserialize(parent_after.active_chain)
+        assert restored_chain.step_index == chain.step_index, (
+            f"Chain step_index must not advance; was {chain.step_index}, "
+            f"got {restored_chain.step_index}"
+        )
+
+        # No second child was created (transaction rolled back).
+        post_children = db.get_children(pid)
+        assert len(post_children) == 1, (
+            f"No new children after rollback, expected 1 got {post_children}"
+        )
+        assert post_children[0] == child1_id, \
+            "Original child must still be the only child"
+
+        # No task-attachment row for the advance key was created.
+        assert db.get_task_attachment_by_storage_key("adv-fl-k") is None, \
+            "Attachment key must not be claimed after rollback"
+
+        # No new audit rows (task_attachment_added or chain_auto_advance)
+        # were persisted for the parent.
+        post_audit_logs = db.get_audit_logs(pid)
+        assert len(post_audit_logs) == pre_audit_count, (
+            f"No new audit rows after rollback; "
+            f"pre={pre_audit_count}, post={len(post_audit_logs)}"
+        )
