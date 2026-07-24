@@ -2,6 +2,21 @@
 
 **THR-107** | **2026-07-19** | **DESIGN ONLY — no production code, no protocol/ edits, no implementation PR**
 
+> **Phase 1 shipped.** The v1 sentinel-envelope contract (envelope_version=1,
+> `__HR_ENVELOPE_BEGIN__`/`__HR_ENVELOPE_END__` markers, optional envelope,
+> `emit_envelope` conformance step) is **shipped and founder-signed**
+> (THR-107 seq57/58). The optional/best-effort backward-compatibility
+> posture (§5) and token-accounting invariants (§1.2) remain authoritative.
+>
+> **Unified adapter-runtime architecture** (THR-107 seq84): a DESIGN-ONLY
+> follow-up spec at
+> [`docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md`](./2026-07-24-unified-adapter-runtime-architecture.md)
+> generalizes this envelope contract into a full adapter boundary covering
+> first-party and custom executors. The envelope remains the custom-CLI
+> conformance surface in that model; this spec's v1 schema, sentinel
+> transport, parser algorithm, backward-compatibility guarantees, and
+> conformance step are carried forward unchanged.
+
 ## Interface Model
 
 HappyRanch defines a **standard daemon↔CLI interface** with two halves:
