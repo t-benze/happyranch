@@ -11,8 +11,14 @@
  *
  * Submit sends exactly ONE of `team` / `new_team` based on role, so the
  * backend's role_team_mismatch guard never fires for legitimate clicks.
+ *
+ * Executor list is derived at runtime from the daemon, never hard-coded:
+ * registered built-ins (health/prereqs present=true) plus all custom
+ * runtime profiles. Unregistered built-ins are shown as unavailable but
+ * are not selectable. On API error, Create is disabled until the
+ * registered list is known (no invented fallback).
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
 import {
@@ -26,6 +32,8 @@ import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { useCreateAgent } from '@/hooks/agents';
+import { usePrereqs } from '@/hooks/health';
+import { useRuntimeProfiles } from '@/hooks/runtime-executors';
 import { useTeamsList } from '@/hooks/teams';
 
 const NAME_RE = /^[a-z][a-z0-9_]*$/;
@@ -38,7 +46,15 @@ function defaultTeamForName(name: string): string {
 }
 
 type Role = 'worker' | 'manager';
-type Executor = 'claude' | 'codex' | 'opencode' | 'pi';
+
+/** One selectable executor option rendered in the dropdown. */
+interface ExecutorOption {
+  name: string;
+  present: boolean;
+  /** The kind — builtin, custom, or unregistered_builtin (unavailable). */
+  kind: 'builtin' | 'custom' | 'unregistered_builtin';
+  hint: string | null;
+}
 
 interface Props {
   open: boolean;
@@ -56,12 +72,89 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
   const [team, setTeam] = useState('');
   const [newTeam, setNewTeam] = useState('');
   const [linkedToName, setLinkedToName] = useState(true);
-  const [executor, setExecutor] = useState<Executor>('claude');
+  const [executor, setExecutor] = useState('');
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [serverError, setServerError] = useState<string | null>(null);
 
   const create = useCreateAgent();
+  const prereqsQuery = usePrereqs();
+  const profilesQuery = useRuntimeProfiles();
+
+  // Derive selectable executor options from live daemon data.
+  const executorOptions = useMemo<{
+    selectable: ExecutorOption[];
+    unavailable: ExecutorOption[];
+    state: 'loading' | 'error' | 'empty' | 'ready';
+  }>(() => {
+    if (prereqsQuery.isLoading || profilesQuery.isLoading) {
+      return { selectable: [], unavailable: [], state: 'loading' };
+    }
+    if (prereqsQuery.isError || profilesQuery.isError) {
+      return { selectable: [], unavailable: [], state: 'error' };
+    }
+
+    const prereqs = prereqsQuery.data?.prereqs ?? [];
+    const customProfiles = profilesQuery.data?.profiles ?? [];
+
+    // Names of all registered custom profiles — used to distinguish
+    // built-in-or-future-registry executors from known custom ones.
+    const customNameSet = new Set(customProfiles.map((p) => p.name));
+
+    // Custom profiles from runtime/profiles are all registered by definition.
+    const customs: ExecutorOption[] = customProfiles.map((p) => ({
+      name: p.name,
+      present: p.present,
+      kind: 'custom' as const,
+      hint: null,
+    }));
+
+    // Built-ins: every prereq whose name is NOT a known custom profile.
+    // Deduplicate against the custom set so a prereq that also appears as
+    // a custom profile is represented only once (as custom).
+    const builtins: ExecutorOption[] = [];
+    for (const p of prereqs) {
+      if (customNameSet.has(p.tool)) continue; // covered by the customs list
+      builtins.push({
+        name: p.tool,
+        present: p.present,
+        kind: p.present ? 'builtin' as const : 'unregistered_builtin' as const,
+        hint: p.hint,
+      });
+    }
+
+    const selectable = [
+      ...builtins.filter((b) => b.kind === 'builtin'),
+      ...customs,
+    ];
+    const unavailable = builtins.filter((b) => b.kind === 'unregistered_builtin');
+
+    if (selectable.length === 0) {
+      return { selectable: [], unavailable, state: 'empty' };
+    }
+    return { selectable, unavailable, state: 'ready' };
+  }, [prereqsQuery, profilesQuery]);
+
+  // When the selectable-name set changes (reload / refetch), keep a
+  // still-valid user selection, but clear or reset when a former value
+  // has disappeared from the live options.
+  const selectableNames = useMemo(
+    () => new Set(executorOptions.selectable.map((o) => o.name)),
+    [executorOptions.selectable],
+  );
+  useEffect(() => {
+    if (executorOptions.state !== 'ready') return;
+    if (selectableNames.has(executor)) return; // still valid
+    if (executorOptions.selectable.length > 0) {
+      setExecutor(executorOptions.selectable[0].name);
+    } else {
+      setExecutor('');
+    }
+    // Run only when the selectable set changes; the eslint-disable is
+    // intentional — adding executor to the deps would re-init on every
+    // selection change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectableNames, executorOptions.state, executorOptions.selectable]);
 
   const onNameChange = (next: string) => {
     setName(next);
@@ -85,8 +178,13 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
   };
 
   const nameOk = NAME_RE.test(name);
+  const executorOk =
+    executorOptions.state === 'ready' &&
+    !!executor &&
+    executorOptions.selectable.some((o) => o.name === executor);
   const fieldsOk =
     nameOk &&
+    executorOk &&
     description.trim().length > 0 &&
     systemPrompt.trim().length > 0 &&
     (role === 'worker' ? !!team && teams.length > 0 : !!newTeam);
@@ -210,17 +308,49 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
 
           <div>
             <Label htmlFor="agent-executor">Executor</Label>
-            <select
-              id="agent-executor"
-              value={executor}
-              onChange={(e) => setExecutor(e.target.value as Executor)}
-              className="border-border-subtle bg-bg-subtle w-full rounded border p-2 text-sm"
-            >
-              <option value="claude">claude</option>
-              <option value="codex">codex</option>
-              <option value="opencode">opencode</option>
-              <option value="pi">pi</option>
-            </select>
+            {executorOptions.state === 'loading' ? (
+              <p className="text-fg-muted text-sm">Loading executor list…</p>
+            ) : executorOptions.state === 'error' ? (
+              <p className="text-tier-red text-sm">
+                Could not load the executor list. Create is disabled.
+              </p>
+            ) : executorOptions.state === 'empty' ? (
+              <p className="text-fg-muted text-sm">
+                No executors are registered on this machine.
+                {executorOptions.unavailable.length > 0 && (
+                  <>
+                    {' '}
+                    The following built-ins are not registered:{' '}
+                    {executorOptions.unavailable.map((e) => e.name).join(', ')}.
+                  </>
+                )}
+                {' '}Register one via Settings → Executors, then reopen this dialog.
+              </p>
+            ) : (
+              <select
+                id="agent-executor"
+                value={executor}
+                onChange={(e) => setExecutor(e.target.value)}
+                className="border-border-subtle bg-bg-subtle w-full rounded border p-2 text-sm"
+              >
+                {executorOptions.selectable.map((opt) => (
+                  <option key={opt.name} value={opt.name}>
+                    {opt.name}
+                    {opt.kind === 'custom' ? ' (custom)' : ''}
+                  </option>
+                ))}
+                {executorOptions.unavailable.length > 0 && (
+                  <>
+                    <option disabled>── unregistered ──</option>
+                    {executorOptions.unavailable.map((opt) => (
+                      <option key={opt.name} value={opt.name} disabled>
+                        {opt.name} (not registered)
+                      </option>
+                    ))}
+                  </>
+                )}
+              </select>
+            )}
           </div>
 
           <div>

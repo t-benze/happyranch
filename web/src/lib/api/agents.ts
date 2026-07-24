@@ -38,7 +38,8 @@ export interface CreateAgentBody {
   role: 'worker' | 'manager';
   team?: string;
   new_team?: string;
-  executor: 'claude' | 'codex' | 'opencode' | 'pi';
+  /** Registered executor profile name (built-in or custom). */
+  executor: string;
   description: string;
   system_prompt: string;
   allow_rules?: string[];

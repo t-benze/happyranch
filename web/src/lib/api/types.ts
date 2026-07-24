@@ -320,7 +320,7 @@ export interface AgentSummary {
   name: string;
   team: string | null;
   role: 'manager' | 'worker' | null;
-  executor: 'claude' | 'codex' | 'opencode' | 'pi' | null;
+  executor: string | null;
   model?: string | null;
   description: string | null;
   // Phase 2: additive read-only fields (D6)
@@ -332,7 +332,7 @@ export interface AgentEnrollment {
   name: string;
   team: string;
   role: 'manager' | 'worker';
-  executor: 'claude' | 'codex' | 'opencode' | 'pi';
+  executor: string;
   description: string;
   status: 'pending' | 'approved';
   enrolled_by: string | null;
