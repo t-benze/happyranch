@@ -221,9 +221,12 @@ describe('Composer / mentions', () => {
   });
 });
 
-// THR-099 Phase A (founder seq57): the "Abort reply" control was moved back
+// THR-099 Phase A (founder seq57): the abort-reply control was moved back
 // INSIDE the composer input pill as an optional, in-flight-gated trailing action
 // next to the circular send button — reversing the earlier "moved OUT" decision.
+// THR-099 abort-reply correction: it is now an ICON-ONLY compact square button
+// (red stop-square) — no visible "Abort reply"/"Aborting…" text; that copy lives
+// only in the accessible name + tooltip.
 describe('Composer / abort replies', () => {
   it('renders no abort control by default (prop omitted)', () => {
     render(
@@ -258,6 +261,36 @@ describe('Composer / abort replies', () => {
     );
     const btn = screen.getByRole('button', { name: /Abort reply/i });
     expect(btn).toBeEnabled();
+    // Icon-only: an accessible name from aria-label, but NO visible text on
+    // screen, and a rendered (stop-square) icon.
+    expect(btn.textContent?.trim()).toBe('');
+    expect(btn.querySelector('svg')).not.toBeNull();
+  });
+
+  it('is icon-only — carries no visible "Abort reply"/"Aborting…" text', () => {
+    const { rerender } = render(
+      <Composer
+        agents={[]}
+        threadId="THR-icon"
+        orgSlug="test-org"
+        onSend={NOOP_SEND}
+        abortReplies={{ active: true, isPending: false, onAbort: vi.fn() }}
+      />,
+    );
+    // Accessible via role+name, but the literal copy is not visible text.
+    expect(screen.getByRole('button', { name: /Abort reply/i }).textContent?.trim()).toBe('');
+    expect(screen.queryByText(/Abort reply/i)).toBeNull();
+    rerender(
+      <Composer
+        agents={[]}
+        threadId="THR-icon"
+        orgSlug="test-org"
+        onSend={NOOP_SEND}
+        abortReplies={{ active: true, isPending: true, onAbort: vi.fn() }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /Aborting…/i }).textContent?.trim()).toBe('');
+    expect(screen.queryByText(/Aborting…/i)).toBeNull();
   });
 
   it('shows "Aborting…" and disables the control while pending', () => {

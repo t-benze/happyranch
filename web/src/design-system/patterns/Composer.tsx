@@ -16,16 +16,17 @@
  *
  * Auto-grow, @-mention autocomplete, Enter-to-send (Shift+Enter for new
  * line) live in MentionTextarea so the same typing experience is reused
- * by other surfaces (e.g. NewThreadDialog). The optional "Abort reply" control
- * sits INSIDE the input pill as a trailing action next to the circular send
- * button (THR-099 Phase A, founder seq57 — reversing the earlier "moved OUT"
- * decision). It renders only while replies are in flight and is owned entirely
- * by props (the parent holds the thread-level abort mutation).
+ * by other surfaces (e.g. NewThreadDialog). The optional abort-reply control
+ * sits INSIDE the input pill as an icon-only trailing action next to the
+ * circular send button (THR-099 Phase A, founder seq57 — reversing the earlier
+ * "moved OUT" decision): a compact neutral/light-fill, thin-outline square
+ * button with a centered red stop-square icon. It renders only while replies
+ * are in flight and is owned entirely by props (the parent holds the
+ * thread-level abort mutation).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowRight, Paperclip, X } from 'lucide-react';
+import { ArrowRight, Paperclip, Square, X } from 'lucide-react';
 import { MAX_THREAD_ATTACHMENTS, REMOVE_ATTACHMENT_LABEL } from '@/lib/threadAttachments';
-import { Button } from '@/design-system/primitives/Button';
 import { MentionTextarea } from './MentionTextarea';
 import type { AgentSummary } from '@/lib/api/agents';
 
@@ -116,12 +117,14 @@ interface ComposerProps {
    */
   orgSlug: string;
   /**
-   * Optional "Abort reply" trailing action rendered INSIDE the input pill, to
-   * the left of the circular send button (THR-099 Phase A). The button renders
-   * ONLY while `active` (replies in flight); shows "Aborting…" + disabled while
-   * `isPending`; otherwise "Abort reply". `onAbort` aborts EVERY in-flight reply
-   * (the parent owns the thread-level mutation — the pattern stays pure). Other
-   * Composer surfaces (NewThreadDialog, the assistant dock) omit this prop.
+   * Optional abort-reply trailing action rendered INSIDE the input pill, to the
+   * left of the circular send button (THR-099 Phase A) — an icon-only compact
+   * square button (red stop-square). It renders ONLY while `active` (replies in
+   * flight); it is disabled and its accessible name/tooltip read "Aborting…"
+   * while `isPending`, otherwise "Abort reply" (no visible text either way).
+   * `onAbort` aborts EVERY in-flight reply (the parent owns the thread-level
+   * mutation — the pattern stays pure). Other Composer surfaces (NewThreadDialog,
+   * the assistant dock) omit this prop.
    */
   abortReplies?: { active: boolean; isPending: boolean; onAbort: () => void };
 }
@@ -234,25 +237,25 @@ export function Composer({
           registerFocus={registerFocus}
           className="text-body text-text-primary placeholder:text-text-muted w-full resize-none bg-transparent py-1.5 focus:outline-none disabled:opacity-50"
         />
-        {/* "Abort reply" — trailing action INSIDE the pill, left of the circular
-            send (THR-099 Phase A). Renders only while replies are in flight.
-            Reuses the SAME bordered-outline DS Button pill as the old inline
-            control: the `sm` size's h-8 is 4rem on this spacing scale (too tall
-            for the compact pill), so height is left content-driven with the
-            mockup's own padding (px-3 py-1, named tokens). One click still aborts
-            EVERY in-flight reply — the parent owns the thread-level mutation. */}
+        {/* Abort reply — icon-only trailing action INSIDE the pill, left of the
+            circular send (THR-099 abort-reply correction). Renders only while
+            replies are in flight. A compact neutral/light-fill, thin-outline
+            square button (matching the send button's h-9 footprint) whose
+            centered icon is a red stop-square; it carries NO visible text (the
+            "Abort reply" / "Aborting…" copy lives in the accessible name +
+            tooltip, not on-screen). One click still aborts EVERY in-flight
+            reply — the parent owns the thread-level mutation. */}
         {abortReplies?.active && (
-          <Button
+          <button
             type="button"
-            variant="outline"
-            size="sm"
             onClick={abortReplies.onAbort}
             disabled={abortReplies.isPending}
-            title="Abort pending replies"
-            className="hover:border-feedback-danger hover:bg-danger-soft hover:text-feedback-danger mb-0.5 h-auto shrink-0 px-3 py-1"
+            aria-label={abortReplies.isPending ? 'Aborting…' : 'Abort reply'}
+            title={abortReplies.isPending ? 'Aborting…' : 'Abort reply'}
+            className="border-border-default bg-surface-raised text-feedback-danger hover:border-feedback-danger hover:bg-danger-soft mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-50"
           >
-            {abortReplies.isPending ? 'Aborting…' : 'Abort reply'}
-          </Button>
+            <Square className="h-4 w-4" aria-hidden="true" />
+          </button>
         )}
         <button
           type="button"
