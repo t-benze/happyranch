@@ -1436,23 +1436,40 @@ class TestBuildExecutorCanonical:
     # -- Fifth lifecycle e2e: registration → factory → run ----------------
 
     def test_custom_profile_full_lifecycle_with_argv_and_envelope(
-            self, tmp_path: Path):
-        """Exercise the complete fifth lifecycle: validate a raw config
-        through the canonical ExecutorRegistry.validate_custom_profile_config,
-        register the returned validated profile, build it via build_executor,
-        run it with mocked Popen, assert exact ordered argv, and verify
-        optional v1 envelope parsing.
+            self, tmp_path: Path, monkeypatch):
+        """Exercise the complete fifth lifecycle with a non-null declared
+        command: validates a fixed raw config through the canonical
+        ExecutorRegistry.validate_custom_profile_config, which exercises
+        the real shutil.which resolution branch and the declared-command /
+        argv_template[0] executable-parity validation (issue #490). Registers
+        the returned validated profile, builds it via build_executor, runs it
+        with mocked Popen, asserts exact ordered argv, and verifies optional
+        v1 envelope parsing.
 
-        This test FAILS if validate_custom_profile_config is bypassed —
-        the profile must flow through the canonical validation seam.
+        The executor_registry module’s shutil.which is patched to return a
+        deterministic resolved path for the valid declared command so the
+        test is platform-stable. This test FAILS if
+        validate_custom_profile_config or the command/template parity check
+        is bypassed.
         """
         workspace = tmp_path / "ws"
         workspace.mkdir()
 
-        # 1. Build a fixed raw config and validate through the canonical seam.
-        #    command=None skips which() resolution (deterministic test path).
+        # -- Patch executor_registry.shutil.which for determinism ---------
+        _registry_which_map = {
+            "kimi-cli": "/opt/kimi/kimi-cli",
+        }
+        import runtime.orchestrator.executor_registry as _reg_mod
+
+        def _patched_registry_which(name, path=None):
+            return _registry_which_map.get(name)
+
+        monkeypatch.setattr(_reg_mod.shutil, "which", _patched_registry_which)
+
+        # 1. Build a fixed raw config with a non-null command and validate
+        #    through the canonical seam.
         config = {
-            "command": None,
+            "command": "kimi-cli",
             "argv_template": [
                 "kimi-cli", "--model", "kimi-v2",
                 "--workspace", "{workspace}",
@@ -1529,6 +1546,41 @@ class TestBuildExecutorCanonical:
         assert result.token_usage is not None
         assert result.token_usage.input_tokens == 500
         assert result.token_usage.output_tokens == 250
+
+    def test_custom_profile_command_template_parity_violation_rejected(
+            self, monkeypatch):
+        """Prove that canonical validation REJECTS a registered custom
+        profile whose non-null declared command resolves to a different
+        executable than argv_template[0] (the executable
+        GenericCliExecutor actually launches).
+
+        This negative assertion locks the issue-#490 parity gate in
+        executor_registry.py:316-345 — if a regression removes or weakens
+        the check this test will fail.
+        """
+        import runtime.orchestrator.executor_registry as _reg_mod
+
+        _which_map = {
+            "kimi-cli": "/opt/kimi/kimi-cli",
+            "other-cli": "/opt/other/other-cli",
+        }
+
+        def _patched_which(name, path=None):
+            return _which_map.get(name)
+
+        monkeypatch.setattr(_reg_mod.shutil, "which", _patched_which)
+
+        config = {
+            "command": "kimi-cli",
+            "argv_template": [
+                "other-cli", "--prompt", "{prompt}",
+            ],
+            "adapter": "pi",
+        }
+        with pytest.raises(ValueError, match="must be the same"):
+            ExecutorRegistry.validate_custom_profile_config(
+                "parity-bad", config,
+            )
 
     def test_custom_profile_no_envelope_returns_no_token_usage(
             self, tmp_path: Path):

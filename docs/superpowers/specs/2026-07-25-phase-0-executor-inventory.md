@@ -44,20 +44,21 @@ Source: `executor_registry.py:148-173`.
 ```text
 registrant → POST /api/v1/orgs/{slug}/executors or
              POST /api/v1/runtime/executors
-         → validate_custom_profile_config() (executor_registry.py:270-344)
+         → validate_custom_profile_config() (executor_registry.py:262-344)
          → ExecutorRegistry.register_custom_profile() (executor_registry.py:199-246)
          → persist durable store + in-memory registry
 ```
 
-Validation (`validate_custom_profile_config`, line 270):
+Validation (`validate_custom_profile_config`, line 262):
 - `adapter` must be one of `claude`/`codex`/`opencode`/`pi` — selects workspace adapter
 - `argv_template` must be a non-empty list of strings with valid placeholders (`{prompt}`, `{timeout_seconds}`, `{workspace}`)
-- `command` must resolve on PATH; `argv_template[0]` must resolve to the same executable
+- `command` must be a string and resolve on PATH; `argv_template[0]` must resolve to the same executable. The command/template executable-parity check (issue #490) is **enforced only when `command` is non-null**.
+- `command=None` is a test-only exception: the shipping code deliberately skips `shutil.which()` resolution and the parity check for this value (executor_registry.py:300-306)
 - Readiness marker: `AGENTS.md` for `codex`/`opencode`/`pi`, `.claude/skills/start-task/SKILL.md` for `claude`
 
 ### 1.4 `build_executor()`: The Executor Factory
 
-`build_executor()` (`executor_registry.py:350-408`) resolves a profile name to
+`build_executor()` (`executor_registry.py:383-408`) resolves a profile name to
 an executor instance. It contains a **hard-coded if/elif chain**:
 
 ```python
