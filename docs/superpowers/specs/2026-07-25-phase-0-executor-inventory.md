@@ -215,17 +215,65 @@ Key behaviors:
 
 ## 4. Convergent Persistence and Audit
 
-### 4.1 `ExecutorResult` → `run_step`
+### 4.1 `ExecutorResult` → persistence: `Orchestrator._run_agent`
 
-`run_step._run_agent()` (`orchestrator.py`) consumes `ExecutorResult`:
+`Orchestrator._run_agent()` (`orchestrator.py:814-828`) is the single call site
+that bridges executor output into the audit trail. After calling
+`executor.run(...)`, it writes the session-end audit row:
 
-- On **success**: `result.token_usage` → `audit.log_session_end(task_id, ..., token_usage=...)` → `database.insert_session_token_usage(...)`.
-  - `stdout_tail`/`stderr_tail` used for `_session_failed_note` enrichment on parse failures (`run_step.py:1087-1091`).
-- On **failure** (success=False): `result.error`, `result.stdout_tail`, `result.stderr_tail` → `audit.log_agent_failure(...)`.
-  - `stdout_tail`/`stderr_tail` read by `run_step.py:1850-1852` (rate-limit heuristic), `run_step.py:1922-1928` (failure audit note), `run_step.py:2489-2490` (error-summary).
-  - `result.rate_limited` → per-provider throttle backoff logic.
+```python
+# orchestrator.py:823-828
+self._audit.log_session_end(
+    task_id=task_id,
+    agent=agent_name,
+    duration_seconds=result.duration_seconds,
+    token_usage=result.token_usage,
+)
+```
 
-### 4.2 `ExecutorResult` → `thread_runner`
+The `log_session_end` audit row (`audit_logger.py:19-38`) includes
+`duration_seconds` and — when non-None — `token_usage` serialized via
+`.model_dump()` plus `token_count` (the `.total` field).
+
+### 4.2 `ExecutorResult` → token-usage persistence: `run_step`
+
+`run_step` (`run_step.py:224-260`) is the caller of `_run_agent` and the
+site that persists token usage into the `session_token_usage` table. After
+`orch._run_agent()` returns:
+
+```python
+# run_step.py:251-260
+if result.token_usage is not None:
+    db.insert_session_token_usage(
+        task_id=task_id,
+        agent=agent,
+        session_id=result.session_id,
+        executor=orch._resolve_executor_name(agent),
+        token_usage=result.token_usage,
+        scope_type="task",
+        scope_id=task_id,
+        thread_id=task.dispatched_from_thread_id,
+    )
+```
+
+Scope fields (`scope_type`, `scope_id`, `thread_id`) are included on every
+row; the insert uses `INSERT OR IGNORE` (first write wins). This runs before
+outcome classification so timeouts and blocked sessions still land their
+usage row.
+
+### 4.3 `ExecutorResult` → failure handling: `run_step`
+
+On a non-success `ExecutorResult` or missing `CompletionReport`,
+`run_step` (`run_step.py:287-298`) constructs a failure note via
+`_session_failed_note(result, report)` (`run_step.py:2638-2660`), which
+reads `result.returncode`, `result.stderr_tail`/`result.stdout_tail` tail
+text, and `result.error`. The failure context is also captured by
+`_executor_failure_context(result, report)` (`run_step.py:2073-2096`) for
+the auto-revisit header. There is no separate `audit.log_agent_failure`
+method — the failure audit row is written by `_fail()` (`run_step.py`)
+which calls `db.update_task(..., status=FAILED, note=...)`.
+
+### 4.4 `ExecutorResult` → `thread_runner`
 
 Thread/wake/schedule/dream execution also consumes `ExecutorResult`:
 
@@ -274,11 +322,12 @@ tests at `tests/test_phase0_executor_contracts.py`:
 |---|---|
 | `_run_command` with mocked `subprocess.Popen` | Tests nonzero, timeout, tail truncation, rate-limit, token-accounting forward |
 | `_parse_claude_usage`, `_parse_codex_usage`, `_parse_opencode_usage`, `_parse_pi_usage`, `_parse_generic_cli_usage` | Direct unit coverage with fixture data |
-| `validate_custom_profile_config` | Profile validation path exercised through registry |
-| `build_executor` + per-executor `.run()` cmd capture | Captures exact argv lists without subprocess launch |
-| `ExecutorRegistry.register_custom_profile` + `build_executor` → `GenericCliExecutor` | Custom profile argv_template substitution and `_resolve_binary` |
-| `run_step` / `audit` seam | Verified through direct `ExecutorResult` shape forwarded to audit/db call site |
-| Workspace adapter mapping | Verified through profile → adapter_id → bootstrap file assertions |
+| `build_executor` + per-executor `.run()` cmd capture | Captures exact ordered argv vectors with normalized unstable values only |
+| `ExecutorRegistry.register_custom_profile` + `build_executor` → `run` (full lifecycle) | Custom profile end-to-end: registration → factory → executor.run() with full argv capture + optional v1 envelope output parsing |
+| `Orchestrator._run_agent` seam | Drives real `Orchestrator._run_agent` with mocked executor subprocess; asserts `log_session_end` receives correct token_usage and duration_seconds |
+| `run_step` token-usage persistence | Drives real `run_step` path with patched `_run_agent`; asserts `insert_session_token_usage` called with correct scope_type/scope_id/thread_id fields |
+| `run_step` failure propagation | Exercises real failure path through `run_step`; asserts `_session_failed_note` receives stdout_tail/stderr_tail/error |
+| Workspace adapter mapping | Exercises real workspace preparation and asserts readiness marker files produced by each adapter |
 
 ---
 

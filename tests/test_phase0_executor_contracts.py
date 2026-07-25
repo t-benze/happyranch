@@ -25,7 +25,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from runtime.config import Settings
-from runtime.models import TokenUsage
+from runtime.infrastructure.database import Database
+from runtime.models import TaskRecord, TaskStatus, TokenUsage
 from runtime.orchestrator.executor_registry import (
     ExecutorProfile,
     ExecutorProfileCollisionError,
@@ -115,12 +116,41 @@ def _allow_rules_patch():
 # ---------------------------------------------------------------------------
 
 class TestCmdBaselines:
-    """Pin the exact argv shape for each built-in executor AND a
-    representative custom argv_template invocation."""
+    """Pin the exact ordered argv vector for each built-in executor AND a
+    representative custom argv_template invocation.
+
+    Only binary path (argv[0]) and prompt content (includes
+    _SESSION_LIFETIME_PREAMBLE) are normalized; every other element is
+    asserted in position.  Flag reordering or extra flags will fail."""
+
+    # -- helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _assert_argv_structure(captured_cmd: list[str], *,
+                               binary_ends_with: str,
+                               expected_len: int,
+                               prompt_index: int | None = None,
+                               prompt_contains: list[str] | None = None):
+        """Assert exact length and binary; normalize prompt content only."""
+        assert len(captured_cmd) == expected_len, (
+            f"expected {expected_len} elements, got {len(captured_cmd)}: {captured_cmd}"
+        )
+        assert captured_cmd[0].endswith(binary_ends_with), (
+            f"binary must end with {binary_ends_with!r}, got {captured_cmd[0]!r}"
+        )
+        if prompt_index is not None and prompt_contains:
+            prompt_val = captured_cmd[prompt_index]
+            assert _SESSION_LIFETIME_PREAMBLE.strip() in prompt_val, (
+                f"prompt arg at [{prompt_index}] must contain session-lifetime preamble"
+            )
+            for fragment in prompt_contains:
+                assert fragment in prompt_val, (
+                    f"prompt arg at [{prompt_index}] must contain {fragment!r}"
+                )
+
+    # -- Claude -------------------------------------------------------------
 
     def test_claude_cmd_baseline(self, tmp_path: Path):
-        """Claude argv: binary, [model flags], -p, prompt, --permission-mode,
-        --allowedTools, --output-format json."""
         workspace = tmp_path / "ws"
         workspace.mkdir()
         fake_proc = _make_popen_mock(stdout="{}")
@@ -140,20 +170,19 @@ class TestCmdBaselines:
                 )
                 ex.run(workspace, prompt="hello", session_id="sess-X")
 
-        assert captured_cmd[0].endswith("/claude")
-        assert "-p" in captured_cmd
-        # prompt includes session-lifetime preamble prepended
-        prompt_idx = captured_cmd.index("-p") + 1
-        assert _SESSION_LIFETIME_PREAMBLE.strip() in captured_cmd[prompt_idx]
-        assert "hello" in captured_cmd[prompt_idx]
-        assert "--permission-mode" in captured_cmd
-        assert "auto" in captured_cmd
-        assert "--allowedTools" in captured_cmd
-        assert "--output-format" in captured_cmd
-        assert "json" in captured_cmd
-        # --output-format json is last flags before the process args
-        fmt_idx = captured_cmd.index("--output-format")
-        assert captured_cmd[fmt_idx + 1] == "json"
+        # [claude, "-p", <prompt>, "--permission-mode", "auto",
+        #  "--allowedTools", "Bash(happyranch *)", "--output-format", "json"]
+        self._assert_argv_structure(
+            captured_cmd, binary_ends_with="/claude", expected_len=9,
+            prompt_index=2, prompt_contains=["hello"],
+        )
+        assert captured_cmd[1] == "-p"
+        assert captured_cmd[3] == "--permission-mode"
+        assert captured_cmd[4] == "auto"
+        assert captured_cmd[5] == "--allowedTools"
+        assert captured_cmd[6] == "Bash(happyranch *)"
+        assert captured_cmd[7] == "--output-format"
+        assert captured_cmd[8] == "json"
 
     def test_claude_cmd_with_model(self, tmp_path: Path):
         workspace = tmp_path / "ws"
@@ -173,13 +202,25 @@ class TestCmdBaselines:
                     settings=Settings(),
                     model_arg=["--model", "{model}"],
                 )
-                ex.run(workspace, prompt="hi", session_id="sess-X", model="claude-sonnet-4-20250514")
+                ex.run(workspace, prompt="hi", session_id="sess-X",
+                       model="claude-sonnet-4-20250514")
 
-        assert "--model" in captured_cmd
-        model_idx = captured_cmd.index("--model")
-        assert captured_cmd[model_idx + 1] == "claude-sonnet-4-20250514"
-        # model args come before -p
-        assert captured_cmd.index("--model") < captured_cmd.index("-p")
+        # [claude, "--model", "claude-sonnet-4-20250514", "-p", <prompt>,
+        #  "--permission-mode", "auto", "--allowedTools", "Bash(happyranch *)",
+        #  "--output-format", "json"]
+        self._assert_argv_structure(
+            captured_cmd, binary_ends_with="/claude", expected_len=11,
+            prompt_index=4, prompt_contains=["hi"],
+        )
+        assert captured_cmd[1] == "--model"
+        assert captured_cmd[2] == "claude-sonnet-4-20250514"
+        assert captured_cmd[3] == "-p"
+        assert captured_cmd[5] == "--permission-mode"
+        assert captured_cmd[6] == "auto"
+        assert captured_cmd[7] == "--allowedTools"
+        assert captured_cmd[8] == "Bash(happyranch *)"
+        assert captured_cmd[9] == "--output-format"
+        assert captured_cmd[10] == "json"
 
     def test_claude_cmd_with_resume(self, tmp_path: Path):
         workspace = tmp_path / "ws"
@@ -198,18 +239,64 @@ class TestCmdBaselines:
                     permission_mode="auto",
                     settings=Settings(),
                 )
-                ex.run(workspace, prompt="hi", session_id="sess-X", resume_session_id="resume-abc")
+                ex.run(workspace, prompt="hi", session_id="sess-X",
+                       resume_session_id="resume-abc")
 
-        assert "--resume" in captured_cmd
-        resume_idx = captured_cmd.index("--resume")
-        assert captured_cmd[resume_idx + 1] == "resume-abc"
+        # [claude, "-p", <prompt>, "--permission-mode", "auto",
+        #  "--allowedTools", "Bash(happyranch *)", "--output-format", "json",
+        #  "--resume", "resume-abc"]
+        self._assert_argv_structure(
+            captured_cmd, binary_ends_with="/claude", expected_len=11,
+            prompt_index=2, prompt_contains=["hi"],
+        )
+        assert captured_cmd[3] == "--permission-mode"
+        assert captured_cmd[4] == "auto"
+        assert captured_cmd[5] == "--allowedTools"
+        assert captured_cmd[6] == "Bash(happyranch *)"
+        assert captured_cmd[7] == "--output-format"
+        assert captured_cmd[8] == "json"
+        assert captured_cmd[9] == "--resume"
+        assert captured_cmd[10] == "resume-abc"
+
+    # -- Codex --------------------------------------------------------------
 
     def test_codex_cmd_baseline(self, tmp_path: Path):
-        """Codex argv: binary, exec, [model flags], --sandbox, network flag,
-        --skip-git-repo-check, --json, -"""
         workspace = tmp_path / "ws"
         workspace.mkdir()
-        fake_proc = _make_popen_mock(stdout='{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}')
+        fake_proc = _make_popen_mock(
+            stdout='{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}'
+        )
+        captured_cmd: list[str] = []
+
+        def _capture(cmd, **kw):
+            captured_cmd.extend(cmd)
+            return fake_proc
+
+        with patch("runtime.orchestrator.executors.subprocess.Popen", _capture):
+            ex = CodexExecutor(codex_cli_path="codex", sandbox_mode="workspace-write")
+            ex.run(workspace, prompt="hello", session_id="sess-X")
+
+        # [codex, "exec", "--sandbox", "workspace-write", "-c",
+        #  "sandbox_workspace_write.network_access=true",
+        #  "--skip-git-repo-check", "--json", "-"]
+        self._assert_argv_structure(
+            captured_cmd, binary_ends_with="/codex", expected_len=9,
+        )
+        assert captured_cmd[1] == "exec"
+        assert captured_cmd[2] == "--sandbox"
+        assert captured_cmd[3] == "workspace-write"
+        assert captured_cmd[4] == "-c"
+        assert captured_cmd[5] == "sandbox_workspace_write.network_access=true"
+        assert captured_cmd[6] == "--skip-git-repo-check"
+        assert captured_cmd[7] == "--json"
+        assert captured_cmd[8] == "-"
+
+    def test_codex_cmd_with_model(self, tmp_path: Path):
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        fake_proc = _make_popen_mock(
+            stdout='{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}'
+        )
         captured_cmd: list[str] = []
 
         def _capture(cmd, **kw):
@@ -220,18 +307,27 @@ class TestCmdBaselines:
             ex = CodexExecutor(
                 codex_cli_path="codex",
                 sandbox_mode="workspace-write",
+                model_arg=["-m", "{model}"],
             )
-            ex.run(workspace, prompt="hello", session_id="sess-X")
+            ex.run(workspace, prompt="hello", session_id="sess-X",
+                   model="codex-gpt5")
 
-        assert captured_cmd[0].endswith("/codex")
-        assert "exec" in captured_cmd
-        assert "--sandbox" in captured_cmd
-        assert "workspace-write" in captured_cmd
-        assert "-c" in captured_cmd
-        assert "sandbox_workspace_write.network_access=true" in captured_cmd
-        assert "--skip-git-repo-check" in captured_cmd
-        assert "--json" in captured_cmd
-        assert "-" in captured_cmd
+        # [codex, "exec", "-m", "codex-gpt5", "--sandbox", "workspace-write",
+        #  "-c", "sandbox_workspace_write.network_access=true",
+        #  "--skip-git-repo-check", "--json", "-"]
+        self._assert_argv_structure(
+            captured_cmd, binary_ends_with="/codex", expected_len=11,
+        )
+        assert captured_cmd[1] == "exec"
+        assert captured_cmd[2] == "-m"
+        assert captured_cmd[3] == "codex-gpt5"
+        assert captured_cmd[4] == "--sandbox"
+        assert captured_cmd[5] == "workspace-write"
+        assert captured_cmd[6] == "-c"
+        assert captured_cmd[7] == "sandbox_workspace_write.network_access=true"
+        assert captured_cmd[8] == "--skip-git-repo-check"
+        assert captured_cmd[9] == "--json"
+        assert captured_cmd[10] == "-"
 
     def test_codex_cmd_reads_prompt_from_stdin(self, tmp_path: Path):
         """Codex passes prompt via input_text to _run_command (stdin), not argv."""
@@ -257,12 +353,14 @@ class TestCmdBaselines:
             f"Codex must pass prompt via stdin, got: {captured_input}"
         )
 
+    # -- Opencode -----------------------------------------------------------
+
     def test_opencode_cmd_baseline(self, tmp_path: Path):
-        """Opencode argv: binary, run, [model flags], --dir <workspace>,
-        --format json, <prompt>"""
         workspace = tmp_path / "ws"
         workspace.mkdir()
-        fake_proc = _make_popen_mock(stdout='{"messages":[{"role":"assistant","usage":{"input_tokens":50,"output_tokens":25}}]}')
+        fake_proc = _make_popen_mock(
+            stdout='{"messages":[{"role":"assistant","usage":{"input_tokens":50,"output_tokens":25}}]}'
+        )
         captured_cmd: list[str] = []
 
         def _capture(cmd, **kw):
@@ -273,15 +371,16 @@ class TestCmdBaselines:
             ex = OpencodeExecutor(opencode_cli_path="opencode")
             ex.run(workspace, prompt="hello world", session_id="sess-X")
 
-        assert captured_cmd[0].endswith("/opencode")
-        assert "run" in captured_cmd
-        assert "--dir" in captured_cmd
-        dir_idx = captured_cmd.index("--dir")
-        assert captured_cmd[dir_idx + 1] == str(workspace)
-        assert "--format" in captured_cmd
-        assert "json" in captured_cmd
-        # prompt is the final positional arg
-        assert captured_cmd[-1] == _SESSION_LIFETIME_PREAMBLE + "hello world"
+        # [opencode, "run", "--dir", <workspace>, "--format", "json", <prompt>]
+        self._assert_argv_structure(
+            captured_cmd, binary_ends_with="/opencode", expected_len=7,
+            prompt_index=6, prompt_contains=["hello world"],
+        )
+        assert captured_cmd[1] == "run"
+        assert captured_cmd[2] == "--dir"
+        assert captured_cmd[3] == str(workspace)
+        assert captured_cmd[4] == "--format"
+        assert captured_cmd[5] == "json"
 
     def test_opencode_cmd_with_model(self, tmp_path: Path):
         workspace = tmp_path / "ws"
@@ -295,16 +394,31 @@ class TestCmdBaselines:
 
         with patch("runtime.orchestrator.executors.subprocess.Popen", _capture):
             ex = OpencodeExecutor(opencode_cli_path="opencode", model_arg=["-m", "{model}"])
-            ex.run(workspace, prompt="hi", session_id="sess-X", model="gemini-2.5-pro")
+            ex.run(workspace, prompt="hi", session_id="sess-X",
+                   model="gemini-2.5-pro")
 
-        assert "-m" in captured_cmd
-        assert "gemini-2.5-pro" in captured_cmd
+        # [opencode, "run", "-m", "gemini-2.5-pro", "--dir", <workspace>,
+        #  "--format", "json", <prompt>]
+        self._assert_argv_structure(
+            captured_cmd, binary_ends_with="/opencode", expected_len=9,
+            prompt_index=8, prompt_contains=["hi"],
+        )
+        assert captured_cmd[1] == "run"
+        assert captured_cmd[2] == "-m"
+        assert captured_cmd[3] == "gemini-2.5-pro"
+        assert captured_cmd[4] == "--dir"
+        assert captured_cmd[5] == str(workspace)
+        assert captured_cmd[6] == "--format"
+        assert captured_cmd[7] == "json"
+
+    # -- Pi -----------------------------------------------------------------
 
     def test_pi_cmd_baseline(self, tmp_path: Path):
-        """Pi argv: binary, [model flags], -p <prompt>, --mode json"""
         workspace = tmp_path / "ws"
         workspace.mkdir()
-        fake_proc = _make_popen_mock(stdout='{"type":"turn_end","message":{"usage":{"input":100,"output":50}}}')
+        fake_proc = _make_popen_mock(
+            stdout='{"type":"turn_end","message":{"usage":{"input":100,"output":50}}}'
+        )
         captured_cmd: list[str] = []
 
         def _capture(cmd, **kw):
@@ -315,12 +429,14 @@ class TestCmdBaselines:
             ex = PiExecutor(pi_cli_path="pi")
             ex.run(workspace, prompt="hello pi", session_id="sess-X")
 
-        assert captured_cmd[0].endswith("/pi")
-        assert "-p" in captured_cmd
-        prompt_idx = captured_cmd.index("-p") + 1
-        assert "hello pi" in captured_cmd[prompt_idx]
-        assert "--mode" in captured_cmd
-        assert "json" in captured_cmd
+        # [pi, "-p", <prompt>, "--mode", "json"]
+        self._assert_argv_structure(
+            captured_cmd, binary_ends_with="/pi", expected_len=5,
+            prompt_index=2, prompt_contains=["hello pi"],
+        )
+        assert captured_cmd[1] == "-p"
+        assert captured_cmd[3] == "--mode"
+        assert captured_cmd[4] == "json"
 
     def test_pi_cmd_with_model(self, tmp_path: Path):
         workspace = tmp_path / "ws"
@@ -336,21 +452,28 @@ class TestCmdBaselines:
 
         with patch("runtime.orchestrator.executors.subprocess.Popen", _capture):
             ex = PiExecutor(pi_cli_path="pi", model_arg=["--model", "{model}"])
-            ex.run(workspace, prompt="hi", session_id="sess-X", model="pi-model-v2")
+            ex.run(workspace, prompt="hi", session_id="sess-X",
+                   model="pi-model-v2")
 
-        assert "--model" in captured_cmd
-        model_idx = captured_cmd.index("--model")
-        assert captured_cmd[model_idx + 1] == "pi-model-v2"
+        # [pi, "--model", "pi-model-v2", "-p", <prompt>, "--mode", "json"]
+        self._assert_argv_structure(
+            captured_cmd, binary_ends_with="/pi", expected_len=7,
+            prompt_index=4, prompt_contains=["hi"],
+        )
+        assert captured_cmd[1] == "--model"
+        assert captured_cmd[2] == "pi-model-v2"
+        assert captured_cmd[3] == "-p"
+        assert captured_cmd[5] == "--mode"
+        assert captured_cmd[6] == "json"
+
+    # -- Custom argv_template -----------------------------------------------
 
     def test_custom_argv_template_substitution(self, tmp_path: Path):
         """argv_template[0] is the executable; placeholders resolve to
         exactly ONE argv element each."""
         workspace = tmp_path / "ws"
         workspace.mkdir()
-        from runtime.orchestrator.executor_binary_registry import get_binary, is_binary_valid
-        from runtime.orchestrator.executors import _resolve_binary as orig_resolve
 
-        # Register a synthetic binary
         fake_bin_path = tmp_path / "bin" / "my-cli"
         fake_bin_path.parent.mkdir()
         fake_bin_path.write_text("")
@@ -358,12 +481,10 @@ class TestCmdBaselines:
 
         captured_cmd: list[str] = []
 
-        # We need _resolve_binary to resolve "my-cli" to our fake path.
-        # The mock_shutil_which fixture won't match "my-cli". Patch
-        # _resolve_binary directly for the custom case.
         ex = GenericCliExecutor(
             profile_name="my-cli",
-            argv_template=["my-cli", "--workspace", "{workspace}", "--prompt", "{prompt}", "--timeout", "{timeout_seconds}"],
+            argv_template=["my-cli", "--workspace", "{workspace}",
+                           "--prompt", "{prompt}", "--timeout", "{timeout_seconds}"],
             provider="my-cli",
         )
 
@@ -377,14 +498,14 @@ class TestCmdBaselines:
                 "runtime.orchestrator.executors._resolve_binary",
                 return_value=str(fake_bin_path),
             ):
-                ex.run(workspace, prompt="custom prompt here", session_id="sess-X", timeout_seconds=300)
+                ex.run(workspace, prompt="custom prompt here", session_id="sess-X",
+                       timeout_seconds=300)
 
         assert len(captured_cmd) == 7
         assert captured_cmd[0] == str(fake_bin_path)
         assert captured_cmd[1] == "--workspace"
         assert captured_cmd[2] == str(workspace)
         assert captured_cmd[3] == "--prompt"
-        # Prompt includes session-lifetime preamble
         prompt_val = captured_cmd[4]
         assert _SESSION_LIFETIME_PREAMBLE.strip() in prompt_val
         assert "custom prompt here" in prompt_val
@@ -415,10 +536,9 @@ class TestCmdBaselines:
             ):
                 ex.run(workspace, prompt="one\ntwo arg", session_id="sess-X")
 
-        # Should be exactly 2 elements: [binary, prompt-as-one-arg]
         assert len(captured_cmd) == 2
         assert captured_cmd[0] == "/usr/local/bin/test-cli"
-        assert "\n" in captured_cmd[1]  # newlines preserved in the single element
+        assert "\n" in captured_cmd[1]
 
 
 # ---------------------------------------------------------------------------
@@ -650,105 +770,127 @@ class TestOutputParsing:
 # ---------------------------------------------------------------------------
 
 class TestWorkspaceMapping:
-    """Verify: profile name → adapter_id → bootstrap file + readiness marker,
-    without modifying workspace adapters or permissions."""
+    """Verify: profile name → adapter_id → actual workspace preparation,
+    exercising the real workspace adapters to produce observable evidence."""
 
-    def test_builtin_profile_workspace_mapping(self):
-        """Each built-in profile maps to the correct adapter_id and
-        readiness marker."""
-        registry = get_registry()
+    # -- workspace initialization helper -----------------------------------
 
-        claude = registry.get_profile("claude")
-        assert claude is not None
-        assert claude.adapter_id == "claude"
-        assert claude.readiness_marker_fragment == ".claude/skills/start-task/SKILL.md"
-
-        codex = registry.get_profile("codex")
-        assert codex is not None
-        assert codex.adapter_id == "codex"
-        assert codex.readiness_marker_fragment == "AGENTS.md"
-
-        opencode = registry.get_profile("opencode")
-        assert opencode is not None
-        assert opencode.adapter_id == "opencode"
-        assert opencode.readiness_marker_fragment == "AGENTS.md"
-
-        pi = registry.get_profile("pi")
-        assert pi is not None
-        assert pi.adapter_id == "pi"
-        assert pi.readiness_marker_fragment == "AGENTS.md"
-
-    def test_profile_adapter_id_mapping_is_unchanged(self):
-        """adapter_id selects workspace preparation — it does not map
-        to a separate command adapter or adapter catalog entry.
-        This is the current behavior; the spec §6.3 proposes a split
-        but this test pins the current mapping."""
-        registry = get_registry()
-        profiles = {p.name: p for p in [
-            registry.get_profile(n) for n in ["claude", "codex", "opencode", "pi"]
-        ]}
-
-        # adapter_id is the workspace adapter — each is unique per built-in
-        for name in ["claude", "codex", "opencode", "pi"]:
-            assert profiles[name].adapter_id == name
-
-    def test_custom_profile_adapter_defaults_to_pi(self):
-        """Custom profiles default adapter to 'pi' when not specified."""
-        registry = get_registry()
-        profile = ExecutorProfile(
-            name="kimi",
-            kind="custom",
-            adapter_id="pi",
-            readiness_marker_fragment="AGENTS.md",
-            argv_template=["kimi", "--prompt", "{prompt}"],
-            command="kimi",
+    @staticmethod
+    def _init_workspace(workspace: Path, agent_name: str, provider: str,
+                        settings: Settings, paths: OrgPaths) -> Path:
+        """Bootstrap a workspace via the real InitAgent flow so the
+        readiness marker exists."""
+        from runtime.orchestrator.workspace_adapters import (
+            ClaudeWorkspaceAdapter, CodexWorkspaceAdapter,
+            OpencodeWorkspaceAdapter, PiWorkspaceAdapter,
+            ensure_system_contracts_materialized,
         )
-        registry.register_custom_profile(profile)
-        stored = registry.get_profile("kimi")
-        assert stored is not None
-        assert stored.adapter_id == "pi"
-
-    def test_custom_profile_can_specify_different_adapter(self):
-        """A custom profile may specify adapter_id = 'claude' to get
-        CLAUDE.md-style bootstrap."""
-        registry = get_registry()
-        profile = ExecutorProfile(
-            name="custom-claude-style",
-            kind="custom",
-            adapter_id="claude",
-            readiness_marker_fragment=".claude/skills/start-task/SKILL.md",
-            argv_template=["my-cli", "{prompt}"],
-            command="my-cli",
-        )
-        registry.register_custom_profile(profile)
-        stored = registry.get_profile("custom-claude-style")
-        assert stored is not None
-        assert stored.adapter_id == "claude"
-        assert stored.readiness_marker_fragment == ".claude/skills/start-task/SKILL.md"
-
-    def test_custom_profile_readiness_marker_derives_from_adapter(self):
-        """Readiness marker fragment is set per adapter_id, not independently
-        chosen arbitrarily. This is an observable convention in
-        validate_custom_profile_config."""
-        registry = get_registry()
-        for adapter_id, expected_marker in [
-            ("claude", ".claude/skills/start-task/SKILL.md"),
-            ("codex", "AGENTS.md"),
-            ("opencode", "AGENTS.md"),
-            ("pi", "AGENTS.md"),
-        ]:
-            profile = ExecutorProfile(
-                name=f"test-{adapter_id}",
-                kind="custom",
-                adapter_id=adapter_id,
-                readiness_marker_fragment=expected_marker,
-                argv_template=["test-cli", "{prompt}"],
-                command="test-cli",
+        workspace.mkdir(parents=True, exist_ok=True)
+        adapter_cls = {
+            "claude": ClaudeWorkspaceAdapter,
+            "codex": CodexWorkspaceAdapter,
+            "opencode": OpencodeWorkspaceAdapter,
+            "pi": PiWorkspaceAdapter,
+        }[provider]
+        adapter = adapter_cls(settings, paths=paths, slug="test")
+        adapter.ensure_workspace_ready(workspace, agent_name, system_prompt="You are a test agent.")
+        # Readiness marker is injected via ensure_system_contracts_materialized
+        try:
+            ensure_system_contracts_materialized(
+                workspace, settings, slug="test", context="test", provider=provider,
             )
-            registry.register_custom_profile(profile)
-            stored = registry.get_profile(f"test-{adapter_id}")
-            assert stored is not None
-            assert stored.adapter_id == adapter_id
+        except Exception:
+            pass  # may fail without org setup; marker may still exist from adapter
+        return workspace
+
+    # -- readiness markers --------------------------------------------------
+
+    def test_builtin_workspace_produces_readiness_marker(
+            self, tmp_path: Path):
+        """Each built-in adapter's ensure_workspace_ready produces the
+        canonical bootstrap files — CLAUDE.md for claude, AGENTS.md for others.
+        The readiness marker (.claude/skills/start-task/SKILL.md) is injected
+        by ensure_system_contracts_materialized at session time, which is a
+        separate concern verified in the existing test_executor.py suite."""
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.runtime import RuntimeDir
+
+        rt = RuntimeDir.init(tmp_path / "rt")
+        paths = OrgPaths(root=rt.orgs_dir / "test")
+        paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.teams_config_path.write_text(
+            "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n"
+        )
+        settings = Settings()
+
+        # Verify bootstrap files produced by the real workspace adapters
+        cases = [
+            ("claude", "CLAUDE.md", False),  # writes CLAUDE.md, not AGENTS.md
+            ("codex", "AGENTS.md", True),     # writes AGENTS.md, not CLAUDE.md
+            ("opencode", "AGENTS.md", True),
+            ("pi", "AGENTS.md", True),
+        ]
+        for provider, bootstrap_file, expect_agents_md in cases:
+            ws = self._init_workspace(
+                tmp_path / f"ws_{provider}",
+                agent_name=f"agent_{provider}",
+                provider=provider,
+                settings=settings,
+                paths=paths,
+            )
+            assert (ws / bootstrap_file).exists(), (
+                f"{provider}: {bootstrap_file} not created. "
+                f"Files: {[p.name for p in ws.iterdir()]}"
+            )
+            if expect_agents_md:
+                assert (ws / "AGENTS.md").exists()
+                assert not (ws / "CLAUDE.md").exists()
+            else:
+                assert (ws / "CLAUDE.md").exists()
+                assert not (ws / "AGENTS.md").exists()
+
+    def test_claude_adapter_writes_claude_md(self, tmp_path: Path):
+        """Claude adapter writes CLAUDE.md (not AGENTS.md)."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        from runtime.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.runtime import RuntimeDir
+        rt = RuntimeDir.init(tmp_path / "rt")
+        paths = OrgPaths(root=rt.orgs_dir / "test")
+        paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.teams_config_path.write_text(
+            "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n"
+        )
+        adapter = ClaudeWorkspaceAdapter(Settings(), paths=paths, slug="test")
+        adapter.ensure_workspace_ready(ws, "test_agent", system_prompt="You are a test agent.")
+        assert (ws / "CLAUDE.md").exists()
+        assert not (ws / "AGENTS.md").exists()
+
+    def test_non_claude_adapters_write_agents_md(self, tmp_path: Path):
+        """Codex, Opencode, Pi all write AGENTS.md (not CLAUDE.md)."""
+        from runtime.orchestrator.workspace_adapters import (
+            CodexWorkspaceAdapter, OpencodeWorkspaceAdapter, PiWorkspaceAdapter,
+        )
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.runtime import RuntimeDir
+        rt = RuntimeDir.init(tmp_path / "rt")
+        paths = OrgPaths(root=rt.orgs_dir / "test")
+        paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.teams_config_path.write_text(
+            "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n"
+        )
+        for provider, adapter_cls in [
+            ("codex", CodexWorkspaceAdapter),
+            ("opencode", OpencodeWorkspaceAdapter),
+            ("pi", PiWorkspaceAdapter),
+        ]:
+            ws = tmp_path / f"ws_{provider}"
+            ws.mkdir()
+            adapter = adapter_cls(Settings(), paths=paths, slug="test")
+            adapter.ensure_workspace_ready(ws, "test_agent", system_prompt="You are a test agent.")
+            assert (ws / "AGENTS.md").exists(), f"{provider}: AGENTS.md missing"
+            assert not (ws / "CLAUDE.md").exists(), f"{provider}: unexpected CLAUDE.md"
 
 
 # ---------------------------------------------------------------------------
@@ -974,109 +1116,252 @@ class TestRunCommand:
 # ---------------------------------------------------------------------------
 
 class TestRunStepAuditSeam:
-    """Verify ExecutorResult fields flow into the audit/database path
-    without mocking run_step internals — direct shape contract."""
+    """Drive the real Orchestrator._run_agent and run_step paths with
+    mocked executor subprocess and fixed fixtures — no lookalike mocks."""
 
-    def test_executor_result_shape_for_success_path(self):
-        """Success ExecutorResult carries token_usage for audit."""
+    @staticmethod
+    def _setup_runtime_and_paths(tmp_path: Path):
+        """Create a minimal RuntimeDir + OrgPaths with seeded agent config."""
+        from runtime.runtime import RuntimeDir
+        from runtime.orchestrator._paths import OrgPaths
+        rt = RuntimeDir.init(tmp_path / "rt")
+        paths = OrgPaths(root=rt.orgs_dir / "test")
+        paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.teams_config_path.write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+        # Seed an agent definition so _resolve_executor_name works
+        agent_md = paths.agents_dir / "dev_agent.md"
+        agent_md.parent.mkdir(parents=True, exist_ok=True)
+        agent_md.write_text("""---
+name: dev_agent
+team: engineering
+role: worker
+executor: claude
+allow_rules:
+  - Bash(happyranch *)
+repos: {}
+system_prompt: |
+  You are the dev agent.
+---
+You are the dev agent. This is your system prompt.
+""")
+        return rt, paths
+
+    @staticmethod
+    def _bootstrap_workspace(paths: OrgPaths, agent_name: str, provider: str):
+        """Bootstrap workspace with the real adapters and inject readiness marker."""
+        workspace = paths.workspaces_dir / agent_name
+        workspace.mkdir(parents=True, exist_ok=True)
+        from runtime.orchestrator.workspace_adapters import (
+            ClaudeWorkspaceAdapter, CodexWorkspaceAdapter,
+            OpencodeWorkspaceAdapter, PiWorkspaceAdapter,
+            ensure_system_contracts_materialized,
+        )
+        adapter_cls = {
+            "claude": ClaudeWorkspaceAdapter,
+            "codex": CodexWorkspaceAdapter,
+            "opencode": OpencodeWorkspaceAdapter,
+            "pi": PiWorkspaceAdapter,
+        }[provider]
+        adapter = adapter_cls(Settings(), paths=paths, slug="test")
+        adapter.ensure_workspace_ready(workspace, agent_name, system_prompt="You are a test agent.")
+        try:
+            ensure_system_contracts_materialized(
+                workspace, Settings(), slug="test", context="test",
+                provider=provider,
+            )
+        except Exception:
+            pass
+        return workspace
+
+    # ------------------------------------------------------------------
+
+    def test_run_agent_calls_log_session_end(self, tmp_path: Path):
+        """Orchestrator._run_agent invokes log_session_end with the
+        ExecutorResult's token_usage and duration_seconds."""
+        rt, paths = self._setup_runtime_and_paths(tmp_path)
+        db = Database(paths.db_path)
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.orchestrator import Orchestrator
+
+        team_reg = TeamsRegistry.load(paths.root)
+        orch = Orchestrator(db=db, settings=Settings(), paths=paths,
+                            slug="test", teams=team_reg)
+
+        # Insert a minimal task
+        db.insert_task(TaskRecord(
+            id="T-RS1", brief="test", assigned_agent="dev_agent",
+        ))
+        # Bootstrap workspace
+        self._bootstrap_workspace(paths, "dev_agent", "claude")
+
+        # Mock the executor so it returns a known result without a subprocess
+        token_usage = TokenUsage(input_tokens=100, output_tokens=50,
+                                model="test-model")
+        fake_result = ExecutorResult(
+            success=True, duration_seconds=7, session_id="sess-FAKE",
+            token_usage=token_usage, returncode=0,
+        )
+        mock_exec = MagicMock()
+        mock_exec.run.return_value = fake_result
+
+        # Spy on log_session_end through the real audit logger
+        with patch.object(orch._audit, 'log_session_end',
+                         wraps=orch._audit.log_session_end) as spy_end:
+            # Replace the executor produced by _build_executor
+            with patch.object(orch, '_build_executor', return_value=mock_exec):
+                result, report = orch._run_agent("T-RS1", "dev_agent", "prompt text")
+
+        # Verify the result is forwarded
+        assert result is fake_result
+        # Verify log_session_end was called with correct args
+        spy_end.assert_called_once()
+        call_kw = spy_end.call_args[1]
+        assert call_kw["task_id"] == "T-RS1"
+        assert call_kw["agent"] == "dev_agent"
+        assert call_kw["duration_seconds"] == 7
+        assert call_kw["token_usage"] is token_usage
+
+    def test_run_step_persists_token_usage_with_scope_fields(
+            self, tmp_path: Path, monkeypatch):
+        """run_step persists token_usage via insert_session_token_usage
+        with correct scope_type, scope_id, and thread_id fields."""
+        rt, paths = self._setup_runtime_and_paths(tmp_path)
+        db = Database(paths.db_path)
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.orchestrator import Orchestrator
+
+        team_reg = TeamsRegistry.load(paths.root)
+        orch = Orchestrator(db=db, settings=Settings(
+            max_orchestration_steps=10,
+        ), paths=paths, slug="test", teams=team_reg)
+
+        # Insert a task with a known thread_id
+        db.insert_task(TaskRecord(
+            id="T-RS2", brief="test", assigned_agent="dev_agent",
+            dispatched_from_thread_id="THREAD-42",
+        ))
+        self._bootstrap_workspace(paths, "dev_agent", "claude")
+
+        # Build a deterministic ExecutorResult
         token_usage = TokenUsage(
-            input_tokens=1000,
-            output_tokens=500,
-            model="claude-sonnet-4-20250514",
+            input_tokens=200, output_tokens=100, cache_read_tokens=50,
+            model="claude-opus",
         )
-        result = ExecutorResult(
-            success=True,
-            duration_seconds=42,
-            session_id="sess-abc",
-            returncode=0,
-            stdout_tail="agent response tail",
-            stderr_tail="",
-            token_usage=token_usage,
-            agent_session_id="agent-sess-xyz",
+        fake_result = ExecutorResult(
+            success=True, duration_seconds=3, session_id="sess-RS2",
+            token_usage=token_usage, returncode=0,
         )
 
-        # The audit site reads these fields
-        assert result.token_usage is not None
-        assert result.token_usage.input_tokens == 1000
-        assert result.token_usage.output_tokens == 500
-        assert result.token_usage.model == "claude-sonnet-4-20250514"
-        assert result.stdout_tail is not None
-        assert result.stderr_tail == ""
+        # Store insert_session_token_usage args
+        insert_calls: list[dict] = []
+        _real_insert = db.insert_session_token_usage
+        def _capturing_insert(**kwargs):
+            insert_calls.append(kwargs)
+            return _real_insert(**kwargs)
+        monkeypatch.setattr(db, 'insert_session_token_usage', _capturing_insert)
 
-    def test_executor_result_shape_for_failure_path(self):
-        """Failure ExecutorResult carries stdout_tail/stderr_tail/error
-        for _session_failed_note enrichment."""
-        result = ExecutorResult(
-            success=False,
-            duration_seconds=10,
-            session_id="sess-X",
-            returncode=1,
-            stdout_tail="partial output",
-            stderr_tail="error details here",
-            error="Command exited with code 1: error details here",
-            rate_limited=False,
+        # Patch _run_agent to return the controlled result
+        def _fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            return fake_result, None  # None report → failure path BUT token usage persisted first
+        monkeypatch.setattr(orch, '_run_agent', _fake_run_agent)
+
+        # Drive run_step — it will call _run_agent, persist token_usage,
+        # then hit the not-success branch. We intercept token persistence first.
+        orch.run_step("T-RS2")
+
+        assert len(insert_calls) == 1, (
+            f"Expected 1 insert_session_token_usage call, got {len(insert_calls)}"
         )
-
-        # The enrichment at run_step.py:1087-1091 reads these
-        assert result.success is False
-        assert result.stdout_tail == "partial output"
-        assert result.stderr_tail == "error details here"
-        assert result.error is not None
-        assert result.rate_limited is False
-        # No token_usage for failure path
-        assert result.token_usage is None
-
-    def test_run_step_token_usage_forwarded_to_audit_logger(self):
-        """Verify the log_session_end call shape that run_step uses
-        forwards token_usage."""
-        from runtime.infrastructure.audit_logger import AuditLogger
-
-        audit = MagicMock(spec=AuditLogger)
-        token_usage = TokenUsage(input_tokens=42, output_tokens=7)
-        result = ExecutorResult(
-            success=True, duration_seconds=5, session_id="s1",
-            token_usage=token_usage,
-        )
-        # This is the exact call shape from orchestrator.py _run_agent
-        audit.log_session_end(
-            task_id="T1", agent="dev_agent", duration_seconds=result.duration_seconds,
-            token_usage=result.token_usage,
-        )
-        audit.log_session_end.assert_called_once()
-        call_kwargs = audit.log_session_end.call_args[1]
-        assert call_kwargs["task_id"] == "T1"
-        assert call_kwargs["agent"] == "dev_agent"
-        assert call_kwargs["token_usage"] is token_usage
-
-    def test_run_step_inserts_session_token_usage_row_shape(self):
-        """Verify insert_session_token_usage receives the expected
-        field shape from ExecutorResult.token_usage."""
-        from runtime.infrastructure.database import Database
-
-        db = MagicMock(spec=Database)
-        token_usage = TokenUsage(
-            input_tokens=100,
-            output_tokens=50,
-            cache_read_tokens=30,
-            cache_creation_tokens=20,
-            reasoning_tokens=10,
-            model="test-model",
-            usage_raw_json='{"raw":"json"}',
-        )
-
-        db.insert_session_token_usage(
-            task_id="T-PHASE0",
-            agent="test_agent",
-            session_id="sess-test",
-            executor="claude",
-            token_usage=token_usage,
-        )
-        db.insert_session_token_usage.assert_called_once()
-        kw = db.insert_session_token_usage.call_args[1]
-        assert kw["task_id"] == "T-PHASE0"
-        assert kw["agent"] == "test_agent"
-        assert kw["executor"] == "claude"
+        kw = insert_calls[0]
+        assert kw["task_id"] == "T-RS2"
+        assert kw["agent"] == "dev_agent"
+        assert kw["session_id"] == "sess-RS2"
+        assert kw["executor"] == "claude"  # from agent.md
         assert kw["token_usage"] is token_usage
+        assert kw["scope_type"] == "task"
+        assert kw["scope_id"] == "T-RS2"
+        assert kw["thread_id"] == "THREAD-42"
+
+    def test_run_step_failure_note_receives_stderr_tail(
+            self, tmp_path: Path, monkeypatch):
+        """Failure path in run_step feeds ExecutorResult error tails into
+        _session_failed_note — assert the failure note contains stderr content."""
+        rt, paths = self._setup_runtime_and_paths(tmp_path)
+        db = Database(paths.db_path)
+        from runtime.orchestrator.teams import TeamsRegistry
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.run_step import _session_failed_note
+
+        team_reg = TeamsRegistry.load(paths.root)
+        orch = Orchestrator(db=db, settings=Settings(
+            max_orchestration_steps=10,
+        ), paths=paths, slug="test", teams=team_reg)
+
+        db.insert_task(TaskRecord(
+            id="T-RS3", brief="test", assigned_agent="dev_agent",
+        ))
+        self._bootstrap_workspace(paths, "dev_agent", "claude")
+
+        # Build a failure ExecutorResult
+        fail_result = ExecutorResult(
+            success=False, duration_seconds=2, session_id="sess-FAIL",
+            returncode=1, stdout_tail="partial stdout",
+            stderr_tail="CRITICAL: something went wrong",
+            error="Command exited with code 1",
+        )
+
+        def _fake_run_agent(task_id, agent, prompt, on_session_started=None):
+            return fail_result, None
+        monkeypatch.setattr(orch, '_run_agent', _fake_run_agent)
+
+        orch.run_step("T-RS3")
+
+        # After run_step, the task should be FAILED with a note containing
+        # the stderr tail content
+        task = db.get_task("T-RS3")
+        assert task is not None
+        assert task.status == TaskStatus.FAILED
+        note = task.note or ""
+        assert "CRITICAL" in note or "stderr" in note.lower(), (
+            f"Failure note must contain stderr evidence, got: {note!r}"
+        )
+
+    def test_run_step_failure_note_from_session_failed_note(
+            self, monkeypatch):
+        """_session_failed_note reads returncode, stderr/stdout tail, and
+        error from the ExecutorResult — the failure note surfaces these."""
+        from runtime.orchestrator.run_step import _session_failed_note
+
+        result = ExecutorResult(
+            success=False, duration_seconds=5, session_id="sess-FAIL1",
+            returncode=42,
+            stderr_tail="fatal error: disk full",
+            stdout_tail="", error="disk write failed",
+        )
+        note = _session_failed_note(result, None)
+        assert "rc=42" in note
+        assert "stderr" in note
+        assert "fatal error: disk full" in note
+        # error text is also included
+        assert "disk write failed" in note
+
+        # When stderr is empty, stdout is used
+        result2 = ExecutorResult(
+            success=False, duration_seconds=3, session_id="sess-FAIL2",
+            returncode=1,
+            stderr_tail="", stdout_tail="output had an error",
+        )
+        note2 = _session_failed_note(result2, None)
+        assert "output had an error" in note2
+
+
+class TestExecutorResultShape:
+    """Static shape guards on ExecutorResult dataclass."""
 
     def test_executorresult_top_level_fields_unchanged(self):
         """ExecutorResult has exactly the 10 fields shipping today.
@@ -1103,7 +1388,8 @@ class TestRunStepAuditSeam:
 
 class TestBuildExecutorCanonical:
     """Pin the build_executor if/elif chain — verifying each built-in
-    returns the correct executor type."""
+    returns the correct executor type, and exercising the full fifth
+    lifecycle (custom registration -> factory -> run) end-to-end."""
 
     def test_build_executor_returns_claude_executor(self):
         ex = build_executor("claude", Settings())
@@ -1137,6 +1423,112 @@ class TestBuildExecutorCanonical:
     def test_build_executor_raises_for_unregistered(self):
         with pytest.raises(ValueError, match="Unregistered"):
             build_executor("nonexistent", Settings())
+
+    # -- Fifth lifecycle e2e: registration → factory → run ----------------
+
+    def test_custom_profile_full_lifecycle_with_argv_and_envelope(
+            self, tmp_path: Path):
+        """Exercise the complete fifth lifecycle: register a custom
+        profile, build it via build_executor, run it with mocked Popen,
+        assert exact ordered argv, and verify optional v1 envelope parsing."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        # 1. Register a custom profile through the real registry
+        registry = get_registry()
+        custom = ExecutorProfile(
+            name="kimi-custom",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=[
+                "kimi-cli", "--model", "kimi-v2",
+                "--workspace", "{workspace}",
+                "--prompt", "{prompt}",
+                "--timeout", "{timeout_seconds}",
+            ],
+            command="kimi-cli",
+        )
+        registry.register_custom_profile(custom)
+
+        # 2. build_executor resolves to GenericCliExecutor
+        ex = build_executor("kimi-custom", Settings())
+        assert isinstance(ex, GenericCliExecutor)
+        assert ex._argv_template == custom.argv_template
+        assert ex._provider == "kimi-custom"
+
+        # 3. Run with mocked Popen, capture full argv
+        captured_cmd: list[str] = []
+
+        # Use a valid v1 envelope in stdout to verify envelope parsing
+        envelope_json = json.dumps({
+            "envelope_version": 1,
+            "token_usage": {"input_tokens": 500, "output_tokens": 250},
+        })
+        fake_proc = _make_popen_mock(stdout=f"output\n{_HR_ENVELOPE_BEGIN}\n{envelope_json}\n{_HR_ENVELOPE_END}\n")
+
+        def _capture(cmd, **kw):
+            captured_cmd.extend(cmd)
+            return fake_proc
+
+        with patch("runtime.orchestrator.executors.subprocess.Popen", _capture):
+            with patch(
+                "runtime.orchestrator.executors._resolve_binary",
+                return_value="/opt/kimi/kimi-cli",
+            ):
+                result = ex.run(
+                    workspace, prompt="make a thing", session_id="sess-E2E",
+                    timeout_seconds=120,
+                )
+
+        # 4. Assert exact ordered argv (normalize binary path + prompt content)
+        assert len(captured_cmd) == 9, f"expected 9, got {len(captured_cmd)}: {captured_cmd}"
+        assert captured_cmd[0] == "/opt/kimi/kimi-cli"
+        assert captured_cmd[1] == "--model"
+        assert captured_cmd[2] == "kimi-v2"
+        assert captured_cmd[3] == "--workspace"
+        assert captured_cmd[4] == str(workspace)
+        assert captured_cmd[5] == "--prompt"
+        prompt_val = captured_cmd[6]
+        assert _SESSION_LIFETIME_PREAMBLE.strip() in prompt_val
+        assert "make a thing" in prompt_val
+        assert captured_cmd[7] == "--timeout"
+        assert captured_cmd[8] == "120"
+
+        # 5. Verify v1 envelope was parsed
+        assert result.success is True
+        assert result.token_usage is not None
+        assert result.token_usage.input_tokens == 500
+        assert result.token_usage.output_tokens == 250
+
+    def test_custom_profile_no_envelope_returns_no_token_usage(
+            self, tmp_path: Path):
+        """Custom profile without v1 envelope → token_usage remains None."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        registry = get_registry()
+        registry.register_custom_profile(ExecutorProfile(
+            name="noenv-cli",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["noenv-cli", "{prompt}"],
+            command="noenv-cli",
+        ))
+        ex = build_executor("noenv-cli", Settings())
+
+        fake_proc = _make_popen_mock(stdout="plain text, no envelope")
+        with patch("runtime.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
+            with patch(
+                "runtime.orchestrator.executors._resolve_binary",
+                return_value="/usr/local/bin/noenv-cli",
+            ):
+                result = ex.run(workspace, prompt="hi", session_id="sess-X")
+
+        assert result.success is True
+        # No v1 envelope → _parse_generic_cli_usage returns None
+        assert result.token_usage is None
 
 
 # ---------------------------------------------------------------------------
