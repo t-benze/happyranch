@@ -349,8 +349,17 @@ class TestCmdBaselines:
             ex = CodexExecutor(codex_cli_path="codex", sandbox_mode="workspace-write")
             ex.run(workspace, prompt="codex prompt text", session_id="sess-X")
 
-        assert any("codex prompt text" in inp for inp in captured_input), (
-            f"Codex must pass prompt via stdin, got: {captured_input}"
+        # Prove exactly one stdin write with exact preamble+prompt content.
+        # Only the session-lifetime preamble and the fixed prompt are sent;
+        # no extras, no omissions, no reordering.
+        expected_stdin = _SESSION_LIFETIME_PREAMBLE + "codex prompt text"
+        assert len(captured_input) == 1, (
+            f"Expected exactly 1 stdin write, got {len(captured_input)}: {captured_input}"
+        )
+        assert captured_input[0] == expected_stdin, (
+            f"Stdin content mismatch.\n"
+            f"Expected ({len(expected_stdin)} chars): {expected_stdin!r}\n"
+            f"Got      ({len(captured_input[0])} chars): {captured_input[0]!r}"
         )
 
     # -- Opencode -----------------------------------------------------------
@@ -1428,36 +1437,56 @@ class TestBuildExecutorCanonical:
 
     def test_custom_profile_full_lifecycle_with_argv_and_envelope(
             self, tmp_path: Path):
-        """Exercise the complete fifth lifecycle: register a custom
-        profile, build it via build_executor, run it with mocked Popen,
-        assert exact ordered argv, and verify optional v1 envelope parsing."""
+        """Exercise the complete fifth lifecycle: validate a raw config
+        through the canonical ExecutorRegistry.validate_custom_profile_config,
+        register the returned validated profile, build it via build_executor,
+        run it with mocked Popen, assert exact ordered argv, and verify
+        optional v1 envelope parsing.
+
+        This test FAILS if validate_custom_profile_config is bypassed —
+        the profile must flow through the canonical validation seam.
+        """
         workspace = tmp_path / "ws"
         workspace.mkdir()
 
-        # 1. Register a custom profile through the real registry
-        registry = get_registry()
-        custom = ExecutorProfile(
-            name="kimi-custom",
-            kind="custom",
-            adapter_id="pi",
-            readiness_marker_fragment="AGENTS.md",
-            argv_template=[
+        # 1. Build a fixed raw config and validate through the canonical seam.
+        #    command=None skips which() resolution (deterministic test path).
+        config = {
+            "command": None,
+            "argv_template": [
                 "kimi-cli", "--model", "kimi-v2",
                 "--workspace", "{workspace}",
                 "--prompt", "{prompt}",
                 "--timeout", "{timeout_seconds}",
             ],
-            command="kimi-cli",
+            "adapter": "pi",
+        }
+        registry = get_registry()
+        profile = ExecutorRegistry.validate_custom_profile_config(
+            "kimi-custom", config,
         )
-        registry.register_custom_profile(custom)
+        # Assert the validated profile shape before registration
+        assert profile is not None
+        assert profile.name == "kimi-custom"
+        assert profile.kind == "custom"
+        assert profile.adapter_id == "pi"
+        assert profile.argv_template == [
+            "kimi-cli", "--model", "kimi-v2",
+            "--workspace", "{workspace}",
+            "--prompt", "{prompt}",
+            "--timeout", "{timeout_seconds}",
+        ]
 
-        # 2. build_executor resolves to GenericCliExecutor
+        # 2. Register the validated profile
+        registry.register_custom_profile(profile)
+
+        # 3. build_executor resolves to GenericCliExecutor
         ex = build_executor("kimi-custom", Settings())
         assert isinstance(ex, GenericCliExecutor)
-        assert ex._argv_template == custom.argv_template
+        assert ex._argv_template == profile.argv_template
         assert ex._provider == "kimi-custom"
 
-        # 3. Run with mocked Popen, capture full argv
+        # 4. Run with mocked Popen, capture full argv
         captured_cmd: list[str] = []
 
         # Use a valid v1 envelope in stdout to verify envelope parsing
@@ -1481,7 +1510,7 @@ class TestBuildExecutorCanonical:
                     timeout_seconds=120,
                 )
 
-        # 4. Assert exact ordered argv (normalize binary path + prompt content)
+        # 5. Assert exact ordered argv (normalize binary path + prompt content)
         assert len(captured_cmd) == 9, f"expected 9, got {len(captured_cmd)}: {captured_cmd}"
         assert captured_cmd[0] == "/opt/kimi/kimi-cli"
         assert captured_cmd[1] == "--model"
@@ -1495,7 +1524,7 @@ class TestBuildExecutorCanonical:
         assert captured_cmd[7] == "--timeout"
         assert captured_cmd[8] == "120"
 
-        # 5. Verify v1 envelope was parsed
+        # 6. Verify v1 envelope was parsed
         assert result.success is True
         assert result.token_usage is not None
         assert result.token_usage.input_tokens == 500
