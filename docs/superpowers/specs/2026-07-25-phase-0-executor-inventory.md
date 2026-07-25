@@ -53,7 +53,7 @@ Validation (`validate_custom_profile_config`, line 262):
 - `adapter` must be one of `claude`/`codex`/`opencode`/`pi` — selects workspace adapter
 - `argv_template` must be a non-empty list of strings with valid placeholders (`{prompt}`, `{timeout_seconds}`, `{workspace}`)
 - `command` must be a string and resolve on PATH; `argv_template[0]` must resolve to the same executable. The command/template executable-parity check (issue #490) is **enforced only when `command` is non-null**.
-- `command=None` is a test-only exception: the shipping code deliberately skips `shutil.which()` resolution and the parity check for this value (executor_registry.py:300-306)
+- `command` is optional; when absent (`None`), validation skips `shutil.which` resolution and the declared-command vs `argv_template[0]` executable-parity check (executor_registry.py:300-306)
 - Readiness marker: `AGENTS.md` for `codex`/`opencode`/`pi`, `.claude/skills/start-task/SKILL.md` for `claude`
 
 ### 1.4 `build_executor()`: The Executor Factory
@@ -232,7 +232,7 @@ self._audit.log_session_end(
 )
 ```
 
-The `log_session_end` audit row (`audit_logger.py:19-38`) includes
+The `log_session_end` audit row (`runtime/infrastructure/audit_logger.py:19-38`) includes
 `duration_seconds` and — when non-None — `token_usage` serialized via
 `.model_dump()` plus `token_count` (the `.total` field).
 
@@ -340,7 +340,7 @@ tests at `tests/test_phase0_executor_contracts.py`:
 | `runtime/orchestrator/executor_registry.py` | 1-443 | `ExecutorProfile` (75), `ExecutorRegistry` (133), `_register_builtins` (144), `register_custom_profile` (191), `validate_custom_profile_config` (262), `build_executor` (383), `get_registry` (364) |
 | `runtime/orchestrator/executors.py` | 1-1043 | `ExecutorResult` (27), `_run_command` (607), `_parse_claude_usage` (210), `_parse_codex_usage` (259), `_parse_opencode_usage` (321), `_parse_pi_usage` (428), `_parse_generic_cli_usage` (480), `ClaudeExecutor` (748), `CodexExecutor` (815), `OpencodeExecutor` (870), `PiExecutor` (928), `GenericCliExecutor` (977), `_SESSION_LIFETIME_PREAMBLE` (733) |
 | `runtime/orchestrator/workspace_adapters.py` | 1-1298 | `ClaudeWorkspaceAdapter`, `CodexWorkspaceAdapter`, `OpencodeWorkspaceAdapter`, `PiWorkspaceAdapter` |
-| `runtime/models.py` | 302-316 | `TokenUsage` model |
+| `runtime/models.py` | 324 | `TokenUsage` model |
 | `tests/fixtures/usage_claude.json` | — | Claude `--output-format json` fixture |
 | `tests/fixtures/usage_codex.jsonl` | — | Codex `exec --json` JSONL fixture |
 | `tests/fixtures/usage_opencode.json` | — | Opencode old-format fixture |
