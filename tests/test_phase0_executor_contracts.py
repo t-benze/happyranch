@@ -1465,9 +1465,16 @@ class TestExecutorResultShape:
 # ---------------------------------------------------------------------------
 
 class TestBuildExecutorCanonical:
-    """Pin the build_executor if/elif chain — verifying each built-in
-    returns the correct executor type, and exercising the full fifth
-    lifecycle (custom registration -> factory -> run) end-to-end."""
+    """Pin the build_executor factory dispatch — verifying each built-in
+    returns the correct executor type via the static data-driven factory dict
+    (D10/D11, THR-107 seq84, July 2026), and exercising the full fifth
+    lifecycle (custom registration -> factory -> run) end-to-end.
+
+    Historical baseline (pre-D10): build_executor used a hard-coded
+    ``if profile.name == "claude" ...`` chain (D2 compatibility path).
+    D10/D11 replaced it with a static code-native factory dict derived from
+    the D8 authoritative catalog. These tests verify the shipped factory
+    produces the same specialized executor types and adapters."""
 
     def test_build_executor_returns_claude_executor(self):
         ex = build_executor("claude", Settings())

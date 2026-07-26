@@ -115,7 +115,8 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
 # ---------------------------------------------------------------------------
 # Maps built-in executor profile name → adapter class.
 # Excludes custom profiles ("generic", "generic-cli") — those continue to
-# use GenericCliExecutor through the existing hard-coded build_executor chain.
+# use GenericCliExecutor through the existing build_executor factory path
+# (D10/D11 shipped a static data-driven factory dict; see executor_registry.py).
 # Derived from _BUILTIN_CATALOG so there is no parallel truth.
 # ---------------------------------------------------------------------------
 

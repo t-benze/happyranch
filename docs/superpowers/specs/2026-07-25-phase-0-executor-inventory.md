@@ -58,8 +58,14 @@ Validation (`validate_custom_profile_config`, line 262):
 
 ### 1.4 `build_executor()`: The Executor Factory
 
+> **Historical baseline (as of `origin/main` @ `a7134f00`, July 2026).**
+> D10/D11 (TASK-3414, THR-107 seq84, July 2026) replaced the if/elif chain
+> described below with a static data-driven factory dict derived from the D8
+> authoritative catalog. See ``executor_registry.py`` current head and the
+> D10/D11 decisions (§9.3) in the unified-adapter architecture spec.
+
 `build_executor()` (`executor_registry.py:383-433`) resolves a profile name to
-an executor instance. It contains a **hard-coded if/elif chain**:
+an executor instance. At this inventory baseline, it contains a **hard-coded if/elif chain**:
 
 ```python
 if profile.name == "claude":   return ClaudeExecutor(...)
@@ -299,6 +305,15 @@ Source: `workspace_adapters.py` (1298 lines) — `ClaudeWorkspaceAdapter`, `Code
 ---
 
 ## 6. Current vs. Target (What Phase 1+ Proposes, NOT Current)
+
+> **Note (July 2026, post D10/D11):** This table records the inventory
+> baseline as of the Phase-0 snapshot (`origin/main` @ `a7134f00`).
+> D10/D11 (TASK-3414, THR-107 seq84) has since replaced the hard-coded
+> if/elif chain in `build_executor()` with a static data-driven factory
+> dict. The "data-driven via adapter catalog" proposal (P3) in the signed
+> spec remains unimplemented in its original form; D10/D11 shipped a
+> narrower static factory derived from the D8 catalog. The rest of this
+> section is the original unmodified inventory text.
 
 This inventory documents the **current** implementation only. The merged
 unified-adapter architecture spec (`2026-07-24-unified-adapter-runtime-architecture.md`)

@@ -38,11 +38,17 @@ knowledge**. Provider-specific argv construction and output parsing live
 inside first-party adapter implementations, never in the generic orchestration
 or registration routes.
 
-### 1.2 Current Implementation (as of `origin/main` @ `1fb1928b`)
+### 1.2 Historical Implementation Snapshot (as of `origin/main` @ `1fb1928b`)
 
-The current implementation converges five executor classes (Claude, Codex,
-OpenCode, Pi, and GenericCliExecutor) through a shared `_run_command` →
-`ExecutorResult` lifecycle, but the adapter boundary is **not yet extracted**
+> **This is a pinned historical baseline from before D10/D11.**
+> D10/D11 (TASK-3414, THR-107 seq84, July 2026) replaced the if/elif chain
+> in ``build_executor()`` with a static data-driven factory dict derived from
+> the D8 authoritative catalog. The current shipped ``build_executor()`` no
+> longer contains per-provider conditional dispatch — see D10/D11 in §9.3.
+
+The implementation at this snapshot converged five executor classes (Claude,
+Codex, OpenCode, Pi, and GenericCliExecutor) through a shared `_run_command` →
+`ExecutorResult` lifecycle, but the adapter boundary was **not yet extracted**
 into a formalized interface:
 
 | Component | Current (concrete) | Target (formalized) |
@@ -64,10 +70,15 @@ into a formalized interface:
 | **`adapter_id`** (current) | A field on `ExecutorProfile` (`executor_registry.py:104`) indicating which workspace adapter to use. This is **misleading** — it selects workspace preparation (bootstrap doc, permission surface), NOT the adapter that executes the CLI. See §6.3 for proposed resolution. |
 | **`adapter_id`** (target) | A profiles' reference to a registered adapter implementation versioned by `adapter_version`. Defaults to the profile kind's bundled adapter; custom profiles may reference a first-party adapter version or, in a future founder-gated track, a custom adapter. |
 
-### 1.4 Current-vs-Target Summary
+### 1.4 Historical Baseline vs. Target Summary
+
+> **Historical snapshot pinned at `origin/main` @ `1fb1928b` (pre-D10/D11).**
+> D10/D11 (TASK-3414, THR-107 seq84, July 2026) replaced the `if/elif` chain
+> below with a static factory dict. The CURRENT block diagram is the
+> pre-cutover baseline — not the shipped state after D10/D11.
 
 ```
-CURRENT (1fb1928b):
+BASELINE (1fb1928b, pre-D10/D11):
   build_executor(name) → if/elif chain → ConcreteExecutor(settings)
     → executor.run() → _run_command(cmd, parser=X)
   Orchestration knows: claude argv shape, codex sandbox flags,
@@ -813,7 +824,7 @@ not the orchestration layer.
 |---|---|---|
 | P1 | Extract `build_argv()` from each executor class into first-party adapter modules | Proposed this spec §3.3; requires separate founder-approved build task |
 | P2 | Create adapter catalog at `runtime/adapters/catalog.yaml` | Proposed this spec §3.1; requires separate founder-approved build task |
-| P3 | Data-driven `build_executor()` via adapter catalog instead of hard-coded `if/elif` chain | Proposed this spec §3.2; requires separate founder-approved build task |
+| P3 | Data-driven `build_executor()` via adapter catalog instead of hard-coded `if/elif` chain | **D10/D11 (TASK-3414, THR-107 seq84, July 2026):** static factory dict replacing the if/elif chain. Full adapter-catalog-based dispatch (as originally proposed in §3.1–3.2) remains unimplemented. |
 | P4 | Add `result.text` and `adapter_metadata` fields to `ExecutorResult` | Proposed this spec §2.2; additive-only, backward-compatible |
 | P5 | Custom adapter executable subprocess model (separate process, stdin/stdout contract) | Proposed this spec §4; requires founder approval for the entire custom-adapter track |
 | P6 | Custom adapter registration: executable path + hash + version + capabilities | Proposed this spec §4.2; requires founder approval |
