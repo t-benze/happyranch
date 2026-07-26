@@ -2313,7 +2313,8 @@ class TestD8CatalogRegistryAgreement:
             assert profile.kind == desc.kind
             assert profile.adapter_id == desc.adapter_id
             assert profile.readiness_marker_fragment == desc.readiness_marker_fragment
-            assert profile.model_arg == desc.model_arg
+            # model_arg: catalog stores tuple; registry stores list — value-equal only
+            assert profile.model_arg == list(desc.model_arg)
             # argv_template, command must be None for built-ins
             assert profile.argv_template is None
             assert profile.command is None
@@ -2397,6 +2398,123 @@ class TestD8CatalogRegistryAgreement:
 
         for desc in get_builtin_catalog():
             assert get_first_party_adapter(desc.name) is desc.adapter_cls
+
+
+class TestD8CatalogImmutability:
+    """Prove catalog descriptor metadata is genuinely immutable across the
+    catalog→registry seam — no aliasing, no shared mutable objects."""
+
+    def test_catalog_model_arg_is_immutable_tuple(self):
+        """Catalog descriptor model_arg must be an immutable tuple, not a
+        list — a mutable list returned from get_builtin_catalog() would be
+        aliasable and violate D8's immutable-bundled-catalog contract."""
+        from runtime.adapters import get_builtin_catalog
+
+        for desc in get_builtin_catalog():
+            if desc.model_arg is not None:
+                assert isinstance(desc.model_arg, tuple), (
+                    f"catalog {desc.name}.model_arg must be tuple, "
+                    f"got {type(desc.model_arg).__name__}"
+                )
+
+    def test_catalog_model_arg_cannot_be_mutated_through_accessor(self):
+        """get_builtin_catalog() must expose no mutable catalog/profile
+        metadata. Appending to a descriptor's model_arg should be impossible
+        because it is a tuple."""
+        from runtime.adapters import get_builtin_catalog
+
+        catalog = get_builtin_catalog()
+        claude_desc = catalog[0]
+        with pytest.raises((TypeError, AttributeError)):
+            claude_desc.model_arg.append("--injected")  # type: ignore[union-attr]
+
+    def test_registry_profile_model_arg_is_value_equal_but_not_same_object(self):
+        """A registry profile's model_arg must be value-equal to the catalog
+        descriptor's model_arg but NOT the same object. Direct aliasing
+        violates D8's registry-immutability contract."""
+        from runtime.adapters import get_builtin_catalog
+
+        registry = ExecutorRegistry()
+        catalog = get_builtin_catalog()
+        claude_desc = catalog[0]
+
+        profile = registry.get_profile("claude")
+        assert profile is not None
+        assert profile.model_arg is not None
+
+        # Value equality: the profile must carry the same values
+        assert profile.model_arg == list(claude_desc.model_arg)
+
+        # Object identity: the profile must NOT alias the catalog
+        assert profile.model_arg is not claude_desc.model_arg, (
+            "Registry profile model_arg must be an independent copy, "
+            "not the same object as the catalog descriptor's model_arg"
+        )
+
+    def test_separate_registry_constructions_do_not_share_model_arg_objects(self):
+        """Two independently constructed registries must NOT share
+        model_arg objects. If they did, mutating one profile's model_arg
+        would silently corrupt another registry's profile."""
+        r1 = ExecutorRegistry()
+        r2 = ExecutorRegistry()
+
+        p1 = r1.get_profile("claude")
+        p2 = r2.get_profile("claude")
+        assert p1 is not None and p2 is not None
+        assert p1.model_arg is not None and p2.model_arg is not None
+
+        assert p1.model_arg is not p2.model_arg, (
+            "Separate registry constructions must produce independent "
+            "model_arg lists, not shared aliases"
+        )
+
+    def test_mutating_profile_local_list_cannot_alter_catalog(self):
+        """Mutating a permitted profile-local model_arg list must not
+        alter the catalog or another registry profile."""
+        from runtime.adapters import get_builtin_catalog
+
+        r1 = ExecutorRegistry()
+        r2 = ExecutorRegistry()
+        catalog = get_builtin_catalog()
+
+        p1 = r1.get_profile("claude")
+        p2 = r2.get_profile("claude")
+        assert p1 is not None and p2 is not None
+
+        # Capture original values
+        original_catalog = list(catalog[0].model_arg)  # type: ignore[arg-type]
+        original_p2 = list(p2.model_arg)  # type: ignore[arg-type]
+
+        # Mutate p1's list — this is permitted because ExecutorProfile
+        # carries a list (not tuple), but must not bleed anywhere else
+        p1.model_arg.append("--local-only")
+
+        # p2 must remain unchanged (separate registry)
+        assert p2.model_arg == original_p2, (
+            "Mutating one registry's profile must not affect another registry"
+        )
+
+        # Catalog descriptor must remain unchanged
+        assert list(catalog[0].model_arg) == original_catalog, (  # type: ignore[arg-type]
+            "Mutating a profile-local list must not alter the catalog"
+        )
+
+        # p1 itself reflects the mutation (it owns its list)
+        assert "--local-only" in p1.model_arg
+
+    def test_phase0_values_unchanged_after_immutability_fix(self):
+        """Exact Phase-0 model_arg values must remain unchanged after
+        the immutability fix — tuples carry the same elements as the
+        original lists."""
+        expected = _expected_builtin_fields()
+        registry = ExecutorRegistry()
+
+        for name, fields in expected.items():
+            profile = registry.get_profile(name)
+            assert profile is not None
+            assert profile.model_arg == fields["model_arg"], (
+                f"{name}.model_arg must preserve exact Phase-0 values"
+            )
 
 
 class TestD8RegistryBehaviorPreserved:
@@ -2713,7 +2831,8 @@ class TestD8AdversarialInvariants:
             assert profile.kind == desc.kind
             assert profile.adapter_id == desc.adapter_id
             assert profile.readiness_marker_fragment == desc.readiness_marker_fragment
-            assert profile.model_arg == desc.model_arg
+            # model_arg: catalog stores tuple; registry stores list — value-equal only
+            assert profile.model_arg == list(desc.model_arg)
 
     def test_catalog_name_typo_would_break_registration(self):
         """Adversarial: if a catalog name doesn't match the adapter lookup key,

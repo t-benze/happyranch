@@ -148,6 +148,11 @@ class ExecutorRegistry:
         private first-party adapter catalog (``runtime/adapters``).
         No literal parallel built-in list or table remains in this
         file — the catalog is the single source of truth.
+
+        **Immutability:** Catalog descriptors store ``model_arg`` as
+        immutable tuples. Each ``ExecutorProfile`` receives its own
+        independent list copy so that profile-local mutation cannot
+        alias into the catalog or other registries.
         """
         from runtime.adapters import get_builtin_catalog
 
@@ -157,7 +162,7 @@ class ExecutorRegistry:
                 kind=desc.kind,
                 adapter_id=desc.adapter_id,
                 readiness_marker_fragment=desc.readiness_marker_fragment,
-                model_arg=desc.model_arg,
+                model_arg=list(desc.model_arg) if desc.model_arg is not None else None,
             )
 
     def get_profile(self, name: str) -> ExecutorProfile | None:

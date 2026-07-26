@@ -51,13 +51,17 @@ class BuiltinAdapterDescriptor:
     This is a **private code-native declaration**, not a runtime-writable
     manifest, dynamic discovery, plugin loader, or external configuration
     format.
+
+    **Immutability:** ``model_arg`` is stored as an immutable tuple to
+    prevent alias mutation through the public catalog accessor. Registry
+    consumers that need a mutable list must copy it independently.
     """
 
     name: str
     kind: str
     adapter_id: str
     readiness_marker_fragment: str
-    model_arg: list[str] | None
+    model_arg: tuple[str, ...] | None
     adapter_cls: type
 
 
@@ -76,7 +80,7 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
         kind="builtin",
         adapter_id="claude",
         readiness_marker_fragment=".claude/skills/start-task/SKILL.md",
-        model_arg=["--model", "{model}"],
+        model_arg=("--model", "{model}"),
         adapter_cls=ClaudeAdapter,
     ),
     BuiltinAdapterDescriptor(
@@ -84,7 +88,7 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
         kind="builtin",
         adapter_id="codex",
         readiness_marker_fragment="AGENTS.md",
-        model_arg=["-m", "{model}"],
+        model_arg=("-m", "{model}"),
         adapter_cls=CodexAdapter,
     ),
     BuiltinAdapterDescriptor(
@@ -92,7 +96,7 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
         kind="builtin",
         adapter_id="opencode",
         readiness_marker_fragment="AGENTS.md",
-        model_arg=["-m", "{model}"],
+        model_arg=("-m", "{model}"),
         adapter_cls=OpencodeAdapter,
     ),
     BuiltinAdapterDescriptor(
@@ -100,7 +104,7 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
         kind="builtin",
         adapter_id="pi",
         readiness_marker_fragment="AGENTS.md",
-        model_arg=["--model", "{model}"],
+        model_arg=("--model", "{model}"),
         adapter_cls=PiAdapter,
     ),
 )
