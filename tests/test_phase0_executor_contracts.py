@@ -80,7 +80,7 @@ _FROZEN_INVALID_JSON_RAW = "{" + "中" * 1000 + "}"
 _FROZEN_NOT_DICT_RAW = "[" + "中" * 1000 + "]"
 # 1002 chars, character-sliced at 2000 — ends in ']', no U+FFFD
 
-# Expected TokenUsage — raw-only, all parsed fields None
+# Expected TokenUsage — parser-level raw-only, all parsed fields None
 _FROZEN_MISSING_END_USAGE = TokenUsage(
     usage_raw_json=_FROZEN_MISSING_END_RAW,
 )
@@ -89,6 +89,42 @@ _FROZEN_INVALID_JSON_USAGE = TokenUsage(
 )
 _FROZEN_NOT_DICT_USAGE = TokenUsage(
     usage_raw_json=_FROZEN_NOT_DICT_RAW,
+)
+
+# ── Frozen executor-seam TokenUsage (model backfill independently encoded) ─
+# The executor's _run_command backfills token_usage.model = provider when
+# the parser yields model=None.  These encode the expected full TokenUsage
+# at the shipping GenericCliExecutor.run() seam with the provider used in
+# each test, computed independently — no imports, calls, or delegation to
+# GenericCliAdapter, GenericCliExecutor, or _parse_generic_cli_usage.
+# Pinned-base provenance: immutable base f4a26824300a650f0ab1841945a9f7c00a84d86e.
+
+_FROZEN_EXECUTOR_MISSING_END_USAGE = TokenUsage(
+    usage_raw_json=_FROZEN_MISSING_END_RAW,
+    input_tokens=None,
+    output_tokens=None,
+    cache_read_tokens=None,
+    cache_creation_tokens=None,
+    reasoning_tokens=None,
+    model="custom-cjk-missing-end",
+)
+_FROZEN_EXECUTOR_INVALID_JSON_USAGE = TokenUsage(
+    usage_raw_json=_FROZEN_INVALID_JSON_RAW,
+    input_tokens=None,
+    output_tokens=None,
+    cache_read_tokens=None,
+    cache_creation_tokens=None,
+    reasoning_tokens=None,
+    model="custom-cjk-invalid-json",
+)
+_FROZEN_EXECUTOR_NOT_DICT_USAGE = TokenUsage(
+    usage_raw_json=_FROZEN_NOT_DICT_RAW,
+    input_tokens=None,
+    output_tokens=None,
+    cache_read_tokens=None,
+    cache_creation_tokens=None,
+    reasoning_tokens=None,
+    model="custom-cjk-not-dict",
 )
 
 
@@ -3161,7 +3197,7 @@ class TestGenericCliAdapter:
     # character slicing str[:2000], not UTF-8 byte slicing.  Each test below
     # compares the shipping GenericCliAdapter.parse_output() result to this
     # independent reference — no imports, calls, or delegation through
-    # _parse_generic_cli_usage (which is a forwarding shim).\n\n    def test_parse_output_unicode_missing_end_character_slicing(self):
+    # _parse_generic_cli_usage.\n\n    def test_parse_output_unicode_missing_end_character_slicing(self):
         """Missing END with 1000 CJK chars — raw is char-sliced, no U+FFFD."""
         adapter = self._adapter()
         from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN
@@ -3181,8 +3217,7 @@ class TestGenericCliAdapter:
 
     def test_parse_output_unicode_missing_end_against_frozen_reference(self):
         """Missing-END CJK output matches independent frozen pre-extraction
-        reference derived from immutable base f4a26824.  No delegation
-        through _parse_generic_cli_usage (circular forwarding shim)."""
+        reference derived from immutable base f4a26824."""
         adapter = self._adapter()
         from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN
         stdout = f"{_HR_ENVELOPE_BEGIN}\n" + "中" * 1000
@@ -3539,19 +3574,20 @@ class TestGenericCliExecutorShell:
         assert result.success is True
         assert result.token_usage is None  # no envelope → no token data
 
-    # -- Executor seam frozen-reference CJK parity (TASK-3396) -------------
+    # -- Executor seam frozen-reference CJK parity (TASK-3396 / TASK-3398) --
     # Each test mocks subprocess.Popen to emit the same CJK over-limit
     # stdout, then asserts that GenericCliExecutor.run() produces a
-    # TokenUsage matching the independent frozen pre-extraction reference
-    # (_FROZEN_* constants above).  Does NOT import _parse_generic_cli_usage
-    # (the circular forwarding shim).
+    # TokenUsage with full Pydantic equality vs the independent frozen
+    # executor-seam reference (_FROZEN_EXECUTOR_* constants above).
+    # Does NOT import _parse_generic_cli_usage, GenericCliAdapter, or
+    # GenericCliExecutor production path.
 
     @patch("runtime.orchestrator.executors.subprocess")
     def test_executor_seam_missing_end_against_frozen_reference(
         self, mock_subprocess, tmp_path
     ):
         """Missing-END CJK stdout → executor.run() TokenUsage matches
-        frozen reference."""
+        independent frozen executor-seam reference."""
         from runtime.orchestrator.executors import (
             GenericCliExecutor,
             _HR_ENVELOPE_BEGIN,
@@ -3577,21 +3613,22 @@ class TestGenericCliExecutorShell:
             timeout_seconds=60,
         )
         assert result.token_usage is not None
-        assert result.token_usage.usage_raw_json == _FROZEN_MISSING_END_RAW
+        # Full Pydantic TokenUsage equality vs independent frozen
+        # executor-seam reference (model backfill encoded independently —
+        # no delegation to GenericCliAdapter, GenericCliExecutor, or
+        # _parse_generic_cli_usage)
+        assert result.token_usage == _FROZEN_EXECUTOR_MISSING_END_USAGE
+        # Defense-in-depth CJK character-slice semantics
         assert len(result.token_usage.usage_raw_json) == 1022
         assert "\ufffd" not in result.token_usage.usage_raw_json
         assert result.token_usage.usage_raw_json[-1] == "中"
-        # Raw-only: parsed token fields must be None (model is set by
-        # _run_command backfill, not by the parser)
-        assert result.token_usage.input_tokens is None
-        assert result.token_usage.output_tokens is None
 
     @patch("runtime.orchestrator.executors.subprocess")
     def test_executor_seam_invalid_json_against_frozen_reference(
         self, mock_subprocess, tmp_path
     ):
         """JSONDecodeError CJK stdout → executor.run() TokenUsage matches
-        frozen reference."""
+        independent frozen executor-seam reference."""
         from runtime.orchestrator.executors import (
             GenericCliExecutor,
             _HR_ENVELOPE_BEGIN,
@@ -3619,20 +3656,23 @@ class TestGenericCliExecutorShell:
             timeout_seconds=60,
         )
         assert result.token_usage is not None
-        assert result.token_usage.usage_raw_json == _FROZEN_INVALID_JSON_RAW
+        # Full Pydantic TokenUsage equality vs independent frozen
+        # executor-seam reference (model backfill encoded independently —
+        # no delegation to GenericCliAdapter, GenericCliExecutor, or
+        # _parse_generic_cli_usage)
+        assert result.token_usage == _FROZEN_EXECUTOR_INVALID_JSON_USAGE
+        # Defense-in-depth CJK character-slice semantics
         assert len(result.token_usage.usage_raw_json) == 1002
         assert "\ufffd" not in result.token_usage.usage_raw_json
         assert result.token_usage.usage_raw_json[0] == "{"
         assert result.token_usage.usage_raw_json[-1] == "}"
-        assert result.token_usage.input_tokens is None
-        assert result.token_usage.output_tokens is None
 
     @patch("runtime.orchestrator.executors.subprocess")
     def test_executor_seam_not_dict_against_frozen_reference(
         self, mock_subprocess, tmp_path
     ):
         """Non-dict root CJK stdout → executor.run() TokenUsage matches
-        frozen reference."""
+        independent frozen executor-seam reference."""
         from runtime.orchestrator.executors import (
             GenericCliExecutor,
             _HR_ENVELOPE_BEGIN,
@@ -3660,13 +3700,16 @@ class TestGenericCliExecutorShell:
             timeout_seconds=60,
         )
         assert result.token_usage is not None
-        assert result.token_usage.usage_raw_json == _FROZEN_NOT_DICT_RAW
+        # Full Pydantic TokenUsage equality vs independent frozen
+        # executor-seam reference (model backfill encoded independently —
+        # no delegation to GenericCliAdapter, GenericCliExecutor, or
+        # _parse_generic_cli_usage)
+        assert result.token_usage == _FROZEN_EXECUTOR_NOT_DICT_USAGE
+        # Defense-in-depth CJK character-slice semantics
         assert len(result.token_usage.usage_raw_json) == 1002
         assert "\ufffd" not in result.token_usage.usage_raw_json
         assert result.token_usage.usage_raw_json[0] == "["
         assert result.token_usage.usage_raw_json[-1] == "]"
-        assert result.token_usage.input_tokens is None
-        assert result.token_usage.output_tokens is None
 
 
 class TestPhase2Boundary:
