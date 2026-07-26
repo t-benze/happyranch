@@ -1981,6 +1981,19 @@ class TestCommandAdapterRejectionOrgRegister:
         # Token consumed on success
         assert store.validate(token, "alpha") is None
 
+        # ── Isolation: unregister from in-memory registry  ──────────
+        # The route handler registers the profile in the global
+        # singleton ExecutorRegistry.  Remove it so the next test that
+        # asserts a clean fresh-registry state does not see a leftover
+        # "my-cli" entry with a resolvable command ("echo") showing
+        # present=true in the health/prereqs route.
+        get_registry().unregister_custom_profile("my-cli")
+        assert not get_registry().is_registered("my-cli"), (
+            "my-cli must not leak into subsequent test registry state"
+        )
+        # The durable store lives in a function-scoped tmp_path so it
+        # does not leak between tests.
+
     def test_null_command_adapter_accepted_defaults_to_generic_cli(
         self, app, daemon_state, monkeypatch,
     ):
@@ -2008,3 +2021,14 @@ class TestCommandAdapterRejectionOrgRegister:
         # Stored profile has command_adapter
         profiles = _store_raw()
         assert "null-adapter" in profiles
+
+        # ── Isolation: unregister from in-memory registry  ──────────
+        # Same as test_explicit_generic_cli_round_trips above — the
+        # route handler registered this profile in the global singleton
+        # ExecutorRegistry.  Remove it so downstream fresh-registry
+        # health tests do not see a leftover entry.
+        get_registry().unregister_custom_profile("null-adapter")
+        assert not get_registry().is_registered("null-adapter"), (
+            "null-adapter must not leak into subsequent test registry state"
+        )
+        # Durable store is function-scoped tmp_path — no cross-test leak.
