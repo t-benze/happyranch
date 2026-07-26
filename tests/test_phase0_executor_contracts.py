@@ -4002,26 +4002,58 @@ class TestD10D11DataDrivenFactory:
 
     def test_model_arg_lists_are_independent_per_profile(self):
         """Each built-in profile's model_arg must be an independent list.
-        Modifying one profile's model_arg must not affect another."""
-        from runtime.orchestrator.executor_registry import get_registry
+        Modifying one profile's model_arg must not affect another.
 
-        registry = get_registry()
-        claude_profile = registry.get_profile("claude")
-        codex_profile = registry.get_profile("codex")
-        assert claude_profile is not None and codex_profile is not None
-
-        # Verify they are different list objects (no shared list)
-        assert claude_profile.model_arg is not codex_profile.model_arg, (
-            "model_arg lists must not be shared"
+        Uses an isolated registry to avoid contaminating later tests with
+        profile mutations. Also proves at the factory seam that the
+        executor's ``_model_arg`` is an independently copied list."""
+        from runtime.orchestrator.executor_registry import (
+            get_registry, reset_registry, build_executor,
         )
-        assert claude_profile.model_arg == ["--model", "{model}"]
-        assert codex_profile.model_arg == ["-m", "{model}"]
+        from runtime.config import Settings
 
-        # Mutating one profile's model_arg must not affect the other
-        claude_profile.model_arg.append("--extra")  # type: ignore[union-attr]
-        assert len(codex_profile.model_arg) == 2, (
-            "Codex model_arg must remain unchanged after Claude mutation"
-        )
+        # Isolate: fresh registry so mutations don't leak to later tests
+        reset_registry()
+        try:
+            registry = get_registry()
+            claude_profile = registry.get_profile("claude")
+            codex_profile = registry.get_profile("codex")
+            assert claude_profile is not None and codex_profile is not None
+
+            # Verify they are different list objects (no shared list)
+            assert claude_profile.model_arg is not codex_profile.model_arg, (
+                "model_arg lists must not be shared"
+            )
+            assert claude_profile.model_arg == ["--model", "{model}"]
+            assert codex_profile.model_arg == ["-m", "{model}"]
+
+            # Mutating one profile's model_arg must not affect the other
+            claude_profile.model_arg.append("--extra")  # type: ignore[union-attr]
+            assert len(codex_profile.model_arg) == 2, (
+                "Codex model_arg must remain unchanged after Claude mutation"
+            )
+
+            # ── Factory seam: executor receives model_arg with correct values ──
+            settings = Settings()
+            for name in ("claude", "codex", "opencode", "pi"):
+                profile = registry.get_profile(name)
+                assert profile is not None and profile.model_arg is not None
+                ex = build_executor(name, settings)
+                assert ex._model_arg is not None, (
+                    f"{name}: executor _model_arg must be non-None"
+                )
+                assert ex._model_arg == list(profile.model_arg), (
+                    f"{name}: executor _model_arg {ex._model_arg!r} "
+                    f"!= profile.model_arg {list(profile.model_arg)!r}"
+                )
+            # Different executors must have independent model_arg lists
+            ex_a = build_executor("claude", settings)
+            ex_b = build_executor("codex", settings)
+            assert ex_a._model_arg is not ex_b._model_arg, (
+                "Claude and Codex executors must have independent model_arg lists"
+            )
+        finally:
+            reset_registry()
 
     # -- Phase-0 argv parity -----------------------------------------------
 
@@ -4030,8 +4062,9 @@ class TestD10D11DataDrivenFactory:
         matching the Phase-0 pinned baselines.
 
         Verifies every built-in is constructed with the correct specialized
-        type, a non-None CLI path, injected adapter, and valid model_arg
-        from the profile — same invariants the former if/elif chain enforced."""
+        type, a non-None CLI path, injected adapter, valid model_arg from
+        the profile, independent model_arg copy at the executor seam, and
+        actual argv including model_arg substitution (when a model is set)."""
         from runtime.orchestrator.executor_registry import build_executor, get_registry
         from runtime.config import Settings
 
@@ -4049,8 +4082,53 @@ class TestD10D11DataDrivenFactory:
             assert profile is not None and profile.model_arg is not None, (
                 f"{name}: profile.model_arg must be non-None for built-in"
             )
+            # Executor's model_arg must match profile's model_arg values
+            assert ex._model_arg is not None, (
+                f"{name}: executor _model_arg must be non-None"
+            )
+            assert ex._model_arg == list(profile.model_arg), (
+                f"{name}: executor _model_arg {ex._model_arg!r} "
+                f"!= profile.model_arg {list(profile.model_arg)!r}"
+            )
+            # ── Phase-0 argv contract: model_arg appears in argv with a model ──
+            from runtime.orchestrator.executors import (
+                ClaudeExecutor, CodexExecutor, OpencodeExecutor, PiExecutor,
+            )
+            fake_model = "test-model-id"
+            if isinstance(ex, ClaudeExecutor):
+                argv = ex._build_argv(
+                    prompt="_parity_test_prompt_",
+                    allowed_tools="Bash(happyranch:*)",
+                    model=fake_model,
+                )
+            elif isinstance(ex, CodexExecutor):
+                argv = ex._build_argv(model=fake_model)
+            elif isinstance(ex, OpencodeExecutor):
+                argv = ex._build_argv(
+                    workspace="/tmp/test_ws",
+                    prompt="_parity_test_prompt_",
+                    model=fake_model,
+                )
+            elif isinstance(ex, PiExecutor):
+                argv = ex._build_argv(
+                    prompt="_parity_test_prompt_",
+                    model=fake_model,
+                )
+            else:
+                pytest.fail(f"{name}: unknown executor type {type(ex).__name__}")
+            assert isinstance(argv, list), f"{name}: argv must be a list"
+            # The model_arg flag-pair must appear verbatim in the argv
+            expected_flags = [
+                elem.replace("{model}", fake_model)
+                for elem in profile.model_arg
+            ]
+            for flag in expected_flags:
+                assert flag in argv, (
+                    f"{name}: model_arg-derived flag {flag!r} missing "
+                    f"from argv: {argv}"
+                )
 
-    # -- omitted-provider detection ----------------------------------------
+    # -- omitted-provider / factory-key alignment --------------------------
 
     def test_omitted_builtin_from_factory_dict_would_fail(self):
         """Adversarial: if a built-in name were removed from the factory dict,
@@ -4082,3 +4160,114 @@ class TestD10D11DataDrivenFactory:
                 f"got {type(ex).__name__}. The factory dict is incomplete or "
                 f"falling through to GenericCliExecutor."
             )
+
+    def test_factory_keys_align_with_d8_catalog(self):
+        """Structural: the static _BUILTIN_EXECUTOR_FACTORIES dict keys
+        must exactly match the D8 authoritative catalog's normalized
+        built-in names (claude, codex, opencode, pi).
+
+        This test directly inspects the factory source to extract the
+        declared keys. It fails if a factory entry is omitted or if
+        the factory names are not the canonical four."""
+        import ast
+        import inspect
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.adapters import get_builtin_catalog
+
+        catalog_names = {desc.name.lower() for desc in get_builtin_catalog()}
+        assert catalog_names == {"claude", "codex", "opencode", "pi"}, (
+            f"Unexpected D8 catalog names: {catalog_names}"
+        )
+
+        # Extract the _BUILTIN_EXECUTOR_FACTORIES dict keys from source
+        src = inspect.getsource(build_executor)
+        tree = ast.parse(src)
+
+        factory_keys: set[str] = set()
+        for node in ast.walk(tree):
+            # _BUILTIN_EXECUTOR_FACTORIES is an AnnAssign (type-annotated)
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets: list[ast.expr] = []
+                raw_value: ast.expr | None = None
+                if isinstance(node, ast.Assign):
+                    targets = list(node.targets)
+                    raw_value = node.value
+                else:
+                    targets = [node.target]
+                    raw_value = node.value
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id == "_BUILTIN_EXECUTOR_FACTORIES":
+                        if raw_value is not None and isinstance(raw_value, ast.Dict):
+                            for key in raw_value.keys:
+                                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                                    factory_keys.add(key.value)
+
+        assert factory_keys == catalog_names, (
+            f"Factory keys {factory_keys!r} do not match D8 catalog "
+            f"names {catalog_names!r}. A factory entry is missing or "
+            f"an unexpected key is present."
+        )
+
+    def test_no_profile_name_if_elif_chain_in_build_executor(self):
+        """AST-level structural assertion: ``build_executor`` must not
+        contain a restored per-provider if/elif chain that compares
+        ``profile.name`` or ``profile.name.lower()`` against provider
+        name string literals.
+
+        This test would FAIL if someone reverted the D10/D11 factory
+        dict to the old ``if profile.name == "claude" ...`` chain.
+        The static data-driven dict dispatch is the only allowed path."""
+        import ast
+        import inspect
+        from runtime.orchestrator.executor_registry import build_executor
+
+        provider_literals = {"claude", "codex", "opencode", "pi"}
+        src = inspect.getsource(build_executor)
+        tree = ast.parse(src)
+
+        class _ProviderIfChainVisitor(ast.NodeVisitor):
+            """Detect if/elif chains that dispatch on profile.name comparisons."""
+
+            def __init__(self) -> None:
+                self.violations: list[str] = []
+
+            def visit_If(self, node: ast.If) -> None:
+                self._check_test(node.test, f"line ~{node.lineno}")
+                self.generic_visit(node)
+
+            def _check_test(self, test: ast.expr, location: str) -> None:
+                # Detect: profile.name.lower() == "provider"
+                # or: profile.name == "provider"
+                if isinstance(test, ast.Compare):
+                    for comparator in test.comparators:
+                        if isinstance(comparator, ast.Constant) and comparator.value in provider_literals:
+                            if isinstance(test.left, ast.Call):
+                                func = test.left.func
+                                if isinstance(func, ast.Attribute):
+                                    # profile.name.lower()
+                                    if (isinstance(func.value, ast.Attribute)
+                                            and isinstance(func.value.value, ast.Name)
+                                            and func.value.value.id == "profile"
+                                            and func.value.attr == "name"):
+                                        self.violations.append(
+                                            f"{location}: if/elif compares profile.name.lower() "
+                                            f"to {comparator.value!r}"
+                                        )
+                            elif isinstance(test.left, ast.Attribute):
+                                # profile.name == "claude"
+                                if (isinstance(test.left.value, ast.Name)
+                                        and test.left.value.id == "profile"
+                                        and test.left.attr == "name"):
+                                    self.violations.append(
+                                        f"{location}: if/elif compares profile.name "
+                                        f"to {comparator.value!r}"
+                                    )
+
+        visitor = _ProviderIfChainVisitor()
+        visitor.visit(tree)
+
+        assert not visitor.violations, (
+            f"build_executor contains per-provider if/elif chain "
+            f"dispatch — D10/D11 static factory dict is required. "
+            f"Violations: {visitor.violations}"
+        )
