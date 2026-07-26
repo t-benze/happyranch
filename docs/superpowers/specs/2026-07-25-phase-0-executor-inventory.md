@@ -315,13 +315,13 @@ Source: `workspace_adapters.py` (1298 lines) — `ClaudeWorkspaceAdapter`, `Code
 > narrower static factory derived from the D8 catalog. The rest of this
 > section is the original unmodified inventory text.
 
-This inventory documents the **current** implementation only. The merged
+This inventory documents the Phase-0 **historical baseline** implementation (pinned at `a7134f00`). The merged
 unified-adapter architecture spec (`2026-07-24-unified-adapter-runtime-architecture.md`)
 proposes (but does NOT authorize):
 
-| Aspect | Current (TODAY) | Proposed (Phase 1+) |
+| Aspect | Phase-0 Baseline (HISTORICAL) | Proposed (Phase 1+) |
 |---|---|---|
-| `build_executor()` | Hard-coded `if/elif` chain | Data-driven via adapter catalog |
+| `build_executor()` | Hard-coded `if/elif` chain *(Phase-0 baseline)* | Data-driven via adapter catalog |
 | argv construction | Inline in each `*Executor.run()` | Extracted to adapter `build_argv()` |
 | output parsing | Five hand-written parsers in `executors.py` | Per-adapter `parse_output()` |
 | adapter_id meaning | workspace adapter only | proposed split to `workspace_adapter_id` + `command_adapter_id` |
