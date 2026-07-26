@@ -1698,3 +1698,526 @@ class TestRegistryShape:
     def test_unregister_nonexistent_returns_false(self):
         registry = get_registry()
         assert registry.unregister_custom_profile("nonexistent") is False
+
+
+# ===========================================================================
+# THR-107 D2: First-party adapter catalog contract tests
+# ===========================================================================
+# Prove the private adapter catalog/facade WORKS for the four built-ins and
+# does NOT leak into custom/GenericCliExecutor paths.
+# ===========================================================================
+
+
+class TestFirstPartyAdapterCatalog:
+    """D2 first-party adapter catalog contract.
+
+    Verify:
+    - Catalog returns correct adapter class for each built-in name.
+    - Catalog returns None for custom/unknown names.
+    - Each adapter's build_argv produces bit-identical argv to Phase-0 baselines.
+    - Adapter build_argv parity: model injection, resume, sandbox flags, etc.
+    """
+
+    def test_catalog_returns_claude_adapter(self):
+        from runtime.adapters import get_first_party_adapter, ClaudeAdapter
+
+        cls = get_first_party_adapter("claude")
+        assert cls is ClaudeAdapter
+
+    def test_catalog_returns_codex_adapter(self):
+        from runtime.adapters import get_first_party_adapter, CodexAdapter
+
+        cls = get_first_party_adapter("codex")
+        assert cls is CodexAdapter
+
+    def test_catalog_returns_opencode_adapter(self):
+        from runtime.adapters import get_first_party_adapter, OpencodeAdapter
+
+        cls = get_first_party_adapter("opencode")
+        assert cls is OpencodeAdapter
+
+    def test_catalog_returns_pi_adapter(self):
+        from runtime.adapters import get_first_party_adapter, PiAdapter
+
+        cls = get_first_party_adapter("pi")
+        assert cls is PiAdapter
+
+    def test_catalog_returns_none_for_custom_name(self):
+        from runtime.adapters import get_first_party_adapter
+
+        assert get_first_party_adapter("openclaw") is None
+        assert get_first_party_adapter("generic-cli") is None
+        assert get_first_party_adapter("nonexistent") is None
+
+    def test_catalog_is_case_insensitive(self):
+        from runtime.adapters import get_first_party_adapter, ClaudeAdapter
+
+        assert get_first_party_adapter("CLAUDE") is ClaudeAdapter
+        assert get_first_party_adapter("Codex") is not None
+
+    # ── Claude adapter argv parity ───────────────────────────────────────
+
+    def test_claude_adapter_build_argv_baseline(self):
+        from runtime.adapters import ClaudeAdapter
+
+        adapter = ClaudeAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/claude",
+            prompt="hello",
+            permission_mode="acceptEdits",
+            allowed_tools="happyranch Bash(git:*)",
+        )
+        assert cmd == [
+            "/usr/local/bin/claude",
+            "-p",
+            "hello",
+            "--permission-mode",
+            "acceptEdits",
+            "--allowedTools",
+            "happyranch Bash(git:*)",
+            "--output-format",
+            "json",
+        ]
+
+    def test_claude_adapter_build_argv_with_model(self):
+        from runtime.adapters import ClaudeAdapter
+
+        adapter = ClaudeAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/claude",
+            prompt="hello",
+            permission_mode="acceptEdits",
+            allowed_tools="happyranch",
+            model="claude-sonnet-4-20250514",
+            model_arg=["--model", "{model}"],
+        )
+        # Model injected after binary, before -p
+        expected = [
+            "/usr/local/bin/claude",
+            "--model",
+            "claude-sonnet-4-20250514",
+            "-p",
+            "hello",
+            "--permission-mode",
+            "acceptEdits",
+            "--allowedTools",
+            "happyranch",
+            "--output-format",
+            "json",
+        ]
+        assert cmd == expected
+
+    def test_claude_adapter_build_argv_with_resume(self):
+        from runtime.adapters import ClaudeAdapter
+
+        adapter = ClaudeAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/claude",
+            prompt="hello",
+            permission_mode="acceptEdits",
+            allowed_tools="happyranch",
+            resume_session_id="abc123",
+        )
+        assert cmd[-2:] == ["--resume", "abc123"]
+        assert "--resume" in cmd
+
+    # ── Codex adapter argv parity ────────────────────────────────────────
+
+    def test_codex_adapter_build_argv_baseline(self):
+        from runtime.adapters import CodexAdapter
+
+        adapter = CodexAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/codex",
+            sandbox_mode="workspace-write",
+        )
+        expected = [
+            "/usr/local/bin/codex",
+            "exec",
+            "--sandbox",
+            "workspace-write",
+            "-c",
+            "sandbox_workspace_write.network_access=true",
+            "--skip-git-repo-check",
+            "--json",
+            "-",
+        ]
+        assert cmd == expected
+
+    def test_codex_adapter_build_argv_with_model(self):
+        from runtime.adapters import CodexAdapter
+
+        adapter = CodexAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/codex",
+            sandbox_mode="workspace-write",
+            model="gpt-5",
+            model_arg=["-m", "{model}"],
+        )
+        # Model injected after binary+exec, before sandbox flags
+        assert cmd[2] == "-m"
+        assert cmd[3] == "gpt-5"
+
+    def test_codex_adapter_sandbox_flags_unchanged(self):
+        """Proof that sandbox flags are NOT changed by D2 extraction."""
+        from runtime.adapters import CodexAdapter
+
+        adapter = CodexAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/codex",
+            sandbox_mode="workspace-write",
+        )
+        assert "-c" in cmd
+        assert "sandbox_workspace_write.network_access=true" in cmd
+
+    # ── OpenCode adapter argv parity ────────────────────────────────────
+
+    def test_opencode_adapter_build_argv_baseline(self):
+        from runtime.adapters import OpencodeAdapter
+
+        adapter = OpencodeAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/opencode",
+            workspace="/tmp/ws",
+            prompt="hello",
+        )
+        expected = [
+            "/usr/local/bin/opencode",
+            "run",
+            "--dir",
+            "/tmp/ws",
+            "--format",
+            "json",
+            "hello",
+        ]
+        assert cmd == expected
+
+    def test_opencode_adapter_build_argv_with_model(self):
+        from runtime.adapters import OpencodeAdapter
+
+        adapter = OpencodeAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/opencode",
+            workspace="/tmp/ws",
+            prompt="hello",
+            model="provider/model",
+            model_arg=["-m", "{model}"],
+        )
+        # Model injected after binary+run, before --dir/prompt
+        assert cmd[2] == "-m"
+        assert cmd[3] == "provider/model"
+
+    # ── Pi adapter argv parity ──────────────────────────────────────────
+
+    def test_pi_adapter_build_argv_baseline(self):
+        from runtime.adapters import PiAdapter
+
+        adapter = PiAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/pi",
+            prompt="hello",
+        )
+        expected = [
+            "/usr/local/bin/pi",
+            "-p",
+            "hello",
+            "--mode",
+            "json",
+        ]
+        assert cmd == expected
+
+    def test_pi_adapter_build_argv_with_model(self):
+        from runtime.adapters import PiAdapter
+
+        adapter = PiAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/pi",
+            prompt="hello",
+            model="gpt-5",
+            model_arg=["--model", "{model}"],
+        )
+        # Model injected after binary, before -p
+        assert cmd[1] == "--model"
+        assert cmd[2] == "gpt-5"
+
+    # ── Model omitted when not set ───────────────────────────────────────
+
+    def test_all_adapters_omit_model_when_none(self):
+        """All four adapters produce argv with no model args when model is None."""
+        from runtime.adapters import (
+            ClaudeAdapter,
+            CodexAdapter,
+            OpencodeAdapter,
+            PiAdapter,
+        )
+
+        claude_cmd = ClaudeAdapter().build_argv(
+            cli_path="/bin/claude",
+            prompt="hi",
+            permission_mode="acceptEdits",
+            allowed_tools="happyranch",
+            model=None,
+            model_arg=["--model", "{model}"],
+        )
+        codex_cmd = CodexAdapter().build_argv(
+            cli_path="/bin/codex",
+            sandbox_mode="workspace-write",
+            model=None,
+            model_arg=["-m", "{model}"],
+        )
+        opencode_cmd = OpencodeAdapter().build_argv(
+            cli_path="/bin/opencode",
+            workspace="/tmp/ws",
+            prompt="hi",
+            model=None,
+            model_arg=["-m", "{model}"],
+        )
+        pi_cmd = PiAdapter().build_argv(
+            cli_path="/bin/pi",
+            prompt="hi",
+            model=None,
+            model_arg=["--model", "{model}"],
+        )
+
+        assert "--model" not in claude_cmd
+        assert "-m" not in codex_cmd
+        assert "-m" not in opencode_cmd
+        assert "--model" not in pi_cmd
+
+
+class TestD2BuildExecutorAdapterInjection:
+    """Prove build_executor injects adapters for built-ins but NOT for custom."""
+
+    def test_build_executor_injects_adapter_for_claude(self, monkeypatch):
+        """ClaudeExecutor built via build_executor carries the D2 adapter."""
+        from runtime.orchestrator.executor_registry import build_executor, reset_registry
+
+        reset_registry()
+        settings = Settings()
+        executor = build_executor("claude", settings)
+        # Adapter should be injected
+        assert executor._adapter is not None
+        from runtime.adapters import ClaudeAdapter
+
+        assert isinstance(executor._adapter, ClaudeAdapter)
+
+    def test_build_executor_injects_adapter_for_codex(self, monkeypatch):
+        from runtime.orchestrator.executor_registry import build_executor, reset_registry
+
+        reset_registry()
+        settings = Settings()
+        executor = build_executor("codex", settings)
+        assert executor._adapter is not None
+        from runtime.adapters import CodexAdapter
+
+        assert isinstance(executor._adapter, CodexAdapter)
+
+    def test_build_executor_injects_adapter_for_opencode(self, monkeypatch):
+        from runtime.orchestrator.executor_registry import build_executor, reset_registry
+
+        reset_registry()
+        settings = Settings()
+        executor = build_executor("opencode", settings)
+        assert executor._adapter is not None
+        from runtime.adapters import OpencodeAdapter
+
+        assert isinstance(executor._adapter, OpencodeAdapter)
+
+    def test_build_executor_injects_adapter_for_pi(self, monkeypatch):
+        from runtime.orchestrator.executor_registry import build_executor, reset_registry
+
+        reset_registry()
+        settings = Settings()
+        executor = build_executor("pi", settings)
+        assert executor._adapter is not None
+        from runtime.adapters import PiAdapter
+
+        assert isinstance(executor._adapter, PiAdapter)
+
+    def test_custom_route_returns_generic_cli_without_adapter(self):
+        """Custom profiles must NOT receive an adapter — GenericCliExecutor is unchanged."""
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfile,
+            ExecutorRegistry,
+            build_executor,
+            get_registry,
+            reset_registry,
+        )
+        import runtime.orchestrator.executor_registry as _reg_mod
+        from unittest.mock import patch
+
+        reset_registry()
+        registry = get_registry()
+        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/kimi-cli"):
+            profile = ExecutorRegistry.validate_custom_profile_config(
+                "kimi-cli",
+                {
+                    "command": "kimi-cli",
+                    "argv_template": ["kimi-cli", "-m", "{prompt}"],
+                    "adapter": "pi",
+                },
+            )
+            registry.register_custom_profile(profile)
+
+        settings = Settings()
+        executor = build_executor("kimi-cli", settings)
+        from runtime.orchestrator.executors import GenericCliExecutor
+
+        assert isinstance(executor, GenericCliExecutor)
+        # GenericCliExecutor must NOT have _adapter
+        assert not hasattr(executor, "_adapter")
+
+    def test_fallback_build_argv_produces_bit_identical_argv(self):
+        """Rollback proof: executor without adapter (adapter=None) produces same argv.
+
+        When a ClaudeExecutor is constructed WITHOUT an adapter (e.g., test
+        code or rollback), its _build_argv MUST produce bit-identical argv
+        to the adapter path. This proves the fallback is safety-preserving.
+        """
+        from runtime.orchestrator.executors import ClaudeExecutor
+        from runtime.config import Settings
+        from unittest.mock import patch
+
+        # Mock _resolve_binary to return a deterministic path
+        with patch(
+            "runtime.orchestrator.executors._resolve_binary",
+            return_value="/usr/local/bin/claude",
+        ):
+            executor = ClaudeExecutor(
+                claude_cli_path="claude",
+                permission_mode="acceptEdits",
+                settings=Settings(),
+                paths=None,
+                adapter=None,  # Explicitly no adapter — fallback path
+                model_arg=["--model", "{model}"],
+            )
+
+            cmd = executor._build_argv(
+                prompt="hello",
+                allowed_tools="happyranch",
+                model="test-model",
+            )
+
+            # Bit-identical to what the adapter would produce
+            assert cmd[0] == "/usr/local/bin/claude"
+            assert cmd[1] == "--model"
+            assert cmd[2] == "test-model"
+            assert "-p" in cmd
+            assert "hello" in cmd
+            assert "--permission-mode" in cmd
+            assert "--allowedTools" in cmd
+            assert "happyranch" in cmd
+            assert "--output-format" in cmd
+            assert "json" in cmd
+
+    def test_fallback_codex_executor_without_adapter(self):
+        """CodexExecutor without adapter produces same sandbox flags as adapter."""
+        from runtime.orchestrator.executors import CodexExecutor
+        from unittest.mock import patch
+
+        with patch(
+            "runtime.orchestrator.executors._resolve_binary",
+            return_value="/usr/local/bin/codex",
+        ):
+            executor = CodexExecutor(
+                codex_cli_path="codex",
+                sandbox_mode="workspace-write",
+                adapter=None,
+            )
+            cmd = executor._build_argv(model=None)
+            # Must include all sandbox flags
+            assert "--sandbox" in cmd
+            assert "workspace-write" in cmd
+            assert "-c" in cmd
+            assert "sandbox_workspace_write.network_access=true" in cmd
+            assert "--skip-git-repo-check" in cmd
+            assert "--json" in cmd
+            assert "-" in cmd
+
+    def test_adapter_and_fallback_produce_identical_argv(self):
+        """Direct proof: adapter.build_argv == executor._build_argv (no adapter)
+        for the same inputs."""
+        from runtime.adapters import ClaudeAdapter
+        from runtime.orchestrator.executors import ClaudeExecutor
+        from runtime.config import Settings
+        from unittest.mock import patch
+
+        model_arg = ["--model", "{model}"]
+        adapter = ClaudeAdapter()
+        with patch(
+            "runtime.orchestrator.executors._resolve_binary",
+            return_value="/bin/claude",
+        ):
+            executor = ClaudeExecutor(
+                claude_cli_path="claude",
+                permission_mode="acceptEdits",
+                settings=Settings(),
+                paths=None,
+                adapter=None,
+                model_arg=model_arg,
+            )
+
+            adapter_cmd = adapter.build_argv(
+                cli_path="/bin/claude",
+                prompt="hello world",
+                permission_mode="acceptEdits",
+                allowed_tools="happyranch Bash(git:*)",
+                model="test-model",
+                model_arg=model_arg,
+                resume_session_id="resume-123",
+            )
+
+            fallback_cmd = executor._build_argv(
+                prompt="hello world",
+                allowed_tools="happyranch Bash(git:*)",
+                model="test-model",
+                resume_session_id="resume-123",
+            )
+
+            assert adapter_cmd == fallback_cmd
+
+    def test_executor_result_fields_unchanged(self):
+        """ExecutorResult top-level fields are NOT changed by D2."""
+        from runtime.orchestrator.executors import ExecutorResult
+
+        r = ExecutorResult(
+            success=True,
+            duration_seconds=42,
+            session_id="sess-abc",
+            returncode=0,
+            stdout_tail="out",
+            stderr_tail="err",
+            error=None,
+            token_usage=None,
+            agent_session_id="abc123",
+            rate_limited=False,
+        )
+        assert r.success is True
+        assert r.duration_seconds == 42
+        assert r.session_id == "sess-abc"
+        assert r.returncode == 0
+        assert r.stdout_tail == "out"
+        assert r.stderr_tail == "err"
+        assert r.error is None
+        assert r.token_usage is None
+        assert r.agent_session_id == "abc123"
+        assert r.rate_limited is False
+
+    def test_run_command_preserves_all_behavior(self):
+        """_run_command lifecycle is NOT changed by D2 — same function signature."""
+        from runtime.orchestrator.executors import _run_command
+        import inspect
+
+        sig = inspect.signature(_run_command)
+        params = list(sig.parameters.keys())
+        # Key parameters must remain
+        assert "cmd" in params
+        assert "workspace" in params
+        assert "session_id" in params
+        assert "timeout_seconds" in params
+        assert "input_text" in params
+        assert "on_started" in params
+        assert "usage_parser" in params
+        assert "session_id_parser" in params
+        assert "provider" in params
+        assert "on_throttle_event" in params

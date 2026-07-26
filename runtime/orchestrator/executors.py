@@ -746,12 +746,66 @@ _SESSION_LIFETIME_PREAMBLE = (
 
 
 class ClaudeExecutor:
-    def __init__(self, claude_cli_path: str, permission_mode: str, settings: Settings, paths: OrgPaths | None = None, model_arg: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        claude_cli_path: str,
+        permission_mode: str,
+        settings: Settings,
+        paths: OrgPaths | None = None,
+        model_arg: list[str] | None = None,
+        *,
+        adapter: object | None = None,
+    ) -> None:
         self._cli_path = claude_cli_path
         self._permission_mode = permission_mode
         self._settings = settings
         self._paths = paths
         self._model_arg = model_arg
+        self._adapter = adapter  # THR-107 D2: first-party adapter delegate
+
+    def _build_argv(
+        self,
+        prompt: str,
+        allowed_tools: str,
+        model: str | None = None,
+        resume_session_id: str | None = None,
+    ) -> list[str]:
+        """Build the argv list for a Claude Code subprocess launch.
+
+        Delegates to the first-party adapter when available (D2); otherwise
+        falls back to the D2-inline compatibility construction (producing
+        bit-identical argv).
+        """
+        if self._adapter is not None:
+            return self._adapter.build_argv(
+                cli_path=_resolve_binary(self._cli_path),
+                prompt=prompt,
+                permission_mode=self._permission_mode,
+                allowed_tools=allowed_tools,
+                model=model,
+                model_arg=self._model_arg,
+                resume_session_id=resume_session_id,
+            )
+        # Compatibility fallback — bit-identical to the adapter path.
+        cmd = [
+            _resolve_binary(self._cli_path),
+        ]
+        if model and self._model_arg:
+            for elem in self._model_arg:
+                cmd.append(elem.replace("{model}", model))
+        cmd += [
+            "-p",
+            prompt,
+            "--permission-mode",
+            self._permission_mode,
+            "--allowedTools",
+            allowed_tools,
+            "--output-format",
+            "json",
+        ]
+        if resume_session_id:
+            cmd += ["--resume", resume_session_id]
+        return cmd
 
     def run(
         self,
@@ -777,28 +831,12 @@ class ClaudeExecutor:
         # Workspace layout is `<runtime>/workspaces/<agent_name>`, so the
         # directory name is the canonical agent identifier.
         allowed = " ".join(allow_rules_for_agent(self._paths, workspace.name, cli=True))
-        cmd = [
-            _resolve_binary(self._cli_path),
-        ]
-        # Model select: inject after binary, before permission flags.
-        if model and self._model_arg:
-            for elem in self._model_arg:
-                cmd.append(elem.replace("{model}", model))
-        cmd += [
-            "-p",
-            prompt,
-            "--permission-mode",
-            self._permission_mode,
-            "--allowedTools",
-            allowed,
-            "--output-format",
-            "json",
-        ]
-        # Resume an existing session (issue #53) for thread turn 2+: the system
-        # prompt + transcript stay in session memory and only the delta is shipped.
-        # Resume may fork a new id; the caller reads ExecutorResult.agent_session_id.
-        if resume_session_id:
-            cmd += ["--resume", resume_session_id]
+        cmd = self._build_argv(
+            prompt=prompt,
+            allowed_tools=allowed,
+            model=model,
+            resume_session_id=resume_session_id,
+        )
         return _run_command(
             cmd,
             workspace,
@@ -813,27 +851,41 @@ class ClaudeExecutor:
 
 
 class CodexExecutor:
-    def __init__(self, codex_cli_path: str, sandbox_mode: str, model_arg: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        codex_cli_path: str,
+        sandbox_mode: str,
+        model_arg: list[str] | None = None,
+        *,
+        adapter: object | None = None,
+    ) -> None:
         self._cli_path = codex_cli_path
         self._sandbox_mode = sandbox_mode
         self._model_arg = model_arg
+        self._adapter = adapter  # THR-107 D2: first-party adapter delegate
 
-    def run(
+    def _build_argv(
         self,
-        workspace: Path,
-        prompt: str,
-        session_id: str | None = None,
-        timeout_seconds: int = 1800,
-        on_started: Callable[[int], None] | None = None,
-        on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
-    ) -> ExecutorResult:
-        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+    ) -> list[str]:
+        """Build the argv list for a Codex subprocess launch.
+
+        Delegates to the first-party adapter when available (D2); otherwise
+        falls back to the D2-inline compatibility construction (producing
+        bit-identical argv).
+        """
+        if self._adapter is not None:
+            return self._adapter.build_argv(
+                cli_path=_resolve_binary(self._cli_path),
+                sandbox_mode=self._sandbox_mode,
+                model=model,
+                model_arg=self._model_arg,
+            )
+        # Compatibility fallback — bit-identical to the adapter path.
         cmd = [
             _resolve_binary(self._cli_path),
             "exec",
         ]
-        # Model select: inject after binary+subcommand, before sandbox flags.
         if model and self._model_arg:
             for elem in self._model_arg:
                 cmd.append(elem.replace("{model}", model))
@@ -854,6 +906,20 @@ class CodexExecutor:
             "--json",
             "-",
         ]
+        return cmd
+
+    def run(
+        self,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        timeout_seconds: int = 1800,
+        on_started: Callable[[int], None] | None = None,
+        on_throttle_event: "OnThrottleEvent | None" = None,
+        model: str | None = None,
+    ) -> ExecutorResult:
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+        cmd = self._build_argv(model=model)
         return _run_command(
             cmd,
             workspace,
@@ -882,9 +948,53 @@ class OpencodeExecutor:
     erase the per-prefix discipline that CLAUDE.md mandates.
     """
 
-    def __init__(self, opencode_cli_path: str, model_arg: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        opencode_cli_path: str,
+        model_arg: list[str] | None = None,
+        *,
+        adapter: object | None = None,
+    ) -> None:
         self._cli_path = opencode_cli_path
         self._model_arg = model_arg
+        self._adapter = adapter  # THR-107 D2: first-party adapter delegate
+
+    def _build_argv(
+        self,
+        workspace: str,
+        prompt: str,
+        model: str | None = None,
+    ) -> list[str]:
+        """Build the argv list for an opencode subprocess launch.
+
+        Delegates to the first-party adapter when available (D2); otherwise
+        falls back to the D2-inline compatibility construction (producing
+        bit-identical argv).
+        """
+        if self._adapter is not None:
+            return self._adapter.build_argv(
+                cli_path=_resolve_binary(self._cli_path),
+                workspace=workspace,
+                prompt=prompt,
+                model=model,
+                model_arg=self._model_arg,
+            )
+        # Compatibility fallback — bit-identical to the adapter path.
+        cmd = [
+            _resolve_binary(self._cli_path),
+            "run",
+        ]
+        if model and self._model_arg:
+            for elem in self._model_arg:
+                cmd.append(elem.replace("{model}", model))
+        cmd += [
+            "--dir",
+            workspace,
+            "--format",
+            "json",
+            prompt,
+        ]
+        return cmd
 
     def run(
         self,
@@ -898,21 +1008,11 @@ class OpencodeExecutor:
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # opencode >= 1.14.0 rejects --prompt; use positional prompt (issue #216).
-        cmd = [
-            _resolve_binary(self._cli_path),
-            "run",
-        ]
-        # Model select: inject after binary+subcommand, before --dir/prompt.
-        if model and self._model_arg:
-            for elem in self._model_arg:
-                cmd.append(elem.replace("{model}", model))
-        cmd += [
-            "--dir",
-            str(workspace),
-            "--format",
-            "json",
-            prompt,
-        ]
+        cmd = self._build_argv(
+            workspace=str(workspace),
+            prompt=prompt,
+            model=model,
+        )
         return _run_command(
             cmd,
             workspace,
@@ -934,9 +1034,49 @@ class PiExecutor:
     must be supplied outside this executor if required.
     """
 
-    def __init__(self, pi_cli_path: str, model_arg: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        pi_cli_path: str,
+        model_arg: list[str] | None = None,
+        *,
+        adapter: object | None = None,
+    ) -> None:
         self._cli_path = pi_cli_path
         self._model_arg = model_arg
+        self._adapter = adapter  # THR-107 D2: first-party adapter delegate
+
+    def _build_argv(
+        self,
+        prompt: str,
+        model: str | None = None,
+    ) -> list[str]:
+        """Build the argv list for a Pi subprocess launch.
+
+        Delegates to the first-party adapter when available (D2); otherwise
+        falls back to the D2-inline compatibility construction (producing
+        bit-identical argv).
+        """
+        if self._adapter is not None:
+            return self._adapter.build_argv(
+                cli_path=_resolve_binary(self._cli_path),
+                prompt=prompt,
+                model=model,
+                model_arg=self._model_arg,
+            )
+        # Compatibility fallback — bit-identical to the adapter path.
+        cmd = [
+            _resolve_binary(self._cli_path),
+        ]
+        if model and self._model_arg:
+            for elem in self._model_arg:
+                cmd.append(elem.replace("{model}", model))
+        cmd += [
+            "-p",
+            prompt,
+            "--mode",
+            "json",
+        ]
+        return cmd
 
     def run(
         self,
@@ -949,19 +1089,7 @@ class PiExecutor:
         model: str | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        cmd = [
-            _resolve_binary(self._cli_path),
-        ]
-        # Model select: inject after binary, before -p/prompt.
-        if model and self._model_arg:
-            for elem in self._model_arg:
-                cmd.append(elem.replace("{model}", model))
-        cmd += [
-            "-p",
-            prompt,
-            "--mode",
-            "json",
-        ]
+        cmd = self._build_argv(prompt=prompt, model=model)
         return _run_command(
             cmd,
             workspace,
