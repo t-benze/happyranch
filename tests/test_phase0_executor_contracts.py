@@ -59,6 +59,39 @@ from runtime.orchestrator.executors import (
 _EXECUTOR_NAMES = frozenset({"claude", "codex", "opencode", "pi"})
 
 
+# ── Frozen pre-extraction reference for CJK Unicode raw-only branches ─────
+# Derived from immutable base f4a26824300a650f0ab1841945a9f7c00a84d86e
+# (origin/main before THR-107 Phase 2), where the pre-extraction
+# _parse_generic_cli_usage used legacy Python character slicing
+# str[:2000].  This reference encodes the exact expected TokenUsage for
+# three over-limit CJK input branches, computed independently — it does
+# NOT import, call, monkeypatch, or otherwise delegate to
+# GenericCliAdapter, GenericCliExecutor, or _parse_generic_cli_usage.
+
+# Branch (1): missing END after __HR_ENVELOPE_BEGIN__
+_FROZEN_MISSING_END_RAW = "__HR_ENVELOPE_BEGIN__\n" + "中" * 1000
+# 1022 chars, character-sliced at 2000 — ends in U+4E2D, no U+FFFD
+
+# Branch (2): JSON-decode failure
+_FROZEN_INVALID_JSON_RAW = "{" + "中" * 1000 + "}"
+# 1002 chars, character-sliced at 2000 — ends in '}', no U+FFFD
+
+# Branch (3): valid JSON whose decoded root is non-dict
+_FROZEN_NOT_DICT_RAW = "[" + "中" * 1000 + "]"
+# 1002 chars, character-sliced at 2000 — ends in ']', no U+FFFD
+
+# Expected TokenUsage — raw-only, all parsed fields None
+_FROZEN_MISSING_END_USAGE = TokenUsage(
+    usage_raw_json=_FROZEN_MISSING_END_RAW,
+)
+_FROZEN_INVALID_JSON_USAGE = TokenUsage(
+    usage_raw_json=_FROZEN_INVALID_JSON_RAW,
+)
+_FROZEN_NOT_DICT_USAGE = TokenUsage(
+    usage_raw_json=_FROZEN_NOT_DICT_RAW,
+)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -3123,13 +3156,12 @@ class TestGenericCliAdapter:
         assert result is not None
         assert result.usage_raw_json is not None
 
-    # -- Unicode character-slicing parity ----------------------------------
-    # Phase-2 fix-forward (TASK-3394): the extracted parse_output()
-    # historically used character slicing (str[:2000]), not UTF-8 byte
-    # slicing.  Multi-byte Unicode characters (e.g. CJK) must be preserved
-    # whole — no replacement characters (U+FFFD) in any raw-only branch.
-
-    def test_parse_output_unicode_missing_end_character_slicing(self):
+    # -- Unicode CJK frozen-reference parity (TASK-3396) ------------------\n    # The frozen pre-extraction reference (_FROZEN_* constants above) encodes
+    # the legacy raw-only behavior from immutable base f4a26824 using Python
+    # character slicing str[:2000], not UTF-8 byte slicing.  Each test below
+    # compares the shipping GenericCliAdapter.parse_output() result to this
+    # independent reference — no imports, calls, or delegation through
+    # _parse_generic_cli_usage (which is a forwarding shim).\n\n    def test_parse_output_unicode_missing_end_character_slicing(self):
         """Missing END with 1000 CJK chars — raw is char-sliced, no U+FFFD."""
         adapter = self._adapter()
         from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN
@@ -3147,25 +3179,24 @@ class TestGenericCliAdapter:
         assert raw[-1] == "中"
         assert raw[-5:] == "中" * 5
 
-    def test_parse_output_unicode_missing_end_parity_with_legacy(self):
-        """Missing-END Unicode output byte-identical to legacy shim."""
-        from runtime.orchestrator.executors import (
-            _parse_generic_cli_usage,
-            _HR_ENVELOPE_BEGIN,
-        )
+    def test_parse_output_unicode_missing_end_against_frozen_reference(self):
+        """Missing-END CJK output matches independent frozen pre-extraction
+        reference derived from immutable base f4a26824.  No delegation
+        through _parse_generic_cli_usage (circular forwarding shim)."""
         adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN
         stdout = f"{_HR_ENVELOPE_BEGIN}\n" + "中" * 1000
 
-        shim_result = _parse_generic_cli_usage(stdout)
-        adapter_result = adapter.parse_output(stdout)
-
-        assert shim_result is not None
-        assert adapter_result is not None
-        # Exact raw output parity
-        assert adapter_result.usage_raw_json == shim_result.usage_raw_json
-        # Both must have no parsed token fields (raw-only)
-        assert adapter_result.input_tokens is None
-        assert shim_result.input_tokens is None
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        # Exact TokenUsage equality — all fields match frozen reference
+        assert result == _FROZEN_MISSING_END_USAGE
+        assert result.usage_raw_json == _FROZEN_MISSING_END_RAW
+        assert len(result.usage_raw_json) == 1022
+        assert "\ufffd" not in result.usage_raw_json
+        assert result.usage_raw_json[-1] == "中"
+        # Raw-only — no parsed token fields
+        assert result.input_tokens is None
 
     def test_parse_output_unicode_invalid_json_character_slicing(self):
         """JSONDecodeError with CJK chars — raw is char-sliced, no U+FFFD."""
@@ -3183,23 +3214,23 @@ class TestGenericCliAdapter:
         assert raw[0] == "{"
         assert raw[-1] == "}"
 
-    def test_parse_output_unicode_invalid_json_parity_with_legacy(self):
-        """JSONDecodeError Unicode output byte-identical to legacy shim."""
-        from runtime.orchestrator.executors import (
-            _parse_generic_cli_usage,
-            _HR_ENVELOPE_BEGIN,
-            _HR_ENVELOPE_END,
-        )
+    def test_parse_output_unicode_invalid_json_against_frozen_reference(self):
+        """JSONDecodeError CJK output matches independent frozen
+        pre-extraction reference from immutable base f4a26824."""
         adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
         block = "{" + "中" * 1000 + "}"
         stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
 
-        shim_result = _parse_generic_cli_usage(stdout)
-        adapter_result = adapter.parse_output(stdout)
-
-        assert shim_result is not None
-        assert adapter_result is not None
-        assert adapter_result.usage_raw_json == shim_result.usage_raw_json
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result == _FROZEN_INVALID_JSON_USAGE
+        assert result.usage_raw_json == _FROZEN_INVALID_JSON_RAW
+        assert len(result.usage_raw_json) == 1002
+        assert "\ufffd" not in result.usage_raw_json
+        assert result.usage_raw_json[0] == "{"
+        assert result.usage_raw_json[-1] == "}"
+        assert result.input_tokens is None
 
     def test_parse_output_unicode_not_dict_character_slicing(self):
         """Not-dict block with CJK chars — raw is char-sliced, no U+FFFD."""
@@ -3216,23 +3247,23 @@ class TestGenericCliAdapter:
         assert raw[0] == "["
         assert raw[-1] == "]"
 
-    def test_parse_output_unicode_not_dict_parity_with_legacy(self):
-        """Not-dict Unicode output byte-identical to legacy shim."""
-        from runtime.orchestrator.executors import (
-            _parse_generic_cli_usage,
-            _HR_ENVELOPE_BEGIN,
-            _HR_ENVELOPE_END,
-        )
+    def test_parse_output_unicode_not_dict_against_frozen_reference(self):
+        """Non-dict root CJK output matches independent frozen
+        pre-extraction reference from immutable base f4a26824."""
         adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
         block = "[" + "中" * 1000 + "]"
         stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
 
-        shim_result = _parse_generic_cli_usage(stdout)
-        adapter_result = adapter.parse_output(stdout)
-
-        assert shim_result is not None
-        assert adapter_result is not None
-        assert adapter_result.usage_raw_json == shim_result.usage_raw_json
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result == _FROZEN_NOT_DICT_USAGE
+        assert result.usage_raw_json == _FROZEN_NOT_DICT_RAW
+        assert len(result.usage_raw_json) == 1002
+        assert "\ufffd" not in result.usage_raw_json
+        assert result.usage_raw_json[0] == "["
+        assert result.usage_raw_json[-1] == "]"
+        assert result.input_tokens is None
 
     def test_parse_output_unicode_over_2000_chars_truncates_correctly(self):
         """When content exceeds 2000 chars, char-slicing truncates at exactly 2000."""
@@ -3507,6 +3538,135 @@ class TestGenericCliExecutorShell:
 
         assert result.success is True
         assert result.token_usage is None  # no envelope → no token data
+
+    # -- Executor seam frozen-reference CJK parity (TASK-3396) -------------
+    # Each test mocks subprocess.Popen to emit the same CJK over-limit
+    # stdout, then asserts that GenericCliExecutor.run() produces a
+    # TokenUsage matching the independent frozen pre-extraction reference
+    # (_FROZEN_* constants above).  Does NOT import _parse_generic_cli_usage
+    # (the circular forwarding shim).
+
+    @patch("runtime.orchestrator.executors.subprocess")
+    def test_executor_seam_missing_end_against_frozen_reference(
+        self, mock_subprocess, tmp_path
+    ):
+        """Missing-END CJK stdout → executor.run() TokenUsage matches
+        frozen reference."""
+        from runtime.orchestrator.executors import (
+            GenericCliExecutor,
+            _HR_ENVELOPE_BEGIN,
+        )
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        cjk_stdout = f"{_HR_ENVELOPE_BEGIN}\n" + "中" * 1000
+
+        proc = MagicMock()
+        proc.pid = 9999
+        proc.returncode = 0
+        proc.communicate.return_value = (cjk_stdout, "")
+        mock_subprocess.Popen.return_value = proc
+
+        executor = GenericCliExecutor(
+            profile_name="custom-cjk-missing-end",
+            argv_template=["echo", "--message", "{prompt}"],
+            provider="custom-cjk-missing-end",
+        )
+        result = executor.run(
+            workspace=workspace,
+            prompt="test",
+            timeout_seconds=60,
+        )
+        assert result.token_usage is not None
+        assert result.token_usage.usage_raw_json == _FROZEN_MISSING_END_RAW
+        assert len(result.token_usage.usage_raw_json) == 1022
+        assert "\ufffd" not in result.token_usage.usage_raw_json
+        assert result.token_usage.usage_raw_json[-1] == "中"
+        # Raw-only: parsed token fields must be None (model is set by
+        # _run_command backfill, not by the parser)
+        assert result.token_usage.input_tokens is None
+        assert result.token_usage.output_tokens is None
+
+    @patch("runtime.orchestrator.executors.subprocess")
+    def test_executor_seam_invalid_json_against_frozen_reference(
+        self, mock_subprocess, tmp_path
+    ):
+        """JSONDecodeError CJK stdout → executor.run() TokenUsage matches
+        frozen reference."""
+        from runtime.orchestrator.executors import (
+            GenericCliExecutor,
+            _HR_ENVELOPE_BEGIN,
+            _HR_ENVELOPE_END,
+        )
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        block = "{" + "中" * 1000 + "}"
+        cjk_stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
+
+        proc = MagicMock()
+        proc.pid = 9998
+        proc.returncode = 0
+        proc.communicate.return_value = (cjk_stdout, "")
+        mock_subprocess.Popen.return_value = proc
+
+        executor = GenericCliExecutor(
+            profile_name="custom-cjk-invalid-json",
+            argv_template=["echo", "--message", "{prompt}"],
+            provider="custom-cjk-invalid-json",
+        )
+        result = executor.run(
+            workspace=workspace,
+            prompt="test",
+            timeout_seconds=60,
+        )
+        assert result.token_usage is not None
+        assert result.token_usage.usage_raw_json == _FROZEN_INVALID_JSON_RAW
+        assert len(result.token_usage.usage_raw_json) == 1002
+        assert "\ufffd" not in result.token_usage.usage_raw_json
+        assert result.token_usage.usage_raw_json[0] == "{"
+        assert result.token_usage.usage_raw_json[-1] == "}"
+        assert result.token_usage.input_tokens is None
+        assert result.token_usage.output_tokens is None
+
+    @patch("runtime.orchestrator.executors.subprocess")
+    def test_executor_seam_not_dict_against_frozen_reference(
+        self, mock_subprocess, tmp_path
+    ):
+        """Non-dict root CJK stdout → executor.run() TokenUsage matches
+        frozen reference."""
+        from runtime.orchestrator.executors import (
+            GenericCliExecutor,
+            _HR_ENVELOPE_BEGIN,
+            _HR_ENVELOPE_END,
+        )
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        block = "[" + "中" * 1000 + "]"
+        cjk_stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
+
+        proc = MagicMock()
+        proc.pid = 9997
+        proc.returncode = 0
+        proc.communicate.return_value = (cjk_stdout, "")
+        mock_subprocess.Popen.return_value = proc
+
+        executor = GenericCliExecutor(
+            profile_name="custom-cjk-not-dict",
+            argv_template=["echo", "--message", "{prompt}"],
+            provider="custom-cjk-not-dict",
+        )
+        result = executor.run(
+            workspace=workspace,
+            prompt="test",
+            timeout_seconds=60,
+        )
+        assert result.token_usage is not None
+        assert result.token_usage.usage_raw_json == _FROZEN_NOT_DICT_RAW
+        assert len(result.token_usage.usage_raw_json) == 1002
+        assert "\ufffd" not in result.token_usage.usage_raw_json
+        assert result.token_usage.usage_raw_json[0] == "["
+        assert result.token_usage.usage_raw_json[-1] == "]"
+        assert result.token_usage.input_tokens is None
+        assert result.token_usage.output_tokens is None
 
 
 class TestPhase2Boundary:
