@@ -409,6 +409,31 @@ def build_executor(
             f"Registered: {', '.join(registry.list_profile_names())}"
         )
 
+    # ── THR-107 D2: data-driven first-party adapter catalog path ──────────
+    # Resolve the first-party adapter for this profile name (built-ins only;
+    # custom profiles return None). When an adapter is available, inject it
+    # into the executor so argv construction delegates through the adapter
+    # boundary instead of the inline hard-coded construction.
+    #
+    # The existing `if/elif` chain BELOW this block is the compatibility
+    # fallback/rollback path — it produces bit-identical executors when the
+    # adapter catalog is absent or returns None. Do NOT remove it.
+    # ───────────────────────────────────────────────────────────────────────
+    try:
+        from runtime.adapters import get_first_party_adapter
+        adapter_cls = get_first_party_adapter(profile.name)
+    except ImportError:
+        adapter_cls = None
+
+    adapter_instance = adapter_cls() if adapter_cls is not None else None
+
+    # ── If/elif chain (compatibility fallback / rollback path) ────────────
+    # Preserved literally/functionally from pre-D2 code. Every branch now
+    # passes the adapter (when resolved) as a keyword argument so the
+    # executor's _build_argv delegates to it. When the adapter is None
+    # (custom profiles, ImportError, or rollback), the executor falls back
+    # to its D2-inline compatibility construction producing bit-identical argv.
+    # ───────────────────────────────────────────────────────────────────────
     if profile.name == "claude":
         return ClaudeExecutor(
             claude_cli_path=settings.claude_cli_path,
@@ -416,25 +441,29 @@ def build_executor(
             settings=settings,
             paths=paths,
             model_arg=profile.model_arg,
+            adapter=adapter_instance,
         )
     if profile.name == "codex":
         return CodexExecutor(
             codex_cli_path=settings.codex_cli_path,
             sandbox_mode=settings.codex_sandbox_mode,
             model_arg=profile.model_arg,
+            adapter=adapter_instance,
         )
     if profile.name == "opencode":
         return OpencodeExecutor(
             opencode_cli_path=settings.opencode_cli_path,
             model_arg=profile.model_arg,
+            adapter=adapter_instance,
         )
     if profile.name == "pi":
         return PiExecutor(
             pi_cli_path=settings.pi_cli_path,
             model_arg=profile.model_arg,
+            adapter=adapter_instance,
         )
 
-    # Custom profile — GenericCliExecutor
+    # Custom profile — GenericCliExecutor (unchanged, no adapter injected)
     assert profile.argv_template is not None
     return GenericCliExecutor(
         profile_name=name,
