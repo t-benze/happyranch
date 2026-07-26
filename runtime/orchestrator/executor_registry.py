@@ -142,39 +142,23 @@ class ExecutorRegistry:
         self._register_builtins()
 
     def _register_builtins(self) -> None:
-        """Register the four built-in executor profiles."""
-        builtins = [
-            ExecutorProfile(
-                name="claude",
-                kind="builtin",
-                adapter_id="claude",
-                readiness_marker_fragment=".claude/skills/start-task/SKILL.md",
-                model_arg=["--model", "{model}"],
-            ),
-            ExecutorProfile(
-                name="codex",
-                kind="builtin",
-                adapter_id="codex",
-                readiness_marker_fragment="AGENTS.md",
-                model_arg=["-m", "{model}"],
-            ),
-            ExecutorProfile(
-                name="opencode",
-                kind="builtin",
-                adapter_id="opencode",
-                readiness_marker_fragment="AGENTS.md",
-                model_arg=["-m", "{model}"],
-            ),
-            ExecutorProfile(
-                name="pi",
-                kind="builtin",
-                adapter_id="pi",
-                readiness_marker_fragment="AGENTS.md",
-                model_arg=["--model", "{model}"],
-            ),
-        ]
-        for p in builtins:
-            self._profiles[p.name] = p
+        """Register the four built-in executor profiles.
+
+        D8: Built-in profile metadata is NOW authoritative from the
+        private first-party adapter catalog (``runtime/adapters``).
+        No literal parallel built-in list or table remains in this
+        file — the catalog is the single source of truth.
+        """
+        from runtime.adapters import get_builtin_catalog
+
+        for desc in get_builtin_catalog():
+            self._profiles[desc.name] = ExecutorProfile(
+                name=desc.name,
+                kind=desc.kind,
+                adapter_id=desc.adapter_id,
+                readiness_marker_fragment=desc.readiness_marker_fragment,
+                model_arg=desc.model_arg,
+            )
 
     def get_profile(self, name: str) -> ExecutorProfile | None:
         """Return the profile for ``name``, or None if unregistered."""

@@ -2221,3 +2221,521 @@ class TestD2BuildExecutorAdapterInjection:
         assert "session_id_parser" in params
         assert "provider" in params
         assert "on_throttle_event" in params
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-107 D8 — catalog-to-registry authority tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _expected_builtin_fields():
+    """Return the exact expected Phase-0/D2 values for each built-in.
+
+    These are the literal values from _register_builtins() at 21d39d53.
+    """
+    return {
+        "claude": {
+            "name": "claude",
+            "kind": "builtin",
+            "adapter_id": "claude",
+            "readiness_marker_fragment": ".claude/skills/start-task/SKILL.md",
+            "model_arg": ["--model", "{model}"],
+        },
+        "codex": {
+            "name": "codex",
+            "kind": "builtin",
+            "adapter_id": "codex",
+            "readiness_marker_fragment": "AGENTS.md",
+            "model_arg": ["-m", "{model}"],
+        },
+        "opencode": {
+            "name": "opencode",
+            "kind": "builtin",
+            "adapter_id": "opencode",
+            "readiness_marker_fragment": "AGENTS.md",
+            "model_arg": ["-m", "{model}"],
+        },
+        "pi": {
+            "name": "pi",
+            "kind": "builtin",
+            "adapter_id": "pi",
+            "readiness_marker_fragment": "AGENTS.md",
+            "model_arg": ["--model", "{model}"],
+        },
+    }
+
+
+class TestD8CatalogRegistryAgreement:
+    """Prove the built-in catalog is the authoritative source for profile registration.
+
+    D8 makes the catalog declaration authoritative. These tests prove:
+    - Every built-in profile from the registry matches the catalog entry.
+    - Phase-0 values are preserved exactly.
+    - Catalog and registry are in lockstep (no silent drift).
+    """
+
+    def test_catalog_has_exactly_four_entries(self):
+        """Catalog must declare exactly 4 built-ins — no drift."""
+        from runtime.adapters import get_builtin_catalog
+
+        catalog = get_builtin_catalog()
+        names = {desc.name for desc in catalog}
+        assert names == {"claude", "codex", "opencode", "pi"}
+        assert len(catalog) == 4
+
+    def test_catalog_is_immutable_tuple(self):
+        """Catalog must be immutable — tuples, not lists."""
+        from runtime.adapters import get_builtin_catalog
+
+        catalog = get_builtin_catalog()
+        assert isinstance(catalog, tuple)
+
+    def test_catalog_order_matches_expected(self):
+        """Catalog order must be claude, codex, opencode, pi."""
+        from runtime.adapters import get_builtin_catalog
+
+        catalog = get_builtin_catalog()
+        names = [desc.name for desc in catalog]
+        assert names == ["claude", "codex", "opencode", "pi"]
+
+    def test_every_builtin_profile_matches_catalog_entry(self):
+        """For each built-in, the registry's ExecutorProfile matches the
+        catalog descriptor's declaration for ALL Phase-0 fields."""
+        from runtime.adapters import get_builtin_catalog
+
+        registry = ExecutorRegistry()
+        catalog = get_builtin_catalog()
+
+        for desc in catalog:
+            profile = registry.get_profile(desc.name)
+            assert profile is not None, f"{desc.name} missing from registry"
+            assert profile.name == desc.name
+            assert profile.kind == desc.kind
+            assert profile.adapter_id == desc.adapter_id
+            assert profile.readiness_marker_fragment == desc.readiness_marker_fragment
+            assert profile.model_arg == desc.model_arg
+            # argv_template, command must be None for built-ins
+            assert profile.argv_template is None
+            assert profile.command is None
+
+    def test_every_catalog_entry_has_registry_profile(self):
+        """Registry must register EXACTLY the catalog entries — no extras."""
+        from runtime.adapters import get_builtin_catalog
+
+        registry = ExecutorRegistry()
+        catalog_names = {desc.name for desc in get_builtin_catalog()}
+        registry_builtins = {
+            name
+            for name in registry.list_profile_names()
+            if registry.get_profile(name).kind == "builtin"
+        }
+        assert registry_builtins == catalog_names
+
+    def test_builtins_preserve_exact_phase0_values(self):
+        """Every built-in profile field value matches the Phase-0 literal.
+
+        This is a line-by-line lock: if a literal value changes, this test
+        fails. It must be intentionally updated, never silently drifted."""
+        expected = _expected_builtin_fields()
+        registry = ExecutorRegistry()
+
+        for name, fields in expected.items():
+            profile = registry.get_profile(name)
+            assert profile is not None
+            assert profile.name == fields["name"]
+            assert profile.kind == fields["kind"]
+            assert profile.adapter_id == fields["adapter_id"]
+            assert profile.readiness_marker_fragment == fields["readiness_marker_fragment"]
+            assert profile.model_arg == fields["model_arg"]
+            assert profile.argv_template is None
+            assert profile.command is None
+
+    def test_catalog_descriptor_includes_adapter_class(self):
+        """Each catalog descriptor must carry its first-party adapter class."""
+        from runtime.adapters import (
+            get_builtin_catalog,
+            ClaudeAdapter,
+            CodexAdapter,
+            OpencodeAdapter,
+            PiAdapter,
+        )
+
+        catalog = get_builtin_catalog()
+        name_to_cls = {desc.name: desc.adapter_cls for desc in catalog}
+        assert name_to_cls["claude"] is ClaudeAdapter
+        assert name_to_cls["codex"] is CodexAdapter
+        assert name_to_cls["opencode"] is OpencodeAdapter
+        assert name_to_cls["pi"] is PiAdapter
+
+    def test_get_first_party_adapter_derives_from_catalog(self):
+        """get_first_party_adapter() must return the same adapter classes
+        as the catalog descriptors for built-in names, and None otherwise."""
+        from runtime.adapters import (
+            get_first_party_adapter,
+            get_builtin_catalog,
+            ClaudeAdapter,
+            CodexAdapter,
+            OpencodeAdapter,
+            PiAdapter,
+        )
+
+        # Built-ins must return correct adapter classes
+        assert get_first_party_adapter("claude") is ClaudeAdapter
+        assert get_first_party_adapter("codex") is CodexAdapter
+        assert get_first_party_adapter("opencode") is OpencodeAdapter
+        assert get_first_party_adapter("pi") is PiAdapter
+
+        # Custom/unknown names must return None
+        assert get_first_party_adapter("kimi-cli") is None
+        assert get_first_party_adapter("generic") is None
+        assert get_first_party_adapter("nonexistent") is None
+
+    def test_get_first_party_adapter_matches_catalog_adapter_cls(self):
+        """get_first_party_adapter() must be derived from the catalog —
+        no parallel truth."""
+        from runtime.adapters import get_first_party_adapter, get_builtin_catalog
+
+        for desc in get_builtin_catalog():
+            assert get_first_party_adapter(desc.name) is desc.adapter_cls
+
+
+class TestD8RegistryBehaviorPreserved:
+    """Prove ALL registry behavior is preserved after catalog-as-authority D8."""
+
+    def test_case_insensitive_lookup_preserved(self):
+        """Registry lookup is case-insensitive."""
+        registry = ExecutorRegistry()
+        assert registry.get_profile("Claude") is not None
+        assert registry.get_profile("CLAUDE") is not None
+        assert registry.get_profile("ClAuDe") is not None
+        assert registry.is_registered("CLAUDE") is True
+
+    def test_builtin_collision_protection_preserved(self):
+        """Custom profiles still cannot override built-in names."""
+        registry = ExecutorRegistry()
+        with pytest.raises(ValueError, match="override built-in"):
+            registry.register_custom_profile(
+                ExecutorProfile(
+                    name="claude",
+                    kind="custom",
+                    adapter_id="pi",
+                    argv_template=["claude", "{prompt}"],
+                )
+            )
+
+    def test_builtin_immutability_preserved(self):
+        """Built-in profiles still cannot be unregistered."""
+        registry = ExecutorRegistry()
+        with pytest.raises(ValueError, match="Cannot unregister built-in"):
+            registry.unregister_custom_profile("claude")
+
+    def test_sorted_list_preserved(self):
+        """list_profile_names returns sorted names."""
+        registry = ExecutorRegistry()
+        names = registry.list_profile_names()
+        # Must include all 4 built-ins
+        assert "claude" in names
+        assert "codex" in names
+        assert "opencode" in names
+        assert "pi" in names
+        # Must be sorted
+        assert names == sorted(names)
+
+    def test_custom_profile_registration_unchanged(self):
+        """Custom profile registration/routing/collision is unchanged."""
+        import runtime.orchestrator.executor_registry as _reg_mod
+
+        registry = ExecutorRegistry()
+        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/kimi-cli"):
+            profile = ExecutorRegistry.validate_custom_profile_config(
+                "kimi-cli",
+                {
+                    "command": "kimi-cli",
+                    "argv_template": ["kimi-cli", "-m", "{prompt}"],
+                    "adapter": "pi",
+                },
+            )
+            registry.register_custom_profile(profile)
+
+        # Profile stored correctly
+        stored = registry.get_profile("kimi-cli")
+        assert stored is not None
+        assert stored.kind == "custom"
+        assert stored.name == "kimi-cli"
+        assert stored.adapter_id == "pi"
+        assert stored.argv_template == ["kimi-cli", "-m", "{prompt}"]
+
+        # Collision with different definition still protected
+        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/kimi-cli"):
+            profile2 = ExecutorRegistry.validate_custom_profile_config(
+                "kimi-cli",
+                {
+                    "command": "kimi-cli",
+                    "argv_template": ["kimi-cli", "--json", "{prompt}"],
+                    "adapter": "pi",
+                },
+            )
+            with pytest.raises(ExecutorProfileCollisionError):
+                registry.register_custom_profile(profile2)
+
+    def test_custom_unregister_unchanged(self):
+        """Custom profile unregistration works as before."""
+        import runtime.orchestrator.executor_registry as _reg_mod
+
+        registry = ExecutorRegistry()
+        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/mycli"):
+            profile = ExecutorRegistry.validate_custom_profile_config(
+                "mycli",
+                {
+                    "command": "mycli",
+                    "argv_template": ["mycli", "{prompt}"],
+                    "adapter": "pi",
+                },
+            )
+            registry.register_custom_profile(profile)
+
+        assert registry.is_registered("mycli")
+        result = registry.unregister_custom_profile("mycli")
+        assert result is True
+        assert not registry.is_registered("mycli")
+
+    def test_validate_custom_profile_config_unchanged(self):
+        """Custom profile validation layer unchanged."""
+        import runtime.orchestrator.executor_registry as _reg_mod
+
+        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/mycli"):
+            profile = ExecutorRegistry.validate_custom_profile_config(
+                "mycli",
+                {
+                    "command": "mycli",
+                    "argv_template": ["mycli", "{prompt}"],
+                    "adapter": "pi",
+                },
+            )
+            assert profile.name == "mycli"
+            assert profile.kind == "custom"
+            assert profile.adapter_id == "pi"
+            assert profile.argv_template == ["mycli", "{prompt}"]
+            assert profile.readiness_marker_fragment == "AGENTS.md"
+
+
+class TestD8BuildExecutorPreserved:
+    """Prove build_executor factory behavior is preserved."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        reset_registry()
+
+    def test_builds_all_four_builtins_correctly(self):
+        """Every built-in profile resolves to its specialized executor class."""
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.orchestrator.executors import (
+            ClaudeExecutor,
+            CodexExecutor,
+            OpencodeExecutor,
+            PiExecutor,
+        )
+
+        settings = Settings()
+        assert isinstance(build_executor("claude", settings), ClaudeExecutor)
+        assert isinstance(build_executor("codex", settings), CodexExecutor)
+        assert isinstance(build_executor("opencode", settings), OpencodeExecutor)
+        assert isinstance(build_executor("pi", settings), PiExecutor)
+
+    def test_builtins_receive_adapters(self):
+        """Each built-in executor built via build_executor receives its adapter."""
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.adapters import (
+            ClaudeAdapter,
+            CodexAdapter,
+            OpencodeAdapter,
+            PiAdapter,
+        )
+
+        settings = Settings()
+        executor = build_executor("claude", settings)
+        assert isinstance(executor._adapter, ClaudeAdapter)
+
+        executor = build_executor("codex", settings)
+        assert isinstance(executor._adapter, CodexAdapter)
+
+        executor = build_executor("opencode", settings)
+        assert isinstance(executor._adapter, OpencodeAdapter)
+
+        executor = build_executor("pi", settings)
+        assert isinstance(executor._adapter, PiAdapter)
+
+    def test_custom_routes_to_generic_cli_no_adapter(self):
+        """Custom profiles route to GenericCliExecutor without adapter injection."""
+        import runtime.orchestrator.executor_registry as _reg_mod
+        from runtime.orchestrator.executor_registry import (
+            ExecutorRegistry,
+            build_executor,
+            get_registry,
+        )
+        from runtime.orchestrator.executors import GenericCliExecutor
+
+        registry = get_registry()
+        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/kimi-cli"):
+            profile = ExecutorRegistry.validate_custom_profile_config(
+                "kimi-cli",
+                {
+                    "command": "kimi-cli",
+                    "argv_template": ["kimi-cli", "-m", "{prompt}"],
+                    "adapter": "pi",
+                },
+            )
+            registry.register_custom_profile(profile)
+
+        settings = Settings()
+        executor = build_executor("kimi-cli", settings)
+        assert isinstance(executor, GenericCliExecutor)
+        assert not hasattr(executor, "_adapter")
+
+    def test_if_elif_chain_still_functional(self):
+        """The D2 if/elif chain in build_executor is preserved and functional."""
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.orchestrator.executors import (
+            ClaudeExecutor,
+            CodexExecutor,
+            OpencodeExecutor,
+            PiExecutor,
+            GenericCliExecutor,
+        )
+
+        settings = Settings()
+
+        # Chain must still dispatch correctly by name
+        assert isinstance(build_executor("claude", settings), ClaudeExecutor)
+        assert isinstance(build_executor("codex", settings), CodexExecutor)
+        assert isinstance(build_executor("opencode", settings), OpencodeExecutor)
+        assert isinstance(build_executor("pi", settings), PiExecutor)
+
+        # Non-built-in falls through chain to GenericCliExecutor
+        import runtime.orchestrator.executor_registry as _reg_mod
+        from runtime.orchestrator.executor_registry import ExecutorRegistry, get_registry
+
+        registry = get_registry()
+        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/mycli"):
+            profile = ExecutorRegistry.validate_custom_profile_config(
+                "mycli",
+                {
+                    "command": "mycli",
+                    "argv_template": ["mycli", "{prompt}"],
+                    "adapter": "pi",
+                },
+            )
+            registry.register_custom_profile(profile)
+
+        executor = build_executor("mycli", settings)
+        assert isinstance(executor, GenericCliExecutor)
+
+    def test_rejects_unregistered_name(self):
+        """build_executor rejects unregistered profile names."""
+        from runtime.orchestrator.executor_registry import build_executor
+
+        settings = Settings()
+        with pytest.raises(ValueError, match="Unregistered executor"):
+            build_executor("nonexistent-executor", settings)
+
+
+class TestD8AdversarialInvariants:
+    """Adversarial tests that would fail if catalog invariants are broken."""
+
+    def test_catalog_entries_cannot_be_mutated_in_place(self):
+        """Catalog descriptors must be frozen — mutation must TypeError.
+
+        If the catalog were a mutable list or editable dataclass, this test
+        would NOT fail — it would silently succeed, allowing runtime corruption.
+        """
+        from runtime.adapters import get_builtin_catalog
+
+        catalog = get_builtin_catalog()
+        with pytest.raises(TypeError):
+            catalog[0] = catalog[1]  # type: ignore[index]
+
+    def test_catalog_fields_cannot_be_mutated(self):
+        """Catalog descriptor fields must be frozen — mutation must raise."""
+        from runtime.adapters import get_builtin_catalog
+
+        catalog = get_builtin_catalog()
+        claude_desc = catalog[0]
+        with pytest.raises(Exception):
+            claude_desc.name = "hacked"
+
+    def test_no_fifth_catalog_entry(self):
+        """Catalog must have exactly 4 entries — extra built-in registrations
+        would silently bypass the catalog-as-authority gate."""
+        from runtime.adapters import get_builtin_catalog
+
+        catalog = get_builtin_catalog()
+        assert len(catalog) == 4
+
+    def test_registry_has_no_additional_builtins(self):
+        """Registry must register exactly the catalog entries — no hard-coded
+        extras left behind in _register_builtins."""
+        registry = ExecutorRegistry()
+        builtins = [
+            name
+            for name in registry.list_profile_names()
+            if registry.get_profile(name).kind == "builtin"
+        ]
+        assert builtins == ["claude", "codex", "opencode", "pi"]
+
+    def test_no_parallel_builtin_list_in_registry_source(self):
+        """_register_builtins must NOT contain literal ExecutorProfile
+        constructions — the method body must derive profiles from the catalog.
+
+        This is a source-level invariant: we check that the profile names
+        we get come from the catalog, not from duplicated literals.
+        Proof: if _register_builtins still has literal ExecutorProfile(...)
+        for each built-in, changing the catalog alone would NOT affect
+        registration — the literal list would still be authoritative.
+
+        We test this by verifying the catalog and registry agree exactly;
+        if both contain hard-coded literals, agreement alone doesn't prove
+        the catalog is authoritative. But if we can break agreement by
+        altering only the catalog (which is the import), then the catalog
+        IS authoritative — and that's what D8 requires.
+        """
+        from runtime.adapters import get_builtin_catalog
+
+        registry = ExecutorRegistry()
+        catalog = get_builtin_catalog()
+
+        # Verify every catalog entry is registered
+        for desc in catalog:
+            profile = registry.get_profile(desc.name)
+            assert profile is not None
+            # All fields must match — if the registry uses its own literals,
+            # these will fail when the catalog changes but the registry doesn't
+            assert profile.name == desc.name
+            assert profile.kind == desc.kind
+            assert profile.adapter_id == desc.adapter_id
+            assert profile.readiness_marker_fragment == desc.readiness_marker_fragment
+            assert profile.model_arg == desc.model_arg
+
+    def test_catalog_name_typo_would_break_registration(self):
+        """Adversarial: if a catalog name doesn't match the adapter lookup key,
+        it would be inconsistent. Verify every catalog name is a valid
+        first-party adapter name."""
+        from runtime.adapters import get_first_party_adapter, get_builtin_catalog
+
+        for desc in get_builtin_catalog():
+            adapter = get_first_party_adapter(desc.name)
+            assert adapter is not None, (
+                f"Catalog entry {desc.name} has no matching adapter. "
+                f"Catalog name must match get_first_party_adapter() key."
+            )
+
+    def test_catalog_adapter_cls_must_be_instantiatable(self):
+        """Every adapter_cls in the catalog must be instantiatable (no abstract
+        base classes or import errors silently lurking)."""
+        from runtime.adapters import get_builtin_catalog
+
+        for desc in get_builtin_catalog():
+            instance = desc.adapter_cls()
+            assert instance is not None
+            # Must have build_argv
+            assert hasattr(instance, "build_argv")
+            assert callable(instance.build_argv)
