@@ -67,6 +67,12 @@ export interface RuntimeProfileEntry {
   command: string | null;
   /** Workspace adapter id (claude/codex/opencode/pi), or null. */
   adapter: string | null;
+  /** Command adapter for custom profiles (THR-107 D9 / Phase 3).
+   *  Controls execution template, argv construction, and output parsing.
+   *  Currently always 'generic-cli' — the sole supported value.
+   *  Legacy absent durable entries resolve to 'generic-cli' at read time
+   *  without auto-mutating the stored profile. */
+  command_adapter: string | null;
   /** True when the profile's declared command resolves to an executable
    *  on the daemon's PATH — the same observable readiness contract as
    *  /health/prereqs. Custom profiles derive presence from command
