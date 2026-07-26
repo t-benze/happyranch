@@ -218,12 +218,17 @@ class ExecutorRegisterRequest(BaseModel):
 
     ``adapter`` must be one of claude/codex/opencode/pi.
 
+    ``command_adapter`` (THR-107 D9 / Phase 3): optional, defaults to
+    ``"generic-cli"`` — the only supported value for now. Omit for
+    legacy behavior.
+
     The ``name`` is not in the body — it comes from the registration
     token's scope, ensuring one token = one named profile.
     """
     command: str = Field(..., min_length=1)
     argv_template: list[str] = Field(..., min_length=1)
     adapter: str = Field("pi", min_length=1)
+    command_adapter: str | None = Field(None)
 
 
 class ExecutorRegisterResponse(BaseModel):
@@ -232,6 +237,13 @@ class ExecutorRegisterResponse(BaseModel):
     adapter_id: str
     command: str
     argv_template: list[str]
+    command_adapter: str | None = Field(
+        "generic-cli",
+        description=(
+            "Command adapter for custom profiles. Always 'generic-cli' "
+            "(the only supported value). Built-in profiles omit this field."
+        ),
+    )
 
 
 # Allowed token_usage keys — must match TokenUsage field names
@@ -465,11 +477,14 @@ def register_executor(
 
     # 3. Static validation — drive through the CANONICAL validation path
     #    so the route can never silently diverge from startup config validation.
-    config_cfg = {
+    command_adapter_from_body = getattr(body, "command_adapter", None)
+    config_cfg: dict[str, object] = {
         "command": body.command,
         "argv_template": body.argv_template,
         "adapter": body.adapter,
     }
+    if command_adapter_from_body is not None:
+        config_cfg["command_adapter"] = command_adapter_from_body
     try:
         candidate = ExecutorRegistry.validate_custom_profile_config(
             profile_name, config_cfg
@@ -553,11 +568,13 @@ def register_executor(
 
         # 8. Durable: write the machine-global runtime store (THR-107 —
         #    the per-org config.yaml executor_profiles surface is removed).
-        config_entry = {
+        config_entry: dict[str, object] = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
             "adapter": body.adapter,
         }
+        if command_adapter_from_body is not None:
+            config_entry["command_adapter"] = command_adapter_from_body
         before_snapshot = dict(load_runtime_profiles())
         try:
             save_runtime_profile(profile_name, config_entry)
@@ -734,11 +751,14 @@ def runtime_register_executor(
         )
 
     # 3. Static validation
-    config_cfg = {
+    command_adapter_from_body = getattr(body, "command_adapter", None)
+    config_cfg: dict[str, object] = {
         "command": body.command,
         "argv_template": body.argv_template,
         "adapter": body.adapter,
     }
+    if command_adapter_from_body is not None:
+        config_cfg["command_adapter"] = command_adapter_from_body
     try:
         candidate = ExecutorRegistry.validate_custom_profile_config(
             profile_name, config_cfg
@@ -792,11 +812,13 @@ def runtime_register_executor(
                 )
 
         # 7. Durable: write runtime store
-        config_entry = {
+        config_entry: dict[str, object] = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
             "adapter": body.adapter,
         }
+        if command_adapter_from_body is not None:
+            config_entry["command_adapter"] = command_adapter_from_body
         try:
             save_runtime_profile(profile_name, config_entry)
         except Exception as exc:
@@ -843,6 +865,7 @@ def runtime_register_executor(
         adapter_id=body.adapter,
         command=body.command,
         argv_template=[str(e) for e in body.argv_template],
+        command_adapter=candidate.command_adapter,
     )
 
 
@@ -976,6 +999,14 @@ class RuntimeProfileEntry(BaseModel):
     adapter: str | None = Field(
         None, description="Workspace adapter id (claude/codex/opencode/pi)"
     )
+    command_adapter: str | None = Field(
+        "generic-cli",
+        description=(
+            "Command adapter for execution. Always 'generic-cli' "
+            "(the only supported value). Absent legacy profiles default "
+            "to generic-cli on read."
+        ),
+    )
     present: bool = Field(
         False,
         description=(
@@ -1043,10 +1074,12 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
         else:
             present = False
             path = None
+        stored_command_adapter = entry.get("command_adapter")
         entries.append(RuntimeProfileEntry(
             name=name,
             command=command if isinstance(command, str) else None,
             adapter=adapter if isinstance(adapter, str) else None,
+            command_adapter=stored_command_adapter if isinstance(stored_command_adapter, str) else "generic-cli",
             present=present,
             path=path,
         ))

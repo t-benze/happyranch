@@ -1290,3 +1290,233 @@ class TestRuntimeProfileDeleteRoute:
         unauth = TestClient(app)  # no Authorization header
         r = unauth.delete("/api/v1/executors/runtime/profiles/anything")
         assert r.status_code == 401
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-107 D9 / Phase 3: command_adapter adversarial runtime route tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestRuntimeCommandAdapterRejection:
+    """Runtime register route: adversarial command_adapter rejection.
+
+    Proves that unsupported command_adapter values reject BEFORE any
+    durable runtime-store mutation, in-memory registry mutation, audit-row
+    residue, or token-reservation/consumption residue.
+    """
+
+    def _mint_and_complete(self, client, store):
+        """Helper: mint a runtime token and complete all conformance steps."""
+        token, _ = store.mint_runtime("cmd-adapter-test")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        steps_and_payloads = [
+            ("workspace_access", None),
+            ("loopback_reachable", None),
+            ("cli_callback", None),
+            ("emit_envelope", {"envelope_version": 1, "token_usage": {"input_tokens": 1, "output_tokens": 1}}),
+        ]
+        for step_id, envelope in steps_and_payloads:
+            payload: dict = {"step_id": step_id}
+            if envelope is not None:
+                payload["envelope"] = envelope
+            r = client.post(
+                "/api/v1/executors/runtime/conformance-checkin",
+                json=payload,
+                headers=headers,
+            )
+            assert r.status_code == 200
+
+        return token, headers
+
+    def test_rejects_unsupported_command_adapter_no_store_no_audit(
+        self, client, store, monkeypatch, tmp_path,
+    ):
+        """Unsupported command_adapter → 422, no runtime-store write,
+        no in-memory registry mutation, no audit row, token NOT consumed."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        from runtime.daemon import paths as paths_mod
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+
+        reset_registry()
+        token, headers = self._mint_and_complete(client, store)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+                "command_adapter": "custom-adapter-v2",
+            },
+            headers=headers,
+        )
+        assert r.status_code == 422, r.json()
+        assert "command_adapter" in r.json()["detail"] or "generic-cli" in r.json()["detail"]
+
+        # No runtime-store write
+        from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+        profiles = load_runtime_profiles()
+        assert "cmd-adapter-test" not in profiles, (
+            "Rejected registration must not write to runtime store"
+        )
+
+        # No in-memory registry mutation
+        assert not get_registry().is_registered("cmd-adapter-test"), (
+            "Rejected registration must not mutate in-memory registry"
+        )
+
+        # Token NOT consumed
+        assert store.validate_runtime(token) is not None, (
+            "Token must be valid (released) after failed registration"
+        )
+
+        # No audit row residue
+        audit_db_path = tmp_path / "runtime-audit.db"
+        if audit_db_path.exists():
+            from runtime.infrastructure.database import Database
+            audit_db = Database(audit_db_path)
+            try:
+                rows = audit_db.get_audit_logs("executor:cmd-adapter-test")
+                assert len(rows) == 0, (
+                    f"Rejected registration must not produce audit rows, got {len(rows)}"
+                )
+            finally:
+                audit_db.close()
+
+    def test_rejects_non_string_command_adapter_no_residue(
+        self, client, store, monkeypatch, tmp_path,
+    ):
+        """Non-string command_adapter (int 42) → 422, no residue."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        from runtime.daemon import paths as paths_mod
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+
+        reset_registry()
+        token, headers = self._mint_and_complete(client, store)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+                "command_adapter": 42,
+            },
+            headers=headers,
+        )
+        assert r.status_code == 422, r.json()
+        # Pydantic validation error detail is a list of dicts (not a string)
+        detail = r.json()["detail"]
+        if isinstance(detail, list):
+            detail_str = str(detail).lower()
+        else:
+            detail_str = detail.lower()
+        assert "command_adapter" in detail_str or "string" in detail_str
+
+        from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+        assert "cmd-adapter-test" not in load_runtime_profiles()
+        assert not get_registry().is_registered("cmd-adapter-test")
+        assert store.validate_runtime(token) is not None
+
+        # No audit row residue
+        audit_db_path = tmp_path / "runtime-audit.db"
+        if audit_db_path.exists():
+            from runtime.infrastructure.database import Database
+            audit_db = Database(audit_db_path)
+            try:
+                rows = audit_db.get_audit_logs("executor:cmd-adapter-test")
+                assert len(rows) == 0, (
+                    f"Rejected non-string registration must not produce audit rows, got {len(rows)}"
+                )
+            finally:
+                audit_db.close()
+
+    def test_explicit_generic_cli_round_trips_through_runtime_register_to_list(
+        self, client, store, monkeypatch, tmp_path,
+    ):
+        """Explicit command_adapter='generic-cli' round-trips through
+        runtime register → durable store → list endpoint.
+        Assert returned command_adapter is 'generic-cli' and adapter is
+        independent."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        from runtime.daemon import paths as paths_mod
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+
+        reset_registry()
+        token, headers = self._mint_and_complete(client, store)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+                "command_adapter": "generic-cli",
+            },
+            headers=headers,
+        )
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["name"] == "cmd-adapter-test"
+        assert body["command_adapter"] == "generic-cli"
+        assert body["adapter_id"] == "pi"  # workspace adapter independent
+
+        # Durable store holds profile with command_adapter
+        from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+        profiles = load_runtime_profiles()
+        assert "cmd-adapter-test" in profiles
+        assert profiles["cmd-adapter-test"]["command_adapter"] == "generic-cli"
+        assert profiles["cmd-adapter-test"]["adapter"] == "pi"
+
+        # List endpoint returns command_adapter.
+        # The registration token is consumed by the successful register,
+        # so we must use the master bearer for the list management route.
+        r2 = client.get(
+            "/api/v1/executors/runtime/profiles",
+            headers={"Authorization": f"Bearer {paths_mod.read_token()}"},
+        )
+        assert r2.status_code == 200, r2.json()
+        list_body = r2.json()
+        listed = [p for p in list_body["profiles"] if p["name"] == "cmd-adapter-test"]
+        assert len(listed) == 1
+        assert listed[0]["command_adapter"] == "generic-cli"
+        assert listed[0]["adapter"] == "pi"
+
+        # Token consumed
+        assert store.validate_runtime(token) is None
+
+    def test_null_command_adapter_accepted_defaults_to_generic_cli(
+        self, client, store, monkeypatch, tmp_path,
+    ):
+        """Null command_adapter in body → accepted, defaults to
+        'generic-cli' in response."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        from runtime.daemon import paths as paths_mod
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+
+        reset_registry()
+        token, headers = self._mint_and_complete(client, store)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "claude",
+                "command_adapter": None,
+            },
+            headers=headers,
+        )
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["command_adapter"] == "generic-cli"
+        assert body["adapter_id"] == "claude"  # workspace adapter independent
+
+        from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+        profiles = load_runtime_profiles()
+        assert "cmd-adapter-test" in profiles

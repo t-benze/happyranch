@@ -69,12 +69,32 @@ openclaw:
     - --timeout
     - "{timeout_seconds}"
   adapter: pi
+  # Optional — THR-107 D9 / Phase 3. Sole accepted value: generic-cli.
+  # Controls execution template, argv construction, and output parsing.
+  # Omitted / null legacy profiles default to generic-cli at read time
+  # without auto-mutating the stored profile.
+  command_adapter: generic-cli
 ```
 
 Custom profiles use the `GenericCliExecutor` which validates the argv template
 at registration time and substitutes placeholders at launch. No shell string
 is constructed — each template element becomes exactly one argv element, with
 placeholders replaced by their resolved values.
+
+**Adapter vs command_adapter (THR-107 D9 / Phase 3).** These are separately
+composable. The workspace `adapter` controls which bootstrap files are written
+(e.g., `CLAUDE.md` with `--allowedTools` for claude, or `AGENTS.md` for pi).
+The optional `command_adapter` controls which execution template builds argv
+and parses result output — currently always `generic-cli` for custom profiles.
+
+*Concrete example:* A custom profile with `adapter: claude` and
+`command_adapter: generic-cli` gets a Claude workspace (CLAUDE.md, settings.json,
+`--allowedTools` generation) but uses the generic template-based executor for
+argv construction and result parsing. The workspace adapter controls
+permission files; the command adapter controls subprocess launch. These may
+differ — crossing them without explicit intent would be a security bug.
+Similarly, `adapter: pi` with `command_adapter: generic-cli` writes AGENTS.md
+(no permission file) while launching via the generic CLI template.
 
 **Result-envelope (THR-107).** Custom CLIs may opt into token metering by
 emitting a single-line JSON envelope on stdout between sentinel markers:
@@ -200,7 +220,8 @@ The generated prompt drives the candidate through:
    with the `hrreg_` token as a Bearer header.
 3. **Registration** — the candidate POSTs to
    `/api/v1/executors/runtime/register` with a JSON body carrying
-   `command`, `argv_template`, and `adapter`. The daemon validates that
+   `command`, `argv_template`, `adapter`, and an optional
+   `command_adapter` (THR-107 D9 / Phase 3). The daemon validates that
    `command` and `argv_template[0]` resolve to the same executable on
    PATH; a mismatch or unresolvable executable returns **422** at
    registration time with an actionable error message. The token is
@@ -231,8 +252,8 @@ store for LIST + REMOVE (standard daemon bearer auth — same posture as
 management reads/writes, not registration):
 
 - `GET /api/v1/executors/runtime/profiles` — lists every custom profile
-  in the runtime store: `name`, `command`, `adapter`, plus a
-  `present`/`path` signal mirroring `/health/prereqs`. **Custom profiles**
+  in the runtime store: `name`, `command`, `adapter`, `command_adapter`,
+  plus a `present`/`path` signal mirroring `/health/prereqs`. **Custom profiles**
   derive `present`/`path` from the profile's declared `command`
   resolvability on the daemon's PATH (via `shutil.which`) — no
   `executors.json` entry is required. **Built-in** presence remains

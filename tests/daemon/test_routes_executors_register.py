@@ -1813,3 +1813,222 @@ class TestRuntimeEmitEnvelopeConformance:
         # Verify step was NOT recorded
         pending = store.get_pending_steps_runtime(token)
         assert "emit_envelope" in (pending or [])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-107 D9 / Phase 3: command_adapter adversarial route tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCommandAdapterRejectionOrgRegister:
+    """Org-scoped register route: adversarial command_adapter rejection.
+
+    Proves that unsupported command_adapter values reject BEFORE any
+    durable runtime-store mutation, in-memory registry mutation, audit-row
+    residue, or token-reservation/consumption residue.
+    """
+
+    def test_rejects_unsupported_command_adapter_no_store_no_audit(
+        self, app, daemon_state, monkeypatch,
+    ):
+        """Unsupported command_adapter → 422, no runtime-store write,
+        no audit row, token NOT consumed (released for retry)."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "bad-adapter")
+        _complete_challenge(store, token)
+
+        # Snapshot current state
+        profiles_before = dict(_store_raw())
+        assert "bad-adapter" not in profiles_before
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+            "command_adapter": "custom-adapter-v2",
+        })
+        assert r.status_code == 422, r.json()
+        assert "command_adapter" in r.json()["detail"] or "generic-cli" in r.json()["detail"]
+
+        # Runtime store MUST NOT contain the rejected profile
+        profiles_after = dict(_store_raw())
+        assert "bad-adapter" not in profiles_after, (
+            "Rejected registration must not write to runtime store"
+        )
+
+        # In-memory registry MUST NOT contain the rejected profile
+        registry = get_registry()
+        assert not registry.is_registered("bad-adapter"), (
+            "Rejected registration must not mutate in-memory registry"
+        )
+
+        # Token MUST NOT be consumed (released for retry)
+        assert store.validate(token, "alpha") is not None, (
+            "Token must be valid (released) after failed registration"
+        )
+
+        # No audit row residue
+        db = daemon_state.orgs["alpha"].db
+        logs = db.get_audit_logs("config:executor_profiles")
+        for log_entry in logs:
+            payload = log_entry["payload"]
+            if isinstance(payload, str):
+                import yaml
+                payload = yaml.safe_load(payload)
+            after_snap = payload.get("after", {})
+            assert "bad-adapter" not in after_snap, (
+                "Rejected registration must not leave audit residue"
+            )
+
+    def test_rejects_non_string_command_adapter_no_residue(
+        self, app, daemon_state, monkeypatch,
+    ):
+        """Non-string command_adapter (int 42) → 422, no residue."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "bad-type")
+        _complete_challenge(store, token)
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+            "command_adapter": 42,
+        })
+        assert r.status_code == 422, r.json()
+        # Pydantic validation error detail is a list of dicts (not a string)
+        detail = r.json()["detail"]
+        if isinstance(detail, list):
+            detail_str = str(detail).lower()
+        else:
+            detail_str = detail.lower()
+        assert "command_adapter" in detail_str or "string" in detail_str
+
+        # No store residue
+        assert "bad-type" not in _store_raw()
+        # No registry residue
+        assert not get_registry().is_registered("bad-type")
+        # Token not consumed
+        assert store.validate(token, "alpha") is not None
+
+        # No audit row residue
+        db = daemon_state.orgs["alpha"].db
+        logs = db.get_audit_logs("config:executor_profiles")
+        for log_entry in logs:
+            payload = log_entry["payload"]
+            if isinstance(payload, str):
+                import yaml
+                payload = yaml.safe_load(payload)
+            after_snap = payload.get("after", {})
+            assert "bad-type" not in after_snap, (
+                "Rejected non-string registration must not leave audit residue"
+            )
+
+    def test_explicit_generic_cli_round_trips_through_org_register_to_list(
+        self, app, daemon_state, monkeypatch,
+    ):
+        """Explicit command_adapter='generic-cli' round-trips through
+        org-scoped register → durable store → list endpoint.
+        Assert returned command_adapter is 'generic-cli' and adapter is
+        independent."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "my-cli")
+        _complete_challenge(store, token)
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "codex",
+            "command_adapter": "generic-cli",
+        })
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["name"] == "my-cli"
+        assert body["command_adapter"] == "generic-cli"
+        assert body["adapter_id"] == "codex"  # workspace adapter independent
+
+        # Durable store holds the profile with command_adapter
+        profiles = _store_raw()
+        assert "my-cli" in profiles
+        assert profiles["my-cli"]["command_adapter"] == "generic-cli"
+        assert profiles["my-cli"]["adapter"] == "codex"
+
+        # List endpoint returns command_adapter (uses master bearer, not
+        # registration token)
+        master_client = TestClient(app)
+        master_client.headers.update({
+            "Authorization": f"Bearer {paths_mod.read_token()}",
+        })
+        r2 = master_client.get("/api/v1/executors/runtime/profiles")
+        assert r2.status_code == 200
+        list_body = r2.json()
+        listed = [p for p in list_body["profiles"] if p["name"] == "my-cli"]
+        assert len(listed) == 1
+        assert listed[0]["command_adapter"] == "generic-cli"
+        assert listed[0]["adapter"] == "codex"
+
+        # Token consumed on success
+        assert store.validate(token, "alpha") is None
+
+        # ── Isolation: unregister from in-memory registry  ──────────
+        # The route handler registers the profile in the global
+        # singleton ExecutorRegistry.  Remove it so the next test that
+        # asserts a clean fresh-registry state does not see a leftover
+        # "my-cli" entry with a resolvable command ("echo") showing
+        # present=true in the health/prereqs route.
+        get_registry().unregister_custom_profile("my-cli")
+        assert not get_registry().is_registered("my-cli"), (
+            "my-cli must not leak into subsequent test registry state"
+        )
+        # The durable store lives in a function-scoped tmp_path so it
+        # does not leak between tests.
+
+    def test_null_command_adapter_accepted_defaults_to_generic_cli(
+        self, app, daemon_state, monkeypatch,
+    ):
+        """Null command_adapter in body → accepted, defaults to
+        'generic-cli' in response."""
+        _bypass_loopback(monkeypatch)
+        client = TestClient(app)
+        store = daemon_state.registration_token_store
+
+        token, _ = store.mint("alpha", "null-adapter")
+        _complete_challenge(store, token)
+
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+            "command_adapter": None,
+        })
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["command_adapter"] == "generic-cli"
+        assert body["adapter_id"] == "pi"
+
+        # Stored profile has command_adapter
+        profiles = _store_raw()
+        assert "null-adapter" in profiles
+
+        # ── Isolation: unregister from in-memory registry  ──────────
+        # Same as test_explicit_generic_cli_round_trips above — the
+        # route handler registered this profile in the global singleton
+        # ExecutorRegistry.  Remove it so downstream fresh-registry
+        # health tests do not see a leftover entry.
+        get_registry().unregister_custom_profile("null-adapter")
+        assert not get_registry().is_registered("null-adapter"), (
+            "null-adapter must not leak into subsequent test registry state"
+        )
+        # Durable store is function-scoped tmp_path — no cross-test leak.

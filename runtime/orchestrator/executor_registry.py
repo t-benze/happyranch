@@ -102,6 +102,10 @@ class ExecutorProfile:
     ``{model}`` placeholder that each executor splices into its CLI argv
     when the agent has a model set. Unset (None) → CLI default model.
     Pre-seeded on the four built-in profiles with each CLI's verified flag.
+
+    ``command_adapter`` (THR-107 D9 / Phase 3): optional field for custom
+    profiles only. When absent or ``None``, defaults to ``"generic-cli"`` —
+    the sole supported value for now. Built-in profiles MUST NOT set it.
     """
 
     name: str
@@ -111,6 +115,7 @@ class ExecutorProfile:
     argv_template: list[str] | None = None
     command: str | None = None
     model_arg: list[str] | None = None
+    command_adapter: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +285,21 @@ class ExecutorRegistry:
                 f"executor_profiles.{name}.adapter must be one of "
                 f"claude/codex/opencode/pi, got {adapter!r}"
             )
+        # ── THR-107 D9 / Phase 3: command_adapter (optional, additive) ────
+        command_adapter = cfg.get("command_adapter", "generic-cli")
+        if command_adapter is not None:
+            if not isinstance(command_adapter, str):
+                raise ValueError(
+                    f"executor_profiles.{name}.command_adapter must be a "
+                    f"string, got {type(command_adapter).__name__}"
+                )
+            if command_adapter not in {"generic-cli"}:
+                raise ValueError(
+                    f"executor_profiles.{name}.command_adapter must be "
+                    f"'generic-cli' (the only supported value), got "
+                    f"{command_adapter!r}"
+                )
+        # ── end command_adapter ───────────────────────────────────────────
         # Validate argv_template placeholders
         argv_errors = validate_argv_template([str(e) for e in argv_template])
         if argv_errors:
@@ -340,6 +360,7 @@ class ExecutorRegistry:
             readiness_marker_fragment=marker,
             argv_template=[str(e) for e in argv_template],
             command=command,
+            command_adapter=command_adapter,
         )
 
 
