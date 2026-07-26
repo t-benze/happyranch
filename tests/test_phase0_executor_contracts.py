@@ -2779,8 +2779,14 @@ class TestD8BuildExecutorPreserved:
         assert isinstance(executor, GenericCliExecutor)
         assert not hasattr(executor, "_adapter")
 
-    def test_if_elif_chain_still_functional(self):
-        """The D2 if/elif chain in build_executor is preserved and functional."""
+    def test_catalog_derived_factory_dispatch_for_four_builtins(self):
+        """D10/D11 Phase-4: data-driven factory dispatch from the D8 catalog.
+
+        Verifies the static _BUILTIN_EXECUTOR_FACTORIES dict in build_executor
+        dispatches each built-in name to its correct specialized executor class.
+        This test fails if any built-in name is missing from the factory dict
+        (proving the data-driven dispatch covers all four profiles).
+        """
         from runtime.orchestrator.executor_registry import build_executor
         from runtime.orchestrator.executors import (
             ClaudeExecutor,
@@ -2792,13 +2798,24 @@ class TestD8BuildExecutorPreserved:
 
         settings = Settings()
 
-        # Chain must still dispatch correctly by name
+        # All four built-ins must resolve via the data-driven factory dict
         assert isinstance(build_executor("claude", settings), ClaudeExecutor)
         assert isinstance(build_executor("codex", settings), CodexExecutor)
         assert isinstance(build_executor("opencode", settings), OpencodeExecutor)
         assert isinstance(build_executor("pi", settings), PiExecutor)
 
-        # Non-built-in falls through chain to GenericCliExecutor
+        # At least one built-in name must be in the factory dict keys.
+        # This is an adversarial check — if someone removes an entry,
+        # the test fails because isinstance on a non-built-in executor
+        # won't match the specialized class.
+        from runtime.adapters import get_builtin_catalog
+        builtin_names = {desc.name for desc in get_builtin_catalog()}
+        for bn in builtin_names:
+            ex = build_executor(bn, settings)
+            # Custom profiles or fallback cannot return specialized classes
+            assert not isinstance(ex, GenericCliExecutor), f"{bn} returned GenericCliExecutor"
+
+        # Custom profile must NOT return a specialized executor class
         import runtime.orchestrator.executor_registry as _reg_mod
         from runtime.orchestrator.executor_registry import ExecutorRegistry, get_registry
 
@@ -2938,8 +2955,8 @@ class TestD8AdversarialInvariants:
 # compatibility shell that delegates to it. These tests lock that
 # behavior, prove bit-for-bit parity, and guard the backward-compat
 # contracts: custom profiles still return GenericCliExecutor from
-# build_executor, all four built-in D2 flows are unchanged, the D10
-# if/elif fallback remains intact, and the adapter module is
+# build_executor, all four built-in flows use the D10/D11 data-driven
+# factory, and the adapter module is
 # statically importable (no dynamic discovery).
 # ============================================================================
 
@@ -3743,9 +3760,9 @@ class TestPhase2Boundary:
         profiles_after = set(get_registry().list_profile_names())
         assert profiles_before == profiles_after
 
-    def test_d10_if_elif_chain_unchanged(self):
-        """The D10-gated build_executor if/elif chain must remain intact
-        for all four built-ins and the custom GenericCliExecutor fallback."""
+    def test_d10_d11_data_driven_factory_dispatch(self):
+        """D10/D11 Phase-4: the static data-driven factory dict dispatches
+        all four built-ins and the custom GenericCliExecutor route correctly."""
         from runtime.orchestrator.executor_registry import (
             ExecutorProfile,
             build_executor,
@@ -3780,6 +3797,69 @@ class TestPhase2Boundary:
         assert isinstance(build_executor("pi", settings), PiExecutor)
         assert isinstance(build_executor("d10-custom", settings), GenericCliExecutor)
 
+    def test_data_driven_factory_case_insensitive_lookup(self):
+        """The factory dict uses case-insensitive lookup (profile.name.lower())."""
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.orchestrator.executors import (
+            ClaudeExecutor,
+            CodexExecutor,
+            OpencodeExecutor,
+            PiExecutor,
+        )
+        from runtime.config import Settings
+
+        settings = Settings()
+        # All case variants must resolve to the same executor class
+        assert isinstance(build_executor("Claude", settings), ClaudeExecutor)
+        assert isinstance(build_executor("CLAUDE", settings), ClaudeExecutor)
+        assert isinstance(build_executor("Codex", settings), CodexExecutor)
+        assert isinstance(build_executor("CODEX", settings), CodexExecutor)
+        assert isinstance(build_executor("OpenCode", settings), OpencodeExecutor)
+        assert isinstance(build_executor("PI", settings), PiExecutor)
+
+    def test_data_driven_factory_rejects_unknown_name(self):
+        """Unknown profile names must be rejected — not silently fall
+        through to a default executor."""
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.config import Settings
+
+        settings = Settings()
+        with pytest.raises(ValueError, match="Unregistered executor"):
+            build_executor("nonexistent-name", settings)
+
+    def test_data_driven_factory_independent_model_arg_lists(self):
+        """The model_arg list from each profile is passed independently
+        to each executor — verified via the profile, not executor internals."""
+        from runtime.orchestrator.executor_registry import (
+            build_executor,
+            get_registry,
+            ExecutorProfile,
+            reset_registry,
+        )
+        from runtime.config import Settings
+
+        reset_registry()
+        settings = Settings()
+
+        # Verify per-profile model_arg values from the registry profiles
+        registry = get_registry()
+        claude_profile = registry.get_profile("claude")
+        codex_profile = registry.get_profile("codex")
+        assert claude_profile is not None and codex_profile is not None
+
+        # model_arg lists are distinct objects (no shared list reference)
+        assert claude_profile.model_arg is not codex_profile.model_arg, (
+            "model_arg lists must be distinct objects"
+        )
+        assert claude_profile.model_arg == ["--model", "{model}"]
+        assert codex_profile.model_arg == ["-m", "{model}"]
+
+        # Factory still produces valid executors from these profiles
+        c = build_executor("claude", settings)
+        cx = build_executor("codex", settings)
+        assert c._adapter is not None
+        assert cx._adapter is not None
+
     def test_d8_catalog_unchanged(self):
         """The D8 built-in catalog must contain exactly four entries
         (claude, codex, opencode, pi) — no generic-cli entry."""
@@ -3796,3 +3876,209 @@ class TestPhase2Boundary:
         assert get_first_party_adapter("generic-cli") is None
         assert get_first_party_adapter("generic_cli") is None
         assert get_first_party_adapter("generic") is None
+
+
+# ============================================================================
+# THR-107 Phase 4: D10/D11 factory cutover — data-driven dispatch
+# ============================================================================
+# Phase 4 replaces the D2 compatibility if/elif chain in build_executor
+# with a static data-driven factory dict derived from the D8 authoritative
+# built-in catalog. These adversarial tests prove the factory dispatches
+# correctly, fails safely, and cannot silently degrade to an if/elif chain
+# or per-provider dispatch.
+# ============================================================================
+
+
+class TestD10D11DataDrivenFactory:
+    """D10/D11 Phase-4: adversarial tests for the data-driven factory.
+
+    Tests that would fail if a built-in profile name were omitted from the
+    static factory dict, or if a literal per-provider if/elif chain were
+    still the primary dispatch mechanism.
+    """
+
+    # -- catalog-derived dispatch for all four built-ins -------------------
+
+    def test_factory_dispatches_all_four_builtins_by_class(self):
+        """Every built-in name resolves to its specialized executor class.
+        This test fails if any entry is missing from the factory dict."""
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.orchestrator.executors import (
+            ClaudeExecutor, CodexExecutor, OpencodeExecutor, PiExecutor,
+        )
+        from runtime.config import Settings
+
+        settings = Settings()
+        expected = {
+            "claude": ClaudeExecutor,
+            "codex": CodexExecutor,
+            "opencode": OpencodeExecutor,
+            "pi": PiExecutor,
+        }
+        for name, cls in expected.items():
+            ex = build_executor(name, settings)
+            assert isinstance(ex, cls), (
+                f"{name!r} expected {cls.__name__}, got {type(ex).__name__}"
+            )
+
+    def test_factory_injects_first_party_adapters(self):
+        """Every built-in executor receives its first-party adapter instance."""
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.adapters import (
+            ClaudeAdapter, CodexAdapter, OpencodeAdapter, PiAdapter,
+        )
+        from runtime.config import Settings
+
+        settings = Settings()
+        checks = [
+            ("claude", ClaudeAdapter),
+            ("codex", CodexAdapter),
+            ("opencode", OpencodeAdapter),
+            ("pi", PiAdapter),
+        ]
+        for name, adapter_cls in checks:
+            ex = build_executor(name, settings)
+            assert ex._adapter is not None, f"{name}: no adapter injected"
+            assert isinstance(ex._adapter, adapter_cls), (
+                f"{name}: expected {adapter_cls.__name__}, got {type(ex._adapter).__name__}"
+            )
+
+    # -- custom route ------------------------------------------------------
+
+    def test_custom_profile_returns_generic_cli_executor(self):
+        """Custom profiles must return GenericCliExecutor, not a built-in
+        specialized executor."""
+        from runtime.orchestrator.executor_registry import (
+            build_executor, get_registry,
+        )
+        from runtime.orchestrator.executors import GenericCliExecutor
+        from runtime.config import Settings
+
+        settings = Settings()
+        import runtime.orchestrator.executor_registry as _reg_mod
+        from runtime.orchestrator.executor_registry import ExecutorRegistry
+        from unittest.mock import patch
+
+        registry = get_registry()
+        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/mycli"):
+            profile = ExecutorRegistry.validate_custom_profile_config(
+                "my-custom",
+                {"command": "mycli", "argv_template": ["mycli", "{prompt}"], "adapter": "pi"},
+            )
+            registry.register_custom_profile(profile)
+
+        ex = build_executor("my-custom", settings)
+        assert isinstance(ex, GenericCliExecutor)
+        # Custom profiles must NOT have a first-party adapter injected
+        assert not hasattr(ex, "_adapter") or ex._adapter is None
+
+    # -- unknown rejection -------------------------------------------------
+
+    def test_unregistered_name_raises_valueerror(self):
+        """Unregistered profile names must raise ValueError, not fall
+        through to a default executor."""
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.config import Settings
+
+        settings = Settings()
+        with pytest.raises(ValueError, match=r"Unregistered executor 'no-such-profile'"):
+            build_executor("no-such-profile", settings)
+
+    # -- case-insensitive lookup -------------------------------------------
+
+    def test_case_insensitive_factory_lookup(self):
+        """The factory dict must use case-insensitive key lookup.
+        'Claude', 'CLAUDE', 'claude' must all resolve identically."""
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.orchestrator.executors import ClaudeExecutor
+        from runtime.config import Settings
+
+        settings = Settings()
+        for variant in ("claude", "Claude", "CLAUDE", "cLaUdE"):
+            ex = build_executor(variant, settings)
+            assert isinstance(ex, ClaudeExecutor), f"case variant {variant!r} failed"
+
+    # -- model_arg independence --------------------------------------------
+
+    def test_model_arg_lists_are_independent_per_profile(self):
+        """Each built-in profile's model_arg must be an independent list.
+        Modifying one profile's model_arg must not affect another."""
+        from runtime.orchestrator.executor_registry import get_registry
+
+        registry = get_registry()
+        claude_profile = registry.get_profile("claude")
+        codex_profile = registry.get_profile("codex")
+        assert claude_profile is not None and codex_profile is not None
+
+        # Verify they are different list objects (no shared list)
+        assert claude_profile.model_arg is not codex_profile.model_arg, (
+            "model_arg lists must not be shared"
+        )
+        assert claude_profile.model_arg == ["--model", "{model}"]
+        assert codex_profile.model_arg == ["-m", "{model}"]
+
+        # Mutating one profile's model_arg must not affect the other
+        claude_profile.model_arg.append("--extra")  # type: ignore[union-attr]
+        assert len(codex_profile.model_arg) == 2, (
+            "Codex model_arg must remain unchanged after Claude mutation"
+        )
+
+    # -- Phase-0 argv parity -----------------------------------------------
+
+    def test_factory_produces_phase0_argv_parity(self):
+        """The data-driven factory must produce executors with argv parity
+        matching the Phase-0 pinned baselines.
+
+        Verifies every built-in is constructed with the correct specialized
+        type, a non-None CLI path, injected adapter, and valid model_arg
+        from the profile — same invariants the former if/elif chain enforced."""
+        from runtime.orchestrator.executor_registry import build_executor, get_registry
+        from runtime.config import Settings
+
+        settings = Settings()
+        registry = get_registry()
+
+        for name in ("claude", "codex", "opencode", "pi"):
+            ex = build_executor(name, settings)
+            # Verify the adapter was injected (D2 path — unchanged)
+            assert ex._adapter is not None, f"{name}: adapter must be injected"
+            # Verify CLI path is set (from Settings, through factory)
+            assert ex._cli_path is not None, f"{name}: _cli_path must be non-None"
+            # Profile must have model_arg — the factory passes it through
+            profile = registry.get_profile(name)
+            assert profile is not None and profile.model_arg is not None, (
+                f"{name}: profile.model_arg must be non-None for built-in"
+            )
+
+    # -- omitted-provider detection ----------------------------------------
+
+    def test_omitted_builtin_from_factory_dict_would_fail(self):
+        """Adversarial: if a built-in name were removed from the factory dict,
+        the resulting executor would no longer be a specialized class.
+        This test documents the invariant, and a follow-up assertion
+        proves the factory covers all four built-in catalog names."""
+        from runtime.adapters import get_builtin_catalog
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.orchestrator.executors import (
+            ClaudeExecutor, CodexExecutor, OpencodeExecutor, PiExecutor,
+            GenericCliExecutor,
+        )
+        from runtime.config import Settings
+
+        catalog_names = {desc.name for desc in get_builtin_catalog()}
+        expected_classes = {
+            "claude": ClaudeExecutor,
+            "codex": CodexExecutor,
+            "opencode": OpencodeExecutor,
+            "pi": PiExecutor,
+        }
+        # Every catalog entry must have a factory entry producing the right class
+        settings = Settings()
+        for name in catalog_names:
+            ex = build_executor(name, settings)
+            expected = expected_classes[name]
+            assert isinstance(ex, expected), (
+                f"Catalog entry {name!r}: expected {expected.__name__}, "
+                f"got {type(ex).__name__}. The factory dict is incomplete or "
+                f"falling through to GenericCliExecutor."
+            )

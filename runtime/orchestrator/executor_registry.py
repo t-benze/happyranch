@@ -419,15 +419,15 @@ def build_executor(
             f"Registered: {', '.join(registry.list_profile_names())}"
         )
 
-    # ── THR-107 D2: data-driven first-party adapter catalog path ──────────
+    # ── THR-107 D2/D10: first-party adapter resolution ────────────────────
     # Resolve the first-party adapter for this profile name (built-ins only;
     # custom profiles return None). When an adapter is available, inject it
     # into the executor so argv construction delegates through the adapter
     # boundary instead of the inline hard-coded construction.
     #
-    # The existing `if/elif` chain BELOW this block is the compatibility
-    # fallback/rollback path — it produces bit-identical executors when the
-    # adapter catalog is absent or returns None. Do NOT remove it.
+    # D10/D11 Phase-4 (this commit): the if/elif chain below was replaced by
+    # a static data-driven factory dict derived from the D8 catalog. The
+    # adapter is resolved exactly as before and passed to the factory.
     # ───────────────────────────────────────────────────────────────────────
     try:
         from runtime.adapters import get_first_party_adapter
@@ -437,41 +437,46 @@ def build_executor(
 
     adapter_instance = adapter_cls() if adapter_cls is not None else None
 
-    # ── If/elif chain (compatibility fallback / rollback path) ────────────
-    # Preserved literally/functionally from pre-D2 code. Every branch now
-    # passes the adapter (when resolved) as a keyword argument so the
-    # executor's _build_argv delegates to it. When the adapter is None
-    # (custom profiles, ImportError, or rollback), the executor falls back
-    # to its D2-inline compatibility construction producing bit-identical argv.
+    # ── D10/D11 Phase-4: Static data-driven factory (replaces D2 if/elif chain) ──
+    #
+    # Companion static mapping derived from the D8 authoritative built-in catalog
+    # (runtime/adapters/__init__.py:_BUILTIN_CATALOG). Each entry maps a built-in
+    # profile name to a factory callable that produces the specialised executor.
+    # No imperative per-provider dispatch — the name-to-factory mapping is a
+    # static data declaration, not a chain of conditionals.
+    #
+    # Rollback: revert this commit to restore the D2 if/elif chain.
     # ───────────────────────────────────────────────────────────────────────
-    if profile.name == "claude":
-        return ClaudeExecutor(
-            claude_cli_path=settings.claude_cli_path,
-            permission_mode=settings.permission_mode,
-            settings=settings,
-            paths=paths,
-            model_arg=profile.model_arg,
-            adapter=adapter_instance,
-        )
-    if profile.name == "codex":
-        return CodexExecutor(
-            codex_cli_path=settings.codex_cli_path,
-            sandbox_mode=settings.codex_sandbox_mode,
-            model_arg=profile.model_arg,
-            adapter=adapter_instance,
-        )
-    if profile.name == "opencode":
-        return OpencodeExecutor(
-            opencode_cli_path=settings.opencode_cli_path,
-            model_arg=profile.model_arg,
-            adapter=adapter_instance,
-        )
-    if profile.name == "pi":
-        return PiExecutor(
-            pi_cli_path=settings.pi_cli_path,
-            model_arg=profile.model_arg,
-            adapter=adapter_instance,
-        )
+    _BUILTIN_EXECUTOR_FACTORIES: dict[str, object] = {
+        "claude": lambda s, p, pr, a: ClaudeExecutor(
+            claude_cli_path=s.claude_cli_path,
+            permission_mode=s.permission_mode,
+            settings=s,
+            paths=p,
+            model_arg=pr.model_arg,
+            adapter=a,
+        ),
+        "codex": lambda s, p, pr, a: CodexExecutor(
+            codex_cli_path=s.codex_cli_path,
+            sandbox_mode=s.codex_sandbox_mode,
+            model_arg=pr.model_arg,
+            adapter=a,
+        ),
+        "opencode": lambda s, p, pr, a: OpencodeExecutor(
+            opencode_cli_path=s.opencode_cli_path,
+            model_arg=pr.model_arg,
+            adapter=a,
+        ),
+        "pi": lambda s, p, pr, a: PiExecutor(
+            pi_cli_path=s.pi_cli_path,
+            model_arg=pr.model_arg,
+            adapter=a,
+        ),
+    }
+
+    factory = _BUILTIN_EXECUTOR_FACTORIES.get(profile.name.lower())
+    if factory is not None:
+        return factory(settings, paths, profile, adapter_instance)
 
     # Custom profile — GenericCliExecutor (unchanged, no adapter injected)
     assert profile.argv_template is not None

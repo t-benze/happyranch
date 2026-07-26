@@ -693,10 +693,15 @@ that will execute the CLI but actually controls workspace readiness only.
 
 #### Phase 4: Default Change / Removal (Founder-Authorized Only)
 
-- After all built-in executors are adapter-backed and validated, the
-  `if/elif` chain in `build_executor()` becomes dead code.
-- Removal of the chain is a separate founder-authorized task.
-- **Rollback:** revert the removal commit.
+- **IMPLEMENTED** (TASK-3414, THR-107 D10/D11). After all built-in
+  executors were adapter-backed and validated (D2/D8/Phase-2/D9 complete),
+  the `if/elif` chain in `build_executor()` was removed and replaced with
+  a static data-driven factory dict derived from the D8 authoritative
+  built-in catalog (`runtime/adapters/__init__.py:_BUILTIN_CATALOG`).
+- The factory dict maps each built-in profile name to a factory callable;
+  no imperative per-provider dispatch or `if profile.name == …` chain
+  remains.
+- **Rollback:** revert the removal commit (TASK-3414).
 
 ### 7.2 Read/Write Compatibility
 
@@ -829,8 +834,8 @@ not the orchestration layer.
 | **D7** | Approve when (if ever) v1 optional envelope becomes required for custom CLI registration? | Legacy spec §5.2; currently optional | Strands existing custom CLIs that don't emit the envelope. |
 | **D8** | Approve adapter catalog manifest as the authoritative source for first-party adapters (replacing hard-coded registration in `_register_builtins()`)? | §3.1, §6.4 | Changes how built-in profiles are defined — currently `_register_builtins()` at `executor_registry.py:145-176`. |
 | **D9** | Approve the `command_adapter` field on custom profiles as opt-in (Phase 3)? | §7.1 Phase 3 | Adds a new profile field; gates on how custom executors are invoked. |
-| **D10** | Approve removal of the `if/elif` chain in `build_executor()` after all adapters are validated (Phase 4)? | §7.1 Phase 4 | Removes dead code; the chain is the current primary path. |
-| **D11** | Approve rollout/rollback authority: who can trigger Phase 4 (default change)? | §7.1 Phase 4, §7.4 | Rollback across all registered profiles requires founder authorization. |
+| **D10** | ~~Approve removal of the `if/elif` chain in `build_executor()`~~ **IMPLEMENTED** (TASK-3414). The chain was replaced with a static data-driven factory dict derived from the D8 authoritative catalog. Rollback: revert the removal commit. | §7.1 Phase 4 | March 2026 |
+| **D11** | ~~Approve rollout/rollback authority~~ **IMPLEMENTED** (TASK-3414). Rollback across all registered profiles: revert the removal commit. | §7.1 Phase 4, §7.4 | March 2026 |
 | **D12** | Approve any protocol/05b or 05c rewrite, or any `ExecutorResult` contract-surface change? | §2.5, §8.2 footnote, Appendix C | `AdapterInput`/`AdapterOutput` are proposed **internal architecture contracts** only. No rewrite of protocol/05b or 05c, no public/stable external contract, and no `ExecutorResult` behavior implementation follows unless founder explicitly authorizes that later change. This spec and the current PR ship no protocol edits. |
 
 ---

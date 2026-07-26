@@ -9,16 +9,16 @@ Custom profiles and ``GenericCliExecutor`` are explicitly excluded — this
 catalog is solely for the four built-ins: Claude, Codex, OpenCode, and Pi.
 
 **D2:** The adapter-class catalog provides data-driven adapter injection
-into ``build_executor``, above the preserved hard-coded if/elif chain.
+into ``build_executor``.
 
 **D8:** ``BuiltinAdapterDescriptor`` is now the authoritative single source
 for built-in profile metadata. ``ExecutorRegistry._register_builtins()``
 constructs ``ExecutorProfile`` instances exclusively from this catalog;
 no literal parallel built-in list remains in ``executor_registry.py``.
 
-**Rollback:** The current hard-coded `if/elif` chain in ``build_executor``
-is preserved as the compatibility fallback/rollback path (D10 is not
-approved in this PR).
+**D10/D11 Phase-4:** The D2 if/elif chain in ``build_executor()`` has been
+replaced with a static data-driven factory dict derived from this catalog.
+Rollback: revert the removal commit.
 """
 
 from __future__ import annotations
