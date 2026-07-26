@@ -480,113 +480,19 @@ _HR_ENVELOPE_END = "__HR_ENVELOPE_END__"
 def _parse_generic_cli_usage(stdout: str) -> TokenUsage | None:
     """Parse a custom CLI's stdout for a THR-107 result-envelope.
 
+    THR-107 Phase 2: Delegates to ``GenericCliAdapter.parse_output()``
+    — the single authoritative implementation lives in
+    ``runtime/adapters/generic_cli.py``. This function is preserved as
+    the stable import surface for ``_run_command(usage_parser=...)``
+    and for backward-compatible test imports.
+
     Best-effort — mirrors the contract of every built-in parser:
     - Returns None when stdout is empty/whitespace (no parse attempted).
     - Returns TokenUsage with token fields NULL and raw JSON on parser failure
       (forensic preservation — same pattern as _parse_claude_usage:222).
-
-    Algorithm:
-    1. Empty stdout → None.
-    2. Last occurrence of __HR_ENVELOPE_BEGIN__ via rfind → None if absent.
-    3. __HR_ENVELOPE_END__ after begin → raw-only TokenUsage if absent.
-    4. JSON parse the block → raw-only TokenUsage on JSONDecodeError.
-    5. Validate envelope_version == 1 (int) → raw-only if absent/wrong.
-    6. Map token_usage dict to TokenUsage fields with key-name parity.
-    7. Top-level model backfills token_usage.model when absent.
     """
-    if not stdout or not stdout.strip():
-        return None
-
-    # Last envelope wins (rfind).
-    begin_pos = stdout.rfind(_HR_ENVELOPE_BEGIN)
-    if begin_pos == -1:
-        return None
-
-    # Locate the closing sentinel after the begin marker.
-    end_pos = stdout.find(_HR_ENVELOPE_END, begin_pos + len(_HR_ENVELOPE_BEGIN))
-    if end_pos == -1:
-        # Missing END — forensic tail preservation.
-        tail = stdout[begin_pos:]
-        logger.warning(
-            "generic CLI usage parser: missing %s sentinel", _HR_ENVELOPE_END
-        )
-        return TokenUsage(usage_raw_json=tail[:_TAIL_BYTES])
-
-    # Extract the JSON block between sentinels.
-    block = stdout[begin_pos + len(_HR_ENVELOPE_BEGIN) : end_pos].strip()
-    if not block:
-        return None
-
-    try:
-        obj = json.loads(block)
-    except json.JSONDecodeError:
-        logger.warning("generic CLI usage parser: envelope is not valid JSON")
-        return TokenUsage(usage_raw_json=block[:_TAIL_BYTES])
-
-    if not isinstance(obj, dict):
-        return TokenUsage(usage_raw_json=block[:_TAIL_BYTES])
-
-    # Validate envelope_version — must be integer 1.
-    version = obj.get("envelope_version")
-    if version != 1 or not isinstance(version, int) or isinstance(version, bool):
-        logger.warning(
-            "generic CLI usage parser: envelope_version=%r, expected 1 (int)",
-            version,
-        )
-        return TokenUsage(usage_raw_json=json.dumps(obj))
-
-    # Map token_usage dict to TokenUsage fields.
-    token_usage_raw = obj.get("token_usage")
-    if not isinstance(token_usage_raw, dict):
-        token_usage_raw = {}
-
-    input_tokens = token_usage_raw.get("input_tokens")
-    output_tokens = token_usage_raw.get("output_tokens")
-    cache_read_tokens = token_usage_raw.get("cache_read_tokens")
-    cache_creation_tokens = token_usage_raw.get("cache_creation_tokens")
-    reasoning_tokens = token_usage_raw.get("reasoning_tokens")
-    model = token_usage_raw.get("model")
-    usage_raw_json_val = token_usage_raw.get("usage_raw_json")
-
-    # Coerce int fields (tolerate float → int, reject non-numeric).
-    def _to_int(value: object) -> int | None:
-        if value is None:
-            return None
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value) if value == int(value) else None
-        return None
-
-    input_tokens = _to_int(input_tokens)
-    output_tokens = _to_int(output_tokens)
-    cache_read_tokens = _to_int(cache_read_tokens)
-    cache_creation_tokens = _to_int(cache_creation_tokens)
-    reasoning_tokens = _to_int(reasoning_tokens)
-
-    # Model coercion: only str|None survives.
-    if model is not None and not isinstance(model, str):
-        model = None
-    if usage_raw_json_val is not None and not isinstance(usage_raw_json_val, str):
-        usage_raw_json_val = None
-
-    # Top-level model backfills token_usage.model when absent.
-    if model is None:
-        top_level_model = obj.get("model")
-        if isinstance(top_level_model, str):
-            model = top_level_model
-
-    return TokenUsage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read_tokens,
-        cache_creation_tokens=cache_creation_tokens,
-        reasoning_tokens=reasoning_tokens,
-        model=model,
-        usage_raw_json=usage_raw_json_val,
-    )
+    from runtime.adapters.generic_cli import GenericCliAdapter
+    return GenericCliAdapter.parse_output(stdout)
 
 
 def is_rate_limit_signature(text: str) -> bool:
@@ -1103,20 +1009,21 @@ class PiExecutor:
 
 
 class GenericCliExecutor:
-    """Executor for registered custom CLI profiles (THR-052).
+    """Executor for registered custom CLI profiles (THR-052, THR-107 Phase 2).
 
-    Unlike the built-in executors, a GenericCliExecutor does not know the
-    CLI's semantics — it builds a subprocess argv from a template with
-    supported placeholders and delegates to ``_run_command`` like every
-    other executor. No shell string, no concatenation beyond placeholder
-    substitution.
+    THR-107 Phase 2: GenericCliExecutor is now a **compatibility shell**
+    around the first-party ``GenericCliAdapter`` in
+    ``runtime/adapters/generic_cli.py``. The adapter owns the template
+    expansion / argv construction and result-envelope parsing logic.
+    This class delegates to it for bit-for-bit compatibility while
+    preserving the existing public factory contract in ``build_executor``.
 
-    The template argv is a list of strings. Each element may contain
-    ``{placeholders}`` which are replaced at launch time:
-    - ``{prompt}`` → the full prompt text (passed as a single argv element;
-      the underlying CLI is responsible for any shell-safe embedding)
-    - ``{timeout_seconds}`` → the timeout in seconds
-    - ``{workspace}`` → absolute path to the agent workspace
+    Custom profiles use this executor through the (unchanged) custom
+    branch of ``build_executor``. Each profile's ``adapter`` field
+    (claude/codex/opencode/pi) still controls workspace preparation
+    only; command execution always routes through the ``generic-cli``
+    adapter. No model selection is performed — custom profile model_arg
+    is out of scope per founder gate (THR-067).
 
     The session-lifetime preamble is prepended to the prompt before
     substitution, same as every other executor.
@@ -1146,16 +1053,14 @@ class GenericCliExecutor:
         # model is accepted for signature parity but not used — custom
         # profile model_arg is out of scope per founder gate (THR-067).
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        cmd: list[str] = []
-        for i, elem in enumerate(self._argv_template):
-            elem = elem.replace("{prompt}", prompt)
-            elem = elem.replace("{timeout_seconds}", str(timeout_seconds))
-            elem = elem.replace("{workspace}", str(workspace))
-            # All placeholders resolve to a single string — no splitting.
-            # Resolve the first element (the CLI binary) to an absolute path.
-            if i == 0:
-                elem = _resolve_binary(elem)
-            cmd.append(elem)
+        from runtime.adapters.generic_cli import GenericCliAdapter
+        cmd = GenericCliAdapter.build_argv(
+            argv_template=self._argv_template,
+            prompt=prompt,
+            workspace=str(workspace),
+            timeout_seconds=timeout_seconds,
+            resolve_binary=_resolve_binary(self._argv_template[0]),
+        )
         return _run_command(
             cmd,
             workspace,
