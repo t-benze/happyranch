@@ -1918,6 +1918,19 @@ class TestCommandAdapterRejectionOrgRegister:
         # Token not consumed
         assert store.validate(token, "alpha") is not None
 
+        # No audit row residue
+        db = daemon_state.orgs["alpha"].db
+        logs = db.get_audit_logs("config:executor_profiles")
+        for log_entry in logs:
+            payload = log_entry["payload"]
+            if isinstance(payload, str):
+                import yaml
+                payload = yaml.safe_load(payload)
+            after_snap = payload.get("after", {})
+            assert "bad-type" not in after_snap, (
+                "Rejected non-string registration must not leave audit residue"
+            )
+
     def test_explicit_generic_cli_round_trips_through_org_register_to_list(
         self, app, daemon_state, monkeypatch,
     ):

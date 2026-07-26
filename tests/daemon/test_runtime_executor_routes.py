@@ -1421,6 +1421,19 @@ class TestRuntimeCommandAdapterRejection:
         assert not get_registry().is_registered("cmd-adapter-test")
         assert store.validate_runtime(token) is not None
 
+        # No audit row residue
+        audit_db_path = tmp_path / "runtime-audit.db"
+        if audit_db_path.exists():
+            from runtime.infrastructure.database import Database
+            audit_db = Database(audit_db_path)
+            try:
+                rows = audit_db.get_audit_logs("executor:cmd-adapter-test")
+                assert len(rows) == 0, (
+                    f"Rejected non-string registration must not produce audit rows, got {len(rows)}"
+                )
+            finally:
+                audit_db.close()
+
     def test_explicit_generic_cli_round_trips_through_runtime_register_to_list(
         self, client, store, monkeypatch, tmp_path,
     ):
