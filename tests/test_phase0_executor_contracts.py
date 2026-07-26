@@ -76,9 +76,9 @@ _FROZEN_MISSING_END_RAW = "__HR_ENVELOPE_BEGIN__\n" + "中" * 1000
 _FROZEN_INVALID_JSON_RAW = "{" + "中" * 1000 + "}"
 # 1002 chars, character-sliced at 2000 — ends in '}', no U+FFFD
 
-# Branch (3): valid JSON whose decoded root is non-dict
-_FROZEN_NOT_DICT_RAW = "[" + "中" * 1000 + "]"
-# 1002 chars, character-sliced at 2000 — ends in ']', no U+FFFD
+# Branch (3): valid JSON whose decoded root is non-dict (list)
+_FROZEN_NOT_DICT_RAW = '["' + "中" * 1000 + '"]'
+# 1004 chars, character-sliced at 2000 — ends in '"]', no U+FFFD
 
 # Expected TokenUsage — parser-level raw-only, all parsed fields None
 _FROZEN_MISSING_END_USAGE = TokenUsage(
@@ -3268,36 +3268,42 @@ class TestGenericCliAdapter:
         assert result.input_tokens is None
 
     def test_parse_output_unicode_not_dict_character_slicing(self):
-        """Not-dict block with CJK chars — raw is char-sliced, no U+FFFD."""
+        """Non-dict root CJK block (valid JSON list) — raw is char-sliced, no U+FFFD."""
         adapter = self._adapter()
         from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
-        block = "[" + "中" * 1000 + "]"
+        # Valid JSON array — decodes to list (non-dict), reaches the
+        # `not isinstance(obj, dict)` branch, not JSONDecodeError.
+        block = '["' + "中" * 1000 + '"]'
         stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
         result = adapter.parse_output(stdout)
         assert result is not None
         assert result.usage_raw_json is not None
         raw = result.usage_raw_json
-        assert len(raw) == 1002
+        # [" + 1000 中 + "] = 1004 chars, no truncation (under 2000)
+        assert len(raw) == 1004
         assert "\ufffd" not in raw
         assert raw[0] == "["
         assert raw[-1] == "]"
+        assert raw[-2:] == '"]'  # closing quote + bracket
 
     def test_parse_output_unicode_not_dict_against_frozen_reference(self):
-        """Non-dict root CJK output matches independent frozen
+        """Non-dict root CJK output (valid JSON list) matches independent frozen
         pre-extraction reference from immutable base f4a26824."""
         adapter = self._adapter()
         from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
-        block = "[" + "中" * 1000 + "]"
+        # Valid JSON array — decodes to list, reaches non-dict branch
+        block = '["' + "中" * 1000 + '"]'
         stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
 
         result = adapter.parse_output(stdout)
         assert result is not None
         assert result == _FROZEN_NOT_DICT_USAGE
         assert result.usage_raw_json == _FROZEN_NOT_DICT_RAW
-        assert len(result.usage_raw_json) == 1002
+        assert len(result.usage_raw_json) == 1004
         assert "\ufffd" not in result.usage_raw_json
         assert result.usage_raw_json[0] == "["
         assert result.usage_raw_json[-1] == "]"
+        assert result.usage_raw_json[-2:] == '"]'
         assert result.input_tokens is None
 
     def test_parse_output_unicode_over_2000_chars_truncates_correctly(self):
@@ -3671,8 +3677,8 @@ class TestGenericCliExecutorShell:
     def test_executor_seam_not_dict_against_frozen_reference(
         self, mock_subprocess, tmp_path
     ):
-        """Non-dict root CJK stdout → executor.run() TokenUsage matches
-        independent frozen executor-seam reference."""
+        """Non-dict root CJK stdout (valid JSON list) → executor.run()
+        TokenUsage matches independent frozen executor-seam reference."""
         from runtime.orchestrator.executors import (
             GenericCliExecutor,
             _HR_ENVELOPE_BEGIN,
@@ -3680,7 +3686,8 @@ class TestGenericCliExecutorShell:
         )
         workspace = tmp_path / "ws"
         workspace.mkdir()
-        block = "[" + "中" * 1000 + "]"
+        # Valid JSON array — decodes to list, reaches non-dict branch
+        block = '["' + "中" * 1000 + '"]'
         cjk_stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
 
         proc = MagicMock()
@@ -3706,10 +3713,11 @@ class TestGenericCliExecutorShell:
         # _parse_generic_cli_usage)
         assert result.token_usage == _FROZEN_EXECUTOR_NOT_DICT_USAGE
         # Defense-in-depth CJK character-slice semantics
-        assert len(result.token_usage.usage_raw_json) == 1002
+        assert len(result.token_usage.usage_raw_json) == 1004
         assert "\ufffd" not in result.token_usage.usage_raw_json
         assert result.token_usage.usage_raw_json[0] == "["
         assert result.token_usage.usage_raw_json[-1] == "]"
+        assert result.token_usage.usage_raw_json[-2:] == '"]'
 
 
 class TestPhase2Boundary:
