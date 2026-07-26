@@ -3123,6 +3123,135 @@ class TestGenericCliAdapter:
         assert result is not None
         assert result.usage_raw_json is not None
 
+    # -- Unicode character-slicing parity ----------------------------------
+    # Phase-2 fix-forward (TASK-3394): the extracted parse_output()
+    # historically used character slicing (str[:2000]), not UTF-8 byte
+    # slicing.  Multi-byte Unicode characters (e.g. CJK) must be preserved
+    # whole — no replacement characters (U+FFFD) in any raw-only branch.
+
+    def test_parse_output_unicode_missing_end_character_slicing(self):
+        """Missing END with 1000 CJK chars — raw is char-sliced, no U+FFFD."""
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN
+        # Reviewer reproduction: begin + newline + 1000 CJK chars, no END
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n" + "中" * 1000
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.usage_raw_json is not None
+        raw = result.usage_raw_json
+        # Length must be 1022 characters (22-char header + 1000 CJK)
+        assert len(raw) == 1022
+        # Must NOT contain replacement character
+        assert "\ufffd" not in raw
+        # Must end with CJK character (not a replacement char or chopped mid-byte)
+        assert raw[-1] == "中"
+        assert raw[-5:] == "中" * 5
+
+    def test_parse_output_unicode_missing_end_parity_with_legacy(self):
+        """Missing-END Unicode output byte-identical to legacy shim."""
+        from runtime.orchestrator.executors import (
+            _parse_generic_cli_usage,
+            _HR_ENVELOPE_BEGIN,
+        )
+        adapter = self._adapter()
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n" + "中" * 1000
+
+        shim_result = _parse_generic_cli_usage(stdout)
+        adapter_result = adapter.parse_output(stdout)
+
+        assert shim_result is not None
+        assert adapter_result is not None
+        # Exact raw output parity
+        assert adapter_result.usage_raw_json == shim_result.usage_raw_json
+        # Both must have no parsed token fields (raw-only)
+        assert adapter_result.input_tokens is None
+        assert shim_result.input_tokens is None
+
+    def test_parse_output_unicode_invalid_json_character_slicing(self):
+        """JSONDecodeError with CJK chars — raw is char-sliced, no U+FFFD."""
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
+        block = "{" + "中" * 1000 + "}"
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.usage_raw_json is not None
+        raw = result.usage_raw_json
+        # The block including the CJK chars, truncated to 2000 characters
+        assert len(raw) == 1002  # { + 1000 中 + } = 1002 chars
+        assert "\ufffd" not in raw
+        assert raw[0] == "{"
+        assert raw[-1] == "}"
+
+    def test_parse_output_unicode_invalid_json_parity_with_legacy(self):
+        """JSONDecodeError Unicode output byte-identical to legacy shim."""
+        from runtime.orchestrator.executors import (
+            _parse_generic_cli_usage,
+            _HR_ENVELOPE_BEGIN,
+            _HR_ENVELOPE_END,
+        )
+        adapter = self._adapter()
+        block = "{" + "中" * 1000 + "}"
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
+
+        shim_result = _parse_generic_cli_usage(stdout)
+        adapter_result = adapter.parse_output(stdout)
+
+        assert shim_result is not None
+        assert adapter_result is not None
+        assert adapter_result.usage_raw_json == shim_result.usage_raw_json
+
+    def test_parse_output_unicode_not_dict_character_slicing(self):
+        """Not-dict block with CJK chars — raw is char-sliced, no U+FFFD."""
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
+        block = "[" + "中" * 1000 + "]"
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.usage_raw_json is not None
+        raw = result.usage_raw_json
+        assert len(raw) == 1002
+        assert "\ufffd" not in raw
+        assert raw[0] == "["
+        assert raw[-1] == "]"
+
+    def test_parse_output_unicode_not_dict_parity_with_legacy(self):
+        """Not-dict Unicode output byte-identical to legacy shim."""
+        from runtime.orchestrator.executors import (
+            _parse_generic_cli_usage,
+            _HR_ENVELOPE_BEGIN,
+            _HR_ENVELOPE_END,
+        )
+        adapter = self._adapter()
+        block = "[" + "中" * 1000 + "]"
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n{block}\n{_HR_ENVELOPE_END}"
+
+        shim_result = _parse_generic_cli_usage(stdout)
+        adapter_result = adapter.parse_output(stdout)
+
+        assert shim_result is not None
+        assert adapter_result is not None
+        assert adapter_result.usage_raw_json == shim_result.usage_raw_json
+
+    def test_parse_output_unicode_over_2000_chars_truncates_correctly(self):
+        """When content exceeds 2000 chars, char-slicing truncates at exactly 2000."""
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN
+        # 3000 CJK chars + header = 3022 chars; truncated to 2000 chars
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n" + "中" * 3000
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.usage_raw_json is not None
+        raw = result.usage_raw_json
+        # Character-sliced to exactly 2000 characters
+        assert len(raw) == 2000
+        assert "\ufffd" not in raw
+        # Last char is a complete CJK (position 2000 = 22 header + starts at
+        # 中[1978]...  but the exact char depends on 2000 being within a CJK.
+        # What matters: no replacement char, and length is exactly 2000.
+        assert raw[-1] == "中"
+
     # -- _parse_generic_cli_usage delegation parity ------------------------
 
     def test_shim_delegates_bit_for_bit(self):

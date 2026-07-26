@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 _HR_ENVELOPE_BEGIN = "__HR_ENVELOPE_BEGIN__"
 _HR_ENVELOPE_END = "__HR_ENVELOPE_END__"
 
+# -- Exact legacy truncation limit (mirrored from executors.py) ----
+# Character slicing, NOT byte slicing. Multi-byte Unicode characters
+# (e.g. CJK) are preserved whole; no UTF-8 replacement-decoding.
+_TAIL_BYTES = 2000
+
 
 class GenericCliAdapter:
     """First-party adapter for custom CLI profiles.
@@ -119,9 +124,7 @@ class GenericCliAdapter:
                 "generic CLI usage parser: missing %s sentinel",
                 _HR_ENVELOPE_END,
             )
-            tail_bytes = tail.encode()
-            safe_len = min(len(tail_bytes), 2000)
-            return TokenUsage(usage_raw_json=tail_bytes[:safe_len].decode("utf-8", errors="replace"))
+            return TokenUsage(usage_raw_json=tail[:_TAIL_BYTES])
 
         # Extract the JSON block between sentinels.
         block = stdout[begin_pos + len(_HR_ENVELOPE_BEGIN) : end_pos].strip()
@@ -132,14 +135,10 @@ class GenericCliAdapter:
             obj = json.loads(block)
         except json.JSONDecodeError:
             logger.warning("generic CLI usage parser: envelope is not valid JSON")
-            block_bytes = block.encode()
-            safe_len = min(len(block_bytes), 2000)
-            return TokenUsage(usage_raw_json=block_bytes[:safe_len].decode("utf-8", errors="replace"))
+            return TokenUsage(usage_raw_json=block[:_TAIL_BYTES])
 
         if not isinstance(obj, dict):
-            block_bytes = block.encode()
-            safe_len = min(len(block_bytes), 2000)
-            return TokenUsage(usage_raw_json=block_bytes[:safe_len].decode("utf-8", errors="replace"))
+            return TokenUsage(usage_raw_json=block[:_TAIL_BYTES])
 
         # Validate envelope_version — must be integer 1.
         version = obj.get("envelope_version")
