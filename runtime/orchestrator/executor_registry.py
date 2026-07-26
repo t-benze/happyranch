@@ -142,39 +142,28 @@ class ExecutorRegistry:
         self._register_builtins()
 
     def _register_builtins(self) -> None:
-        """Register the four built-in executor profiles."""
-        builtins = [
-            ExecutorProfile(
-                name="claude",
-                kind="builtin",
-                adapter_id="claude",
-                readiness_marker_fragment=".claude/skills/start-task/SKILL.md",
-                model_arg=["--model", "{model}"],
-            ),
-            ExecutorProfile(
-                name="codex",
-                kind="builtin",
-                adapter_id="codex",
-                readiness_marker_fragment="AGENTS.md",
-                model_arg=["-m", "{model}"],
-            ),
-            ExecutorProfile(
-                name="opencode",
-                kind="builtin",
-                adapter_id="opencode",
-                readiness_marker_fragment="AGENTS.md",
-                model_arg=["-m", "{model}"],
-            ),
-            ExecutorProfile(
-                name="pi",
-                kind="builtin",
-                adapter_id="pi",
-                readiness_marker_fragment="AGENTS.md",
-                model_arg=["--model", "{model}"],
-            ),
-        ]
-        for p in builtins:
-            self._profiles[p.name] = p
+        """Register the four built-in executor profiles.
+
+        D8: Built-in profile metadata is NOW authoritative from the
+        private first-party adapter catalog (``runtime/adapters``).
+        No literal parallel built-in list or table remains in this
+        file — the catalog is the single source of truth.
+
+        **Immutability:** Catalog descriptors store ``model_arg`` as
+        immutable tuples. Each ``ExecutorProfile`` receives its own
+        independent list copy so that profile-local mutation cannot
+        alias into the catalog or other registries.
+        """
+        from runtime.adapters import get_builtin_catalog
+
+        for desc in get_builtin_catalog():
+            self._profiles[desc.name] = ExecutorProfile(
+                name=desc.name,
+                kind=desc.kind,
+                adapter_id=desc.adapter_id,
+                readiness_marker_fragment=desc.readiness_marker_fragment,
+                model_arg=list(desc.model_arg) if desc.model_arg is not None else None,
+            )
 
     def get_profile(self, name: str) -> ExecutorProfile | None:
         """Return the profile for ``name``, or None if unregistered."""
