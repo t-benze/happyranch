@@ -2858,3 +2858,601 @@ class TestD8AdversarialInvariants:
             # Must have build_argv
             assert hasattr(instance, "build_argv")
             assert callable(instance.build_argv)
+
+
+# ============================================================================
+# THR-107 Phase 2: Generic CLI first-party adapter / GenericCliExecutor shell
+# ============================================================================
+# Phase 2 extracts the GenericCliExecutor template expansion / argv
+# construction and result-envelope parsing into GenericCliAdapter
+# (runtime/adapters/generic_cli.py). GenericCliExecutor becomes a
+# compatibility shell that delegates to it. These tests lock that
+# behavior, prove bit-for-bit parity, and guard the backward-compat
+# contracts: custom profiles still return GenericCliExecutor from
+# build_executor, all four built-in D2 flows are unchanged, the D10
+# if/elif fallback remains intact, and the adapter module is
+# statically importable (no dynamic discovery).
+# ============================================================================
+
+
+class TestGenericCliAdapter:
+    """Phase 2: GenericCliAdapter unit tests — verify the adapter's
+    build_argv and parse_output methods produce bit-for-bit output
+    identical to the pre-extraction inline GenericCliExecutor logic."""
+
+    @staticmethod
+    def _adapter():
+        from runtime.adapters.generic_cli import GenericCliAdapter
+        return GenericCliAdapter
+
+    # -- build_argv --------------------------------------------------------
+
+    def test_build_argv_substitutes_all_three_placeholders(self):
+        """{prompt}, {timeout_seconds}, {workspace} all substituted."""
+        cmd = self._adapter().build_argv(
+            argv_template=["my-cli", "--workspace", "{workspace}",
+                           "--prompt", "{prompt}", "--timeout", "{timeout_seconds}"],
+            prompt="hello world",
+            workspace="/tmp/ws",
+            timeout_seconds=300,
+        )
+        assert cmd[0] == "my-cli"
+        assert cmd[1] == "--workspace"
+        assert cmd[2] == "/tmp/ws"
+        assert cmd[3] == "--prompt"
+        assert cmd[4] == "hello world"
+        assert cmd[5] == "--timeout"
+        assert cmd[6] == "300"
+
+    def test_build_argv_prompt_contains_newlines_stays_one_element(self):
+        """Prompt with embedded newlines must NOT split into multiple
+        argv elements."""
+        cmd = self._adapter().build_argv(
+            argv_template=["test-cli", "{prompt}"],
+            prompt="one\ntwo\nthree",
+            workspace="/ws",
+            timeout_seconds=60,
+        )
+        assert len(cmd) == 2
+        assert cmd[1] == "one\ntwo\nthree"
+        assert "\n" in cmd[1]
+
+    def test_build_argv_resolve_binary_replaces_element_zero(self):
+        """When resolve_binary is given, element[0] uses it instead of
+        the template value."""
+        cmd = self._adapter().build_argv(
+            argv_template=["echo", "--msg", "{prompt}"],
+            prompt="hi",
+            workspace="/ws",
+            timeout_seconds=10,
+            resolve_binary="/usr/local/bin/echo",
+        )
+        assert cmd[0] == "/usr/local/bin/echo"
+        assert cmd[1] == "--msg"
+        assert cmd[2] == "hi"
+
+    def test_build_argv_no_resolve_binary_uses_template_as_is(self):
+        """Without resolve_binary, element[0] is used as-is."""
+        cmd = self._adapter().build_argv(
+            argv_template=["echo", "{prompt}"],
+            prompt="test",
+            workspace="/ws",
+            timeout_seconds=5,
+        )
+        assert cmd[0] == "echo"
+        assert cmd[1] == "test"
+
+    def test_build_argv_no_placeholders(self):
+        """Template with no placeholders produces exact argv."""
+        cmd = self._adapter().build_argv(
+            argv_template=["static", "arg1", "arg2"],
+            prompt="ignored",
+            workspace="/ws",
+            timeout_seconds=60,
+        )
+        assert cmd == ["static", "arg1", "arg2"]
+
+    def test_build_argv_does_not_alias_input_template(self):
+        """The adapter does not mutate the caller's argv_template list."""
+        template = ["cli", "--flag", "{prompt}"]
+        original = list(template)
+        self._adapter().build_argv(
+            argv_template=template,
+            prompt="hi",
+            workspace="/ws",
+            timeout_seconds=5,
+        )
+        assert template == original  # unchanged
+
+    def test_build_argv_parity_with_original_generic_cli_executor(self, tmp_path):
+        """Prove bit-for-bit parity: the adapter produces the exact same
+        argv list that the original inline GenericCliExecutor produced."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        fake_bin_path = tmp_path / "bin" / "my-cli"
+        fake_bin_path.parent.mkdir()
+        fake_bin_path.write_text("")
+        fake_bin_path.chmod(0o755)
+
+        template = ["my-cli", "--workspace", "{workspace}",
+                    "--prompt", "{prompt}", "--timeout", "{timeout_seconds}"]
+        prompt = "custom prompt"
+
+        # Adapter build_argv
+        from runtime.orchestrator.executors import _SESSION_LIFETIME_PREAMBLE
+        adapter_cmd = self._adapter().build_argv(
+            argv_template=template,
+            prompt=_SESSION_LIFETIME_PREAMBLE + prompt,
+            workspace=str(workspace),
+            timeout_seconds=300,
+            resolve_binary=str(fake_bin_path),
+        )
+
+        # Original GenericCliExecutor (simulate what the pre-extraction code did)
+        legacy_cmd: list[str] = []
+        for i, elem in enumerate(template):
+            elem = elem.replace("{prompt}", _SESSION_LIFETIME_PREAMBLE + prompt)
+            elem = elem.replace("{timeout_seconds}", "300")
+            elem = elem.replace("{workspace}", str(workspace))
+            if i == 0:
+                elem = str(fake_bin_path)
+            legacy_cmd.append(elem)
+
+        assert adapter_cmd == legacy_cmd
+        assert len(adapter_cmd) == 7
+
+    # -- parse_output ------------------------------------------------------
+
+    def test_parse_output_empty_returns_none(self):
+        adapter = self._adapter()
+        assert adapter.parse_output("") is None
+        assert adapter.parse_output("   ") is None
+
+    def test_parse_output_no_envelope_returns_none(self):
+        adapter = self._adapter()
+        result = adapter.parse_output("regular stdout output\nno envelope here")
+        assert result is None
+
+    def test_parse_output_valid_v1_envelope(self):
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
+        envelope = {
+            "envelope_version": 1,
+            "token_usage": {
+                "input_tokens": 299,
+                "output_tokens": 101,
+                "cache_read_tokens": 50,
+                "cache_creation_tokens": 10,
+                "reasoning_tokens": None,
+                "model": "my-cli-v2",
+            },
+        }
+        stdout = f"some output\n{_HR_ENVELOPE_BEGIN}\n{json.dumps(envelope)}\n{_HR_ENVELOPE_END}\nmore output"
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.input_tokens == 299
+        assert result.output_tokens == 101
+        assert result.cache_read_tokens == 50
+        assert result.cache_creation_tokens == 10
+        assert result.model == "my-cli-v2"
+
+    def test_parse_output_last_envelope_wins(self):
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
+        envelope1 = {"envelope_version": 1, "token_usage": {"input_tokens": 10}}
+        envelope2 = {"envelope_version": 1, "token_usage": {"input_tokens": 20}}
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n{json.dumps(envelope1)}\n{_HR_ENVELOPE_END}\n{_HR_ENVELOPE_BEGIN}\n{json.dumps(envelope2)}\n{_HR_ENVELOPE_END}"
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.input_tokens == 20  # last wins
+
+    def test_parse_output_missing_end_returns_raw_only(self):
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n{{\"envelope_version\":1}}\n"
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.input_tokens is None  # raw only, no parsed fields
+        assert result.usage_raw_json is not None
+
+    def test_parse_output_wrong_version_returns_raw_only(self):
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
+        envelope = {"envelope_version": 2, "token_usage": {"input_tokens": 5}}
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n{json.dumps(envelope)}\n{_HR_ENVELOPE_END}"
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.input_tokens is None  # version rejected
+        assert result.usage_raw_json is not None
+
+    def test_parse_output_invalid_json_returns_raw_only(self):
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
+        stdout = f"{_HR_ENVELOPE_BEGIN}\nnot json{{{{\n{_HR_ENVELOPE_END}"
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.usage_raw_json is not None
+
+    def test_parse_output_empty_envelope_block_returns_none(self):
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n\n{_HR_ENVELOPE_END}"
+        result = adapter.parse_output(stdout)
+        assert result is None
+
+    def test_parse_output_top_level_model_backfill(self):
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
+        envelope = {
+            "envelope_version": 1,
+            "model": "custom-model-v3",
+            "token_usage": {"input_tokens": 500},
+        }
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n{json.dumps(envelope)}\n{_HR_ENVELOPE_END}"
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.input_tokens == 500
+        assert result.model == "custom-model-v3"
+
+    def test_parse_output_token_type_coercion(self):
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
+        envelope = {
+            "envelope_version": 1,
+            "token_usage": {
+                "input_tokens": 100.0,
+                "output_tokens": 50.5,
+                "cache_read_tokens": True,
+                "cache_creation_tokens": "nope",
+            },
+        }
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n{json.dumps(envelope)}\n{_HR_ENVELOPE_END}"
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.input_tokens == 100
+        assert result.output_tokens is None
+        assert result.cache_read_tokens is None
+        assert result.cache_creation_tokens is None
+
+    def test_parse_output_not_dict_returns_raw_only(self):
+        adapter = self._adapter()
+        from runtime.orchestrator.executors import _HR_ENVELOPE_BEGIN, _HR_ENVELOPE_END
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n[1, 2, 3]\n{_HR_ENVELOPE_END}"
+        result = adapter.parse_output(stdout)
+        assert result is not None
+        assert result.usage_raw_json is not None
+
+    # -- _parse_generic_cli_usage delegation parity ------------------------
+
+    def test_shim_delegates_bit_for_bit(self):
+        """Prove the _parse_generic_cli_usage shim produces identical
+        results to calling GenericCliAdapter.parse_output directly."""
+        from runtime.orchestrator.executors import (
+            _parse_generic_cli_usage,
+            _HR_ENVELOPE_BEGIN,
+            _HR_ENVELOPE_END,
+        )
+        envelope = {
+            "envelope_version": 1,
+            "token_usage": {"input_tokens": 42, "output_tokens": 7},
+        }
+        stdout = f"{_HR_ENVELOPE_BEGIN}\n{json.dumps(envelope)}\n{_HR_ENVELOPE_END}"
+
+        shim_result = _parse_generic_cli_usage(stdout)
+        adapter_result = self._adapter().parse_output(stdout)
+
+        assert shim_result is not None
+        assert adapter_result is not None
+        assert shim_result.input_tokens == adapter_result.input_tokens
+        assert shim_result.output_tokens == adapter_result.output_tokens
+        assert shim_result.model == adapter_result.model
+
+    def test_shim_empty_returns_none(self):
+        from runtime.orchestrator.executors import _parse_generic_cli_usage
+        assert _parse_generic_cli_usage("") is None
+
+
+class TestGenericCliExecutorShell:
+    """Phase 2: GenericCliExecutor remains the public factory result for
+    custom profiles, now a thin shell around GenericCliAdapter. These
+    tests lock the backward-compat contract."""
+
+    def test_build_executor_returns_generic_cli_executor_for_custom_profile(self):
+        """build_executor for a custom profile must return a
+        GenericCliExecutor instance."""
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfile,
+            get_registry,
+            build_executor,
+        )
+        from runtime.orchestrator.executors import GenericCliExecutor
+        from runtime.config import Settings
+
+        registry = get_registry()
+        profile = ExecutorProfile(
+            name="phase2-custom",
+            kind="custom",
+            adapter_id="pi",
+            argv_template=["echo", "--input", "{prompt}"],
+            command="echo",
+        )
+        registry.register_custom_profile(profile)
+
+        settings = Settings()
+        executor = build_executor("phase2-custom", settings)
+        assert isinstance(executor, GenericCliExecutor)
+
+    def test_all_four_builtins_still_return_specialized_executors(self):
+        """Phase 2 must not break built-in executor resolution."""
+        from runtime.orchestrator.executor_registry import build_executor
+        from runtime.orchestrator.executors import (
+            ClaudeExecutor,
+            CodexExecutor,
+            OpencodeExecutor,
+            PiExecutor,
+        )
+        from runtime.config import Settings
+
+        settings = Settings()
+        assert isinstance(build_executor("claude", settings), ClaudeExecutor)
+        assert isinstance(build_executor("codex", settings), CodexExecutor)
+        assert isinstance(build_executor("opencode", settings), OpencodeExecutor)
+        assert isinstance(build_executor("pi", settings), PiExecutor)
+
+    def test_custom_profile_no_adapter_injection(self):
+        """GenericCliExecutor for custom profiles must NOT receive
+        a D2 first-party adapter — custom profiles are not in the
+        first-party catalog."""
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfile,
+            get_registry,
+            build_executor,
+        )
+        from runtime.orchestrator.executors import GenericCliExecutor
+        from runtime.config import Settings
+
+        registry = get_registry()
+        profile = ExecutorProfile(
+            name="phase2-no-adapter",
+            kind="custom",
+            adapter_id="pi",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+        )
+        registry.register_custom_profile(profile)
+
+        settings = Settings()
+        executor = build_executor("phase2-no-adapter", settings)
+        assert isinstance(executor, GenericCliExecutor)
+        # No adapter attribute — GenericCliExecutor doesn't have one
+        assert not hasattr(executor, "_adapter")
+
+    @patch("runtime.orchestrator.executors.subprocess")
+    def test_generic_cli_executor_delegates_argv_to_adapter(self, mock_subprocess, tmp_path):
+        """When GenericCliExecutor.run() is called, the argv built by
+        the adapter matches what the pre-extraction code produced."""
+        from runtime.orchestrator.executors import GenericCliExecutor
+
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        proc = MagicMock()
+        proc.pid = 9999
+        proc.returncode = 0
+        proc.communicate.return_value = ("output", "")
+        mock_subprocess.Popen.return_value = proc
+
+        executor = GenericCliExecutor(
+            profile_name="openclaw",
+            argv_template=[
+                "echo", "agent", "--json", "--message", "{prompt}",
+                "--timeout", "{timeout_seconds}",
+            ],
+            provider="openclaw",
+        )
+        result = executor.run(
+            workspace=workspace,
+            prompt="Do something",
+            timeout_seconds=60,
+        )
+
+        assert result.success is True
+        cmd = mock_subprocess.Popen.call_args[0][0]
+        assert cmd[1] == "agent"
+        assert cmd[2] == "--json"
+        assert cmd[3] == "--message"
+        assert "Do something" in cmd[4]
+        assert "<session-lifetime>" in cmd[4]
+        assert cmd[5] == "--timeout"
+        assert cmd[6] == "60"
+
+    def test_generic_cli_executor_argv_template_not_aliased(self):
+        """GenericCliExecutor._argv_template must be an independent copy,
+        not the caller's object reference."""
+        from runtime.orchestrator.executors import GenericCliExecutor
+
+        template = ["echo", "--input", "{prompt}"]
+        executor = GenericCliExecutor(
+            profile_name="test",
+            argv_template=template,
+            provider="test",
+        )
+        # Mutate the original — executor's copy must not change
+        template.append("--extra")
+        assert len(executor._argv_template) == 3  # original length
+        assert executor._argv_template[-1] == "{prompt}"
+
+    @patch("runtime.orchestrator.executors.subprocess")
+    def test_workspace_placeholder_delegated(self, mock_subprocess, tmp_path):
+        from runtime.orchestrator.executors import GenericCliExecutor
+
+        workspace = tmp_path / "agent_ws"
+        workspace.mkdir()
+
+        proc = MagicMock()
+        proc.pid = 8888
+        proc.returncode = 0
+        proc.communicate.return_value = ("output", "")
+        mock_subprocess.Popen.return_value = proc
+
+        executor = GenericCliExecutor(
+            profile_name="custom",
+            argv_template=["echo", "--dir", "{workspace}", "--input", "{prompt}"],
+            provider="custom",
+        )
+        result = executor.run(
+            workspace=workspace,
+            prompt="Do something",
+            timeout_seconds=30,
+        )
+
+        assert result.success is True
+        cmd = mock_subprocess.Popen.call_args[0][0]
+        assert cmd[2] == str(workspace)
+
+    @patch("runtime.orchestrator.executors.subprocess")
+    def test_envelope_parsing_still_works_through_shell(self, mock_subprocess, tmp_path):
+        """Token usage from envelope is populated when GenericCliExecutor
+        delegates through the adapter (via _parse_generic_cli_usage shim)."""
+        from runtime.orchestrator.executors import (
+            GenericCliExecutor,
+            _HR_ENVELOPE_BEGIN,
+            _HR_ENVELOPE_END,
+        )
+
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        envelope = json.dumps({
+            "envelope_version": 1,
+            "token_usage": {"input_tokens": 299, "output_tokens": 101},
+        })
+        stdout = f"output...\n{_HR_ENVELOPE_BEGIN}\n{envelope}\n{_HR_ENVELOPE_END}\n...more"
+
+        proc = MagicMock()
+        proc.pid = 9997
+        proc.returncode = 0
+        proc.communicate.return_value = (stdout, "")
+        mock_subprocess.Popen.return_value = proc
+
+        executor = GenericCliExecutor(
+            profile_name="enveloped",
+            argv_template=["echo", "--prompt", "{prompt}"],
+            provider="enveloped",
+        )
+        result = executor.run(
+            workspace=workspace,
+            prompt="hi",
+            timeout_seconds=30,
+        )
+
+        assert result.success is True
+        assert result.token_usage is not None
+        assert result.token_usage.input_tokens == 299
+        assert result.token_usage.output_tokens == 101
+
+    @patch("runtime.orchestrator.executors.subprocess")
+    def test_no_envelope_still_succeeds_through_shell(self, mock_subprocess, tmp_path):
+        from runtime.orchestrator.executors import GenericCliExecutor
+
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        proc = MagicMock()
+        proc.pid = 9996
+        proc.returncode = 0
+        proc.communicate.return_value = ("plain output", "")
+        mock_subprocess.Popen.return_value = proc
+
+        executor = GenericCliExecutor(
+            profile_name="noenv",
+            argv_template=["echo", "--prompt", "{prompt}"],
+            provider="noenv",
+        )
+        result = executor.run(
+            workspace=workspace,
+            prompt="hi",
+            timeout_seconds=30,
+        )
+
+        assert result.success is True
+        assert result.token_usage is None  # no envelope → no token data
+
+
+class TestPhase2Boundary:
+    """Phase 2 scope fence: prove no D3-D12, schema, catalog, registry,
+    or web changes leaked in."""
+
+    def test_adapter_module_is_statically_importable(self):
+        """GenericCliAdapter must be a plain static import — no dynamic
+        discovery, no importlib, no plugin loader."""
+        from runtime.adapters.generic_cli import GenericCliAdapter
+        assert GenericCliAdapter is not None
+        assert hasattr(GenericCliAdapter, "build_argv")
+        assert hasattr(GenericCliAdapter, "parse_output")
+
+    def test_adapter_module_no_side_effects_on_import(self):
+        """Importing the adapter must not mutate global state, registry,
+        or any process-wide singleton."""
+        from runtime.orchestrator.executor_registry import get_registry
+        profiles_before = set(get_registry().list_profile_names())
+
+        import runtime.adapters.generic_cli  # noqa: F401 — verify no side effects
+
+        profiles_after = set(get_registry().list_profile_names())
+        assert profiles_before == profiles_after
+
+    def test_d10_if_elif_chain_unchanged(self):
+        """The D10-gated build_executor if/elif chain must remain intact
+        for all four built-ins and the custom GenericCliExecutor fallback."""
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfile,
+            build_executor,
+            get_registry,
+            reset_registry,
+        )
+        from runtime.orchestrator.executors import (
+            ClaudeExecutor,
+            CodexExecutor,
+            OpencodeExecutor,
+            PiExecutor,
+            GenericCliExecutor,
+        )
+        from runtime.config import Settings
+
+        # Fresh registry with only built-ins
+        reset_registry()
+        registry = get_registry()
+        profile = ExecutorProfile(
+            name="d10-custom",
+            kind="custom",
+            adapter_id="pi",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+        )
+        registry.register_custom_profile(profile)
+
+        settings = Settings()
+        assert isinstance(build_executor("claude", settings), ClaudeExecutor)
+        assert isinstance(build_executor("codex", settings), CodexExecutor)
+        assert isinstance(build_executor("opencode", settings), OpencodeExecutor)
+        assert isinstance(build_executor("pi", settings), PiExecutor)
+        assert isinstance(build_executor("d10-custom", settings), GenericCliExecutor)
+
+    def test_d8_catalog_unchanged(self):
+        """The D8 built-in catalog must contain exactly four entries
+        (claude, codex, opencode, pi) — no generic-cli entry."""
+        from runtime.adapters import get_builtin_catalog
+        catalog = get_builtin_catalog()
+        names = {desc.name for desc in catalog}
+        assert names == {"claude", "codex", "opencode", "pi"}
+
+    def test_generic_cli_adapter_not_in_first_party_catalog(self):
+        """get_first_party_adapter must return None for 'generic-cli'
+        or any generic name — the adapter is used directly, not via
+        the D2 catalog lookup."""
+        from runtime.adapters import get_first_party_adapter
+        assert get_first_party_adapter("generic-cli") is None
+        assert get_first_party_adapter("generic_cli") is None
+        assert get_first_party_adapter("generic") is None
