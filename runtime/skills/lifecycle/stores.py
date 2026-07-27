@@ -1,0 +1,492 @@
+"""THR-055 lifecycle SQLite stores — immutable package-version records,
+lifecycle events, and version-pinned assignments.
+
+Provides a thin SQLite-backed persistence layer for the lifecycle service.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from typing import Optional
+
+from .models import (
+    AssignmentRecord,
+    LifecycleEvent,
+    LifecycleStatus,
+    MaterializationRecord,
+    PackageVersion,
+)
+
+
+def _row_to_package_version(row: dict) -> PackageVersion:
+    """Convert a DB row dict to a PackageVersion model."""
+    return PackageVersion(
+        id=row["id"],
+        skill_id=row["skill_id"],
+        slug=row["slug"],
+        name=row["name"],
+        version=row["version"],
+        content_hash=row["content_hash"],
+        policy_class=row.get("policy_class", "standard_operational"),
+        description=row.get("description", ""),
+        skill_md=row.get("skill_md", ""),
+        status=LifecycleStatus(row["status"]),
+        created_at=_parse_datetime(row.get("created_at")),
+        created_by=row.get("created_by", ""),
+        proposal_task_id=row.get("proposal_task_id"),
+        proposal_session_id=row.get("proposal_session_id"),
+        proposer_agent=row.get("proposer_agent"),
+        reviewer=row.get("reviewer"),
+        review_decision=row.get("review_decision"),
+        review_rationale=row.get("review_rationale"),
+        reviewed_at=_parse_datetime(row.get("reviewed_at")),
+        publisher=row.get("publisher"),
+        published_at=_parse_datetime(row.get("published_at")),
+        publication_decision_id=row.get("publication_decision_id"),
+    )
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    return datetime.fromisoformat(value)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ── Schema / migration ───────────────────────────────────────────────────
+
+CREATE_PACKAGE_VERSIONS = """
+CREATE TABLE IF NOT EXISTS skill_lifecycle_packages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_id    TEXT NOT NULL,
+    slug        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    version     TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    policy_class TEXT NOT NULL DEFAULT 'standard_operational',
+    description TEXT NOT NULL DEFAULT '',
+    skill_md    TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'proposed',
+    created_at  TEXT NOT NULL,
+    created_by  TEXT NOT NULL DEFAULT '',
+    -- Proposal provenance (agent-authored proposals)
+    proposal_task_id    TEXT,
+    proposal_session_id TEXT,
+    proposer_agent      TEXT,
+    -- Review provenance
+    reviewer          TEXT,
+    review_decision   TEXT,
+    review_rationale  TEXT,
+    reviewed_at       TEXT,
+    -- Publication provenance
+    publisher              TEXT,
+    published_at           TEXT,
+    publication_decision_id INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_lifecycle_packages_skill_id
+    ON skill_lifecycle_packages(skill_id);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_packages_slug
+    ON skill_lifecycle_packages(slug);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_packages_status
+    ON skill_lifecycle_packages(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lifecycle_packages_hash
+    ON skill_lifecycle_packages(skill_id, content_hash);
+"""
+
+CREATE_LIFECYCLE_EVENTS = """
+CREATE TABLE IF NOT EXISTS skill_lifecycle_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_id            TEXT NOT NULL,
+    package_version_id  INTEGER,
+    event_type          TEXT NOT NULL,
+    actor               TEXT NOT NULL DEFAULT '',
+    actor_role          TEXT NOT NULL DEFAULT '',
+    previous_status     TEXT,
+    new_status          TEXT,
+    content_hash        TEXT,
+    metadata_json       TEXT,
+    created_at          TEXT NOT NULL,
+    task_id             TEXT,
+    session_id          TEXT,
+    FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lifecycle_events_skill_id
+    ON skill_lifecycle_events(skill_id);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_events_created_at
+    ON skill_lifecycle_events(created_at);
+"""
+
+CREATE_ASSIGNMENTS = """
+CREATE TABLE IF NOT EXISTS skill_lifecycle_assignments (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_id            TEXT NOT NULL,
+    agent_name          TEXT NOT NULL,
+    package_version_id  INTEGER NOT NULL,
+    version             TEXT NOT NULL,
+    content_hash        TEXT NOT NULL,
+    assigned_by         TEXT NOT NULL DEFAULT '',
+    assigned_at         TEXT NOT NULL,
+    active              INTEGER NOT NULL DEFAULT 1,
+    -- Rollback provenance
+    rolled_back_by            TEXT,
+    rolled_back_at            TEXT,
+    rollback_reason           TEXT,
+    rollback_target_version_id INTEGER,
+    FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lifecycle_assignments_skill
+    ON skill_lifecycle_assignments(skill_id);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_assignments_agent
+    ON skill_lifecycle_assignments(agent_name);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_assignments_active
+    ON skill_lifecycle_assignments(active);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lifecycle_assignments_unique_active
+    ON skill_lifecycle_assignments(skill_id, agent_name)
+    WHERE active = 1;
+"""
+
+CREATE_MATERIALIZATIONS = """
+CREATE TABLE IF NOT EXISTS skill_lifecycle_materializations (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_id            TEXT NOT NULL,
+    agent_name          TEXT NOT NULL,
+    package_version_id  INTEGER NOT NULL,
+    version             TEXT NOT NULL,
+    content_hash        TEXT NOT NULL,
+    success             INTEGER NOT NULL DEFAULT 0,
+    error_message       TEXT,
+    session_context     TEXT,
+    created_at          TEXT NOT NULL,
+    FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lifecycle_materializations_skill_agent
+    ON skill_lifecycle_materializations(skill_id, agent_name);
+"""
+
+
+def migrate(db) -> None:
+    """Run the lifecycle schema migration (idempotent)."""
+    db.execute(CREATE_PACKAGE_VERSIONS)
+    db.execute(CREATE_LIFECYCLE_EVENTS)
+    db.execute(CREATE_ASSIGNMENTS)
+    db.execute(CREATE_MATERIALIZATIONS)
+
+
+# ── Package version CRUD ──────────────────────────────────────────────────
+
+def insert_package_version(db, pkg: PackageVersion) -> int:
+    """Insert a new package version row. Returns the new row id."""
+    now = _now_iso()
+    pkg.created_at = pkg.created_at or datetime.fromisoformat(now)
+    row = db.execute(
+        """INSERT INTO skill_lifecycle_packages
+           (skill_id, slug, name, version, content_hash, policy_class,
+            description, skill_md, status, created_at, created_by,
+            proposal_task_id, proposal_session_id, proposer_agent,
+            reviewer, review_decision, review_rationale, reviewed_at,
+            publisher, published_at, publication_decision_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            pkg.skill_id, pkg.slug, pkg.name, pkg.version, pkg.content_hash,
+            pkg.policy_class, pkg.description, pkg.skill_md, pkg.status.value,
+            pkg.created_at.isoformat(), pkg.created_by,
+            pkg.proposal_task_id, pkg.proposal_session_id, pkg.proposer_agent,
+            pkg.reviewer, pkg.review_decision, pkg.review_rationale,
+            pkg.reviewed_at.isoformat() if pkg.reviewed_at else None,
+            pkg.publisher,
+            pkg.published_at.isoformat() if pkg.published_at else None,
+            pkg.publication_decision_id,
+        ),
+    )
+    return row.lastrowid
+
+
+def get_package_version(db, version_id: int) -> PackageVersion | None:
+    """Fetch a package version by primary key."""
+    row = db.execute(
+        "SELECT * FROM skill_lifecycle_packages WHERE id = ?",
+        (version_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_package_version(dict(row))
+
+
+def get_package_version_by_hash(db, skill_id: str, content_hash: str) -> PackageVersion | None:
+    """Fetch a package version by skill_id + content_hash."""
+    row = db.execute(
+        "SELECT * FROM skill_lifecycle_packages WHERE skill_id = ? AND content_hash = ?",
+        (skill_id, content_hash),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_package_version(dict(row))
+
+
+def get_latest_package_version(db, skill_id: str) -> PackageVersion | None:
+    """Fetch the most recent package version for a skill_id."""
+    row = db.execute(
+        "SELECT * FROM skill_lifecycle_packages WHERE skill_id = ? ORDER BY id DESC LIMIT 1",
+        (skill_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_package_version(dict(row))
+
+
+def update_package_status(
+    db, version_id: int, new_status: LifecycleStatus, **kwargs
+) -> None:
+    """Update the status (and optional provenance fields) of a package version."""
+    sets = ["status = ?"]
+    params: list = [new_status.value]
+    for field in ["reviewer", "review_decision", "review_rationale", "reviewed_at",
+                  "publisher", "published_at", "publication_decision_id"]:
+        if field in kwargs and kwargs[field] is not None:
+            sets.append(f"{field} = ?")
+            val = kwargs[field]
+            params.append(val.isoformat() if isinstance(val, datetime) else val)
+    params.append(version_id)
+    db.execute(
+        f"UPDATE skill_lifecycle_packages SET {', '.join(sets)} WHERE id = ?",
+        tuple(params),
+    )
+
+
+def list_package_versions(
+    db, skill_id: str | None = None, status: LifecycleStatus | None = None
+) -> list[PackageVersion]:
+    """List package versions, optionally filtered."""
+    query = "SELECT * FROM skill_lifecycle_packages WHERE 1=1"
+    params: list = []
+    if skill_id is not None:
+        query += " AND skill_id = ?"
+        params.append(skill_id)
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status.value)
+    query += " ORDER BY id DESC"
+    rows = db.execute(query, tuple(params)).fetchall()
+    return [_row_to_package_version(dict(r)) for r in rows]
+
+
+def count_published_packages(db) -> int:
+    """Count currently published packages (for cap enforcement)."""
+    row = db.execute(
+        "SELECT COUNT(*) FROM skill_lifecycle_packages WHERE status = ?",
+        (LifecycleStatus.PUBLISHED.value,),
+    ).fetchone()
+    return row[0] if row else 0
+
+
+# ── Lifecycle events CRUD ─────────────────────────────────────────────────
+
+def insert_lifecycle_event(db, event: LifecycleEvent) -> int:
+    """Insert a lifecycle event. Returns the new row id."""
+    row = db.execute(
+        """INSERT INTO skill_lifecycle_events
+           (skill_id, package_version_id, event_type, actor, actor_role,
+            previous_status, new_status, content_hash, metadata_json,
+            created_at, task_id, session_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            event.skill_id,
+            event.package_version_id,
+            event.event_type,
+            event.actor,
+            event.actor_role,
+            event.previous_status,
+            event.new_status,
+            event.content_hash,
+            json.dumps(event.metadata) if event.metadata else None,
+            event.created_at.isoformat(),
+            event.task_id,
+            event.session_id,
+        ),
+    )
+    return row.lastrowid
+
+
+def list_lifecycle_events(
+    db, skill_id: str | None = None, limit: int = 100
+) -> list[LifecycleEvent]:
+    """List lifecycle events, newest first."""
+    query = "SELECT * FROM skill_lifecycle_events"
+    params: list = []
+    if skill_id is not None:
+        query += " WHERE skill_id = ?"
+        params.append(skill_id)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    rows = db.execute(query, tuple(params)).fetchall()
+    events = []
+    for row in rows:
+        d = dict(row)
+        events.append(LifecycleEvent(
+            id=d["id"],
+            skill_id=d["skill_id"],
+            package_version_id=d["package_version_id"],
+            event_type=d["event_type"],
+            actor=d.get("actor", ""),
+            actor_role=d.get("actor_role", ""),
+            previous_status=d.get("previous_status"),
+            new_status=d.get("new_status"),
+            content_hash=d.get("content_hash"),
+            metadata=json.loads(d["metadata_json"]) if d.get("metadata_json") else None,
+            created_at=_parse_datetime(d["created_at"]) or datetime.now(timezone.utc),
+            task_id=d.get("task_id"),
+            session_id=d.get("session_id"),
+        ))
+    return events
+
+
+# ── Assignment CRUD ──────────────────────────────────────────────────────
+
+def insert_assignment(db, assign: AssignmentRecord) -> int:
+    """Insert a new assignment. Returns the new row id."""
+    row = db.execute(
+        """INSERT INTO skill_lifecycle_assignments
+           (skill_id, agent_name, package_version_id, version, content_hash,
+            assigned_by, assigned_at, active, rolled_back_by, rolled_back_at,
+            rollback_reason, rollback_target_version_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            assign.skill_id, assign.agent_name, assign.package_version_id,
+            assign.version, assign.content_hash, assign.assigned_by,
+            assign.assigned_at.isoformat(), 1 if assign.active else 0,
+            assign.rolled_back_by,
+            assign.rolled_back_at.isoformat() if assign.rolled_back_at else None,
+            assign.rollback_reason, assign.rollback_target_version_id,
+        ),
+    )
+    return row.lastrowid
+
+
+def get_active_assignment(db, skill_id: str, agent_name: str) -> AssignmentRecord | None:
+    """Get the active assignment for a skill + agent (or None)."""
+    row = db.execute(
+        """SELECT * FROM skill_lifecycle_assignments
+           WHERE skill_id = ? AND agent_name = ? AND active = 1""",
+        (skill_id, agent_name),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_assignment(dict(row))
+
+
+def get_active_assignments_for_agent(db, agent_name: str) -> list[AssignmentRecord]:
+    """Get all active assignments for an agent."""
+    rows = db.execute(
+        "SELECT * FROM skill_lifecycle_assignments WHERE agent_name = ? AND active = 1",
+        (agent_name,),
+    ).fetchall()
+    return [_row_to_assignment(dict(r)) for r in rows]
+
+
+def get_all_active_assignments_for_skill(db, skill_id: str) -> list[AssignmentRecord]:
+    """Get all active assignments for a skill."""
+    rows = db.execute(
+        "SELECT * FROM skill_lifecycle_assignments WHERE skill_id = ? AND active = 1",
+        (skill_id,),
+    ).fetchall()
+    return [_row_to_assignment(dict(r)) for r in rows]
+
+
+def deactivate_assignments_for_skill(
+    db, skill_id: str, rolled_back_by: str = "", reason: str = "",
+    target_version_id: int | None = None,
+) -> int:
+    """Atomically deactivate all active assignments for a skill (rollback)."""
+    now = _now_iso()
+    row = db.execute(
+        """UPDATE skill_lifecycle_assignments
+           SET active = 0, rolled_back_by = ?, rolled_back_at = ?,
+               rollback_reason = ?, rollback_target_version_id = ?
+           WHERE skill_id = ? AND active = 1""",
+        (rolled_back_by, now, reason, target_version_id, skill_id),
+    )
+    return row.rowcount
+
+
+def deactivate_assignment(db, skill_id: str, agent_name: str, unassigned_by: str = "") -> int:
+    """Atomically deactivate a single agent's assignment (unassign)."""
+    now = _now_iso()
+    row = db.execute(
+        """UPDATE skill_lifecycle_assignments
+           SET active = 0, rolled_back_by = ?, rolled_back_at = ?
+           WHERE skill_id = ? AND agent_name = ? AND active = 1""",
+        (unassigned_by, now, skill_id, agent_name),
+    )
+    return row.rowcount
+
+
+def _row_to_assignment(row: dict) -> AssignmentRecord:
+    return AssignmentRecord(
+        id=row["id"],
+        skill_id=row["skill_id"],
+        agent_name=row["agent_name"],
+        package_version_id=row["package_version_id"],
+        version=row["version"],
+        content_hash=row["content_hash"],
+        assigned_by=row.get("assigned_by", ""),
+        assigned_at=_parse_datetime(row.get("assigned_at")) or datetime.now(timezone.utc),
+        active=bool(row.get("active", True)),
+        rolled_back_by=row.get("rolled_back_by"),
+        rolled_back_at=_parse_datetime(row.get("rolled_back_at")),
+        rollback_reason=row.get("rollback_reason"),
+        rollback_target_version_id=row.get("rollback_target_version_id"),
+    )
+
+
+# ── Materialization CRUD ─────────────────────────────────────────────────
+
+def insert_materialization(db, mat: MaterializationRecord) -> int:
+    """Insert a materialization event."""
+    row = db.execute(
+        """INSERT INTO skill_lifecycle_materializations
+           (skill_id, agent_name, package_version_id, version, content_hash,
+            success, error_message, session_context, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            mat.skill_id, mat.agent_name, mat.package_version_id,
+            mat.version, mat.content_hash,
+            1 if mat.success else 0, mat.error_message,
+            mat.session_context, mat.created_at.isoformat(),
+        ),
+    )
+    return row.lastrowid
+
+
+def get_latest_materialization(
+    db, skill_id: str, agent_name: str
+) -> MaterializationRecord | None:
+    """Get the latest materialization record for a skill + agent."""
+    row = db.execute(
+        """SELECT * FROM skill_lifecycle_materializations
+           WHERE skill_id = ? AND agent_name = ?
+           ORDER BY id DESC LIMIT 1""",
+        (skill_id, agent_name),
+    ).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    return MaterializationRecord(
+        id=d["id"],
+        skill_id=d["skill_id"],
+        agent_name=d["agent_name"],
+        package_version_id=d["package_version_id"],
+        version=d["version"],
+        content_hash=d["content_hash"],
+        success=bool(d["success"]),
+        error_message=d.get("error_message"),
+        session_context=d.get("session_context"),
+        created_at=_parse_datetime(d["created_at"]) or datetime.now(timezone.utc),
+    )
