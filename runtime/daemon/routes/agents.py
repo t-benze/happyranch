@@ -877,11 +877,12 @@ async def set_agent_executor(
                 )
 
         # 4. stale Claude-only files when switching AWAY from a Claude
-        #    adapter. Check the profile's adapter_id, not the name — a
-        #    custom profile might use the pi adapter but not be named "pi".
+        #    adapter. Check the profile's canonical workspace_adapter_id (D6),
+        #    not the name — a custom profile might use the pi adapter but not
+        #    be named "pi".
         from runtime.orchestrator.executor_registry import get_registry as _gr
         profile = _gr().get_profile(body.executor)
-        if profile is not None and profile.adapter_id != "claude":
+        if profile is not None and profile.workspace_adapter_id != "claude":
             stale_files = [
                 name for name in _CLAUDE_ONLY_WORKSPACE_FILES
                 if (workspace / name).exists()

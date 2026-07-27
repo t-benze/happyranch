@@ -43,6 +43,13 @@ class BuiltinAdapterDescriptor:
     ``adapter_cls`` is the D2 first-party adapter class used for argv
     construction in ``build_executor``.
 
+    D6: ``workspace_adapter_id`` and ``command_adapter_id`` are the
+    canonical identity fields. ``adapter_id`` carries the same value
+    as ``workspace_adapter_id`` (deprecated alias for read compatibility).
+    Built-in profiles have ``command_adapter_id`` equal to their
+    ``workspace_adapter_id`` (each built-in carries its own first-party
+    command adapter).
+
     **D8 authoritative source:** ``ExecutorRegistry._register_builtins()``
     constructs its built-in ``ExecutorProfile`` instances exclusively from
     the catalog of these descriptors. No literal parallel built-in list or
@@ -63,6 +70,16 @@ class BuiltinAdapterDescriptor:
     readiness_marker_fragment: str
     model_arg: tuple[str, ...] | None
     adapter_cls: type
+
+    @property
+    def workspace_adapter_id(self) -> str:
+        """D6 canonical workspace adapter id (mirrors adapter_id)."""
+        return self.adapter_id
+
+    @property
+    def command_adapter_id(self) -> str | None:
+        """D6 canonical command adapter id — for built-ins, same as workspace_adapter_id."""
+        return self.adapter_id
 
 
 # ---------------------------------------------------------------------------

@@ -65,13 +65,15 @@ export interface RuntimeProfileEntry {
   name: string;
   /** Executable name from the stored profile definition, or null. */
   command: string | null;
-  /** Workspace adapter id (claude/codex/opencode/pi), or null. */
+  /** D6 canonical: workspace adapter id (claude/codex/opencode/pi), or null. */
+  workspace_adapter_id: string | null;
+  /** D6 canonical: command adapter id (currently always 'generic-cli'). */
+  command_adapter_id: string | null;
+  /** @deprecated Use workspace_adapter_id instead. Preserved for backward compat. */
   adapter: string | null;
-  /** Command adapter for custom profiles (THR-107 D9 / Phase 3).
-   *  Controls execution template, argv construction, and output parsing.
-   *  Currently always 'generic-cli' — the sole supported value.
-   *  Legacy absent durable entries resolve to 'generic-cli' at read time
-   *  without auto-mutating the stored profile. */
+  /** @deprecated Alias for workspace_adapter_id. Same meaning as adapter. */
+  adapter_id: string | null;
+  /** @deprecated Use command_adapter_id instead. Preserved for backward compat. */
   command_adapter: string | null;
   /** True when the profile's declared command resolves to an executable
    *  on the daemon's PATH — the same observable readiness contract as

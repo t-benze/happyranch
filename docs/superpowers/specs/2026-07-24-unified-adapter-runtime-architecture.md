@@ -615,35 +615,33 @@ The target profile model (above) adds: `adapter_version`, `capabilities`,
 optionally `display_name`. It does NOT remove any current fields — it
 extends them.
 
-### 6.3 The `adapter_id` Problem
+### 6.3 The `adapter_id` Problem → RESOLVED (D6, 2026-07-27)
 
-**Current state:** `adapter_id` on `ExecutorProfile` (`executor_registry.py:104`)
-selects the **workspace preparation adapter** — which bootstrap file to
-write, which permission surface to configure. In custom profiles, it
-currently appears as `adapter` in the response surface (e.g., the Settings
-register prompt), where it is **misleading** — it looks like the adapter
-that will execute the CLI but actually controls workspace readiness only.
+**D6 COMPLETED (THR-107 founder seq115).** The migration established two explicit
+canonical fields:
 
-**Target state:** Two separate fields:
+| Field | Purpose |
+|---|---|
+| `workspace_adapter_id` | Selects workspace preparation (CLAUDE.md vs AGENTS.md, permission files). Canonical field on `ExecutorProfile`. |
+| `command_adapter_id` | Selects which command adapter builds argv and parses result output. Built-in profiles carry their own first-party adapter (`claude`/`codex`/`opencode`/`pi`); custom profiles are always `"generic-cli"`. |
 
-| Field | Current name | Proposed name | Purpose |
-|---|---|---|---|
-| Workspace adapter | `adapter_id` | `workspace_adapter` | Selects workspace preparation (CLAUDE.md vs AGENTS.md, permission files) |
-| Command adapter | (implicit: `kind` + `name` → hard-coded executor class) | `adapter_id` (repurposed) | Selects which adapter implementation executes the CLI |
+**Deprecated aliases** (preserved for read compatibility):
+- `adapter_id` / `adapter` → deprecated alias for `workspace_adapter_id`
+- `command_adapter` → deprecated alias for `command_adapter_id`
 
-**Proposed migration (no code change now):**
+**Dual-read behavior:**
+- Legacy-only values (e.g., only `adapter_id` set) → canonical field mirrors it
+- Canonical-only values (e.g., only `workspace_adapter_id` set) → deprecated alias mirrors it
+- Agreeing dual values → both preserved
+- Conflicting values (both set to different non-default values) → `ValueError` BEFORE any durable-store mutation, registry mutation, audit write, or token consumption
 
-1. **Read-compatible alias.** In the current code, `adapter_id` IS the
-   workspace adapter. Do NOT rename it in code yet.
-2. **Response surface deprecation.** In the web Settings register prompt
-   and API responses, label the field as "Workspace Adapter" (already the
-   actual meaning). The JSON key `adapter` stays for backward compat.
-3. **Additive `command_adapter` field (future).** When first-party
-   adapters are extracted, add a new `command_adapter` field defaulting to
-   the profile's `kind` ("builtin" → same name; "custom" → "generic-cli").
-4. **Founder decision required:** whether to rename `adapter_id` →
-   `workspace_adapter_id` (a field rename with migration implications), or
-   keep the current name and add a separate `command_adapter_id`.
+**Response contract:** Registration and list response models carry BOTH canonical (`workspace_adapter_id`, `command_adapter_id`) and deprecated (`adapter_id`, `command_adapter`) fields. Existing request bodies using legacy keys work; canonical request fields work; mixed conflicting bodies 422.
+
+**No auto-mutation:** Existing machine-global custom profiles are never silently rewritten — legacy keys are read compatibly without altering the stored profile. New writes may carry compatibility aliases alongside canonical fields for downgrade safety.
+
+**Built-in profiles:** Carry `command_adapter_id` == `workspace_adapter_id` (each built-in has its own first-party command adapter). Exact pre-existing workspace markers and permission-bearing surfaces are unchanged.
+
+**Rollback/re-registration path:** Legacy profile operators need no immediate action. When they next re-register, the canonical fields are available. No mandatory result-envelope enforcement (D7 is later).
 
 ### 6.4 Manifest Storage
 
@@ -818,7 +816,7 @@ not the orchestration layer.
 | F9 | `ExecutorRegistry` is CRITICAL: 83 impacted, 13 direct dependents, 23 affected processes | GitNexus @ `1fb1928b` (this task) |
 | F10 | The stronger unified adapter-runtime direction is founder-approved | THR-107 seq84 (this task's brief) |
 
-### 9.2 Proposed but NOT Approved
+### 9.2 Proposed but NOT Approved (D1-D5, D7-D12 remain pending)
 
 | # | Proposal | Status |
 |---|---|---|
@@ -829,24 +827,24 @@ not the orchestration layer.
 | P5 | Custom adapter executable subprocess model (separate process, stdin/stdout contract) | Proposed this spec §4; requires founder approval for the entire custom-adapter track |
 | P6 | Custom adapter registration: executable path + hash + version + capabilities | Proposed this spec §4.2; requires founder approval |
 | P7 | Extended `ExecutorProfile` with `adapter_version`, `capabilities`, `bootstrap_file`, `contract_version`, `provenance` | Proposed this spec §6.1; additive-only |
-| P8 | `workspace_adapter` vs `command_adapter` split in profile model | Proposed this spec §6.3; requires founder approval for schema change |
+| P8 | `workspace_adapter` vs `command_adapter` split in profile model | ~~Proposed~~ → **APPROVED and IMPLEMENTED as D6** (PR TASK-3434, founder seq115). Canonical `workspace_adapter_id` + `command_adapter_id` with deprecated aliases, dual-read, conflict detection, no auto-mutation. |
 | P9 | Migration phases 0–4 (inventory → encapsulation → opt-in → default change) | Proposed this spec §7; each phase requires explicit founder authorization |
 
 ### 9.3 Exact Founder-Gated Decisions Required Before Any Build
 
-| # | Decision | Context | Why founder-gated |
-|---|---|---|---|
-| **D1** | Approve Phase 0 (inventory + shadow contract tests) as a docs+test-only task? | §7.1 Phase 0 | No code change — but establishes the regression baseline for all subsequent extraction |
-| **D2** | Approve Phase 1 (first-party adapter encapsulation behind compatibility facade)? | §7.1 Phase 1, §3.3 | Touches `ExecutorRegistry` (CRITICAL, 83 impacted) and all five executor classes. Behavior-preserving but high blast radius. |
-| **D3** | Approve the custom-adapter executable model (separate process, stdin/stdout contract, hash verification, conformance)? | §4 | Introduces a new trust boundary: daemon spawns third-party executables. Changes the security posture. |
-| **D4** | Approve custom-adapter registration requiring explicit founder approval? | §4.4 | Gates who can install executable adapters. |
-| **D5** | Approve any allow-rule or sandbox-rule changes for custom adapter subprocesses? | §4.6 | Permission model changes are founder-gated per protocol charter. |
-| **D6** | Approve `adapter_id` rename to `workspace_adapter_id` + new `command_adapter_id` field? | §6.3 | Schema change; stored profiles carry `adapter_id` today. Migration implications. |
-| **D7** | Approve when (if ever) v1 optional envelope becomes required for custom CLI registration? | Legacy spec §5.2; currently optional | Strands existing custom CLIs that don't emit the envelope. |
-| **D8** | Approve adapter catalog manifest as the authoritative source for first-party adapters (replacing hard-coded registration in `_register_builtins()`)? | §3.1, §6.4 | Changes how built-in profiles are defined — currently `_register_builtins()` at `executor_registry.py:145-176`. |
-| **D9** | Approve the `command_adapter` field on custom profiles as opt-in (Phase 3)? | §7.1 Phase 3 | Adds a new profile field; gates on how custom executors are invoked. |
-| **D10** | ~~Approve removal of the `if/elif` chain in `build_executor()`~~ **IMPLEMENTED** (TASK-3414, THR-107 seq84, July 2026). The chain was replaced with a static data-driven factory dict derived from the D8 authoritative catalog. Rollback: revert the removal commit. | §7.1 Phase 4 | THR-107 seq84 (July 2026) |
-| **D11** | ~~Approve rollout/rollback authority~~ **IMPLEMENTED** (TASK-3414, THR-107 seq84, July 2026). Rollback across all registered profiles: revert the removal commit. | §7.1 Phase 4, §7.4 | THR-107 seq84 (July 2026) |
+| # | Decision | Context | Why founder-gated | Status |
+|---|---|---|---|---|
+| **D1** | Approve Phase 0 (inventory + shadow contract tests) as a docs+test-only task? | §7.1 Phase 0 | No code change — but establishes the regression baseline for all subsequent extraction | **DONE** (PR #497, TASK-3347) |
+| **D2** | Approve Phase 1 (first-party adapter encapsulation behind compatibility facade)? | §7.1 Phase 1, §3.3 | Touches `ExecutorRegistry` (CRITICAL, 83 impacted) and all five executor classes. Behavior-preserving but high blast radius. | **DONE** (PR #499) |
+| **D3** | Approve the custom-adapter executable model (separate process, stdin/stdout contract, hash verification, conformance)? | §4 | Introduces a new trust boundary: daemon spawns third-party executables. Changes the security posture. | **PENDING** (founder-gated, not in D6 scope) |
+| **D4** | Approve custom-adapter registration requiring explicit founder approval? | §4.4 | Gates who can install executable adapters. | **PENDING** (founder-gated, not in D6 scope) |
+| **D5** | Approve any allow-rule or sandbox-rule changes for custom adapter subprocesses? | §4.6 | Permission model changes are founder-gated per protocol charter. | **PENDING** (founder-gated, not in D6 scope) |
+| **D6** | Approve `adapter_id` rename to `workspace_adapter_id` + new `command_adapter_id` field? | §6.3 | Schema change; stored profiles carry `adapter_id` today. Migration implications. | **DONE** (PR TASK-3434, founder seq115) |
+| **D7** | Approve when (if ever) v1 optional envelope becomes required for custom CLI registration? | Legacy spec §5.2; currently optional | Strands existing custom CLIs that don't emit the envelope. | **PENDING** (founder-gated, not in D6 scope) |
+| **D8** | Approve adapter catalog manifest as the authoritative source for first-party adapters (replacing hard-coded registration in `_register_builtins()`)? | §3.1, §6.4 | Changes how built-in profiles are defined — currently `_register_builtins()` at `executor_registry.py:145-176`. | **DONE** (PR #500) |
+| **D9** | Approve the `command_adapter` field on custom profiles as opt-in (Phase 3)? | §7.1 Phase 3 | Adds a new profile field; gates on how custom executors are invoked. | **DONE** (PR #502) |
+| **D10** | ~~Approve removal of the `if/elif` chain in `build_executor()`~~ **IMPLEMENTED** (TASK-3414, THR-107 seq84, July 2026). The chain was replaced with a static data-driven factory dict derived from the D8 authoritative catalog. Rollback: revert the removal commit. | §7.1 Phase 4 | THR-107 seq84 (July 2026) | **DONE** (as part of PR #503, merged) |
+| **D11** | ~~Approve rollout/rollback authority~~ **IMPLEMENTED** (TASK-3414, THR-107 seq84, July 2026). Rollback across all registered profiles: revert the removal commit. | §7.1 Phase 4, §7.4 | THR-107 seq84 (July 2026) | **DONE** (as part of PR #503, merged) |
 | **D12** | Approve any protocol/05b or 05c rewrite, or any `ExecutorResult` contract-surface change? | §2.5, §8.2 footnote, Appendix C | `AdapterInput`/`AdapterOutput` are proposed **internal architecture contracts** only. No rewrite of protocol/05b or 05c, no public/stable external contract, and no `ExecutorResult` behavior implementation follows unless founder explicitly authorizes that later change. This spec and the current PR ship no protocol edits. |
 
 ---

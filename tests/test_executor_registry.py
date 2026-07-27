@@ -786,21 +786,23 @@ class TestCommandAdapterField:
         with pytest.raises(ValueError, match="command_adapter"):
             ExecutorRegistry.validate_custom_profile_config("future", config)
 
-    def test_builtin_profiles_have_no_command_adapter(self) -> None:
-        """Built-in profiles must NOT carry a command_adapter.
-        The registry constructs built-ins from the D8 catalog, which
-        does not set command_adapter — it defaults to None."""
+    def test_builtin_profiles_have_command_adapter_id_matching_workspace(self) -> None:
+        """Built-in profiles carry command_adapter_id equal to workspace_adapter_id (D6).
+        Each built-in has its own first-party command adapter."""
         reset_registry()
         registry = ExecutorRegistry()
         for name in ("claude", "codex", "opencode", "pi"):
             p = registry.get_profile(name)
             assert p is not None
-            assert p.command_adapter is None, (
-                f"Built-in {name!r} must not have command_adapter set"
+            assert p.command_adapter_id == p.workspace_adapter_id == name, (
+                f"Built-in {name!r} must have command_adapter_id=workspace_adapter_id={name}"
             )
+            # Deprecated alias must match
+            assert p.command_adapter == p.command_adapter_id
+            assert p.adapter_id == p.workspace_adapter_id
 
     def test_adapter_id_remains_workspace_only_independent(self) -> None:
-        """adapter_id stays workspace-only; command_adapter does NOT change it."""
+        """workspace_adapter_id stays workspace-only; command_adapter_id does NOT change it."""
         config = {
             "command": None,
             "argv_template": ["echo", "{prompt}"],
@@ -810,7 +812,8 @@ class TestCommandAdapterField:
         profile = ExecutorRegistry.validate_custom_profile_config(
             "codex-workspace", config
         )
-        assert profile.adapter_id == "codex"  # workspace adapter unchanged
+        assert profile.workspace_adapter_id == "codex"  # workspace adapter unchanged
+        assert profile.command_adapter_id == "generic-cli"  # separate
         assert profile.command_adapter == "generic-cli"  # command adapter is independent
 
     def test_legacy_yaml_absent_field_defaults_in_startup_load(
@@ -904,15 +907,16 @@ class TestCommandAdapterField:
         registry.register_custom_profile(profile_b)  # no-op
         assert registry.is_registered("ca-collision")
 
-    def test_builtins_cannot_set_command_adapter(self) -> None:
-        """Built-in ExecutorProfile constructor should not receive non-None
-        command_adapter. The built-in catalog does not inject it."""
+    def test_builtins_carry_effective_command_adapter(self) -> None:
+        """Built-in profiles carry command_adapter_id matching workspace_adapter_id (D6).
+        Each built-in has its own first-party command adapter."""
         reset_registry()
         registry = ExecutorRegistry()
-        # All built-ins must have command_adapter=None
         for name in ("claude", "codex", "opencode", "pi"):
             p = registry.get_profile(name)
             assert p is not None
-            assert p.command_adapter is None, (
-                f"Built-in {name} command_adapter={p.command_adapter!r}, expected None"
+            assert p.command_adapter_id == name, (
+                f"Built-in {name} command_adapter_id={p.command_adapter_id!r}, expected {name!r}"
             )
+            # The deprecated alias mirrors the canonical field
+            assert p.command_adapter == p.command_adapter_id

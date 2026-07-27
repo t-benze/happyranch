@@ -109,8 +109,11 @@ function ProfileRow({ profile }: { profile: RuntimeProfileEntry }): JSX.Element 
             <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs break-all">
               {profile.command}
             </code>
-            {profile.adapter ? (
-              <span className="text-text-muted"> · adapter {profile.adapter}</span>
+            {profile.workspace_adapter_id || profile.adapter ? (
+              <span className="text-text-muted"> · Workspace adapter: {profile.workspace_adapter_id || profile.adapter}</span>
+            ) : null}
+            {profile.command_adapter_id && profile.command_adapter_id !== 'generic-cli' ? (
+              <span className="text-text-muted"> · Command adapter: {profile.command_adapter_id}</span>
             ) : null}
           </p>
         ) : (

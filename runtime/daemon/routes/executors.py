@@ -19,7 +19,7 @@ import shutil
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from runtime.daemon.auth import require_registration_token, require_token
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX
@@ -216,34 +216,56 @@ class ExecutorRegisterRequest(BaseModel):
     ``GenericCliExecutor`` launches ``argv_template[0]`` directly — it does
     NOT consult the ``command`` field at launch time.
 
-    ``adapter`` must be one of claude/codex/opencode/pi.
-
-    ``command_adapter`` (THR-107 D9 / Phase 3): optional, defaults to
-    ``"generic-cli"`` — the only supported value for now. Omit for
-    legacy behavior.
+    ``adapter`` (DEPRECATED by D6) must be one of claude/codex/opencode/pi.
+    For new code, use ``workspace_adapter_id`` (the canonical field).
+    ``command_adapter`` (DEPRECATED by D6) is optional, defaults to
+    ``"generic-cli"`` — the only supported value for now. For new code,
+    use ``command_adapter_id`` (the canonical field).
 
     The ``name`` is not in the body — it comes from the registration
     token's scope, ensuring one token = one named profile.
     """
+    model_config = ConfigDict(extra="allow")
     command: str = Field(..., min_length=1)
     argv_template: list[str] = Field(..., min_length=1)
-    adapter: str = Field("pi", min_length=1)
-    command_adapter: str | None = Field(None)
+    adapter: str = Field("pi", min_length=1, deprecated=True)
+    adapter_id: str | None = Field(
+        None, deprecated=True,
+        description="Deprecated. Use workspace_adapter_id."
+    )
+    command_adapter: str | None = Field(None, deprecated=True)
+    # D6 canonical request fields (optional — allow mixed old/new payloads)
+    workspace_adapter_id: str | None = Field(
+        None, min_length=1,
+        description="Canonical workspace adapter id (D6). Overrides deprecated 'adapter' and 'adapter_id'. "
+        "Obsolete spelling 'workspace_adapter' is rejected."
+    )
+    command_adapter_id: str | None = Field(
+        None,
+        description="Canonical command adapter id (D6). Overrides deprecated 'command_adapter'."
+    )
 
 
 class ExecutorRegisterResponse(BaseModel):
     name: str
     kind: str
-    adapter_id: str
-    command: str
-    argv_template: list[str]
-    command_adapter: str | None = Field(
-        "generic-cli",
+    # D6 canonical fields
+    workspace_adapter_id: str
+    command_adapter_id: str | None = Field(
+        None,
         description=(
-            "Command adapter for custom profiles. Always 'generic-cli' "
-            "(the only supported value). Built-in profiles omit this field."
+            "Command adapter id. For built-in profiles this matches "
+            "workspace_adapter_id. For custom profiles always 'generic-cli'."
         ),
     )
+    # DEPRECATED aliases (D6 — read-compatible, preserved for backward compat)
+    adapter_id: str = Field(deprecated=True)
+    command_adapter: str | None = Field(
+        None, deprecated=True,
+        description="Deprecated. Use command_adapter_id.",
+    )
+    command: str
+    argv_template: list[str]
 
 
 # Allowed token_usage keys — must match TokenUsage field names
@@ -475,16 +497,51 @@ def register_executor(
             detail=f"Conformance incomplete. Pending steps: {pending}",
         )
 
+    # 2a. Reject the obsolete "workspace_adapter" spelling before any
+    #     store/registry/audit/token side effect. D6 canonical field is
+    #     workspace_adapter_id; adapter and adapter_id are the only
+    #     documented deprecated aliases.
+    if body.model_extra and "workspace_adapter" in body.model_extra:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'workspace_adapter' is not a valid field. "
+                   "Use 'workspace_adapter_id' (canonical) or "
+                   "'adapter' (deprecated alias).",
+        )
+
     # 3. Static validation — drive through the CANONICAL validation path
     #    so the route can never silently diverge from startup config validation.
+    #
+    #    D6: accept both deprecated (adapter/command_adapter) and canonical
+    #    (workspace_adapter_id/command_adapter_id) fields. Canonical wins on conflict.
+    workspace_adapter_from_body = getattr(body, "workspace_adapter_id", None)
     command_adapter_from_body = getattr(body, "command_adapter", None)
+    command_adapter_id_from_body = getattr(body, "command_adapter_id", None)
     config_cfg: dict[str, object] = {
         "command": body.command,
         "argv_template": body.argv_template,
-        "adapter": body.adapter,
     }
-    if command_adapter_from_body is not None:
-        config_cfg["command_adapter"] = command_adapter_from_body
+    # Only include deprecated adapter if explicitly provided by caller.
+    # Default pi is NOT an explicit supply, so canonical-only requests
+    # (e.g. {workspace_adapter_id: "claude"}) are not conflated with
+    # the conflicting {adapter: "pi", workspace_adapter_id: "claude"}.
+    if "adapter" in body.model_fields_set:
+        config_cfg["adapter"] = body.adapter
+    # D6: forward deprecated adapter_id alias when explicitly supplied.
+    # The validator already includes adapter_id in its conflict matrix;
+    # this ensures adapter_id-only and adapter_id + workspace_adapter_id
+    # requests are correctly resolved/rejected at the shipping seam.
+    if "adapter_id" in body.model_fields_set and body.adapter_id is not None:
+        config_cfg["adapter_id"] = body.adapter_id
+    if workspace_adapter_from_body is not None:
+        config_cfg["workspace_adapter_id"] = workspace_adapter_from_body
+    if command_adapter_id_from_body is not None:
+        config_cfg["command_adapter_id"] = command_adapter_id_from_body
+    # Always include deprecated command_adapter when explicitly supplied,
+    # so the validator can detect conflicts with command_adapter_id.
+    # Omitted default None is not an explicit supply.
+    if "command_adapter" in body.model_fields_set and body.command_adapter is not None:
+        config_cfg["command_adapter"] = body.command_adapter
     try:
         candidate = ExecutorRegistry.validate_custom_profile_config(
             profile_name, config_cfg
@@ -568,13 +625,18 @@ def register_executor(
 
         # 8. Durable: write the machine-global runtime store (THR-107 —
         #    the per-org config.yaml executor_profiles surface is removed).
+        #    D6: persist resolved canonical identity + matching compatibility
+        #    aliases so canonical-only registrations survive restart/reload.
         config_entry: dict[str, object] = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
-            "adapter": body.adapter,
+            "adapter": candidate.workspace_adapter_id,
+            "adapter_id": candidate.workspace_adapter_id,
+            "workspace_adapter_id": candidate.workspace_adapter_id,
         }
-        if command_adapter_from_body is not None:
-            config_entry["command_adapter"] = command_adapter_from_body
+        if candidate.command_adapter_id is not None:
+            config_entry["command_adapter_id"] = candidate.command_adapter_id
+            config_entry["command_adapter"] = candidate.command_adapter_id
         before_snapshot = dict(load_runtime_profiles())
         try:
             save_runtime_profile(profile_name, config_entry)
@@ -627,7 +689,12 @@ def register_executor(
     return ExecutorRegisterResponse(
         name=profile_name,
         kind="custom",
-        adapter_id=body.adapter,
+        # D6 canonical fields
+        workspace_adapter_id=candidate.workspace_adapter_id,
+        command_adapter_id=candidate.command_adapter_id,
+        # D6 deprecated aliases (preserved for backward compat)
+        adapter_id=candidate.workspace_adapter_id,
+        command_adapter=candidate.command_adapter_id,
         command=body.command,
         argv_template=[str(e) for e in body.argv_template],
     )
@@ -750,15 +817,45 @@ def runtime_register_executor(
             detail=f"Conformance incomplete. Pending steps: {pending}",
         )
 
-    # 3. Static validation
+    # 2a. Reject the obsolete "workspace_adapter" spelling before any
+    #     store/registry/audit/token side effect.
+    if body.model_extra and "workspace_adapter" in body.model_extra:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'workspace_adapter' is not a valid field. "
+                   "Use 'workspace_adapter_id' (canonical) or "
+                   "'adapter' (deprecated alias).",
+        )
+
+    # 3. Static validation — D6: canonical fields accepted alongside deprecated
+    workspace_adapter_from_body = getattr(body, "workspace_adapter_id", None)
     command_adapter_from_body = getattr(body, "command_adapter", None)
+    command_adapter_id_from_body = getattr(body, "command_adapter_id", None)
     config_cfg: dict[str, object] = {
         "command": body.command,
         "argv_template": body.argv_template,
-        "adapter": body.adapter,
     }
-    if command_adapter_from_body is not None:
-        config_cfg["command_adapter"] = command_adapter_from_body
+    # Only include deprecated adapter if explicitly provided by caller.
+    # Default pi is NOT an explicit supply, so canonical-only requests
+    # (e.g. {workspace_adapter_id: "claude"}) are not conflated with
+    # the conflicting {adapter: "pi", workspace_adapter_id: "claude"}.
+    if "adapter" in body.model_fields_set:
+        config_cfg["adapter"] = body.adapter
+    # D6: forward deprecated adapter_id alias when explicitly supplied.
+    # The validator already includes adapter_id in its conflict matrix;
+    # this ensures adapter_id-only and adapter_id + workspace_adapter_id
+    # requests are correctly resolved/rejected at the shipping seam.
+    if "adapter_id" in body.model_fields_set and body.adapter_id is not None:
+        config_cfg["adapter_id"] = body.adapter_id
+    if workspace_adapter_from_body is not None:
+        config_cfg["workspace_adapter_id"] = workspace_adapter_from_body
+    if command_adapter_id_from_body is not None:
+        config_cfg["command_adapter_id"] = command_adapter_id_from_body
+    # Always include deprecated command_adapter when explicitly supplied,
+    # so the validator can detect conflicts with command_adapter_id.
+    # Omitted default None is not an explicit supply.
+    if "command_adapter" in body.model_fields_set and body.command_adapter is not None:
+        config_cfg["command_adapter"] = body.command_adapter
     try:
         candidate = ExecutorRegistry.validate_custom_profile_config(
             profile_name, config_cfg
@@ -812,13 +909,18 @@ def runtime_register_executor(
                 )
 
         # 7. Durable: write runtime store
+        #    D6: persist resolved canonical identity + matching compatibility
+        #    aliases so canonical-only registrations survive restart/reload.
         config_entry: dict[str, object] = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
-            "adapter": body.adapter,
+            "adapter": candidate.workspace_adapter_id,
+            "adapter_id": candidate.workspace_adapter_id,
+            "workspace_adapter_id": candidate.workspace_adapter_id,
         }
-        if command_adapter_from_body is not None:
-            config_entry["command_adapter"] = command_adapter_from_body
+        if candidate.command_adapter_id is not None:
+            config_entry["command_adapter_id"] = candidate.command_adapter_id
+            config_entry["command_adapter"] = candidate.command_adapter_id
         try:
             save_runtime_profile(profile_name, config_entry)
         except Exception as exc:
@@ -853,7 +955,7 @@ def runtime_register_executor(
             profile_name=profile_name,
             command=body.command,
             argv_template=body.argv_template,
-            adapter=body.adapter,
+            adapter=candidate.workspace_adapter_id,
         )
         store.commit_runtime(token_value)
     finally:
@@ -862,10 +964,14 @@ def runtime_register_executor(
     return ExecutorRegisterResponse(
         name=profile_name,
         kind="custom",
-        adapter_id=body.adapter,
+        # D6 canonical fields
+        workspace_adapter_id=candidate.workspace_adapter_id,
+        command_adapter_id=candidate.command_adapter_id,
+        # D6 deprecated aliases (preserved for backward compat)
+        adapter_id=candidate.workspace_adapter_id,
+        command_adapter=candidate.command_adapter_id,
         command=body.command,
         argv_template=[str(e) for e in body.argv_template],
-        command_adapter=candidate.command_adapter,
     )
 
 
@@ -996,16 +1102,27 @@ class RuntimeProfileEntry(BaseModel):
     command: str | None = Field(
         None, description="Executable name from the stored profile definition"
     )
+    # D6 canonical fields
+    workspace_adapter_id: str | None = Field(
+        None, description="Workspace adapter id (claude/codex/opencode/pi) — canonical (D6)"
+    )
+    command_adapter_id: str | None = Field(
+        None,
+        description=(
+            "Command adapter for execution — canonical (D6). "
+            "Currently always 'generic-cli' for custom profiles."
+        ),
+    )
+    # DEPRECATED aliases (D6 — preserved for backward compat)
     adapter: str | None = Field(
-        None, description="Workspace adapter id (claude/codex/opencode/pi)"
+        None, deprecated=True, description="Deprecated. Use workspace_adapter_id."
+    )
+    adapter_id: str | None = Field(
+        None, deprecated=True,
+        description="Deprecated alias for workspace_adapter_id. Same meaning as adapter.",
     )
     command_adapter: str | None = Field(
-        "generic-cli",
-        description=(
-            "Command adapter for execution. Always 'generic-cli' "
-            "(the only supported value). Absent legacy profiles default "
-            "to generic-cli on read."
-        ),
+        None, deprecated=True, description="Deprecated. Use command_adapter_id."
     )
     present: bool = Field(
         False,
@@ -1063,7 +1180,6 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
     for name in sorted(stored.keys()):
         entry = stored[name]
         command = entry.get("command")
-        adapter = entry.get("adapter")
         # Custom profile — derive present/path from declared command
         # resolvability, the same observable readiness contract as
         # /health/prereqs. No executors.json entry is required.
@@ -1074,12 +1190,40 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
         else:
             present = False
             path = None
-        stored_command_adapter = entry.get("command_adapter")
+        # D6: dual-read command adapter — canonical command_adapter_id wins
+        resolved_command_adapter: str | None = "generic-cli"  # default
+        cmd_canon = entry.get("command_adapter_id")
+        if isinstance(cmd_canon, str):
+            resolved_command_adapter = cmd_canon
+        else:
+            stored_command_adapter = entry.get("command_adapter")
+            if isinstance(stored_command_adapter, str):
+                resolved_command_adapter = stored_command_adapter
+        # D6: dual-read workspace adapter from store — canonical key
+        # workspace_adapter_id wins, deprecated adapter/adapter_id
+        # provide fallback.
+        resolved_adapter: str | None = None
+        ws_canon = entry.get("workspace_adapter_id")
+        if isinstance(ws_canon, str):
+            resolved_adapter = ws_canon
+        else:
+            adapter = entry.get("adapter")
+            if isinstance(adapter, str):
+                resolved_adapter = adapter
+            else:
+                adapter_id_val = entry.get("adapter_id")
+                if isinstance(adapter_id_val, str):
+                    resolved_adapter = adapter_id_val
         entries.append(RuntimeProfileEntry(
             name=name,
             command=command if isinstance(command, str) else None,
-            adapter=adapter if isinstance(adapter, str) else None,
-            command_adapter=stored_command_adapter if isinstance(stored_command_adapter, str) else "generic-cli",
+            # D6 canonical fields
+            workspace_adapter_id=resolved_adapter,
+            command_adapter_id=resolved_command_adapter,
+            # D6 deprecated aliases (preserved for backward compat)
+            adapter=resolved_adapter,
+            adapter_id=resolved_adapter,
+            command_adapter=resolved_command_adapter,
             present=present,
             path=path,
         ))
