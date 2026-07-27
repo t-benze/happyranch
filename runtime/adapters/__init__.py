@@ -131,9 +131,10 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
 # Derived adapter-class lookup (D2 — preserved, derived from D8 catalog)
 # ---------------------------------------------------------------------------
 # Maps built-in executor profile name → adapter class.
-# Excludes profiles with adapter_id="generic" (i.e. generic-cli custom
-# profiles) — those continue to use GenericCliExecutor through the existing
-# build_executor factory path. ``custom-adapter:<id>`` profiles (D7B) use
+# Excludes custom profiles — this catalog is built-in only.
+# ``command_adapter_id: generic-cli`` profiles route through the existing
+# GenericCliExecutor factory path. ``command_adapter_id:
+# custom-adapter:<id>`` profiles (D7B) route through
 # ``CustomAdapterExecutor`` instead and are not covered by this catalog.
 # (D10/D11 shipped a static data-driven factory dict; see executor_registry.py).
 # Derived from _BUILTIN_CATALOG so there is no parallel truth.
