@@ -2655,207 +2655,427 @@ class TestSessionClearRevocation:
 
 
 class TestProposalConcurrentClearRace:
-    """Regression: TOCTOU race between proposal persistence and
-    SessionTracker.clear()/set_active() (completion, cancellation,
-    replacement). The reviewer independently reproduced that
-    clear() can run after authorization but before
-    _service.submit_proposal(), causing artifact/ledger persistence
-    with a revoked session. These tests prove the two possible
-    orderings are handled correctly.
+    """Per-binding lease concurrency proofs.
+
+    The per-(task_id, agent_name) binding lease replaces the old
+    SessionTracker-wide _proposal_lease.  Each (task_id, agent) pair
+    has its own independent threading.Lock that serializes the agent
+    proposal route's authorization+persistence span against clear()
+    and set_active() on the SAME binding.  Unrelated bindings are
+    NOT blocked.
+
+    These tests prove all required orderings:
+
+    Ordering 1 (clear/replacement wins first — 403, no residue):
+      clear() or set_active() invalidates the session BEFORE the
+      proposal acquires the per-binding lease; the route's
+      resolution (get_context_by_session / get_by_session) returns
+      None → 403 with zero artifact/ledger residue.
+
+    Ordering 2 (proposal pending at barrier, then terminal blocks):
+      The proposal route acquires the per-binding lease and pauses
+      at the test-seam barrier.  Same-binding clear()/set_active()
+      starts and demonstrably blocks.  After the barrier is released,
+      the proposal commits (201, immutable, correct provenance) and
+      the terminal/replacement operation returns only afterward.
+
+    Unrelated-task nonblocking proof:
+      TASK-A proposal at barrier; TASK-B clear() and TASK-B
+      set_active() both complete immediately — no blocking through
+      a SessionTracker-wide mutex.
+
+    Sequential regression: preserved from prior revisions.
     """
 
-    def test_clear_wins_before_persistence_returns_403_no_residue(
+    # ── helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _setup_barrier(sessions):
+        """Install the test-seam barrier on a SessionTracker.
+
+        The route checks _proposal_barrier after acquiring the
+        per-binding lease; when non-None, it sets _barrier_reached
+        and then waits on _proposal_barrier.
+        """
+        import threading
+        sessions._proposal_barrier = threading.Event()
+        sessions._barrier_reached = threading.Event()
+
+    @staticmethod
+    def _teardown_barrier(sessions):
+        sessions._proposal_barrier = None
+        sessions._barrier_reached = None
+
+    def _wait_for_barrier(self, sessions, timeout=5.0):
+        """Wait until the proposal route has reached the barrier."""
+        reached = sessions._barrier_reached
+        assert reached is not None, "barrier not installed"
+        assert reached.wait(timeout=timeout), (
+            "Timed out waiting for proposal to reach barrier"
+        )
+
+    # ── Ordering 1: clear/set_active wins first ──────────────────────
+
+    def test_clear_wins_first_returns_403_no_residue(
         self, app, org_state,
     ):
-        """Ordering 1: clear() wins before proposal commit.
-        The route must return 403 with NO artifact or ledger residue.
-
-        We use a controlled interleaving: the test thread calls clear()
-        while the proposal thread is trying to acquire the lease.
-        A barrier ensures clear() acquires _proposal_lease first,
-        invalidating the session. The proposal then acquires the lease,
-        re-verifies, and returns 403.
-        """
-        from threading import Barrier, Thread
-
+        """clear() before proposal → 403, zero residue."""
         org_state.sessions.set_active(
-            "TASK-RACE-CLR", "frontend_engineer", "sess-race-clr",
+            "TASK-CW1", "frontend_engineer", "sess-cw1",
             org_slug="alpha",
         )
+        # Clear wins first — invalidate the session.
+        org_state.sessions.clear("TASK-CW1", "frontend_engineer")
 
         client = TestClient(app)
-        # Two-phase barrier: proposal thread releases Phase 0
-        # (signals it's about to acquire the lease), test thread
-        # does clear() before proposal can acquire the lease.
-        barrier = Barrier(2, timeout=5.0)
-        result = {"status_code": None, "error": None}
-
-        def run_proposal():
-            try:
-                # Release Phase 0: we're about to acquire the lease.
-                # The test thread drives clear() now.
-                barrier.wait()
-                r = client.post(
-                    "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
-                    json=AGENT_PROPOSAL_BODY,
-                    params={"session_id": "sess-race-clr"},
-                )
-                result["status_code"] = r.status_code
-                # Release Phase 1: proposal finished.
-                barrier.wait()
-            except Exception as e:
-                result["error"] = str(e)
-
-        t = Thread(target=run_proposal)
-        t.start()
-        # Release Phase 0: both threads now race for the lock.
-        barrier.wait()
-
-        # Clear while proposal is trying to acquire the lease.
-        # Since clear() acquires _proposal_lease internally, and
-        # the proposal hasn't acquired it yet, clear() wins the race.
-        org_state.sessions.clear("TASK-RACE-CLR", "frontend_engineer")
-
-        # Wait for proposal to complete.
-        barrier.wait()
-        t.join(timeout=5.0)
-
-        assert result["error"] is None, f"Proposal thread error: {result['error']}"
-
-        # MUST be 403 — the session was cleared before proposal acquired lease.
-        assert result["status_code"] == 403, (
-            f"Expected 403 after clear() wins race, got {result['status_code']}"
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-cw1"},
         )
-
-        # MUST have zero artifact/ledger residue.
-        from runtime.skills.lifecycle import stores as lifecycle_stores
-        pkg = lifecycle_stores.get_latest_package_version(
-            org_state.db, "hr:frontend-development",
-        )
-        assert pkg is None, (
-            "Clear-winning race must leave no artifact/ledger residue"
-        )
-
-    def test_replacement_wins_before_persistence_returns_403_no_residue(
-        self, app, org_state,
-    ):
-        """Ordering 1 variant: set_active() replacement wins before
-        proposal commit. Old session_id must 403 with no residue.
-        """
-        from threading import Barrier, Thread
-
-        org_state.sessions.set_active(
-            "TASK-RACE-REP", "frontend_engineer", "sess-race-old",
-            org_slug="alpha",
-        )
-
-        client = TestClient(app)
-        barrier = Barrier(2, timeout=5.0)
-        result = {"status_code": None, "error": None}
-
-        def run_proposal():
-            try:
-                barrier.wait()
-                r = client.post(
-                    "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
-                    json=AGENT_PROPOSAL_BODY,
-                    params={"session_id": "sess-race-old"},
-                )
-                result["status_code"] = r.status_code
-                barrier.wait()
-            except Exception as e:
-                result["error"] = str(e)
-
-        t = Thread(target=run_proposal)
-        t.start()
-        barrier.wait()
-
-        # Replace the session while proposal tries to acquire the lease.
-        org_state.sessions.set_active(
-            "TASK-RACE-REP", "frontend_engineer", "sess-race-new",
-            org_slug="alpha",
-        )
-
-        barrier.wait()
-        t.join(timeout=5.0)
-
-        assert result["error"] is None, f"Proposal thread error: {result['error']}"
-
-        assert result["status_code"] == 403, (
-            f"Expected 403 after replacement wins race, got {result['status_code']}"
+        assert r.status_code == 403, (
+            f"Expected 403, got {r.status_code}"
         )
 
         from runtime.skills.lifecycle import stores as lifecycle_stores
         pkg = lifecycle_stores.get_latest_package_version(
             org_state.db, "hr:frontend-development",
         )
-        assert pkg is None, (
-            "Replacement-winning race must leave no artifact/ledger residue"
-        )
+        assert pkg is None, "No artifact/ledger residue after clear-first"
 
-    def test_proposal_persistence_wins_then_clear_completes_after(
+    def test_replacement_wins_first_returns_403_no_residue(
         self, app, org_state,
     ):
-        """Ordering 2: proposal persistence wins while the validated
-        active lease is held. clear() must not take effect until the
-        commit completes. Result: one valid immutable proposal with
-        correct session provenance.
+        """set_active() replacement before proposal → 403, zero residue."""
+        org_state.sessions.set_active(
+            "TASK-RW1", "frontend_engineer", "sess-rw-old",
+            org_slug="alpha",
+        )
+        # Replace — old session_id is invalidated.
+        org_state.sessions.set_active(
+            "TASK-RW1", "frontend_engineer", "sess-rw-new",
+            org_slug="alpha",
+        )
 
-        The proposal thread acquires _proposal_lease first, runs
-        authorization + persistence. The test thread's clear() blocks
-        on _proposal_lease until the proposal releases it.
-        We demonstrate this by running the proposal thread to completion
-        first, then driving clear() — which now succeeds normally.
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-rw-old"},
+        )
+        assert r.status_code == 403, (
+            f"Expected 403 for replaced session, got {r.status_code}"
+        )
+
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:frontend-development",
+        )
+        assert pkg is None, "No artifact/ledger residue after replacement-first"
+
+    # ── Ordering 2: proposal pending at barrier, terminal blocks ─────
+
+    def test_proposal_at_barrier_clear_blocks_then_commits(
+        self, app, org_state,
+    ):
+        """Same-binding clear() blocks while proposal is pending at
+        the test-seam barrier.  After barrier release: exactly one
+        201 immutable proposal with correct session provenance,
+        and clear() returns only afterward.
         """
         from threading import Thread
 
-        org_state.sessions.set_active(
-            "TASK-RACE-WIN", "frontend_engineer", "sess-race-win",
-            org_slug="alpha",
-        )
+        self._setup_barrier(org_state.sessions)
+        try:
+            org_state.sessions.set_active(
+                "TASK-BLK-CLR", "frontend_engineer", "sess-blk-clr",
+                org_slug="alpha",
+            )
+            client = TestClient(app)
 
-        client = TestClient(app)
-        result = {"status_code": None}
+            result = {"status_code": None, "error": None}
 
-        t = Thread(
-            target=lambda: result.update(
-                status_code=client.post(
-                    "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
-                    json=AGENT_PROPOSAL_BODY,
-                    params={"session_id": "sess-race-win"},
-                ).status_code,
-            ),
-        )
-        t.start()
-        t.join(timeout=5.0)
+            def run_proposal():
+                try:
+                    r = client.post(
+                        "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                        json=AGENT_PROPOSAL_BODY,
+                        params={"session_id": "sess-blk-clr"},
+                    )
+                    result["status_code"] = r.status_code
+                except Exception as e:
+                    result["error"] = str(e)
 
-        assert not t.is_alive(), "Proposal thread must complete"
+            t_proposal = Thread(target=run_proposal)
+            t_proposal.start()
 
-        # Proposal must have succeeded.
-        assert result["status_code"] == 201, (
-            f"Proposal must win (201), got {result['status_code']}"
-        )
+            # Wait until proposal reaches the barrier.
+            self._wait_for_barrier(org_state.sessions)
 
-        # Verify the proposal exists with correct provenance.
-        from runtime.skills.lifecycle import stores as lifecycle_stores
-        pkg = lifecycle_stores.get_latest_package_version(
-            org_state.db, "hr:frontend-development",
-        )
-        assert pkg is not None, "Proposal must exist in ledger"
-        assert pkg.proposal_session_id == "sess-race-win", (
-            f"Proposal must have correct session_id: {pkg.proposal_session_id}"
-        )
+            # Now start clear() in its own thread.  It must block
+            # because the proposal already holds the same-binding lease.
+            clear_done = {"done": False}
 
-        # Now clear — must succeed since proposal is done.
-        org_state.sessions.clear("TASK-RACE-WIN", "frontend_engineer")
+            def run_clear():
+                org_state.sessions.clear("TASK-BLK-CLR", "frontend_engineer")
+                clear_done["done"] = True
 
-        # Verify session is cleared.
-        assert org_state.sessions.get_active(
-            "TASK-RACE-WIN", "frontend_engineer",
-        ) is None
-        assert org_state.sessions.get_context_by_session(
-            "sess-race-win",
-        ) is None
+            t_clear = Thread(target=run_clear)
+            t_clear.start()
+
+            # Prove clear() is blocked: join with a short timeout.
+            t_clear.join(timeout=1.0)
+            assert t_clear.is_alive(), (
+                "clear() must block while proposal holds same-binding lease"
+            )
+            assert not clear_done["done"], "clear must not have finished"
+
+            # Release the barrier — proposal commits + releases lease.
+            org_state.sessions._proposal_barrier.set()
+
+            t_proposal.join(timeout=5.0)
+            assert not t_proposal.is_alive(), "proposal thread must finish"
+            assert result["error"] is None, f"Proposal error: {result['error']}"
+            assert result["status_code"] == 201, (
+                f"Expected 201, got {result['status_code']}"
+            )
+
+            # Verify immutable proposal with correct provenance.
+            from runtime.skills.lifecycle import stores as lifecycle_stores
+            pkg = lifecycle_stores.get_latest_package_version(
+                org_state.db, "hr:frontend-development",
+            )
+            assert pkg is not None, "Proposal must exist after commit"
+            assert pkg.proposal_session_id == "sess-blk-clr", (
+                f"Provenance session: {pkg.proposal_session_id}"
+            )
+
+            # clear() must now complete (acquires just-released lease).
+            t_clear.join(timeout=5.0)
+            assert not t_clear.is_alive(), "clear() must complete after proposal"
+            assert clear_done["done"], "clear must have finished"
+
+            # Session is now cleared.
+            assert org_state.sessions.get_active(
+                "TASK-BLK-CLR", "frontend_engineer",
+            ) is None
+        finally:
+            self._teardown_barrier(org_state.sessions)
+
+    def test_proposal_at_barrier_set_active_blocks_then_commits(
+        self, app, org_state,
+    ):
+        """Same-binding set_active() replacement blocks while proposal
+        is pending.  After release: exactly one 201 immutable proposal
+        with correct provenance, and replacement returns only afterward.
+        """
+        from threading import Thread
+
+        self._setup_barrier(org_state.sessions)
+        try:
+            org_state.sessions.set_active(
+                "TASK-BLK-REP", "frontend_engineer", "sess-blk-old",
+                org_slug="alpha",
+            )
+            client = TestClient(app)
+
+            result = {"status_code": None, "error": None}
+
+            def run_proposal():
+                try:
+                    r = client.post(
+                        "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                        json=AGENT_PROPOSAL_BODY,
+                        params={"session_id": "sess-blk-old"},
+                    )
+                    result["status_code"] = r.status_code
+                except Exception as e:
+                    result["error"] = str(e)
+
+            t_proposal = Thread(target=run_proposal)
+            t_proposal.start()
+
+            self._wait_for_barrier(org_state.sessions)
+
+            # Start replacement — must block on same-binding lease.
+            repl_done = {"done": False}
+
+            def run_replacement():
+                org_state.sessions.set_active(
+                    "TASK-BLK-REP", "frontend_engineer", "sess-blk-new",
+                    org_slug="alpha",
+                )
+                repl_done["done"] = True
+
+            t_repl = Thread(target=run_replacement)
+            t_repl.start()
+
+            t_repl.join(timeout=1.0)
+            assert t_repl.is_alive(), (
+                "set_active() must block while proposal holds same-binding lease"
+            )
+            assert not repl_done["done"], "replacement must not have finished"
+
+            # Release barrier.
+            org_state.sessions._proposal_barrier.set()
+
+            t_proposal.join(timeout=5.0)
+            assert not t_proposal.is_alive()
+            assert result["error"] is None, f"Proposal error: {result['error']}"
+            assert result["status_code"] == 201, (
+                f"Expected 201, got {result['status_code']}"
+            )
+
+            from runtime.skills.lifecycle import stores as lifecycle_stores
+            pkg = lifecycle_stores.get_latest_package_version(
+                org_state.db, "hr:frontend-development",
+            )
+            assert pkg is not None
+            assert pkg.proposal_session_id == "sess-blk-old", (
+                f"Provenance session: {pkg.proposal_session_id}"
+            )
+
+            t_repl.join(timeout=5.0)
+            assert not t_repl.is_alive(), (
+                "set_active() must complete after proposal"
+            )
+            assert repl_done["done"], "replacement must have finished"
+
+            # New session is now active.
+            assert org_state.sessions.get_active(
+                "TASK-BLK-REP", "frontend_engineer",
+            ) == "sess-blk-new"
+        finally:
+            self._teardown_barrier(org_state.sessions)
+
+    # ── Unrelated-task nonblocking proof ─────────────────────────────
+
+    def test_unrelated_clear_does_not_block(
+        self, app, org_state,
+    ):
+        """TASK-A proposal at barrier; TASK-B clear() completes
+        immediately — no SessionTracker-wide serialization.
+        """
+        from threading import Thread
+
+        self._setup_barrier(org_state.sessions)
+        try:
+            # TASK-A session (will propose)
+            org_state.sessions.set_active(
+                "TASK-NB-A", "frontend_engineer", "sess-nb-a",
+                org_slug="alpha",
+            )
+            # TASK-B session (will be cleared)
+            org_state.sessions.set_active(
+                "TASK-NB-B", "product_lead", "sess-nb-b",
+                org_slug="alpha",
+            )
+
+            client = TestClient(app)
+            result = {"status_code": None, "error": None}
+
+            def run_proposal():
+                try:
+                    r = client.post(
+                        "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                        json=AGENT_PROPOSAL_BODY,
+                        params={"session_id": "sess-nb-a"},
+                    )
+                    result["status_code"] = r.status_code
+                except Exception as e:
+                    result["error"] = str(e)
+
+            t_proposal = Thread(target=run_proposal)
+            t_proposal.start()
+
+            self._wait_for_barrier(org_state.sessions)
+
+            # Clear TASK-B — different binding, must NOT block.
+            import time
+            start = time.monotonic()
+            org_state.sessions.clear("TASK-NB-B", "product_lead")
+            elapsed = time.monotonic() - start
+            assert elapsed < 0.5, (
+                f"Unrelated clear() must not block (took {elapsed:.2f}s)"
+            )
+
+            # Verify TASK-B is cleared.
+            assert org_state.sessions.get_active(
+                "TASK-NB-B", "product_lead",
+            ) is None
+
+            # Release TASK-A proposal.
+            org_state.sessions._proposal_barrier.set()
+            t_proposal.join(timeout=5.0)
+            assert result["error"] is None, f"Proposal error: {result['error']}"
+            assert result["status_code"] == 201
+        finally:
+            self._teardown_barrier(org_state.sessions)
+
+    def test_unrelated_replacement_does_not_block(
+        self, app, org_state,
+    ):
+        """TASK-A proposal at barrier; TASK-B set_active() replacement
+        completes immediately — no SessionTracker-wide serialization.
+        """
+        from threading import Thread
+
+        self._setup_barrier(org_state.sessions)
+        try:
+            org_state.sessions.set_active(
+                "TASK-NB2-A", "frontend_engineer", "sess-nb2-a",
+                org_slug="alpha",
+            )
+            org_state.sessions.set_active(
+                "TASK-NB2-B", "product_lead", "sess-nb2-b-old",
+                org_slug="alpha",
+            )
+
+            client = TestClient(app)
+            result = {"status_code": None, "error": None}
+
+            def run_proposal():
+                try:
+                    r = client.post(
+                        "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                        json=AGENT_PROPOSAL_BODY,
+                        params={"session_id": "sess-nb2-a"},
+                    )
+                    result["status_code"] = r.status_code
+                except Exception as e:
+                    result["error"] = str(e)
+
+            t_proposal = Thread(target=run_proposal)
+            t_proposal.start()
+
+            self._wait_for_barrier(org_state.sessions)
+
+            # Replace TASK-B — different binding, must NOT block.
+            import time
+            start = time.monotonic()
+            org_state.sessions.set_active(
+                "TASK-NB2-B", "product_lead", "sess-nb2-b-new",
+                org_slug="alpha",
+            )
+            elapsed = time.monotonic() - start
+            assert elapsed < 0.5, (
+                f"Unrelated set_active() must not block (took {elapsed:.2f}s)"
+            )
+
+            # Verify TASK-B has new session.
+            assert org_state.sessions.get_active(
+                "TASK-NB2-B", "product_lead",
+            ) == "sess-nb2-b-new"
+
+            # Release TASK-A.
+            org_state.sessions._proposal_barrier.set()
+            t_proposal.join(timeout=5.0)
+            assert result["error"] is None
+            assert result["status_code"] == 201
+        finally:
+            self._teardown_barrier(org_state.sessions)
+
+    # ── Sequential regression (preserved) ────────────────────────────
 
     def test_sequential_clear_no_residue_retained(self, app, org_state):
         """Sequential clear/replacement no-residue behavior is preserved."""

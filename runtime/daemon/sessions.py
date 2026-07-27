@@ -7,6 +7,7 @@ without grepping the process table.
 """
 from __future__ import annotations
 
+import threading
 from threading import Lock
 
 
@@ -21,20 +22,48 @@ class SessionTracker:
         # only (task_id, agent_name) for backward compatibility.
         self._context_by_session: dict[str, tuple[str, str, str]] = {}
         self._lock = Lock()
-        # Serializes proposal persistence against clear()/set_active()
-        # to close the TOCTOU window between authorization (under _lock)
-        # and the service-layer commit (outside _lock).  The proposal
-        # route acquires this lock around the full authorization +
-        # persistence span; clear() and set_active() acquire it during
-        # their critical mutation.  This ensures: if clear/replacement
-        # wins the lock first, the proposal's re-verification catches
-        # the revoked session (403, no residue); if the proposal wins
-        # the lock first, clear/replacement blocks until the commit
-        # completes, preserving consistent audit provenance.
-        self._proposal_lease = Lock()
+        # Per-(task_id, agent_name) lease map for linearizing the agent
+        # proposal route's authorization+persistence span against
+        # clear()/set_active() on the SAME binding.  Each key maps to
+        # a threading.Lock that is acquired by the proposal route
+        # (around authorization + persistence) and by clear()/set_active()
+        # (around session mutation).  This ensures same-binding mutual
+        # exclusion WITHOUT serializing unrelated task/agent pairs
+        # through a single SessionTracker-wide mutex.
+        #
+        # Guarded by self._lock during creation only; the Lock objects
+        # themselves provide the per-binding synchronization.
+        self._binding_leases: dict[tuple[str, str], Lock] = {}
+        # Test seam: threading.Event that, when set (non-None), pauses
+        # the proposal route after acquiring the binding lease and
+        # re-verifying the session but BEFORE persistence.  Tests use
+        # this to prove clear()/set_active() blocking and nonblocking
+        # interleaving.  None in production.
+        self._proposal_barrier: threading.Event | None = None
+        # Test seam: set by the route when it reaches _proposal_barrier.
+        # Tests wait on this to know the barrier has been reached before
+        # driving concurrent clear()/set_active().
+        self._barrier_reached: threading.Event | None = None
+
+    def _get_binding_lease(self, task_id: str, agent: str) -> Lock:
+        """Return the per-binding Lock for (task_id, agent).
+
+        Creates a new Lock if one doesn't exist.  The caller must
+        acquire the returned Lock (typically via a context manager).
+        The Lock persists in the map; cleanup is not required for
+        correctness and the objects are small.
+        """
+        key = (task_id, agent)
+        with self._lock:
+            lock = self._binding_leases.get(key)
+            if lock is None:
+                lock = Lock()
+                self._binding_leases[key] = lock
+            return lock
 
     def set_active(self, task_id: str, agent: str, session_id: str, *, org_slug: str | None = None) -> None:
-        with self._proposal_lease:
+        binding_lease = self._get_binding_lease(task_id, agent)
+        with binding_lease:
             with self._lock:
                 old_session_id = self._active.get((task_id, agent))
                 self._active[(task_id, agent)] = session_id
@@ -107,7 +136,8 @@ class SessionTracker:
             return len(self._active)
 
     def clear(self, task_id: str, agent: str) -> None:
-        with self._proposal_lease:
+        binding_lease = self._get_binding_lease(task_id, agent)
+        with binding_lease:
             with self._lock:
                 old_session_id = self._active.pop((task_id, agent), None)
                 self._pids.pop((task_id, agent), None)

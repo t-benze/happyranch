@@ -297,63 +297,77 @@ def submit_proposal_agent_only(
             },
         )
 
-    # Acquire the proposal lease to serialize session authorization +
-    # persistence against concurrent clear()/set_active().  This closes
-    # the TOCTOU window where clear() could run after the authorization
-    # check but before _service.submit_proposal() commits.
-    with org.sessions._proposal_lease:
-        # Resolve (org_slug, task_id, agent_name) from opaque session.
-        # First try the four-part context index; fall back to the legacy
-        # two-field lookup (backward compat for sessions activated without
-        # org awareness).
-        context = org.sessions.get_context_by_session(session_id)
-        if context is not None:
-            verified_org, task_id, agent_name = context
-            # Cross-check: the path-selected org MUST match the session's org.
-            # This prevents caller-controlled org routing from determining the
-            # persistence org independently of the opaque session context.
-            if verified_org != slug:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={
-                        "code": "cross_org_session",
-                        "detail": f"Session {session_id} belongs to org '{verified_org}', "
-                                  f"not '{slug}'. Org is derived from the server's "
-                                  "verified session context, not caller-selected path.",
-                    },
-                )
-            # Defense-in-depth: re-verify the session is still CURRENTLY active
-            # for the (task_id, agent_name) binding.  This proves the opaque
-            # capability still owns the active binding before policy evaluation
-            # or persistence — completed/cancelled/revoked or superseded sessions
-            # are denied even if a residual context entry exists.
-            expected_session = org.sessions.get_active(task_id, agent_name)
-            if expected_session != session_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={
-                        "code": "session_not_current",
-                        "detail": f"Session {session_id} is not the current active session "
-                                  f"for task {task_id} agent {agent_name}. "
-                                  "The session may have been cleared, superseded, or revoked.",
-                    },
-                )
-        else:
-            # Legacy fallback: session was activated without org context.
-            # Still derive (task_id, agent_name) but org is caller-selected.
-            resolved = org.sessions.get_by_session(session_id)
-            if resolved is None:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={
-                        "code": "unknown_session",
-                        "detail": f"No active session found for session_id '{session_id}'. "
-                                  "The session may be inactive, expired, or never existed.",
-                    },
-                )
-            task_id, agent_name = resolved
+    # Step 1: Resolve (org_slug, task_id, agent_name) from opaque session.
+    # This is a read-only lookup under _lock with no binding lease held.
+    # The resolved pair will be re-verified under the binding lease below.
+    context = org.sessions.get_context_by_session(session_id)
+    if context is not None:
+        verified_org, task_id, agent_name = context
+        # Cross-check: the path-selected org MUST match the session's org.
+        # This prevents caller-controlled org routing from determining the
+        # persistence org independently of the opaque session context.
+        if verified_org != slug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "cross_org_session",
+                    "detail": f"Session {session_id} belongs to org '{verified_org}', "
+                              f"not '{slug}'. Org is derived from the server's "
+                              "verified session context, not caller-selected path.",
+                },
+            )
+    else:
+        # Legacy fallback: session was activated without org context.
+        # Still derive (task_id, agent_name) but org is caller-selected.
+        resolved = org.sessions.get_by_session(session_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "unknown_session",
+                    "detail": f"No active session found for session_id '{session_id}'. "
+                              "The session may be inactive, expired, or never existed.",
+                },
+            )
+        task_id, agent_name = resolved
 
-        # Enforce agent-id × canonical-slug policy BEFORE any artifact/ledger write
+    # Step 2: Acquire the per-binding lease for the resolved
+    # (task_id, agent_name) to linearize authorization + persistence
+    # against concurrent clear()/set_active() on the SAME binding.
+    # Unrelated bindings are NOT blocked — each (task_id, agent) pair
+    # has its own independent Lock.
+    binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
+    with binding_lease:
+        # Test seam: if a barrier is set, pause here so tests can
+        # drive concurrent clear()/set_active() and prove correct
+        # interleaving (blocking for same binding, nonblocking for
+        # unrelated bindings).
+        barrier = org.sessions._proposal_barrier
+        if barrier is not None:
+            # Signal that the route has reached the barrier.
+            reached = org.sessions._barrier_reached
+            if reached is not None:
+                reached.set()
+            barrier.wait()
+
+        # Step 3: Under the binding lease, re-verify the session is
+        # still CURRENTLY active for the (task_id, agent_name) binding.
+        # This catches concurrent clear()/set_active() that may have run
+        # between Step 1 (resolution) and Step 2 (lease acquisition).
+        expected_session = org.sessions.get_active(task_id, agent_name)
+        if expected_session != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "session_not_current",
+                    "detail": f"Session {session_id} is not the current active session "
+                              f"for task {task_id} agent {agent_name}. "
+                              "The session may have been cleared, superseded, or revoked.",
+                },
+            )
+
+        # Step 4: Enforce agent-id × canonical-slug policy BEFORE any
+        # artifact/ledger write.
         _enforce_agent_pilot_policy(agent_name, body.slug)
 
         try:
