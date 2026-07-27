@@ -636,9 +636,10 @@ def test_run_step_terminal_failed_no_successor_with_legacy_audit(
     runtime, db, monkeypatch,
 ):
     """After 2 prior auto-revisits in the audit chain, opaque failure is
-    terminal FAILED with no successor spawned. The legacy audit entries
-    (auto_revisit_of) are readable but no new revisit is created.
-    Since TASK-3604, auto-revisit spawning is removed; the queue stays empty."""
+    terminal FAILED with no successor spawned. Legacy audit entries
+    (auto_revisit_of) are preserved as historical fixtures but the terminal
+    failure creates no new revisit. Since TASK-3604, auto-revisit spawning is
+    removed; the queue stays empty."""
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -655,10 +656,8 @@ def test_run_step_terminal_failed_no_successor_with_legacy_audit(
         id="T-AR2", brief="b", assigned_agent="engineering_head",
         revisit_of_task_id="T-AR1",
     ))
-    # Mark T-AR1 and T-AR2 as auto-revisits in the audit log. Both prior
-    # entries are the SAME kind as the new failure we'll trigger below
-    # (_make_result(success=False) with no error/rc → classifier returns
-    # "session_failed") so the per-kind cap (spec §5) is exhausted at 2.
+    # Mark T-AR1 and T-AR2 as auto-revisits in the audit log (historical
+    # fixtures — TASK-3604 removed auto-revisit spawning).
     from runtime.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
     audit.log_auto_revisit_of(

@@ -160,7 +160,7 @@ The Task and Thread lifecycles intersect at exactly three interaction surfaces.
        # Not a thread-dispatched chain; silent no-op.
        return
    ```
-   This means: only tasks born from Bridge (1) get a followup. Tasks created by the founder, by the orchestrator's auto-revisit, or by inline delegation chains do not.
+   This means: only tasks born from Bridge (1) get a followup. Tasks created by the founder or by inline delegation chains do not. (The orchestrator's auto-revisit was removed in TASK-3604; both opaque-failure branches are terminal FAILED with no daemon successor.)
 
 2. **Terminal mapping to kind_tag:**
    - Status → system message `kind_tag`:
@@ -218,7 +218,7 @@ Bridge (1) — thread dispatch — enters from a thread and creates a task. Brid
 
 **(b) Bridge (2) fires only for tasks BORN from bridge (1).**
 
-The followup fire predicate explicitly gates on `original.dispatched_from_thread_id`. A task created by the founder, by the orchestrator's auto-revisit, or by inline delegation carries `dispatched_from_thread_id=None` and will never produce a thread followup. The `if thread_id is None: return` guard in both `_maybe_post_thread_followup` and `_maybe_post_thread_escalation` ensures this is a silent no-op with no audit trail.
+The followup fire predicate explicitly gates on `original.dispatched_from_thread_id`. A task created by the founder or by inline delegation carries `dispatched_from_thread_id=None` and will never produce a thread followup. (The orchestrator's auto-revisit was removed in TASK-3604; both opaque-failure branches are terminal FAILED with no daemon successor.) The `if thread_id is None: return` guard in both `_maybe_post_thread_followup` and `_maybe_post_thread_escalation` ensures this is a silent no-op with no audit trail.
 
 **(c) Outbound reach is live-session-only, available ONLY via bridge (3).**
 

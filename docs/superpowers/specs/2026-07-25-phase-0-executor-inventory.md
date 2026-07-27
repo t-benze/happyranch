@@ -271,14 +271,16 @@ usage row.
 ### 4.3 `ExecutorResult` → failure handling: `run_step`
 
 On a non-success `ExecutorResult` or missing `CompletionReport`,
-`run_step` (`run_step.py:287-298`) constructs a failure note via
+`run_step` (`run_step.py:277-285`) constructs a failure note via
 `_session_failed_note(result, report)` (`run_step.py:2379`), which
 reads `result.returncode`, `result.stderr_tail`/`result.stdout_tail` tail
 text, and `result.error`. The failure audit row is written by `_fail()`
-(`run_step.py:1451`) which calls `db.update_task(..., status=FAILED, note=...)`.
-Since TASK-3604 removed daemon auto-revisit, there is no automatic successor
-header or `_executor_failure_context` helper — opaque failures are terminal
-FAILED with no daemon successor. There is no separate `audit.log_agent_failure`
+(`run_step.py:1451`) which calls `db.update_task(..., status=FAILED, note=...)`;
+`_enqueue_parent_if_waiting` and `_maybe_post_thread_followup` are called with
+`root_auto_revisit_spawned=False`. Since TASK-3604 removed daemon auto-revisit,
+there is no automatic successor header or `_executor_failure_context` helper —
+opaque failures are terminal FAILED with no daemon successor. (Line 287 begins
+successful completion handling.) There is no separate `audit.log_agent_failure`
 method.
 
 ### 4.4 `ExecutorResult` → `thread_runner`
