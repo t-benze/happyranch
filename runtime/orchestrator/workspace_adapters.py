@@ -423,93 +423,78 @@ def inject_managed_skills(
         for entry in release_registry.list_all():
             release_entries[entry.id] = entry
 
-    # Load per-org user-authored skills (when org_root provided)
-    user_entries: dict[str, "SkillEntry"] = {}  # noqa: F821
-    if org_root is not None:
-        user_skills_dir = org_root / "skills"
-        if user_skills_dir.is_dir():
-            user_registry = SkillRegistry(skills_root=user_skills_dir)
-            # Release-wins + system-contract-wins on slug collision (v3 §6.3).
-            # Must match the daemon catalog path _union_catalog protection set
-            # (release slugs + SYSTEM_CONTRACTS slugs).
-            from runtime.skills.system_contracts import SYSTEM_CONTRACTS
-            release_slugs: set[str] = {
-                e.slug for e in release_entries.values()
-            }
-            sc_slugs: set[str] = {sc.id for sc in SYSTEM_CONTRACTS}
-            protected_slugs = release_slugs | sc_slugs
-            for entry in user_registry.list_all():
-                if entry.slug not in protected_slugs:
-                    user_entries[entry.id] = entry
+    # THR-055: Per-org user-authored skills are now governed exclusively by the
+    # lifecycle ledger. The legacy filesystem user store (org_root/skills/) is
+    # quarantined — its content must never materialize. Only lifecycle-published
+    # assigned skills (resolved below via _materialize_lifecycle_skills) and
+    # release-shipped managed-catalog skills reach the workspace.
 
-    # Union catalog: release + user-authored (release wins on id collision)
+    # Union catalog: release-shipped managed-catalog skills only.
+    # User-authored custom skills come from the lifecycle ledger (THR-055).
     union_entries: list["SkillEntry"] = []  # noqa: F821
-    union_entries.extend(user_entries.values())
     union_entries.extend(release_entries.values())
 
-    if not union_entries:
-        return
+    if union_entries:
+        # Build a unioned registry for resolve_exposed_skills
+        union_registry = SkillRegistry(skills_root=skills_root)
+        for entry in union_entries:
+            union_registry._entries[entry.id] = entry
 
-    # Build a unioned registry for resolve_exposed_skills
-    union_registry = SkillRegistry(skills_root=skills_root)
-    for entry in union_entries:
-        union_registry._entries[entry.id] = entry
-
-    # Load eligibility policy from org config YAML
-    policy: dict = {}
-    if org_root is not None:
-        config_path = org_root / "org" / "config.yaml"
-    else:
-        config_path = settings.project_root / "org" / "config.yaml"
-    if config_path.is_file():
-        import yaml
-        try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                policy = raw.get("skills", {})
-        except (yaml.YAMLError, OSError):
-            pass
-
-    resolver = EligibilityResolver(policy)
-    exposed = resolve_exposed_skills(
-        union_registry, resolver, org=slug, team=team, agent=agent_name,
-    )
-
-    for es in exposed:
-        skill_id_slug = es.skill.slug
-
-        # Resolve source directory by provenance
-        if es.skill.source == "user_authored" and org_root is not None:
-            src_dir = org_root / "skills" / skill_id_slug
+        # Load eligibility policy from org config YAML
+        policy: dict = {}
+        if org_root is not None:
+            config_path = org_root / "org" / "config.yaml"
         else:
-            src_dir = skills_root / skill_id_slug
+            config_path = settings.project_root / "org" / "config.yaml"
+        if config_path.is_file():
+            import yaml
+            try:
+                raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    policy = raw.get("skills", {})
+            except (yaml.YAMLError, OSError):
+                pass
 
-        if not src_dir.is_dir():
-            continue
-
-        # Materialize the skill into the workspace
-        _copy_skills_tree(
-            src_dir,
-            workspace / ".claude" / "skills" / skill_id_slug,
-            slug=slug,
-        )
-        _copy_skills_tree(
-            src_dir,
-            workspace / ".agents" / "skills" / skill_id_slug,
-            slug=slug,
+        resolver = EligibilityResolver(policy)
+        exposed = resolve_exposed_skills(
+            union_registry, resolver, org=slug, team=team, agent=agent_name,
         )
 
-        # Record materialization event for effective-state version compare
-        if db is not None:
-            db.insert_skill_validation_event(
-                skill_id=es.skill.id,
-                slug=skill_id_slug,
-                agent=agent_name,
-                source="materialization",
-                severity="info",
-                ok=True,
-                version=es.skill.version,
+        for es in exposed:
+            skill_id_slug = es.skill.slug
+
+            # Resolve source directory by provenance
+            if es.skill.source == "user_authored" and org_root is not None:
+                src_dir = org_root / "skills" / skill_id_slug
+            else:
+                src_dir = skills_root / skill_id_slug
+
+            if not src_dir.is_dir():
+                continue
+
+            # Materialize the skill into the workspace
+            _copy_skills_tree(
+                src_dir,
+                workspace / ".claude" / "skills" / skill_id_slug,
+                slug=slug,
             )
+            _copy_skills_tree(
+                src_dir,
+                workspace / ".agents" / "skills" / skill_id_slug,
+                slug=slug,
+            )
+
+            # Record materialization event for effective-state version compare
+            if db is not None:
+                db.insert_skill_validation_event(
+                    skill_id=es.skill.id,
+                    slug=skill_id_slug,
+                    agent=agent_name,
+                    source="materialization",
+                    severity="info",
+                    ok=True,
+                    version=es.skill.version,
+                )
 
     # ── THR-055: lifecycle-ledger skill resolution ──────────────────────
     # Resolve published + assigned skills from the lifecycle ledger.
@@ -540,10 +525,20 @@ def _materialize_lifecycle_skills(
     Proposed/draft/validated/approved-but-unpublished/quarantined skills
     are invisible here.
 
+    Content resolution priority:
+    1. ArtifactStore-backed content (``content_artifact_key`` is set):
+       load from the org ArtifactStore, validate hash, write to workspace.
+    2. No valid content source → record failure, skip.
+
+    Legacy filesystem paths (org_root/skills/) are NEVER resolved — the
+    lifecycle ledger is the sole runtime source.
+
     Fail-closed: any materialization error cleans up the target directory
     and raises immediately. No partial-package residue.
     """
-    from runtime.skills.lifecycle import stores
+    import hashlib
+    import tempfile
+
     from runtime.skills.lifecycle.service import SkillLifecycleService
 
     service = SkillLifecycleService()
@@ -553,18 +548,60 @@ def _materialize_lifecycle_skills(
     if not pkgs:
         return
 
+    # Resolve ArtifactStore for artifact-backed content
+    from runtime.infrastructure.artifact_store import ArtifactStore, ArtifactNotFound
+    from runtime.orchestrator._paths import OrgPaths
+    artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+
     for pkg in pkgs:
         skill_slug = pkg.slug
+        dest_claude = workspace / ".claude" / "skills" / skill_slug
+        dest_agents = workspace / ".agents" / "skills" / skill_slug
 
-        # Resolve content source: artifact-backed content takes priority
-        if pkg.content_artifact_key and org_root:
-            src_dir = org_root / pkg.content_artifact_key
+        # Resolve content source
+        content_bytes: bytes | None = None
+        source_description = "unknown"
+
+        if pkg.content_artifact_key:
+            # Artifact-backed: load from the org ArtifactStore
+            try:
+                content_bytes = artifact_store.read(pkg.content_artifact_key)
+                source_description = f"artifact:{pkg.content_artifact_key}"
+            except ArtifactNotFound:
+                # Record failure and skip
+                try:
+                    service.record_materialization(
+                        db=db,
+                        skill_id=pkg.skill_id,
+                        agent_name=agent_name,
+                        version_id=pkg.id,
+                        version=pkg.version,
+                        content_hash=pkg.content_hash,
+                        success=False,
+                        error_message=f"Artifact not found: {pkg.content_artifact_key}",
+                        session_context="session_spawn",
+                    )
+                except Exception:
+                    pass
+                continue
+            except Exception as exc:
+                try:
+                    service.record_materialization(
+                        db=db,
+                        skill_id=pkg.skill_id,
+                        agent_name=agent_name,
+                        version_id=pkg.id,
+                        version=pkg.version,
+                        content_hash=pkg.content_hash,
+                        success=False,
+                        error_message=f"Artifact load error: {exc}",
+                        session_context="session_spawn",
+                    )
+                except Exception:
+                    pass
+                continue
         else:
-            # Legacy inline content: write from skill_md cache
-            src_dir = org_root / "skills" / skill_slug
-
-        if not src_dir.is_dir():
-            # No content to materialize — record failure and continue
+            # No content source — record failure and skip
             try:
                 service.record_materialization(
                     db=db,
@@ -574,21 +611,52 @@ def _materialize_lifecycle_skills(
                     version=pkg.version,
                     content_hash=pkg.content_hash,
                     success=False,
-                    error_message=f"Source directory not found: {src_dir}",
+                    error_message="No content source (no artifact key, legacy paths not supported)",
                     session_context="session_spawn",
                 )
             except Exception:
                 pass
             continue
 
-        dest_claude = workspace / ".claude" / "skills" / skill_slug
-        dest_agents = workspace / ".agents" / "skills" / skill_slug
+        # Validate exact hash before writing to workspace
+        if content_bytes is not None:
+            actual_hash = hashlib.sha256(content_bytes).hexdigest()
+            if actual_hash != pkg.content_hash:
+                try:
+                    service.record_materialization(
+                        db=db,
+                        skill_id=pkg.skill_id,
+                        agent_name=agent_name,
+                        version_id=pkg.id,
+                        version=pkg.version,
+                        content_hash=pkg.content_hash,
+                        success=False,
+                        error_message=f"Hash mismatch: expected {pkg.content_hash}, got {actual_hash}",
+                        session_context="session_spawn",
+                    )
+                except Exception:
+                    pass
+                continue
 
+        # Write content to workspace skill directories
         try:
-            _copy_skills_tree(src_dir, dest_claude, slug=slug)
-            _copy_skills_tree(src_dir, dest_agents, slug=slug)
+            dest_claude.mkdir(parents=True, exist_ok=True)
+            dest_agents.mkdir(parents=True, exist_ok=True)
+            (dest_claude / "SKILL.md").write_bytes(content_bytes)
+            (dest_agents / "SKILL.md").write_bytes(content_bytes)
 
-            # Record successful materialization in lifecycle ledger
+            # Apply org-slug substitution ({ORG_SLUG} → actual slug)
+            try:
+                text = content_bytes.decode("utf-8")
+                text = text.replace("{ORG_SLUG}", slug)
+                content_bytes = text.encode("utf-8")
+            except UnicodeDecodeError:
+                pass  # Non-text content, skip substitution
+
+            (dest_claude / "SKILL.md").write_bytes(content_bytes)
+            (dest_agents / "SKILL.md").write_bytes(content_bytes)
+
+            # Record successful materialization with hash + version provenance
             try:
                 service.record_materialization(
                     db=db,
@@ -624,8 +692,7 @@ def _materialize_lifecycle_skills(
             except Exception:
                 pass
 
-            # Don't let one failed materialization block others,
-            # but log the failure
+            # Don't let one failed materialization block others, but log
             import logging
             logger = logging.getLogger("happyranch.skills.lifecycle.materialization")
             logger.warning(

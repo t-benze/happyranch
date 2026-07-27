@@ -1,35 +1,37 @@
 """THR-055 Custom-skill lifecycle routes — agent proposals + human lifecycle management.
 
-Routes:
-- POST /skill-lifecycle/proposals — Agent-only task/session-bound proposal submission
-- GET /skill-lifecycle/{skill_id} — Read lifecycle status (human + agent read)
-- GET /skill-lifecycle/catalog/custom — List published custom skills
+Routes on ``human_router`` (bearer-only, master-bearer-token-authed — human/founder):
 - POST /skill-lifecycle/{skill_id}/claim — Human: claim proposal → draft
 - POST /skill-lifecycle/validate — Human: validate a version
 - POST /skill-lifecycle/submit-review — Human: submit for review
 - POST /skill-lifecycle/review — Human: approve/reject
 - POST /skill-lifecycle/publish — Human: publish
 - POST /skill-lifecycle/assign — Human: assign to agent
-- POST /skill-lifecycle/rollback — Human: emergency rollback
+- POST /skill-lifecycle/rollback — Human: emergency rollback (atomic)
 - POST /skill-lifecycle/retire — Human: retire
+
+Routes on ``dual_router`` (dual-auth — bearer OR session-binding):
+- POST /skill-lifecycle/proposals — Agent task/session-bound proposal OR founder proposal
+- GET /skill-lifecycle/{skill_id} — Read lifecycle status (human + agent)
+- GET /skill-lifecycle/catalog/custom — List published custom skills
 - GET /skill-lifecycle/events/{skill_id} — Read event history
 
-Agent 403 matrix: agents may ONLY submit proposals. All lifecycle/config/
-eligibility/permission mutation attempts return server-side 403.
+Agent 403 matrix: agents may ONLY submit proposals. All other lifecycle/
+config/eligibility/permission mutation attempts return server-side 403.
 
 Identity for proposals derives from verified task/session binding via
-SessionTracker, never from request body claims.
+SessionTracker (never from request body claims) when the caller is an agent.
+For human callers (master bearer), identity is the founder with full authority.
 
-Protected-slug checking consults the live release/system catalog, not a
-static list.
+Protected-slug checking consults the live release/system catalog and fails
+closed if the registry is unavailable — no static fallback.
 """
 
 from __future__ import annotations
 
-import yaml
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from runtime.daemon.auth import require_token
+from runtime.daemon.auth import optional_bearer, require_token
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.skills.lifecycle.models import (
@@ -48,7 +50,10 @@ from runtime.skills.lifecycle.service import (
     SkillLifecycleService,
 )
 
-router = APIRouter(prefix="/skill-lifecycle", dependencies=[require_token()])
+# ── Two routers: human-only (bearer) and dual-auth (bearer OR session) ──
+
+human_router = APIRouter(prefix="/skill-lifecycle", dependencies=[require_token()])
+dual_router = APIRouter(prefix="/skill-lifecycle")
 
 _service = SkillLifecycleService()
 
@@ -63,35 +68,24 @@ def _get_protected_slugs(org: OrgState) -> frozenset:
     """Build the live protected-slug set from the release catalog + system contracts.
 
     Consults the runtime skills registry and system contracts, NOT a static list.
+    Fails closed: if the registry cannot be loaded, raises HTTP 500 rather than
+    falling back to a stale static list.
     """
-    try:
-        from runtime.skills.registry import SkillRegistry
-        from runtime.skills.system_contracts import SYSTEM_CONTRACTS
+    from runtime.skills.registry import SkillRegistry
+    from runtime.skills.system_contracts import SYSTEM_CONTRACTS
 
-        release_dir = org.settings.project_root / "runtime" / "skills"
-        protected = set()
-        if release_dir.is_dir():
-            registry = SkillRegistry(skills_root=release_dir)
-            for entry in registry.list_all():
-                if isinstance(entry, tuple):
-                    entry = entry[0]  # Some registries return (entry, source) tuples
-                protected.add(getattr(entry, 'slug', getattr(entry, 'id', '')))
-        # Add system contract slugs
-        for sc in SYSTEM_CONTRACTS:
-            protected.add(sc.id)
-        return frozenset(protected)
-    except Exception:
-        # Fallback static list on registry load failure
-        return frozenset({
-            "start-task", "jobs", "make-worktree", "thread", "dream",
-            "reflection", "manage-agent", "manage-repo", "brainstorming",
-            "dispatching-parallel-agents", "executing-plans",
-            "finishing-a-development-branch", "receiving-code-review",
-            "requesting-code-review", "subagent-driven-development",
-            "systematic-debugging", "test-driven-development",
-            "using-git-worktrees", "using-superpowers",
-            "verification-before-completion", "writing-plans", "writing-skills",
-        })
+    release_dir = org.settings.project_root / "runtime" / "skills"
+    protected = set()
+    if release_dir.is_dir():
+        registry = SkillRegistry(skills_root=release_dir)
+        for entry in registry.list_all():
+            if isinstance(entry, tuple):
+                entry = entry[0]  # Some registries return (entry, source) tuples
+            protected.add(getattr(entry, 'slug', getattr(entry, 'id', '')))
+    # Add system contract slugs
+    for sc in SYSTEM_CONTRACTS:
+        protected.add(sc.id)
+    return frozenset(protected)
 
 
 def _verify_agent_session(
@@ -132,41 +126,68 @@ def _verify_agent_session(
     return task_id, session_id, agent_name
 
 
-# ── Route: POST /skill-lifecycle/proposals ────────────────────────────────
+def _verify_agent_proposal_identity(
+    org: OrgState,
+    task_id: str | None,
+    session_id: str | None,
+    agent_name: str | None,
+    has_bearer: bool,
+) -> tuple[str, str]:
+    """Derive authentic actor identity for proposal submission.
 
-@router.post("/proposals", status_code=201)
+    - has_bearer=True → human/founder (trusted master bearer)
+    - has_bearer=False → must verify task/session/agent via SessionTracker
+
+    Returns (actor_kind, actor_name).
+    """
+    if has_bearer:
+        return "human", "founder"
+
+    if not task_id or not session_id or not agent_name:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "agent_identity_required",
+                "detail": "Agent proposals require verified task_id + session_id + agent_name binding.",
+            },
+        )
+
+    # Verify against SessionTracker
+    _verify_agent_session(org, task_id, session_id, agent_name)
+
+    return "agent", agent_name
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Dual-auth routes (bearer OR session-binding)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dual_router.post("/proposals", status_code=201)
 def submit_proposal(
     slug: str,
     org: OrgDep,
     body: ProposalRequest,
     request: Request,
+    task_id: str | None = Query(None),
+    session_id: str | None = Query(None),
+    agent_name: str | None = Query(None),
+    has_bearer: bool = Depends(optional_bearer),
 ) -> dict:
-    """Agent-only: submit a task/session-bound skill proposal.
+    """Submit a skill proposal.
 
-    Identity is derived from the verified task/session binding via SessionTracker.
+    **Dual-auth.** Agent callers submit via verified task/session binding
+    (query params ``task_id``, ``session_id``, ``agent_name``). Human/founder
+    callers use the master bearer token.
+
     Body claims for task_id, session_id, proposer_agent are IGNORED —
-    only the verified session binding is trusted.
+    only verified session binding (agent path) or bearer token (human path)
+    is trusted.
 
-    Query params: ?task_id=TASK-xxx&session_id=sess-yyy&agent_name=dev_agent
-
-    Returns 403 for inactive, expired, or mismatched task/session bindings.
+    Agent path returns 403 for inactive, expired, or mismatched bindings.
     """
-    # Extract identity claims from query params (agent callbacks arrive as
-    # query params since they come through the CLI's single-line Bash tool)
-    task_id = request.query_params.get("task_id") or getattr(request.state, "task_id", None)
-    session_id = request.query_params.get("session_id") or getattr(request.state, "session_id", None)
-    agent_name = request.query_params.get("agent_name") or getattr(request.state, "agent_name", None)
-
-    # Derive actor kind and verify via SessionTracker
-    if task_id and session_id and agent_name:
-        # Verify active session binding
-        _verify_agent_session(org, task_id, session_id, agent_name)
-        actor_kind = "agent"
-        # Use verified values (ignore body claims completely)
-    else:
-        # No session binding → human (founder) request.
-        # Human requests can submit proposals but with human semantics.
-        actor_kind = "human"
+    actor_kind, actor_name = _verify_agent_proposal_identity(
+        org, task_id, session_id, agent_name, has_bearer,
+    )
 
     try:
         protected_slugs = _get_protected_slugs(org)
@@ -187,6 +208,7 @@ def submit_proposal(
             purpose=body.purpose,
             target_agent_suggestion=body.target_agent_suggestion,
             protected_slugs=protected_slugs,
+            org_root=org.root,
         )
     except LifecycleError as e:
         raise HTTPException(
@@ -200,22 +222,22 @@ def submit_proposal(
         "version": pkg.version,
         "status": pkg.status.value,
         "content_hash": pkg.content_hash,
+        "content_artifact_key": pkg.content_artifact_key,
         "proposal_task_id": pkg.proposal_task_id,
     }
 
 
-# ── Route: GET /skill-lifecycle/{skill_id} ────────────────────────────────
-
-@router.get("/{skill_id}")
+@dual_router.get("/{skill_id}")
 def get_lifecycle_status(
     slug: str,
     skill_id: str,
     org: OrgDep,
+    has_bearer: bool = Depends(optional_bearer),
 ) -> dict:
     """Read the full lifecycle status for a skill.
 
+    Dual-auth: human + agent readable.
     Returns current status, version, assignments, event history, and provenance.
-    Human + agent readable.
     """
     try:
         result = _service.get_status(_get_db(org), skill_id)
@@ -231,7 +253,6 @@ def get_lifecycle_status(
             detail={"code": "not_found", "skill_id": skill_id},
         )
 
-    # Serialize for JSON
     return {
         "skill_id": result["skill_id"],
         "slug": result["slug"],
@@ -266,15 +287,15 @@ def get_lifecycle_status(
     }
 
 
-# ── Route: GET /skill-lifecycle/catalog/custom ────────────────────────────
-
-@router.get("/catalog/custom")
+@dual_router.get("/catalog/custom")
 def list_custom_catalog(
     slug: str,
     org: OrgDep,
+    has_bearer: bool = Depends(optional_bearer),
 ) -> dict:
     """List published custom skills for the catalog.
 
+    Dual-auth: human + agent readable.
     Only PUBLISHED skills appear. Proposed, draft, validated, approved,
     rolled_back, and retired skills are invisible here.
     """
@@ -296,16 +317,54 @@ def list_custom_catalog(
     }
 
 
-# ── Route: POST /skill-lifecycle/{skill_id}/claim ────────────────────────
+@dual_router.get("/events/{skill_id}")
+def get_events(
+    slug: str,
+    skill_id: str,
+    org: OrgDep,
+    limit: int = Query(100, ge=1, le=500),
+    has_bearer: bool = Depends(optional_bearer),
+) -> dict:
+    """Read event history for a skill.
 
-@router.post("/{skill_id}/claim")
+    Dual-auth: human + agent readable.
+    """
+    from runtime.skills.lifecycle import stores
+    events = stores.list_lifecycle_events(_get_db(org), skill_id=skill_id, limit=limit)
+    return {
+        "skill_id": skill_id,
+        "events": [
+            {
+                "id": e.id,
+                "event_type": e.event_type,
+                "actor": e.actor,
+                "actor_role": e.actor_role,
+                "previous_status": e.previous_status,
+                "new_status": e.new_status,
+                "content_hash": e.content_hash,
+                "created_at": e.created_at.isoformat(),
+                "metadata": e.metadata,
+            }
+            for e in events
+        ],
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Human-only routes (bearer-token-gated — founder)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@human_router.post("/{skill_id}/claim")
 def claim_proposal(
     slug: str,
     skill_id: str,
     org: OrgDep,
     body: ClaimProposalRequest,
 ) -> dict:
-    """Human-only: claim an agent proposal and promote to draft."""
+    """Human-only: claim an agent proposal and promote to draft.
+
+    Bearer-token-gated — only the founder/human with the master bearer can call this.
+    """
     try:
         pkg = _service.claim_proposal(
             db=_get_db(org),
@@ -327,15 +386,16 @@ def claim_proposal(
     }
 
 
-# ── Route: POST /skill-lifecycle/validate ─────────────────────────────────
-
-@router.post("/validate")
+@human_router.post("/validate")
 def validate_version(
     slug: str,
     org: OrgDep,
     version_id: int = Query(...),
 ) -> dict:
-    """Human-only: record validation result for a draft version."""
+    """Human-only: record validation result for a draft version.
+
+    Bearer-token-gated — only the founder/human with the master bearer can call this.
+    """
     try:
         pkg = _service.record_validation(
             db=_get_db(org),
@@ -358,15 +418,16 @@ def validate_version(
     }
 
 
-# ── Route: POST /skill-lifecycle/submit-review ────────────────────────────
-
-@router.post("/submit-review")
+@human_router.post("/submit-review")
 def submit_for_review(
     slug: str,
     org: OrgDep,
     body: SubmitForReviewRequest,
 ) -> dict:
-    """Human-only: submit a validated version for review."""
+    """Human-only: submit a validated version for review.
+
+    Bearer-token-gated — only the founder/human with the master bearer can call this.
+    """
     try:
         pkg = _service.submit_for_review(
             db=_get_db(org),
@@ -390,9 +451,7 @@ def submit_for_review(
     }
 
 
-# ── Route: POST /skill-lifecycle/review ───────────────────────────────────
-
-@router.post("/review")
+@human_router.post("/review")
 def review_decision(
     slug: str,
     org: OrgDep,
@@ -401,6 +460,7 @@ def review_decision(
     """Human-only: reviewer approves or rejects a submitted version.
 
     Reviewer must be distinct from author (maker-checker).
+    Bearer-token-gated — only the founder/human with the master bearer can call this.
     """
     try:
         pkg = _service.review_decision(
@@ -425,9 +485,7 @@ def review_decision(
     }
 
 
-# ── Route: POST /skill-lifecycle/publish ──────────────────────────────────
-
-@router.post("/publish")
+@human_router.post("/publish")
 def publish(
     slug: str,
     org: OrgDep,
@@ -436,6 +494,7 @@ def publish(
     """Human-only: publish an approved version to the custom catalog.
 
     Enforces the two-published-cap and requires matching approval event id.
+    Bearer-token-gated — only the founder/human with the master bearer can call this.
     """
     try:
         pkg = _service.publish(
@@ -460,9 +519,7 @@ def publish(
     }
 
 
-# ── Route: POST /skill-lifecycle/assign ───────────────────────────────────
-
-@router.post("/assign")
+@human_router.post("/assign")
 def assign_skill(
     slug: str,
     org: OrgDep,
@@ -471,6 +528,7 @@ def assign_skill(
     """Human-only: assign a published version to a named agent.
 
     Requires explicit skill_id (e.g. "hr:my-skill") in the request body.
+    Bearer-token-gated — only the founder/human with the master bearer can call this.
     """
     try:
         assign = _service.assign(
@@ -496,9 +554,7 @@ def assign_skill(
     }
 
 
-# ── Route: POST /skill-lifecycle/rollback ─────────────────────────────────
-
-@router.post("/rollback")
+@human_router.post("/rollback")
 def rollback(
     slug: str,
     org: OrgDep,
@@ -509,18 +565,39 @@ def rollback(
     """Human-only: emergency rollback — deactivate all assignments for a skill.
 
     Atomically unassigns affected assignments while retaining immutable
-    history/content references.
+    history/content references. All operations execute within an explicit
+    ``BEGIN IMMEDIATE`` / ``COMMIT`` transaction so package status,
+    assignment deactivation, and event insertion roll back together.
+
+    Bearer-token-gated — only the founder/human with the master bearer can call this.
     """
+    db = _get_db(org)
     try:
+        # Explicit transaction wrapping for atomicity
+        db.execute("BEGIN IMMEDIATE")
         count = _service.rollback(
-            db=_get_db(org),
+            db=db,
             actor_kind="human",
             skill_id=skill_id,
             reason=reason,
             rolled_back_by="founder",
             target_version_id=target_version_id,
         )
+        db.execute("COMMIT")
+    except Exception:
+        try:
+            db.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "rollback_failed", "skill_id": skill_id},
+        )
     except LifecycleError as e:
+        try:
+            db.execute("ROLLBACK")
+        except Exception:
+            pass
         raise HTTPException(
             status_code=e.status_code,
             detail={"code": e.code, "detail": e.detail},
@@ -533,16 +610,17 @@ def rollback(
     }
 
 
-# ── Route: POST /skill-lifecycle/retire ───────────────────────────────────
-
-@router.post("/retire")
+@human_router.post("/retire")
 def retire(
     slug: str,
     org: OrgDep,
     skill_id: str = Query(...),
     reason: str = Query(""),
 ) -> dict:
-    """Human-only: retire a published skill."""
+    """Human-only: retire a published skill.
+
+    Bearer-token-gated — only the founder/human with the master bearer can call this.
+    """
     try:
         pkg = _service.retire(
             db=_get_db(org),
@@ -561,35 +639,4 @@ def retire(
         "skill_id": pkg.skill_id,
         "status": pkg.status.value,
         "reason": reason,
-    }
-
-
-# ── Route: GET /skill-lifecycle/events/{skill_id} ─────────────────────────
-
-@router.get("/events/{skill_id}")
-def get_events(
-    slug: str,
-    skill_id: str,
-    org: OrgDep,
-    limit: int = Query(100, ge=1, le=500),
-) -> dict:
-    """Read event history for a skill (human + agent readable)."""
-    from runtime.skills.lifecycle import stores
-    events = stores.list_lifecycle_events(_get_db(org), skill_id=skill_id, limit=limit)
-    return {
-        "skill_id": skill_id,
-        "events": [
-            {
-                "id": e.id,
-                "event_type": e.event_type,
-                "actor": e.actor,
-                "actor_role": e.actor_role,
-                "previous_status": e.previous_status,
-                "new_status": e.new_status,
-                "content_hash": e.content_hash,
-                "created_at": e.created_at.isoformat(),
-                "metadata": e.metadata,
-            }
-            for e in events
-        ],
     }

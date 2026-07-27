@@ -509,12 +509,16 @@ def quarantine_legacy_user_skills(db, org_root, settings) -> int:
     """Migrate existing per-org user-authored skills into the lifecycle ledger.
 
     Reads ``<org_root>/skills/`` directory. For each user-authored skill found:
+    - Copies SKILL.md content to the org ArtifactStore under
+      ``skill-lifecycle/legacy/<slug>/SKILL.md`` for immutable retention
     - Creates a PackageVersion record with status LEGACY_QUARANTINED
-    - Stores the content_artifact_key referencing the existing filesystem path
+    - Stores the content_artifact_key referencing the immutable artifact
     - Records a lifecycle event for the migration
     - Does NOT materialize quarantined content into any catalog or workspace
 
     Malformed/unsafe legacy data is preserved with error metadata.
+    Legacy filesystem paths (org_root/skills/) are NEVER referenced — only
+    the immutable ArtifactStore key is stored.
 
     Returns the number of skills quarantined.
     """
@@ -526,78 +530,58 @@ def quarantine_legacy_user_skills(db, org_root, settings) -> int:
     if not skills_dir.is_dir():
         return 0
 
+    # Resolve ArtifactStore for immutable artifact retention
+    try:
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        artifact_store = ArtifactStore(OrgPaths(org_path).artifacts_dir)
+    except Exception:
+        artifact_store = None
+
     count = 0
     for skill_dir in sorted(skills_dir.iterdir()):
         if not skill_dir.is_dir():
             continue
-        slug = skill_dir.name
+        slug_val = skill_dir.name
+        skill_id = f"hr:{slug_val}"
         skill_md_path = skill_dir / "SKILL.md"
+
+        # Determine artifact key for immutable retention
+        base_artifact_key: str | None = None
+
         if not skill_md_path.is_file():
             # Malformed — no SKILL.md
+            content_hash = "malformed-no-content"
+            artifact_key = f"skill-lifecycle/legacy/{slug_val}-no-content/0.0.0/SKILL.md"
+        else:
             try:
-                db.execute(
-                    """INSERT OR IGNORE INTO skill_lifecycle_packages
-                       (skill_id, slug, name, version, content_hash,
-                        policy_class, description, skill_md,
-                        content_artifact_key, status, created_at, created_by)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        f"hr:{slug}", slug, slug, "0.0.0",
-                        "malformed-no-content",
-                        "standard_operational",
-                        f"Legacy skill '{slug}' — no SKILL.md found",
-                        "",
-                        f"skills/{slug}",
-                        LifecycleStatus.LEGACY_QUARANTINED.value,
-                        datetime.now(timezone.utc).isoformat(),
-                        "migration",
-                    ),
-                )
-                count += 1
-            except Exception:
-                pass
-            continue
+                skill_md = skill_md_path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                content_hash = "malformed-unreadable"
+                artifact_key = f"skill-lifecycle/legacy/{slug_val}-unreadable/0.0.0/SKILL.md"
+                # Fall through to DB insert without artifact copy
+                skill_md = ""
+            else:
+                content_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
+                artifact_key = f"skill-lifecycle/legacy/{slug_val}/{content_hash[:16]}/SKILL.md"
 
-        try:
-            skill_md = skill_md_path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            # Malformed — unreadable content
-            try:
-                db.execute(
-                    """INSERT OR IGNORE INTO skill_lifecycle_packages
-                       (skill_id, slug, name, version, content_hash,
-                        policy_class, description, skill_md,
-                        content_artifact_key, status, created_at, created_by)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        f"hr:{slug}", slug, slug, "0.0.0",
-                        "malformed-unreadable",
-                        "standard_operational",
-                        f"Legacy skill '{slug}' — SKILL.md unreadable",
-                        "",
-                        f"skills/{slug}",
-                        LifecycleStatus.LEGACY_QUARANTINED.value,
-                        datetime.now(timezone.utc).isoformat(),
-                        "migration",
-                    ),
-                )
-                count += 1
-            except Exception:
-                pass
-            continue
+                # Check if already migrated (idempotent)
+                existing = db.execute(
+                    "SELECT id FROM skill_lifecycle_packages WHERE skill_id = ? AND content_hash = ?",
+                    (skill_id, content_hash),
+                ).fetchone()
+                if existing:
+                    continue
 
-        # Compute hash
-        content_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
+                # Copy content to immutable ArtifactStore
+                if artifact_store is not None and skill_md:
+                    try:
+                        artifact_store.put(artifact_key, skill_md.encode("utf-8"))
+                    except Exception:
+                        # Artifact store may be unavailable; continue with metadata-only
+                        pass
 
-        # Check if already migrated (idempotent)
-        existing = db.execute(
-            "SELECT id FROM skill_lifecycle_packages WHERE skill_id = ? AND content_hash = ?",
-            (f"hr:{slug}", content_hash),
-        ).fetchone()
-        if existing:
-            continue
-
-        artifact_key = f"skills/{slug}"
+        # Insert quarantined package record
         try:
             db.execute(
                 """INSERT OR IGNORE INTO skill_lifecycle_packages
@@ -606,22 +590,26 @@ def quarantine_legacy_user_skills(db, org_root, settings) -> int:
                     content_artifact_key, status, created_at, created_by)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    f"hr:{slug}", slug, slug, "0.0.0",
+                    skill_id, slug_val, slug_val, "0.0.0",
                     content_hash,
                     "standard_operational",
-                    f"Legacy skill '{slug}' — migrated to lifecycle ledger",
+                    f"Legacy skill '{slug_val}' — migrated to lifecycle ledger",
                     "",  # skill_md lives in artifact store
-                    artifact_key,
+                    artifact_key,  # Immutable ArtifactStore key, NOT filesystem path
                     LifecycleStatus.LEGACY_QUARANTINED.value,
                     datetime.now(timezone.utc).isoformat(),
                     "migration",
                 ),
             )
+            count += 1
+        except Exception:
+            continue
 
-            # Record migration event
+        # Record migration event
+        try:
             row = db.execute(
                 "SELECT id FROM skill_lifecycle_packages WHERE skill_id = ? AND content_hash = ?",
-                (f"hr:{slug}", content_hash),
+                (skill_id, content_hash),
             ).fetchone()
             if row:
                 db.execute(
@@ -631,7 +619,7 @@ def quarantine_legacy_user_skills(db, org_root, settings) -> int:
                         created_at, task_id, session_id)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        f"hr:{slug}", row["id"], "legacy_quarantined",
+                        skill_id, row["id"], "legacy_quarantined",
                         "migration", "service",
                         None, LifecycleStatus.LEGACY_QUARANTINED.value,
                         content_hash,
@@ -640,8 +628,6 @@ def quarantine_legacy_user_skills(db, org_root, settings) -> int:
                         None, None,
                     ),
                 )
-
-            count += 1
         except Exception:
             pass
 

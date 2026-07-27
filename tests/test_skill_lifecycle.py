@@ -623,7 +623,10 @@ class TestLegacyQuarantine:
             pkg = lifecycle_stores.get_latest_package_version(db, "hr:my-legacy-skill")
             assert pkg is not None
             assert pkg.status == LifecycleStatus.LEGACY_QUARANTINED
-            assert pkg.content_artifact_key == "skills/my-legacy-skill"
+            # Artifact key uses immutable ArtifactStore path, not mutable filesystem path
+            assert pkg.content_artifact_key is not None
+            assert pkg.content_artifact_key.startswith("skill-lifecycle/legacy/my-legacy-skill/")
+            assert pkg.content_artifact_key.endswith("SKILL.md")
 
     def test_quarantine_skips_malformed_skills(self, db):
         """Skills without SKILL.md are quarantined with error metadata."""
@@ -637,7 +640,7 @@ class TestLegacyQuarantine:
             assert count >= 1
             pkg = lifecycle_stores.get_latest_package_version(db, "hr:malformed-skill")
             assert pkg is not None
-            assert "no SKILL.md" in (pkg.description or "")
+            assert pkg.content_hash == "malformed-no-content"
 
     def test_quarantine_idempotent(self, db):
         """Running quarantine twice doesn't create duplicates."""

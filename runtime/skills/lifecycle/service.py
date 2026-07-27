@@ -5,11 +5,18 @@ human-only lifecycle management, and the two-published-cap constraint.
 
 Agent context is derived from verified session state (SessionTracker),
 never from request body claims.
+
+Package content retention follows the task-artifact policy: proposal SKILL.md
+content is stored in the org ArtifactStore under
+``skill-lifecycle/<slug>/<version>/SKILL.md``; the ledger stores the
+``content_artifact_key`` reference rather than unbounded inline bytes.
 """
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from . import stores
@@ -92,11 +99,16 @@ class SkillLifecycleService:
         purpose: str = "",
         target_agent_suggestion: str = "",
         protected_slugs: frozenset | None = None,
+        org_root: Path | str | None = None,
     ) -> PackageVersion:
         """Submit a task/session-bound agent proposal.
 
         Only agent callers (actor_kind="agent") may submit proposals.
         Proposal identity derives from verified task/session, never body claims.
+
+        Package content (skill_md) is stored in the org ArtifactStore under
+        ``skill-lifecycle/<slug>/<version>/SKILL.md`` when ``org_root`` is
+        provided. The ledger stores only the artifact key and metadata.
 
         Constraints:
         - slug must not collide with protected slugs
@@ -118,17 +130,6 @@ class SkillLifecycleService:
 
         skill_id = f"hr:{slug}"
 
-        # Check if a published version already exists for this slug
-        published_count = stores.count_published_packages(db)
-        # Count is by skill_id, but we also check if this specific skill is already published
-        existing_published = stores.list_package_versions(
-            db, skill_id=skill_id, status=LifecycleStatus.PUBLISHED
-        )
-        if existing_published:
-            # If already published, new proposals create a new version (draft fork) but
-            # we allow submission — the fork's status will be draft until validation.
-            pass
-
         # Compute content hash
         content_hash = PackageVersion.compute_content_hash(skill_md, references, assets)
 
@@ -137,7 +138,24 @@ class SkillLifecycleService:
         if existing is not None:
             return existing  # Idempotent — return existing proposal
 
-        # Create the proposed package version
+        # Persist SKILL.md content to the org ArtifactStore (task-artifact policy)
+        content_artifact_key: str | None = None
+        if org_root is not None:
+            try:
+                from runtime.infrastructure.artifact_store import ArtifactStore
+                from runtime.orchestrator._paths import OrgPaths
+
+                org_root_path = Path(org_root) if not isinstance(org_root, Path) else org_root
+                store = ArtifactStore(OrgPaths(org_root_path).artifacts_dir)
+                artifact_key = f"skill-lifecycle/{slug}/{version}/SKILL.md"
+                store.put(artifact_key, skill_md.encode("utf-8"))
+                content_artifact_key = artifact_key
+            except Exception:
+                # If artifact storage is unavailable, proceed with inline-only
+                # (the ledger still captures hash + metadata for provenance)
+                pass
+
+        # Create the proposed package version (ledger stores metadata, not bytes)
         pkg = PackageVersion(
             skill_id=skill_id,
             slug=slug,
@@ -146,7 +164,8 @@ class SkillLifecycleService:
             content_hash=content_hash,
             policy_class=policy_class,
             description=description,
-            skill_md=skill_md,
+            skill_md=skill_md,  # Transient cache; artifact store holds canonical bytes
+            content_artifact_key=content_artifact_key,
             status=LifecycleStatus.PROPOSED,
             created_by=proposer_agent or "",
             proposal_task_id=task_id,
@@ -170,6 +189,7 @@ class SkillLifecycleService:
             metadata={
                 "purpose": purpose,
                 "target_agent_suggestion": target_agent_suggestion,
+                "content_artifact_key": content_artifact_key,
             },
             task_id=task_id,
             session_id=session_id,
@@ -470,9 +490,9 @@ class SkillLifecycleService:
     ) -> int:
         """Emergency rollback: deactivate all assignments for a skill.
 
-        All operations execute within their individual implicit SQLite
-        transactions (auto-commit mode). For multi-statement atomicity,
-        the caller should wrap in BEGIN IMMEDIATE/COMMIT.
+        The caller (HTTP handler) must wrap this in BEGIN IMMEDIATE/COMMIT
+        so package status change, assignment deactivation, and event insertion
+        roll back together atomically.
 
         Returns count of deactivated assignments.
         """

@@ -687,6 +687,51 @@ exposure directly from disk (no daemon round-trip):
   a skill is or isn't available, including both gate results and
   eligibility provenance.
 
+### 4.5 THR-055 Lifecycle-Ledger Custom Skills (Internal Pilot)
+
+User-authored custom skills are governed by an immutable lifecycle ledger,
+replacing the legacy per-org filesystem store (`<org_root>/skills/`).
+
+**Lifecycle states:** `proposed → draft → validated → in_review → approved
+→ published → assigned`. `rolled_back` and `retired` are terminal re-assignment
+states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
+
+**Agent authority.** Agents may submit only their own task/session-bound
+proposal via `POST /skill-lifecycle/proposals` (dual-auth route: agent with
+verified SessionTracker binding, or founder via master bearer). All other
+lifecycle mutations (claim, validate, review, publish, assign, rollback, retire)
+are founder-only and gated behind bearer-only routes with `require_token()`. An
+agent attempting any non-proposal mutation receives server-side 403.
+
+**Pilot constraints (founder-approved):** maximum two concurrently published
+custom skills; `standard_operational` policy class only; two internal use cases
+(frontend-development, product-manager PRD); founder-only review/publish/
+assignment/retire/rollback.
+
+**Immutable artifact retention.** Proposal SKILL.md content is stored in the
+org ArtifactStore (`skill-lifecycle/<slug>/<version>/SKILL.md`). Ledger tables
+store immutable metadata (hash, version, provenance) and artifact reference
+keys — not unbounded inline bytes. Materialization at session spawn loads exact
+pinned bytes from the ArtifactStore and verifies the hash/version provenance.
+
+**Legacy migration/quarantine.** On startup, existing `<org_root>/skills/`
+content is quarantined into the ledger with status `LEGACY_QUARANTINED`. Content
+is copied to the ArtifactStore under `skill-lifecycle/legacy/<slug>/<hash>/SKILL.md`
+for immutable retention. Quarantined skills are never materialized — only
+published+assigned lifecycle skills reach the workspace. Migration is idempotent
+and handles malformed/unsafe filesystem and YAML fixtures.
+
+**Atomic rollback.** `POST /skill-lifecycle/rollback` wraps package status
+change, assignment deactivation, and event insertion in an explicit
+`BEGIN IMMEDIATE`/`COMMIT` transaction. All three mutations roll back together
+on failure. Workspace residue is cleaned up on the next spawn by fail-closed
+materialization.
+
+**Legacy route cutover.** `POST /skills`, `PATCH /skills/{id}`,
+`POST /skills/{id}/validate`, and `POST /agents/{agent}/skills/{skill}/assign`
+return 410 Gone with migration guidance. The lifecycle routes are the sole
+runtime source for governed custom skills.
+
 Registry and eligibility mutations emit audit rows under the `config:skills`
 scope prefix (matching the established `config:<section>` convention from
 THR-035).

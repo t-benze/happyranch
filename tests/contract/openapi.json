@@ -1924,10 +1924,6 @@
       "GET": {
         "params": [
           [
-            "authorization",
-            "header"
-          ],
-          [
             "slug",
             "path"
           ]
@@ -1941,10 +1937,6 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/events/{skill_id}": {
       "GET": {
         "params": [
-          [
-            "authorization",
-            "header"
-          ],
           [
             "limit",
             "query"
@@ -1968,12 +1960,20 @@
       "POST": {
         "params": [
           [
-            "authorization",
-            "header"
+            "agent_name",
+            "query"
+          ],
+          [
+            "session_id",
+            "query"
           ],
           [
             "slug",
             "path"
+          ],
+          [
+            "task_id",
+            "query"
           ]
         ],
         "responses": [
@@ -2117,10 +2117,6 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/{skill_id}": {
       "GET": {
         "params": [
-          [
-            "authorization",
-            "header"
-          ],
           [
             "skill_id",
             "path"
