@@ -101,7 +101,7 @@ describe('SkillCreatePage — add custom skill (THR-092 Slice 3)', () => {
     expect(screen.queryByLabelText('Validation result')).toBeNull();
   });
 
-  test('SUCCESS path: renders Proposed badge, confirmation, and a View skill link to the detail route', async () => {
+  test('SUCCESS path: renders Proposed badge, confirmation, and NO catalog detail link (proposed stays outside catalog)', async () => {
     mount();
     await screen.findByRole('heading', { name: /Add a custom skill/i });
     await fillMinimalForm();
@@ -111,11 +111,11 @@ describe('SkillCreatePage — add custom skill (THR-092 Slice 3)', () => {
     expect(result).toHaveAttribute('data-result', 'proposed');
     expect(within(result).getByText('Proposed')).toBeInTheDocument();
     expect(within(result).getByText(/awaiting review/i)).toBeInTheDocument();
-    const view = within(result).getByRole('link', { name: /View skill/i });
-    expect(view).toHaveAttribute(
-      'href',
-      `/orgs/${SLUG}/skills/${encodeURIComponent('hr:incident-postmortem')}`,
-    );
+    // Proposed skills are NOT in the catalog — no View skill / catalog-detail
+    // link must be rendered (TASK-3488).
+    expect(within(result).queryByRole('link', { name: /View skill/i })).toBeNull();
+    // Proposed state does NOT expose a catalog claim.
+    expect(within(result).queryByText(/catalog/i)).toBeNull();
     // Proposed state does not offer Re-validate.
     expect(within(result).queryByRole('button', { name: /Re-validate/i })).toBeNull();
   });

@@ -433,8 +433,8 @@ export function SkillEditPage(): JSX.Element {
 
           {isProposed ? (
             <p className="text-fg mt-3 text-sm font-semibold">
-              Edit proposal submitted — awaiting review. Your changes were accepted
-              and saved to the catalog as a new proposal.
+              Edit proposal submitted — awaiting review. Your changes have been submitted
+              as a new proposal and will be reviewed before becoming available to agents.
             </p>
           ) : (
             <p className="text-fg mt-3 text-sm font-semibold">
@@ -501,6 +501,7 @@ export function SkillEditPage(): JSX.Element {
             </div>
           )}
 
+          {!isProposed && (
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <Link
               to={detailPath}
@@ -508,7 +509,7 @@ export function SkillEditPage(): JSX.Element {
             >
               View skill
             </Link>
-            {!passed && !isProposed && (
+            {!passed && (
               <button
                 type="button"
                 onClick={onRevalidate}
@@ -524,6 +525,7 @@ export function SkillEditPage(): JSX.Element {
               </button>
             )}
           </div>
+          )}
         </section>
       )}
 

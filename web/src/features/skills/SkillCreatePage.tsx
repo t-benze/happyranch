@@ -310,8 +310,8 @@ export function SkillCreatePage(): JSX.Element {
 
           {isProposed ? (
             <p className="text-fg mt-3 text-sm font-semibold">
-              Proposal submitted — awaiting review. The skill package was accepted
-              and saved to the catalog as a proposal.
+              Proposal submitted — awaiting review. Your skill has been submitted
+              as a proposal and will be reviewed before becoming available to agents.
             </p>
           ) : (
             <p className="text-fg mt-3 text-sm font-semibold">
@@ -333,6 +333,7 @@ export function SkillCreatePage(): JSX.Element {
           {/* Guidance: every technical check, in plain language (failure only). */}
           {!passed && !isProposed && <ValidationChecklist />}
 
+          {!isProposed && (
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <Link
               to={detailPath}
@@ -340,7 +341,7 @@ export function SkillCreatePage(): JSX.Element {
             >
               View skill
             </Link>
-            {!passed && !isProposed && (
+            {!passed && (
               <button
                 type="button"
                 onClick={onRevalidate}
@@ -356,6 +357,7 @@ export function SkillCreatePage(): JSX.Element {
               </button>
             )}
           </div>
+          )}
         </section>
       )}
 

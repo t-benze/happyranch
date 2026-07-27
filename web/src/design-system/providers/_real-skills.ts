@@ -106,7 +106,7 @@ function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse>
 // Agent-side "validate" reflects the CURRENT lifecycle state of the proposal.
 // Does NOT fabricate validated — only the founder-only lifecycle validation
 // transition sets the validated state.
-function lifecycleStatusToValidationState(
+export function lifecycleStatusToValidationState(
   status: string | null,
 ): 'proposed' | 'validated' | 'failed_validation' {
   switch (status) {

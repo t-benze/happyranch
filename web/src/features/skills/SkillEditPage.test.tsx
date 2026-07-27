@@ -71,7 +71,7 @@ const PASS_PROPOSAL: ProposalResponse = {
   proposal_task_id: null,
 };
 
-const LIFECYCLE_STATUS_VALIDATED = {
+const LIFECYCLE_STATUS_PROPOSED = {
   skill_id: CUSTOM_ID,
   slug: 'tourism-partner-playbook',
   current_status: 'proposed',
@@ -112,7 +112,7 @@ function mount(
     // Lifecycle status read (used by Re-validate).
     http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/:skillId`, () =>
       HttpResponse.json(
-        opts.lifecycleStatus ?? LIFECYCLE_STATUS_VALIDATED,
+        opts.lifecycleStatus ?? LIFECYCLE_STATUS_PROPOSED,
         { status: 200 },
       ),
     ),
@@ -164,7 +164,7 @@ describe('SkillEditPage — edit + re-validate a custom skill (THR-092 Slice 4)'
     expect(screen.queryByLabelText('Validation result')).toBeNull();
   });
 
-  test('PROPOSED + version bump: submits proposal, shows proposed state, confirmation, and View skill link', async () => {
+  test('PROPOSED + version bump: submits proposal, shows proposed state, NO catalog link (proposed stays outside catalog)', async () => {
     mount(CUSTOM_DETAIL);
     await screen.findByRole('heading', { name: /Edit a custom skill/i });
     await userEvent.clear(screen.getByLabelText(/Version/i));
@@ -175,11 +175,12 @@ describe('SkillEditPage — edit + re-validate a custom skill (THR-092 Slice 4)'
     expect(result).toHaveAttribute('data-result', 'proposed');
     expect(within(result).getByText('Proposed')).toBeInTheDocument();
     expect(within(result).getByText(/awaiting review/i)).toBeInTheDocument();
-    // Proposed state adds a View skill link and no Re-validate.
-    expect(within(result).getByRole('link', { name: /View skill/i })).toHaveAttribute(
-      'href',
-      `/orgs/${SLUG}/skills/${CUSTOM_ID}`,
-    );
+    // Proposed state does NOT render a View skill / catalog-detail link
+    // (TASK-3488 — proposed content is outside the catalog).
+    expect(within(result).queryByRole('link', { name: /View skill/i })).toBeNull();
+    // No catalog claim.
+    expect(within(result).queryByText(/catalog/i)).toBeNull();
+    // No Re-validate.
     expect(within(result).queryByRole('button', { name: /Re-validate/i })).toBeNull();
   });
 
