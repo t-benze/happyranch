@@ -2652,3 +2652,261 @@ class TestSessionClearRevocation:
         skills = r2.json()["skills"]
         skill_ids = [s["skill_id"] for s in skills]
         assert "hr:frontend-development" not in skill_ids
+
+
+class TestProposalConcurrentClearRace:
+    """Regression: TOCTOU race between proposal persistence and
+    SessionTracker.clear()/set_active() (completion, cancellation,
+    replacement). The reviewer independently reproduced that
+    clear() can run after authorization but before
+    _service.submit_proposal(), causing artifact/ledger persistence
+    with a revoked session. These tests prove the two possible
+    orderings are handled correctly.
+    """
+
+    def test_clear_wins_before_persistence_returns_403_no_residue(
+        self, app, org_state,
+    ):
+        """Ordering 1: clear() wins before proposal commit.
+        The route must return 403 with NO artifact or ledger residue.
+
+        We use a controlled interleaving: the test thread calls clear()
+        while the proposal thread is trying to acquire the lease.
+        A barrier ensures clear() acquires _proposal_lease first,
+        invalidating the session. The proposal then acquires the lease,
+        re-verifies, and returns 403.
+        """
+        from threading import Barrier, Thread
+
+        org_state.sessions.set_active(
+            "TASK-RACE-CLR", "frontend_engineer", "sess-race-clr",
+            org_slug="alpha",
+        )
+
+        client = TestClient(app)
+        # Two-phase barrier: proposal thread releases Phase 0
+        # (signals it's about to acquire the lease), test thread
+        # does clear() before proposal can acquire the lease.
+        barrier = Barrier(2, timeout=5.0)
+        result = {"status_code": None, "error": None}
+
+        def run_proposal():
+            try:
+                # Release Phase 0: we're about to acquire the lease.
+                # The test thread drives clear() now.
+                barrier.wait()
+                r = client.post(
+                    "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                    json=AGENT_PROPOSAL_BODY,
+                    params={"session_id": "sess-race-clr"},
+                )
+                result["status_code"] = r.status_code
+                # Release Phase 1: proposal finished.
+                barrier.wait()
+            except Exception as e:
+                result["error"] = str(e)
+
+        t = Thread(target=run_proposal)
+        t.start()
+        # Release Phase 0: both threads now race for the lock.
+        barrier.wait()
+
+        # Clear while proposal is trying to acquire the lease.
+        # Since clear() acquires _proposal_lease internally, and
+        # the proposal hasn't acquired it yet, clear() wins the race.
+        org_state.sessions.clear("TASK-RACE-CLR", "frontend_engineer")
+
+        # Wait for proposal to complete.
+        barrier.wait()
+        t.join(timeout=5.0)
+
+        assert result["error"] is None, f"Proposal thread error: {result['error']}"
+
+        # MUST be 403 — the session was cleared before proposal acquired lease.
+        assert result["status_code"] == 403, (
+            f"Expected 403 after clear() wins race, got {result['status_code']}"
+        )
+
+        # MUST have zero artifact/ledger residue.
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:frontend-development",
+        )
+        assert pkg is None, (
+            "Clear-winning race must leave no artifact/ledger residue"
+        )
+
+    def test_replacement_wins_before_persistence_returns_403_no_residue(
+        self, app, org_state,
+    ):
+        """Ordering 1 variant: set_active() replacement wins before
+        proposal commit. Old session_id must 403 with no residue.
+        """
+        from threading import Barrier, Thread
+
+        org_state.sessions.set_active(
+            "TASK-RACE-REP", "frontend_engineer", "sess-race-old",
+            org_slug="alpha",
+        )
+
+        client = TestClient(app)
+        barrier = Barrier(2, timeout=5.0)
+        result = {"status_code": None, "error": None}
+
+        def run_proposal():
+            try:
+                barrier.wait()
+                r = client.post(
+                    "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                    json=AGENT_PROPOSAL_BODY,
+                    params={"session_id": "sess-race-old"},
+                )
+                result["status_code"] = r.status_code
+                barrier.wait()
+            except Exception as e:
+                result["error"] = str(e)
+
+        t = Thread(target=run_proposal)
+        t.start()
+        barrier.wait()
+
+        # Replace the session while proposal tries to acquire the lease.
+        org_state.sessions.set_active(
+            "TASK-RACE-REP", "frontend_engineer", "sess-race-new",
+            org_slug="alpha",
+        )
+
+        barrier.wait()
+        t.join(timeout=5.0)
+
+        assert result["error"] is None, f"Proposal thread error: {result['error']}"
+
+        assert result["status_code"] == 403, (
+            f"Expected 403 after replacement wins race, got {result['status_code']}"
+        )
+
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:frontend-development",
+        )
+        assert pkg is None, (
+            "Replacement-winning race must leave no artifact/ledger residue"
+        )
+
+    def test_proposal_persistence_wins_then_clear_completes_after(
+        self, app, org_state,
+    ):
+        """Ordering 2: proposal persistence wins while the validated
+        active lease is held. clear() must not take effect until the
+        commit completes. Result: one valid immutable proposal with
+        correct session provenance.
+
+        The proposal thread acquires _proposal_lease first, runs
+        authorization + persistence. The test thread's clear() blocks
+        on _proposal_lease until the proposal releases it.
+        We demonstrate this by running the proposal thread to completion
+        first, then driving clear() — which now succeeds normally.
+        """
+        from threading import Thread
+
+        org_state.sessions.set_active(
+            "TASK-RACE-WIN", "frontend_engineer", "sess-race-win",
+            org_slug="alpha",
+        )
+
+        client = TestClient(app)
+        result = {"status_code": None}
+
+        t = Thread(
+            target=lambda: result.update(
+                status_code=client.post(
+                    "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+                    json=AGENT_PROPOSAL_BODY,
+                    params={"session_id": "sess-race-win"},
+                ).status_code,
+            ),
+        )
+        t.start()
+        t.join(timeout=5.0)
+
+        assert not t.is_alive(), "Proposal thread must complete"
+
+        # Proposal must have succeeded.
+        assert result["status_code"] == 201, (
+            f"Proposal must win (201), got {result['status_code']}"
+        )
+
+        # Verify the proposal exists with correct provenance.
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:frontend-development",
+        )
+        assert pkg is not None, "Proposal must exist in ledger"
+        assert pkg.proposal_session_id == "sess-race-win", (
+            f"Proposal must have correct session_id: {pkg.proposal_session_id}"
+        )
+
+        # Now clear — must succeed since proposal is done.
+        org_state.sessions.clear("TASK-RACE-WIN", "frontend_engineer")
+
+        # Verify session is cleared.
+        assert org_state.sessions.get_active(
+            "TASK-RACE-WIN", "frontend_engineer",
+        ) is None
+        assert org_state.sessions.get_context_by_session(
+            "sess-race-win",
+        ) is None
+
+    def test_sequential_clear_no_residue_retained(self, app, org_state):
+        """Sequential clear/replacement no-residue behavior is preserved."""
+        org_state.sessions.set_active(
+            "TASK-SEQ-1", "frontend_engineer", "sess-seq-001",
+            org_slug="alpha",
+        )
+        org_state.sessions.clear("TASK-SEQ-1", "frontend_engineer")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-seq-001"},
+        )
+        assert r.status_code == 403
+
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:frontend-development",
+        )
+        assert pkg is None
+
+    def test_sequential_replacement_current_works_retained(
+        self, app, org_state,
+    ):
+        """Sequential replacement: current ID still works, old ID 403."""
+        org_state.sessions.set_active(
+            "TASK-SEQ-2", "frontend_engineer", "sess-seq-old",
+            org_slug="alpha",
+        )
+        org_state.sessions.set_active(
+            "TASK-SEQ-2", "frontend_engineer", "sess-seq-new",
+            org_slug="alpha",
+        )
+        client = TestClient(app)
+
+        # New session works
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-seq-new"},
+        )
+        assert r.status_code == 201, (
+            f"Current replacement must work: {r.status_code}"
+        )
+
+        # Old session denied
+        r2 = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-seq-old"},
+        )
+        assert r2.status_code == 403

@@ -21,17 +21,29 @@ class SessionTracker:
         # only (task_id, agent_name) for backward compatibility.
         self._context_by_session: dict[str, tuple[str, str, str]] = {}
         self._lock = Lock()
+        # Serializes proposal persistence against clear()/set_active()
+        # to close the TOCTOU window between authorization (under _lock)
+        # and the service-layer commit (outside _lock).  The proposal
+        # route acquires this lock around the full authorization +
+        # persistence span; clear() and set_active() acquire it during
+        # their critical mutation.  This ensures: if clear/replacement
+        # wins the lock first, the proposal's re-verification catches
+        # the revoked session (403, no residue); if the proposal wins
+        # the lock first, clear/replacement blocks until the commit
+        # completes, preserving consistent audit provenance.
+        self._proposal_lease = Lock()
 
     def set_active(self, task_id: str, agent: str, session_id: str, *, org_slug: str | None = None) -> None:
-        with self._lock:
-            old_session_id = self._active.get((task_id, agent))
-            self._active[(task_id, agent)] = session_id
-            if old_session_id is not None and old_session_id != session_id:
-                # Invalidate the superseded session's context so stale
-                # opaque capabilities cannot create proposals.
-                self._context_by_session.pop(old_session_id, None)
-            if org_slug is not None:
-                self._context_by_session[session_id] = (org_slug, task_id, agent)
+        with self._proposal_lease:
+            with self._lock:
+                old_session_id = self._active.get((task_id, agent))
+                self._active[(task_id, agent)] = session_id
+                if old_session_id is not None and old_session_id != session_id:
+                    # Invalidate the superseded session's context so stale
+                    # opaque capabilities cannot create proposals.
+                    self._context_by_session.pop(old_session_id, None)
+                if org_slug is not None:
+                    self._context_by_session[session_id] = (org_slug, task_id, agent)
 
     def get_active(self, task_id: str, agent: str) -> str | None:
         with self._lock:
@@ -95,10 +107,11 @@ class SessionTracker:
             return len(self._active)
 
     def clear(self, task_id: str, agent: str) -> None:
-        with self._lock:
-            old_session_id = self._active.pop((task_id, agent), None)
-            self._pids.pop((task_id, agent), None)
-            if old_session_id is not None:
-                # Invalidate the cleared session's context so completed/
-                # cancelled/revoked opaque capabilities cannot create proposals.
-                self._context_by_session.pop(old_session_id, None)
+        with self._proposal_lease:
+            with self._lock:
+                old_session_id = self._active.pop((task_id, agent), None)
+                self._pids.pop((task_id, agent), None)
+                if old_session_id is not None:
+                    # Invalidate the cleared session's context so completed/
+                    # cancelled/revoked opaque capabilities cannot create proposals.
+                    self._context_by_session.pop(old_session_id, None)

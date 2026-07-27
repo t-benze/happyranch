@@ -297,86 +297,91 @@ def submit_proposal_agent_only(
             },
         )
 
-    # Resolve (org_slug, task_id, agent_name) from opaque session.
-    # First try the four-part context index; fall back to the legacy
-    # two-field lookup (backward compat for sessions activated without
-    # org awareness).
-    context = org.sessions.get_context_by_session(session_id)
-    if context is not None:
-        verified_org, task_id, agent_name = context
-        # Cross-check: the path-selected org MUST match the session's org.
-        # This prevents caller-controlled org routing from determining the
-        # persistence org independently of the opaque session context.
-        if verified_org != slug:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "cross_org_session",
-                    "detail": f"Session {session_id} belongs to org '{verified_org}', "
-                              f"not '{slug}'. Org is derived from the server's "
-                              "verified session context, not caller-selected path.",
-                },
-            )
-        # Defense-in-depth: re-verify the session is still CURRENTLY active
-        # for the (task_id, agent_name) binding.  This proves the opaque
-        # capability still owns the active binding before policy evaluation
-        # or persistence — completed/cancelled/revoked or superseded sessions
-        # are denied even if a residual context entry exists.
-        expected_session = org.sessions.get_active(task_id, agent_name)
-        if expected_session != session_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "session_not_current",
-                    "detail": f"Session {session_id} is not the current active session "
-                              f"for task {task_id} agent {agent_name}. "
-                              "The session may have been cleared, superseded, or revoked.",
-                },
-            )
-    else:
-        # Legacy fallback: session was activated without org context.
-        # Still derive (task_id, agent_name) but org is caller-selected.
-        resolved = org.sessions.get_by_session(session_id)
-        if resolved is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "unknown_session",
-                    "detail": f"No active session found for session_id '{session_id}'. "
-                              "The session may be inactive, expired, or never existed.",
-                },
-            )
-        task_id, agent_name = resolved
+    # Acquire the proposal lease to serialize session authorization +
+    # persistence against concurrent clear()/set_active().  This closes
+    # the TOCTOU window where clear() could run after the authorization
+    # check but before _service.submit_proposal() commits.
+    with org.sessions._proposal_lease:
+        # Resolve (org_slug, task_id, agent_name) from opaque session.
+        # First try the four-part context index; fall back to the legacy
+        # two-field lookup (backward compat for sessions activated without
+        # org awareness).
+        context = org.sessions.get_context_by_session(session_id)
+        if context is not None:
+            verified_org, task_id, agent_name = context
+            # Cross-check: the path-selected org MUST match the session's org.
+            # This prevents caller-controlled org routing from determining the
+            # persistence org independently of the opaque session context.
+            if verified_org != slug:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "cross_org_session",
+                        "detail": f"Session {session_id} belongs to org '{verified_org}', "
+                                  f"not '{slug}'. Org is derived from the server's "
+                                  "verified session context, not caller-selected path.",
+                    },
+                )
+            # Defense-in-depth: re-verify the session is still CURRENTLY active
+            # for the (task_id, agent_name) binding.  This proves the opaque
+            # capability still owns the active binding before policy evaluation
+            # or persistence — completed/cancelled/revoked or superseded sessions
+            # are denied even if a residual context entry exists.
+            expected_session = org.sessions.get_active(task_id, agent_name)
+            if expected_session != session_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "session_not_current",
+                        "detail": f"Session {session_id} is not the current active session "
+                                  f"for task {task_id} agent {agent_name}. "
+                                  "The session may have been cleared, superseded, or revoked.",
+                    },
+                )
+        else:
+            # Legacy fallback: session was activated without org context.
+            # Still derive (task_id, agent_name) but org is caller-selected.
+            resolved = org.sessions.get_by_session(session_id)
+            if resolved is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "unknown_session",
+                        "detail": f"No active session found for session_id '{session_id}'. "
+                                  "The session may be inactive, expired, or never existed.",
+                    },
+                )
+            task_id, agent_name = resolved
 
-    # Enforce agent-id × canonical-slug policy BEFORE any artifact/ledger write
-    _enforce_agent_pilot_policy(agent_name, body.slug)
+        # Enforce agent-id × canonical-slug policy BEFORE any artifact/ledger write
+        _enforce_agent_pilot_policy(agent_name, body.slug)
 
-    try:
-        protected_slugs = _get_protected_slugs(org)
-        pkg = _service.submit_proposal(
-            db=_get_db(org),
-            actor_kind="agent",
-            slug=body.slug,
-            name=body.name,
-            description=body.description,
-            skill_md=body.skill_md,
-            version=body.version,
-            policy_class=body.policy_class,
-            references=body.references,
-            assets=body.assets,
-            task_id=task_id,
-            session_id=session_id,
-            proposer_agent=agent_name,
-            purpose=body.purpose,
-            target_agent_suggestion=body.target_agent_suggestion,
-            protected_slugs=protected_slugs,
-            org_root=org.root,
-        )
-    except LifecycleError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "detail": e.detail},
-        )
+        try:
+            protected_slugs = _get_protected_slugs(org)
+            pkg = _service.submit_proposal(
+                db=_get_db(org),
+                actor_kind="agent",
+                slug=body.slug,
+                name=body.name,
+                description=body.description,
+                skill_md=body.skill_md,
+                version=body.version,
+                policy_class=body.policy_class,
+                references=body.references,
+                assets=body.assets,
+                task_id=task_id,
+                session_id=session_id,
+                proposer_agent=agent_name,
+                purpose=body.purpose,
+                target_agent_suggestion=body.target_agent_suggestion,
+                protected_slugs=protected_slugs,
+                org_root=org.root,
+            )
+        except LifecycleError as e:
+            raise HTTPException(
+                status_code=e.status_code,
+                detail={"code": e.code, "detail": e.detail},
+            )
 
     return {
         "skill_id": pkg.skill_id,
