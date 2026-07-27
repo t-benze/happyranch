@@ -1673,3 +1673,775 @@ class TestCommandAdapterConflictViaRoutes:
         stored = profiles["cmd-id-only"]
         assert stored["command_adapter_id"] == "generic-cli"
         assert stored.get("command_adapter") == "generic-cli"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Round 4: adapter_id as explicit deprecated workspace alias
+# ═══════════════════════════════════════════════════════════════════════════
+# Root cause: ExecutorRegisterRequest allowed extras but did NOT declare
+# adapter_id as a field. Both registration routes consequently discarded
+# adapter_id before presence-sensitive validation. The validator already
+# handles adapter_id in its conflict matrix — it just never received it.
+
+
+class TestAdapterIdLegacyOnlyViaRoutes:
+    """adapter_id-only (legacy-only deprecated alias) succeeds on both
+    endpoints and persists the correct workspace identity."""
+
+    @pytest.mark.parametrize("ws_id", ["pi", "claude", "codex", "opencode"])
+    def test_adapter_id_only_succeeds_runtime(self, _runtime_setup, monkeypatch, ws_id, tmp_path):
+        """Runtime: adapter_id-only=pi/claude/codex/opencode registers correct workspace."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+
+        _bypass_loopback(monkeypatch)
+        state = DaemonState.idle(Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        store = state.registration_token_store
+
+        token, _ = store.mint_runtime(f"adapter-id-only-{ws_id}")
+        _complete_runtime_conformance(client, store, monkeypatch, token)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": ws_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, f"adapter_id-only={ws_id} runtime failed: {r.json()}"
+        body = r.json()
+        assert body["workspace_adapter_id"] == ws_id
+        assert body["adapter_id"] == ws_id
+
+        # Verify registry
+        registry = get_registry()
+        profile = registry.get_profile(f"adapter-id-only-{ws_id}")
+        assert profile is not None
+        assert profile.workspace_adapter_id == ws_id
+        assert profile.adapter_id == ws_id
+
+        # Verify store persistence
+        profiles = load_runtime_profiles()
+        assert f"adapter-id-only-{ws_id}" in profiles
+        stored = profiles[f"adapter-id-only-{ws_id}"]
+        assert stored["workspace_adapter_id"] == ws_id
+
+    @pytest.mark.parametrize("ws_id", ["pi", "claude", "codex", "opencode"])
+    def test_adapter_id_only_succeeds_org(self, monkeypatch, ws_id, tmp_path):
+        """Org: adapter_id-only=pi/claude/codex/opencode registers correct workspace."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+        from runtime.runtime import RuntimeDir
+
+        _bypass_loopback(monkeypatch)
+
+        rt = RuntimeDir.init(tmp_path / "runtime_adapter_id_org")
+        org_root = rt.orgs_dir / "alpha"
+        org_root.mkdir(parents=True, exist_ok=True)
+        (org_root / "org").mkdir(exist_ok=True)
+        (org_root / "org" / "teams.yaml").write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+
+        state = DaemonState.from_runtime(rt, Settings())
+        store = state.registration_token_store
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        token, _ = store.mint("alpha", f"adapter-id-org-{ws_id}")
+        _complete_org_conformance(store, token, "alpha")
+
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": ws_id,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, f"adapter_id-only={ws_id} org failed: {r.json()}"
+        body = r.json()
+        assert body["workspace_adapter_id"] == ws_id
+        assert body["adapter_id"] == ws_id
+
+        # Verify store persistence
+        profiles = load_runtime_profiles()
+        assert f"adapter-id-org-{ws_id}" in profiles
+        stored = profiles[f"adapter-id-org-{ws_id}"]
+        assert stored["workspace_adapter_id"] == ws_id
+
+
+class TestAdapterIdAgreementViaRoutes:
+    """adapter_id + workspace_adapter_id agreement succeeds on both endpoints."""
+
+    def test_adapter_id_plus_workspace_adapter_id_agree_runtime(self, _runtime_setup, monkeypatch, tmp_path):
+        """Runtime: adapter_id=codex + workspace_adapter_id=codex → 200."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+
+        _bypass_loopback(monkeypatch)
+        state = DaemonState.idle(Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        store = state.registration_token_store
+
+        token, _ = store.mint_runtime("adapter-id-agree-rt")
+        _complete_runtime_conformance(client, store, monkeypatch, token)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "codex",
+                "workspace_adapter_id": "codex",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, f"adapter_id + ws agree should 200, got {r.status_code}: {r.json()}"
+        body = r.json()
+        assert body["workspace_adapter_id"] == "codex"
+        assert body["adapter_id"] == "codex"
+
+        # Verify persisted shape
+        profiles = load_runtime_profiles()
+        stored = profiles["adapter-id-agree-rt"]
+        assert stored["workspace_adapter_id"] == "codex"
+        assert stored["adapter"] == "codex"  # stored alias matches
+
+    def test_adapter_id_plus_workspace_adapter_id_agree_org(self, monkeypatch, tmp_path):
+        """Org: adapter_id=opencode + workspace_adapter_id=opencode → 200."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+        from runtime.runtime import RuntimeDir
+
+        _bypass_loopback(monkeypatch)
+
+        rt = RuntimeDir.init(tmp_path / "runtime_ai_agree_org")
+        org_root = rt.orgs_dir / "alpha"
+        org_root.mkdir(parents=True, exist_ok=True)
+        (org_root / "org").mkdir(exist_ok=True)
+        (org_root / "org" / "teams.yaml").write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+
+        state = DaemonState.from_runtime(rt, Settings())
+        store = state.registration_token_store
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        token, _ = store.mint("alpha", "adapter-id-agree-org")
+        _complete_org_conformance(store, token, "alpha")
+
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "opencode",
+                "workspace_adapter_id": "opencode",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, f"adapter_id + ws agree org should 200, got {r.status_code}: {r.json()}"
+        body = r.json()
+        assert body["workspace_adapter_id"] == "opencode"
+        assert body["adapter_id"] == "opencode"
+
+    def test_adapter_id_plus_adapter_agree_runtime(self, _runtime_setup, monkeypatch, tmp_path):
+        """Runtime: adapter_id=claude + adapter=claude (agreeing documented pair) → 200."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+
+        _bypass_loopback(monkeypatch)
+        state = DaemonState.idle(Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        store = state.registration_token_store
+
+        token, _ = store.mint_runtime("aid-adapter-agree-rt")
+        _complete_runtime_conformance(client, store, monkeypatch, token)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "claude",
+                "adapter": "claude",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, f"adapter_id + adapter agree should 200, got {r.status_code}: {r.json()}"
+        body = r.json()
+        assert body["workspace_adapter_id"] == "claude"
+
+
+class TestAdapterIdConflictNoResidue:
+    """Every explicit mixed workspace conflict involving adapter_id returns
+    actionable 4xx before any store/registry/audit/token side effect."""
+
+    def test_adapter_id_vs_workspace_adapter_id_conflict_runtime(self, _runtime_setup, monkeypatch, tmp_path):
+        """Runtime: adapter_id=codex + workspace_adapter_id=pi → 422, no residue."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+
+        _bypass_loopback(monkeypatch)
+        state = DaemonState.idle(Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        store = state.registration_token_store
+
+        token, _ = store.mint_runtime("aid-ws-conflict-rt")
+        _complete_runtime_conformance(client, store, monkeypatch, token)
+
+        pre_registry = set(get_registry().list_profile_names())
+        pre_profiles = dict(load_runtime_profiles())
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "codex",
+                "workspace_adapter_id": "pi",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422, (
+            f"adapter_id=codex vs ws=pi should 422, got {r.status_code}: {r.json()}"
+        )
+
+        # No residue
+        assert set(get_registry().list_profile_names()) == pre_registry
+        assert dict(load_runtime_profiles()) == pre_profiles
+
+    def test_adapter_id_vs_workspace_adapter_id_conflict_org(self, monkeypatch, tmp_path):
+        """Org: adapter_id=codex + workspace_adapter_id=pi → 422, no residue."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+        from runtime.runtime import RuntimeDir
+
+        _bypass_loopback(monkeypatch)
+
+        rt = RuntimeDir.init(tmp_path / "runtime_aid_ws_conflict_org")
+        org_root = rt.orgs_dir / "alpha"
+        org_root.mkdir(parents=True, exist_ok=True)
+        (org_root / "org").mkdir(exist_ok=True)
+        (org_root / "org" / "teams.yaml").write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+
+        state = DaemonState.from_runtime(rt, Settings())
+        store = state.registration_token_store
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        token, _ = store.mint("alpha", "aid-ws-conflict-org")
+        _complete_org_conformance(store, token, "alpha")
+
+        pre_registry = set(get_registry().list_profile_names())
+        pre_profiles = dict(load_runtime_profiles())
+
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "codex",
+                "workspace_adapter_id": "pi",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422, (
+            f"adapter_id=codex vs ws=pi org should 422, got {r.status_code}: {r.json()}"
+        )
+
+        # No residue
+        assert set(get_registry().list_profile_names()) == pre_registry
+        assert dict(load_runtime_profiles()) == pre_profiles
+
+    def test_adapter_id_vs_adapter_conflict_runtime(self, _runtime_setup, monkeypatch, tmp_path):
+        """Runtime: adapter_id=codex + adapter=pi → 422, no residue."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+
+        _bypass_loopback(monkeypatch)
+        state = DaemonState.idle(Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        store = state.registration_token_store
+
+        token, _ = store.mint_runtime("aid-adapter-conflict-rt")
+        _complete_runtime_conformance(client, store, monkeypatch, token)
+
+        pre_registry = set(get_registry().list_profile_names())
+        pre_profiles = dict(load_runtime_profiles())
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "codex",
+                "adapter": "pi",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422, (
+            f"adapter_id=codex vs adapter=pi should 422, got {r.status_code}: {r.json()}"
+        )
+
+        # No residue
+        assert set(get_registry().list_profile_names()) == pre_registry
+        assert dict(load_runtime_profiles()) == pre_profiles
+
+    def test_adapter_id_vs_adapter_conflict_org(self, monkeypatch, tmp_path):
+        """Org: adapter_id=codex + adapter=claude → 422, no residue."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+        from runtime.runtime import RuntimeDir
+
+        _bypass_loopback(monkeypatch)
+
+        rt = RuntimeDir.init(tmp_path / "runtime_aid_adapter_conflict_org")
+        org_root = rt.orgs_dir / "alpha"
+        org_root.mkdir(parents=True, exist_ok=True)
+        (org_root / "org").mkdir(exist_ok=True)
+        (org_root / "org" / "teams.yaml").write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+
+        state = DaemonState.from_runtime(rt, Settings())
+        store = state.registration_token_store
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        token, _ = store.mint("alpha", "aid-adapter-conflict-org")
+        _complete_org_conformance(store, token, "alpha")
+
+        pre_registry = set(get_registry().list_profile_names())
+        pre_profiles = dict(load_runtime_profiles())
+
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "codex",
+                "adapter": "claude",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422, (
+            f"adapter_id=codex vs adapter=claude org should 422, got {r.status_code}: {r.json()}"
+        )
+
+        # No residue
+        assert set(get_registry().list_profile_names()) == pre_registry
+        assert dict(load_runtime_profiles()) == pre_profiles
+
+
+class TestAdapterIdStoredShapeRestart:
+    """adapter_id-only registration persists consistent shape and survives restart/reload."""
+
+    def test_adapter_id_only_stored_shape_runtime(self, _runtime_setup, monkeypatch, tmp_path):
+        """Runtime: adapter_id-only stored shape has consistent canonical+alias fields."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+
+        _bypass_loopback(monkeypatch)
+        state = DaemonState.idle(Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        store = state.registration_token_store
+
+        token, _ = store.mint_runtime("aid-store-rt")
+        _complete_runtime_conformance(client, store, monkeypatch, token)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "codex",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+
+        profiles = load_runtime_profiles()
+        stored = profiles["aid-store-rt"]
+        # Stored adapter matches the resolved workspace
+        assert stored["adapter"] == "codex"
+        assert stored["workspace_adapter_id"] == "codex"
+        # No contradictory aliases
+        assert "adapter_id" not in stored or stored.get("adapter_id") == "codex"
+
+    def test_adapter_id_only_survives_restart_runtime(self, _runtime_setup, monkeypatch, tmp_path):
+        """Runtime: adapter_id-only profile survives reset_registry + from_runtime reload."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+
+        _bypass_loopback(monkeypatch)
+        state = DaemonState.idle(Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        store = state.registration_token_store
+
+        token, _ = store.mint_runtime("aid-restart-rt")
+        _complete_runtime_conformance(client, store, monkeypatch, token)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "opencode",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+
+        # Simulate restart: reset in-memory registry, reload from runtime store
+        reset_registry()
+        from runtime.runtime import RuntimeDir
+        rt = RuntimeDir.init(tmp_path / "runtime_aid_restart")
+        (rt.orgs_dir / "alpha" / "org").mkdir(parents=True, exist_ok=True)
+        (rt.orgs_dir / "alpha" / "org" / "teams.yaml").write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        new_state = DaemonState.from_runtime(rt, Settings())
+
+        # Verify profile loaded correctly after restart
+        new_registry = get_registry()
+        profile = new_registry.get_profile("aid-restart-rt")
+        assert profile is not None, "adapter_id-only profile should survive restart"
+        assert profile.workspace_adapter_id == "opencode", (
+            f"Restart should preserve opencode, got {profile.workspace_adapter_id}"
+        )
+
+    def test_adapter_id_only_survives_restart_org(self, monkeypatch, tmp_path):
+        """Org: adapter_id-only profile survives reset_registry + from_runtime reload."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+        from runtime.runtime import RuntimeDir
+
+        _bypass_loopback(monkeypatch)
+
+        rt = RuntimeDir.init(tmp_path / "runtime_aid_restart_org")
+        org_root = rt.orgs_dir / "alpha"
+        org_root.mkdir(parents=True, exist_ok=True)
+        (org_root / "org").mkdir(exist_ok=True)
+        (org_root / "org" / "teams.yaml").write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+
+        state = DaemonState.from_runtime(rt, Settings())
+        store = state.registration_token_store
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        token, _ = store.mint("alpha", "aid-restart-org")
+        _complete_org_conformance(store, token, "alpha")
+
+        r = client.post(
+            "/api/v1/orgs/alpha/executors/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "claude",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+
+        # Simulate restart
+        reset_registry()
+        new_state = DaemonState.from_runtime(rt, Settings())
+        new_registry = get_registry()
+        profile = new_registry.get_profile("aid-restart-org")
+        assert profile is not None
+        assert profile.workspace_adapter_id == "claude"
+
+
+class TestAdapterIdOmittedNoFalseConflict:
+    """Regression: omitted adapter_id does not create false conflicts."""
+
+    def test_omitted_adapter_id_with_ws_canonical_succeeds(self, _runtime_setup, monkeypatch, tmp_path):
+        """Runtime: No adapter_id + workspace_adapter_id=claude → 200 (no false conflict)."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+
+        _bypass_loopback(monkeypatch)
+        state = DaemonState.idle(Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        store = state.registration_token_store
+
+        token, _ = store.mint_runtime("no-aid-rt")
+        _complete_runtime_conformance(client, store, monkeypatch, token)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "workspace_adapter_id": "claude",
+                # adapter_id omitted — should NOT create false conflict
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, (
+            f"Omitted adapter_id + canonical ws should 200, got {r.status_code}: {r.json()}"
+        )
+
+    def test_omitted_adapter_id_with_adapter_succeeds(self, _runtime_setup, monkeypatch, tmp_path):
+        """Runtime: No adapter_id + adapter=codex → 200 (legacy-only still works)."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+
+        _bypass_loopback(monkeypatch)
+        state = DaemonState.idle(Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        store = state.registration_token_store
+
+        token, _ = store.mint_runtime("no-aid-adapter-rt")
+        _complete_runtime_conformance(client, store, monkeypatch, token)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "codex",
+                # adapter_id omitted
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["workspace_adapter_id"] == "codex"
+
+
+class TestLegacyStoredProfileUntouched:
+    """Legacy stored profiles remain read-compatible and untouched."""
+
+    def test_legacy_adapter_only_profile_loads(self, tmp_path):
+        """A stored entry with only 'adapter' (no canonical fields) loads correctly."""
+        monkeypatch = None  # not needed — only exercising the store load
+        from runtime.orchestrator.runtime_executor_store import (
+            save_runtime_profile,
+            load_runtime_profiles,
+        )
+        from unittest.mock import patch
+
+        # Write a legacy-only entry
+        with patch.object(runtime_executor_store, '_store_path', return_value=tmp_path / "executor_profiles.yaml"):
+            save_runtime_profile("legacy-prof", {
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "codex",  # legacy key only
+            })
+
+            profiles = load_runtime_profiles()
+            assert "legacy-prof" in profiles
+            stored = profiles["legacy-prof"]
+            assert stored["adapter"] == "codex"
+            # No mutation — original keys preserved
+
+    def test_legacy_adapter_id_only_profile_loads(self, tmp_path):
+        """A stored entry with only 'adapter_id' (legacy key) loads correctly."""
+        from runtime.orchestrator.runtime_executor_store import (
+            save_runtime_profile,
+            load_runtime_profiles,
+        )
+        from unittest.mock import patch
+
+        with patch.object(runtime_executor_store, '_store_path', return_value=tmp_path / "executor_profiles.yaml"):
+            save_runtime_profile("legacy-aid-prof", {
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "opencode",  # legacy key only
+            })
+
+            profiles = load_runtime_profiles()
+            assert "legacy-aid-prof" in profiles
+            stored = profiles["legacy-aid-prof"]
+            assert stored["adapter_id"] == "opencode"
+            # No mutation
+
+
+class TestAdapterIdResponseList:
+    """Response and list correctly report adapter_id as deprecated alias."""
+
+    def test_adapter_id_only_response_has_correct_aliases(self, monkeypatch, tmp_path):
+        """Runtime: adapter_id-only registration response has non-contradictory aliases.
+        Uses a full DaemonState.from_runtime to exercise the list route."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+        reset_registry()
+
+        from runtime.config import Settings
+        from runtime.daemon.state import DaemonState
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+        from runtime.runtime import RuntimeDir
+
+        _bypass_loopback(monkeypatch)
+
+        rt = RuntimeDir.init(tmp_path / "runtime_aid_resp")
+        org_root = rt.orgs_dir / "alpha"
+        org_root.mkdir(parents=True, exist_ok=True)
+        (org_root / "org").mkdir(exist_ok=True)
+        (org_root / "org" / "teams.yaml").write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+
+        state = DaemonState.from_runtime(rt, Settings())
+        app = create_app(state)
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        store = state.registration_token_store
+
+        token, _ = store.mint_runtime("aid-resp-rt")
+        _complete_runtime_conformance(client, store, monkeypatch, token)
+
+        r = client.post(
+            "/api/v1/executors/runtime/register",
+            json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter_id": "codex",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        # All workspace aliases agree
+        assert body["workspace_adapter_id"] == "codex"
+        assert body["adapter_id"] == "codex"
+
+        # List route
+        r_list = client.get(
+            "/api/v1/executors/runtime/profiles",
+            headers={"Authorization": f"Bearer {paths_mod.read_token()}"},
+        )
+        assert r_list.status_code == 200, f"List route returned {r_list.status_code}: {r_list.text}"
+        list_body = r_list.json()
+        found = [p for p in list_body["profiles"] if p["name"] == "aid-resp-rt"]
+        assert len(found) == 1
+        assert found[0]["workspace_adapter_id"] == "codex"

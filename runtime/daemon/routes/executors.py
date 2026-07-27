@@ -229,6 +229,10 @@ class ExecutorRegisterRequest(BaseModel):
     command: str = Field(..., min_length=1)
     argv_template: list[str] = Field(..., min_length=1)
     adapter: str = Field("pi", min_length=1, deprecated=True)
+    adapter_id: str | None = Field(
+        None, deprecated=True,
+        description="Deprecated. Use workspace_adapter_id."
+    )
     command_adapter: str | None = Field(None, deprecated=True)
     # D6 canonical request fields (optional — allow mixed old/new payloads)
     workspace_adapter_id: str | None = Field(
@@ -523,6 +527,12 @@ def register_executor(
     # the conflicting {adapter: "pi", workspace_adapter_id: "claude"}.
     if "adapter" in body.model_fields_set:
         config_cfg["adapter"] = body.adapter
+    # D6: forward deprecated adapter_id alias when explicitly supplied.
+    # The validator already includes adapter_id in its conflict matrix;
+    # this ensures adapter_id-only and adapter_id + workspace_adapter_id
+    # requests are correctly resolved/rejected at the shipping seam.
+    if "adapter_id" in body.model_fields_set and body.adapter_id is not None:
+        config_cfg["adapter_id"] = body.adapter_id
     if workspace_adapter_from_body is not None:
         config_cfg["workspace_adapter_id"] = workspace_adapter_from_body
     if command_adapter_id_from_body is not None:
@@ -830,6 +840,12 @@ def runtime_register_executor(
     # the conflicting {adapter: "pi", workspace_adapter_id: "claude"}.
     if "adapter" in body.model_fields_set:
         config_cfg["adapter"] = body.adapter
+    # D6: forward deprecated adapter_id alias when explicitly supplied.
+    # The validator already includes adapter_id in its conflict matrix;
+    # this ensures adapter_id-only and adapter_id + workspace_adapter_id
+    # requests are correctly resolved/rejected at the shipping seam.
+    if "adapter_id" in body.model_fields_set and body.adapter_id is not None:
+        config_cfg["adapter_id"] = body.adapter_id
     if workspace_adapter_from_body is not None:
         config_cfg["workspace_adapter_id"] = workspace_adapter_from_body
     if command_adapter_id_from_body is not None:
