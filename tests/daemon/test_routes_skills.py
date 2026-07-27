@@ -2805,13 +2805,49 @@ class TestProposalConcurrentClearRace:
                 f"Expected 403 for cleared session, got {result['status_code']}"
             )
 
-            # Zero artifact/ledger residue.
+            # Zero artifact/ledger/operational-materialization residue.
+            # Directly inspect EVERY relevant persistence surface, not just
+            # get_latest_package_version (which misses ArtifactStore and
+            # materialization writes that could happen before denial).
             from runtime.skills.lifecycle import stores as lifecycle_stores
-            pkg = lifecycle_stores.get_latest_package_version(
-                org_state.db, "hr:frontend-development",
+            from runtime.infrastructure.artifact_store import ArtifactStore
+            from runtime.orchestrator._paths import OrgPaths
+
+            # 1. Zero package versions in skill_lifecycle_packages.
+            packages = lifecycle_stores.list_package_versions(
+                org_state.db, skill_id="hr:frontend-development",
             )
-            assert pkg is None, (
-                "No artifact/ledger residue after terminal clear wins"
+            assert len(packages) == 0, (
+                f"No package residue: expected 0, got {len(packages)}"
+            )
+
+            # 2. Zero lifecycle events in skill_lifecycle_events.
+            events = lifecycle_stores.list_lifecycle_events(
+                org_state.db, skill_id="hr:frontend-development",
+            )
+            assert len(events) == 0, (
+                f"No event/ledger residue: expected 0, got {len(events)}"
+            )
+
+            # 3. Zero operational materializations for this task/agent binding.
+            mat = lifecycle_stores.get_latest_materialization(
+                org_state.db, "hr:frontend-development", "frontend_engineer",
+            )
+            assert mat is None, (
+                f"No operational materialization residue: {mat}"
+            )
+
+            # 4. Zero proposal artifacts in the ArtifactStore
+            #    (prefix: skill-lifecycle/frontend-development/).
+            artifact_store = ArtifactStore(
+                OrgPaths(org_state.root).artifacts_dir,
+            )
+            proposal_artifacts = artifact_store.list_artifacts(
+                prefix="skill-lifecycle/frontend-development",
+            )
+            assert len(proposal_artifacts) == 0, (
+                f"No artifact-store residue: expected 0, "
+                f"got {[a.name for a in proposal_artifacts]}"
             )
 
             # Session is cleared.
@@ -2879,13 +2915,42 @@ class TestProposalConcurrentClearRace:
                 f"Expected 403 for replaced session, got {result['status_code']}"
             )
 
-            # Zero artifact/ledger residue.
+            # Zero artifact/ledger/operational-materialization residue.
+            # Same full four-surface inventory as the clear variant.
             from runtime.skills.lifecycle import stores as lifecycle_stores
-            pkg = lifecycle_stores.get_latest_package_version(
-                org_state.db, "hr:frontend-development",
+            from runtime.infrastructure.artifact_store import ArtifactStore
+            from runtime.orchestrator._paths import OrgPaths
+
+            packages = lifecycle_stores.list_package_versions(
+                org_state.db, skill_id="hr:frontend-development",
             )
-            assert pkg is None, (
-                "No artifact/ledger residue after terminal replacement wins"
+            assert len(packages) == 0, (
+                f"No package residue: expected 0, got {len(packages)}"
+            )
+
+            events = lifecycle_stores.list_lifecycle_events(
+                org_state.db, skill_id="hr:frontend-development",
+            )
+            assert len(events) == 0, (
+                f"No event/ledger residue: expected 0, got {len(events)}"
+            )
+
+            mat = lifecycle_stores.get_latest_materialization(
+                org_state.db, "hr:frontend-development", "frontend_engineer",
+            )
+            assert mat is None, (
+                f"No operational materialization residue: {mat}"
+            )
+
+            artifact_store = ArtifactStore(
+                OrgPaths(org_state.root).artifacts_dir,
+            )
+            proposal_artifacts = artifact_store.list_artifacts(
+                prefix="skill-lifecycle/frontend-development",
+            )
+            assert len(proposal_artifacts) == 0, (
+                f"No artifact-store residue: expected 0, "
+                f"got {[a.name for a in proposal_artifacts]}"
             )
 
             # New session is active (replacement took effect).
@@ -2964,18 +3029,90 @@ class TestProposalConcurrentClearRace:
                 f"Expected 201 after auth+persist, got {result['status_code']}"
             )
 
-            # Verify immutable proposal with correct provenance.
+            # Verify exactly one immutable proposal with complete
+            # server-derived four-part provenance:
+            #   org=alpha, task_id, agent, session_id.
+            # Also prove exactly one package version, exactly one
+            # lifecycle event, zero materializations, and artifact
+            # placement in the alpha org's artifact store.
             from runtime.skills.lifecycle import stores as lifecycle_stores
+            from runtime.infrastructure.artifact_store import ArtifactStore
+            from runtime.orchestrator._paths import OrgPaths
+
+            # ── Package version: exactly one, correct provenance ──
             pkg = lifecycle_stores.get_latest_package_version(
                 org_state.db, "hr:frontend-development",
             )
             assert pkg is not None, "Proposal must exist after commit"
+            assert pkg.proposal_task_id == "TASK-PWIN-C", (
+                f"Task provenance: expected TASK-PWIN-C, "
+                f"got {pkg.proposal_task_id}"
+            )
             assert pkg.proposal_session_id == "sess-pwin-c", (
                 f"Session provenance: {pkg.proposal_session_id}"
             )
-            assert pkg.proposal_task_id is not None, "task_id provenance"
             assert pkg.proposer_agent == "frontend_engineer", (
                 f"Agent provenance: {pkg.proposer_agent}"
+            )
+            # Storage placement is alpha-only: the package row lives
+            # in org_state.db which IS the alpha org's DB.
+            assert org_state.slug == "alpha", (
+                f"Org provenance: expected alpha, got {org_state.slug}"
+            )
+
+            # Exactly one package version row.
+            all_packages = lifecycle_stores.list_package_versions(
+                org_state.db, skill_id="hr:frontend-development",
+            )
+            assert len(all_packages) == 1, (
+                f"Exactly one immutable commit: expected 1 package, "
+                f"got {len(all_packages)}"
+            )
+
+            # ── Lifecycle event: exactly one, correct type/status ──
+            events = lifecycle_stores.list_lifecycle_events(
+                org_state.db, skill_id="hr:frontend-development",
+            )
+            assert len(events) == 1, (
+                f"Exactly one lifecycle event: expected 1, got {len(events)}"
+            )
+            evt = events[0]
+            assert evt.event_type == "proposed", (
+                f"Event type: expected 'proposed', got {evt.event_type!r}"
+            )
+            assert evt.actor == "frontend_engineer", (
+                f"Event actor: {evt.actor!r}"
+            )
+            assert evt.actor_role == "agent", (
+                f"Event actor_role: {evt.actor_role!r}"
+            )
+            assert evt.new_status == "proposed", (
+                f"Event new_status: {evt.new_status!r}"
+            )
+            assert evt.task_id == "TASK-PWIN-C", (
+                f"Event task_id: {evt.task_id!r}"
+            )
+            assert evt.session_id == "sess-pwin-c", (
+                f"Event session_id: {evt.session_id!r}"
+            )
+
+            # ── Zero materializations (proposal only, not published) ──
+            mat = lifecycle_stores.get_latest_materialization(
+                org_state.db, "hr:frontend-development", "frontend_engineer",
+            )
+            assert mat is None, (
+                f"No materialization for proposal: {mat}"
+            )
+
+            # ── Artifacts exist in alpha org's store ──
+            artifact_store = ArtifactStore(
+                OrgPaths(org_state.root).artifacts_dir,
+            )
+            proposal_artifacts = artifact_store.list_artifacts(
+                prefix="skill-lifecycle/frontend-development",
+            )
+            assert len(proposal_artifacts) > 0, (
+                "Proposal artifacts must exist in alpha org's ArtifactStore"
             )
 
             # clear() must now complete (acquires just-released lease).
@@ -3057,15 +3194,70 @@ class TestProposalConcurrentClearRace:
                 f"Expected 201, got {result['status_code']}"
             )
 
+            # Verify exactly one immutable proposal with complete
+            # server-derived four-part provenance.
             from runtime.skills.lifecycle import stores as lifecycle_stores
+            from runtime.infrastructure.artifact_store import ArtifactStore
+            from runtime.orchestrator._paths import OrgPaths
+
+            # ── Package version: exact provenance ──
             pkg = lifecycle_stores.get_latest_package_version(
                 org_state.db, "hr:frontend-development",
             )
             assert pkg is not None
+            assert pkg.proposal_task_id == "TASK-PWIN-R", (
+                f"Task provenance: expected TASK-PWIN-R, "
+                f"got {pkg.proposal_task_id}"
+            )
             assert pkg.proposal_session_id == "sess-pwin-old", (
                 f"Session provenance: {pkg.proposal_session_id}"
             )
-            assert pkg.proposer_agent == "frontend_engineer"
+            assert pkg.proposer_agent == "frontend_engineer", (
+                f"Agent provenance: {pkg.proposer_agent}"
+            )
+            assert org_state.slug == "alpha", (
+                f"Org provenance: expected alpha, got {org_state.slug}"
+            )
+
+            # Exactly one package version row.
+            all_packages = lifecycle_stores.list_package_versions(
+                org_state.db, skill_id="hr:frontend-development",
+            )
+            assert len(all_packages) == 1, (
+                f"Exactly one immutable commit: expected 1, got {len(all_packages)}"
+            )
+
+            # ── Lifecycle event: exactly one, correct type/status ──
+            events = lifecycle_stores.list_lifecycle_events(
+                org_state.db, skill_id="hr:frontend-development",
+            )
+            assert len(events) == 1, (
+                f"Exactly one event: expected 1, got {len(events)}"
+            )
+            evt = events[0]
+            assert evt.event_type == "proposed"
+            assert evt.actor == "frontend_engineer"
+            assert evt.actor_role == "agent"
+            assert evt.new_status == "proposed"
+            assert evt.task_id == "TASK-PWIN-R"
+            assert evt.session_id == "sess-pwin-old"
+
+            # ── Zero materializations ──
+            mat = lifecycle_stores.get_latest_materialization(
+                org_state.db, "hr:frontend-development", "frontend_engineer",
+            )
+            assert mat is None, f"No materialization for proposal: {mat}"
+
+            # ── Artifacts exist in alpha org's store ──
+            artifact_store = ArtifactStore(
+                OrgPaths(org_state.root).artifacts_dir,
+            )
+            proposal_artifacts = artifact_store.list_artifacts(
+                prefix="skill-lifecycle/frontend-development",
+            )
+            assert len(proposal_artifacts) > 0, (
+                "Proposal artifacts must exist in alpha org's ArtifactStore"
+            )
 
             t_repl.join(timeout=5.0)
             assert not t_repl.is_alive(), (
