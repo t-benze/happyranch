@@ -1634,3 +1634,475 @@ class TestD7AStrictMissingEnvelopeFailsClosed:
             result = executor.run(workspace=tmp_path, prompt="hello")
 
         assert result.success, "valid v1 envelope must succeed in strict mode"
+
+
+# ── TASK-3567: Audit-failure compensating rollback tests ────────────────
+#
+# These tests prove the HIGH transaction-boundary defect found in TASK-3562:
+# an audit failure after durable write and atomic active-profile replacement
+# must fail closed — restoring the exact pre-request durable profile and
+# active registry snapshot, releasing the token, and leaving no audit row or
+# other residue.
+
+
+_AUDIT_ERROR_MSG = "injected audit failure for rollback test"
+
+
+class TestD7AAuditFailureRollbackOrgRoute:
+    """Org-route audit-failure compensating rollback (TASK-3567)."""
+
+    def test_org_route_audit_failure_rolls_back_legacy_state(
+        self, tmp_home, daemon_state, monkeypatch,
+    ):
+        """Audit failure after durable write + registry swap on org route
+        must restore exact legacy state: durable YAML back to None,
+        active registry back to None, token released, no audit row."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-audit-rb-org")
+        _seed_legacy_profile_in_registry("test-audit-rb-org")
+
+        token, headers = _mint_and_complete_conformance(
+            store, org="alpha", name="test-audit-rb-org",
+        )
+
+        # Pre-request state assertions (red-side proof baseline)
+        pre_stored = load_runtime_profiles()
+        assert pre_stored["test-audit-rb-org"].get("envelope_policy") is None
+        pre_active = get_registry().get_profile("test-audit-rb-org")
+        assert pre_active is not None
+        assert pre_active.envelope_policy is None
+
+        # Count audit rows before the request
+        org_db = daemon_state.orgs["alpha"].db
+        audit_before = len(org_db.get_audit_logs("config:executor_profiles"))
+
+        # Inject audit failure via patching log_org_config_write on the
+        # AuditLogger CLASS — the route instantiates AuditLogger(org.db)
+        # inside the try block, so we patch the method.
+        from runtime.infrastructure.audit_logger import AuditLogger as AuditLoggerClass
+        with patch.object(
+            AuditLoggerClass, "log_org_config_write",
+            side_effect=RuntimeError(_AUDIT_ERROR_MSG),
+        ):
+            c = TestClient(app, raise_server_exceptions=False)
+            c.headers.update(headers)
+            r = c.post("/api/v1/orgs/alpha/executors/register", json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            })
+
+        # Must receive HTTP 500 (not 200, not 409)
+        assert r.status_code == 500, \
+            f"expected 500 after audit rollback, got {r.status_code}: {r.text}"
+
+        # ── Post-rollback state assertions ──
+
+        # 1. Durable YAML must restore exact legacy (no envelope_policy key)
+        post_stored = load_runtime_profiles()
+        assert "test-audit-rb-org" in post_stored, \
+            "profile must still exist in durable store after rollback"
+        assert post_stored["test-audit-rb-org"].get("envelope_policy") is None, \
+            f"durable store must restore legacy None, got {post_stored['test-audit-rb-org'].get('envelope_policy')}"
+        assert post_stored["test-audit-rb-org"]["command"] == "echo", \
+            "durable store must preserve original command"
+
+        # 2. Active registry must restore legacy profile
+        post_active = get_registry().get_profile("test-audit-rb-org")
+        assert post_active is not None, \
+            "profile must still be registered in active registry after rollback"
+        assert post_active.envelope_policy is None, \
+            f"active registry must restore legacy None, got {post_active.envelope_policy}"
+        assert post_active.command == "echo", \
+            "active registry must preserve original command"
+
+        # 3. No audit row created — count must be unchanged
+        audit_after = len(org_db.get_audit_logs("config:executor_profiles"))
+        assert audit_after == audit_before, \
+            f"must have no new audit row: before={audit_before}, after={audit_after}"
+
+        # 4. Token must be reusable (released, not consumed)
+        record = store.validate(token, "alpha")
+        assert record is not None, \
+            "token must still be valid after audit-failure rollback"
+
+    def test_org_route_audit_failure_clean_retry_succeeds(
+        self, tmp_home, daemon_state, monkeypatch,
+    ):
+        """After org-route audit-failure rollback, a clean retry must succeed
+        and produce strict state."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        from runtime.infrastructure.audit_logger import AuditLogger as AuditLoggerClass
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-audit-retry-org")
+        _seed_legacy_profile_in_registry("test-audit-retry-org")
+
+        token, headers = _mint_and_complete_conformance(
+            store, org="alpha", name="test-audit-retry-org",
+        )
+
+        # First attempt: inject audit failure → rollback
+        with patch.object(
+            AuditLoggerClass, "log_org_config_write",
+            side_effect=RuntimeError(_AUDIT_ERROR_MSG),
+        ):
+            c = TestClient(app, raise_server_exceptions=False)
+            c.headers.update(headers)
+            r = c.post("/api/v1/orgs/alpha/executors/register", json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            })
+            assert r.status_code == 500
+
+        # Verify rollback: state is legacy, token valid
+        assert load_runtime_profiles()["test-audit-retry-org"].get("envelope_policy") is None
+        assert get_registry().get_profile("test-audit-retry-org").envelope_policy is None
+        assert store.validate(token, "alpha") is not None
+
+        # Second attempt (clean retry): MUST succeed and go strict
+        c = TestClient(app, raise_server_exceptions=False)
+        c.headers.update(headers)
+        r = c.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 200, \
+            f"clean retry must succeed, got {r.status_code}: {r.text}"
+
+        # Post-retry: state must be strict
+        assert load_runtime_profiles()["test-audit-retry-org"]["envelope_policy"] == "strict"
+        assert get_registry().get_profile("test-audit-retry-org").envelope_policy == "strict"
+        # Token must be consumed (committed) after clean success
+        assert store.validate(token, "alpha") is None, \
+            "token must be consumed after successful registration"
+
+    def test_org_route_audit_failure_pre_existing_strict_preserved(
+        self, tmp_home, daemon_state, monkeypatch,
+    ):
+        """When the source state is already strict (idempotent re-registration),
+        an audit failure must still trigger rollback — but the rollback must
+        restore the identical strict profile, not downgrade it."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        from runtime.infrastructure.audit_logger import AuditLogger as AuditLoggerClass
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        # Seed a pre-existing strict profile (already registered via first pass)
+        _seed_legacy_profile_in_store("test-strict-rb")
+        _seed_legacy_profile_in_registry("test-strict-rb")
+
+        # First do a clean legacy→strict transition
+        token1, headers1 = _mint_and_complete_conformance(
+            store, org="alpha", name="test-strict-rb",
+        )
+        c = TestClient(app, raise_server_exceptions=False)
+        c.headers.update(headers1)
+        r = c.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 200
+        assert load_runtime_profiles()["test-strict-rb"]["envelope_policy"] == "strict"
+        assert get_registry().get_profile("test-strict-rb").envelope_policy == "strict"
+
+        # Now attempt idempotent strict re-registration with audit failure
+        token2, headers2 = _mint_and_complete_conformance(
+            store, org="alpha", name="test-strict-rb",
+        )
+        with patch.object(
+            AuditLoggerClass, "log_org_config_write",
+            side_effect=RuntimeError(_AUDIT_ERROR_MSG),
+        ):
+            c2 = TestClient(app, raise_server_exceptions=False)
+            c2.headers.update(headers2)
+            r = c2.post("/api/v1/orgs/alpha/executors/register", json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            })
+            assert r.status_code == 500
+
+        # After rollback, strict state must be preserved identically
+        assert load_runtime_profiles()["test-strict-rb"]["envelope_policy"] == "strict", \
+            "strict durable state must be preserved after rollback"
+        assert get_registry().get_profile("test-strict-rb").envelope_policy == "strict", \
+            "strict registry state must be preserved after rollback"
+
+    def test_org_route_red_side_proof_injection_after_swap(
+        self, tmp_home, daemon_state, monkeypatch,
+    ):
+        """Red-side proof: the audit patch injection point is truly after
+        durable write and atomic registry swap, not a preflight error.
+
+        We verify this by: (a) receiving HTTP 500 (not 409/422 which would
+        indicate a pre-write rejection), and (b) momentarily observing the
+        strict state before the patched audit function raises."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        from runtime.infrastructure.audit_logger import AuditLogger as AuditLoggerClass
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-redside-org")
+        _seed_legacy_profile_in_registry("test-redside-org")
+
+        token, headers = _mint_and_complete_conformance(
+            store, org="alpha", name="test-redside-org",
+        )
+
+        # Use a side-effect that captures the "momentarily strict" state
+        # before raising — this proves the injection point is after swap.
+        captured_envelope: list[str | None] = []
+
+        def _capture_then_fail(*args, **kwargs):
+            # At this point, durable write + registry swap have succeeded.
+            # Capture the current state to prove it was strict.
+            active = get_registry().get_profile("test-redside-org")
+            captured_envelope.append(
+                active.envelope_policy if active is not None else "MISSING"
+            )
+            stored = load_runtime_profiles().get("test-redside-org", {})
+            captured_envelope.append(stored.get("envelope_policy"))
+            raise RuntimeError(_AUDIT_ERROR_MSG)
+
+        with patch.object(
+            AuditLoggerClass, "log_org_config_write",
+            side_effect=_capture_then_fail,
+        ):
+            c = TestClient(app, raise_server_exceptions=False)
+            c.headers.update(headers)
+            r = c.post("/api/v1/orgs/alpha/executors/register", json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            })
+            assert r.status_code == 500
+
+        # Red-side proof: at the moment of audit injection, the state was strict
+        assert captured_envelope[0] == "strict", \
+            f"active registry must be strict at injection point, got {captured_envelope[0]}"
+        assert captured_envelope[1] == "strict", \
+            f"durable store must be strict at injection point, got {captured_envelope[1]}"
+
+        # After rollback: state is back to legacy
+        assert get_registry().get_profile("test-redside-org").envelope_policy is None
+        assert load_runtime_profiles()["test-redside-org"].get("envelope_policy") is None
+
+
+class TestD7AAuditFailureRollbackRuntimeRoute:
+    """Runtime-route audit-failure compensating rollback (TASK-3567)."""
+
+    def test_runtime_route_audit_failure_rolls_back_legacy_state(
+        self, tmp_home, daemon_state, monkeypatch,
+    ):
+        """Audit failure after durable write + registry swap on runtime route
+        must restore exact legacy state: durable YAML back to None,
+        active registry back to None, token released, no audit residue."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-audit-rb-rt")
+        _seed_legacy_profile_in_registry("test-audit-rb-rt")
+
+        token, headers = _mint_and_complete_conformance(
+            store, name="test-audit-rb-rt", runtime=True,
+        )
+
+        # Token was reserved by mint + conformance flow
+        record = store.validate_runtime(token)
+        assert record is not None
+
+        # Inject audit failure via patching _audit_runtime_registration
+        with patch(
+            "runtime.daemon.routes.executors._audit_runtime_registration",
+            side_effect=RuntimeError(_AUDIT_ERROR_MSG),
+        ):
+            c = TestClient(app, raise_server_exceptions=False)
+            c.headers.update(headers)
+            r = c.post("/api/v1/executors/runtime/register", json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            })
+
+        assert r.status_code == 500, \
+            f"expected 500 after runtime audit rollback, got {r.status_code}: {r.text}"
+
+        # 1. Durable YAML must restore exact legacy
+        post_stored = load_runtime_profiles()
+        assert post_stored["test-audit-rb-rt"].get("envelope_policy") is None, \
+            f"durable store must restore legacy None, got {post_stored['test-audit-rb-rt'].get('envelope_policy')}"
+        assert post_stored["test-audit-rb-rt"]["command"] == "echo"
+
+        # 2. Active registry must restore legacy
+        post_active = get_registry().get_profile("test-audit-rb-rt")
+        assert post_active is not None
+        assert post_active.envelope_policy is None
+        assert post_active.command == "echo"
+
+        # 3. Token must be reusable (released, not stranded)
+        record = store.validate_runtime(token)
+        assert record is not None, \
+            "runtime token must still be valid after audit-failure rollback"
+        assert not record.reserved, \
+            f"token must not be reserved after rollback, got reserved={record.reserved}"
+        assert not record.consumed, \
+            f"token must not be consumed after rollback, got consumed={record.consumed}"
+
+        # 4. No audit residue — the runtime-audit.db path check is inherent:
+        #    _audit_runtime_registration was patched to raise, so it never ran.
+
+    def test_runtime_route_audit_failure_clean_retry_succeeds(
+        self, tmp_home, daemon_state, monkeypatch,
+    ):
+        """After runtime-route audit-failure rollback, a clean retry must
+        succeed and produce strict state."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-audit-retry-rt")
+        _seed_legacy_profile_in_registry("test-audit-retry-rt")
+
+        token, headers = _mint_and_complete_conformance(
+            store, name="test-audit-retry-rt", runtime=True,
+        )
+
+        # First attempt: inject audit failure → rollback
+        with patch(
+            "runtime.daemon.routes.executors._audit_runtime_registration",
+            side_effect=RuntimeError(_AUDIT_ERROR_MSG),
+        ):
+            c = TestClient(app, raise_server_exceptions=False)
+            c.headers.update(headers)
+            r = c.post("/api/v1/executors/runtime/register", json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            })
+            assert r.status_code == 500
+
+        # Verify rollback: state is legacy
+        assert load_runtime_profiles()["test-audit-retry-rt"].get("envelope_policy") is None
+        assert get_registry().get_profile("test-audit-retry-rt").envelope_policy is None
+
+        # Second attempt (clean retry): MUST succeed and go strict
+        c = TestClient(app, raise_server_exceptions=False)
+        c.headers.update(headers)
+        r = c.post("/api/v1/executors/runtime/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 200, \
+            f"clean retry must succeed, got {r.status_code}: {r.text}"
+
+        assert load_runtime_profiles()["test-audit-retry-rt"]["envelope_policy"] == "strict"
+        assert get_registry().get_profile("test-audit-retry-rt").envelope_policy == "strict"
+
+    def test_runtime_route_red_side_proof_injection_after_swap(
+        self, tmp_home, daemon_state, monkeypatch,
+    ):
+        """Red-side proof: the runtime-route audit patch injection point is
+        truly after durable write and atomic registry swap."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-redside-rt")
+        _seed_legacy_profile_in_registry("test-redside-rt")
+
+        token, headers = _mint_and_complete_conformance(
+            store, name="test-redside-rt", runtime=True,
+        )
+
+        captured_envelope: list[str | None] = []
+
+        def _capture_then_fail(**kw):
+            captured_envelope.append(
+                get_registry().get_profile("test-redside-rt").envelope_policy
+            )
+            captured_envelope.append(
+                load_runtime_profiles().get("test-redside-rt", {}).get("envelope_policy")
+            )
+            raise RuntimeError(_AUDIT_ERROR_MSG)
+
+        with patch(
+            "runtime.daemon.routes.executors._audit_runtime_registration",
+            side_effect=_capture_then_fail,
+        ):
+            c = TestClient(app, raise_server_exceptions=False)
+            c.headers.update(headers)
+            r = c.post("/api/v1/executors/runtime/register", json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            })
+            assert r.status_code == 500
+
+        # Red-side proof: at injection point, state was strict
+        assert captured_envelope[0] == "strict", \
+            f"active registry must be strict at injection point, got {captured_envelope[0]}"
+        assert captured_envelope[1] == "strict", \
+            f"durable store must be strict at injection point, got {captured_envelope[1]}"
+
+        # After rollback: state is back to legacy
+        assert get_registry().get_profile("test-redside-rt").envelope_policy is None
+        assert load_runtime_profiles()["test-redside-rt"].get("envelope_policy") is None
+
+    def test_runtime_route_audit_failure_first_time_registration_no_residue(
+        self, tmp_home, daemon_state, monkeypatch,
+    ):
+        """When a runtime registration is the FIRST registration (no prior
+        profile), an audit failure must remove the profile entirely from both
+        durable store and active registry — no orphan residue."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        # Do NOT seed any prior profile — this is first-time registration
+        token, headers = _mint_and_complete_conformance(
+            store, name="test-first-reg-rollback", runtime=True,
+        )
+
+        # Verify profile does not exist before
+        assert "test-first-reg-rollback" not in load_runtime_profiles()
+        assert get_registry().get_profile("test-first-reg-rollback") is None
+
+        with patch(
+            "runtime.daemon.routes.executors._audit_runtime_registration",
+            side_effect=RuntimeError(_AUDIT_ERROR_MSG),
+        ):
+            c = TestClient(app, raise_server_exceptions=False)
+            c.headers.update(headers)
+            r = c.post("/api/v1/executors/runtime/register", json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            })
+            assert r.status_code == 500
+
+        # After rollback: profile must be absent (no orphan residue)
+        assert "test-first-reg-rollback" not in load_runtime_profiles(), \
+            "first-time registration must leave no durable residue after rollback"
+        assert get_registry().get_profile("test-first-reg-rollback") is None, \
+            "first-time registration must leave no registry residue after rollback"
+
+        # Token must still be usable
+        assert store.validate_runtime(token) is not None

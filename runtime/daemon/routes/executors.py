@@ -152,6 +152,42 @@ def _audit_runtime_removal(
 # ---------------------------------------------------------------------------
 
 
+def _rollback_runtime_profile(
+    name: str,
+    before_durable_snapshot: dict,
+    before_registry_profile: ExecutorProfile | None,
+) -> None:
+    """Compensating rollback: restore durable store and active registry.
+
+    D7A rollback seam (TASK-3567): after a durable write + atomic replacement
+    succeed but the subsequent audit step fails, this helper restores both the
+    durable runtime store and the active in-memory registry to their exact
+    pre-request state.  No audit row, temp file, or registry residue.
+
+    Args:
+        name: the profile name being registered.
+        before_durable_snapshot: the full ``load_runtime_profiles()`` dict
+            captured BEFORE the durable write.
+        before_registry_profile: the ``ExecutorProfile`` obtained from
+            ``registry.get_profile(name)`` BEFORE the atomic replacement,
+            or None when the profile did not exist (first-time registration).
+    """
+    # Restore durable store: either overwrite with the saved entry or remove
+    # the profile entirely if it was not present before the request.
+    if name in before_durable_snapshot:
+        save_runtime_profile(name, before_durable_snapshot[name])
+    else:
+        remove_runtime_profile(name)
+
+    # Restore active in-memory registry: replace with the saved profile or
+    # unregister if it was absent.
+    registry = get_registry()
+    if before_registry_profile is not None:
+        registry.replace_custom_profile(before_registry_profile)
+    else:
+        registry.unregister_custom_profile(name)
+
+
 def _allow_legacy_to_strict_replacement(
     existing: ExecutorProfile,
     candidate: ExecutorProfile,
@@ -699,7 +735,14 @@ def register_executor(
         # The stored envelope_policy reflects what was written — for new
         # registrations that's always "strict" (no user choice).
         config_entry["envelope_policy"] = "strict"
-        before_snapshot = dict(load_runtime_profiles())
+        # Capture pre-request state for compensating rollback (TASK-3567).
+        # When the durable write and atomic replacement succeed but a
+        # subsequent audit step fails, this snapshot allows us to restore
+        # the exact pre-request state — no durable/registry/audit/token residue.
+        before_durable_snapshot = dict(load_runtime_profiles())
+        before_registry_profile = registry.get_profile(profile_name)
+        durable_committed = False
+
         try:
             save_runtime_profile(profile_name, config_entry)
         except Exception as exc:
@@ -726,6 +769,7 @@ def register_executor(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             )
+        durable_committed = True
 
         # 10. Audit the write. THR-107: the durable write went to the
         #     machine-global runtime store, so the before/after snapshots
@@ -738,11 +782,20 @@ def register_executor(
         logger.log_org_config_write(
             section="executor_profiles",
             tiers=[profile_name],
-            before=before_snapshot,
+            before=before_durable_snapshot,
             after=after_snapshot,
             actor="founder",
         )
     except BaseException:
+        if durable_committed:
+            # D7A compensating rollback (TASK-3567): the durable write and
+            # atomic registry replacement succeeded but a subsequent step
+            # (audit) failed.  Restore the exact pre-request durable and
+            # active-registry state so no strict/residue state leaks out
+            # and the client sees a consistent failure.
+            _rollback_runtime_profile(
+                profile_name, before_durable_snapshot, before_registry_profile,
+            )
         # Release reservation on ANY failure so the token stays valid
         # for retry within its unexpired TTL.
         store.release(token_value, slug)
@@ -1003,6 +1056,11 @@ def runtime_register_executor(
             config_entry["command_adapter"] = candidate.command_adapter_id
         # D7A: new/re-registered profiles always get strict enforcement
         config_entry["envelope_policy"] = "strict"
+        # Capture pre-request state for compensating rollback (TASK-3567).
+        before_durable_snapshot = dict(load_runtime_profiles())
+        before_registry_profile = registry.get_profile(profile_name)
+        durable_committed = False
+
         try:
             save_runtime_profile(profile_name, config_entry)
         except Exception as exc:
@@ -1029,10 +1087,8 @@ def runtime_register_executor(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             )
-    except BaseException:
-        store.release_runtime(token_value)
-        raise
-    else:
+        durable_committed = True
+
         # 9. Audit the successful runtime-level registration.
         #    Runtime-level registration is org-agnostic, so audit
         #    rows go to a dedicated runtime-audit.db (co-located
@@ -1044,6 +1100,19 @@ def runtime_register_executor(
             argv_template=body.argv_template,
             adapter=candidate.workspace_adapter_id,
         )
+    except BaseException:
+        if durable_committed:
+            # D7A compensating rollback (TASK-3567): the durable write and
+            # atomic registry replacement succeeded but a subsequent step
+            # (audit) failed.  Restore the exact pre-request durable and
+            # active-registry state so no strict/residue state leaks out
+            # and the client sees a consistent failure.
+            _rollback_runtime_profile(
+                profile_name, before_durable_snapshot, before_registry_profile,
+            )
+        store.release_runtime(token_value)
+        raise
+    else:
         store.commit_runtime(token_value)
     finally:
         profile_lock.release()
