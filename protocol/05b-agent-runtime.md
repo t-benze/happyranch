@@ -150,6 +150,22 @@ provided; additional agentic CLIs can be registered as custom profiles via org
 configuration (THR-052). Swapping an agent from one executor to another is a
 one-line config change in `agent.yaml`.
 
+**Profile identity (D6, THR-107 seq115).** Each registered executor profile
+carries two canonical identity fields:
+- ``workspace_adapter_id`` — selects workspace preparation (bootstrap file,
+  permission surface). One of ``claude``/``codex``/``opencode``/``pi``.
+- ``command_adapter_id`` — selects the command execution adapter (argv
+  construction and output parsing). For built-in profiles this matches
+  ``workspace_adapter_id`` (each carries its own first-party adapter); for
+  custom profiles this is always ``"generic-cli"``.
+
+Legacy fields ``adapter_id``/``adapter`` (deprecated alias for
+``workspace_adapter_id``) and ``command_adapter`` (deprecated alias for
+``command_adapter_id``) remain for read compatibility. The canonical
+fields are the preferred surface for all consumers. See the
+unified adapter-runtime architecture spec (§6.3) for dual-read,
+conflict-detection, and no-auto-mutation guarantees.
+
 ### Executor binary-path resolution (THR-085)
 
 At spawn time, each executor's CLI binary is resolved as follows:

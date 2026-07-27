@@ -81,10 +81,18 @@ class ExecutorProfile:
     ``kind`` is ``"builtin"`` for the four built-in adapters (claude, codex,
     opencode, pi) and ``"custom"`` for user-registered CLI profiles.
 
-    ``adapter_id`` tells the workspace preparation layer which adapter to use
-    when writing bootstrap files (CLAUDE.md / AGENTS.md / settings.json). It
-    refers to a built-in adapter: ``"claude"``, ``"codex"``, ``"opencode"``,
-    or ``"pi"``.
+    ``workspace_adapter_id`` (D6 canonical) selects the workspace preparation
+    adapter — which bootstrap files to write, which permission surface to
+    configure. One of ``"claude"``, ``"codex"``, ``"opencode"``, ``"pi"``.
+    This is the field consumers should read; ``adapter_id`` is a deprecated
+    read-compatible alias that MUST match ``workspace_adapter_id``.
+
+    ``command_adapter_id`` (D6 canonical) selects the command execution
+    adapter — which executor builds argv and parses output. For built-in
+    profiles this is the same as ``workspace_adapter_id`` (each built-in
+    carries its own first-party command adapter). For custom profiles
+    this is always ``"generic-cli"`` (the only supported command adapter).
+    ``command_adapter`` is a deprecated read-compatible alias.
 
     ``readiness_marker_fragment`` is a relative path within the workspace
     that, when present, signals the workspace is ready. The orchestrator
@@ -103,19 +111,73 @@ class ExecutorProfile:
     when the agent has a model set. Unset (None) → CLI default model.
     Pre-seeded on the four built-in profiles with each CLI's verified flag.
 
-    ``command_adapter`` (THR-107 D9 / Phase 3): optional field for custom
-    profiles only. When absent or ``None``, defaults to ``"generic-cli"`` —
-    the sole supported value for now. Built-in profiles MUST NOT set it.
+    **D6 migration:** ``workspace_adapter_id`` and ``command_adapter_id`` are
+    the canonical identity fields. ``adapter_id`` and ``command_adapter`` are
+    deprecated read-compatible aliases that MUST match their canonical
+    counterparts — conflicting values raise ``ValueError`` at construction
+    time BEFORE any durable-store mutation, registry mutation, audit write,
+    or token consumption.
     """
 
     name: str
     kind: str = "builtin"
-    adapter_id: str = "claude"
+    workspace_adapter_id: str = "claude"
+    command_adapter_id: str | None = None
     readiness_marker_fragment: str = ".claude/skills/start-task/SKILL.md"
     argv_template: list[str] | None = None
     command: str | None = None
     model_arg: list[str] | None = None
+    # ── Deprecated read-compatible aliases (D6) ────────────────────────
+    # MUST match canonical fields; conflict → ValueError.
+    adapter_id: str = "claude"
     command_adapter: str | None = None
+
+    def __post_init__(self):
+        """Enforce D6 canonical-alias consistency.
+
+        Dual-read resolution (deterministic):
+        1. If only the deprecated alias is set (canonical is default),
+           the canonical field is updated to match.
+        2. If only the canonical field is set (alias is default),
+           the alias is updated to match.
+        3. If both are set and disagree, raise ValueError before any
+           durable-store mutation, registry mutation, audit write, or
+           token consumption.
+        """
+        # Workspace adapter resolution
+        ws = self.workspace_adapter_id
+        ad_legacy = self.adapter_id
+        _DEFAULT_WS = "claude"
+
+        if ad_legacy != _DEFAULT_WS and ws == _DEFAULT_WS:
+            # Legacy-only: use deprecated alias value
+            object.__setattr__(self, "workspace_adapter_id", ad_legacy)
+        elif ws != _DEFAULT_WS and ad_legacy == _DEFAULT_WS:
+            # Canonical-only: sync deprecated alias
+            object.__setattr__(self, "adapter_id", ws)
+        elif ws != ad_legacy:
+            raise ValueError(
+                f"ExecutorProfile {self.name!r}: conflicting workspace adapter "
+                f"identifiers — canonical workspace_adapter_id={ws!r}, "
+                f"deprecated adapter_id={ad_legacy!r}. Use only "
+                f"workspace_adapter_id; adapter_id is a deprecated alias."
+            )
+
+        # Command adapter resolution (both default to None)
+        cmd = self.command_adapter_id
+        cmd_legacy = self.command_adapter
+
+        if cmd_legacy is not None and cmd is None:
+            object.__setattr__(self, "command_adapter_id", cmd_legacy)
+        elif cmd is not None and cmd_legacy is None:
+            object.__setattr__(self, "command_adapter", cmd)
+        elif cmd != cmd_legacy:
+            raise ValueError(
+                f"ExecutorProfile {self.name!r}: conflicting command adapter "
+                f"identifiers — canonical command_adapter_id={cmd!r}, "
+                f"deprecated command_adapter={cmd_legacy!r}. Use only "
+                f"command_adapter_id; command_adapter is a deprecated alias."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +216,10 @@ class ExecutorRegistry:
         No literal parallel built-in list or table remains in this
         file — the catalog is the single source of truth.
 
+        D6: Built-in profiles use the canonical ``workspace_adapter_id``
+        field. Their ``command_adapter_id`` matches ``workspace_adapter_id``
+        (each built-in carries its own first-party command adapter).
+
         **Immutability:** Catalog descriptors store ``model_arg`` as
         immutable tuples. Each ``ExecutorProfile`` receives its own
         independent list copy so that profile-local mutation cannot
@@ -165,7 +231,8 @@ class ExecutorRegistry:
             self._profiles[desc.name] = ExecutorProfile(
                 name=desc.name,
                 kind=desc.kind,
-                adapter_id=desc.adapter_id,
+                workspace_adapter_id=desc.workspace_adapter_id,
+                command_adapter_id=desc.command_adapter_id,
                 readiness_marker_fragment=desc.readiness_marker_fragment,
                 model_arg=list(desc.model_arg) if desc.model_arg is not None else None,
             )
@@ -273,20 +340,68 @@ class ExecutorRegistry:
             raise ValueError(f"executor_profiles.{name} must be a mapping")
         command = cfg.get("command")
         argv_template = cfg.get("argv_template")
+        # ── D6: dual-read workspace adapter (canonical workspace_adapter
+        #     wins over deprecated adapter; conflict → error) ────────────
         adapter = cfg.get("adapter", "pi")
-        if not isinstance(argv_template, list) or not argv_template:
-            raise ValueError(
-                f"executor_profiles.{name}.argv_template required"
-            )
-        if not isinstance(adapter, str) or adapter not in {
+        workspace_adapter_from_cfg = cfg.get("workspace_adapter")
+        if workspace_adapter_from_cfg is not None:
+            if not isinstance(workspace_adapter_from_cfg, str) or workspace_adapter_from_cfg not in {
+                "claude", "codex", "opencode", "pi",
+            }:
+                raise ValueError(
+                    f"executor_profiles.{name}.workspace_adapter must be "
+                    f"one of claude/codex/opencode/pi, got "
+                    f"{workspace_adapter_from_cfg!r}"
+                )
+            if adapter != "pi" and adapter != workspace_adapter_from_cfg:
+                raise ValueError(
+                    f"executor_profiles.{name}: conflicting workspace "
+                    f"adapter — canonical workspace_adapter="
+                    f"{workspace_adapter_from_cfg!r}, deprecated adapter="
+                    f"{adapter!r}. Use workspace_adapter; adapter is "
+                    f"a deprecated alias."
+                )
+            adapter = workspace_adapter_from_cfg
+        elif not isinstance(adapter, str) or adapter not in {
             "claude", "codex", "opencode", "pi",
         }:
             raise ValueError(
                 f"executor_profiles.{name}.adapter must be one of "
                 f"claude/codex/opencode/pi, got {adapter!r}"
             )
-        # ── THR-107 D9 / Phase 3: command_adapter (optional, additive) ────
-        command_adapter = cfg.get("command_adapter", "generic-cli")
+        # ── end workspace adapter dual-read ───────────────────────────────
+        if not isinstance(argv_template, list) or not argv_template:
+            raise ValueError(
+                f"executor_profiles.{name}.argv_template required"
+            )
+        # ── D6: dual-read command adapter (canonical command_adapter_id
+        #     wins over deprecated command_adapter; conflict → error) ─────
+        command_adapter = cfg.get("command_adapter")
+        command_adapter_id_from_cfg = cfg.get("command_adapter_id")
+        if command_adapter_id_from_cfg is not None:
+            if not isinstance(command_adapter_id_from_cfg, str):
+                raise ValueError(
+                    f"executor_profiles.{name}.command_adapter_id must be "
+                    f"a string, got {type(command_adapter_id_from_cfg).__name__}"
+                )
+            if command_adapter_id_from_cfg not in {"generic-cli"}:
+                raise ValueError(
+                    f"executor_profiles.{name}.command_adapter_id must be "
+                    f"'generic-cli' (the only supported value), got "
+                    f"{command_adapter_id_from_cfg!r}"
+                )
+            if command_adapter is not None and command_adapter != command_adapter_id_from_cfg:
+                raise ValueError(
+                    f"executor_profiles.{name}: conflicting command "
+                    f"adapter — canonical command_adapter_id="
+                    f"{command_adapter_id_from_cfg!r}, deprecated "
+                    f"command_adapter={command_adapter!r}. Use "
+                    f"command_adapter_id; command_adapter is a "
+                    f"deprecated alias."
+                )
+            command_adapter = command_adapter_id_from_cfg
+        elif command_adapter is None:
+            command_adapter = "generic-cli"
         if command_adapter is not None:
             if not isinstance(command_adapter, str):
                 raise ValueError(
@@ -299,7 +414,7 @@ class ExecutorRegistry:
                     f"'generic-cli' (the only supported value), got "
                     f"{command_adapter!r}"
                 )
-        # ── end command_adapter ───────────────────────────────────────────
+        # ── end command adapter dual-read ────────────────────────────────
         # Validate argv_template placeholders
         argv_errors = validate_argv_template([str(e) for e in argv_template])
         if argv_errors:
@@ -356,11 +471,11 @@ class ExecutorRegistry:
         return ExecutorProfile(
             name=name,
             kind="custom",
-            adapter_id=adapter,
+            workspace_adapter_id=adapter,
+            command_adapter_id=command_adapter,
             readiness_marker_fragment=marker,
             argv_template=[str(e) for e in argv_template],
             command=command,
-            command_adapter=command_adapter,
         )
 
 

@@ -69,10 +69,13 @@ openclaw:
     - --timeout
     - "{timeout_seconds}"
   adapter: pi
+  # D6 (2026-07-27): adapter is the DEPRECATED alias for workspace_adapter_id.
+  # For new profiles, use workspace_adapter_id: pi instead.
+  workspace_adapter_id: pi
   # Optional — THR-107 D9 / Phase 3. Sole accepted value: generic-cli.
-  # Controls execution template, argv construction, and output parsing.
-  # Omitted / null legacy profiles default to generic-cli at read time
-  # without auto-mutating the stored profile.
+  # D6: command_adapter is the DEPRECATED alias for command_adapter_id.
+  # For new profiles, use command_adapter_id: generic-cli instead.
+  command_adapter_id: generic-cli
   command_adapter: generic-cli
 ```
 
@@ -81,20 +84,23 @@ at registration time and substitutes placeholders at launch. No shell string
 is constructed — each template element becomes exactly one argv element, with
 placeholders replaced by their resolved values.
 
-**Adapter vs command_adapter (THR-107 D9 / Phase 3).** These are separately
-composable. The workspace `adapter` controls which bootstrap files are written
-(e.g., `CLAUDE.md` with `--allowedTools` for claude, or `AGENTS.md` for pi).
-The optional `command_adapter` controls which execution template builds argv
-and parses result output — currently always `generic-cli` for custom profiles.
+**Adapter vs command_adapter (THR-107 D9 / Phase 3 + D6).** These are separately
+composable. The canonical workspace `workspace_adapter_id` (deprecated alias:
+`adapter`) controls which bootstrap files are written (e.g., `CLAUDE.md` with
+`--allowedTools` for claude, or `AGENTS.md` for pi). The canonical
+`command_adapter_id` (deprecated alias: `command_adapter`) controls which
+execution template builds argv and parses result output — currently always
+`generic-cli` for custom profiles.
 
-*Concrete example:* A custom profile with `adapter: claude` and
-`command_adapter: generic-cli` gets a Claude workspace (CLAUDE.md, settings.json,
-`--allowedTools` generation) but uses the generic template-based executor for
-argv construction and result parsing. The workspace adapter controls
+*Concrete example:* A custom profile with `workspace_adapter_id: claude` and
+`command_adapter_id: generic-cli` gets a Claude workspace (CLAUDE.md,
+settings.json, `--allowedTools` generation) but uses the generic template-based
+executor for argv construction and result parsing. The workspace adapter controls
 permission files; the command adapter controls subprocess launch. These may
 differ — crossing them without explicit intent would be a security bug.
-Similarly, `adapter: pi` with `command_adapter: generic-cli` writes AGENTS.md
-(no permission file) while launching via the generic CLI template.
+Similarly, `workspace_adapter_id: pi` with `command_adapter_id: generic-cli`
+writes AGENTS.md (no permission file) while launching via the generic CLI
+template.
 
 **Result-envelope (THR-107).** Custom CLIs may opt into token metering by
 emitting a single-line JSON envelope on stdout between sentinel markers:
