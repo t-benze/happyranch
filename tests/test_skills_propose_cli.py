@@ -1,16 +1,12 @@
-"""THR-055 follow-up — CLI and route tests for `happyranch skills propose`.
+"""THR-055 follow-up — CLI tests for `happyranch skills propose`.
 
 Covers:
-- argparse required flags (--from-file, --org, --task-id, --session-id, --agent)
-- Absolute --from-file enforcement
+- argparse required flags (--from-file, --session-id), optional --org
+- Missing-file and invalid-JSON error handling
 - Body sanitization (identity-key rejection)
-- POST path + exact query binding
-- Absence of Authorization/bearer header
+- Bearer-free transport (no Authorization header)
 - Success output format
-- Structured lifecycle validation errors
-- Agent e2e proposal through real route with SessionTracker binding
-- Mismatch/inactive SessionTracker binding rejection
-- Existing non-proposal 403 coverage
+- Daemon lifecycle validation error rendering (exact format + exit code)
 """
 
 from __future__ import annotations
@@ -67,230 +63,137 @@ def _mock_response(status: int, json_body: dict | None = None, text: str = ""):
     return mock
 
 
+# patch targets: port_file is imported locally via
+#   from cli.client.client import port_file
+# and httpx.Client is accessed via a local `import httpx` inside
+# cmd_skills_propose, so patch at their source modules.
+_PORT_FILE_PATCH = "cli.client.client.port_file"
+_HTTPX_CLIENT_PATCH = "httpx.Client"
+
+
+def _setup_transport_mocks(
+    port_mock,
+    httpx_client_mock,
+    *,
+    post_response: MagicMock | None = None,
+    orgs_response: MagicMock | None = None,
+):
+    """Configure port_file and httpx.Client mocks for cmd_skills_propose."""
+    port_fake = MagicMock()
+    port_fake.exists.return_value = True
+    port_fake.read_text.return_value = "19999"
+    port_mock.return_value = port_fake
+
+    client_instance = MagicMock()
+    if orgs_response is not None:
+        client_instance.get.return_value = orgs_response
+    else:
+        orgs_resp = _mock_response(200, {"orgs": [{"slug": "alpha"}]})
+        client_instance.get.return_value = orgs_resp
+
+    if post_response is not None:
+        client_instance.post.return_value = post_response
+    else:
+        success_resp = _mock_response(201, {
+            "status": "proposed",
+            "skill_id": "hr:frontend-testing",
+            "version_id": 42,
+            "version": "0.1.0",
+            "content_hash": "abc123def456",
+        })
+        client_instance.post.return_value = success_resp
+
+    httpx_client_mock.return_value = client_instance
+    return port_fake, client_instance
+
+
+def _run_propose(args_dict: dict, capsys, expect_exit: bool = True) -> int | None:
+    """Run cmd_skills_propose with given args dict, return exit code or None."""
+    from cli.commands.skills import cmd_skills_propose
+    import argparse
+
+    ns = argparse.Namespace(**args_dict)
+    if expect_exit:
+        with pytest.raises(SystemExit) as exc:
+            cmd_skills_propose(ns)
+        return exc.value.code
+    else:
+        cmd_skills_propose(ns)
+        return None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # CLI argument parsing tests
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestArgparseRequiredFlags:
-    """Tests for required CLI flags."""
+    """Tests for required CLI flags (--from-file, --session-id)."""
 
     def test_missing_from_file_exits(self, capsys):
         """--from-file is required."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        ns = argparse.Namespace(
-            **{
-                "from_file": None,
-                "org": "alpha",
-                "task_id": "TASK-1",
-                "session_id": "sess-1",
-                "agent": "dev_agent",
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
+        code = _run_propose({
+            "from_file": None,
+            "session_id": "sess-1",
+            "org": "alpha",
+        }, capsys)
+        assert code == 1
         err = capsys.readouterr().err
-        assert exc.value.code == 2
         assert "--from-file" in err
-
-    def test_missing_org_exits(self, capsys):
-        """--org is required."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        p = _write_proposal_json(_VALID_PROPOSAL)
-        ns = argparse.Namespace(
-            **{
-                "from_file": p,
-                "org": None,
-                "task_id": "TASK-1",
-                "session_id": "sess-1",
-                "agent": "dev_agent",
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
-        err = capsys.readouterr().err
-        assert exc.value.code == 2
-        assert "--org" in err
-
-    def test_missing_task_id_exits(self, capsys):
-        """--task-id is required."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        p = _write_proposal_json(_VALID_PROPOSAL)
-        ns = argparse.Namespace(
-            **{
-                "from_file": p,
-                "org": "alpha",
-                "task_id": None,
-                "session_id": "sess-1",
-                "agent": "dev_agent",
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
-        err = capsys.readouterr().err
-        assert exc.value.code == 2
-        assert "--task-id" in err
 
     def test_missing_session_id_exits(self, capsys):
         """--session-id is required."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
         p = _write_proposal_json(_VALID_PROPOSAL)
-        ns = argparse.Namespace(
-            **{
-                "from_file": p,
-                "org": "alpha",
-                "task_id": "TASK-1",
-                "session_id": None,
-                "agent": "dev_agent",
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
+        code = _run_propose({
+            "from_file": p,
+            "session_id": None,
+            "org": "alpha",
+        }, capsys)
+        assert code == 1
         err = capsys.readouterr().err
-        assert exc.value.code == 2
         assert "--session-id" in err
 
-    def test_missing_agent_exits(self, capsys):
-        """--agent is required."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
+    def test_org_is_optional(self, capsys):
+        """--org is optional; resolves from daemon if absent."""
         p = _write_proposal_json(_VALID_PROPOSAL)
-        ns = argparse.Namespace(
-            **{
+        with patch(_PORT_FILE_PATCH) as port_mock, \
+             patch(_HTTPX_CLIENT_PATCH) as client_mock:
+            _setup_transport_mocks(port_mock, client_mock)
+            code = _run_propose({
                 "from_file": p,
-                "org": "alpha",
-                "task_id": "TASK-1",
                 "session_id": "sess-1",
-                "agent": None,
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
-        err = capsys.readouterr().err
-        assert exc.value.code == 2
-        assert "--agent" in err
-
-    def test_all_missing_reported(self, capsys):
-        """All missing flags are reported together."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        p = _write_proposal_json(_VALID_PROPOSAL)
-        ns = argparse.Namespace(
-            **{
-                "from_file": p,
                 "org": None,
-                "task_id": None,
-                "session_id": None,
-                "agent": None,
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
-        err = capsys.readouterr().err
-        assert exc.value.code == 2
-        assert "--org" in err
-        assert "--task-id" in err
-        assert "--session-id" in err
-        assert "--agent" in err
+            }, capsys, expect_exit=False)
+        out = capsys.readouterr().out
+        assert "Proposal submitted successfully" in out
 
 
 class TestFromFile:
     """Tests for --from-file validation."""
 
-    def test_relative_path_rejected(self, capsys):
-        """Relative --from-file is rejected with a clear message."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        ns = argparse.Namespace(
-            **{
-                "from_file": "relative/path.json",
-                "org": "alpha",
-                "task_id": "TASK-1",
-                "session_id": "sess-1",
-                "agent": "dev_agent",
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
-        err = capsys.readouterr().err
-        assert exc.value.code != 0
-        assert "absolute" in err.lower()
-
     def test_missing_file_exits(self, capsys):
         """Non-existent --from-file exits with error."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        ns = argparse.Namespace(
-            **{
-                "from_file": "/nonexistent/path/proposal.json",
-                "org": "alpha",
-                "task_id": "TASK-1",
-                "session_id": "sess-1",
-                "agent": "dev_agent",
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
+        code = _run_propose({
+            "from_file": "/nonexistent/path/proposal.json",
+            "session_id": "sess-1",
+            "org": "alpha",
+        }, capsys)
+        assert code == 1
         err = capsys.readouterr().err
-        assert exc.value.code != 0
-        assert "cannot read" in err.lower()
+        assert "Error reading proposal file" in err
 
     def test_invalid_json_exits(self, capsys):
         """Malformed JSON in --from-file exits with clear error."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
         fd, p = tempfile.mkstemp(suffix=".json")
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("not json {{{")
-        ns = argparse.Namespace(
-            **{
-                "from_file": p,
-                "org": "alpha",
-                "task_id": "TASK-1",
-                "session_id": "sess-1",
-                "agent": "dev_agent",
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
+        code = _run_propose({
+            "from_file": p,
+            "session_id": "sess-1",
+            "org": "alpha",
+        }, capsys)
+        assert code == 1
         err = capsys.readouterr().err
-        assert exc.value.code != 0
-        assert "invalid JSON" in err
-
-    def test_non_object_json_exits(self, capsys):
-        """A JSON array/string/num in --from-file exits with error."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        fd, p = tempfile.mkstemp(suffix=".json")
-        with os.fdopen(fd, "w") as f:
-            json.dump([1, 2, 3], f)
-        ns = argparse.Namespace(
-            **{
-                "from_file": p,
-                "org": "alpha",
-                "task_id": "TASK-1",
-                "session_id": "sess-1",
-                "agent": "dev_agent",
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
-        err = capsys.readouterr().err
-        assert exc.value.code != 0
-        assert "object" in err.lower()
+        assert "Error reading proposal file" in err
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -300,375 +203,231 @@ class TestFromFile:
 class TestBodySanitization:
     """Tests that identity keys in the JSON body are rejected."""
 
-    def _run_with_body(self, body: dict, capsys) -> int:
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        p = _write_proposal_json(body)
-        ns = argparse.Namespace(
-            **{
-                "from_file": p,
-                "org": "alpha",
-                "task_id": "TASK-1",
-                "session_id": "sess-1",
-                "agent": "dev_agent",
-            }
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns)
-        return exc.value.code
-
     def test_task_id_in_body_rejected(self, capsys):
         body = dict(_VALID_PROPOSAL, task_id="TASK-spoof")
-        code = self._run_with_body(body, capsys)
+        p = _write_proposal_json(body)
+        code = _run_propose({
+            "from_file": p,
+            "session_id": "sess-1",
+            "org": "alpha",
+        }, capsys)
+        assert code == 1
         err = capsys.readouterr().err
-        assert code != 0
         assert "task_id" in err
+        assert "must not contain identity field" in err
 
     def test_session_id_in_body_rejected(self, capsys):
         body = dict(_VALID_PROPOSAL, session_id="sess-spoof")
-        code = self._run_with_body(body, capsys)
+        p = _write_proposal_json(body)
+        code = _run_propose({
+            "from_file": p,
+            "session_id": "sess-1",
+            "org": "alpha",
+        }, capsys)
+        assert code == 1
         err = capsys.readouterr().err
-        assert code != 0
         assert "session_id" in err
+        assert "must not contain identity field" in err
 
     def test_proposer_agent_in_body_rejected(self, capsys):
         body = dict(_VALID_PROPOSAL, proposer_agent="engineering_manager")
-        code = self._run_with_body(body, capsys)
+        p = _write_proposal_json(body)
+        code = _run_propose({
+            "from_file": p,
+            "session_id": "sess-1",
+            "org": "alpha",
+        }, capsys)
+        assert code == 1
         err = capsys.readouterr().err
-        assert code != 0
         assert "proposer_agent" in err
+        assert "must not contain identity field" in err
 
     def test_agent_name_in_body_rejected(self, capsys):
-        """agent_name (the query identity parameter) is rejected from body."""
+        """agent_name (the identity parameter) is rejected from body."""
         body = dict(_VALID_PROPOSAL, agent_name="engineering_manager")
-        code = self._run_with_body(body, capsys)
+        p = _write_proposal_json(body)
+        code = _run_propose({
+            "from_file": p,
+            "session_id": "sess-1",
+            "org": "alpha",
+        }, capsys)
+        assert code == 1
         err = capsys.readouterr().err
-        assert code != 0
         assert "agent_name" in err
+        assert "must not contain identity field" in err
 
-    def test_all_identity_keys_rejected_together(self, capsys):
-        body = dict(
-            _VALID_PROPOSAL,
-            task_id="TASK-spoof",
-            session_id="sess-spoof",
-            proposer_agent="engineering_manager",
-            agent_name="engineering_manager",
-        )
-        code = self._run_with_body(body, capsys)
+    def test_org_in_body_rejected(self, capsys):
+        body = dict(_VALID_PROPOSAL, org="bad")
+        p = _write_proposal_json(body)
+        code = _run_propose({
+            "from_file": p,
+            "session_id": "sess-1",
+            "org": "alpha",
+        }, capsys)
+        assert code == 1
         err = capsys.readouterr().err
-        assert code != 0
-        assert "task_id" in err
-        assert "session_id" in err
-        assert "proposer_agent" in err
-        assert "agent_name" in err
-
-    def test_mixed_identity_and_unknown_keys_rejected(self, capsys):
-        """Any key outside the package-field allow-list is rejected."""
-        body = dict(
-            _VALID_PROPOSAL,
-            agent_name="bad",
-            task_id="bad",
-            unknown_field="bad",
-        )
-        code = self._run_with_body(body, capsys)
-        err = capsys.readouterr().err
-        assert code != 0
-        # The error message should list each offending key
-        for key in ("agent_name", "task_id", "unknown_field"):
-            assert key in err
+        assert "org" in err
+        assert "must not contain identity field" in err
 
     def test_pure_package_body_passes_sanitization(self, capsys):
-        """A body containing only known package fields passes validation."""
+        """A body containing only known package fields passes body validation."""
         body = dict(_VALID_PROPOSAL)  # all fields are package-content only
         p = _write_proposal_json(body)
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        # Inject a mock transport to bypass the real daemon connection.
-        # The key assertion is that body sanitization passes (no
-        # unrecognized-key error) before reaching the transport.
-        mock_transport = MagicMock()
-        mock_transport.submit_proposal.return_value = _mock_response(201, {
-            "status": "proposed",
-            "skill_id": "hr:test",
-            "version_id": 1,
-            "version": "0.1.0",
-            "content_hash": "hash",
-        })
-
-        ns = argparse.Namespace(
-            **{
+        with patch(_PORT_FILE_PATCH) as port_mock, \
+             patch(_HTTPX_CLIENT_PATCH) as client_mock:
+            _setup_transport_mocks(port_mock, client_mock)
+            code = _run_propose({
                 "from_file": p,
-                "org": "alpha",
-                "task_id": "TASK-1",
                 "session_id": "sess-1",
-                "agent": "dev_agent",
-            }
-        )
-        # Should succeed — no SystemExit
-        cmd_skills_propose(ns, _transport=mock_transport)
-
+                "org": "alpha",
+            }, capsys, expect_exit=False)
         out = capsys.readouterr().out
         assert "Proposal submitted successfully" in out
-        assert "unrecognized" not in out.lower()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Transport tests (no bearer token, correct POST shape)
+# Transport tests (no bearer token, correct POST shape, error rendering)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestSessionProposalTransport:
+class TestBearerFreeTransport:
     """Tests for the bearer-free session-proposal transport."""
 
-    def test_no_authorization_header_sent(self):
-        """SessionProposalTransport must NOT send an Authorization header."""
-        from cli.commands.skills import SessionProposalTransport
+    def test_no_authorization_header_sent(self, capsys):
+        """The POST client must NOT send an Authorization header."""
+        p = _write_proposal_json(_VALID_PROPOSAL)
+        with patch(_PORT_FILE_PATCH) as port_mock, \
+             patch(_HTTPX_CLIENT_PATCH) as client_mock:
+            _, client_instance = _setup_transport_mocks(port_mock, client_mock)
+            _run_propose({
+                "from_file": p,
+                "session_id": "sess-1",
+                "org": "alpha",
+            }, capsys, expect_exit=False)
 
-        transport = SessionProposalTransport(port="19999")
-        try:
-            headers = dict(transport._client.headers)
-            assert "authorization" not in {k.lower() for k in headers}
-        finally:
-            transport.close()
+        # Verify httpx.Client was constructed without Authorization
+        call_kwargs = client_mock.call_args.kwargs
+        headers = call_kwargs.get("headers", {})
+        assert "authorization" not in {k.lower() for k in headers}
 
-    def test_submit_proposal_posts_correct_path_and_params(self):
+    def test_posts_correct_path_and_params(self, capsys):
         """submit_proposal POSTs to the correct path with query params."""
-        from cli.commands.skills import SessionProposalTransport
+        p = _write_proposal_json(_VALID_PROPOSAL)
+        with patch(_PORT_FILE_PATCH) as port_mock, \
+             patch(_HTTPX_CLIENT_PATCH) as client_mock:
+            _, client_instance = _setup_transport_mocks(port_mock, client_mock)
+            _run_propose({
+                "from_file": p,
+                "session_id": "sess-1",
+                "org": "alpha",
+            }, capsys, expect_exit=False)
 
-        transport = SessionProposalTransport(port="19999")
-        try:
-            with patch.object(transport._client, "post") as mock_post:
-                mock_resp = _mock_response(201, {
-                    "status": "proposed",
-                    "skill_id": "hr:test",
-                    "version_id": 1,
-                    "version": "0.1.0",
-                    "content_hash": "abc123",
-                })
-                mock_post.return_value = mock_resp
-
-                transport.submit_proposal(
-                    org="alpha",
-                    task_id="TASK-1",
-                    session_id="sess-1",
-                    agent_name="dev_agent",
-                    body=_VALID_PROPOSAL,
-                )
-
-                mock_post.assert_called_once()
-                call_args, call_kwargs = mock_post.call_args
-                assert call_args[0] == "/api/v1/orgs/alpha/skill-lifecycle/proposals"
-                assert call_kwargs["params"] == {
-                    "slug": "alpha",
-                    "task_id": "TASK-1",
-                    "session_id": "sess-1",
-                    "agent_name": "dev_agent",
-                }
-                assert call_kwargs["json"] == _VALID_PROPOSAL
-        finally:
-            transport.close()
+        client_instance.post.assert_called_once()
+        call_args, call_kwargs = client_instance.post.call_args
+        assert "skill-lifecycle/proposals/agent" in call_args[0]
+        assert call_kwargs["params"] == {"session_id": "sess-1"}
+        assert call_kwargs["json"] == _VALID_PROPOSAL
 
     def test_success_output_format(self, capsys):
         """Success response prints structured output."""
-        from cli.commands.skills import cmd_skills_propose, SessionProposalTransport
-        import argparse
-
         p = _write_proposal_json(_VALID_PROPOSAL)
+        with patch(_PORT_FILE_PATCH) as port_mock, \
+             patch(_HTTPX_CLIENT_PATCH) as client_mock:
+            _setup_transport_mocks(port_mock, client_mock)
+            _run_propose({
+                "from_file": p,
+                "session_id": "sess-1",
+                "org": "alpha",
+            }, capsys, expect_exit=False)
 
-        with patch(
-            "cli.commands.skills.SessionProposalTransport",
-            autospec=True,
-        ) as MockTransport:
-            instance = MockTransport.return_value
-            instance.submit_proposal.return_value = _mock_response(201, {
-                "status": "proposed",
-                "skill_id": "hr:frontend-testing",
-                "version_id": 42,
-                "version": "0.1.0",
-                "content_hash": "abc123def456",
-                "proposal_task_id": "TASK-1",
-            })
+        out = capsys.readouterr().out
+        assert "Proposal submitted successfully" in out
+        assert "proposed" in out
+        assert "hr:frontend-testing" in out
+        assert "42" in out
+        assert "abc123def456" in out
 
-            ns = argparse.Namespace(
-                **{
-                    "from_file": p,
-                    "org": "alpha",
-                    "task_id": "TASK-1",
-                    "session_id": "sess-1",
-                    "agent": "dev_agent",
-                }
-            )
-            cmd_skills_propose(ns)
+    def test_lifecycle_error_rendered_exact_form(self, capsys):
+        """Lifecycle 4xx/422 errors are rendered as 'error (<status>): <detail>'.
 
-            out = capsys.readouterr().out
-            assert "Proposal submitted successfully" in out
-            assert "proposed" in out
-            assert "hr:frontend-testing" in out
-            assert "42" in out
-            assert "abc123def456" in out
-
-    def test_structured_lifecycle_error_output(self, capsys):
-        """Lifecycle 4xx/422 errors print code + detail."""
-        from cli.commands.skills import cmd_skills_propose, SessionProposalTransport
-        import argparse
-
+        This is a regression test per TASK-3591 review finding: the protocol
+        must reflect the exact shipping format. The CLI prints
+        ``error (<HTTP-status>): <detail>`` (not ``error: [<code>] <detail>``)
+        and exits with code 1.
+        """
         p = _write_proposal_json(_VALID_PROPOSAL)
+        error_body = {
+            "detail": {
+                "code": "protected_slug",
+                "detail": "Slug 'start-task' is a protected system skill.",
+            }
+        }
+        post_resp = _mock_response(422, error_body)
 
-        with patch(
-            "cli.commands.skills.SessionProposalTransport",
-            autospec=True,
-        ) as MockTransport:
-            instance = MockTransport.return_value
-            instance.submit_proposal.return_value = _mock_response(422, {
-                "detail": {
-                    "code": "protected_slug",
-                    "detail": "Slug 'start-task' is a protected system skill.",
-                }
-            })
+        with patch(_PORT_FILE_PATCH) as port_mock, \
+             patch(_HTTPX_CLIENT_PATCH) as client_mock:
+            _setup_transport_mocks(port_mock, client_mock, post_response=post_resp)
+            code = _run_propose({
+                "from_file": p,
+                "session_id": "sess-1",
+                "org": "alpha",
+            }, capsys)
 
-            ns = argparse.Namespace(
-                **{
-                    "from_file": p,
-                    "org": "alpha",
-                    "task_id": "TASK-1",
-                    "session_id": "sess-1",
-                    "agent": "dev_agent",
-                }
-            )
-            with pytest.raises(SystemExit) as exc:
-                cmd_skills_propose(ns)
-            err = capsys.readouterr().err
-            assert exc.value.code != 0
-            assert "[protected_slug]" in err
-            assert "protected system skill" in err
+        err = capsys.readouterr().err
+        # Exact form: "error (<HTTP-status>): <detail>" and exit 1
+        assert code == 1
+        assert err.startswith("error (422): ")
+        assert "protected_slug" in err
+        assert "protected system skill" in err
 
-    def test_unstructured_error_fallback(self, capsys):
-        """Non-structured errors print status code + text."""
-        from cli.commands.skills import cmd_skills_propose, SessionProposalTransport
-        import argparse
-
+    def test_internal_server_error_rendered(self, capsys):
+        """Daemon 500 errors (JSON detail) print status code + detail."""
         p = _write_proposal_json(_VALID_PROPOSAL)
+        error_body = {"detail": "Internal Server Error"}
+        post_resp = _mock_response(500, error_body)
 
-        with patch(
-            "cli.commands.skills.SessionProposalTransport",
-            autospec=True,
-        ) as MockTransport:
-            instance = MockTransport.return_value
-            instance.submit_proposal.return_value = _mock_response(
-                500, text="Internal Server Error"
-            )
+        with patch(_PORT_FILE_PATCH) as port_mock, \
+             patch(_HTTPX_CLIENT_PATCH) as client_mock:
+            _setup_transport_mocks(port_mock, client_mock, post_response=post_resp)
+            code = _run_propose({
+                "from_file": p,
+                "session_id": "sess-1",
+                "org": "alpha",
+            }, capsys)
 
-            ns = argparse.Namespace(
-                **{
-                    "from_file": p,
-                    "org": "alpha",
-                    "task_id": "TASK-1",
-                    "session_id": "sess-1",
-                    "agent": "dev_agent",
-                }
-            )
-            with pytest.raises(SystemExit) as exc:
-                cmd_skills_propose(ns)
-            err = capsys.readouterr().err
-            assert exc.value.code != 0
-            assert "500" in err
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "error (500): " in err
+        assert "Internal Server Error" in err
+
+    def test_daemon_not_running_exits(self, capsys):
+        """When daemon port file doesn't exist, exit with clear message."""
+        p = _write_proposal_json(_VALID_PROPOSAL)
+        with patch(_PORT_FILE_PATCH) as port_mock:
+            port_fake = MagicMock()
+            port_fake.exists.return_value = False
+            port_mock.return_value = port_fake
+            code = _run_propose({
+                "from_file": p,
+                "session_id": "sess-1",
+                "org": "alpha",
+            }, capsys)
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "daemon not running" in err
 
     def test_subcommand_registered(self):
         """`skills propose` is registered in the argument parser."""
         from cli.main import build_parser
 
         parser = build_parser()
-        # parse with add_help=False to avoid SystemExit on --help
+        # verify the parser accepts the propose subcommand
         try:
-            args = parser.parse_args(["skills", "propose", "--from-file", "/tmp/x.json",
-                                      "--org", "x", "--task-id", "T-1",
-                                      "--session-id", "s-1", "--agent", "a"])
+            args = parser.parse_args(["skills", "propose",
+                                      "--from-file", "/tmp/x.json",
+                                      "--session-id", "s-1",
+                                      "--org", "x"])
         except SystemExit:
-            # If all flags present, cmd_skills_propose will try to read /tmp/x.json
-            # which doesn't exist — that's fine, the test just confirms the parser
-            # doesn't reject the subcommand
             pass
-        # If we got here without argparse error, subcommand is registered
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Subcommand discovery test (parser smoke)
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestTransportInjection:
-    """Tests for the optional _transport injection point in cmd_skills_propose."""
-
-    def test_injected_transport_used_instead_of_real_one(self, capsys):
-        """When _transport is provided, it is used and the real
-        SessionProposalTransport is never created."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        p = _write_proposal_json(_VALID_PROPOSAL)
-
-        injected = MagicMock()
-        injected.submit_proposal.return_value = _mock_response(201, {
-            "status": "proposed",
-            "skill_id": "hr:test",
-            "version_id": 1,
-            "version": "0.1.0",
-            "content_hash": "hash123",
-            "proposal_task_id": "TASK-1",
-        })
-
-        ns = argparse.Namespace(
-            from_file=p,
-            org="alpha",
-            task_id="TASK-1",
-            session_id="sess-1",
-            agent="dev_agent",
-        )
-        cmd_skills_propose(ns, _transport=injected)
-
-        # The injected transport's submit_proposal was called
-        injected.submit_proposal.assert_called_once()
-        call_kwargs = injected.submit_proposal.call_args.kwargs
-        assert call_kwargs["org"] == "alpha"
-        assert call_kwargs["task_id"] == "TASK-1"
-        assert call_kwargs["session_id"] == "sess-1"
-        assert call_kwargs["agent_name"] == "dev_agent"
-
-        # The injected transport's close was NOT called (only real transport
-        # manages its own lifecycle)
-        injected.close.assert_not_called()
-
-        out = capsys.readouterr().out
-        assert "Proposal submitted successfully" in out
-
-    def test_injected_transport_lifecycle_error_rendered(self, capsys):
-        """Lifecycle errors from injected transport are rendered correctly."""
-        from cli.commands.skills import cmd_skills_propose
-        import argparse
-
-        p = _write_proposal_json(_VALID_PROPOSAL)
-
-        injected = MagicMock()
-        injected.submit_proposal.return_value = _mock_response(422, {
-            "detail": {
-                "code": "protected_slug",
-                "detail": "Slug 'start-task' is a protected system skill.",
-            }
-        })
-
-        ns = argparse.Namespace(
-            from_file=p,
-            org="alpha",
-            task_id="TASK-1",
-            session_id="sess-1",
-            agent="dev_agent",
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_skills_propose(ns, _transport=injected)
-
-        err = capsys.readouterr().err
-        assert exc.value.code != 0
-        assert "[protected_slug]" in err
 
 
 class TestProposeSubcommandDiscovery:

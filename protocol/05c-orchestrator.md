@@ -770,8 +770,11 @@ trusted identity; body identity claims are rejected with 403.
 
 Malformed JSON, missing ``--from-file`` or ``--session-id`` flags, and body
 identity-key attacks fail locally with exit code 1 or 2. Lifecycle validation
-errors (4xx/422) from the daemon are rendered as ``error: [<code>] <detail>``
-with the structured ``code`` + ``detail`` fields. On success the CLI prints
+errors (4xx/422) from the daemon are rendered as ``error (<HTTP-status>): <detail>``
+and exit with code 1, where ``<HTTP-status>`` is the HTTP response status code
+and ``<detail>`` is the daemon's error body (the ``detail`` response body field
+for structured errors, or the response text for non-JSON responses). On success
+the CLI prints
 status, skill_id, version_id, version, and content_hash.
 
 After submission, the proposal enters the lifecycle at ``proposed`` status. All
