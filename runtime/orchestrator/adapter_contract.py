@@ -1,0 +1,129 @@
+"""Versioned adapter input/output contract (THR-107 D3).
+
+Defines the canonical ``AdapterInput`` and ``AdapterOutput`` Pydantic models
+that form the stdin/stdout contract between the daemon and custom adapter
+executables. These models are the authoritative shape for the conformance
+probe run at registration time (§4.4 of the unified adapter architecture).
+
+The contract is additive — it does not alter ``ExecutorResult``, any
+existing audit shape, or any SQLite column. ``AdapterOutput`` is validated
+during the conformance probe only; at launch time the adapter's output is
+mapped back into the existing ``ExecutorResult`` by the command-adapter
+boundary (D6 `command_adapter_id`).
+
+D3 scope: conformance-probe use only. The fields here are the CONTRACT the
+custom adapter executable must speak; the daemon-side adapter maps this
+into ``ExecutorResult`` during actual launches (a later slice).
+"""
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# Adapter Input Contract (§2.1)
+# ---------------------------------------------------------------------------
+
+
+class InvocationInfo(BaseModel):
+    """Identifies the invocation for the adapter."""
+    invocation_id: str = Field(..., description="HappyRanch session id (sess-<uuid>)")
+    task_id: str | None = Field(None, description="Owning task id (null for threads/dreams/wakes)")
+    agent: str = Field(..., description="Agent name")
+    org: str = Field(..., description="Org slug")
+    invocation_kind: str = Field(..., description="task | thread | wake | dream | schedule")
+
+
+class TimeoutInfo(BaseModel):
+    """Wall-clock and subprocess timeout parameters."""
+    deadline_seconds: int = Field(..., description="Wall-clock deadline")
+    max_runtime_seconds: int = Field(..., description="Subprocess communicate() timeout")
+
+
+class ModelInfo(BaseModel):
+    """Model selection parameters (null → adapter default)."""
+    model_id: str = Field(..., description="Model identifier string")
+    model_arg_template: list[str] | None = Field(None, description="How to splice into argv, e.g. ['--model', '{model}']")
+
+
+class SessionInfo(BaseModel):
+    """Resume-capable session info."""
+    resume_session_id: str = Field(..., description="The agent CLI's own session id to resume")
+
+
+class ExecutorContext(BaseModel):
+    """Immutable per-invocation executor context."""
+    provider: str = Field(..., description="Throttle key (profile name)")
+    adapter_id: str = Field(..., description="Workspace adapter id (D6: workspace_adapter_id)")
+    adapter_version: str = Field(..., description="Adapter implementation version")
+    permission_mode: str | None = Field(None, description="Provider-specific permission posture")
+
+
+class AdapterInput(BaseModel):
+    """The contract the daemon passes to EVERY adapter via stdin.
+
+    This is the normative type from §2.1 of the unified adapter architecture.
+    """
+
+    contract_version: int = Field(..., ge=1, description="Version of THIS input contract")
+    invocation: InvocationInfo
+    prompt: str = Field(..., description="Full prompt text (includes session-lifetime preamble)")
+    workspace: str = Field(..., description="Absolute path to prepared workspace")
+    timeout: TimeoutInfo
+    model: ModelInfo | None = Field(None, description="Null → adapter uses its own default")
+    session: SessionInfo | None = Field(None, description="Present for resume-capable invocations")
+    executor_context: ExecutorContext
+
+
+# ---------------------------------------------------------------------------
+# Adapter Output Contract (§2.2)
+# ---------------------------------------------------------------------------
+
+
+class TokenUsageInfo(BaseModel):
+    """Token usage reporting (maps to existing TokenUsage model)."""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    model: str | None = None
+    usage_raw_json: str | None = None
+
+
+class ResultText(BaseModel):
+    """Additive result text field (§2.2)."""
+    text: str | None = Field(None, description="Agent's final response text (trimmed)")
+
+
+class AdapterMetadata(BaseModel):
+    """Provenance metadata from the adapter (§2.2)."""
+    adapter: str = Field(..., description="Adapter implementation identity")
+    adapter_version: str = Field(..., description="Version of the adapter implementation")
+    contract_version: int = Field(..., description="Version of THIS result contract")
+
+
+class AdapterOutput(BaseModel):
+    """The contract EVERY adapter returns via stdout.
+
+    This is the normative type from §2.2 of the unified adapter architecture.
+
+    ``stdout_tail`` and ``stderr_tail`` are TOP-LEVEL fields (per §2.5) —
+    consumed directly by ``run_step`` and ``thread_runner`` for failure
+    forensics. They MUST NOT be nested.
+    """
+
+    success: bool = Field(..., description="Did the subprocess exit 0?")
+    duration_seconds: int = Field(..., description="Wall-clock duration")
+    session_id: str = Field(..., description="Echo back the invocation id")
+    returncode: int | None = Field(None, description="Subprocess exit code (null on timeout)")
+    stdout_tail: str = Field(..., description="Last ~2000 bytes of stdout")
+    stderr_tail: str = Field(..., description="Last ~2000 bytes of stderr")
+    result: ResultText | None = Field(None, description="Additive result text")
+    token_usage: TokenUsageInfo | None = Field(None, description="Token usage (maps to TokenUsage model)")
+    error: str | None = Field(None, description="Human-readable error")
+    agent_session_id: str | None = Field(None, description="Agent CLI's own session id (for resume)")
+    rate_limited: bool = Field(False, description="Did the provider rate-limit this attempt?")
+    adapter_metadata: AdapterMetadata = Field(..., description="Provenance metadata from the adapter")
+    child_session_id: str | None = Field(None, description="Future: spawned child session id")
+    raw_forensics_ref: str | None = Field(None, description="Path/ref to raw forensic capture")

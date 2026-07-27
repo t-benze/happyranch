@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from runtime.config import settings
 from runtime.daemon.dispatcher import Dispatcher
 from runtime.daemon.routes import (
+    adapters,
     agents,
     artifacts,
     assistant,
@@ -310,6 +311,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(executors.router, prefix="/api/v1/orgs/{slug}", tags=["executors"])
     app.include_router(executors.runtime_router, prefix="/api/v1", tags=["executors-runtime"])
     app.include_router(executor_binaries.router, prefix="/api/v1", tags=["executor-binaries"])
+    app.include_router(adapters.router, prefix="/api/v1", tags=["adapters"])
     from runtime.daemon.routes import web_static
     web_static.register(app, settings=state.settings)
     return app

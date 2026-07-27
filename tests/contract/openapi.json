@@ -3172,6 +3172,37 @@
         ]
       }
     },
+    "/api/v1/runtime/adapters": {
+      "GET": {
+        "params": [],
+        "responses": [
+          "200"
+        ]
+      }
+    },
+    "/api/v1/runtime/adapters/register": {
+      "POST": {
+        "params": [],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/runtime/adapters/{adapter_id}": {
+      "GET": {
+        "params": [
+          [
+            "adapter_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/runtime/use": {
       "POST": {
         "params": [
