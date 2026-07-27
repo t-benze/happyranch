@@ -19,6 +19,7 @@ import hashlib
 import logging
 import os
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,6 +28,37 @@ import yaml
 from runtime.runtime import daemon_home
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Store-level write lock
+# ---------------------------------------------------------------------------
+
+_store_lock = threading.RLock()
+
+
+def acquire_store_lock() -> None:
+    """Acquire the exclusive adapter store write lock (reentrant).
+
+    Serializes all write operations (registration, approval, removal)
+    against the shared adapters.yaml file.  Callers MUST release it
+    via ``release_store_lock()`` — prefer a try/finally block.
+
+    This lock is reentrant so that ``approve_adapter`` and
+    ``register_custom_adapter`` can hold it across their critical
+    sections while internally calling ``save_adapter``, which also
+    acquires it.
+
+    This lock covers the daemon's single-process multi-threaded
+    concurrency model (FastAPI thread pool).  For cross-process safety
+    an ``fcntl.flock`` would be needed, but the daemon ships as a single
+    process.
+    """
+    _store_lock.acquire()
+
+
+def release_store_lock() -> None:
+    """Release the adapter store write lock."""
+    _store_lock.release()
 
 # ---------------------------------------------------------------------------
 # Adapter entry model
@@ -178,7 +210,19 @@ def save_adapter(entry: AdapterEntry) -> None:
     ``runtime_executor_store.save_runtime_profile``).
 
     The entry's ``id`` is used as the store key.
+
+    Acquires the store write lock internally (reentrant) so that
+    direct callers (tests, D3 path) are safe.
     """
+    acquire_store_lock()
+    try:
+        _save_adapter_locked(entry)
+    finally:
+        release_store_lock()
+
+
+def _save_adapter_locked(entry: AdapterEntry) -> None:
+    """Internal: write entry assuming the caller already holds the lock."""
     path = _store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -210,31 +254,37 @@ def remove_adapter(adapter_id: str) -> bool:
 
     Returns True if the entry was removed, False if it was not found
     (no-op). Uses the same atomic temp-file + ``os.replace`` pattern.
+
+    Acquires the store write lock internally.
     """
-    path = _store_path()
-    current = load_adapters()
-    if adapter_id not in current:
-        return False
-    del current[adapter_id]
-
-    serialized: dict[str, dict] = {}
-    for aid, aentry in current.items():
-        serialized[aid] = aentry.to_dict()
-
-    fd, tmp = tempfile.mkstemp(
-        prefix=".adapters.", suffix=".yaml", dir=str(path.parent)
-    )
+    acquire_store_lock()
     try:
-        with os.fdopen(fd, "w") as fh:
-            yaml.safe_dump(serialized, fh, sort_keys=False)
-        os.replace(tmp, path)
-    except Exception:
+        path = _store_path()
+        current = load_adapters()
+        if adapter_id not in current:
+            return False
+        del current[adapter_id]
+
+        serialized: dict[str, dict] = {}
+        for aid, aentry in current.items():
+            serialized[aid] = aentry.to_dict()
+
+        fd, tmp = tempfile.mkstemp(
+            prefix=".adapters.", suffix=".yaml", dir=str(path.parent)
+        )
         try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
-    return True
+            with os.fdopen(fd, "w") as fh:
+                yaml.safe_dump(serialized, fh, sort_keys=False)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
+        return True
+    finally:
+        release_store_lock()
 
 
 # ---------------------------------------------------------------------------

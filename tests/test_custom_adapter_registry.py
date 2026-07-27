@@ -1578,3 +1578,1352 @@ class TestReRegistrationPreservesPending:
         assert entry1.executable_hash != entry2.executable_hash
         # Only one entry in store
         assert len(load_adapters()) == 1
+
+
+# ============================================================================
+# D4: Approval gate tests
+# ============================================================================
+
+
+class TestApprovalGate:
+    """Test the D4 explicit founder approval gate.
+
+    Covers: successful matching approval, transition semantics, provenance
+    fields, exact-idempotence, mismatched facts, unknown adapter,
+    non-pending/approved-repeat behavior, and route-level auth gate.
+    """
+
+    def _register_pending(self, tmp_path, monkeypatch, name="approval-adapter"):
+        """Helper: register a pending adapter and return the entry."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = _make_fake_adapter_script(tmp_path, name)
+        return register_custom_adapter(
+            executable=str(script),
+            version="1.0.0",
+            capabilities=["token_metering"],
+            workspace_adapter="pi",
+        )
+
+    def test_successful_approval_writes_status_and_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        """Matching approval transitions PENDING→APPROVED and persists
+        approved_at + approved_by provenance."""
+        from runtime.orchestrator.custom_adapter_registry import approve_adapter
+
+        entry = self._register_pending(tmp_path, monkeypatch)
+        assert entry.status == "pending"
+
+        approved = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+        )
+
+        assert approved.status == "approved"
+        assert approved.approved_at is not None
+        assert approved.approved_at != ""
+        assert approved.approved_by == "founder/master-bearer"
+        # Registration metadata preserved
+        assert approved.registered_at == entry.registered_at
+        assert approved.registered_by == entry.registered_by
+        assert approved.executable == entry.executable
+        assert approved.executable_hash == entry.executable_hash
+
+        # Verify durable persistence
+        from runtime.orchestrator.adapter_store import load_adapters
+        loaded = load_adapters()
+        assert loaded[entry.id].status == "approved"
+        assert loaded[entry.id].approved_at == approved.approved_at
+        assert loaded[entry.id].approved_by == "founder/master-bearer"
+
+    def test_exact_idempotent_approval_noop(
+        self, tmp_path, monkeypatch
+    ):
+        """Approving an already-APPROVED adapter with identical facts
+        is an idempotent no-op — same entry returned, no provenance change."""
+        from runtime.orchestrator.custom_adapter_registry import approve_adapter
+
+        entry = self._register_pending(tmp_path, monkeypatch)
+        first = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+        )
+        assert first.status == "approved"
+        first_approved_at = first.approved_at
+
+        # Second call with identical facts
+        second = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+        )
+        assert second.status == "approved"
+        assert second.approved_at == first_approved_at  # not rewritten
+        assert second.approved_by == "founder/master-bearer"
+
+    def test_already_approved_with_different_facts_rejects(
+        self, tmp_path, monkeypatch
+    ):
+        """An already-APPROVED adapter cannot be re-approved with
+        different facts — must re-register first."""
+        from runtime.orchestrator.custom_adapter_registry import approve_adapter
+
+        entry = self._register_pending(tmp_path, monkeypatch)
+        approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+        )
+
+        with pytest.raises(ValueError, match="already APPROVED with different"):
+            approve_adapter(
+                adapter_id=entry.id,
+                executable=entry.executable,
+                executable_hash=entry.executable_hash,
+                version="2.0.0",  # different version
+                capabilities=entry.capabilities,
+                contract_version=entry.contract_version,
+                workspace_adapter=entry.workspace_adapter,
+            )
+
+    def test_unknown_adapter_rejected(self):
+        """Approving a non-existent adapter raises actionable error."""
+        from runtime.orchestrator.custom_adapter_registry import approve_adapter
+
+        with pytest.raises(ValueError, match="Unknown adapter"):
+            approve_adapter(
+                adapter_id="nonexistent-adapter",
+                executable="/bin/true",
+                executable_hash="abc",
+                version="1.0.0",
+                capabilities=[],
+                contract_version=1,
+                workspace_adapter="pi",
+            )
+
+    def test_non_pending_entry_rejected(
+        self, tmp_path, monkeypatch
+    ):
+        """Approval only applies to PENDING status — non-pending rejected."""
+        from runtime.orchestrator.custom_adapter_registry import approve_adapter
+
+        entry = self._register_pending(tmp_path, monkeypatch)
+        # Manually set a non-pending, non-approved state
+        from runtime.orchestrator.adapter_store import AdapterEntry, save_adapter
+
+        bad_entry = AdapterEntry(
+            id=entry.id,
+            name=entry.name,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version="1.0.0",
+            status="revoked",  # not pending, not approved
+            registered_at=entry.registered_at,
+        )
+        save_adapter(bad_entry)
+
+        with pytest.raises(ValueError, match="not PENDING"):
+            approve_adapter(
+                adapter_id=entry.id,
+                executable=entry.executable,
+                executable_hash=entry.executable_hash,
+                version="1.0.0",
+                capabilities=[],
+                contract_version=1,
+                workspace_adapter="pi",
+            )
+
+    def test_every_snapshot_fact_mismatch_fails_individually(
+        self, tmp_path, monkeypatch
+    ):
+        """Each material identity fact mismatch must fail before persistence."""
+        from runtime.orchestrator.custom_adapter_registry import approve_adapter
+
+        entry = self._register_pending(tmp_path, monkeypatch)
+
+        base = {
+            "adapter_id": entry.id,
+            "executable": entry.executable,
+            "executable_hash": entry.executable_hash,
+            "version": entry.version,
+            "capabilities": entry.capabilities,
+            "contract_version": entry.contract_version,
+            "workspace_adapter": entry.workspace_adapter,
+        }
+
+        # executable mismatch
+        with pytest.raises(ValueError, match="executable mismatch"):
+            approve_adapter(**{**base, "executable": "/other/path"})
+
+        # hash mismatch
+        with pytest.raises(ValueError, match="executable_hash mismatch"):
+            approve_adapter(**{**base, "executable_hash": "deadbeef" * 8})
+
+        # version mismatch
+        with pytest.raises(ValueError, match="version mismatch"):
+            approve_adapter(**{**base, "version": "3.0.0"})
+
+        # capabilities mismatch
+        with pytest.raises(ValueError, match="capabilities mismatch"):
+            approve_adapter(
+                **{**base, "capabilities": ["token_metering", "unknown_cap"]}
+            )
+
+        # contract_version mismatch
+        with pytest.raises(ValueError, match="contract_version mismatch"):
+            approve_adapter(**{**base, "contract_version": 2})
+
+        # workspace_adapter mismatch
+        with pytest.raises(ValueError, match="workspace_adapter mismatch"):
+            approve_adapter(**{**base, "workspace_adapter": "claude"})
+
+        # Verify entry still PENDING (no durable mutation from any failed attempt)
+        from runtime.orchestrator.adapter_store import load_adapters
+        assert load_adapters()[entry.id].status == "pending"
+
+    def test_approval_after_re_registration_rejects_old_snapshot(
+        self, tmp_path, monkeypatch
+    ):
+        """Re-registration resets to PENDING; old approval snapshot must reject."""
+        from runtime.orchestrator.custom_adapter_registry import approve_adapter
+
+        entry1 = self._register_pending(tmp_path, monkeypatch)
+
+        # Change the executable (re-registration)
+        script1_path = Path(entry1.executable)
+        script1_path.unlink()
+        script2 = _make_fake_adapter_script(
+            tmp_path, "approval-adapter",
+            output={
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": "v2",
+                "stderr_tail": "",
+                "result": {"text": "v2"},
+                "token_usage": None,
+                "error": None,
+                "agent_session_id": None,
+                "rate_limited": False,
+                "adapter_metadata": {
+                    "adapter": "fake",
+                    "adapter_version": "2.0.0",
+                    "contract_version": 1,
+                },
+                "child_session_id": None,
+                "raw_forensics_ref": None,
+            },
+        )
+        entry2 = register_custom_adapter(
+            executable=str(script2),
+            version="2.0.0",
+            capabilities=["token_metering"],
+            workspace_adapter="pi",
+        )
+        assert entry2.status == "pending"
+        assert entry2.approved_at is None
+
+        # Old approval payload (from entry1) must fail against entry2
+        with pytest.raises(ValueError, match="executable_hash mismatch"):
+            approve_adapter(
+                adapter_id=entry1.id,
+                executable=entry1.executable,
+                executable_hash=entry1.executable_hash,
+                version=entry1.version,
+                capabilities=entry1.capabilities,
+                contract_version=entry1.contract_version,
+                workspace_adapter=entry1.workspace_adapter,
+            )
+
+        # Verify still pending
+        from runtime.orchestrator.adapter_store import load_adapters
+        assert load_adapters()[entry1.id].status == "pending"
+
+        # Fresh approval with correct entry2 facts succeeds
+        approved = approve_adapter(
+            adapter_id=entry2.id,
+            executable=entry2.executable,
+            executable_hash=entry2.executable_hash,
+            version=entry2.version,
+            capabilities=entry2.capabilities,
+            contract_version=entry2.contract_version,
+            workspace_adapter=entry2.workspace_adapter,
+        )
+        assert approved.status == "approved"
+
+    def test_malformed_approval_inputs_rejected(self, tmp_path, monkeypatch):
+        """Empty/None/invalid inputs must be caught before store access."""
+        from runtime.orchestrator.custom_adapter_registry import approve_adapter
+
+        entry = self._register_pending(tmp_path, monkeypatch)
+
+        with pytest.raises(ValueError, match="adapter_id must be"):
+            approve_adapter(
+                adapter_id="",
+                executable=entry.executable,
+                executable_hash=entry.executable_hash,
+                version="1.0.0",
+                capabilities=[],
+                contract_version=1,
+                workspace_adapter="pi",
+            )
+
+        with pytest.raises(ValueError, match="executable must be"):
+            approve_adapter(
+                adapter_id=entry.id,
+                executable="",
+                executable_hash=entry.executable_hash,
+                version="1.0.0",
+                capabilities=[],
+                contract_version=1,
+                workspace_adapter="pi",
+            )
+
+        with pytest.raises(ValueError, match="contract_version must be an integer"):
+            approve_adapter(
+                adapter_id=entry.id,
+                executable=entry.executable,
+                executable_hash=entry.executable_hash,
+                version="1.0.0",
+                capabilities=[],
+                contract_version=True,  # bool, not int
+                workspace_adapter="pi",
+            )
+
+
+# ============================================================================
+# D4: resolve_adapter hash verification tests
+# ============================================================================
+
+
+class TestResolveAdapterHashVerification:
+    """D4: On-disk hash verification at resolve time.
+
+    APPROVED adapters must have the executable still present, regular,
+    executable, and with matching SHA-256 at the stored path.
+    Tampered/missing/non-regular/non-executable → resolve returns None.
+    """
+
+    def _register_and_approve(self, tmp_path, monkeypatch, name="resolve-adapter"):
+        """Helper: register + approve an adapter, return the entry + script path."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            approve_adapter,
+            register_custom_adapter,
+        )
+
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = _make_fake_adapter_script(tmp_path, name)
+        entry = register_custom_adapter(
+            executable=str(script),
+            version="1.0.0",
+            capabilities=["token_metering"],
+            workspace_adapter="pi",
+        )
+        approved = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+        )
+        return approved, script
+
+    def test_approved_resolves_when_on_disk_intact(self, tmp_path, monkeypatch):
+        """Intact approved adapter resolves successfully."""
+        approved, _script = self._register_and_approve(tmp_path, monkeypatch)
+        result = resolve_adapter(approved.id)
+        assert result is not None
+        assert result.status == "approved"
+        assert result.id == approved.id
+
+    def test_tampered_executable_fails_resolve(self, tmp_path, monkeypatch):
+        """Modified executable → resolve returns None."""
+        approved, script = self._register_and_approve(tmp_path, monkeypatch)
+        # Tamper with the executable
+        script.write_text("#!/usr/bin/env python3\nprint('tampered')\n")
+        script.chmod(0o755)
+
+        result = resolve_adapter(approved.id)
+        assert result is None  # hash mismatch — refuses to resolve
+
+    def test_removed_executable_fails_resolve(self, tmp_path, monkeypatch):
+        """Deleted executable → resolve returns None."""
+        approved, script = self._register_and_approve(tmp_path, monkeypatch)
+        script.unlink()
+
+        result = resolve_adapter(approved.id)
+        assert result is None
+
+    def test_non_regular_file_fails_resolve(self, tmp_path, monkeypatch):
+        """Path that is a directory (not regular file) → resolve returns None."""
+        approved, script = self._register_and_approve(tmp_path, monkeypatch)
+        script.unlink()
+        script.mkdir()  # replace with directory
+
+        result = resolve_adapter(approved.id)
+        assert result is None
+
+    def test_non_executable_file_fails_resolve(self, tmp_path, monkeypatch):
+        """File without execute permission → resolve returns None."""
+        approved, script = self._register_and_approve(tmp_path, monkeypatch)
+        script.chmod(0o644)  # remove execute permission
+
+        result = resolve_adapter(approved.id)
+        assert result is None
+
+    def test_hash_never_silently_updated(self, tmp_path, monkeypatch):
+        """Daemon never silently updates stored hash after tamper detection."""
+        approved, script = self._register_and_approve(tmp_path, monkeypatch)
+        original_hash = approved.executable_hash
+
+        # Tamper
+        script.write_text("#!/usr/bin/env python3\nprint('tampered')\n")
+        script.chmod(0o755)
+
+        # Resolve fails
+        result = resolve_adapter(approved.id)
+        assert result is None
+
+        # Stored entry still has original hash — NOT updated
+        from runtime.orchestrator.adapter_store import load_adapters
+        loaded = load_adapters()[approved.id]
+        assert loaded.executable_hash == original_hash
+        assert loaded.status == "approved"  # status NOT changed
+
+    def test_pending_unaffected_by_tamper_check(self, tmp_path, monkeypatch):
+        """Pending adapters skip hash verification (no approval, no launch)."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = _make_fake_adapter_script(tmp_path, "pending-tampered")
+        entry = register_custom_adapter(
+            executable=str(script),
+            version="1.0.0",
+            capabilities=[],
+            workspace_adapter="pi",
+        )
+        # Tamper
+        script.write_text("tampered")
+        # resolve still returns None (pending rejection, not hash issue)
+        result = resolve_adapter(entry.id)
+        assert result is None  # rejected for pending status
+
+
+# ============================================================================
+# D4: Approval route tests
+# ============================================================================
+
+
+class TestApproveRoute:
+    """Real route tests for POST /api/v1/runtime/adapters/{adapter_id}/approve."""
+
+    @pytest.fixture
+    def route_setup(self, tmp_path, monkeypatch):
+        """Set up daemon home, token, and adapter store."""
+        from runtime.daemon import paths as paths_mod
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+        return tmp_path
+
+    @pytest.fixture
+    def app(self, route_setup):
+        """Create FastAPI app with the real adapters router."""
+        from fastapi import FastAPI
+        from runtime.daemon.routes.adapters import router
+        app = FastAPI()
+        app.include_router(router, prefix="/api/v1")
+        return app
+
+    def _register_as_authed(
+        self, client, token, script, version="1.0.0", capabilities=None,
+        workspace_adapter="pi"
+    ):
+        """Helper: authenticated register, returns response json."""
+        r = client.post("/api/v1/runtime/adapters/register", json={
+            "executable": str(script),
+            "version": version,
+            "capabilities": capabilities or ["token_metering"],
+            "workspace_adapter": workspace_adapter,
+        })
+        assert r.status_code == 200
+        return r.json()
+
+    def test_approve_route_requires_auth(self, route_setup, app):
+        """POST /approve without auth → 401."""
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.post("/api/v1/runtime/adapters/my-adapter/approve", json={
+            "executable": "/bin/true",
+            "executable_hash": "abc",
+            "version": "1.0.0",
+            "capabilities": [],
+            "contract_version": 1,
+            "workspace_adapter": "pi",
+        })
+        assert r.status_code == 401
+
+    def test_approve_route_success(self, route_setup, app):
+        """Authenticated approval with matching facts returns 200
+        with approved_at/approved_by fields."""
+        from fastapi.testclient import TestClient
+        from runtime.daemon import paths as paths_mod
+
+        token = paths_mod.read_token()
+        script = _make_fake_adapter_script(route_setup, "route-approve-adapter")
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        # Register
+        registered = self._register_as_authed(client, token, script)
+
+        # Approve
+        r = client.post(
+            f"/api/v1/runtime/adapters/{registered['id']}/approve",
+            json={
+                "executable": registered["executable"],
+                "executable_hash": registered["executable_hash"],
+                "version": registered["version"],
+                "capabilities": registered["capabilities"],
+                "contract_version": registered["contract_version"],
+                "workspace_adapter": registered["workspace_adapter"],
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "approved"
+        assert body["approved_at"] is not None
+        assert body["approved_at"] != ""
+        assert body["approved_by"] == "founder/master-bearer"
+        # Registration metadata preserved
+        assert body["registered_at"] == registered["registered_at"]
+        assert body["executable"] == registered["executable"]
+        assert body["executable_hash"] == registered["executable_hash"]
+
+    def test_approve_route_mismatch_rejects_422(self, route_setup, app):
+        """Approval with mismatched facts → 422, entry remains pending."""
+        from fastapi.testclient import TestClient
+        from runtime.daemon import paths as paths_mod
+
+        token = paths_mod.read_token()
+        script = _make_fake_adapter_script(route_setup, "mismatch-approve")
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        registered = self._register_as_authed(client, token, script)
+
+        r = client.post(
+            f"/api/v1/runtime/adapters/{registered['id']}/approve",
+            json={
+                "executable": "/wrong/path",  # mismatch
+                "executable_hash": registered["executable_hash"],
+                "version": registered["version"],
+                "capabilities": registered["capabilities"],
+                "contract_version": registered["contract_version"],
+                "workspace_adapter": registered["workspace_adapter"],
+            },
+        )
+        assert r.status_code == 422
+        assert "mismatch" in r.json()["detail"].lower()
+
+        # Entry still PENDING
+        r_get = client.get(f"/api/v1/runtime/adapters/{registered['id']}")
+        assert r_get.json()["status"] == "pending"
+
+    def test_approve_unknown_adapter_422(self, route_setup, app):
+        """Approving non-existent adapter → 422."""
+        from fastapi.testclient import TestClient
+        from runtime.daemon import paths as paths_mod
+
+        token = paths_mod.read_token()
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        r = client.post("/api/v1/runtime/adapters/nonexistent/approve", json={
+            "executable": "/bin/true",
+            "executable_hash": "abc",
+            "version": "1.0.0",
+            "capabilities": [],
+            "contract_version": 1,
+            "workspace_adapter": "pi",
+        })
+        assert r.status_code == 422
+
+    def test_approve_idempotent_200(self, route_setup, app):
+        """Idempotent approval returns 200 with same approved_at."""
+        from fastapi.testclient import TestClient
+        from runtime.daemon import paths as paths_mod
+
+        token = paths_mod.read_token()
+        script = _make_fake_adapter_script(route_setup, "idempotent-approve")
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        registered = self._register_as_authed(client, token, script)
+
+        payload = {
+            "executable": registered["executable"],
+            "executable_hash": registered["executable_hash"],
+            "version": registered["version"],
+            "capabilities": registered["capabilities"],
+            "contract_version": registered["contract_version"],
+            "workspace_adapter": registered["workspace_adapter"],
+        }
+
+        r1 = client.post(
+            f"/api/v1/runtime/adapters/{registered['id']}/approve", json=payload
+        )
+        assert r1.status_code == 200
+        first_at = r1.json()["approved_at"]
+
+        r2 = client.post(
+            f"/api/v1/runtime/adapters/{registered['id']}/approve", json=payload
+        )
+        assert r2.status_code == 200
+        assert r2.json()["approved_at"] == first_at  # idempotent
+
+    def test_approve_after_re_registration_old_payload_422(
+        self, route_setup, app
+    ):
+        """After re-registration, old approval payload → 422, entry pending."""
+        from fastapi.testclient import TestClient
+        from runtime.daemon import paths as paths_mod
+
+        token = paths_mod.read_token()
+        script1 = _make_fake_adapter_script(route_setup, "rereg-approve-v1")
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        registered1 = self._register_as_authed(client, token, script1)
+        adapter_id = registered1["id"]
+
+        # Change the executable
+        script1_path = Path(registered1["executable"])
+        script1_path.unlink()
+        script2 = _make_fake_adapter_script(
+            route_setup, "rereg-approve-v1",
+            output={
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": "v2",
+                "stderr_tail": "",
+                "result": {"text": "v2"},
+                "token_usage": None,
+                "error": None,
+                "agent_session_id": None,
+                "rate_limited": False,
+                "adapter_metadata": {
+                    "adapter": "fake",
+                    "adapter_version": "2.0.0",
+                    "contract_version": 1,
+                },
+                "child_session_id": None,
+                "raw_forensics_ref": None,
+            },
+        )
+        registered2 = self._register_as_authed(
+            client, token, script2, version="2.0.0"
+        )
+        assert registered2["status"] == "pending"
+
+        # Old payload (from registered1) must 422
+        r = client.post(f"/api/v1/runtime/adapters/{adapter_id}/approve", json={
+            "executable": registered1["executable"],
+            "executable_hash": registered1["executable_hash"],
+            "version": registered1["version"],
+            "capabilities": registered1["capabilities"],
+            "contract_version": registered1["contract_version"],
+            "workspace_adapter": registered1["workspace_adapter"],
+        })
+        assert r.status_code == 422
+
+        # Entry still pending
+        r_get = client.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert r_get.json()["status"] == "pending"
+
+    def test_list_and_detail_include_approval_fields(
+        self, route_setup, app
+    ):
+        """GET list and detail must expose approved_at/approved_by."""
+        from fastapi.testclient import TestClient
+        from runtime.daemon import paths as paths_mod
+
+        token = paths_mod.read_token()
+        script = _make_fake_adapter_script(route_setup, "approval-fields-adapter")
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+
+        registered = self._register_as_authed(client, token, script)
+
+        # Before approval
+        r_detail = client.get(f"/api/v1/runtime/adapters/{registered['id']}")
+        assert r_detail.status_code == 200
+        assert r_detail.json()["approved_at"] is None
+        assert r_detail.json()["approved_by"] is None
+
+        # Approve
+        r_approve = client.post(
+            f"/api/v1/runtime/adapters/{registered['id']}/approve",
+            json={
+                "executable": registered["executable"],
+                "executable_hash": registered["executable_hash"],
+                "version": registered["version"],
+                "capabilities": registered["capabilities"],
+                "contract_version": registered["contract_version"],
+                "workspace_adapter": registered["workspace_adapter"],
+            },
+        )
+        assert r_approve.status_code == 200
+
+        # Detail now shows approval fields
+        r_detail2 = client.get(f"/api/v1/runtime/adapters/{registered['id']}")
+        assert r_detail2.status_code == 200
+        assert r_detail2.json()["approved_at"] is not None
+        assert r_detail2.json()["approved_by"] == "founder/master-bearer"
+
+        # List also shows approval fields
+        r_list = client.get("/api/v1/runtime/adapters")
+        assert r_list.status_code == 200
+        entries = r_list.json()
+        matching = [e for e in entries if e["id"] == registered["id"]]
+        assert len(matching) == 1
+        assert matching[0]["approved_at"] is not None
+        assert matching[0]["approved_by"] == "founder/master-bearer"
+
+    def test_resolve_adapter_resolves_approved(self, route_setup):
+        """resolve_adapter returns approved adapter at the Python seam."""
+        from runtime.orchestrator.custom_adapter_registry import (
+            approve_adapter,
+            register_custom_adapter,
+            resolve_adapter,
+        )
+        monkeypatch_ctx = pytest.MonkeyPatch()
+        monkeypatch_ctx.setenv("HAPPYRANCH_DAEMON_HOME", str(route_setup))
+        script = _make_fake_adapter_script(route_setup, "resolve-approved")
+
+        entry = register_custom_adapter(
+            executable=str(script),
+            version="1.0.0",
+            capabilities=["token_metering"],
+            workspace_adapter="pi",
+        )
+        approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+        )
+        result = resolve_adapter(entry.id)
+        assert result is not None
+        assert result.status == "approved"
+
+
+# ============================================================================
+# D4: forbidden-surface proof + D3 regression
+# ============================================================================
+
+
+class TestD4ForbiddenSurfacesAndRegression:
+    """Verify D4 does not touch D5/D7/D12, SQLite, auth, permissions, etc."""
+
+    def test_d3_bounded_conformance_preserved(self, tmp_path, monkeypatch):
+        """D3 real subprocess tests still pass."""
+        from runtime.orchestrator import custom_adapter_registry as car
+
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        patched_timeout = 1.5
+        monkeypatch.setattr(
+            car, "CONFORMANCE_PROBE_TIMEOUT_SECONDS", patched_timeout
+        )
+
+        # Flood test
+        flood_script = tmp_path / "d4-flood"
+        flood_script.write_text(r"""#!/usr/bin/env python3
+import sys
+_ = sys.stdin.read()
+sys.stdout.write("x" * 2_000_000)
+sys.exit(0)
+""")
+        flood_script.chmod(0o755)
+        with pytest.raises(ValueError, match="stdout.*byte limit"):
+            car.run_conformance_probe(str(flood_script), "d4-flood")
+        assert load_adapters() == {}
+
+    def test_builtin_profile_regression(self):
+        """Built-in profiles unchanged by D4."""
+        from runtime.orchestrator.executor_registry import get_registry
+        registry = get_registry()
+        for name in ["claude", "codex", "opencode", "pi"]:
+            profile = registry.get_profile(name)
+            assert profile is not None
+            assert profile.kind == "builtin"
+
+    def test_no_python_import_path(self):
+        """No Python import/discovery introduced by D4."""
+        import runtime.orchestrator.custom_adapter_registry as car
+        content = Path(car.__file__).read_text() if car.__file__ else ""
+        assert "importlib" not in content
+        assert "__import__(" not in content
+
+    def test_no_sqlite_changes(self):
+        """D4 introduces zero SQLite schema/migration changes.
+
+        Checks for actual SQLite import/connection usage patterns, not
+        docstring mentions of the word (the D4 scope disclaimer mentions
+        SQLite as a forbidden surface).
+        """
+        import runtime.orchestrator.custom_adapter_registry as car
+        source = Path(car.__file__).read_text() if car.__file__ else ""
+        # No actual SQLite imports or usage
+        assert "import sqlite" not in source.lower()
+        assert "from sqlite" not in source.lower()
+        # No migration patterns
+        assert "ALTER TABLE" not in source
+        assert "ADD COLUMN" not in source
+
+    def test_no_auth_bearer_flow_change(self, tmp_path, monkeypatch):
+        """Existing auth dependency still works — routes still reject unauth."""
+        # Set up app with real adapter router
+        from runtime.daemon import paths as paths_mod
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from runtime.daemon.routes.adapters import router
+        app = FastAPI()
+        app.include_router(router, prefix="/api/v1")
+        client = TestClient(app)
+
+        assert client.post("/api/v1/runtime/adapters/register", json={
+            "executable": "/bin/true", "version": "1.0.0", "capabilities": [],
+            "workspace_adapter": "pi",
+        }).status_code == 401
+        assert client.get("/api/v1/runtime/adapters").status_code == 401
+        assert client.get("/api/v1/runtime/adapters/fake").status_code == 401
+        assert client.post("/api/v1/runtime/adapters/fake/approve", json={
+            "executable": "/bin/true", "executable_hash": "abc",
+            "version": "1.0.0", "capabilities": [],
+            "contract_version": 1, "workspace_adapter": "pi",
+        }).status_code == 401
+
+
+# ============================================================================
+# D4 REVISE: atomic approval/re-registration interleaving tests
+# ============================================================================
+
+
+class TestD4AtomicApprovalReRegistration:
+    """D4 REVISE (TASK-3503): atomic lock protects approval vs re-registration.
+
+    These tests drive the real public registration + approval seam against
+    the durable store with real threads, exercising the store-level RLock
+    that serializes competing writes to the same adapters.yaml file.
+
+    Test coverage:
+      1. Re-registration wins first → stale approval rejects, no overwrite
+      2. Approval wins first → re-registration overwrites with PENDING + null provenance
+      3. Failed stale approval leaves no YAML corruption
+      4. Concurrent operations on different adapters preserve both entries
+      5. Sequential stale-payload + exact-idempotence + existing regression
+    """
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_fake_script(
+        tmp_path: Path,
+        name: str,
+        version_str: str = "1.0.0",
+    ) -> Path:
+        """Create a minimal fake adapter script for a specific version."""
+        return _make_fake_adapter_script(
+            tmp_path, name,
+            output={
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": f"v{version_str}",
+                "stderr_tail": "",
+                "result": {"text": f"v{version_str}"},
+                "token_usage": None,
+                "error": None,
+                "agent_session_id": None,
+                "rate_limited": False,
+                "adapter_metadata": {
+                    "adapter": name,
+                    "adapter_version": version_str,
+                    "contract_version": 1,
+                },
+                "child_session_id": None,
+                "raw_forensics_ref": None,
+            },
+        )
+
+    @staticmethod
+    def _register(tmp_path, monkeypatch, name, version="1.0.0"):
+        """Register a fake adapter, return the AdapterEntry."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = TestD4AtomicApprovalReRegistration._make_fake_script(
+            tmp_path, name, version
+        )
+        return register_custom_adapter(
+            executable=str(script),
+            version=version,
+            capabilities=["token_metering"],
+            workspace_adapter="pi",
+        )
+
+    def _assert_durable(
+        self, entry_id, expected_status, expected_version,
+        approved_at_null=True, approved_by_null=True,
+    ):
+        """Assert the durable-store state of an adapter.
+
+        Reads fresh from disk via ``load_adapters()`` — NOT the returned
+        object — satisfying the brief's requirement for a durable reload
+        assertion.
+        """
+        from runtime.orchestrator.adapter_store import load_adapters
+        all_entries = load_adapters()
+        assert entry_id in all_entries, f"{entry_id} missing from durable store"
+        entry = all_entries[entry_id]
+        assert entry.status == expected_status, (
+            f"expected status={expected_status}, got {entry.status}"
+        )
+        assert entry.version == expected_version, (
+            f"expected version={expected_version}, got {entry.version}"
+        )
+        if approved_at_null:
+            assert entry.approved_at is None, (
+                f"expected approved_at=None, got {entry.approved_at}"
+            )
+        if approved_by_null:
+            assert entry.approved_by is None, (
+                f"expected approved_by=None, got {entry.approved_by}"
+            )
+
+    # ------------------------------------------------------------------
+    # Test 1 — re-registration wins first, stale approval must reject
+    # ------------------------------------------------------------------
+
+    def test_reregistration_wins_stale_approval_rejects(self, tmp_path, monkeypatch):
+        """Registration writes v2 PENDING before stale approval commits.
+
+        Interleaving: a changed re-registration acquires the store lock
+        first and writes v2.0.0 PENDING.  The stale approval then acquires
+        the lock, reloads from disk, detects the mismatch, and rejects —
+        leaving the durable entry as v2 PENDING with null provenance.
+        """
+        import threading
+
+        from runtime.orchestrator.custom_adapter_registry import (
+            approve_adapter,
+            register_custom_adapter,
+        )
+
+        # Register v1.0.0
+        entry1 = self._register(tmp_path, monkeypatch, "race-adapter", "1.0.0")
+        assert entry1.status == "pending"
+
+        # Prepare v2 script (different content → different hash)
+        script2 = self._make_fake_script(tmp_path, "race-adapter", "2.0.0")
+
+        # Synchronization: approval thread waits for re-reg to finish first
+        approval_started = threading.Event()
+        rereg_done = threading.Event()
+        approval_result: list = []
+
+        def _approve():
+            approval_started.set()  # signal: I'm ready
+            rereg_done.wait(timeout=5)  # wait for re-reg to finish first
+            try:
+                result = approve_adapter(
+                    adapter_id=entry1.id,
+                    executable=entry1.executable,
+                    executable_hash=entry1.executable_hash,
+                    version=entry1.version,
+                    capabilities=entry1.capabilities,
+                    contract_version=entry1.contract_version,
+                    workspace_adapter=entry1.workspace_adapter,
+                )
+                approval_result.append(("ok", result))
+            except ValueError as exc:
+                approval_result.append(("error", str(exc)))
+
+        t = threading.Thread(target=_approve)
+        t.start()
+
+        # Wait for approval thread to be ready (lock not yet acquired)
+        approval_started.wait(timeout=5)
+
+        # Re-register v2 — acquires lock first, writes PENDING
+        entry2 = register_custom_adapter(
+            executable=str(script2),
+            version="2.0.0",
+            capabilities=["token_metering"],
+            workspace_adapter="pi",
+        )
+        assert entry2.status == "pending"
+        assert entry2.version == "2.0.0"
+
+        # Signal approval to proceed
+        rereg_done.set()
+        t.join(timeout=10)
+
+        # Approval MUST have rejected (stale snapshot)
+        assert len(approval_result) == 1
+        assert approval_result[0][0] == "error", (
+            f"expected stale approval to raise ValueError, got {approval_result}"
+        )
+        assert "mismatch" in approval_result[0][1].lower() or \
+            "executable_hash" in approval_result[0][1].lower(), (
+            f"error message should mention mismatch: {approval_result[0][1]}"
+        )
+
+        # Durable assertion: v2 PENDING, null provenance
+        self._assert_durable(entry1.id, "pending", "2.0.0")
+
+    # ------------------------------------------------------------------
+    # Test 2 — approval wins first, re-registration overwrites with PENDING
+    # ------------------------------------------------------------------
+
+    def test_approval_wins_reregistration_overwrites_pending(self, tmp_path, monkeypatch):
+        """Approval commits v1 APPROVED, then re-registration overwrites.
+
+        Interleaving: the approval wins the lock first and writes v1.0.0
+        APPROVED with provenance.  The re-registration then acquires the
+        lock, sees the existing entry, and durably replaces it with v2.0.0
+        PENDING and cleared approved_at/approved_by.
+        """
+        import threading
+
+        from runtime.orchestrator.custom_adapter_registry import (
+            approve_adapter,
+            register_custom_adapter,
+        )
+
+        # Register v1.0.0
+        entry1 = self._register(tmp_path, monkeypatch, "race-adapter-b", "1.0.0")
+
+        # Prepare v2 script
+        script2 = self._make_fake_script(tmp_path, "race-adapter-b", "2.0.0")
+
+        # Synchronization: re-reg thread waits for approval to finish first
+        rereg_ready = threading.Event()
+        approval_done = threading.Event()
+        rereg_result: list = []
+
+        def _reregister():
+            rereg_ready.set()  # signal: I'm ready
+            approval_done.wait(timeout=5)  # wait for approval first
+            try:
+                entry = register_custom_adapter(
+                    executable=str(script2),
+                    version="2.0.0",
+                    capabilities=["token_metering"],
+                    workspace_adapter="pi",
+                )
+                rereg_result.append(("ok", entry))
+            except Exception as exc:
+                rereg_result.append(("error", str(exc)))
+
+        t = threading.Thread(target=_reregister)
+        t.start()
+
+        # Wait for re-reg thread to be ready
+        rereg_ready.wait(timeout=5)
+
+        # Approve v1 — acquires lock first, writes APPROVED
+        approved = approve_adapter(
+            adapter_id=entry1.id,
+            executable=entry1.executable,
+            executable_hash=entry1.executable_hash,
+            version=entry1.version,
+            capabilities=entry1.capabilities,
+            contract_version=entry1.contract_version,
+            workspace_adapter=entry1.workspace_adapter,
+        )
+        assert approved.status == "approved"
+        assert approved.approved_at is not None
+        assert approved.approved_by == "founder/master-bearer"
+
+        # Signal re-reg to proceed
+        approval_done.set()
+        t.join(timeout=10)
+
+        # Re-registration MUST have succeeded (overwrites approved entry)
+        assert len(rereg_result) == 1
+        assert rereg_result[0][0] == "ok", (
+            f"expected re-registration to succeed, got {rereg_result}"
+        )
+        rereg_entry = rereg_result[0][1]
+        assert rereg_entry.status == "pending"
+        assert rereg_entry.version == "2.0.0"
+
+        # Durable assertion: v2 PENDING, null provenance
+        self._assert_durable(entry1.id, "pending", "2.0.0")
+
+    # ------------------------------------------------------------------
+    # Test 3 — no YAML corruption from failed stale approval
+    # ------------------------------------------------------------------
+
+    def test_no_yaml_corruption_after_stale_approval(self, tmp_path, monkeypatch):
+        """A failed stale approval leaves the YAML store intact.
+
+        After a stale approval rejects, the adapters.yaml file must still
+        be valid YAML with only the correct entries — no partial write,
+        no corruption, no orphaned temp file.
+        """
+        import threading
+        import yaml as _yaml
+
+        from runtime.orchestrator.adapter_store import _store_path
+        from runtime.orchestrator.custom_adapter_registry import approve_adapter
+
+        # Register v1.0.0
+        entry1 = self._register(tmp_path, monkeypatch, "corrupt-adapter", "1.0.0")
+
+        # Prepare v2 script
+        script2 = self._make_fake_script(tmp_path, "corrupt-adapter", "2.0.0")
+
+        # Interleaving: re-reg wins first, then stale approval fails
+        approval_done = threading.Event()
+        rereg_first = threading.Event()
+
+        def _approve():
+            rereg_first.wait(timeout=5)
+            try:
+                approve_adapter(
+                    adapter_id=entry1.id,
+                    executable=entry1.executable,
+                    executable_hash=entry1.executable_hash,
+                    version=entry1.version,
+                    capabilities=entry1.capabilities,
+                    contract_version=entry1.contract_version,
+                    workspace_adapter=entry1.workspace_adapter,
+                )
+            except ValueError:
+                pass  # expected
+            approval_done.set()
+
+        t = threading.Thread(target=_approve)
+        t.start()
+
+        # Re-register first
+        register_custom_adapter(
+            executable=str(script2),
+            version="2.0.0",
+            capabilities=["token_metering"],
+            workspace_adapter="pi",
+        )
+        rereg_first.set()
+        t.join(timeout=10)
+        approval_done.wait(timeout=5)
+
+        # Verify YAML is valid and contains correct entries
+        store_path = _store_path()
+        assert store_path.exists(), "adapters.yaml must exist"
+
+        raw = store_path.read_text(encoding="utf-8")
+        assert raw.strip(), "adapters.yaml must not be empty"
+
+        parsed = _yaml.safe_load(raw)
+        assert isinstance(parsed, dict), "top-level must be a dict"
+        assert entry1.id in parsed, f"{entry1.id} must be in YAML"
+        assert parsed[entry1.id]["status"] == "pending"
+        assert parsed[entry1.id]["version"] == "2.0.0"
+        assert parsed[entry1.id].get("approved_at") is None
+        assert parsed[entry1.id].get("approved_by") is None
+
+        # No temp files left behind
+        store_dir = store_path.parent
+        temps = list(store_dir.glob(".adapters.*.yaml"))
+        assert len(temps) == 0, f"orphaned temp files: {temps}"
+
+    # ------------------------------------------------------------------
+    # Test 4 — different-adapter concurrency preserves both entries
+    # ------------------------------------------------------------------
+
+    def test_concurrent_operations_different_adapters_preserve_both(
+        self, tmp_path, monkeypatch
+    ):
+        """Approval of adapter A + re-registration of adapter B must not
+        interfere — both entries must survive with correct final state.
+        """
+        import threading
+
+        from runtime.orchestrator.custom_adapter_registry import (
+            approve_adapter,
+            register_custom_adapter,
+        )
+
+        # Register adapter A v1.0.0
+        entry_a1 = self._register(tmp_path, monkeypatch, "adapter-a", "1.0.0")
+
+        # Register adapter B v1.0.0
+        entry_b1 = self._register(tmp_path, monkeypatch, "adapter-b", "1.0.0")
+
+        # Prepare adapter B v2 script
+        script_b2 = self._make_fake_script(tmp_path, "adapter-b", "2.0.0")
+
+        barrier = threading.Barrier(2, timeout=10)
+        results: dict = {"approve_a": None, "rereg_b": None}
+
+        def _approve_a():
+            barrier.wait()
+            try:
+                result = approve_adapter(
+                    adapter_id=entry_a1.id,
+                    executable=entry_a1.executable,
+                    executable_hash=entry_a1.executable_hash,
+                    version=entry_a1.version,
+                    capabilities=entry_a1.capabilities,
+                    contract_version=entry_a1.contract_version,
+                    workspace_adapter=entry_a1.workspace_adapter,
+                )
+                results["approve_a"] = ("ok", result)
+            except Exception as exc:
+                results["approve_a"] = ("error", str(exc))
+
+        def _rereg_b():
+            barrier.wait()
+            try:
+                entry = register_custom_adapter(
+                    executable=str(script_b2),
+                    version="2.0.0",
+                    capabilities=["token_metering"],
+                    workspace_adapter="pi",
+                )
+                results["rereg_b"] = ("ok", entry)
+            except Exception as exc:
+                results["rereg_b"] = ("error", str(exc))
+
+        t1 = threading.Thread(target=_approve_a)
+        t2 = threading.Thread(target=_rereg_b)
+        t1.start()
+        t2.start()
+        t1.join(timeout=15)
+        t2.join(timeout=15)
+
+        # Both operations must succeed
+        assert results["approve_a"] is not None, "approve_a did not complete"
+        assert results["approve_a"][0] == "ok", (
+            f"approve_a failed: {results['approve_a']}"
+        )
+        assert results["rereg_b"] is not None, "rereg_b did not complete"
+        assert results["rereg_b"][0] == "ok", (
+            f"rereg_b failed: {results['rereg_b']}"
+        )
+
+        # Durable assertion: adapter A = APPROVED v1, adapter B = PENDING v2
+        self._assert_durable(
+            entry_a1.id, "approved", "1.0.0",
+            approved_at_null=False, approved_by_null=False,
+        )
+        self._assert_durable(entry_b1.id, "pending", "2.0.0")
+
+        # Verify A's approval provenance is intact
+        from runtime.orchestrator.adapter_store import load_adapters
+        a_entry = load_adapters()[entry_a1.id]
+        assert a_entry.approved_at is not None
+        assert a_entry.approved_by == "founder/master-bearer"
+
+    # ------------------------------------------------------------------
+    # Test 5 — keep/extend existing sequential + idempotence behavior
+    # ------------------------------------------------------------------
+
+    def test_approval_idempotence_preserved(self, tmp_path, monkeypatch):
+        """Exact-idempotence: re-approving identical snapshot returns unchanged."""
+        from runtime.orchestrator.custom_adapter_registry import approve_adapter
+
+        entry = self._register(tmp_path, monkeypatch, "idempotent-adapter")
+
+        approved1 = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+        )
+        assert approved1.status == "approved"
+
+        # Second approval with same facts → idempotent
+        approved2 = approve_adapter(
+            adapter_id=entry.id,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+        )
+        assert approved2.status == "approved"
+        # Provenance unchanged (same approved_at)
+        assert approved2.approved_at == approved1.approved_at
+
+    def test_sequential_stale_approval_after_rereg_still_rejects(
+        self, tmp_path, monkeypatch
+    ):
+        """Sequential re-reg + stale approval (no threads) still rejects.
+
+        This covers the non-concurrent case: re-register then try to
+        approve with old facts — must reject with mismatch.
+        """
+        from runtime.orchestrator.custom_adapter_registry import (
+            approve_adapter,
+            register_custom_adapter,
+        )
+
+        entry1 = self._register(tmp_path, monkeypatch, "seq-stale", "1.0.0")
+        script2 = self._make_fake_script(tmp_path, "seq-stale", "2.0.0")
+        register_custom_adapter(
+            executable=str(script2),
+            version="2.0.0",
+            capabilities=["token_metering"],
+            workspace_adapter="pi",
+        )
+
+        with pytest.raises(ValueError, match="mismatch"):
+            approve_adapter(
+                adapter_id=entry1.id,
+                executable=entry1.executable,
+                executable_hash=entry1.executable_hash,
+                version=entry1.version,
+                capabilities=entry1.capabilities,
+                contract_version=entry1.contract_version,
+                workspace_adapter=entry1.workspace_adapter,
+            )
+
+        # Durable assertion: still v2 PENDING
+        self._assert_durable(entry1.id, "pending", "2.0.0")

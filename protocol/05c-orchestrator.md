@@ -753,6 +753,55 @@ permission/config mutation surface reachable from this API) return server-side
 403 for agent invocations. No agent route may gain an alternate mutation method.
 Human/founder lifecycle authority remains as merged.
 
+**Agent CLI delivery contract (THR-055 follow-up — `happyranch skills propose`).**
+The proposal endpoint is reachable from agent sessions through a narrow,
+bearer-free CLI command:
+
+```bash
+happyranch skills propose \
+  --from-file /tmp/skill-proposal.json \
+  --org happyranch \
+  --task-id TASK-3510 \
+  --session-id sess-abc123 \
+  --agent dev_agent
+```
+
+**Identity binding.** ``task_id``, ``session_id``, and agent name are carried
+ONLY as CLI flags (transmitted as query parameters to the daemon route). The
+``--from-file`` JSON body MUST NOT contain any identity or actor-binding
+keys — including ``task_id``, ``session_id``, ``proposer_agent``, and
+``agent_name``. The CLI uses a package-field allow-list derived from
+``ProposalRequest`` and rejects any unrecognized key locally before any HTTP
+call. Identity is verified server-side via the in-memory ``SessionTracker``
+binding; there is NO Authorization header or bearer token on the HTTP request.
+
+**Payload contract.** ``--from-file`` must be an absolute path to a JSON file
+containing exactly the package-content fields understood by ``ProposalRequest``:
+``slug``, ``name``, ``description``, ``version``, ``policy_class``, ``skill_md``,
+``purpose``, ``target_agent_suggestion``, and optional ``references`` / ``assets``.
+
+**Error handling.** Malformed JSON, missing flags, relative ``--from-file``,
+and body identity-key attacks fail locally with exit code 1 or 2 and a
+human-readable message. Lifecycle validation errors (4xx/422) from the daemon
+are rendered as ``error: [<code>] <detail>`` — the structured ``code`` +
+``detail`` fields from the lifecycle error response, never raw HTTP JSON or
+tracebacks. On success the CLI prints status, skill_id, version_id, version,
+and content_hash.
+
+**No-bearer transport.** The CLI uses a dedicated ``SessionProposalTransport``
+that reads ONLY the daemon port from ``~/.happyranch/daemon.port`` and creates
+a plain ``httpx.Client`` with NO ``Authorization`` header. It is deliberately
+scoped to ONLY the proposal POST path — it does not use ``OpcClient.from_env()``
+and cannot call any other daemon route. Agents that need this command MUST have
+their task brief explicitly authorize it (the pilot gate is "only when a task
+explicitly authorizes a THR-055 pilot proposal").
+
+**Founder-only follow-up.** After submission, the proposal enters the lifecycle
+at ``proposed`` status. All subsequent lifecycle actions (claim → draft,
+validate, submit-review, review, publish, assign, rollback, retire) remain
+founder-only and are NOT reachable through this CLI. The founder reviews and
+approves proposals through the existing bearer-gated lifecycle routes.
+
 **Pilot constraints (founder-approved):** maximum two concurrently published
 custom skills; `standard_operational` policy class only; two internal use cases
 (frontend-development, product-manager-prd); founder-only review/publish/
