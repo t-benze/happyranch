@@ -149,6 +149,9 @@
     "POST /api/v1/auth/registration-token/runtime": "founder-only runtime-level registration-token mint (THR-088)",
     "POST /api/v1/executors/runtime/conformance-checkin": "cli-only runtime-level conformance check-in (THR-088)",
     "POST /api/v1/executors/runtime/register": "conformance-gated runtime-level executor registration (THR-088)",
-    "POST /api/v1/executors/runtime/register-binary": "cli-only runtime-level binary registration via scoped token (THR-088)"
+    "POST /api/v1/executors/runtime/register-binary": "cli-only runtime-level binary registration via scoped token (THR-088)",
+    "GET /api/v1/runtime/adapters": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
+    "POST /api/v1/runtime/adapters/register": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
+    "GET /api/v1/runtime/adapters/{adapter_id}": "agent-only adapter administration route — no browser consumer (THR-107 D3)"
   }
 }

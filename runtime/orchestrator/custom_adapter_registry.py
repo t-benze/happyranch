@@ -19,8 +19,9 @@ import json
 import logging
 import os
 import re
+import select
 import subprocess
-import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -154,34 +155,25 @@ class BoundedReadError(ValueError):
         self.executable = executable
 
 
-def _drain_proc(proc: subprocess.Popen) -> None:
-    """Drain remaining output from a killed subprocess to prevent zombie."""
+def _kill_and_reap(proc: subprocess.Popen) -> None:
+    """Kill the subprocess and wait for it to terminate (reap zombie).
+
+    No durable, in-memory, operational, or child-handle residue remains.
+    """
+    if proc.poll() is not None:
+        return  # already exited
     try:
-        proc.communicate(timeout=5)
-    except Exception:
+        proc.kill()
+    except OSError:
         pass
-
-
-def _read_stream_worker(pipe, chunks: list[bytes], limit: int,
-                         stream_name: str, error_container: list):
-    """Worker function for _read_bounded — reads a single pipe."""
-    total = 0
     try:
-        while True:
-            chunk = pipe.read(65536)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > limit:
-                if not error_container:
-                    error_container.append(
-                        BoundedReadError(stream_name, limit, total, "")
-                    )
-                return
-            chunks.append(chunk)
-    except Exception as exc:
-        if not error_container:
-            error_container.append(exc)
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        logger.error("Could not reap process %d after SIGKILL", proc.pid)
+        try:
+            proc.kill()  # Ensure SIGKILL was sent
+        except OSError:
+            pass
 
 
 def _read_bounded(
@@ -192,11 +184,14 @@ def _read_bounded(
 ) -> tuple[bytes, bytes]:
     """Read stdout and stderr concurrently with per-stream byte limits.
 
-    Reads from both pipes in parallel (using threads) until both are closed
-    or a limit is exceeded. On limit breach, raises ``BoundedReadError``
-    immediately — the caller MUST kill and drain the child.
+    Uses ``select.select()`` with a single monotonic deadline to read from
+    whichever pipe has data available without blocking. Accumulates bytes
+    per-stream and checks byte limits as data arrives (not after buffering).
 
-    Returns (stdout_bytes, stderr_bytes) on successful bounded read.
+    On timeout or byte-limit breach, raises the appropriate exception —
+    the caller MUST kill and reap the child via ``_kill_and_reap``.
+
+    Returns (stdout_bytes, stderr_bytes) on both-streams-EOF within limits.
 
     Precondition: stdin has already been closed by the caller.
     """
@@ -205,44 +200,92 @@ def _read_bounded(
             "Subprocess stdout/stderr pipes are not available"
         )
 
-    stdout_chunks: list[bytes] = []
-    stderr_chunks: list[bytes] = []
-    error_container: list = []  # mutable container shared across threads
+    stdout_fd = proc.stdout.fileno()
+    stderr_fd = proc.stderr.fileno()
 
-    t_stdout = threading.Thread(
-        target=_read_stream_worker,
-        args=(proc.stdout, stdout_chunks, stdout_limit, "stdout", error_container),
-        daemon=True,
-    )
-    t_stderr = threading.Thread(
-        target=_read_stream_worker,
-        args=(proc.stderr, stderr_chunks, stderr_limit, "stderr", error_container),
-        daemon=True,
-    )
+    # Set non-blocking mode so os.read() returns available data immediately.
+    for fd in (stdout_fd, stderr_fd):
+        try:
+            os.set_blocking(fd, False)
+        except OSError:
+            pass  # fd may be invalid if process already exited
 
-    t_stdout.start()
-    t_stderr.start()
+    stdout_buf = bytearray()
+    stderr_buf = bytearray()
 
-    # Wait for both threads to finish, with timeout
-    t_stdout.join(timeout=timeout)
-    t_stderr.join(timeout=timeout)
+    deadline = time.monotonic() + timeout
+    stdout_eof = False
+    stderr_eof = False
 
-    if t_stdout.is_alive() or t_stderr.is_alive():
-        # Timeout — one or both threads are still reading
-        raise subprocess.TimeoutExpired(
-            proc.args, timeout,
-            output=b"".join(stdout_chunks),
-            stderr=b"".join(stderr_chunks),
-        )
+    while not (stdout_eof and stderr_eof):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(
+                proc.args, timeout,
+                output=bytes(stdout_buf),
+                stderr=bytes(stderr_buf),
+            )
 
-    if error_container:
-        error = error_container[0]
-        if isinstance(error, BoundedReadError):
-            error.executable = proc.args[0] if proc.args else ""
-        raise error
+        read_fds: list[int] = []
+        if not stdout_eof:
+            read_fds.append(stdout_fd)
+        if not stderr_eof:
+            read_fds.append(stderr_fd)
 
-    # Both streams closed cleanly within limits
-    return b"".join(stdout_chunks), b"".join(stderr_chunks)
+        if not read_fds:
+            break
+
+        try:
+            readable, _, _ = select.select(read_fds, [], [], remaining)
+        except InterruptedError:
+            continue
+
+        if not readable:
+            # select timed out → overall probe timeout
+            raise subprocess.TimeoutExpired(
+                proc.args, timeout,
+                output=bytes(stdout_buf),
+                stderr=bytes(stderr_buf),
+            )
+
+        for fd in readable:
+            try:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    if fd == stdout_fd:
+                        stdout_eof = True
+                    else:
+                        stderr_eof = True
+                    continue
+            except BlockingIOError:
+                continue
+            except OSError:
+                # Pipe closed or broken — treat as EOF
+                if fd == stdout_fd:
+                    stdout_eof = True
+                else:
+                    stderr_eof = True
+                continue
+
+            if fd == stdout_fd:
+                new_total = len(stdout_buf) + len(chunk)
+                if new_total > stdout_limit:
+                    raise BoundedReadError(
+                        "stdout", stdout_limit, new_total,
+                        proc.args[0] if proc.args else ""
+                    )
+                stdout_buf.extend(chunk)
+            else:
+                new_total = len(stderr_buf) + len(chunk)
+                if new_total > stderr_limit:
+                    raise BoundedReadError(
+                        "stderr", stderr_limit, new_total,
+                        proc.args[0] if proc.args else ""
+                    )
+                stderr_buf.extend(chunk)
+
+    # Both streams reached EOF within limits
+    return bytes(stdout_buf), bytes(stderr_buf)
 
 
 def build_probe_input(adapter_name: str) -> AdapterInput:
@@ -337,15 +380,13 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
         # Wait for the subprocess to finish
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        _drain_proc(proc)
+        _kill_and_reap(proc)
         raise ValueError(
             f"Conformance probe timed out after "
             f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}"
         )
     except BoundedReadError as exc:
-        proc.kill()
-        _drain_proc(proc)
+        _kill_and_reap(proc)
         raise ValueError(str(exc)) from exc
 
     if proc.returncode != 0:
