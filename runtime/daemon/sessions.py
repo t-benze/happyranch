@@ -24,6 +24,19 @@ class SessionTracker:
         with self._lock:
             return self._active.get((task_id, agent))
 
+    def get_by_session(self, session_id: str) -> tuple[str, str] | None:
+        """Reverse lookup: given an opaque session_id, return (task_id, agent_name).
+
+        Returns None when the session_id is not active, expired, or unknown.
+        When multiple (task_id, agent) pairs share the same session_id
+        (should not happen with UUID-v4 session ids), returns the first match.
+        """
+        with self._lock:
+            for (task_id, agent), sid in self._active.items():
+                if sid == session_id:
+                    return task_id, agent
+            return None
+
     def set_pid(self, task_id: str, agent: str, pid: int) -> None:
         """Register the OS pid for an already-set-active session.
 

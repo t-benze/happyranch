@@ -708,17 +708,50 @@ replacing the legacy per-org filesystem store (`<org_root>/skills/`).
 → published → assigned`. `rolled_back` and `retired` are terminal re-assignment
 states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
 
-**Agent authority.** Agents may submit only their own task/session-bound
-proposal via `POST /skill-lifecycle/proposals` (dual-auth route: agent with
-verified SessionTracker binding, or founder via master bearer). All other
-lifecycle mutations (claim, validate, review, publish, assign, rollback, retire)
-are founder-only and gated behind bearer-only routes with `require_token()`. An
-agent attempting any non-proposal mutation receives server-side 403.
+**Agent authority.** Agents may submit proposals through two paths:
+
+1. **Opaque session CLI (THR-055 corrective).** The single safe agent authoring
+   workflow: ``happyranch skills propose --from-file <proposal.json> --session-id <session-id>``.
+   The proposal file contains only package metadata/content accepted by
+   ``ProposalRequest`` (slug, name, description, skill_md, version, policy_class,
+   references, assets, purpose, target_agent_suggestion). It must NOT contain
+   org, agent, task, session, proposer_agent, eligibility, or permission identity.
+   The CLI sends the opaque session ID to
+   ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent``, which does NOT
+   accept the master bearer token. The server resolves org from the route slug
+   and derives (task_id, agent_name) from the opaque session via
+   ``SessionTracker.get_by_session()`` — not from body, query, environment, task
+   lookup by agent, team membership, or client-asserted identity.
+   Body identity claims (task_id, session_id, proposer_agent) are rejected with 403.
+
+2. **Existing dual-auth route.** ``POST /skill-lifecycle/proposals`` accepts
+   either the master bearer token (human/founder) or explicit task_id + session_id
+   + agent_name query params (agent, verified via SessionTracker).
+
+**Agent-id × canonical-slug pilot policy.** The agent-only route enforces a fixed
+server-side policy BEFORE any artifact creation or ledger/event write:
+
+| Agent | Allowed slug |
+| --- | --- |
+| ``frontend_engineer`` | ``frontend-development`` |
+| ``product_lead`` | ``product-manager-prd`` (lowercase; canonical spelling from "product-manager-PRD") |
+
+Every other agent is denied (403). Either permitted agent with the wrong slug
+is denied (403). This fixed map does NOT inspect team membership, prompts, org
+config/YAML eligibility, request metadata, or body identity claims.
+
+All other lifecycle mutations (claim, draft edit/fork/edit, validate,
+submit-review, review, publish, assign, retire, rollback, and any eligibility/
+permission/config mutation surface reachable from this API) return server-side
+403 for agent invocations. No agent route may gain an alternate mutation method.
+Human/founder lifecycle authority remains as merged.
 
 **Pilot constraints (founder-approved):** maximum two concurrently published
 custom skills; `standard_operational` policy class only; two internal use cases
-(frontend-development, product-manager PRD); founder-only review/publish/
-assignment/retire/rollback.
+(frontend-development, product-manager-prd); founder-only review/publish/
+assignment/retire/rollback. Proposals remain immutable and task/session-provenanced
+with proposed content excluded from catalog/effective resolution/materialization
+until founder publication.
 
 **Immutable artifact retention.** All package members (SKILL.md, each
 reference file, each asset) are stored as independent content-addressed

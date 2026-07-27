@@ -118,10 +118,49 @@ are never deleted. An ArtifactStore write failure before any ledger row
 aborts without any side effects.
 
 **Session-bound authority.** Agent proposal submission requires verified
-task/session binding via the SessionTracker (`org.sessions.get_active()`).
-Body claims for task_id, session_id, proposer_agent are ignored — identity
-derives exclusively from the verified session context. Human/founder lifecycle
-mutations (claim, validate, review, publish, assign, rollback, retire) require
+task/session binding via the SessionTracker. Two paths exist:
+
+- **Opaque session path (agent CLI).** The agent commands
+  ``happyranch skills propose --from-file <proposal.json> --session-id <session-id>``.
+  The CLI sends the opaque session ID to
+  ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent`` — an agent-only
+  route that does NOT accept the master bearer token. The server resolves the
+  org from the route slug, then uses SessionTracker reverse lookup
+  (``get_by_session()``) to derive (task_id, agent_name) from the opaque
+  session ID. The proposal file must contain only package metadata/content
+  (slug, name, description, skill_md, version, policy_class, references,
+  assets). It must NOT contain org, agent, task, session, proposer_agent,
+  eligibility, or permission identity — body identity claims are rejected
+  server-side with 403. This is the intended agent authoring workflow.
+
+- **Dual-auth path (existing, for human/founder).** ``POST /skill-lifecycle/proposals``
+  accepts either the master bearer token (human/founder) or explicit
+  task_id + session_id + agent_name query params (agent, verified via
+  ``org.sessions.get_active()``).
+
+Both paths derive identity exclusively from the server's verified context.
+Body claims for task_id, session_id, proposer_agent are ignored.
+
+**Agent-id × canonical-slug pilot policy (THR-055 corrective).** The
+agent-only route enforces a fixed server-side policy BEFORE any artifact
+creation or ledger write. The policy does NOT inspect team membership,
+prompts, org config/YAML eligibility, request metadata, or body identity
+claims:
+
+| Agent | Allowed slug |
+| --- | --- |
+| ``frontend_engineer`` | ``frontend-development`` |
+| ``product_lead`` | ``product-manager-prd`` (lowercase) |
+
+Every other agent is denied. Either permitted agent with the wrong slug
+is denied. Human/founder lifecycle authority (claim, draft, edit, validate,
+submit-review, review, publish, assign, retire, rollback, all eligibility/
+permission/config mutations) remains unchanged and returns 403 for agent
+invocations. Proposals remain immutable and task/session-provenanced,
+``standard_operational`` only, with content excluded from catalog/effective
+resolution/materialization until founder publication.
+
+Human/founder lifecycle mutations (claim, validate, review, publish, assign, rollback, retire) require
 the master bearer token and are gated behind bearer-only routes with no agent
 path. Agent callers receive server-side 403 for all lifecycle mutations other
 than their own active pilot task/session-bound proposal submission.

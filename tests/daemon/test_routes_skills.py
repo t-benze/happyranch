@@ -1621,3 +1621,263 @@ class TestVerifiedAgentSessionAuthority:
             params={"skill_id": skill_id, "reason": "test"},
         )
         assert r.status_code == 200, f"Rollback got {r.status_code}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-055 corrective: Agent-only proposal route (opaque session-binding)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+AGENT_PROPOSAL_BODY = {
+    "slug": "frontend-development",
+    "name": "Frontend Development",
+    "description": "Guidelines for building frontend features",
+    "skill_md": "# Frontend Development\n\nFrontend development skill content.",
+    "version": "0.1.0",
+    "policy_class": "standard_operational",
+    "purpose": "Help frontend engineers build better UIs",
+    "target_agent_suggestion": "dev_agent",
+}
+
+
+class TestAgentOnlyProposalRoute:
+    """POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent
+
+    Tests the agent-only opaque session-binding route.
+    """
+
+    def test_frontend_engineer_with_active_session_succeeds(self, app, org_state):
+        """Valid proposal from frontend_engineer with their canonical slug."""
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-001")
+        client = TestClient(app)  # No auth headers — agent route
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-fe-001"},
+        )
+        assert r.status_code == 201, f"Got {r.status_code}: {r.json()}"
+        data = r.json()
+        assert data["skill_id"] == "hr:frontend-development"
+        assert data["status"] == "proposed"
+        assert data["proposal_task_id"] == "TASK-200"
+
+    def test_product_lead_with_product_manager_prd_succeeds(self, app, org_state):
+        """Valid proposal from product_lead with their canonical slug."""
+        org_state.sessions.set_active("TASK-300", "product_lead", "sess-pm-001")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json={**AGENT_PROPOSAL_BODY,
+                  "slug": "product-manager-prd",
+                  "name": "Product Manager PRD"},
+            params={"session_id": "sess-pm-001"},
+        )
+        assert r.status_code == 201, f"Got {r.status_code}: {r.json()}"
+        data = r.json()
+        assert data["skill_id"] == "hr:product-manager-prd"
+        assert data["proposal_task_id"] == "TASK-300"
+
+    def test_rejects_bearer_token(self, app, org_state):
+        """Agent-only route returns 401 when bearer token is present."""
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-001")
+        from runtime.daemon import paths as paths_mod
+        client = TestClient(app)
+        client.headers["Authorization"] = f"Bearer {paths_mod.read_token()}"
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-fe-001"},
+        )
+        assert r.status_code == 401, f"Expected 401, got {r.status_code}"
+
+    def test_unknown_session_returns_403(self, app, org_state):
+        """Inactive/unknown session returns 403."""
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-nonexistent"},
+        )
+        assert r.status_code == 403
+
+    def test_non_pilot_agent_returns_403(self, app, org_state):
+        """Agent not in pilot (dev_agent) returns 403."""
+        org_state.sessions.set_active("TASK-100", "dev_agent", "sess-dev-001")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-dev-001"},
+        )
+        assert r.status_code == 403
+        detail = r.json().get("detail", {})
+        assert "not in the custom-skill pilot" in detail.get("detail", "")
+
+    def test_frontend_engineer_wrong_slug_returns_403(self, app, org_state):
+        """frontend_engineer with product-manager-prd slug returns 403."""
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-002")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json={**AGENT_PROPOSAL_BODY, "slug": "product-manager-prd"},
+            params={"session_id": "sess-fe-002"},
+        )
+        assert r.status_code == 403
+        detail = r.json().get("detail", {})
+        assert "slug_not_allowed_for_agent" in detail.get("code", "")
+
+    def test_product_lead_wrong_slug_returns_403(self, app, org_state):
+        """product_lead with frontend-development slug returns 403."""
+        org_state.sessions.set_active("TASK-300", "product_lead", "sess-pm-002")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,  # slug=frontend-development
+            params={"session_id": "sess-pm-002"},
+        )
+        assert r.status_code == 403
+        detail = r.json().get("detail", {})
+        assert "slug_not_allowed_for_agent" in detail.get("code", "")
+
+    def test_body_task_id_rejected(self, app, org_state):
+        """proposal body containing task_id is rejected."""
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-003")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json={**AGENT_PROPOSAL_BODY, "task_id": "TASK-999"},
+            params={"session_id": "sess-fe-003"},
+        )
+        assert r.status_code == 403
+
+    def test_body_session_id_rejected(self, app, org_state):
+        """proposal body containing session_id is rejected."""
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-003")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json={**AGENT_PROPOSAL_BODY, "session_id": "sess-fake"},
+            params={"session_id": "sess-fe-003"},
+        )
+        assert r.status_code == 403
+
+    def test_body_proposer_agent_rejected(self, app, org_state):
+        """proposal body containing proposer_agent is rejected."""
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-003")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json={**AGENT_PROPOSAL_BODY, "proposer_agent": "someone_else"},
+            params={"session_id": "sess-fe-003"},
+        )
+        assert r.status_code == 403
+
+    def test_proposal_stored_with_server_derived_provenance(self, app, org_state):
+        """The stored proposal provenance derives from server context, not body."""
+        org_state.sessions.set_active("TASK-222", "frontend_engineer", "sess-fe-prov")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-fe-prov"},
+        )
+        assert r.status_code == 201, f"Got {r.status_code}: {r.json()}"
+        data = r.json()
+        # Provenance comes from the server's SessionTracker context
+        assert data["proposal_task_id"] == "TASK-222"
+
+        # Verify through the read endpoint
+        skill_id = data["skill_id"]
+        r2 = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/{skill_id}",
+        )
+        assert r2.status_code == 200
+        status_data = r2.json()
+        assert status_data["proposal_task_id"] == "TASK-222"
+        assert status_data["proposer_agent"] == "frontend_engineer"
+
+    def test_proposal_not_in_catalog_before_publication(self, app, org_state):
+        """Proposed but unpublished skills are invisible to the catalog."""
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-cat")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-fe-cat"},
+        )
+        assert r.status_code == 201, f"Got {r.status_code}: {r.json()}"
+
+        # Catalog should NOT include the proposed skill
+        r2 = client.get("/api/v1/orgs/alpha/skill-lifecycle/catalog/custom")
+        assert r2.status_code == 200
+        skills = r2.json()["skills"]
+        skill_ids = [s["skill_id"] for s in skills]
+        assert "hr:frontend-development" not in skill_ids
+
+    def test_all_non_proposal_mutations_403_for_agent_session(self, app, org_state):
+        """Every non-proposal lifecycle mutation returns 403 for agent sessions."""
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-mut")
+        client = TestClient(app)
+
+        # First, submit a proposal via human bearer path so we have a skill_id
+        from runtime.daemon import paths as paths_mod
+        auth_client = TestClient(app)
+        auth_client.headers["Authorization"] = f"Bearer {paths_mod.read_token()}"
+        r = auth_client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            json=AGENT_PROPOSAL_BODY,
+        )
+        assert r.status_code == 201
+        skill_id = r.json()["skill_id"]
+
+        # Human-only mutations — all should return 403 for agent
+        mutation_paths = [
+            ("POST", f"/skill-lifecycle/{skill_id}/claim",
+             {"proposal_version_id": r.json()["version_id"]}),
+            ("POST", "/skill-lifecycle/validate",
+             {}, {"version_id": r.json()["version_id"]}),
+            ("POST", "/skill-lifecycle/submit-review",
+             {"version_id": r.json()["version_id"], "intended_audience": "", "review_notes": ""}),
+            ("POST", "/skill-lifecycle/review",
+             {"version_id": r.json()["version_id"], "decision": "approved", "rationale": ""}),
+            ("POST", "/skill-lifecycle/publish",
+             {"version_id": r.json()["version_id"], "approval_event_id": 1}),
+            ("POST", "/skill-lifecycle/assign",
+             {"skill_id": skill_id, "agent_name": "dev_agent", "version_id": r.json()["version_id"]}),
+        ]
+
+        base = "/api/v1/orgs/alpha"
+        for method, path, *body_args in mutation_paths:
+            body = body_args[0] if body_args else {}
+            if method == "POST":
+                resp = client.post(f"{base}{path}", json=body)
+            else:
+                resp = client.request(method, f"{base}{path}", json=body)
+            assert resp.status_code == 403, (
+                f"Expected 403 for {method} {path}, got {resp.status_code}"
+            )
+
+        # Rollback as agent — also 403
+        resp = client.post(
+            f"{base}/skill-lifecycle/rollback",
+            params={"skill_id": skill_id, "reason": "test"},
+        )
+        assert resp.status_code == 403
+
+        # Retire as agent — also 403
+        resp = client.post(
+            f"{base}/skill-lifecycle/retire",
+            params={"skill_id": skill_id, "reason": "test"},
+        )
+        assert resp.status_code == 403

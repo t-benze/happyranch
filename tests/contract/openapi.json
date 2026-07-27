@@ -1994,6 +1994,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/skill-lifecycle/proposals/agent": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "201",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/skill-lifecycle/publish": {
       "POST": {
         "params": [

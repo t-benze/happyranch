@@ -65,3 +65,38 @@ def test_count_active_after_clear() -> None:
     assert t.count_active() == 2
     t.clear("TASK-001", "dev_agent")
     assert t.count_active() == 1
+
+
+def test_get_by_session_returns_task_and_agent() -> None:
+    t = SessionTracker()
+    t.set_active("TASK-001", "frontend_engineer", "sess-abc")
+    assert t.get_by_session("sess-abc") == ("TASK-001", "frontend_engineer")
+
+
+def test_get_by_session_unknown_returns_none() -> None:
+    t = SessionTracker()
+    assert t.get_by_session("sess-nonexistent") is None
+
+
+def test_get_by_session_after_clear_returns_none() -> None:
+    t = SessionTracker()
+    t.set_active("TASK-001", "dev_agent", "sess-xyz")
+    t.clear("TASK-001", "dev_agent")
+    assert t.get_by_session("sess-xyz") is None
+
+
+def test_get_by_session_after_overwrite_still_finds() -> None:
+    t = SessionTracker()
+    t.set_active("TASK-001", "dev_agent", "sess-1")
+    t.set_active("TASK-001", "dev_agent", "sess-2")
+    # Old session is overwritten; only the new one resolves
+    assert t.get_by_session("sess-1") is None
+    assert t.get_by_session("sess-2") == ("TASK-001", "dev_agent")
+
+
+def test_get_by_session_independent_per_agent() -> None:
+    t = SessionTracker()
+    t.set_active("TASK-001", "dev_agent", "sess-dev")
+    t.set_active("TASK-002", "frontend_engineer", "sess-fe")
+    assert t.get_by_session("sess-dev") == ("TASK-001", "dev_agent")
+    assert t.get_by_session("sess-fe") == ("TASK-002", "frontend_engineer")

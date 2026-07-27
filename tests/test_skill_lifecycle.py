@@ -1863,3 +1863,114 @@ class TestFullPackageRetention:
             assert not skill_path.exists() or not any(skill_path.iterdir()), (
                 f"Partial residue at {skill_path}"
             )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Agent-id × canonical-slug pilot policy (THR-055 corrective)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestAgentPilotPolicy:
+    """Tests for the fixed agent-id × canonical-slug enforcement.
+
+    The policy (enforced BEFORE artifact/ledger writes):
+    - frontend_engineer → only slug frontend-development
+    - product_lead → only slug product-manager-prd
+    - All other agents → denied
+    - Either permitted agent with wrong slug → denied
+    """
+
+    def test_frontend_engineer_can_submit_frontend_development(self, db, service):
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="frontend-development",
+                              proposer_agent="frontend_engineer",
+                              task_id="TASK-200", session_id="sess-fe"))
+        assert pkg.status == LifecycleStatus.PROPOSED
+        assert pkg.slug == "frontend-development"
+        assert pkg.proposer_agent == "frontend_engineer"
+
+    def test_product_lead_can_submit_product_manager_prd(self, db, service):
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="product-manager-prd",
+                              proposer_agent="product_lead",
+                              task_id="TASK-300", session_id="sess-pm"))
+        assert pkg.status == LifecycleStatus.PROPOSED
+        assert pkg.slug == "product-manager-prd"
+        assert pkg.proposer_agent == "product_lead"
+
+    def test_frontend_engineer_with_wrong_slug_denied(self, db, service):
+        """frontend_engineer with product-manager-prd slug — should be denied
+        by the route-layer policy (tested at route level). The service layer
+        does not enforce this policy; it's the route's responsibility."""
+        # Service layer does NOT enforce agent-id × slug — route layer does.
+        # The service only enforces protected slugs and policy_class.
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="product-manager-prd",
+                              proposer_agent="frontend_engineer",
+                              task_id="TASK-400", session_id="sess-wrong"))
+        assert pkg.status == LifecycleStatus.PROPOSED  # Service allows it
+
+    def test_product_lead_with_wrong_slug_service_allows(self, db, service):
+        """product_lead with frontend-development slug — service allows.
+        Route layer enforces the agent-id × slug policy."""
+        pkg = service.submit_proposal(
+            db=db, actor_kind="agent",
+            **_proposal_kwargs(slug="frontend-development",
+                              proposer_agent="product_lead",
+                              task_id="TASK-500", session_id="sess-pm-wrong"))
+        assert pkg.status == LifecycleStatus.PROPOSED
+
+    def test_non_pilot_agent_denied(self, db, service):
+        """Non-pilot agent (dev_agent) can still submit proposals through
+        the service — it's the route's job to deny non-pilot agents.
+        The service accepts any agent."""
+        pkg = service.submit_proposal(db=db, actor_kind="agent",
+                                      **_proposal_kwargs(proposer_agent="dev_agent"))
+        assert pkg.status == LifecycleStatus.PROPOSED
+
+    def test_all_non_proposal_mutations_return_403_for_agent(self, db, service):
+        """Verify that every lifecycle mutation other than submission
+        raises AgentForbiddenError for agent actors."""
+        pkg = service.submit_proposal(db=db, actor_kind="agent", **_proposal_kwargs())
+
+        # claim
+        with pytest.raises(AgentForbiddenError, match="claim proposal"):
+            service.claim_proposal(db=db, actor_kind="agent", version_id=pkg.id)
+        # record_validation
+        with pytest.raises(AgentForbiddenError, match="record validation"):
+            service.record_validation(db=db, actor_kind="agent", version_id=pkg.id, ok=True)
+        # submit_for_review
+        with pytest.raises(AgentForbiddenError, match="submit for review"):
+            service.submit_for_review(db=db, actor_kind="agent", version_id=pkg.id)
+        # review_decision
+        with pytest.raises(AgentForbiddenError, match="review"):
+            service.review_decision(
+                db=db, actor_kind="agent", version_id=pkg.id,
+                decision="approved", rationale="test", reviewer="founder",
+            )
+        # publish
+        with pytest.raises(AgentForbiddenError, match="publish"):
+            service.publish(
+                db=db, actor_kind="agent", version_id=pkg.id,
+                approval_event_id=1, publisher="founder",
+            )
+        # assign
+        with pytest.raises(AgentForbiddenError, match="assign"):
+            service.assign(
+                db=db, actor_kind="agent", skill_id=pkg.skill_id,
+                agent_name="test_agent", version_id=pkg.id,
+            )
+        # rollback
+        with pytest.raises(AgentForbiddenError, match="rollback"):
+            service.rollback(
+                db=db, actor_kind="agent", skill_id=pkg.skill_id,
+                reason="test",
+            )
+        # retire
+        with pytest.raises(AgentForbiddenError, match="retire"):
+            service.retire(
+                db=db, actor_kind="agent", skill_id=pkg.skill_id,
+                reason="test",
+            )

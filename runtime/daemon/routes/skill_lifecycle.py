@@ -6,6 +6,7 @@ non-bearer (agent-session) callers. Human/founder uses master bearer token.
 
 Routes:
 - POST /skill-lifecycle/proposals — Agent task/session-bound OR founder proposal
+- POST /skill-lifecycle/proposals/agent — Agent-only: opaque session-binding, NO bearer
 - POST /skill-lifecycle/{skill_id}/claim — Human-only: claim proposal → draft
 - POST /skill-lifecycle/validate — Human-only: validate a version
 - POST /skill-lifecycle/submit-review — Human-only: submit for review
@@ -175,6 +176,175 @@ def _verify_agent_proposal_identity(
     _verify_agent_session(org, task_id, session_id, agent_name)
 
     return "agent", agent_name
+
+
+# ── Agent-id × canonical-slug pilot policy (THR-055 corrective) ───────────
+
+# Fixed map: agent name → allowed skill slug.
+# This is enforced server-side, BEFORE any artifact creation or ledger write.
+# It does NOT inspect team membership, prompts, org config, YAML eligibility,
+# request metadata, or body identity claims.
+_AGENT_PILOT_SLUG_MAP: dict[str, str] = {
+    "frontend_engineer": "frontend-development",
+    "product_lead": "product-manager-prd",
+}
+
+
+def _enforce_agent_pilot_policy(agent_name: str, slug: str) -> None:
+    """Enforce the fixed agent-id × canonical-slug policy.
+
+    Raises 403 if:
+    - agent_name is not in the pilot map
+    - agent_name is in the pilot map but slug doesn't match its canonical slug
+
+    This is called BEFORE any artifact creation or ledger write.
+    """
+    allowed_slug = _AGENT_PILOT_SLUG_MAP.get(agent_name)
+    if allowed_slug is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "agent_not_in_pilot",
+                "detail": f"Agent '{agent_name}' is not in the custom-skill pilot. "
+                          f"Only frontend_engineer and product_lead may submit proposals.",
+            },
+        )
+    if slug != allowed_slug:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "slug_not_allowed_for_agent",
+                "detail": f"Agent '{agent_name}' may only submit proposals with slug "
+                          f"'{allowed_slug}', not '{slug}'.",
+            },
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Agent-only route (opaque session-binding, NO bearer token)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dual_router.post("/proposals/agent", status_code=201)
+def submit_proposal_agent_only(
+    slug: str,
+    org: OrgDep,
+    body: ProposalRequest,
+    request: Request,
+    session_id: str = Query(..., min_length=1),
+    has_bearer: bool = Depends(_check_optional_token),
+) -> dict:
+    """Submit a skill proposal via opaque agent-session binding.
+
+    **Agent-only.** This route does NOT accept the master bearer token.
+    The caller provides only an opaque active session ID; the server
+    derives org, task_id, and agent_name from the SessionTracker context.
+
+    - Org is resolved from the route ``{slug}`` (not from the client).
+    - Task and agent identity are resolved from the opaque session ID
+      via SessionTracker reverse lookup.
+    - The fixed agent-id × canonical-slug pilot policy is enforced
+      BEFORE any artifact creation or ledger write.
+    - Body claims for org, agent, task, session, proposer_agent,
+      eligibility, or permission identity are rejected/ignored.
+
+    Returns 403 for:
+    - Inactive, expired, unknown, or ambiguous session
+    - Bearer token present (agent path only)
+    - Agent not in pilot
+    - Agent submitting a slug not matching their canonical slug
+    """
+    # Reject bearer token — this route is agent-session ONLY
+    if has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "bearer_not_accepted",
+                "detail": "This route is for agent-session proposals only. "
+                          "Use POST /skill-lifecycle/proposals for bearer-authenticated proposals.",
+            },
+        )
+
+    # Reject body identity claims early
+    if body.proposer_agent:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "body_identity_rejected",
+                "detail": "proposer_agent must not be set in the proposal body. "
+                          "Agent identity is derived from the server's verified session context.",
+            },
+        )
+    if body.task_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "body_identity_rejected",
+                "detail": "task_id must not be set in the proposal body. "
+                          "Task identity is derived from the server's verified session context.",
+            },
+        )
+    if body.session_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "body_identity_rejected",
+                "detail": "session_id must not be set in the proposal body. "
+                          "Session identity is derived from the server's verified session context.",
+            },
+        )
+
+    # Resolve (task_id, agent_name) from opaque session
+    resolved = org.sessions.get_by_session(session_id)
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "unknown_session",
+                "detail": f"No active session found for session_id '{session_id}'. "
+                          "The session may be inactive, expired, or never existed.",
+            },
+        )
+    task_id, agent_name = resolved
+
+    # Enforce agent-id × canonical-slug policy BEFORE any artifact/ledger write
+    _enforce_agent_pilot_policy(agent_name, body.slug)
+
+    try:
+        protected_slugs = _get_protected_slugs(org)
+        pkg = _service.submit_proposal(
+            db=_get_db(org),
+            actor_kind="agent",
+            slug=body.slug,
+            name=body.name,
+            description=body.description,
+            skill_md=body.skill_md,
+            version=body.version,
+            policy_class=body.policy_class,
+            references=body.references,
+            assets=body.assets,
+            task_id=task_id,
+            session_id=session_id,
+            proposer_agent=agent_name,
+            purpose=body.purpose,
+            target_agent_suggestion=body.target_agent_suggestion,
+            protected_slugs=protected_slugs,
+            org_root=org.root,
+        )
+    except LifecycleError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"code": e.code, "detail": e.detail},
+        )
+
+    return {
+        "skill_id": pkg.skill_id,
+        "version_id": pkg.id,
+        "version": pkg.version,
+        "status": pkg.status.value,
+        "content_hash": pkg.content_hash,
+        "content_artifact_key": pkg.content_artifact_key,
+        "proposal_task_id": pkg.proposal_task_id,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
