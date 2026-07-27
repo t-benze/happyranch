@@ -392,7 +392,7 @@ The header is injected at the same call site as `_revisit_header_if_applicable` 
 
 ### 6.5 Backward read of `blocked_on_job_ids` across revisit chains
 
-Consistent with how `dispatched_from_thread_id` is treated (CLAUDE.md "Thread task-followup invariants"): `blocked_on_job_ids` is **not** copied onto revisit roots by `/revisit` or by auto-revisit. The column lives on the original blocked row; once a manual revisit spawns a fresh root, the new root is unblocked from scratch.
+Consistent with how `dispatched_from_thread_id` is treated (CLAUDE.md "Thread task-followup invariants"): `blocked_on_job_ids` is **not** copied onto revisit roots by `/revisit`. The column lives on the original blocked row; once a manual revisit spawns a fresh root, the new root is unblocked from scratch.
 
 This is intentional. A founder using `happyranch revisit` on a blocked-on-jobs task is explicitly overriding the wait — propagating the wait would defeat the purpose. The original row's `blocked_on_job_ids` remains in the DB for audit purposes; the new row starts at `status=pending` with `blocked_on_job_ids=NULL`.
 

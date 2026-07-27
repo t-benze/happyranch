@@ -106,8 +106,8 @@ class TestSystemContractMaterializationError:
         assert isinstance(err, RuntimeError)
 
     def test_error_is_exception_catchable(self):
-        """The error must be caught by `except Exception as exc:` in
-        run_step_impl, which drives auto-revisit (retry-eligible)."""
+        """The error is caught by `except Exception as exc:` in
+        run_step_impl; handling is terminal FAILED with no daemon successor (TASK-3604)."""
         from runtime.orchestrator.workspace_adapters import (
             SystemContractMaterializationError,
         )
