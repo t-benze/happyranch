@@ -100,10 +100,14 @@ openclaw:
   command_adapter: generic-cli
 ```
 
-Custom profiles use the `GenericCliExecutor` which validates the argv template
-at registration time and substitutes placeholders at launch. No shell string
-is constructed — each template element becomes exactly one argv element, with
-placeholders replaced by their resolved values.
+**Generic-cli profiles** use the `GenericCliExecutor` which validates the
+argv template at registration time and substitutes placeholders at launch.
+No shell string is constructed — each template element becomes exactly one
+argv element, with placeholders replaced by their resolved values.
+
+**Custom-adapter profiles** (D7B, ``command_adapter_id: custom-adapter:<id>``)
+route through ``CustomAdapterExecutor`` instead — see
+[Custom adapter profiles](#custom-adapter-profiles-thr-107-d7b) below.
 
 **Adapter vs command_adapter (THR-107 D9 / Phase 3 + D6).** These are separately
 composable. The canonical workspace `workspace_adapter_id` (deprecated alias:
