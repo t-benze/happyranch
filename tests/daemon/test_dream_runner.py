@@ -355,9 +355,10 @@ def _popen_mock(returncode=0, stdout="", stderr="", pid=4242):
     return proc
 
 
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
 @patch("runtime.orchestrator.executors.subprocess")
 async def test_run_dream_real_chain_session_limit(
-    mock_subprocess, org_state,
+    mock_subprocess, _mock_resolve_binary, org_state,
 ):
     """Real-chain (session-limit): mocked subprocess produces
     {type:result, subtype:error_during_execution} + workspace-trust stderr →
@@ -383,6 +384,7 @@ async def test_run_dream_real_chain_session_limit(
         executor_factory=_factory,
     )
 
+    mock_subprocess.Popen.assert_called_once()
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED
     assert dream.error == "session_limit"
@@ -393,9 +395,10 @@ async def test_run_dream_real_chain_session_limit(
     assert "Workspace trust warning" not in dream.error
 
 
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
 @patch("runtime.orchestrator.executors.subprocess")
 async def test_run_dream_real_chain_certificate_error(
-    mock_subprocess, org_state,
+    mock_subprocess, _mock_resolve_binary, org_state,
 ):
     """Real-chain (certificate): mocked subprocess produces
     {type:result, subtype:error_during_execution, result: certificate...}
@@ -422,6 +425,7 @@ async def test_run_dream_real_chain_certificate_error(
         executor_factory=_factory,
     )
 
+    mock_subprocess.Popen.assert_called_once()
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED
     assert dream.error == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
@@ -431,9 +435,10 @@ async def test_run_dream_real_chain_certificate_error(
     assert "Workspace trust warning" not in dream.error
 
 
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
 @patch("runtime.orchestrator.executors.subprocess")
 async def test_run_dream_real_chain_no_structured_result_fallback(
-    mock_subprocess, org_state,
+    mock_subprocess, _mock_resolve_binary, org_state,
 ):
     """Real-chain (fallback): mocked subprocess produces non-JSON stdout
     → ClaudeExecutor with production parser returns None → raw error wins."""
@@ -456,6 +461,7 @@ async def test_run_dream_real_chain_no_structured_result_fallback(
         executor_factory=_factory,
     )
 
+    mock_subprocess.Popen.assert_called_once()
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED
     assert "Command exited with code 2" in dream.error
@@ -465,9 +471,10 @@ async def test_run_dream_real_chain_no_structured_result_fallback(
     assert "Command exited with code 2" in actions[-1]["payload"]["reason"]
 
 
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
 @patch("runtime.orchestrator.executors.subprocess")
 async def test_run_dream_real_chain_subtype_success_no_terminal_error(
-    mock_subprocess, org_state,
+    mock_subprocess, _mock_resolve_binary, org_state,
 ):
     """Real-chain (false-precedence): mocked subprocess produces
     {type:result, subtype:success, result: certificate...} —
@@ -492,6 +499,7 @@ async def test_run_dream_real_chain_subtype_success_no_terminal_error(
         executor_factory=_factory,
     )
 
+    mock_subprocess.Popen.assert_called_once()
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED
     # Raw error must contain the stderr noise — no classified reason available.
@@ -501,9 +509,10 @@ async def test_run_dream_real_chain_subtype_success_no_terminal_error(
     assert actions[-1]["action"] == "dream_failed"
 
 
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
 @patch("runtime.orchestrator.executors.subprocess")
 async def test_run_dream_real_chain_error_lookalike_falls_back_to_raw(
-    mock_subprocess, org_state,
+    mock_subprocess, _mock_resolve_binary, org_state,
 ):
     """Real-chain (error_lookalike): mocked subprocess produces
     {type:result, subtype:error_lookalike, is_error:true, result: irrelevant}
@@ -530,6 +539,7 @@ async def test_run_dream_real_chain_error_lookalike_falls_back_to_raw(
         executor_factory=_factory,
     )
 
+    mock_subprocess.Popen.assert_called_once()
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED
     # error_lookalike is unsupported → raw stderr-first fallback, no
@@ -543,9 +553,10 @@ async def test_run_dream_real_chain_error_lookalike_falls_back_to_raw(
     assert actions[-1]["payload"]["reason"] == dream.error
 
 
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
 @patch("runtime.orchestrator.executors.subprocess")
 async def test_run_dream_real_chain_error_unknown_falls_back_to_raw(
-    mock_subprocess, org_state,
+    mock_subprocess, _mock_resolve_binary, org_state,
 ):
     """Real-chain (error_unknown): mocked subprocess produces
     {type:result, subtype:error_unknown, is_error:true, result: ...}
@@ -572,6 +583,7 @@ async def test_run_dream_real_chain_error_unknown_falls_back_to_raw(
         executor_factory=_factory,
     )
 
+    mock_subprocess.Popen.assert_called_once()
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED
     # error_unknown is unsupported → raw stderr-first fallback, no
@@ -593,9 +605,10 @@ async def test_run_dream_real_chain_error_unknown_falls_back_to_raw(
 # stderr-first fallback, not a classified reason.
 
 
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
 @patch("runtime.orchestrator.executors.subprocess")
 async def test_run_dream_real_chain_error_lookalike_session_limit_raw_fallback(
-    mock_subprocess, org_state,
+    mock_subprocess, _mock_resolve_binary, org_state,
 ):
     """Real-chain adversarial (error_lookalike + session-limit text):
     {type:result, subtype:error_lookalike, is_error:true,
@@ -627,6 +640,7 @@ async def test_run_dream_real_chain_error_lookalike_session_limit_raw_fallback(
         executor_factory=_factory,
     )
 
+    mock_subprocess.Popen.assert_called_once()
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED
     # error_lookalike is unsupported → raw stderr-first fallback.
@@ -643,9 +657,10 @@ async def test_run_dream_real_chain_error_lookalike_session_limit_raw_fallback(
     )
 
 
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
 @patch("runtime.orchestrator.executors.subprocess")
 async def test_run_dream_real_chain_error_unknown_certificate_raw_fallback(
-    mock_subprocess, org_state,
+    mock_subprocess, _mock_resolve_binary, org_state,
 ):
     """Real-chain adversarial (error_unknown + certificate text):
     {type:result, subtype:error_unknown, is_error:true,
@@ -678,6 +693,7 @@ async def test_run_dream_real_chain_error_unknown_certificate_raw_fallback(
         executor_factory=_factory,
     )
 
+    mock_subprocess.Popen.assert_called_once()
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED
     # error_unknown is unsupported → raw stderr-first fallback.
