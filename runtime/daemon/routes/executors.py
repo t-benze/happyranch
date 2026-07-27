@@ -217,7 +217,7 @@ class ExecutorRegisterRequest(BaseModel):
     NOT consult the ``command`` field at launch time.
 
     ``adapter`` (DEPRECATED by D6) must be one of claude/codex/opencode/pi.
-    For new code, use ``workspace_adapter`` (the canonical field).
+    For new code, use ``workspace_adapter_id`` (the canonical field).
     ``command_adapter`` (DEPRECATED by D6) is optional, defaults to
     ``"generic-cli"`` — the only supported value for now. For new code,
     use ``command_adapter_id`` (the canonical field).
@@ -230,9 +230,9 @@ class ExecutorRegisterRequest(BaseModel):
     adapter: str = Field("pi", min_length=1, deprecated=True)
     command_adapter: str | None = Field(None, deprecated=True)
     # D6 canonical request fields (optional — allow mixed old/new payloads)
-    workspace_adapter: str | None = Field(
+    workspace_adapter_id: str | None = Field(
         None, min_length=1,
-        description="Canonical workspace adapter (D6). Overrides deprecated 'adapter'."
+        description="Canonical workspace adapter id (D6). Overrides deprecated 'adapter' and 'adapter_id'."
     )
     command_adapter_id: str | None = Field(
         None,
@@ -495,8 +495,8 @@ def register_executor(
     #    so the route can never silently diverge from startup config validation.
     #
     #    D6: accept both deprecated (adapter/command_adapter) and canonical
-    #    (workspace_adapter/command_adapter_id) fields. Canonical wins on conflict.
-    workspace_adapter_from_body = getattr(body, "workspace_adapter", None)
+    #    (workspace_adapter_id/command_adapter_id) fields. Canonical wins on conflict.
+    workspace_adapter_from_body = getattr(body, "workspace_adapter_id", None)
     command_adapter_from_body = getattr(body, "command_adapter", None)
     command_adapter_id_from_body = getattr(body, "command_adapter_id", None)
     config_cfg: dict[str, object] = {
@@ -505,7 +505,7 @@ def register_executor(
         "adapter": body.adapter,
     }
     if workspace_adapter_from_body is not None:
-        config_cfg["workspace_adapter"] = workspace_adapter_from_body
+        config_cfg["workspace_adapter_id"] = workspace_adapter_from_body
     if command_adapter_id_from_body is not None:
         config_cfg["command_adapter_id"] = command_adapter_id_from_body
     elif command_adapter_from_body is not None:
@@ -781,7 +781,7 @@ def runtime_register_executor(
         )
 
     # 3. Static validation — D6: canonical fields accepted alongside deprecated
-    workspace_adapter_from_body = getattr(body, "workspace_adapter", None)
+    workspace_adapter_from_body = getattr(body, "workspace_adapter_id", None)
     command_adapter_from_body = getattr(body, "command_adapter", None)
     command_adapter_id_from_body = getattr(body, "command_adapter_id", None)
     config_cfg: dict[str, object] = {
@@ -790,7 +790,7 @@ def runtime_register_executor(
         "adapter": body.adapter,
     }
     if workspace_adapter_from_body is not None:
-        config_cfg["workspace_adapter"] = workspace_adapter_from_body
+        config_cfg["workspace_adapter_id"] = workspace_adapter_from_body
     if command_adapter_id_from_body is not None:
         config_cfg["command_adapter_id"] = command_adapter_id_from_body
     elif command_adapter_from_body is not None:
@@ -855,7 +855,7 @@ def runtime_register_executor(
         }
         # D6: persist canonical fields alongside deprecated for downgrade safety
         if workspace_adapter_from_body is not None:
-            config_entry["workspace_adapter"] = workspace_adapter_from_body
+            config_entry["workspace_adapter_id"] = workspace_adapter_from_body
         if command_adapter_id_from_body is not None:
             config_entry["command_adapter_id"] = command_adapter_id_from_body
         if command_adapter_from_body is not None:
@@ -1115,7 +1115,6 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
     for name in sorted(stored.keys()):
         entry = stored[name]
         command = entry.get("command")
-        adapter = entry.get("adapter")
         # Custom profile — derive present/path from declared command
         # resolvability, the same observable readiness contract as
         # /health/prereqs. No executors.json entry is required.
@@ -1126,12 +1125,30 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
         else:
             present = False
             path = None
-        stored_command_adapter = entry.get("command_adapter")
-        resolved_command_adapter = (
-            stored_command_adapter if isinstance(stored_command_adapter, str)
-            else "generic-cli"
-        )
-        resolved_adapter = adapter if isinstance(adapter, str) else None
+        # D6: dual-read command adapter — canonical command_adapter_id wins
+        resolved_command_adapter: str | None = "generic-cli"  # default
+        cmd_canon = entry.get("command_adapter_id")
+        if isinstance(cmd_canon, str):
+            resolved_command_adapter = cmd_canon
+        else:
+            stored_command_adapter = entry.get("command_adapter")
+            if isinstance(stored_command_adapter, str):
+                resolved_command_adapter = stored_command_adapter
+        # D6: dual-read workspace adapter from store — canonical key
+        # workspace_adapter_id wins, deprecated adapter/adapter_id
+        # provide fallback.
+        resolved_adapter: str | None = None
+        ws_canon = entry.get("workspace_adapter_id")
+        if isinstance(ws_canon, str):
+            resolved_adapter = ws_canon
+        else:
+            adapter = entry.get("adapter")
+            if isinstance(adapter, str):
+                resolved_adapter = adapter
+            else:
+                adapter_id_val = entry.get("adapter_id")
+                if isinstance(adapter_id_val, str):
+                    resolved_adapter = adapter_id_val
         entries.append(RuntimeProfileEntry(
             name=name,
             command=command if isinstance(command, str) else None,

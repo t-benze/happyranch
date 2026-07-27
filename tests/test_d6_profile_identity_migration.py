@@ -170,11 +170,11 @@ class TestCustomProfileDualRead:
         assert p.command_adapter == "generic-cli"
 
     def test_canonical_keys_only(self):
-        """Profile with only 'workspace_adapter' and 'command_adapter_id' works."""
+        """Profile with only 'workspace_adapter_id' and 'command_adapter_id' works."""
         config = {
             "command": None,
             "argv_template": ["echo", "{prompt}"],
-            "workspace_adapter": "pi",
+            "workspace_adapter_id": "pi",
             "command_adapter_id": "generic-cli",
         }
         p = ExecutorRegistry.validate_custom_profile_config("canonical", config)
@@ -187,7 +187,7 @@ class TestCustomProfileDualRead:
             "command": None,
             "argv_template": ["echo", "{prompt}"],
             "adapter": "pi",
-            "workspace_adapter": "pi",
+            "workspace_adapter_id": "pi",
             "command_adapter": "generic-cli",
             "command_adapter_id": "generic-cli",
         }
@@ -196,15 +196,68 @@ class TestCustomProfileDualRead:
         assert p.command_adapter_id == "generic-cli"
 
     def test_conflicting_workspace_keys_raises(self):
-        """Canonical 'workspace_adapter' vs deprecated 'adapter' conflict raises."""
+        """Canonical 'workspace_adapter_id' vs deprecated 'adapter' conflict raises."""
         config = {
             "command": None,
             "argv_template": ["echo", "{prompt}"],
             "adapter": "claude",
-            "workspace_adapter": "pi",
+            "workspace_adapter_id": "pi",
         }
         with pytest.raises(ValueError, match="conflicting workspace adapter"):
             ExecutorRegistry.validate_custom_profile_config("conflict-ws", config)
+
+    @pytest.mark.parametrize(
+        "legacy_key,legacy_value,canon_key,canon_value",
+        [
+            # Defect 2 repro: explicit adapter=pi + workspace_adapter_id=claude → 422
+            ("adapter", "pi", "workspace_adapter_id", "claude"),
+            ("adapter_id", "pi", "workspace_adapter_id", "claude"),
+            # Canonical-only: adapter_id=codex + workspace_adapter_id=pi → 422
+            ("adapter_id", "codex", "workspace_adapter_id", "pi"),
+            # adapter=codex + workspace_adapter_id=pi → 422
+            ("adapter", "codex", "workspace_adapter_id", "pi"),
+            # Three-way: adapter=pi + adapter_id=codex + workspace_adapter_id=claude → 422
+            # (covered by the fact that any two disagreeing → conflict)
+        ],
+    )
+    def test_every_explicit_conflict_direction_raises(
+        self, legacy_key, legacy_value, canon_key, canon_value
+    ):
+        """Every explicitly supplied disagreeing legacy/canonical pair fails with 422 path.
+
+        This specifically covers the Defect 2 scenario:
+        {adapter: "pi", workspace_adapter_id: "claude"} → 422, NOT accepted as claude.
+        """
+        config: dict = {
+            "command": None,
+            "argv_template": ["echo", "{prompt}"],
+            legacy_key: legacy_value,
+            canon_key: canon_value,
+        }
+        with pytest.raises(ValueError, match="conflicting workspace adapter"):
+            ExecutorRegistry.validate_custom_profile_config("conflict", config)
+
+    def test_adapter_id_as_standalone_deprecated_alias(self):
+        """adapter_id (deprecated) works as an alias for workspace_adapter_id."""
+        config = {
+            "command": None,
+            "argv_template": ["echo", "{prompt}"],
+            "adapter_id": "codex",
+        }
+        p = ExecutorRegistry.validate_custom_profile_config("adapter-id-test", config)
+        assert p.workspace_adapter_id == "codex"
+
+    def test_agreeing_all_three_workspace_keys(self):
+        """Agreeing adapter/adapter_id/workspace_adapter_id all works."""
+        config = {
+            "command": None,
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+            "adapter_id": "pi",
+            "workspace_adapter_id": "pi",
+        }
+        p = ExecutorRegistry.validate_custom_profile_config("three-way", config)
+        assert p.workspace_adapter_id == "pi"
 
     def test_invalid_command_adapter_id_rejected(self):
         """Invalid command_adapter_id value is rejected by validation (only 'generic-cli' allowed)."""
@@ -245,7 +298,7 @@ class TestStoreNoAutoMutation:
             stored = profiles["legacy-profile"]
             assert stored == legacy_config  # exactly the legacy shape
             # No canonical keys autopopulated
-            assert "workspace_adapter" not in stored
+            assert "workspace_adapter_id" not in stored
             assert "command_adapter_id" not in stored
         finally:
             if old_home is not None:
@@ -263,14 +316,14 @@ class TestStoreNoAutoMutation:
                 "command": "mycli",
                 "argv_template": ["mycli", "--msg", "{prompt}"],
                 "adapter": "pi",
-                "workspace_adapter": "pi",
+                "workspace_adapter_id": "pi",
                 "command_adapter": "generic-cli",
                 "command_adapter_id": "generic-cli",
             }
             save_runtime_profile("canonical-profile", canonical_config)
             profiles = load_runtime_profiles()
             stored = profiles["canonical-profile"]
-            assert stored["workspace_adapter"] == "pi"
+            assert stored["workspace_adapter_id"] == "pi"
             assert stored["command_adapter_id"] == "generic-cli"
             assert stored["adapter"] == "pi"  # preserved for downgrade safety
             assert stored["command_adapter"] == "generic-cli"  # preserved
@@ -431,7 +484,7 @@ class TestConflictPreventsAllSideEffects:
                 "command": "mycli",
                 "argv_template": ["mycli", "{prompt}"],
                 "adapter": "claude",
-                "workspace_adapter": "pi",  # conflict!
+                "workspace_adapter_id": "pi",  # conflict!
             }
             with pytest.raises(ValueError):
                 ExecutorRegistry.validate_custom_profile_config("conflict", config)

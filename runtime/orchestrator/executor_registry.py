@@ -340,34 +340,50 @@ class ExecutorRegistry:
             raise ValueError(f"executor_profiles.{name} must be a mapping")
         command = cfg.get("command")
         argv_template = cfg.get("argv_template")
-        # ── D6: dual-read workspace adapter (canonical workspace_adapter
-        #     wins over deprecated adapter; conflict → error) ────────────
+        # ── D6: dual-read workspace adapter (canonical workspace_adapter_id
+        #     wins over deprecated adapter/adapter_id; conflict → error) ──
+        #     Presence detection: if any two explicitly-supplied keys disagree,
+        #     raise ValueError BEFORE any durable/registry/audit/token side effect.
         adapter = cfg.get("adapter", "pi")
-        workspace_adapter_from_cfg = cfg.get("workspace_adapter")
-        if workspace_adapter_from_cfg is not None:
-            if not isinstance(workspace_adapter_from_cfg, str) or workspace_adapter_from_cfg not in {
-                "claude", "codex", "opencode", "pi",
-            }:
-                raise ValueError(
-                    f"executor_profiles.{name}.workspace_adapter must be "
-                    f"one of claude/codex/opencode/pi, got "
-                    f"{workspace_adapter_from_cfg!r}"
-                )
-            if adapter != "pi" and adapter != workspace_adapter_from_cfg:
-                raise ValueError(
-                    f"executor_profiles.{name}: conflicting workspace "
-                    f"adapter — canonical workspace_adapter="
-                    f"{workspace_adapter_from_cfg!r}, deprecated adapter="
-                    f"{adapter!r}. Use workspace_adapter; adapter is "
-                    f"a deprecated alias."
-                )
-            adapter = workspace_adapter_from_cfg
-        elif not isinstance(adapter, str) or adapter not in {
+        # Collect explicitly-supplied workspace adapter identifiers
+        explicit_ws_keys: dict[str, str] = {}
+        if "workspace_adapter_id" in cfg:
+            val = cfg["workspace_adapter_id"]
+            if isinstance(val, str):
+                explicit_ws_keys["workspace_adapter_id"] = val
+        if "adapter" in cfg:
+            val = cfg["adapter"]
+            if isinstance(val, str):
+                explicit_ws_keys["adapter"] = val
+        if "adapter_id" in cfg:
+            val = cfg["adapter_id"]
+            if isinstance(val, str):
+                explicit_ws_keys["adapter_id"] = val
+        # Detect conflicting explicitly-supplied values
+        unique_values = list(set(explicit_ws_keys.values()))
+        if len(unique_values) > 1:
+            raise ValueError(
+                f"executor_profiles.{name}: conflicting workspace adapter "
+                f"identifiers — got {explicit_ws_keys!r}. Use only "
+                f"workspace_adapter_id; adapter and adapter_id are "
+                f"deprecated aliases."
+            )
+        # Resolve: canonical wins, then adapter, then adapter_id, then default
+        if explicit_ws_keys:
+            if "workspace_adapter_id" in explicit_ws_keys:
+                adapter = explicit_ws_keys["workspace_adapter_id"]
+            elif "adapter" in explicit_ws_keys:
+                adapter = explicit_ws_keys["adapter"]
+            elif "adapter_id" in explicit_ws_keys:
+                adapter = explicit_ws_keys["adapter_id"]
+        # Validate resolved value
+        if not isinstance(adapter, str) or adapter not in {
             "claude", "codex", "opencode", "pi",
         }:
             raise ValueError(
-                f"executor_profiles.{name}.adapter must be one of "
-                f"claude/codex/opencode/pi, got {adapter!r}"
+                f"executor_profiles.{name}.workspace_adapter_id must be "
+                f"one of claude/codex/opencode/pi, got "
+                f"{adapter!r}"
             )
         # ── end workspace adapter dual-read ───────────────────────────────
         if not isinstance(argv_template, list) or not argv_template:
