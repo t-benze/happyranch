@@ -595,7 +595,14 @@ def _fmt_pc(pc) -> str:
 # Session-Proposal Transport (no bearer token)
 # ---------------------------------------------------------------------------
 
-_IDENTITY_KEYS = frozenset({"task_id", "session_id", "proposer_agent"})
+# Fields the ProposalRequest pydantic model accepts as package content.
+# Any key NOT in this set (including identity keys like task_id, session_id,
+# proposer_agent, agent_name) is rejected locally before any HTTP call.
+_PACKAGE_FIELDS = frozenset({
+    "slug", "name", "description", "version", "policy_class",
+    "skill_md", "purpose", "target_agent_suggestion",
+    "references", "assets",
+})
 
 
 class SessionProposalTransport:
@@ -659,12 +666,17 @@ class SessionProposalTransport:
 # Command: skills propose
 # ---------------------------------------------------------------------------
 
-def cmd_skills_propose(args: argparse.Namespace) -> None:
+def cmd_skills_propose(args: argparse.Namespace, _transport: SessionProposalTransport | None = None) -> None:
     """Submit a skill proposal via session-bound transport (no bearer token).
 
     Agent-only path: POST /api/v1/orgs/{slug}/skill-lifecycle/proposals with
     task_id + session_id + agent_name as verified query binding. The request
-    body carries the package content only — identity claims are rejected.
+    body carries the package content only — non-package keys are rejected.
+
+    The optional ``_transport`` parameter allows tests to inject an
+    alternative transport (e.g. one that routes through a TestClient's
+    FastAPI app). When ``None`` (production), the normal localhost bearer-free
+    ``SessionProposalTransport`` is used.
     """
     # 1. Require absolute --from-file
     if not args.from_file:
@@ -709,20 +721,26 @@ def cmd_skills_propose(args: argparse.Namespace) -> None:
               file=sys.stderr)
         sys.exit(1)
 
-    # 4. Reject identity keys in body — these come ONLY from verified session binding
-    identity_violations = [k for k in _IDENTITY_KEYS if k in body]
-    if identity_violations:
+    # 4. Reject non-package keys in body — identity comes ONLY from verified query binding.
+    #    Use a tight allow-list derived from ProposalRequest's actual package-content fields.
+    #    Any key outside that set (including task_id, session_id, proposer_agent, agent_name,
+    #    and any other identity/actor binding) is rejected locally before any HTTP call.
+    extra_keys = [k for k in body if k not in _PACKAGE_FIELDS]
+    if extra_keys:
+        sorted_keys = sorted(extra_keys)
+        quoted = ", ".join(f"'{k}'" for k in sorted_keys)
         print(
-            f"error: proposal body must NOT contain identity key(s):"
-            f" {', '.join(sorted(identity_violations))}."
+            f"error: proposal body contains unrecognized key(s): {quoted}."
+            f" Package content fields are:"
+            f" {', '.join(sorted(_PACKAGE_FIELDS))}."
             f" Identity is verified via --task-id / --session-id / --agent"
             f" query binding only.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    # 5. Submit via bearer-free transport
-    transport = SessionProposalTransport()
+    # 5. Submit via bearer-free transport (injectable for tests)
+    transport = _transport if _transport is not None else SessionProposalTransport()
     try:
         resp = transport.submit_proposal(
             org=args.org,
@@ -735,7 +753,8 @@ def cmd_skills_propose(args: argparse.Namespace) -> None:
         print("error: cannot connect to daemon — is it running?", file=sys.stderr)
         sys.exit(1)
     finally:
-        transport.close()
+        if _transport is None:
+            transport.close()
 
     # 6. Handle response
     if 200 <= resp.status_code < 300:

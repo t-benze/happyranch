@@ -339,12 +339,21 @@ class TestBodySanitization:
         assert code != 0
         assert "proposer_agent" in err
 
+    def test_agent_name_in_body_rejected(self, capsys):
+        """agent_name (the query identity parameter) is rejected from body."""
+        body = dict(_VALID_PROPOSAL, agent_name="engineering_manager")
+        code = self._run_with_body(body, capsys)
+        err = capsys.readouterr().err
+        assert code != 0
+        assert "agent_name" in err
+
     def test_all_identity_keys_rejected_together(self, capsys):
         body = dict(
             _VALID_PROPOSAL,
             task_id="TASK-spoof",
             session_id="sess-spoof",
             proposer_agent="engineering_manager",
+            agent_name="engineering_manager",
         )
         code = self._run_with_body(body, capsys)
         err = capsys.readouterr().err
@@ -352,6 +361,57 @@ class TestBodySanitization:
         assert "task_id" in err
         assert "session_id" in err
         assert "proposer_agent" in err
+        assert "agent_name" in err
+
+    def test_mixed_identity_and_unknown_keys_rejected(self, capsys):
+        """Any key outside the package-field allow-list is rejected."""
+        body = dict(
+            _VALID_PROPOSAL,
+            agent_name="bad",
+            task_id="bad",
+            unknown_field="bad",
+        )
+        code = self._run_with_body(body, capsys)
+        err = capsys.readouterr().err
+        assert code != 0
+        # The error message should list each offending key
+        for key in ("agent_name", "task_id", "unknown_field"):
+            assert key in err
+
+    def test_pure_package_body_passes_sanitization(self, capsys):
+        """A body containing only known package fields passes validation."""
+        body = dict(_VALID_PROPOSAL)  # all fields are package-content only
+        p = _write_proposal_json(body)
+        from cli.commands.skills import cmd_skills_propose
+        import argparse
+
+        # Inject a mock transport to bypass the real daemon connection.
+        # The key assertion is that body sanitization passes (no
+        # unrecognized-key error) before reaching the transport.
+        mock_transport = MagicMock()
+        mock_transport.submit_proposal.return_value = _mock_response(201, {
+            "status": "proposed",
+            "skill_id": "hr:test",
+            "version_id": 1,
+            "version": "0.1.0",
+            "content_hash": "hash",
+        })
+
+        ns = argparse.Namespace(
+            **{
+                "from_file": p,
+                "org": "alpha",
+                "task_id": "TASK-1",
+                "session_id": "sess-1",
+                "agent": "dev_agent",
+            }
+        )
+        # Should succeed — no SystemExit
+        cmd_skills_propose(ns, _transport=mock_transport)
+
+        out = capsys.readouterr().out
+        assert "Proposal submitted successfully" in out
+        assert "unrecognized" not in out.lower()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -535,6 +595,81 @@ class TestSessionProposalTransport:
 # ═══════════════════════════════════════════════════════════════════════════
 # Subcommand discovery test (parser smoke)
 # ═══════════════════════════════════════════════════════════════════════════
+
+class TestTransportInjection:
+    """Tests for the optional _transport injection point in cmd_skills_propose."""
+
+    def test_injected_transport_used_instead_of_real_one(self, capsys):
+        """When _transport is provided, it is used and the real
+        SessionProposalTransport is never created."""
+        from cli.commands.skills import cmd_skills_propose
+        import argparse
+
+        p = _write_proposal_json(_VALID_PROPOSAL)
+
+        injected = MagicMock()
+        injected.submit_proposal.return_value = _mock_response(201, {
+            "status": "proposed",
+            "skill_id": "hr:test",
+            "version_id": 1,
+            "version": "0.1.0",
+            "content_hash": "hash123",
+            "proposal_task_id": "TASK-1",
+        })
+
+        ns = argparse.Namespace(
+            from_file=p,
+            org="alpha",
+            task_id="TASK-1",
+            session_id="sess-1",
+            agent="dev_agent",
+        )
+        cmd_skills_propose(ns, _transport=injected)
+
+        # The injected transport's submit_proposal was called
+        injected.submit_proposal.assert_called_once()
+        call_kwargs = injected.submit_proposal.call_args.kwargs
+        assert call_kwargs["org"] == "alpha"
+        assert call_kwargs["task_id"] == "TASK-1"
+        assert call_kwargs["session_id"] == "sess-1"
+        assert call_kwargs["agent_name"] == "dev_agent"
+
+        # The injected transport's close was NOT called (only real transport
+        # manages its own lifecycle)
+        injected.close.assert_not_called()
+
+        out = capsys.readouterr().out
+        assert "Proposal submitted successfully" in out
+
+    def test_injected_transport_lifecycle_error_rendered(self, capsys):
+        """Lifecycle errors from injected transport are rendered correctly."""
+        from cli.commands.skills import cmd_skills_propose
+        import argparse
+
+        p = _write_proposal_json(_VALID_PROPOSAL)
+
+        injected = MagicMock()
+        injected.submit_proposal.return_value = _mock_response(422, {
+            "detail": {
+                "code": "protected_slug",
+                "detail": "Slug 'start-task' is a protected system skill.",
+            }
+        })
+
+        ns = argparse.Namespace(
+            from_file=p,
+            org="alpha",
+            task_id="TASK-1",
+            session_id="sess-1",
+            agent="dev_agent",
+        )
+        with pytest.raises(SystemExit) as exc:
+            cmd_skills_propose(ns, _transport=injected)
+
+        err = capsys.readouterr().err
+        assert exc.value.code != 0
+        assert "[protected_slug]" in err
+
 
 class TestProposeSubcommandDiscovery:
     """Smoke test for subcommand presence in parser."""

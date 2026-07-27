@@ -730,10 +730,12 @@ happyranch skills propose \
 
 **Identity binding.** ``task_id``, ``session_id``, and agent name are carried
 ONLY as CLI flags (transmitted as query parameters to the daemon route). The
-``--from-file`` JSON body MUST NOT contain ``task_id``, ``session_id``, or
-``proposer_agent`` keys — the CLI rejects them locally before any HTTP call.
-Identity is verified server-side via the in-memory ``SessionTracker`` binding;
-there is NO Authorization header or bearer token on the HTTP request.
+``--from-file`` JSON body MUST NOT contain any identity or actor-binding
+keys — including ``task_id``, ``session_id``, ``proposer_agent``, and
+``agent_name``. The CLI uses a package-field allow-list derived from
+``ProposalRequest`` and rejects any unrecognized key locally before any HTTP
+call. Identity is verified server-side via the in-memory ``SessionTracker``
+binding; there is NO Authorization header or bearer token on the HTTP request.
 
 **Payload contract.** ``--from-file`` must be an absolute path to a JSON file
 containing exactly the package-content fields understood by ``ProposalRequest``:
