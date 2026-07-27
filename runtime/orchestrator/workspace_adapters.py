@@ -511,6 +511,128 @@ def inject_managed_skills(
                 version=es.skill.version,
             )
 
+    # ── THR-055: lifecycle-ledger skill resolution ──────────────────────
+    # Resolve published + assigned skills from the lifecycle ledger.
+    # Only PUBLISHED skills with an active assignment for this agent are
+    # materialized. Proposed/draft/validated/approved-but-unpublished
+    # content never reaches the workspace.
+    if db is not None and org_root is not None:
+        _materialize_lifecycle_skills(
+            workspace=workspace,
+            org_root=org_root,
+            db=db,
+            agent_name=agent_name,
+            slug=slug,
+        )
+
+
+def _materialize_lifecycle_skills(
+    *,
+    workspace: Path,
+    org_root: Path,
+    db,
+    agent_name: str,
+    slug: str,
+) -> None:
+    """Resolve and materialize lifecycle-ledger custom skills for an agent.
+
+    Only PUBLISHED skills with an active assignment are materialized.
+    Proposed/draft/validated/approved-but-unpublished/quarantined skills
+    are invisible here.
+
+    Fail-closed: any materialization error cleans up the target directory
+    and raises immediately. No partial-package residue.
+    """
+    from runtime.skills.lifecycle import stores
+    from runtime.skills.lifecycle.service import SkillLifecycleService
+
+    service = SkillLifecycleService()
+
+    # Get active assignments for this agent from the lifecycle ledger
+    pkgs = service.get_effective_skills(db, agent_name)
+    if not pkgs:
+        return
+
+    for pkg in pkgs:
+        skill_slug = pkg.slug
+
+        # Resolve content source: artifact-backed content takes priority
+        if pkg.content_artifact_key and org_root:
+            src_dir = org_root / pkg.content_artifact_key
+        else:
+            # Legacy inline content: write from skill_md cache
+            src_dir = org_root / "skills" / skill_slug
+
+        if not src_dir.is_dir():
+            # No content to materialize — record failure and continue
+            try:
+                service.record_materialization(
+                    db=db,
+                    skill_id=pkg.skill_id,
+                    agent_name=agent_name,
+                    version_id=pkg.id,
+                    version=pkg.version,
+                    content_hash=pkg.content_hash,
+                    success=False,
+                    error_message=f"Source directory not found: {src_dir}",
+                    session_context="session_spawn",
+                )
+            except Exception:
+                pass
+            continue
+
+        dest_claude = workspace / ".claude" / "skills" / skill_slug
+        dest_agents = workspace / ".agents" / "skills" / skill_slug
+
+        try:
+            _copy_skills_tree(src_dir, dest_claude, slug=slug)
+            _copy_skills_tree(src_dir, dest_agents, slug=slug)
+
+            # Record successful materialization in lifecycle ledger
+            try:
+                service.record_materialization(
+                    db=db,
+                    skill_id=pkg.skill_id,
+                    agent_name=agent_name,
+                    version_id=pkg.id,
+                    version=pkg.version,
+                    content_hash=pkg.content_hash,
+                    success=True,
+                    session_context="session_spawn",
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            # Fail-closed: cleanup partial residues
+            import shutil
+            for d in (dest_claude, dest_agents):
+                if d.exists():
+                    shutil.rmtree(d, ignore_errors=True)
+
+            try:
+                service.record_materialization(
+                    db=db,
+                    skill_id=pkg.skill_id,
+                    agent_name=agent_name,
+                    version_id=pkg.id,
+                    version=pkg.version,
+                    content_hash=pkg.content_hash,
+                    success=False,
+                    error_message=str(exc),
+                    session_context="session_spawn",
+                )
+            except Exception:
+                pass
+
+            # Don't let one failed materialization block others,
+            # but log the failure
+            import logging
+            logger = logging.getLogger("happyranch.skills.lifecycle.materialization")
+            logger.warning(
+                "Lifecycle skill materialization failed for %s/%s: %s",
+                pkg.skill_id, agent_name, exc,
+            )
+
 
 def _memory_bootstrap_section(workspace: Path) -> list[str]:
     """Returns the 'Persistent Files' + 'Your Memory' block.

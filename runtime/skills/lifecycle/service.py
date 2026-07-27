@@ -91,6 +91,7 @@ class SkillLifecycleService:
         proposer_agent: str | None = None,
         purpose: str = "",
         target_agent_suggestion: str = "",
+        protected_slugs: frozenset | None = None,
     ) -> PackageVersion:
         """Submit a task/session-bound agent proposal.
 
@@ -104,7 +105,7 @@ class SkillLifecycleService:
         """
         self._ensure_agent(actor_kind, "submit proposal")
         self._ensure_non_empty(skill_md, "skill_md")
-        self._ensure_protected_slug(slug)
+        self._ensure_protected_slug(slug, protected_slugs)
         self._ensure_policy_class(policy_class)
 
         # Agent proposals require verified task/session binding
@@ -469,6 +470,10 @@ class SkillLifecycleService:
     ) -> int:
         """Emergency rollback: deactivate all assignments for a skill.
 
+        All operations execute within their individual implicit SQLite
+        transactions (auto-commit mode). For multi-statement atomicity,
+        the caller should wrap in BEGIN IMMEDIATE/COMMIT.
+
         Returns count of deactivated assignments.
         """
         self._ensure_human(actor_kind, "rollback")
@@ -635,8 +640,9 @@ class SkillLifecycleService:
                 status_code=400,
             )
 
-    def _ensure_protected_slug(self, slug: str) -> None:
-        if slug in _PROTECTED_SLUGS:
+    def _ensure_protected_slug(self, slug: str, protected_slugs: frozenset | None = None) -> None:
+        slugs = protected_slugs if protected_slugs is not None else _PROTECTED_SLUGS
+        if slug in slugs:
             raise LifecycleError(
                 code="protected_slug",
                 detail=f"Slug '{slug}' is a protected release or system-contract slug and cannot be used for custom skills.",

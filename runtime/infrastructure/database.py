@@ -136,6 +136,15 @@ class Database:
         self.work_hours = WorkHoursStore(self._conn, self._lock)
         self.schedules = ScheduleStore(self._conn, self._lock)
 
+    def execute(self, sql: str, parameters=()):
+        """Passthrough to the underlying sqlite3 connection's execute().
+
+        Enables lifecycle stores that accept either raw connections (tests)
+        or Database wrappers (production) to call ``db.execute()`` uniformly.
+        """
+        with self._lock:
+            return self._conn.execute(sql, parameters)
+
     @property
     def path(self) -> Path:
         """Alias for ``db_path``. Convenience for callers that prefer ``.path``."""
@@ -943,6 +952,7 @@ class Database:
                 policy_class TEXT NOT NULL DEFAULT 'standard_operational',
                 description TEXT NOT NULL DEFAULT '',
                 skill_md    TEXT NOT NULL DEFAULT '',
+                content_artifact_key TEXT,
                 status      TEXT NOT NULL DEFAULT 'proposed',
                 created_at  TEXT NOT NULL,
                 created_by  TEXT NOT NULL DEFAULT '',
@@ -1046,6 +1056,13 @@ class Database:
         try:
             self._conn.execute(
                 "ALTER TABLE thread_message_attachments ADD COLUMN thread_attachment_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        # THR-055: content_artifact_key column for artifact-backed package retention
+        try:
+            self._conn.execute(
+                "ALTER TABLE skill_lifecycle_packages ADD COLUMN content_artifact_key TEXT"
             )
         except sqlite3.OperationalError:
             pass

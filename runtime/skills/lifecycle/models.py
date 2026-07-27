@@ -39,6 +39,7 @@ class LifecycleStatus(str, Enum):
     PUBLISHED = "published"
     RETIRED = "retired"
     ROLLED_BACK = "rolled_back"
+    LEGACY_QUARANTINED = "legacy_quarantined"  # Pre-lifecycle data, read-only
 
 
 # ── Package version record ────────────────────────────────────────────────
@@ -47,6 +48,13 @@ class PackageVersion(BaseModel):
     """An immutable record of a skill package at a specific version + content hash.
 
     Created once and never mutated. Byte changes fork a new version.
+
+    Content retention: the primary content lives in the org artifact store
+    (``<org_root>/artifacts/skill-lifecycle/<slug>/<version>/``). The
+    ``content_artifact_key`` stores the relative path; ``skill_md`` is a
+    transient cache populated on read, not the durable store. This keeps
+    the ledger tables lean while content lives under the task-artifact
+    retention policy.
     """
 
     id: int | None = None  # DB primary key, set on insert
@@ -57,7 +65,8 @@ class PackageVersion(BaseModel):
     content_hash: str  # SHA-256 hex of the package content
     policy_class: str = "standard_operational"
     description: str = ""
-    skill_md: str = ""  # Full SKILL.md body
+    skill_md: str = ""  # Transient cache of SKILL.md body (loaded on demand)
+    content_artifact_key: str | None = None  # Relative path in org artifact store
     status: LifecycleStatus = LifecycleStatus.PROPOSED
     created_at: datetime = Field(default_factory=utcnow)
     created_by: str = ""  # agent name or "founder"
@@ -210,11 +219,13 @@ class ReviewDecisionRequest(BaseModel):
 
 class PublishRequest(BaseModel):
     """Publisher admits an approved version to the catalog."""
+    version_id: int  # The PackageVersion to publish
     approval_event_id: int  # Must match the approval lifecycle event
 
 
 class AssignRequest(BaseModel):
     """Eligibility admin assigns a published version to a named agent."""
+    skill_id: str  # e.g. "hr:my-skill"
     agent_name: str
     version_id: int
 

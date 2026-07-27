@@ -19,6 +19,13 @@ from .models import (
 )
 
 
+def _get_conn(db) -> "sqlite3.Connection":
+    """Extract a sqlite3.Connection from either a raw connection or a Database wrapper."""
+    if hasattr(db, '_conn'):
+        return db._conn
+    return db
+
+
 def _row_to_package_version(row: dict) -> PackageVersion:
     """Convert a DB row dict to a PackageVersion model."""
     return PackageVersion(
@@ -31,6 +38,7 @@ def _row_to_package_version(row: dict) -> PackageVersion:
         policy_class=row.get("policy_class", "standard_operational"),
         description=row.get("description", ""),
         skill_md=row.get("skill_md", ""),
+        content_artifact_key=row.get("content_artifact_key"),
         status=LifecycleStatus(row["status"]),
         created_at=_parse_datetime(row.get("created_at")),
         created_by=row.get("created_by", ""),
@@ -70,6 +78,7 @@ CREATE TABLE IF NOT EXISTS skill_lifecycle_packages (
     policy_class TEXT NOT NULL DEFAULT 'standard_operational',
     description TEXT NOT NULL DEFAULT '',
     skill_md    TEXT NOT NULL DEFAULT '',
+    content_artifact_key TEXT,
     status      TEXT NOT NULL DEFAULT 'proposed',
     created_at  TEXT NOT NULL,
     created_by  TEXT NOT NULL DEFAULT '',
@@ -189,14 +198,15 @@ def insert_package_version(db, pkg: PackageVersion) -> int:
     row = db.execute(
         """INSERT INTO skill_lifecycle_packages
            (skill_id, slug, name, version, content_hash, policy_class,
-            description, skill_md, status, created_at, created_by,
+            description, skill_md, content_artifact_key, status, created_at, created_by,
             proposal_task_id, proposal_session_id, proposer_agent,
             reviewer, review_decision, review_rationale, reviewed_at,
             publisher, published_at, publication_decision_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             pkg.skill_id, pkg.slug, pkg.name, pkg.version, pkg.content_hash,
-            pkg.policy_class, pkg.description, pkg.skill_md, pkg.status.value,
+            pkg.policy_class, pkg.description, pkg.skill_md, pkg.content_artifact_key,
+            pkg.status.value,
             pkg.created_at.isoformat(), pkg.created_by,
             pkg.proposal_task_id, pkg.proposal_session_id, pkg.proposer_agent,
             pkg.reviewer, pkg.review_decision, pkg.review_rationale,
@@ -490,3 +500,150 @@ def get_latest_materialization(
         session_context=d.get("session_context"),
         created_at=_parse_datetime(d["created_at"]) or datetime.now(timezone.utc),
     )
+
+
+# ── Legacy migration / quarantine ─────────────────────────────────────────
+
+
+def quarantine_legacy_user_skills(db, org_root, settings) -> int:
+    """Migrate existing per-org user-authored skills into the lifecycle ledger.
+
+    Reads ``<org_root>/skills/`` directory. For each user-authored skill found:
+    - Creates a PackageVersion record with status LEGACY_QUARANTINED
+    - Stores the content_artifact_key referencing the existing filesystem path
+    - Records a lifecycle event for the migration
+    - Does NOT materialize quarantined content into any catalog or workspace
+
+    Malformed/unsafe legacy data is preserved with error metadata.
+
+    Returns the number of skills quarantined.
+    """
+    from pathlib import Path
+    import hashlib
+
+    org_path = Path(org_root) if not isinstance(org_root, Path) else org_root
+    skills_dir = org_path / "skills"
+    if not skills_dir.is_dir():
+        return 0
+
+    count = 0
+    for skill_dir in sorted(skills_dir.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        slug = skill_dir.name
+        skill_md_path = skill_dir / "SKILL.md"
+        if not skill_md_path.is_file():
+            # Malformed — no SKILL.md
+            try:
+                db.execute(
+                    """INSERT OR IGNORE INTO skill_lifecycle_packages
+                       (skill_id, slug, name, version, content_hash,
+                        policy_class, description, skill_md,
+                        content_artifact_key, status, created_at, created_by)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        f"hr:{slug}", slug, slug, "0.0.0",
+                        "malformed-no-content",
+                        "standard_operational",
+                        f"Legacy skill '{slug}' — no SKILL.md found",
+                        "",
+                        f"skills/{slug}",
+                        LifecycleStatus.LEGACY_QUARANTINED.value,
+                        datetime.now(timezone.utc).isoformat(),
+                        "migration",
+                    ),
+                )
+                count += 1
+            except Exception:
+                pass
+            continue
+
+        try:
+            skill_md = skill_md_path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            # Malformed — unreadable content
+            try:
+                db.execute(
+                    """INSERT OR IGNORE INTO skill_lifecycle_packages
+                       (skill_id, slug, name, version, content_hash,
+                        policy_class, description, skill_md,
+                        content_artifact_key, status, created_at, created_by)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        f"hr:{slug}", slug, slug, "0.0.0",
+                        "malformed-unreadable",
+                        "standard_operational",
+                        f"Legacy skill '{slug}' — SKILL.md unreadable",
+                        "",
+                        f"skills/{slug}",
+                        LifecycleStatus.LEGACY_QUARANTINED.value,
+                        datetime.now(timezone.utc).isoformat(),
+                        "migration",
+                    ),
+                )
+                count += 1
+            except Exception:
+                pass
+            continue
+
+        # Compute hash
+        content_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
+
+        # Check if already migrated (idempotent)
+        existing = db.execute(
+            "SELECT id FROM skill_lifecycle_packages WHERE skill_id = ? AND content_hash = ?",
+            (f"hr:{slug}", content_hash),
+        ).fetchone()
+        if existing:
+            continue
+
+        artifact_key = f"skills/{slug}"
+        try:
+            db.execute(
+                """INSERT OR IGNORE INTO skill_lifecycle_packages
+                   (skill_id, slug, name, version, content_hash,
+                    policy_class, description, skill_md,
+                    content_artifact_key, status, created_at, created_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    f"hr:{slug}", slug, slug, "0.0.0",
+                    content_hash,
+                    "standard_operational",
+                    f"Legacy skill '{slug}' — migrated to lifecycle ledger",
+                    "",  # skill_md lives in artifact store
+                    artifact_key,
+                    LifecycleStatus.LEGACY_QUARANTINED.value,
+                    datetime.now(timezone.utc).isoformat(),
+                    "migration",
+                ),
+            )
+
+            # Record migration event
+            row = db.execute(
+                "SELECT id FROM skill_lifecycle_packages WHERE skill_id = ? AND content_hash = ?",
+                (f"hr:{slug}", content_hash),
+            ).fetchone()
+            if row:
+                db.execute(
+                    """INSERT INTO skill_lifecycle_events
+                       (skill_id, package_version_id, event_type, actor, actor_role,
+                        previous_status, new_status, content_hash, metadata_json,
+                        created_at, task_id, session_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        f"hr:{slug}", row["id"], "legacy_quarantined",
+                        "migration", "service",
+                        None, LifecycleStatus.LEGACY_QUARANTINED.value,
+                        content_hash,
+                        json.dumps({"source": "filesystem", "artifact_key": artifact_key}),
+                        datetime.now(timezone.utc).isoformat(),
+                        None, None,
+                    ),
+                )
+
+            count += 1
+        except Exception:
+            pass
+
+    return count
+

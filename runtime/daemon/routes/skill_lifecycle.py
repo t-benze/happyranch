@@ -17,8 +17,11 @@ Routes:
 Agent 403 matrix: agents may ONLY submit proposals. All lifecycle/config/
 eligibility/permission mutation attempts return server-side 403.
 
-Identity for proposals derives from verified task/session binding (SessionTracker),
-never from request body claims.
+Identity for proposals derives from verified task/session binding via
+SessionTracker, never from request body claims.
+
+Protected-slug checking consults the live release/system catalog, not a
+static list.
 """
 
 from __future__ import annotations
@@ -52,20 +55,82 @@ _service = SkillLifecycleService()
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-def _derive_actor_kind(request: Request) -> str:
-    """Derive actor kind from request context.
-
-    In the pilot, all bearer-authed requests are treated as 'human' (founder)
-    EXCEPT requests that carry validated task_id + session_id binding, which
-    are treated as 'agent'.
-
-    The real binding check happens inside the proposal route via SessionTracker.
-    """
-    return "human"  # Default — overridden in proposal route
-
-
 def _get_db(org: OrgState):
     return org.db
+
+
+def _get_protected_slugs(org: OrgState) -> frozenset:
+    """Build the live protected-slug set from the release catalog + system contracts.
+
+    Consults the runtime skills registry and system contracts, NOT a static list.
+    """
+    try:
+        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.system_contracts import SYSTEM_CONTRACTS
+
+        release_dir = org.settings.project_root / "runtime" / "skills"
+        protected = set()
+        if release_dir.is_dir():
+            registry = SkillRegistry(skills_root=release_dir)
+            for entry in registry.list_all():
+                if isinstance(entry, tuple):
+                    entry = entry[0]  # Some registries return (entry, source) tuples
+                protected.add(getattr(entry, 'slug', getattr(entry, 'id', '')))
+        # Add system contract slugs
+        for sc in SYSTEM_CONTRACTS:
+            protected.add(sc.id)
+        return frozenset(protected)
+    except Exception:
+        # Fallback static list on registry load failure
+        return frozenset({
+            "start-task", "jobs", "make-worktree", "thread", "dream",
+            "reflection", "manage-agent", "manage-repo", "brainstorming",
+            "dispatching-parallel-agents", "executing-plans",
+            "finishing-a-development-branch", "receiving-code-review",
+            "requesting-code-review", "subagent-driven-development",
+            "systematic-debugging", "test-driven-development",
+            "using-git-worktrees", "using-superpowers",
+            "verification-before-completion", "writing-plans", "writing-skills",
+        })
+
+
+def _verify_agent_session(
+    org: OrgState, task_id: str | None, session_id: str | None, agent_name: str | None,
+) -> tuple[str, str, str]:
+    """Verify agent identity via SessionTracker.
+
+    Returns (verified_task_id, verified_session_id, verified_agent_name) on success.
+    Raises 403 if any binding is invalid/expired/mismatched.
+    """
+    if not task_id or not session_id or not agent_name:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "agent_identity_required",
+                "detail": "Agent proposals require verified task_id + session_id + agent_name binding.",
+            },
+        )
+
+    expected_session = org.sessions.get_active(task_id, agent_name)
+    if expected_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "unknown_session",
+                "detail": f"No active session for task {task_id} agent {agent_name}.",
+            },
+        )
+    if expected_session != session_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "session_mismatch",
+                "detail": f"Session {session_id} does not match active session for task {task_id} agent {agent_name}.",
+            },
+        )
+
+    return task_id, session_id, agent_name
+
 
 # ── Route: POST /skill-lifecycle/proposals ────────────────────────────────
 
@@ -79,24 +144,32 @@ def submit_proposal(
     """Agent-only: submit a task/session-bound skill proposal.
 
     Identity is derived from the verified task/session binding via SessionTracker.
-    Body claims for task_id, session_id, proposer_agent are IGNORED.
+    Body claims for task_id, session_id, proposer_agent are IGNORED —
+    only the verified session binding is trusted.
 
-    Returns 403 for all agent lifecycle/config/eligibility mutation attempts
-    except this bounded proposal submission.
+    Query params: ?task_id=TASK-xxx&session_id=sess-yyy&agent_name=dev_agent
+
+    Returns 403 for inactive, expired, or mismatched task/session bindings.
     """
-    # Derive agent identity from session binding
-    task_id = getattr(request.state, "task_id", None)
-    session_id = getattr(request.state, "session_id", None)
-    agent_name = getattr(request.state, "agent_name", None)
+    # Extract identity claims from query params (agent callbacks arrive as
+    # query params since they come through the CLI's single-line Bash tool)
+    task_id = request.query_params.get("task_id") or getattr(request.state, "task_id", None)
+    session_id = request.query_params.get("session_id") or getattr(request.state, "session_id", None)
+    agent_name = request.query_params.get("agent_name") or getattr(request.state, "agent_name", None)
 
-    # If no session binding, treat as human (founder) request.
-    # Human-founders can also submit proposals but with different semantics.
+    # Derive actor kind and verify via SessionTracker
     if task_id and session_id and agent_name:
+        # Verify active session binding
+        _verify_agent_session(org, task_id, session_id, agent_name)
         actor_kind = "agent"
+        # Use verified values (ignore body claims completely)
     else:
+        # No session binding → human (founder) request.
+        # Human requests can submit proposals but with human semantics.
         actor_kind = "human"
 
     try:
+        protected_slugs = _get_protected_slugs(org)
         pkg = _service.submit_proposal(
             db=_get_db(org),
             actor_kind=actor_kind,
@@ -113,6 +186,7 @@ def submit_proposal(
             proposer_agent=agent_name,
             purpose=body.purpose,
             target_agent_suggestion=body.target_agent_suggestion,
+            protected_slugs=protected_slugs,
         )
     except LifecycleError as e:
         raise HTTPException(
@@ -367,7 +441,7 @@ def publish(
         pkg = _service.publish(
             db=_get_db(org),
             actor_kind="human",
-            version_id=body.publish_version_id if hasattr(body, 'publish_version_id') else body.approval_event_id,
+            version_id=body.version_id,
             approval_event_id=body.approval_event_id,
             publisher="founder",
         )
@@ -394,12 +468,15 @@ def assign_skill(
     org: OrgDep,
     body: AssignRequest,
 ) -> dict:
-    """Human-only: assign a published version to a named agent."""
+    """Human-only: assign a published version to a named agent.
+
+    Requires explicit skill_id (e.g. "hr:my-skill") in the request body.
+    """
     try:
         assign = _service.assign(
             db=_get_db(org),
             actor_kind="human",
-            skill_id=f"hr:{body.skill_slug}" if hasattr(body, 'skill_slug') else body.agent_name,
+            skill_id=body.skill_id,
             agent_name=body.agent_name,
             version_id=body.version_id,
             assigner="founder",
@@ -429,7 +506,11 @@ def rollback(
     reason: str = Query(""),
     target_version_id: int | None = Query(None),
 ) -> dict:
-    """Human-only: emergency rollback — deactivate all assignments for a skill."""
+    """Human-only: emergency rollback — deactivate all assignments for a skill.
+
+    Atomically unassigns affected assignments while retaining immutable
+    history/content references.
+    """
     try:
         count = _service.rollback(
             db=_get_db(org),

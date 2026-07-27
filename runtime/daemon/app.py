@@ -157,6 +157,24 @@ async def _lifespan(app: FastAPI):
                 "THR-106 skill-id rename migration error for org %s: %s",
                 org.slug, exc,
             )
+        # THR-055: one-shot quarantine of legacy user-authored skills into
+        # the lifecycle ledger. Creates LEGACY_QUARANTINED PackageVersion
+        # records for pre-lifecycle filesystem skills. Idempotent by hash.
+        try:
+            from runtime.skills.lifecycle.stores import quarantine_legacy_user_skills
+            quarantined = quarantine_legacy_user_skills(
+                org.db, org.root, org.settings,
+            )
+            if quarantined > 0:
+                _logger.info(
+                    "THR-055 legacy skill quarantine for org %s: %d skills quarantined",
+                    org.slug, quarantined,
+                )
+        except Exception as exc:
+            _logger.warning(
+                "THR-055 legacy skill quarantine error for org %s: %s",
+                org.slug, exc,
+            )
         recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
         if recovered:
             _logger.warning(
