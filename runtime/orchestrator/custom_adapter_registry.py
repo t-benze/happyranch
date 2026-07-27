@@ -28,9 +28,12 @@ from pathlib import Path
 from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput
 from runtime.orchestrator.adapter_store import (
     AdapterEntry,
+    _save_adapter_locked,
+    acquire_store_lock,
     compute_sha256,
     get_adapter,
     load_adapters,
+    release_store_lock,
     save_adapter,
 )
 
@@ -559,59 +562,67 @@ def register_custom_adapter(
     # Step 6: Conformance probe (spawns subprocess — no durable residue on failure)
     run_conformance_probe(str(executable_path), adapter_id)
 
-    # Step 7: Build and persist
+    # Step 7: Build and persist atomically with competing writes.
+    # Acquire the store lock so that no concurrent approval or
+    # registration can interleave between the existing-entry check
+    # and the durable write.
     now = datetime.now(timezone.utc).isoformat()
 
-    # Check for existing entry to enforce re-registration semantics
-    existing = get_adapter(adapter_id)
+    acquire_store_lock()
+    try:
+        # Reload existing entry from disk AT the commit boundary
+        existing = get_adapter(adapter_id)
 
-    entry = AdapterEntry(
-        id=adapter_id,
-        name=adapter_name,
-        executable=str(executable_path),
-        executable_hash=file_hash,
-        version=version,
-        capabilities=capabilities,
-        contract_version=1,
-        workspace_adapter=workspace_adapter,
-        status="pending",  # ALWAYS pending in D3
-        registered_at=now,
-        registered_by=registered_by,
-        approved_at=None,
-        approved_by=None,
-    )
+        entry = AdapterEntry(
+            id=adapter_id,
+            name=adapter_name,
+            executable=str(executable_path),
+            executable_hash=file_hash,
+            version=version,
+            capabilities=capabilities,
+            contract_version=1,
+            workspace_adapter=workspace_adapter,
+            status="pending",  # ALWAYS pending
+            registered_at=now,
+            registered_by=registered_by,
+            approved_at=None,
+            approved_by=None,
+        )
 
-    # Re-registration guard: if existing entry differs, status MUST be pending.
-    # If identical (same executable, hash, caps), keep original status
-    # (forward-compat for D4 approval — but D3 always has pending anyway).
-    if existing is not None:
-        if (existing.executable == str(executable_path) and
-                existing.executable_hash == file_hash and
-                existing.version == version and
-                existing.capabilities == capabilities and
-                existing.workspace_adapter == workspace_adapter):
-            # Identical — preserve original registration metadata
-            entry = AdapterEntry(
-                id=entry.id,
-                name=entry.name,
-                executable=entry.executable,
-                executable_hash=entry.executable_hash,
-                version=entry.version,
-                capabilities=entry.capabilities,
-                contract_version=entry.contract_version,
-                workspace_adapter=entry.workspace_adapter,
-                status="pending",  # D3: always pending
-                registered_at=existing.registered_at,
-                registered_by=existing.registered_by,
-                approved_at=None,  # D3: never approved
-                approved_by=None,
-            )
-        else:
-            # Changed — new registration, pending
-            pass  # entry already has status="pending"
+        # Re-registration guard: if existing entry differs, status MUST be
+        # pending.  If identical (same executable, hash, caps), keep original
+        # status (forward-compat for D4 approval).
+        if existing is not None:
+            if (existing.executable == str(executable_path) and
+                    existing.executable_hash == file_hash and
+                    existing.version == version and
+                    existing.capabilities == capabilities and
+                    existing.workspace_adapter == workspace_adapter):
+                # Identical — preserve original registration metadata
+                entry = AdapterEntry(
+                    id=entry.id,
+                    name=entry.name,
+                    executable=entry.executable,
+                    executable_hash=entry.executable_hash,
+                    version=entry.version,
+                    capabilities=entry.capabilities,
+                    contract_version=entry.contract_version,
+                    workspace_adapter=entry.workspace_adapter,
+                    status="pending",
+                    registered_at=existing.registered_at,
+                    registered_by=existing.registered_by,
+                    approved_at=None,
+                    approved_by=None,
+                )
+            else:
+                # Changed — new registration, pending
+                pass  # entry already has status="pending"
 
-    # Persist atomically
-    save_adapter(entry)
+        # Persist atomically (save_adapter reloads + replaces under the
+        # same lock, which serializes against competing writers).
+        _save_adapter_locked(entry)
+    finally:
+        release_store_lock()
 
     return entry
 
@@ -646,6 +657,15 @@ def approve_adapter(
     snapshot the founder inspected — every material identity fact is compared
     against the durable store entry.
 
+    **Atomicity (D4 REVISE)**: the durable comparison of all six approval
+    facts and the PENDING→APPROVED transition is serialized with competing
+    registration writes via a store-level lock.  After acquiring the lock
+    the function reloads the entry from disk and re-validates every fact
+    at the commit boundary.  A changed re-registration that won the lock
+    first causes the stale approval to reject with no durable overwrite.
+    If approval wins first, a subsequent re-registration durably replaces
+    the entry with a new PENDING snapshot and cleared provenance.
+
     Exact-idempotence: if the adapter is already APPROVED with identical
     stored immutable facts, the existing entry is returned unchanged (no
     duplicate writes, no provenance overwrite).
@@ -657,6 +677,8 @@ def approve_adapter(
       - Any snapshot fact mismatches the store: executable, hash, version,
         capabilities, contract_version, or workspace_adapter
       - Any malformed/empty values are provided
+      - A competing re-registration changed the entry between the caller's
+        inspection and the commit boundary (stale approval)
 
     This is NOT authorization for D5/D7/D12 changes — only the approval
     transition within D4 scope.
@@ -677,101 +699,108 @@ def approve_adapter(
     if not workspace_adapter or not isinstance(workspace_adapter, str):
         raise ValueError("workspace_adapter must be a non-empty string")
 
-    # Look up the adapter in the durable store
-    entry = get_adapter(adapter_id)
-    if entry is None:
-        raise ValueError(
-            f"Unknown adapter {adapter_id!r}. Register the adapter first; "
-            f"it must be in PENDING state before approval."
-        )
-
-    # Exact-idempotence: if already APPROVED with identical facts, return as-is
-    if entry.status == "approved":
-        if (entry.executable == executable and
-                entry.executable_hash == executable_hash and
-                entry.version == version and
-                entry.capabilities == capabilities and
-                entry.contract_version == contract_version and
-                entry.workspace_adapter == workspace_adapter):
-            logger.info(
-                "approve_adapter: adapter %r already approved with identical "
-                "facts — idempotent no-op", adapter_id
+    # Serialize the entire load-validate-save critical section so that
+    # competing registration writes cannot overwrite a stale approval.
+    acquire_store_lock()
+    try:
+        # Reload from disk AT the commit boundary — this is the durable
+        # re-read that detects a re-registration that won the lock first.
+        entry = get_adapter(adapter_id)
+        if entry is None:
+            raise ValueError(
+                f"Unknown adapter {adapter_id!r}. Register the adapter first; "
+                f"it must be in PENDING state before approval."
             )
-            return entry
-        # Already approved but facts differ → reject
-        raise ValueError(
-            f"Adapter {adapter_id!r} is already APPROVED with different "
-            f"immutable facts. Re-register (which resets to PENDING), then "
-            f"re-approve with the new snapshot. Current stored hash: "
-            f"{entry.executable_hash[:12]}..., current version: {entry.version}."
-        )
 
-    # Must be PENDING — reject any other state
-    if entry.status != "pending":
-        raise ValueError(
-            f"Adapter {adapter_id!r} is status={entry.status!r}, not PENDING. "
-            f"Only PENDING adapters may be approved."
-        )
+        # Exact-idempotence: if already APPROVED with identical facts, return as-is
+        if entry.status == "approved":
+            if (entry.executable == executable and
+                    entry.executable_hash == executable_hash and
+                    entry.version == version and
+                    entry.capabilities == capabilities and
+                    entry.contract_version == contract_version and
+                    entry.workspace_adapter == workspace_adapter):
+                logger.info(
+                    "approve_adapter: adapter %r already approved with identical "
+                    "facts — idempotent no-op", adapter_id
+                )
+                return entry
+            # Already approved but facts differ → reject
+            raise ValueError(
+                f"Adapter {adapter_id!r} is already APPROVED with different "
+                f"immutable facts. Re-register (which resets to PENDING), then "
+                f"re-approve with the new snapshot. Current stored hash: "
+                f"{entry.executable_hash[:12]}..., current version: {entry.version}."
+            )
 
-    # Verify EVERY material identity fact matches the durable store
-    if entry.executable != executable:
-        raise ValueError(
-            f"executable mismatch for {adapter_id!r}: "
-            f"store has {entry.executable!r}, approval request has {executable!r}"
-        )
-    if entry.executable_hash != executable_hash:
-        raise ValueError(
-            f"executable_hash mismatch for {adapter_id!r}: "
-            f"store has {entry.executable_hash[:12]}..., "
-            f"approval request has {executable_hash[:12]}..."
-        )
-    if entry.version != version:
-        raise ValueError(
-            f"version mismatch for {adapter_id!r}: "
-            f"store has {entry.version!r}, approval request has {version!r}"
-        )
-    if entry.capabilities != capabilities:
-        raise ValueError(
-            f"capabilities mismatch for {adapter_id!r}: "
-            f"store has {entry.capabilities!r}, "
-            f"approval request has {capabilities!r}"
-        )
-    if entry.contract_version != contract_version:
-        raise ValueError(
-            f"contract_version mismatch for {adapter_id!r}: "
-            f"store has {entry.contract_version}, "
-            f"approval request has {contract_version}"
-        )
-    if entry.workspace_adapter != workspace_adapter:
-        raise ValueError(
-            f"workspace_adapter mismatch for {adapter_id!r}: "
-            f"store has {entry.workspace_adapter!r}, "
-            f"approval request has {workspace_adapter!r}"
-        )
+        # Must be PENDING — reject any other state
+        if entry.status != "pending":
+            raise ValueError(
+                f"Adapter {adapter_id!r} is status={entry.status!r}, not PENDING. "
+                f"Only PENDING adapters may be approved."
+            )
 
-    # Transition from PENDING → APPROVED
-    now = datetime.now(timezone.utc).isoformat()
-    approved_entry = AdapterEntry(
-        id=entry.id,
-        name=entry.name,
-        executable=entry.executable,
-        executable_hash=entry.executable_hash,
-        version=entry.version,
-        capabilities=entry.capabilities,
-        contract_version=entry.contract_version,
-        workspace_adapter=entry.workspace_adapter,
-        status="approved",
-        registered_at=entry.registered_at,
-        registered_by=entry.registered_by,
-        approved_at=now,
-        approved_by=approved_by,
-    )
-    save_adapter(approved_entry)
-    logger.info(
-        "approve_adapter: adapter %r approved at %s by %s",
-        adapter_id, now, approved_by,
-    )
-    return approved_entry
+        # Verify EVERY material identity fact matches the durable store
+        if entry.executable != executable:
+            raise ValueError(
+                f"executable mismatch for {adapter_id!r}: "
+                f"store has {entry.executable!r}, approval request has {executable!r}"
+            )
+        if entry.executable_hash != executable_hash:
+            raise ValueError(
+                f"executable_hash mismatch for {adapter_id!r}: "
+                f"store has {entry.executable_hash[:12]}..., "
+                f"approval request has {executable_hash[:12]}..."
+            )
+        if entry.version != version:
+            raise ValueError(
+                f"version mismatch for {adapter_id!r}: "
+                f"store has {entry.version!r}, approval request has {version!r}"
+            )
+        if entry.capabilities != capabilities:
+            raise ValueError(
+                f"capabilities mismatch for {adapter_id!r}: "
+                f"store has {entry.capabilities!r}, "
+                f"approval request has {capabilities!r}"
+            )
+        if entry.contract_version != contract_version:
+            raise ValueError(
+                f"contract_version mismatch for {adapter_id!r}: "
+                f"store has {entry.contract_version}, "
+                f"approval request has {contract_version}"
+            )
+        if entry.workspace_adapter != workspace_adapter:
+            raise ValueError(
+                f"workspace_adapter mismatch for {adapter_id!r}: "
+                f"store has {entry.workspace_adapter!r}, "
+                f"approval request has {workspace_adapter!r}"
+            )
+
+        # Transition from PENDING → APPROVED
+        now = datetime.now(timezone.utc).isoformat()
+        approved_entry = AdapterEntry(
+            id=entry.id,
+            name=entry.name,
+            executable=entry.executable,
+            executable_hash=entry.executable_hash,
+            version=entry.version,
+            capabilities=entry.capabilities,
+            contract_version=entry.contract_version,
+            workspace_adapter=entry.workspace_adapter,
+            status="approved",
+            registered_at=entry.registered_at,
+            registered_by=entry.registered_by,
+            approved_at=now,
+            approved_by=approved_by,
+        )
+        _save_adapter_locked(approved_entry)
+        logger.info(
+            "approve_adapter: adapter %r approved at %s by %s",
+            adapter_id, now, approved_by,
+        )
+        return approved_entry
+    finally:
+        release_store_lock()
 
 
 def resolve_adapter(adapter_id: str) -> AdapterEntry | None:
