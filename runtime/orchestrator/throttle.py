@@ -164,7 +164,7 @@ class ProviderThrottle:
                 # does not weaken de-bursting. Return on a non-retry-worthy
                 # result, or once the backoff schedule is exhausted — the
                 # survivor then falls through to the existing classifier /
-                # auto-revisit path.
+                # terminal failure path (TASK-3604: no auto-revisit).
                 retry_worthy = getattr(result, "rate_limited", False) and not getattr(
                     result, "success", True
                 )

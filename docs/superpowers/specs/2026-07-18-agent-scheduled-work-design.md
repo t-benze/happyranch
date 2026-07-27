@@ -46,7 +46,8 @@ agent-to-agent dispatch channel.
 ## 2. Motivation & anchor use cases
 
 Today an agent can only act when *something else* wakes it: a founder message, a
-thread turn, a working-hours cadence slot, or an auto-revisit. There is no way for
+thread turn, or a working-hours cadence slot (TASK-3604 removed the daemon
+auto-revisit mechanism; recovery is now explicit manager/founder action). There is no way for
 an agent to say "do this specific thing at this specific future time, once" — the
 closest tool, working-hours, is **cadence-driven and goal-state-blind**: it fires
 on a clock grid and re-reads a *static* routine checklist (KB

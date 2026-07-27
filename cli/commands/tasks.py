@@ -1140,7 +1140,7 @@ def register(sub) -> None:
         "--session-timeout-seconds", type=int, default=None, dest="session_timeout_seconds",
         help=(
             "Per-task subprocess timeout in seconds. Persisted on the new root and "
-            "inherited by every delegated child + auto-revisit. Omit to inherit from "
+            "inherited by every delegated child. Omit to inherit from "
             "the predecessor (which itself falls through to org/Settings)."
         ),
     )

@@ -21,7 +21,6 @@ import logging
 from typing import TYPE_CHECKING
 
 from runtime.models import BlockKind, TaskStatus
-from runtime.orchestrator.executors import is_rate_limit_signature
 from runtime.orchestrator.org_config import load_org_config
 
 if TYPE_CHECKING:
@@ -225,20 +224,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     except Exception as exc:
         note = f"agent invocation failed: {exc}"
         _fail(orch, task_id, note=note)
-        failure_kind = _classify_failure_kind(None, None, mode="exception")
-        revisit_id = _maybe_spawn_auto_revisit(
-            orch, task_id, agent,
-            failure_kind=failure_kind,
-            error_context={"mode": "exception", "detail": str(exc)},
-        )
-        spawned = revisit_id is not None
-        _enqueue_parent_if_waiting(
-            orch, task_id, root_auto_revisit_spawned=spawned,
-        )
+        _enqueue_parent_if_waiting(orch, task_id, root_auto_revisit_spawned=False)
         _maybe_post_thread_followup(
             orch, task_id,
-            status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
-            revisit_task_id=revisit_id,
+            status=TaskStatus.FAILED, auto_revisit_spawned=False,
         )
         return
 
@@ -288,22 +277,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     if not result.success or report is None:
         note = _session_failed_note(result, report)
         _fail(orch, task_id, note=note)
-        failure_kind = _classify_failure_kind(
-            result, report, mode="session_failure",
-        )
-        revisit_id = _maybe_spawn_auto_revisit(
-            orch, task_id, agent,
-            failure_kind=failure_kind,
-            error_context=_executor_failure_context(result, report),
-        )
-        spawned = revisit_id is not None
-        _enqueue_parent_if_waiting(
-            orch, task_id, root_auto_revisit_spawned=spawned,
-        )
+        _enqueue_parent_if_waiting(orch, task_id, root_auto_revisit_spawned=False)
         _maybe_post_thread_followup(
             orch, task_id,
-            status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
-            revisit_task_id=revisit_id,
+            status=TaskStatus.FAILED, auto_revisit_spawned=False,
         )
         return
 
@@ -1225,7 +1202,7 @@ def _auto_revisit_header(payload: dict) -> str:
 
     lines = [
         f"AUTO-REVISIT CONTEXT (orchestrator-triggered, kind={failure_kind}, "
-        f"attempt {attempt} of {_AUTO_REVISIT_CAP_PER_KIND} for this kind): "
+        f"attempt {attempt}): "
         f"this root is a revisit of {predecessor}, "
         "spawned because an agent in the predecessor lineage hit an opaque "
         "failure.",
@@ -1826,30 +1803,39 @@ def _enqueue_parent_if_waiting(
     """Idempotent: advance the parent only if it's actually waiting on THIS
     lineage (in_progress+delegated) AND all its children are now terminal.
 
-    Three outcomes (TASK-573 bounded failure-recovery):
+    Per-slice revisit-lineage rule (THR-078, TASK-573 bounded failure-recovery):
       - every subtask COMPLETED → enqueue parent for its next manager
         decision step (unchanged happy path).
-      - a subtask FAILED, but fewer than 2 prior failed subtasks exist in
-        this delegation slot → clear any active chain, enqueue the parent
-        for a bounded manager-wake decision step. The parent receives the
-        failed subtask's reason so it can author an updated brief.
-      - a subtask FAILED and 2+ prior failed subtasks already exist (bound
-        exhausted) → escalate the parent to escalated via
-        try_escalate, carrying the last failure reason. The parent does NOT
-        cascade-fail — the founder can resolve the escalation per existing
-        routes. The round count is derived from the count of FAILED subtask
-        siblings in the DB (no schema migration).
+      - a subtask FAILED, and no other failed child in this delegation
+        slot has exhausted its retry ceiling → clear any active chain,
+        enqueue the parent for a bounded manager-wake decision step. The
+        parent receives the failed subtask's reason so it can author an
+        updated brief.
+      - a subtask FAILED and its per-slice retry ceiling is exhausted
+        (this slice was already retried once — its ``revisit_of_task_id``
+        ancestor is a FAILED child of this same parent) → escalate a root
+        parent to ``escalated`` via ``try_escalate``, carrying the last
+        failure reason; or, for a non-root parent, fail it and recurse
+        upward (THR-033 root-only escalation). The parent does NOT
+        cascade-fail — the founder or upstream manager resolves the
+        termination per existing routes. The ceiling is
+        ``_SLICE_RETRY_CEILING = 1`` (exactly one retry after a slice's
+        first failure), evaluated per-slice via ``_is_slice_retry_exhausted``
+        from the failing child's ``revisit_of_task_id`` lineage (no schema
+        migration).
 
-    ``root_auto_revisit_spawned`` is threaded through the cascade so every
-    ancestor knows the founder-dispatched root has already been auto-revisited —
-    the work IS being retried. Callers that did not spawn an auto-revisit pass
-    the default ``False``. See spec
-    2026-05-25-session-timeout-auto-route-design.md §6.
+    ``root_auto_revisit_spawned`` is a retained compatibility/bookkeeping
+    input. All current production callers (opaque-failure branches and
+    startup sweep) pass ``False`` — no daemon auto-successor exists
+    (TASK-3604). The boolean preserves call-site symmetry for the bounded
+    parent wake / per-slice escalation contract; it does not signal that a
+    root has been auto-revisited. See the retired spec
+    2026-05-25-session-timeout-auto-route-design.md §6 for historical context.
 
     Chain handling: a FAILED chain leg clears the active chain and falls
-    through to the bounded-wake logic (same round bound + escalation). A
-    COMPLETED chain leg tries to auto-advance as before; on mismatch it
-    clears the chain and wakes the parent.
+    through to the bounded-wake logic below. A COMPLETED chain leg tries
+    to auto-advance as before; on mismatch it clears the chain and wakes
+    the parent.
     """
     task = orch._db.get_task(task_id)
     if task is None or task.parent_task_id is None:
@@ -1956,249 +1942,11 @@ def _enqueue_parent_if_waiting(
         queue.put_nowait(orch._slug, parent.id)
 
 
-_AUTO_REVISIT_CAP_PER_KIND = 1
-
-# Triad of "agent died mid-flight, retry as-is" kinds. Routed identically by
-# the auto-revisit machinery in v1; constant exists so future per-class policy
-# (e.g., "fail-fast on rate_limit class for batch jobs") doesn't have to
-# re-derive the set. See spec 2026-05-25-session-timeout-auto-route-design.md §4.1.
-_SESSION_TIMEOUT_CLASS = frozenset({"session_timeout", "no_callback", "rate_limit"})
-
-
-def _classify_failure_kind(result, report, *, mode: str) -> str:
-    """Classify a failure into a granular kind for per-kind dedup + routing.
-
-    ``mode`` ∈ {"exception", "session_failure"} — distinguishes the two
-    opaque-failure entry points in ``run_step_impl``.
-
-    Five canonical kinds plus a defensive ``session_failed`` fallback:
-      - ``session_timeout`` — subprocess walltime exceeded
-        ``session_timeout_seconds`` (executors.py:197 writes
-        ``"Session timed out after {N} seconds"`` into ``result.error``).
-      - ``no_callback`` — rc=0 but no completion callback (TASK-045 class:
-        agent exited clean without invoking ``happyranch report-completion``).
-      - ``rate_limit`` — executor reported a provider rate limit on stdout/
-        stderr/error (e.g., Claude's "hit your limit · resets at HH:MM").
-      - ``executor_error`` — subprocess exited with non-zero ``returncode``;
-        stderr tail is usually diagnostic.
-      - ``agent_exception`` — Python exception escaped
-        ``Orchestrator._run_agent`` before the subprocess boundary.
-
-    Fallback ``session_failed`` preserves graceful degradation if a new
-    executor surface introduces a failure shape we haven't classified yet.
-    """
-    if mode == "exception":
-        return "agent_exception"
-    if result is None:
-        return "session_failed"
-
-    err = getattr(result, "error", None) or ""
-    success = getattr(result, "success", False)
-    rc = getattr(result, "returncode", None)
-
-    if err.startswith("Session timed out after"):
-        return "session_timeout"
-
-    # Prefer the normalized ``rate_limited`` field set centrally in
-    # ``executors._run_command`` (issue #85); fall back to the legacy stdout/
-    # stderr string heuristic for results that predate the field. Both layers
-    # use the same ``is_rate_limit_signature`` patterns, so they never disagree.
-    if getattr(result, "rate_limited", False):
-        return "rate_limit"
-
-    haystack = (
-        err.lower()
-        + " "
-        + (getattr(result, "stdout_tail", "") or "").lower()
-        + " "
-        + (getattr(result, "stderr_tail", "") or "").lower()
-    )
-    if is_rate_limit_signature(haystack):
-        return "rate_limit"
-
-    if success and report is None:
-        return "no_callback"
-
-    if rc is not None and rc != 0:
-        return "executor_error"
-
-    return "session_failed"
-
-
-_CHAIN_HOP_LIMIT_FOR_COUNTING = 200
-
-
-def _count_prior_auto_revisits_by_kind(
-    orch: "Orchestrator", root_id: str, kind: str,
-) -> int:
-    """Walk the revisit chain ending at ``root_id``; count ``auto_revisit_of``
-    audit entries whose ``payload.failure_kind`` matches ``kind``.
-
-    Founder revisits (``action="revisit_of"``) are excluded — they're
-    intentional human retries, not part of the auto-retry budget. Auto-revisit
-    rows written before this spec shipped (no ``failure_kind`` in payload)
-    are also excluded; that's mildly lenient by design — see spec §10.
-
-    Chain-walk safety: ``walk_revisit_chain`` has a defensive max-hop bound to
-    prevent runaway lineage walks. Read-path callers pass ``truncate=True``
-    to gracefully ignore the overflow, but here that would silently
-    undercount older auto-revisits past the window and let the per-kind cap
-    be exceeded on long-lived tasks (founder revisits also consume hops). We
-    walk with a larger bound and ``truncate=False``; if the chain still
-    overflows, we treat that as "cap definitively hit" — refusing to spawn
-    is the conservative answer when we cannot verify the count, and it also
-    acts as a circuit breaker against pathological revisit loops.
-    """
-    db = orch._db
-    from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle
-    try:
-        chain = db.walk_revisit_chain(
-            root_id,
-            max_hops=_CHAIN_HOP_LIMIT_FOR_COUNTING,
-            truncate=False,
-        )
-    except LineageTooDeep:
-        return _AUTO_REVISIT_CAP_PER_KIND
-    count = 0
-    for r in chain:
-        for entry in db.get_audit_logs(r.id):
-            if entry["action"] != "auto_revisit_of":
-                continue
-            payload = entry.get("payload") or {}
-            if payload.get("failure_kind") == kind:
-                count += 1
-    return count
-
-
-def _executor_failure_context(result, report) -> dict:
-    """Build the structured error_context payload for the auto_revisit_of audit.
-
-    Captures rc, stderr/stdout tail, executor error string, and a flag for
-    the "rc=0 but no completion callback" branch. The task owner's first
-    step on the auto-revisit reads this back via the revisit header so the
-    decision is grounded in the actual failure mode, not a free-form note.
-    """
-    if result is None:
-        return {"mode": "exception"}
-    rc = getattr(result, "returncode", None)
-    err = (getattr(result, "stderr_tail", "") or "").strip()
-    out = (getattr(result, "stdout_tail", "") or "").strip()
-    return {
-        "mode": "session_failure",
-        "rc": rc,
-        "stderr_tail": err[-300:],
-        "stdout_tail": out[-300:],
-        "executor_error": getattr(result, "error", None),
-        "missing_callback": (
-            report is None and getattr(result, "success", False)
-        ),
-    }
-
-
-def _maybe_spawn_auto_revisit(
-    orch: "Orchestrator",
-    failed_task_id: str,
-    failed_agent: str,
-    *,
-    failure_kind: str,
-    error_context: dict,
-) -> str | None:
-    """Spawn an orchestrator-triggered revisit on an opaque agent failure.
-
-    Triggered ONLY by the two opaque agent-error paths in run_step (an
-    exception escaping ``_run_agent`` or a non-success ``ExecutorResult``
-    branch which subsumes both subprocess timeouts and rc=0-no-callback).
-    Self-blocked subtask agents, invalid-delegate JSON, max-step escalations, and
-    founder cancellations do NOT auto-revisit — those failures are
-    deliberate or load-bearing.
-
-    Walks parent links to find the orchestrating root task (the original task the
-    founder dispatched), then spawns a NEW root linked via
-    ``revisit_of_task_id``. The original lineage's cascade-to-parent
-    behavior is unchanged; the auto-revisit runs as an independent tree
-    so the task owner can re-decide with the structured ``error_context``
-    in hand.
-
-    Capped at ``_AUTO_REVISIT_CAP_PER_KIND`` auto-revisits **per
-    ``failure_kind`` per chain** — if two prior same-kind auto-revisits
-    already exist in the predecessor chain, give up rather than burning
-    tokens on the TASK-033..045 retry-loop pattern. A different kind in
-    the same chain has its own independent budget, so a single executor
-    crash does not exhaust the session-timeout cap. Founder revisits do
-    not count toward the cap (they're intentional human retries). See
-    spec 2026-05-25-session-timeout-auto-route-design.md §5.
-
-    Returns the newly-inserted revisit task id on success, None otherwise
-    (no chain, cap hit, or future not-eligible cases).
-    """
-    db = orch._db
-    chain = db.walk_ancestors(failed_task_id)
-    if not chain:
-        return None
-    # Founder cancellation gate: /cancel stamps cancelled_at + flips status to
-    # FAILED, then SIGTERMs the running subprocess. The dying subprocess returns
-    # rc=-15, which run_step's classifier reads as executor_error and routes
-    # here. Without this check the cancel would silently respawn a new root via
-    # revisit_of_task_id and re-enqueue it — exactly the "respawn on cancel"
-    # bug. Mirrors the docstring's explicit exclusion of founder cancellations.
-    if chain[0].cancelled_at is not None:
-        return None
-    root = chain[-1]
-
-    # Walk the revisit chain from the root to find the original
-    # thread-dispatched task, so the auto-revisit successor inherits
-    # the thread linkage. Without this, the task list treats the
-    # successor as "no thread" even though the originate thread
-    # still needs it for grouping. Uses the same pattern as
-    # _maybe_post_thread_escalation and _maybe_post_thread_followup.
-    from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle
-    try:
-        revisit_chain = db.walk_revisit_chain(root.id, max_hops=200, truncate=True)
-    except LineageTooDeep:
-        revisit_chain = []
-    original = revisit_chain[-1] if revisit_chain else root
-    thread_id = original.dispatched_from_thread_id
-
-    prior = _count_prior_auto_revisits_by_kind(orch, root.id, failure_kind)
-    if prior >= _AUTO_REVISIT_CAP_PER_KIND:
-        return None
-
-    from runtime.models import TaskRecord
-
-    new_id = db.next_task_id()
-    db.insert_task(TaskRecord(
-        id=new_id,
-        brief=root.brief,
-        team=root.team,
-        assigned_agent=root.assigned_agent,
-        status=TaskStatus.PENDING,
-        parent_task_id=None,
-        revisit_of_task_id=root.id,
-        dispatched_from_thread_id=thread_id,
-        session_timeout_seconds=root.session_timeout_seconds,
-    ))
-
-    cascade = [t.id for t in reversed(chain)]
-    orch._audit.log_auto_revisit_of(
-        task_id=new_id,
-        predecessor_root=root.id,
-        failed_task=failed_task_id,
-        failed_agent=failed_agent,
-        cascade=cascade,
-        failure_kind=failure_kind,
-        error_context=error_context,
-        attempt=prior + 1,
-    )
-    orch._audit.log_revisit_spawned(
-        predecessor_task_id=root.id, new_root=new_id,
-    )
-
-    queue = getattr(orch, "_queue", None)
-    if queue is not None:
-        queue.put_nowait(orch._slug, new_id)
-    return new_id
-
-
+# ---------------------------------------------------------------------------
+# Legacy auto-revisit audit readers (TASK-3604: auto-revisit creation removed;
+# these readers are preserved for historical compatibility — existing
+# auto_revisit_of audit rows must remain readable).
+# ---------------------------------------------------------------------------
 def _maybe_resume_blocked_task(
     orch: "Orchestrator",
     task_id: str,
@@ -2278,10 +2026,14 @@ def _append_followup_system_and_reinvoke(
 
     When `reinvoke=False`, only the SYSTEM message is appended; the
     dispatcher re-invocation (cap-extend + mint + enqueue) is suppressed.
-    This is used for intermediate auto-revisit failures (THR-046 msg99):
-    the thread surface needs the 'revisiting as <SUCCESSOR>' system message,
-    but the successor fires its own followup at its terminal, so
-    double-invocation is avoided here.
+    Historically this was used for intermediate auto-revisit failures
+    (THR-046 msg99, retired TASK-3604): the thread surface needed the
+    'revisiting as <SUCCESSOR>' system message while the successor fired its
+    own followup at its terminal. The parameter remains as a retained
+    bookkeeping seam — all production callers now pass `auto_revisit_spawned=False`
+    (and thus `reinvoke=True`), but the suppressed path is preserved for
+    compatibility with the `auto_revisit_spawned` contract in
+    `_maybe_post_thread_followup`.
     """
     db = orch._db
     audit = orch._audit
@@ -2297,11 +2049,16 @@ def _append_followup_system_and_reinvoke(
     )
 
     if not reinvoke:
-        # System-message-only path: the thread surface receives the
-        # task_failed notification (with revisit_task_id for 'revisiting as
-        # <SUCCESSOR>' rendering), but the dispatcher is NOT re-invoked.
-        # The revisit successor will fire its own followup (with
-        # re-invocation) at its terminal.
+        # Historical legacy stored-payload compatibility path.
+        # TASK-3604 removed daemon auto-revisit creation; all current
+        # production callers pass ``auto_revisit_spawned=False`` (and thus
+        # ``reinvoke=True``). No current code path populates
+        # ``revisit_task_id`` or enters this branch.  The branch, audit
+        # log, and conditional are retained for compatibility with
+        # ``_maybe_post_thread_followup``'s ``auto_revisit_spawned``
+        # contract so that any pre-TASK-3604 stored system payload whose
+        # stored ``reinvoke`` field resolved to ``False`` is still handled
+        # correctly.
         audit.log_thread_followup_skipped(
             thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
             reason="auto_revisit_spawned",
@@ -2470,38 +2227,44 @@ def _maybe_post_thread_followup(
 ) -> None:
     """Post a task-followup system message + mint a re-invocation for the dispatcher.
 
-    Fire predicate (spec §4, §4.1 — revised THR-046 msg99):
+    Fire predicate (spec §4, §4.1):
       - status == COMPLETED                                → always fire
       - status == SUPERSEDED                      → always fire (terminal,
                                                              completion-class — a
                                                              thread-originated task
                                                              auto-resolved by a
                                                              continuation; THR-018 §3a)
-      - status == FAILED and not auto_revisit_spawned      → true terminal, fire
-      - status == FAILED and auto_revisit_spawned          → fire system-message-only
-                                                             (carries revisit_task_id
-                                                             so the thread surface can
-                                                             render 'revisiting as
-                                                             <SUCCESSOR>'; dispatcher
-                                                             re-invocation is suppressed
-                                                             — the revisit successor
-                                                             will fire its own followup
-                                                             at its terminal)
+      - status == FAILED                                   → true terminal, fire
+                                                             (TASK-3604: daemon
+                                                             auto-revisit removed;
+                                                             all current production
+                                                             callers pass
+                                                             ``auto_revisit_spawned=False``)
 
-    Only root tasks fire. Child terminals cascade-fail through the parent,
-    which re-enters this helper there. The originating thread is found by
-    walking ``walk_revisit_chain`` backward to the earliest predecessor and
-    reading ``dispatched_from_thread_id`` off that row.
+    Only root tasks fire. Non-root child terminals wake the parent via
+    bounded recovery (``_enqueue_parent_if_waiting``) — the parent may
+    produce a followup at its own terminal, not via cascade. The originating
+    thread is found by walking ``walk_revisit_chain`` backward to the
+    earliest predecessor and reading ``dispatched_from_thread_id`` off that
+    row.
+
+    ``auto_revisit_spawned`` is a retained compatibility parameter.
+    Since TASK-3604 removed daemon auto-revisit creation, all current
+    production callers pass ``False``. The parameter and its conditional
+    ``reinvoke`` logic are preserved for compatibility with the
+    ``_append_followup_system_and_reinvoke`` contract; the
+    ``revisit_task_id`` path is historical and never populated by current
+    code paths.
 
     Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
     # Predicate gate — first pass using caller's claim (cheap early-out).
     # CANCELLED is a terminal followup status (Path B, THR-037): a founder cancel
     # writes the stored terminal CANCELLED and replays in the task_failed class.
-    # THR-046 msg99: FAILED+auto_revisit_spawned is no longer a no-op — the
-    # system message (with revisit_task_id) fires so the thread surface can
-    # render 'revisiting as <SUCCESSOR>', but the dispatcher re-invocation is
-    # suppressed (performed conditionally at the end).
+    # TASK-3604: daemon auto-revisit removed — all current production
+    # callers pass auto_revisit_spawned=False, so the system-message-only
+    # path with revisit_task_id is historical. The parameter and conditional
+    # are retained for compatibility with _append_followup_system_and_reinvoke.
     if status not in (
         TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SUPERSEDED,
         TaskStatus.CANCELLED,
@@ -2537,8 +2300,9 @@ def _maybe_post_thread_followup(
 
     # Find the original dispatched root via the revisit chain.
     # walk_revisit_chain returns [task, predecessor, ..., original].
-    # Use a larger hop bound (200) consistent with _count_prior_auto_revisits_by_kind,
-    # and handle LineageTooDeep defensively rather than crashing and silently
+    # Use a hop bound large enough to cover any realistic revisit chain
+    # (200 hops, matching the bound in _is_slice_retry_exhausted), and
+    # handle LineageTooDeep defensively rather than crashing and silently
     # discarding the followup without any audit trail.
     from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle
     try:

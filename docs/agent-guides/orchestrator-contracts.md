@@ -96,23 +96,27 @@ decision step — NOT cascade-failed. This replaces the pre-TASK-573 behavior wh
 any subtask FAILED unconditionally cascade-failed the parent without giving the
 task owner a chance to re-ground.
 
-Contract (founder-approved in THR-028):
+Contract (founder-approved in THR-028, refined in THR-078):
 
-1. **Bounded wake.** On subtask failure, re-enqueue the parent for a fresh
+1. **Bounded wake.** On child failure, re-enqueue the parent for a fresh
    decision step. The failed subtask's reason is available so the task owner can
    author an updated brief.
 
-2. **Round bound.** At most 2 re-spawn rounds per delegation slot. The round
-   count is derived from EXISTING database state (count of FAILED subtask
-   siblings) — no schema migration.
+2. **Per-slice retry ceiling (THR-078).** A delegated slot gets exactly one
+   retry: the Ceiling is `_SLICE_RETRY_CEILING = 1` — a slice that already had a
+   FAILED predecessor under the same parent (tracked via `revisit_of_task_id`
+   lineage, evaluated by `_is_slice_retry_exhausted`) and fails again exhausts
+   the ceiling. Retry of a COMPLETED predecessor does not count toward the
+   ceiling.
 
-3. **Escalation on exhaustion.** When the bound is exhausted (> 2 FAILED
-   subtasks in this delegation slot), the parent transitions to
-   `escalated` via `try_escalate()`. The parent does NOT cascade-fail.
+3. **Escalation on exhaustion.** When a slice's retry ceiling is exhausted
+   (its 2nd failure), a root parent transitions to `escalated` via
+   `try_escalate()`; a non-root parent fails and recurses upward (THR-033
+   root-only escalation). The parent does NOT cascade-fail.
 
 4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
    COMPLETED) clears the active chain and hands the parent back to its
-   bounded-wake path (same 2-round bound + escalation).
+   bounded-wake path (same per-slice ceiling + escalation).
 
 5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
@@ -124,9 +128,13 @@ Contract (founder-approved in THR-028):
 
 Traps:
 
-- Round count = `len([s for s in siblings if s.status == FAILED])`;
-  threshold `_FAILURE_ROUND_BOUND = 2` (`>= 2` → escalate).
-- The bound escalation uses `try_escalate` (atomic CAS under Database RLock).
+- Retry ceiling is per-slice: `_is_slice_retry_exhausted` walks the failing
+  child's `revisit_of_task_id` chain; only a FAILED predecessor under the
+  same parent triggers escalation. COMPLETED predecessors do not count.
+- Ceiling constant: `_SLICE_RETRY_CEILING = 1` (one retry after a slice's
+  first failure).
+- The exhaustion escalation uses `try_escalate` (atomic CAS under Database
+  RLock) for roots; non-root parents fail and hand upward.
 - Chain-advance in `_enqueue_parent_if_waiting` handles FAILED subtasks:
   failed chain legs clear the chain and fall through to bounded-wake.
 - Self-block (`status=blocked` + empty `waiting_on_job_ids`) is a malformed
@@ -151,20 +159,18 @@ Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the r
    (as `result_summary`), so the manager can ground its next decision on the
    failure cause rather than treating it as a code bug.
 
-2. **Parked-ancestor discriminant (THR-064).** Before auto-revisiting, the sweep
-   walks the killed child's ancestors. If any STRICT ancestor (exclude the
-   failed task itself) is a parked, non-terminal, recoverable manager
-   (`in_progress` + `block_kind` in `{DELEGATED, BLOCKED_ON_JOB}`), auto-revisit
-   is **skipped** — the parked ancestor's bounded-wake (Branch 2/3) recovers
-   the child directly. This eliminates the duplicate-twin-root bug where both
-   the sweep's auto-revisit AND the parent's bounded-wake re-dispatched the
-   same work.
+2. **Parked-ancestor recovery.** The sweep marks killed children FAILED. If a
+   killed child has a parked non-terminal ancestor
+   (`in_progress` + `block_kind` in `{DELEGATED, BLOCKED_ON_JOB}`),
+   bounded-parent recovery wakes the ancestor directly — no duplicate root
+   is created. This is the same bounded-wake path used for any child failure.
 
-3. **Genuine root-level death still auto-revisits.** A task with no parked
-   non-terminal ancestor (a worker/leaf root, or an EM root mid-decision with
-   no delegated children yet) still spawns an auto-revisit via
-   `_maybe_spawn_auto_revisit` exactly as before. The discriminant only
-   suppresses the visit when a recoverable parent already exists.
+3. **No auto-revisit (THR-079 + TASK-3604).** Startup recovery does NOT spawn
+   an auto-revisit successor — the THR-079 ruling superseded the earlier
+   heartbeat/revisit approach, and TASK-3604 removed automatic successor
+   creation entirely from the run_step path. Dead in_progress tasks are
+   fail-closed; the founder receives a `daemon_restart_failure` audit row
+   and decides whether to re-dispatch.
 
 4. **Fan-out barrier preserved.** A restart-killed child among still-live
    siblings does NOT wake the parked root early — only marking the killed

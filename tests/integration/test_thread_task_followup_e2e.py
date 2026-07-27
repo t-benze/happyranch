@@ -240,15 +240,18 @@ def test_followup_fires_on_completed_thread_dispatched_task(
 # ---------------------------------------------------------------------------
 
 
-def test_followup_fires_once_after_revisit(
+def test_followup_fires_once_after_opaque_failure(
     live_daemon,
     runtime,
     fake_claude_plan_env,
     fake_claude_thread_plan_env,
 ):
-    """First task attempt fails (executor_error) → auto-revisit → revisit
-    completes → exactly ONE followup fires at the revisit's terminal, not
-    at the original failure.
+    """Opaque executor failure → terminal FAILED with task_failed follow-up.
+
+    The task fails with a non-zero exit (no callback). The daemon does NOT
+    spawn an auto-revisit successor. The thread receives a task_failed system
+    message and a followup agent reply acknowledging the failure. No successor
+    root, queue record, or revisit_task_id is created.
     """
     port = live_daemon
     base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
@@ -256,25 +259,12 @@ def test_followup_fires_once_after_revisit(
 
     _write_thread_plan(fake_claude_thread_plan_env)
 
-    # Task plan: first invocation exits 1 (no callback → executor_error),
-    # triggering an auto-revisit. Subsequent invocations complete cleanly.
-    # A counter file in the runtime dir tracks which attempt this is.
-    counter = runtime / "task_attempt_counter"
+    # Task plan: executor exits 1 (no callback → executor_error).
+    # With auto-revisit removed (TASK-3604), the task is terminal FAILED.
     fake_claude_plan_env.write_text(
         "#!/usr/bin/env bash\n"
-        "task_id=$1; session_id=$2; agent=$3; org_slug=$4\n"
-        f'counter="{counter}"\n'
-        "n=$(cat \"$counter\" 2>/dev/null || echo 0)\n"
-        "n=$((n + 1))\n"
-        'echo "$n" > "$counter"\n'
-        'if [ "$n" = "1" ]; then\n'
-        "  # First attempt: fail with a non-zero exit so auto-revisit fires.\n"
-        "  exit 1\n"
-        "fi\n"
-        'happyranch report-completion --org "$org_slug" \\\n'
-        '  --task-id "$task_id" --session-id "$session_id" \\\n'
-        '  --agent "$agent" --status completed --confidence 90 \\\n'
-        "  --summary '{\"action\":\"done\",\"summary\":\"after revisit\"}'\n"
+        "# Fail with non-zero exit — daemon marks FAILED, no successor.\n"
+        "exit 1\n"
     )
     fake_claude_plan_env.chmod(0o755)
 
@@ -282,7 +272,7 @@ def test_followup_fires_once_after_revisit(
     r = httpx.post(
         f"{base}/threads",
         json={
-            "subject": "revisit followup test",
+            "subject": "opaque failure followup test",
             "recipients": ["dev_agent"],
             "body_markdown": "please do Y",
         },
@@ -292,38 +282,24 @@ def test_followup_fires_once_after_revisit(
     assert r.status_code == 200, r.text
     thread_id = r.json()["thread_id"]
 
-    # 2. Wait for timeline: task_dispatched + task_completed + 2+ agent replies.
-    # Give extra time because two task invocations are needed (fail + revisit).
+    # 2. Wait for timeline: task_dispatched + task_failed + agent replies.
     def _timeline_complete(msgs: list[dict]) -> bool:
         tags = _sys_tags(msgs)
         replies = _agent_replies(msgs, "dev_agent")
-        return "task_dispatched" in tags and "task_completed" in tags and len(replies) >= 2
+        return "task_dispatched" in tags and "task_failed" in tags and len(replies) >= 2
 
     msgs = _wait_for_condition(base, thread_id, predicate=_timeline_complete, timeout=120.0)
 
     tags = _sys_tags(msgs)
     assert "task_dispatched" in tags, f"missing task_dispatched; tags: {tags}"
-    assert "task_completed" in tags, f"missing task_completed; tags: {tags}"
+    assert "task_failed" in tags, f"missing task_failed; tags: {tags}"
 
-    # Exactly ONE task_completed system message (the revisit's terminal, not the
-    # original failure — which never fires a followup because auto_revisit_spawned=True).
-    completed_msgs = [
-        m for m in msgs
-        if m.get("kind") == "system"
-        and (m.get("system_payload") or {}).get("kind_tag") == "task_completed"
-    ]
-    assert len(completed_msgs) == 1, (
-        f"expected exactly 1 task_completed, got {len(completed_msgs)}: {completed_msgs}"
+    # No task_completed — the task FAILED with no auto-revisit successor.
+    assert "task_completed" not in tags, (
+        f"unexpected task_completed (auto-revisit successor should not exist); tags: {tags}"
     )
 
-    # The original failure now fires a task_failed system message (THR-046 msg99)
-    # carrying revisit_task_id so the thread surface can render 'revisiting as
-    # <SUCCESSOR>'. The revisit successor terminal also fires its own followup
-    # (task_completed), so we should see BOTH system messages.
-    assert "task_failed" in tags, (
-        f"missing task_failed system message; tags: {tags}"
-    )
-    # Verify the task_failed payload carries the successor task id.
+    # Exactly ONE task_failed system message, with NO revisit_task_id.
     failed_msgs = [
         m for m in msgs
         if m.get("kind") == "system"
@@ -332,20 +308,20 @@ def test_followup_fires_once_after_revisit(
     assert len(failed_msgs) == 1, (
         f"expected exactly 1 task_failed, got {len(failed_msgs)}: {failed_msgs}"
     )
-    assert failed_msgs[0]["system_payload"].get("revisit_task_id"), (
-        "task_failed payload must carry revisit_task_id"
+    # No daemon successor → revisit_task_id must be absent.
+    assert not failed_msgs[0]["system_payload"].get("revisit_task_id"), (
+        "task_failed payload must NOT carry revisit_task_id (no auto-revisit successor)"
     )
 
     replies = _agent_replies(msgs, "dev_agent")
     assert len(replies) >= 2, f"expected 2+ agent replies, got {len(replies)}"
 
-    # The followup reply must still appear after the task_completed system
-    # message (the revisit successor's terminal, which carries the re-invocation).
-    tc_seq = completed_msgs[0]["seq"]
+    # The followup reply must appear after the task_failed system message.
+    tf_seq = failed_msgs[0]["seq"]
     followup_reply = replies[-1]
-    assert followup_reply["seq"] > tc_seq, (
+    assert followup_reply["seq"] > tf_seq, (
         f"followup reply (seq={followup_reply['seq']}) must come after "
-        f"task_completed (seq={tc_seq})"
+        f"task_failed (seq={tf_seq})"
     )
 
 

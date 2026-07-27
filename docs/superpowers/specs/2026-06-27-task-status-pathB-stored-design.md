@@ -62,7 +62,7 @@ did `if status == IN_PROGRESS: → FAILED`. Left unchanged, that force-fails eve
 parent and every blocked-on-job task on **every restart** (silent cascade corruption). The
 `block_kind` discriminant saves it. Branches:
 
-1. `in_progress + block_kind IS NULL` → FAILED + auto-revisit (genuinely running, killed).
+1. `in_progress + block_kind IS NULL` → FAILED (genuinely running, killed). No automatic successor is spawned; recovery is explicit manager/founder action (TASK-3604).
 2. `in_progress + block_kind=DELEGATED` → re-enqueue when all children terminal, else leave.
 3. `in_progress + block_kind=BLOCKED_ON_JOB` → re-enqueue when all jobs terminal, else leave.
    **MUST exist** — without it these fall into Branch 1 and are wrongly failed.

@@ -253,11 +253,11 @@ The Python-level `if _is_already_terminal(orch, task_id): return` is **removed**
 
 **What about `_complete` and `_fail`?** Lower-priority by impact: neither spawns new work. The original Python-level idempotence guards (via `_is_already_terminal`) survive on these. The residual race is "founder's note `cancelled by founder: stop` may be observable for one window before `_fail` runs and the idempotence guard catches it" — but the *intent* of the founder's cancel is preserved (status stays FAILED, cancelled_at stays set). Promoting these to CAS too would be straight-line cleanup; deferred as cost-benefit isn't load-bearing.
 
-## 6. Interaction with auto-revisit
+## 6. Interaction with daemon successors
 
-`_maybe_spawn_auto_revisit` already gates on `chain[0].cancelled_at` (`run_step.py:965`), so auto-revisit correctly suppresses for cancelled chains. **No changes needed there.**
+Since TASK-3604 removed daemon auto-revisit, **cancellation does not cause a daemon successor** — there is no `_maybe_spawn_auto_revisit` in the codebase. Cancelled chains remain terminal FAILED with no automatic revisit. Surviving opaque execution failures that are not cancelled are also terminal FAILED with no daemon successor; recovery is explicit manager/founder action.
 
-The drop-on-cancel path in Guard B does *not* call `_maybe_spawn_auto_revisit` — the session ran successfully (or failed for reasons we're now ignoring); either way, the founder's cancel intent rules. Skipping auto-revisit on a cancellation drop is the correct behavior; it's also what would happen today because `_maybe_spawn_auto_revisit` is only called from the `except Exception` branch and the `not result.success or report is None` branch, neither of which the Guard B drop traverses.
+The drop-on-cancel path in Guard B does not spawn any successor — the session ran successfully (or failed for reasons we're now ignoring); either way, the founder's cancel intent rules. The cancelled chain ends at FAILED, consistent with the terminal-failure contract.
 
 ## 7. Interaction with `_enqueue_parent_if_waiting`
 

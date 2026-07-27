@@ -1,6 +1,6 @@
 # Task ↔ Thread Lifecycle & Interaction Surfaces — Design Spec
 
-**Date:** 2026-06-16
+**Date:** 2026-06-16 (revised 2026-07-28 per TASK-3604 auto-revisit removal)
 **Status:** Reference documentation (doc-only; no code changes).
 **Origin:** Replaces the THR-027 thread one-pager. Provides a single durable artifact capturing the full lifecycle of both Task and Thread primitives, the three bridges that connect them, and the asymmetry rules that govern those bridges.
 **Cross-references:**
@@ -34,7 +34,7 @@ flowchart TB
         BLOCKED -->|"block_kind=escalated<br/>→ resolve-escalation (approve)<br/>→ SAME task → PENDING<br/>(tasks.py:518-520)"| PENDING
         BLOCKED -->|"block_kind=escalated or delegated<br/>→ founder revisit<br/>→ predecessor → RESOLVED_SUPERSEDED<br/>(tasks.py:827-844)"| RESOLVED_SUPERSEDED
         BLOCKED -.->|"concurrently: NEW task<br/>born PENDING (revisit_of_task_id)<br/>(tasks.py:803-812)"| PENDING
-        FAILED -->|"auto-revisit chain<br/>(new sibling task)"| IN_PROGRESS
+        FAILED -.->|"(TASK-3604: removed)<br/>was: auto-revisit chain"| TERMINAL["terminal — no automatic successor"]
 
         style RESOLVED_SUPERSEDED fill:#e8e8e8,stroke:#666,stroke-dasharray:3 3
     end
@@ -72,7 +72,7 @@ A task is the fundamental unit of work. It represents a single brief dispatched 
 | **PENDING** | The task has been created but not yet claimed by the orchestrator for execution. |
 | **IN_PROGRESS** | The orchestrator has claimed the task and is executing a session (or the task is in the run queue awaiting a slot). |
 | **COMPLETED** | The task reached a successful terminal state. The agent reported `status=completed` via `report-completion`. |
-| **FAILED** | The task reached an unsuccessful terminal state — either the agent reported a failure, the session timed out, or the task was cancelled. A FAILED task may trigger an auto-revisit chain (a new sibling task re-executing the same brief). |
+| **FAILED** | The task reached an unsuccessful terminal state — either the agent reported a failure, the session timed out, or the task was cancelled. Failure is terminal; no automatic successor is spawned. Recovery is explicit manager/founder action (`happyranch revisit` or delegated `revisit_of_task_id` retry). (TASK-3604 removed the daemon auto-revisit chain.) |
 | **BLOCKED** | The task cannot proceed. `block_kind` (defined in `class BlockKind(StrEnum)`) distinguishes three sub-types: `delegated` (waiting on a manager's next delegation decision), `escalated` (waiting on founder intervention), and `blocked_on_job` (waiting on an async job to complete). |
 | **RESOLVED_SUPERSEDED** | A terminal state for blocked (`escalated` or `delegated`) tasks whose follow-up work was moved to a human-authorized continuation (founder `revisit` or a new thread-dispatched task). Distinct from COMPLETED so the audit trail shows the task was superseded rather than finished by an agent. This state joins every terminal predicate. |
 
@@ -86,7 +86,7 @@ A task is the fundamental unit of work. It represents a single brief dispatched 
 - `BLOCKED → RESOLVED_SUPERSEDED` (predecessor terminal; **NEW** task born): A human-authorized continuation that spawns a **NEW** root task, distinct from resuming the same task. Two triggers:
   - **Founder revisit:** `revisit_from_notification` (`tasks.py:803-812`) inserts a **NEW** root task with `status=TaskStatus.PENDING` and `revisit_of_task_id=predecessor.id`, then supersedes the eligible blocked predecessor to RESOLVED_SUPERSEDED via `_supersede_predecessor_locked` (`tasks.py:827-844`). The predecessor is terminal/superseded — it does NOT itself resume. The new task begins its own lifecycle from PENDING.
   - **Thread dispatch with `resolves`:** A manager dispatch carrying the `resolves` field also supersedes the predecessor via the same `_supersede_predecessor_locked` helper. Both leave the original blocked task terminal.
-- `FAILED → IN_PROGRESS`: The orchestrator's auto-revisit logic spawns a new sibling task carrying the same brief (gated on revisit-chain length limits and task-type).
+- `FAILED → IN_PROGRESS`: (TASK-3604 — removed.) Pre-TASK-3604 behavior spawned a daemon auto-revisit sibling. Current behavior: FAILED is terminal; the only successor-creating paths are explicit human `happyranch revisit` and delegated `revisit_of_task_id` retry.
 
 ### 2.2 Thread Lifecycle
 
@@ -160,7 +160,7 @@ The Task and Thread lifecycles intersect at exactly three interaction surfaces.
        # Not a thread-dispatched chain; silent no-op.
        return
    ```
-   This means: only tasks born from Bridge (1) get a followup. Tasks created by the founder, by the orchestrator's auto-revisit, or by inline delegation chains do not.
+   This means: only tasks born from Bridge (1) get a followup. Tasks created by the founder or by inline delegation chains do not. (The orchestrator's auto-revisit was removed in TASK-3604; both opaque-failure branches are terminal FAILED with no daemon successor.)
 
 2. **Terminal mapping to kind_tag:**
    - Status → system message `kind_tag`:
@@ -218,7 +218,7 @@ Bridge (1) — thread dispatch — enters from a thread and creates a task. Brid
 
 **(b) Bridge (2) fires only for tasks BORN from bridge (1).**
 
-The followup fire predicate explicitly gates on `original.dispatched_from_thread_id`. A task created by the founder, by the orchestrator's auto-revisit, or by inline delegation carries `dispatched_from_thread_id=None` and will never produce a thread followup. The `if thread_id is None: return` guard in both `_maybe_post_thread_followup` and `_maybe_post_thread_escalation` ensures this is a silent no-op with no audit trail.
+The followup fire predicate explicitly gates on `original.dispatched_from_thread_id`. A task created by the founder or by inline delegation carries `dispatched_from_thread_id=None` and will never produce a thread followup. (The orchestrator's auto-revisit was removed in TASK-3604; both opaque-failure branches are terminal FAILED with no daemon successor.) The `if thread_id is None: return` guard in both `_maybe_post_thread_followup` and `_maybe_post_thread_escalation` ensures this is a silent no-op with no audit trail.
 
 **(c) Outbound reach is live-session-only, available ONLY via bridge (3).**
 

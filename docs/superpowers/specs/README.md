@@ -66,7 +66,7 @@ New specs should include a short status block near the top:
 | `2026-05-20-agent-initiated-threads-design.md` | implemented | Current thread compose-as-agent route and thread skill. |
 | `2026-05-23-agent-script-requests-design.md` | superseded | Renamed and extended by jobs. Current contract: `2026-05-26-jobs-design.md` and jobs skill. |
 | `2026-05-25-feishu-script-request-notifications-design.md` | removed | REMOVED in TASK-302 (THR-022). DB tables dormant; web UI + threads are sole control surface. |
-| `2026-05-25-session-timeout-auto-route-design.md` | implemented | Current auto-revisit notes: feature guide. |
+| `2026-05-25-session-timeout-auto-route-design.md` | retired | TASK-3604 removed automatic daemon successor creation. See `docs/agent-guides/features-and-invariants.md` §Session-Timeout Auto-Route. Legacy `auto_revisit_of` audit rows remain readable. |
 | `2026-05-26-cancel-race-design.md` | implemented | Current cancel behavior in task routes and run-step helpers. |
 | `2026-05-26-jobs-design.md` | current | Current jobs design companion; executable truth in `protocol/skills/jobs/SKILL.md` and `runtime/daemon/routes/jobs.py`. |
 | `2026-05-28-task-blocked-by-job-design.md` | implemented | Current behavior: feature guide and jobs skill. |

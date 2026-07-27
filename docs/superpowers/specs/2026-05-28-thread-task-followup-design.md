@@ -1,12 +1,12 @@
 # Thread Task-Followup Re-Invocation — Design Spec
 
 **Date:** 2026-05-28
-**Status:** Draft, pending implementation.
+**Status:** Implemented. Revised 2026-07-27 (TASK-3604): daemon auto-revisit removed; opaque failures are terminal FAILED with no daemon successor.
 **Origin:** Founder-reported gap on THR-002 (2026-05-28): manager replied "我会在本 thread 回贴附链接" after dispatching `TASK-005` / `TASK-007`, but the promised follow-up never arrived because nothing in the runtime re-engages the thread on task completion.
 **Relates to:**
 - `docs/superpowers/specs/2026-05-13-threads-design.md` — the threads primitive this extends; today thread invocations are message-driven only.
-- `docs/superpowers/specs/2026-04-21-opc-revisit-design.md` and `docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md` — the revisit / auto-revisit primitives the fire predicate must coordinate with.
-- `protocol/skills/thread/SKILL.md` — the agent-facing skill that gains a new `task_followup` turn shape.
+- `docs/superpowers/specs/2026-04-21-opc-revisit-design.md` — the explicit human revisit primitive that can create a successor chain.
+- `protocol/skills/thread/SKILL.md` — the agent-facing skill that gained a new `task_followup` turn shape.
 
 ## 1. Goal
 
@@ -41,22 +41,21 @@ The manager's promise is reasonable behavior for an LLM that doesn't know how th
 
 ## 4. Fire predicate
 
-The new helper `_maybe_post_thread_followup(orch, task_id, status, auto_revisit_spawned)` is invoked at run_step's terminal-transition sites (after `_maybe_spawn_auto_revisit`). It fires iff:
+The helper `_maybe_post_thread_followup(orch, task_id, status, auto_revisit_spawned)` is invoked at run_step's terminal-transition sites. Since TASK-3604 removed daemon auto-revisit, `auto_revisit_spawned` is always `False` in current production; the parameter is retained for compatibility. The predicate fires iff:
 
-| Terminal status | `auto_revisit_spawned` | `cancelled_at` | Action |
-|---|---|---|---|
-| `COMPLETED` | n/a | n/a | **Fire** |
-| `FAILED` | `True` | — | **Fire system-message-only** (carries `revisit_task_id` for 'revisiting as <SUCCESSOR>' rendering; dispatcher re-invocation is suppressed — the revisit successor fires its own followup at its terminal. THR-046 msg99 revision.) |
-| `FAILED` | `False` | `None` | **Fire** (true chain terminal: per-kind cap exhausted, non-eligible failure kind, or no chain) |
-| `FAILED` | `False` | set | **Fire** (founder-cancelled — surface in thread record) |
+| Terminal status | `cancelled_at` | Action |
+|---|---|---|
+| `COMPLETED` | n/a | **Fire** |
+| `FAILED` | `None` | **Fire** (terminal FAILED; no daemon successor exists since TASK-3604 — recovery is explicit manager/founder action) |
+| `FAILED` | set | **Fire** (founder-cancelled — surface in thread record) |
 
 In every "Fire" case, the helper still no-ops if the chain has no thread linkage (§5) or the thread is not OPEN (§7).
 
-**Call-order constraint** (mirroring the existing `_maybe_spawn_auto_revisit` → `_enqueue_parent_if_waiting` ordering documented in CLAUDE.md): `_maybe_post_thread_followup` must be called **after** `_maybe_spawn_auto_revisit` returns, so the `auto_revisit_spawned` bit is correct. It may be called before or after `_enqueue_parent_if_waiting` — they are independent; placing it after matches the existing reading order.
+**Call-order constraint:** `_maybe_post_thread_followup` may be called before or after `_enqueue_parent_if_waiting` — they are independent; placing it after matches the existing reading order.
 
 ## 5. Finding the originating thread
 
-Revisit roots (auto and founder) do **not** copy `dispatched_from_thread_id`. `_maybe_spawn_auto_revisit` (`run_step.py:1086-1095`) only copies `session_timeout_seconds`; the founder `/revisit` route is the same. Rather than change insert semantics (risk: every future revisit caller has to remember to propagate), we walk backward at trigger time.
+Revisit roots (founder-initiated only since TASK-3604 removed daemon auto-revisit) do **not** copy `dispatched_from_thread_id`. The founder `/revisit` route only copies `session_timeout_seconds`. Rather than change insert semantics (risk: every future revisit caller has to remember to propagate), we walk backward at trigger time.
 
 **Lookup algorithm:**
 
@@ -102,7 +101,7 @@ system_payload = {
   "final_artifact_dir": <task.final_artifact_dir or null>,
   "cancelled": <bool, cancelled_at is not None>,
   "revisit_chain_length": <len(chain)>,  # 1 if no revisits, >1 if revisited
-  "revisit_task_id": <str | null>,  # set when an auto-revisit successor was spawned (THR-046 msg99)
+  "revisit_task_id": null,  # always null since TASK-3604 removed daemon auto-revisit
 }
 ```
 
@@ -234,7 +233,7 @@ Unit (no real subprocess):
 Integration (with `fake_claude.sh` thread plan env):
 
 - **e2e_followup_reply**: founder send → manager reply+dispatch → task completes → followup invocation runs → manager reply (seq N+2) → assert thread now has 5 messages: founder, manager reply, system task_dispatched, system task_completed, manager followup reply.
-- **e2e_followup_revisit**: same as above but task fails first → auto-revisit spawns → revisit completes → followup fires once at the revisit's terminal (not the original failure).
+- **e2e_followup_opaque_failure**: opaque executor failure (exit 1) → terminal FAILED with `task_failed` follow-up, no successor, no `revisit_task_id`. This is the contract exercised by the current integration test `tests/integration/test_thread_task_followup_e2e.py::test_followup_fires_once_after_opaque_failure`.
 - **e2e_followup_archived**: thread is archived (status flipped) between dispatch and terminal → audit-only, no new messages, no new invocations.
 
 Each followup test sets both `fake_claude_plan_env` (task) and `fake_claude_thread_plan_env` (followup), per the dual-plan pattern documented in CLAUDE.md.
@@ -263,7 +262,7 @@ None blocking. Two flagged for future:
 4. `_purpose_note` branch + prompt parameter wiring in `src/daemon/thread_runner.py`.
 5. New system-message renderers (`task_completed`, `task_failed`) in `src/infrastructure/thread_store.py` and `src/daemon/thread_forward.py`.
 6. `db.bump_thread_turn_cap(thread_id, delta)` method + `audit.log_thread_*` methods.
-7. `_maybe_post_thread_followup` helper in `src/orchestrator/run_step.py`; wire into both terminal sites after `_maybe_spawn_auto_revisit`.
+7. `_maybe_post_thread_followup` helper in `src/orchestrator/run_step.py`; wire into both terminal transition sites.
 8. Web renderer cases for the two new tags.
 9. Unit tests (§11 unit set).
 10. Integration tests (§11 integration set).

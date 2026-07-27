@@ -13,7 +13,7 @@
 
 ## 1. Goal
 
-Today's `scripts` module exists to solve one problem — an agent hits a permission wall, founder runs the command, agent unblocks via revisit. It can't address a second problem that turns out to be just as common: **agents block on shell calls that don't return** (dev servers, watchers, polling loops, long builds). The current bash tool synchronously blocks until the command exits or the session times out — at which point the orchestrator auto-revisits and the agent has made no progress.
+Today's `scripts` module exists to solve one problem — an agent hits a permission wall, founder runs the command, agent unblocks via revisit. It can't address a second problem that turns out to be just as common: **agents block on shell calls that don't return** (dev servers, watchers, polling loops, long builds). The current bash tool synchronously blocks until the command exits or the session times out — at which point the task is marked terminal FAILED and the agent has made no progress.
 
 Both problems share the same underlying machinery: spawn a subprocess inside the daemon, capture stdout/stderr to disk with a DB head cap, stream events over SSE, expose detail/list/stop over HTTP, audit transitions, kill cleanly on daemon shutdown. The only differences are **policy**: who gates the start, and whether the subprocess has a bounded timeout.
 

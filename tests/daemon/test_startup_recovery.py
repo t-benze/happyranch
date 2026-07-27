@@ -28,8 +28,9 @@ def _seed_org_with_orch(
 ) -> tuple[Database, Orchestrator, TaskQueue]:
     """Seed an org + construct a real Orchestrator wired to a real queue.
 
-    Mirrors the sweep's production wiring closely enough that the unified
-    auto-revisit path is exercisable end-to-end.
+    Mirrors the sweep's production wiring closely enough that the
+    bounded-wake and terminal-failure paths are exercisable end-to-end.
+    Since TASK-3604, there is no auto-revisit path in production.
     """
     runtime = RuntimeDir.init(tmp_path / "rt")
     paths = OrgPaths(root=runtime.orgs_dir / slug)
@@ -160,11 +161,12 @@ def test_sweep_leaves_escalated_alone(tmp_path):
     assert queue._queue.empty()
 
 
-def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_path):
+def test_sweep_blocked_delegated_with_live_child_bounded_wake(tmp_path):
     """THR-064 / TASK-573: when sweep force-fails an in-progress child of an
     in_progress(delegated) parent, the parent gets a bounded-wake decision step
-    (enqueued, NOT cascade-failed). The parked non-terminal ancestor means
-    auto-revisit is SKIPPED — the bounded-wake recovers the work directly."""
+    (enqueued, NOT cascade-failed). Since TASK-3604 there is no auto-revisit —
+    the parked non-terminal ancestor means the bounded-wake recovers the work
+    directly without spawning any successor."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     db.insert_task(TaskRecord(
         id="T-PAR", brief="p", team="engineering",
@@ -238,7 +240,7 @@ def test_sweep_pending_stays_pending_but_gets_enqueued(tmp_path):
 def test_sweep_works_without_orchestrator_arg(tmp_path):
     """Degraded mode: with no orchestrator (test convenience only — production
     always passes one), the IN_PROGRESS branch marks-failed-and-audits and
-    skips auto-revisit / cascade / notify entirely."""
+    does not enqueue or notify (no orchestrator wiring)."""
     db = _seed_org(tmp_path)
     db.insert_task(TaskRecord(id="T-BC", brief="x"))
     db.update_task("T-BC", status=TaskStatus.IN_PROGRESS)
@@ -250,11 +252,11 @@ def test_sweep_works_without_orchestrator_arg(tmp_path):
     assert "auto_revisit_of" not in actions
 
 
-def test_sweep_in_progress_spawns_auto_revisit(tmp_path):
-    """THR-064: in-progress child of a parked DELEGATED root at restart
-    skips auto-revisit because a non-terminal recoverable ancestor exists.
-    Parent gets bounded-wake instead; no twin root. notify_failed is
-    suppressed because the work is being retried via parent re-enqueue."""
+def test_sweep_in_progress_bounded_parent_wake(tmp_path):
+    """THR-064: in-progress child of a parked DELEGATED root at restart is
+    terminal FAILED with no successor. Parent gets bounded-wake instead;
+    no twin root since TASK-3604 removed daemon auto-revisit. notify_failed
+    is suppressed because the work is being retried via parent re-enqueue."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     # Root parent task is in_progress+delegated waiting on its in-flight child.
     db.insert_task(TaskRecord(
@@ -583,12 +585,11 @@ def test_sweep_leaves_already_terminal_invocations_alone(tmp_path):
 
 # ── THR-064: daemon-restart double-recovery (TASK-1855) ──────────────────
 
-def test_thr064_parked_ancestor_skips_auto_revisit(tmp_path):
-    """THR-064 RED-FIRST (fails on merge-base b96e105, passes on branch head).
-
-    A parked manager root (in_progress/DELEGATED) with ONE running child at
-    restart -> EXACTLY ONE woken root (parent bounded-wake), NO twin
-    auto-revisit, killed child FAILED with the restart marker note."""
+def test_thr064_parked_ancestor_bounded_wake(tmp_path):
+    """THR-064: A parked manager root (in_progress/DELEGATED) with ONE running
+    child at restart -> EXACTLY ONE woken root (parent bounded-wake), NO twin
+    successor (auto-revisit removed in TASK-3604), killed child FAILED with
+    the restart marker note."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     db.insert_task(TaskRecord(
         id="T-ROOT", brief="root", team="engineering",
@@ -638,11 +639,12 @@ def test_thr064_parked_ancestor_skips_auto_revisit(tmp_path):
     )
 
 
-def test_thr064_guardrail1_worker_root_still_auto_revisits(tmp_path):
-    """THR-079 UPDATE: a genuine parentless worker root subprocess death
-    (no parked non-terminal ancestor) is FAILED but NO LONGER auto-revisits.
-    The THR-079 pid-liveness probe supersedes the old auto-revisit approach.
-    A daemon_restart_failure audit row suffices; the founder decides."""
+def test_thr064_guardrail1_worker_root_terminal_failed(tmp_path):
+    """THR-079 / TASK-3604: a genuine parentless worker root subprocess death
+    (no parked non-terminal ancestor) is terminal FAILED with no daemon
+    successor. The THR-079 pid-liveness probe plus TASK-3604's removal of
+    auto-revisit means only a daemon_restart_failure audit row is written;
+    recovery is explicit founder action."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     # A root task with NO parent and NO block_kind — a genuine worker root.
     db.insert_task(TaskRecord(

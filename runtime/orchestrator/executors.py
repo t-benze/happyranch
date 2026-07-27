@@ -51,9 +51,9 @@ class ExecutorResult:
     agent_session_id: str | None = None
     # True when the subprocess output matched a known provider rate-limit
     # signature (issue #85). Set centrally in ``_run_command`` so every executor
-    # exposes one normalized field; ``run_step._classify_failure_kind`` prefers
-    # it over its legacy stdout/stderr string heuristic, and the per-provider
-    # throttle uses it to drive 429 backoff.
+    # exposes one normalized field; the opaque-failure completion path
+    # prefers it over its legacy stdout/stderr string heuristic, and the
+    # per-provider throttle uses it to drive 429 backoff.
     rate_limited: bool = False
     # Classified terminal failure reason extracted from structured executor
     # output (e.g. Claude's --output-format json result envelope).  None when
@@ -587,7 +587,7 @@ def is_rate_limit_signature(text: str) -> bool:
 
     The single source of truth for rate-limit detection (issue #85). Used by
     ``_run_command`` to set ``ExecutorResult.rate_limited`` across all executors
-    and by ``run_step._classify_failure_kind`` as the back-compat string
+    and by the opaque-failure completion path as the back-compat string
     fallback — keeping both layers in lock-step. Intentionally matches the
     exact patterns the classifier has always used (Claude's
     "hit your limit · resets at HH:MM" and the generic "rate limit") so the

@@ -398,12 +398,16 @@ def _payload(row: dict) -> dict:
     return p if isinstance(p, dict) else _json.loads(p)
 
 
-# --- Truth table (spec §4, §4.1 — revised THR-046 msg99) ---
+# --- Truth table (spec §4, §4.1) ---
 #
-# Row 2 (FAILED+spawned) changed in THR-046 msg99: the system message now
-# fires (with revisit_task_id) so the thread surface can render 'revisiting
-# as <SUCCESSOR>', but the dispatcher re-invocation (TASK_FOLLOWUP) is
-# suppressed — the successor will fire its own followup at its terminal.
+# Row 2 (FAILED+spawned, ``auto_revisit_spawned=True``) is legacy
+# historical stored-payload coverage.  TASK-3604 removed daemon
+# auto-revisit creation; no current production call path supplies
+# ``auto_revisit_spawned=True`` or ``revisit_task_id``.  The row is
+# retained to protect the helper's conditional ``reinvoke`` seam and
+# to verify that the system-message fires but the re-invocation is
+# suppressed as required by the original ``_maybe_post_thread_followup``
+# contract.
 @_pytest.mark.parametrize("status,spawned,cancelled,should_fire,should_invoke", [
     (TaskStatus.COMPLETED, False, False, True,  True),   # row 1: normal completion
     (TaskStatus.FAILED,    True,  False, True,  False),  # row 2: revisit spawned → system msg fires, no re-invoke
@@ -1107,8 +1111,13 @@ def test_thread_forward_renders_task_escalated():
 
 
 def test_revisit_task_id_in_system_payload(orch_with_db):
-    """When a task_failed followup fires with revisit_task_id set, the
-    system_payload carries the successor task id."""
+    """Legacy historical stored-payload coverage: when
+    ``_maybe_post_thread_followup`` is called with ``revisit_task_id``
+    set, the system_payload carries the successor task id.  TASK-3604
+    removed daemon auto-revisit creation; no current production path
+    populates ``revisit_task_id``.  The assertion protects the
+    parameter's transport contract for compatibility with pre-TASK-3604
+    stored payloads."""
     from runtime.orchestrator.run_step import _maybe_post_thread_followup
     from runtime.models import ThreadInvocationPurpose, ThreadMessageKind
     orch = orch_with_db
@@ -1158,20 +1167,13 @@ def test_revisit_task_id_none_when_not_provided(orch_with_db):
     assert payload.get("revisit_task_id") is None
 
 
-def test_run_step_auto_revisit_emits_task_failed_with_successor_link(
+def test_run_step_opaque_failure_emits_task_failed_no_successor_link(
     orch_with_db, monkeypatch,
 ):
-    """THR-046 msg99 regression: when run_step fails a task and spawns an
-    auto-revisit successor, the task_failed system message MUST carry
-    revisit_task_id linking the successor — so the thread surface can
-    render 'revisiting as <SUCCESSOR>'.
-
-    This exercises the REAL run_step path (not synthetic _maybe_post_thread_followup
-    call), confirming the fix: the FAILED+auto_revisit_spawned early-return guards
-    in _maybe_post_thread_followup no longer suppress the system message.
-    The TASK_FOLLOWUP re-invocation is still suppressed (the successor fires
-    its own followup at its terminal).
-    """
+    """TASK-3604: when run_step fails a task with an opaque agent failure,
+    the task_failed system message is emitted. Since no auto-revisit successor
+    is spawned, revisit_task_id is absent from the payload. The TASK_FOLLOWUP
+    re-invocation IS minted (this is a true terminal now)."""
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.executors import ExecutorResult
     from runtime.models import ThreadInvocationPurpose, ThreadMessageKind
@@ -1206,10 +1208,9 @@ def test_run_step_auto_revisit_emits_task_failed_with_successor_link(
 
     orch.run_step("TASK-1")
 
-    # The failed task should have spawned an auto-revisit successor.
-    assert len(q.items) >= 1, f"expected auto-revisit enqueue, got {q.items}"
-    _, successor_id = q.items[0]
-    assert successor_id != "TASK-1"
+    # TASK-3604: no auto-revisit successor is spawned.
+    # The queue has zero entries (the root task has no parent to wake).
+    # But a thread followup message was posted.
 
     # System message check: a task_failed message must have been appended.
     sys_msgs = [
@@ -1224,18 +1225,20 @@ def test_run_step_auto_revisit_emits_task_failed_with_successor_link(
         f"expected 1 task_failed system message, got {len(task_failed_msgs)}"
     )
     payload = task_failed_msgs[0].system_payload
-    assert payload["revisit_task_id"] == successor_id, (
-        f"revisit_task_id should be the successor {successor_id}, "
+    # TASK-3604: no revisit_task_id since no auto-revisit successor.
+    assert payload.get("revisit_task_id") is None, (
+        f"revisit_task_id should be absent (no auto-revisit successor), "
         f"got {payload.get('revisit_task_id')}"
     )
     assert payload["kind_tag"] == "task_failed"
     assert payload["task_id"] == "TASK-1"
 
-    # No TASK_FOLLOWUP invocation should have been minted (suppressed).
+    # TASK-3604: since this is a true terminal (no successor to fire its own
+    # followup), a TASK_FOLLOWUP invocation IS minted.
     invs = orch._db.list_thread_invocations("THR-1")
     followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
-    assert len(followups) == 0, (
-        f"expected 0 TASK_FOLLOWUP invocations, got {len(followups)}"
+    assert len(followups) == 1, (
+        f"expected 1 TASK_FOLLOWUP invocation, got {len(followups)}"
     )
 
 

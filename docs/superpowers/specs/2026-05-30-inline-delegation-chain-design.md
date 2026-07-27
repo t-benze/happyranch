@@ -207,7 +207,7 @@ Rendering source: `parent.active_chain` + the spawned child tasks identified via
 - Success: `Chain summary: 3 legs, all completed (TASK-579 → TASK-580 → TASK-581), final verdict PASS`
 - Mismatch: `Chain aborted at leg 2: senior_dev returned REQUEST_CHANGES (expected APPROVE); see TASK-580`
 - Blocked: `Chain aborted at leg 2: TASK-580 self-blocked (see its summary)`
-- Failed: `Chain aborted at leg 2: TASK-580 failed (auto-revisit cap exhausted)`
+- Failed: `Chain aborted at leg 2: TASK-580 failed (terminal)`
 
 The manager doesn't need to re-derive the chain's history from raw child task records.
 
@@ -219,7 +219,7 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 | Worker emits verdict when none expected | Ignored for routing (no gate); still stored on `task_results` and visible in `details`. Cheap forward-compat. |
 | Worker emits `status=blocked` mid-chain | Chain aborts; manager wakes with the blocker text. |
 | Worker on gated leg emits no verdict | Treated as mismatch (`None ≠ "APPROVE"`); chain aborts. Forces gated-leg workers to actually emit their verdict — surfaces silent drift early. |
-| Auto-revisit on opaque infra failure mid-leg | The failed leg cascade-fails the chain parent per existing logic (`_maybe_spawn_auto_revisit` runs before `_enqueue_parent_if_waiting`; cascade-fail still cascades when `root_auto_revisit_spawned=True`, only the Feishu notification is suppressed). `active_chain` is cleared as part of the parent's cascade-fail. The auto-revisit spawns a NEW root task carrying `revisit_of_task_id` per the existing "auto-revisit creates a new root" invariant — it does NOT preserve `parent_task_id`, and is therefore NOT re-attached to the original chain. Chains do not survive an opaque leg failure in v1; the founder (or any successor driver auto-revisited from the chain parent) sees the failed parent and decides whether to re-declare the chain skipping completed legs. Durable worker artifacts (per memory `durable-worker-artifact-rescues-orphaned-completion`) survive the cascade so the re-declared chain can pick up evidence. |
+| Opaque infra failure mid-leg (TASK-3604) | The failed leg is terminal FAILED — no automatic successor root is spawned. `_enqueue_parent_if_waiting` receives the FAILED child and wakes the parent via the per-slice revisit-lineage contract (bounded manager wake; if the failed slice's `revisit_of_task_id` ancestor is a FAILED child of the same parent the ceiling is exhausted and a root parent escalates, otherwise the parent wakes for a fresh decision step). `active_chain` is cleared on the parent as part of this wake. The failed leg carries `revisit_of_task_id`-free (it was not auto-revisited) and the chain does not survive — the parent manager receives the wake with the failed-leg report and decides whether to re-declare the chain skipping completed legs. Durable worker artifacts survive so the re-declared chain can pick up evidence. Recovery is explicit manager or founder action — no daemon successor. |
 | Leg's spawned child fails to launch | Treated as leg failure → manager wakes. Same code path as today's failed-delegate. |
 | Founder cascade-cancels parent | Existing cascade kills any in-flight leg; clears `active_chain` as part of the parent-cancel path. |
 | Founder cancels a leg directly (no cascade) | Wake parent; clear `active_chain`. Explicit termination beats auto-advance. |
@@ -244,14 +244,14 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 - Chain advance final leg: chain cleared, parent waked with success summary.
 - Cross-team guard rejects chain with any off-team leg (test each position).
 - Step-count accounting: declaring a 4-leg chain bumps `orchestration_step_count` by 1; three `chain_auto_advance` rows have NO `orchestration_step_count` effect; the final-leg parent-wake bumps the counter by 1 when the manager's next session claims (totals to 2 per chain, not 4).
-- Auto-revisit + chain: simulated session_timeout on leg 2 → chain parent cascade-fails, `active_chain` cleared, auto-revisit root spawned independently of the chain. Assert the auto-revisit root has no `parent_task_id` and no chain inherited.
+- Opaque failure + chain (TASK-3604): simulated session_timeout on leg 2 → leg FAILED (terminal, no auto-revisit successor), bounded parent wake via `_enqueue_parent_if_waiting`, `active_chain` cleared.
 
 ### Integration (fake-claude harness)
 
 - Plan a 3-leg chain (`dev_agent` builder → `senior_dev` reviewer → `qa_engineer` QA) where the fake reviewer emits `verdict: APPROVE` and fake QA emits `verdict: PASS`. Assert: exactly 2 `chain_auto_advance` rows, exactly 1 final manager wake, `orchestration_step_count` on parent incremented by 2 total (declare + final wake).
 - Same plan, fake reviewer emits `REQUEST_CHANGES`. Assert: 0 `chain_auto_advance` rows; manager wakes after leg 2 with mismatch context in history block; `active_chain` cleared on parent.
 - Founder-cancel during leg 2 in-flight: assert `active_chain` cleared, no leg 3 spawn, parent ends in `failed-cancelled`.
-- Auto-revisit on leg 2 (fake worker triggers session timeout under cap): assert chain parent cascade-fails, `active_chain` cleared on parent, auto-revisit root spawned with no `parent_task_id` and no chain inheritance, no leg 3 spawn.
+- Opaque failure on leg 2 (fake worker triggers session timeout under cap — TASK-3604): assert leg 2 FAILED (terminal, no successor root), parent receives bounded wake, `active_chain` cleared on parent, no leg 3 spawn.
 
 ### Contract
 
@@ -272,7 +272,7 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 - **Cross-team validation runs on every leg, at declaration time.** Don't lazy-validate when the leg is about to spawn — by then the manager's session has ended and the feedback loop is broken.
 - **`first_leg_expect_verdict` lives in the chain payload, not derived from audit.** Audit-row recovery would couple the orchestrator to audit-log durability for routing decisions; the chain payload is the source of truth.
 - **Workers don't author chains.** The `is_team_manager(agent)` gate in `run_step.py` already blocks workers from emitting `decision` payloads; do not relax this when adding chain support.
-- **Auto-revisit of a chain leg does NOT preserve the chain.** Auto-revisit follows the existing "spawns a new root, cascade-fails the ancestor" invariant; chains aborted by cascade-fail do not auto-resume. v1 accepts this — the founder/successor decides whether to re-declare. Re-attaching auto-revisits to chains would require breaking the new-root invariant and is deferred.
+- **Opaque failure of a chain leg does NOT preserve the chain (TASK-3604).** The failed leg is terminal FAILED with no automatic successor; the bounded parent wake receives the failure and clears `active_chain`. Chains aborted by a failed leg do not auto-resume — the parent manager decides whether to re-declare.
 - **Cancel-during-chain clears `active_chain` before terminating the in-flight leg.** Otherwise the leg's terminal could race the cancel and trigger a phantom auto-advance.
 
 ## Open questions
