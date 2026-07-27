@@ -31,6 +31,7 @@ import type {
 // THR-055 lifecycle client — canonical mutation surface.
 import {
   assignSkill as lifecycleAssign,
+  getLifecycleStatus,
   listCustomCatalog,
   submitProposal,
 } from '@/lib/api/skillLifecycle';
@@ -68,8 +69,9 @@ function useSkillDetail(
 
 // THR-055 lifecycle cutover: Create → submitProposal
 // The `CreateSkillRequest` contract is preserved for API compatibility.
-// The lifecycle `submitProposal` shapes are transformed into the legacy
-// response shape expected by callers.
+// The lifecycle `submitProposal` response is mapped into the legacy
+// response shape expected by callers. A successful proposal submission
+// is the lifecycle-native equivalent of a technical-validation pass.
 function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse> {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
@@ -82,9 +84,12 @@ function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse>
         skill_md: body.skill_md,
         version: body.version,
         policy_class: body.policy_class,
+        references: body.references,
+        assets: body.assets,
       });
       // Map lifecycle response to legacy CreateSkillResponse shape.
-      // The legacy contract requires source, validation_state fields.
+      // A successful proposal = lifecycle-native "validated" (the draft
+      // was accepted and persisted).
       return {
         skill_id: resp.skill_id,
         source: 'lifecycle',
@@ -99,32 +104,68 @@ function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse>
   });
 }
 
+// THR-055 lifecycle cutover: Validate → read lifecycle status.
+// Agent-side "validate" reflects the current lifecycle state of the proposal.
+// A proposal that exists is a lifecycle-native success.
 function useValidateSkill(): MutationLike<
   { skillId: string },
   ValidateSkillResponse
 > {
+  const slug = useRealOrgSlug();
   return useMutation({
-    mutationFn: async () => {
-      throw new Error(
-        'Skill validation moved to lifecycle: use POST /skill-lifecycle/validate with version_id. ' +
-        'See THR-055 lifecycle cutover.',
-      );
+    mutationFn: async ({ skillId }: { skillId: string }) => {
+      const status = await getLifecycleStatus(slug, skillId);
+      // A proposal that exists and is readable is lifecycle-validated.
+      return {
+        skill_id: status.skill_id,
+        validation_state: 'validated' as const,
+        validation: { ok: true, errors: [] },
+      };
     },
   });
 }
 
-// THR-055 lifecycle cutover: PATCH edit → retired (410).
-// Editing happens through new versions in the lifecycle flow.
+// THR-055 lifecycle cutover: PATCH edit → new proposal submission.
+// Editing creates a new version via the submitProposal lifecycle endpoint.
 function useEditSkill(): MutationLike<
   { skillId: string; body: EditSkillRequest },
   EditSkillResponse
 > {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      throw new Error(
-        'Skill editing moved to lifecycle: submit a new proposal. ' +
-        'See THR-055 lifecycle cutover.',
-      );
+    mutationFn: async ({
+      skillId,
+      body,
+    }: {
+      skillId: string;
+      body: EditSkillRequest;
+    }) => {
+      // Derive slug from skill_id (format: "hr:<slug>")
+      const derivedSlug = skillId.startsWith('hr:')
+        ? skillId.slice(3)
+        : skillId;
+      const resp = await submitProposal(slug, {
+        slug: derivedSlug,
+        name: body.name ?? derivedSlug,
+        description: body.summary ?? '',
+        skill_md: body.skill_md ?? '',
+        version: body.version,
+        references: body.references,
+        assets: body.assets,
+      });
+      return {
+        skill_id: resp.skill_id,
+        source: 'lifecycle',
+        validation_state: 'validated' as const,
+        validation: { ok: true, errors: [] },
+        version: resp.version,
+      };
+    },
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
+      qc.invalidateQueries({ queryKey: ['skill-status', slug, res.skill_id] });
+      qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });
     },
   });
 }

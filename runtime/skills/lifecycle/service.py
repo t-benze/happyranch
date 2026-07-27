@@ -106,61 +106,78 @@ def _persist_package_to_artifact_store(
             new_keys.append(artifact_key)
         store.put(artifact_key, content)
 
-    # ── Store SKILL.md ───────────────────────────────────────────────
-    skill_md_bytes = skill_md.encode("utf-8")
-    skill_hash = hashlib.sha256(skill_md_bytes).hexdigest()
-    skill_key = f"{prefix}/{skill_hash[:16]}/SKILL.md"
-    _put_if_new(skill_key, skill_md_bytes)
-    members.append({
-        "path": "SKILL.md",
-        "hash": f"sha256:{skill_hash}",
-        "artifact_key": skill_key,
-        "size_bytes": len(skill_md_bytes),
-    })
+    def _compensate_new_keys() -> None:
+        """Delete every artifact we created during this call (best-effort).
 
-    # ── Store references ─────────────────────────────────────────────
-    for rel_path, content in sorted(references.items()):
-        content_bytes = content.encode("utf-8")
-        ref_hash = hashlib.sha256(content_bytes).hexdigest()
-        ref_key = f"{prefix}/{ref_hash[:16]}/references/{rel_path}"
-        _put_if_new(ref_key, content_bytes)
+        Pre-existing dedup artifacts (not in ``new_keys``) are never touched.
+        """
+        for key in new_keys:
+            try:
+                store.delete(key)
+            except Exception:
+                pass
+
+    try:
+        # ── Store SKILL.md ───────────────────────────────────────────
+        skill_md_bytes = skill_md.encode("utf-8")
+        skill_hash = hashlib.sha256(skill_md_bytes).hexdigest()
+        skill_key = f"{prefix}/{skill_hash[:16]}/SKILL.md"
+        _put_if_new(skill_key, skill_md_bytes)
         members.append({
-            "path": f"references/{rel_path}",
-            "hash": f"sha256:{ref_hash}",
-            "artifact_key": ref_key,
-            "size_bytes": len(content_bytes),
+            "path": "SKILL.md",
+            "hash": f"sha256:{skill_hash}",
+            "artifact_key": skill_key,
+            "size_bytes": len(skill_md_bytes),
         })
 
-    # ── Store assets ─────────────────────────────────────────────────
-    for rel_path, content in sorted(assets.items()):
-        content_bytes = content.encode("utf-8")
-        asset_hash = hashlib.sha256(content_bytes).hexdigest()
-        asset_key = f"{prefix}/{asset_hash[:16]}/assets/{rel_path}"
-        _put_if_new(asset_key, content_bytes)
-        members.append({
-            "path": f"assets/{rel_path}",
-            "hash": f"sha256:{asset_hash}",
-            "artifact_key": asset_key,
-            "size_bytes": len(content_bytes),
-        })
+        # ── Store references ─────────────────────────────────────────
+        for rel_path, content in sorted(references.items()):
+            content_bytes = content.encode("utf-8")
+            ref_hash = hashlib.sha256(content_bytes).hexdigest()
+            ref_key = f"{prefix}/{ref_hash[:16]}/references/{rel_path}"
+            _put_if_new(ref_key, content_bytes)
+            members.append({
+                "path": f"references/{rel_path}",
+                "hash": f"sha256:{ref_hash}",
+                "artifact_key": ref_key,
+                "size_bytes": len(content_bytes),
+            })
 
-    # ── Build and store manifest ─────────────────────────────────────
-    manifest = {
-        "schema_version": 1,
-        "skill_id": f"hr:{slug}",
-        "slug": slug,
-        "members": members,
-    }
-    manifest_json = json.dumps(manifest, sort_keys=True, indent=2)
-    manifest_bytes = manifest_json.encode("utf-8")
-    manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
-    manifest_key = f"{prefix}/{manifest_hash[:16]}/manifest.json"
-    _put_if_new(manifest_key, manifest_bytes)
-    new_keys.append(manifest_key)  # Manifest is always "new" for this call
+        # ── Store assets ─────────────────────────────────────────────
+        for rel_path, content in sorted(assets.items()):
+            content_bytes = content.encode("utf-8")
+            asset_hash = hashlib.sha256(content_bytes).hexdigest()
+            asset_key = f"{prefix}/{asset_hash[:16]}/assets/{rel_path}"
+            _put_if_new(asset_key, content_bytes)
+            members.append({
+                "path": f"assets/{rel_path}",
+                "hash": f"sha256:{asset_hash}",
+                "artifact_key": asset_key,
+                "size_bytes": len(content_bytes),
+            })
 
-    # The package content_hash is the manifest's SHA-256.
-    # This binds the full-package provenance (not just SKILL.md).
-    return manifest_hash, manifest_key, new_keys
+        # ── Build and store manifest ─────────────────────────────────
+        manifest = {
+            "schema_version": 1,
+            "skill_id": f"hr:{slug}",
+            "slug": slug,
+            "members": members,
+        }
+        manifest_json = json.dumps(manifest, sort_keys=True, indent=2)
+        manifest_bytes = manifest_json.encode("utf-8")
+        manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+        manifest_key = f"{prefix}/{manifest_hash[:16]}/manifest.json"
+        _put_if_new(manifest_key, manifest_bytes)
+        new_keys.append(manifest_key)  # Manifest is always "new" for this call
+
+        # The package content_hash is the manifest's SHA-256.
+        # This binds the full-package provenance (not just SKILL.md).
+        return manifest_hash, manifest_key, new_keys
+    except Exception:
+        # Compensate every artifact we successfully wrote before the failure.
+        # Pre-existing dedup artifacts are NOT in new_keys and are preserved.
+        _compensate_new_keys()
+        raise
 
 
 # ── Service ───────────────────────────────────────────────────────────────

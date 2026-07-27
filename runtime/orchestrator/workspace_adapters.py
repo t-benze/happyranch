@@ -691,15 +691,11 @@ def _materialize_lifecycle_skills(
                             reason=error_msg,
                         )
 
-                    # Apply org-slug substitution to text files
-                    try:
-                        text = member_bytes.decode("utf-8")
-                        text = text.replace("{ORG_SLUG}", slug)
-                        member_bytes = text.encode("utf-8")
-                    except UnicodeDecodeError:
-                        pass
-
-                    # Write to both target directories
+                    # Write exact retained bytes to both target directories.
+                    # The immutable-artifact content is the workspace content —
+                    # no post-verification substitution (the hash was validated
+                    # against the original bytes; mutating them would break the
+                    # exact-byte provenance guarantee).
                     dest_path = member_path
                     for target_base in (dest_claude, dest_agents):
                         target_file = target_base / dest_path
@@ -725,13 +721,8 @@ def _materialize_lifecycle_skills(
             # Backward compatibility: content_artifact_key points to
             # a raw SKILL.md file (no manifest). Treat the artifact
             # content directly as the SKILL.md to materialize.
+            # Write exact retained bytes — no post-verification substitution.
             content_bytes = manifest_bytes
-            try:
-                text = content_bytes.decode("utf-8")
-                text = text.replace("{ORG_SLUG}", slug)
-                content_bytes = text.encode("utf-8")
-            except UnicodeDecodeError:
-                pass
 
             try:
                 dest_claude.mkdir(parents=True, exist_ok=True)

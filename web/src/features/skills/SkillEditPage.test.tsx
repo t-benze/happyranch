@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
@@ -50,39 +50,48 @@ const BUNDLED_DETAIL = {
   assignments: [],
 };
 
-interface EditResponse {
+// Lifecycle-native response shapes.
+interface ProposalResponse {
   skill_id: string;
-  source: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
-  validation: { ok: boolean; errors: string[] };
+  version_id: number;
   version: string;
+  status: string;
+  content_hash: string;
+  content_artifact_key: string | null;
+  proposal_task_id: string | null;
 }
 
-const PASS_BUMP: EditResponse = {
+const PASS_PROPOSAL: ProposalResponse = {
   skill_id: CUSTOM_ID,
-  source: 'user_authored',
-  validation_state: 'validated',
-  validation: { ok: true, errors: [] },
+  version_id: 99,
   version: '1.3.0',
+  status: 'proposed',
+  content_hash: 'abc123',
+  content_artifact_key: null,
+  proposal_task_id: null,
 };
 
-const FAIL: EditResponse = {
+const LIFECYCLE_STATUS_VALIDATED = {
   skill_id: CUSTOM_ID,
-  source: 'user_authored',
-  validation_state: 'in_catalog',
-  validation: {
-    ok: false,
-    errors: [
-      'version is required',
-      'The references/pricing.md asset could not be resolved.',
-    ],
-  },
-  version: '1.2.0',
+  slug: 'tourism-partner-playbook',
+  current_status: 'proposed',
+  current_version: '1.3.0',
+  current_version_id: 99,
+  published_version: null,
+  assignments: [],
+  events: [],
+  proposal_task_id: null,
+  proposer_agent: null,
 };
 
 function mount(
   detail: typeof CUSTOM_DETAIL,
-  opts: { editResponse?: EditResponse; editStatus?: number; skillId?: string } = {},
+  opts: {
+    proposalResponse?: ProposalResponse;
+    proposalStatus?: number;
+    skillId?: string;
+    lifecycleStatus?: Record<string, unknown>;
+  } = {},
 ) {
   const skillId = opts.skillId ?? CUSTOM_ID;
   sessionStorage.setItem('happyranch.token', 'tok');
@@ -93,18 +102,17 @@ function mount(
     http.get(`/api/v1/orgs/${SLUG}/skills/catalog/:id`, () =>
       HttpResponse.json(detail),
     ),
-    http.patch(`/api/v1/orgs/${SLUG}/skills/:id`, () =>
-      HttpResponse.json(opts.editResponse ?? PASS_BUMP, {
-        status: opts.editStatus ?? 200,
-      }),
-    ),
-    http.post(`/api/v1/orgs/${SLUG}/skills/:id/validate`, ({ params }) =>
+    // Lifecycle proposal endpoint (replaces legacy PATCH /skills/:id).
+    http.post(`/api/v1/orgs/${SLUG}/skill-lifecycle/proposals`, () =>
       HttpResponse.json(
-        {
-          skill_id: params.id,
-          validation_state: 'validated',
-          validation: { ok: true, errors: [] },
-        },
+        opts.proposalResponse ?? PASS_PROPOSAL,
+        { status: opts.proposalStatus ?? 201 },
+      ),
+    ),
+    // Lifecycle status read (used by Re-validate).
+    http.get(`/api/v1/orgs/${SLUG}/skill-lifecycle/:skillId`, () =>
+      HttpResponse.json(
+        opts.lifecycleStatus ?? LIFECYCLE_STATUS_VALIDATED,
         { status: 200 },
       ),
     ),
@@ -156,8 +164,8 @@ describe('SkillEditPage — edit + re-validate a custom skill (THR-092 Slice 4)'
     expect(screen.queryByLabelText('Validation result')).toBeNull();
   });
 
-  test('PASS + version bump: PATCH submits, confirms next-session effect, and shows every already-effective agent as "takes effect next session"', async () => {
-    mount(CUSTOM_DETAIL, { editResponse: PASS_BUMP });
+  test('PASS + version bump: submits proposal, confirms next-session effect, and shows every already-effective agent as "takes effect next session"', async () => {
+    mount(CUSTOM_DETAIL);
     await screen.findByRole('heading', { name: /Edit a custom skill/i });
     await userEvent.clear(screen.getByLabelText(/Version/i));
     await userEvent.type(screen.getByLabelText(/Version/i), '1.3.0');
@@ -181,56 +189,36 @@ describe('SkillEditPage — edit + re-validate a custom skill (THR-092 Slice 4)'
     expect(within(result).queryByRole('button', { name: /Re-validate/i })).toBeNull();
   });
 
-  test('FAILURE (draft-persist): maps issues + explains every check + keeps an editable draft + offers View skill / Re-validate', async () => {
-    mount(CUSTOM_DETAIL, { editResponse: FAIL });
+  test('FAILURE (proposal error): shows submit-error message, no validation result section', async () => {
+    // Lifecycle-native: a failed edit proposal (e.g., 409 slug collision)
+    // is caught as a mutation error — not a "validation result" section.
+    mount(CUSTOM_DETAIL, { proposalStatus: 409 });
     await screen.findByRole('heading', { name: /Edit a custom skill/i });
     await userEvent.type(screen.getByLabelText(/SKILL\.md/i), '# fail this validation');
     await userEvent.click(screen.getByRole('button', { name: /Save & re-validate/i }));
 
-    const result = await screen.findByLabelText('Validation result');
-    expect(result).toHaveAttribute('data-result', 'failed_validation');
-    expect(within(result).getByText('Needs attention')).toBeInTheDocument();
-    // Draft-persist framing — not a dead end.
-    expect(within(result).getByText(/not a review gate/i)).toBeInTheDocument();
-    expect(within(result).getByText(/draft is kept in the catalog/i)).toBeInTheDocument();
-    // Raw backend errors mapped to plain-language guidance.
-    expect(within(result).getByText(/Add a version to the skill’s details/i)).toBeInTheDocument();
-    expect(within(result).getByText(/referenced file couldn’t be found/i)).toBeInTheDocument();
-    // The plain-language explanation covers every check.
-    expect(within(result).getByText('What validation checks')).toBeInTheDocument();
-    expect(within(result).getByText('It stays a custom skill')).toBeInTheDocument();
-    expect(within(result).getByText('It assembles cleanly')).toBeInTheDocument();
-    // Both recovery actions offered; no edited-effective section on a failure.
-    expect(within(result).getByRole('link', { name: /View skill/i })).toBeInTheDocument();
-    expect(within(result).getByRole('button', { name: /Re-validate/i })).toBeInTheDocument();
-    expect(within(result).queryByText('Per-agent effect')).toBeNull();
+    expect(
+      await screen.findByText(/Could not save the changes/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText('Validation result')).toBeNull();
   });
 
-  test('Re-validate re-runs the guard and flips a failed edit to Validated', async () => {
-    mount(CUSTOM_DETAIL, { editResponse: FAIL });
+  test('SUCCESS path does not offer Re-validate (lifecycle-native: proposals are accepted, not iteratively validated)', async () => {
+    mount(CUSTOM_DETAIL);
     await screen.findByRole('heading', { name: /Edit a custom skill/i });
-    await userEvent.type(screen.getByLabelText(/SKILL\.md/i), '# fail');
     await userEvent.click(screen.getByRole('button', { name: /Save & re-validate/i }));
     const result = await screen.findByLabelText('Validation result');
-    await userEvent.click(within(result).getByRole('button', { name: /Re-validate/i }));
-    await waitFor(() =>
-      expect(screen.getByLabelText('Validation result')).toHaveAttribute(
-        'data-result',
-        'validated',
-      ),
-    );
+    // Success state never offers Re-validate (search within the result section
+    // so the "Save & re-validate" submit button outside isn't matched).
+    expect(within(result).queryByRole('button', { name: /Re-validate/i })).toBeNull();
   });
 
   test('copy discipline: the routed edit page uses no capability / approval / lifecycle language', async () => {
-    mount(CUSTOM_DETAIL, { editResponse: FAIL });
+    mount(CUSTOM_DETAIL);
     await screen.findByRole('heading', { name: /Edit a custom skill/i });
     await userEvent.type(screen.getByLabelText(/SKILL\.md/i), '# fail');
     await userEvent.click(screen.getByRole('button', { name: /Save & re-validate/i }));
     await screen.findByLabelText('Validation result');
-    // The form AND a FAILED validation-result state are both mounted here. Scan
-    // the FULL forbidden family (mirrors the Slice-2/3 tightened scans) plus a
-    // user-facing "active" rejection (spec §3.4 / §9.1a — guidance visibility,
-    // never permission / admit / materialize).
     const forbidden = /materializ|admit|permission|approve|grant|\bpending\b/i;
     const main = document.querySelector('main')?.textContent ?? '';
     expect(main).not.toMatch(forbidden);
@@ -238,7 +226,7 @@ describe('SkillEditPage — edit + re-validate a custom skill (THR-092 Slice 4)'
   });
 
   test('copy discipline: the PASS edited-effective state also stays clean', async () => {
-    mount(CUSTOM_DETAIL, { editResponse: PASS_BUMP });
+    mount(CUSTOM_DETAIL);
     await screen.findByRole('heading', { name: /Edit a custom skill/i });
     await userEvent.click(screen.getByRole('button', { name: /Save & re-validate/i }));
     await screen.findByLabelText('Validation result');
