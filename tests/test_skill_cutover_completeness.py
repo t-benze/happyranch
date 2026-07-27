@@ -899,3 +899,317 @@ class TestMakeWorktreeGuardInDeliveredSkill:
                 ["git", "-C", str(test_repo), "branch", "-D", "task/TASK-AGENTS"],
                 capture_output=True, text=True,
             )
+
+
+# ── FINDING 1: Delivered workflow lookup — execute the exact skill workflow ─
+
+
+class TestDeliveredMakeWorktreeWorkflow:
+    """Prove the delivered make-worktree SKILL.md workflow can actually
+    locate and execute the guard from within a real task worktree in a
+    non-HappyRanch repo — the exact setup fragment the skill instructs
+    agents to run.
+
+    This is the FINDING-1 fix: the old WORKSPACE_ROOT calculation
+    (WORKTREE_ROOT/../../../) resolved only to repos/<repo>, not the
+    workspace, so the guard was unfindable. The new calculation
+    (WORKTREE_ROOT/../../../../../) correctly reaches the workspace root.
+    """
+
+    def _simulate_workflow(
+        self, tmp_path: Path, test_settings: Settings, test_runtime: OrgPaths,
+        guard_skill_dir: str,  # ".claude" or ".agents"
+    ) -> tuple[Path, Path, Path]:
+        """Set up a simulated workspace + non-HappyRanch repo + real
+        task worktree, materialize contracts, and return
+        (workspace, primary_repo, worktree_dir)."""
+        from runtime.orchestrator.workspace_adapters import inject_system_contracts
+        from runtime.orchestrator.context_builder import ContextBuilder
+
+        # Build a workspace with repos/ structure
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        (workspace / "repos").mkdir()
+
+        # Create a non-HappyRanch git repo under repos/
+        repo = workspace / "repos" / "my-project"
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=repo, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=repo, capture_output=True, text=True,
+        )
+        (repo / "README.md").write_text("# My Project\n")
+        subprocess.run(
+            ["git", "add", "README.md"], cwd=repo, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "initial"],
+            cwd=repo, capture_output=True, text=True,
+        )
+
+        # Create a task worktree inside the repo (as the skill instructs)
+        wt = repo / ".claude" / "worktrees" / "TASK-DELIVERED"
+        wt.parent.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", str(wt),
+             "-b", "task/TASK-DELIVERED"],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, f"worktree add failed: {r.stderr}"
+
+        # Materialize system contracts into the workspace
+        inject_system_contracts(workspace, test_settings, slug="test",
+                                context="task")
+
+        return workspace, repo, wt
+
+    def test_delivered_workflow_setup_and_verify_claude(
+        self, test_settings: Settings, tmp_path: Path, test_runtime: OrgPaths,
+    ):
+        """FINDING-1: The delivered make-worktree workflow (via .claude/skills)
+        executes against a real task worktree — setup succeeds, no-op verify
+        passes, primary edit detect fails."""
+        workspace, repo, wt = self._simulate_workflow(
+            tmp_path, test_settings, test_runtime, ".claude",
+        )
+
+        guard = workspace / ".claude" / "skills" / "make-worktree" / "worktree_guard.py"
+        assert guard.is_file(), f"Guard not delivered: {guard}"
+
+        # Execute the EXACT workflow from the delivered skill, substituting
+        # WORKTREE_ROOT the way the skill instructs
+        worktree_root = str(wt.resolve())
+        primary_root = str(repo.resolve())
+        task_id = "TASK-DELIVERED"  # matches the branch created by _simulate_workflow
+
+        # Step: setup
+        r = subprocess.run(
+            [
+                sys.executable, str(guard),
+                "setup",
+                "--worktree-root", worktree_root,
+                "--primary-root", primary_root,
+                "--task-id", "TASK-DELIVERED",
+            ],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, (
+            f"Delivered Claude guard setup failed:\n"
+            f"stdout: {r.stdout}\nstderr: {r.stderr}"
+        )
+        assert "WORKTREE_ROOT=" in r.stdout
+        assert "PRIMARY_ROOT=" in r.stdout
+
+        # Step: verify (no-op)
+        r = subprocess.run(
+            [
+                sys.executable, str(guard),
+                "verify",
+                "--worktree-root", worktree_root,
+            ],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, (
+            f"Delivered Claude guard no-op verify failed:\n"
+            f"stdout: {r.stdout}\nstderr: {r.stderr}"
+        )
+        assert "GUARD PASS" in r.stdout
+
+        # Step: primary edit → verify fails
+        (repo / "accidental.txt").write_text("bad edit\n")
+        r = subprocess.run(
+            [
+                sys.executable, str(guard),
+                "verify",
+                "--worktree-root", worktree_root,
+            ],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 1, (
+            f"Delivered Claude guard should detect primary edit:\n"
+            f"stdout: {r.stdout}\nstderr: {r.stderr}"
+        )
+        assert "GUARD FAILED" in r.stderr
+        assert "accidental.txt" in r.stderr
+
+        # Cleanup
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "remove", str(wt), "--force"],
+            capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "branch", "-D", "task/TASK-DELIVERED"],
+            capture_output=True, text=True,
+        )
+
+    def test_delivered_workflow_setup_and_verify_agents(
+        self, test_settings: Settings, tmp_path: Path, test_runtime: OrgPaths,
+    ):
+        """FINDING-1: The delivered make-worktree workflow (via .agents/skills)
+        executes against a real task worktree — setup succeeds, no-op verify
+        passes, primary edit detect fails."""
+        workspace, repo, wt = self._simulate_workflow(
+            tmp_path, test_settings, test_runtime, ".agents",
+        )
+
+        guard = workspace / ".agents" / "skills" / "make-worktree" / "worktree_guard.py"
+        assert guard.is_file(), f"Guard not delivered to .agents: {guard}"
+
+        worktree_root = str(wt.resolve())
+        primary_root = str(repo.resolve())
+        # Must match the branch name created in _simulate_workflow:
+        # task/TASK-DELIVERED
+        task_id = "TASK-DELIVERED"
+
+        # Step: setup
+        r = subprocess.run(
+            [
+                sys.executable, str(guard),
+                "setup",
+                "--worktree-root", worktree_root,
+                "--primary-root", primary_root,
+                "--task-id", task_id,
+            ],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, (
+            f"Delivered Agents guard setup failed:\n"
+            f"stdout: {r.stdout}\nstderr: {r.stderr}"
+        )
+
+        # Step: verify (no-op)
+        r = subprocess.run(
+            [
+                sys.executable, str(guard),
+                "verify",
+                "--worktree-root", worktree_root,
+            ],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, "Agents guard no-op verify must pass"
+        assert "GUARD PASS" in r.stdout
+
+        # Step: primary edit → fail
+        (repo / "bad.txt").write_text("edit\n")
+        r = subprocess.run(
+            [
+                sys.executable, str(guard),
+                "verify",
+                "--worktree-root", worktree_root,
+            ],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 1, "Agents guard must detect primary edit"
+        assert "GUARD FAILED" in r.stderr
+
+        # Cleanup
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "remove", str(wt), "--force"],
+            capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "branch", "-D", "task/TASK-AGENTS-DEL"],
+            capture_output=True, text=True,
+        )
+
+    def test_delivered_worktree_edit_not_accused_claude(
+        self, test_settings: Settings, tmp_path: Path, test_runtime: OrgPaths,
+    ):
+        """FINDING-1: A legitimate edit in the task worktree does NOT
+        falsely accuse the primary checkout when run through the delivered
+        Claude workflow."""
+        workspace, repo, wt = self._simulate_workflow(
+            tmp_path, test_settings, test_runtime, ".claude",
+        )
+
+        guard = workspace / ".claude" / "skills" / "make-worktree" / "worktree_guard.py"
+        worktree_root = str(wt.resolve())
+        primary_root = str(repo.resolve())
+        task_id = "TASK-DELIVERED"  # matches the branch created by _simulate_workflow
+
+        # Setup
+        r = subprocess.run(
+            [sys.executable, str(guard), "setup",
+             "--worktree-root", worktree_root,
+             "--primary-root", primary_root,
+             "--task-id", task_id],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, f"setup failed: {r.stderr}"
+
+        # Edit in the worktree (legitimate)
+        (wt / "feature.py").write_text("print('hello')\n")
+
+        # Edit in the worktree (legitimate)
+        (wt / "feature.py").write_text("print('hello')\n")
+
+        # Verify must pass — worktree edits are never accused
+        r = subprocess.run(
+            [sys.executable, str(guard), "verify",
+             "--worktree-root", worktree_root],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, (
+            f"Worktree edit falsely accused primary:\n"
+            f"stdout: {r.stdout}\nstderr: {r.stderr}"
+        )
+
+        # Cleanup
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "remove", str(wt), "--force"],
+            capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "branch", "-D", "task/TASK-WT-EDIT"],
+            capture_output=True, text=True,
+        )
+
+    def test_delivered_workflow_workspace_root_computed_correctly(
+        self, test_settings: Settings, tmp_path: Path, test_runtime: OrgPaths,
+    ):
+        """FINDING-1: The WORKSPACE_ROOT calculation in the delivered
+        SKILL.md matches the actual workspace root by executing the
+        exact shell computation from the skill."""
+        workspace, repo, wt = self._simulate_workflow(
+            tmp_path, test_settings, test_runtime, ".claude",
+        )
+
+        # Verify the skill's workspace root computation works:
+        # WORKSPACE_ROOT=$(cd "$WORKTREE_ROOT/../../../../.." && pwd -P)
+        worktree_root = str(wt.resolve())
+        computed = subprocess.run(
+            ["/bin/bash", "-c",
+             f'cd "$1/../../../../.." && pwd -P', "_",
+             worktree_root],
+            capture_output=True, text=True,
+        )
+        assert computed.returncode == 0, f"Shell computation failed: {computed.stderr}"
+        computed_ws = Path(computed.stdout.strip()).resolve()
+        actual_ws = workspace.resolve()
+        assert computed_ws == actual_ws, (
+            f"WORKSPACE_ROOT mismatch:\n"
+            f"  Computed: {computed_ws}\n"
+            f"  Actual:   {actual_ws}\n"
+            f"  Worktree: {worktree_root}"
+        )
+
+        # Now verify the guard exists at the computed path
+        guard_claude = computed_ws / ".claude" / "skills" / "make-worktree" / "worktree_guard.py"
+        guard_agents = computed_ws / ".agents" / "skills" / "make-worktree" / "worktree_guard.py"
+        assert guard_claude.is_file(), f"Guard not at computed .claude path: {guard_claude}"
+        assert guard_agents.is_file(), f"Guard not at computed .agents path: {guard_agents}"
+
+        # Cleanup
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "remove", str(wt), "--force"],
+            capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "branch", "-D", "task/TASK-DELIVERED"],
+            capture_output=True, text=True,
+        )

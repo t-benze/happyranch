@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -100,6 +101,22 @@ def _checksum_file(repo: Path, relpath: str) -> str:
     return out
 
 
+def _checksum_untracked(repo: Path, relpath: str) -> str:
+    """Compute a SHA-256 content hash for an untracked file.
+
+    Reads the file from disk (untracked files have no git blob yet)
+    and hashes its content. Returns empty string on unreadable file.
+    """
+    filepath = repo / relpath
+    try:
+        data = filepath.read_bytes()
+    except (OSError, PermissionError):
+        return ""
+    hasher = hashlib.sha256()
+    hasher.update(data)
+    return hasher.hexdigest()
+
+
 def _baseline_primary(primary: Path) -> dict:
     """Capture a robust state fingerprint of the primary checkout.
 
@@ -140,9 +157,18 @@ def _baseline_primary(primary: Path) -> dict:
                     staged_files[relpath] = h
     baseline["staged_files"] = staged_files
 
-    # Untracked files
-    untracked = _git_out(primary, "ls-files", "--others", "--exclude-standard")
-    baseline["untracked"] = sorted(untracked.splitlines()) if untracked else []
+    # Untracked files: capture path + content hash so mutations are detected.
+    # Use -z for NUL-separated output (safe for filenames with spaces).
+    untracked_raw = _git_out(primary, "ls-files", "--others", "--exclude-standard", "-z")
+    untracked_hashes: dict[str, str] = {}
+    if untracked_raw:
+        for relpath in untracked_raw.split("\0"):
+            relpath = relpath.strip()
+            if relpath:
+                h = _checksum_untracked(primary, relpath)
+                if h:
+                    untracked_hashes[relpath] = h
+    baseline["untracked"] = untracked_hashes
 
     return baseline
 
@@ -226,7 +252,7 @@ def cmd_setup(
     baseline = _baseline_primary(pr)
 
     snapshot = {
-        "version": 2,
+        "version": 3,
         "primary_root": str(pr),
         "worktree_root": str(wt),
         "task_id": task_id,
@@ -315,7 +341,6 @@ def cmd_verify(worktree_root: str) -> int:
         current_hash = current_dirty.get(relpath, "")
         if current_hash and current_hash != baseline_hash:
             new_changed_paths.add(relpath)
-            break  # One mutation is enough for this path
 
     # 3. Check staged files: content hash mutation or new staged files
     baseline_staged = baseline.get("staged_files", {})
@@ -329,12 +354,24 @@ def cmd_verify(worktree_root: str) -> int:
         if relpath not in baseline_staged:
             new_changed_paths.add(relpath)
 
-    # 4. Check untracked files: new untracked files
-    baseline_untracked = set(baseline.get("untracked", []))
-    current_untracked = set(current_baseline.get("untracked", []))
-    new_untracked = current_untracked - baseline_untracked
-    for relpath in new_untracked:
-        new_changed_paths.add(relpath)
+    # 4. Check untracked files: new untracked files OR content mutations
+    baseline_untracked: dict[str, str] = baseline.get("untracked", {})
+    current_untracked: dict[str, str] = current_baseline.get("untracked", {})
+    # New files not in baseline
+    for relpath in current_untracked:
+        if relpath not in baseline_untracked:
+            new_changed_paths.add(relpath)
+    # Content mutations of already-baselined untracked files
+    for relpath, baseline_hash in baseline_untracked.items():
+        current_hash = current_untracked.get(relpath, "")
+        if current_hash and current_hash != baseline_hash:
+            new_changed_paths.add(relpath)
+        elif not current_hash and relpath in current_untracked:
+            # Hash retrieval failed now but succeeded at baseline — flag
+            new_changed_paths.add(relpath)
+        elif not current_hash:
+            # File disappeared — mutation
+            new_changed_paths.add(relpath)
 
     # ── No new changes? Pass. ──────────────────────────────────────
     if not new_changed_paths:
@@ -348,10 +385,12 @@ def cmd_verify(worktree_root: str) -> int:
     changed_untracked: list[str] = []
 
     # Re-check each path against current state for accurate categorization
+    # current_untracked is a dict {path: hash}
+    cur_untracked_set = set(current_untracked.keys())
     for path in sorted(new_changed_paths):
         # Determine category by checking what kind of change it is
         in_staged = path in current_staged or path in baseline_staged
-        in_untracked = path in current_untracked
+        in_untracked = path in cur_untracked_set
         if in_untracked:
             changed_untracked.append(path)
         elif in_staged:
@@ -395,24 +434,54 @@ def cmd_verify(worktree_root: str) -> int:
     lines.append("")
 
     # ── Preservation-first recovery instructions ────────────────────
+    # Use shlex.quote() for ALL path-bearing shell commands so a
+    # primary/worktree root with spaces, quotes, $, semicolons, or
+    # other shell metacharacters is safe to copy-paste.
+    pr_quoted = shlex.quote(str(pr))
+    wt_quoted = shlex.quote(str(wt))
+    recovery_tarball = shlex.quote(str(Path(wt) / "primary-recovery.tar.gz"))
+
     lines.append("  To preserve your changes and move them to the worktree:")
     lines.append("")
     lines.append("  1. Inspect what changed in the primary:")
-    lines.append(f"     cd {pr}")
+    lines.append(f"     cd {pr_quoted}")
     lines.append(f"     git diff")
     lines.append(f"     git diff --cached  # staged changes")
     lines.append(f"     git status")
     lines.append("")
-    lines.append("  2. Save a patch of your primary changes:")
-    lines.append(f"     cd {pr}")
-    lines.append(f"     git diff > /tmp/guard-recovery.patch")
-    lines.append(f"     git diff --cached >> /tmp/guard-recovery.patch")
+    lines.append("  2. Export a complete copy of ALL primary changes")
+    lines.append("     (tracked + staged + untracked) into a recovery archive")
+    lines.append("     stored safely in the worktree:")
     lines.append("")
-    lines.append("  3. Apply the saved patch to the WORKTREE:")
-    lines.append(f"     cd {wt}")
-    lines.append(f"     patch -p1 < /tmp/guard-recovery.patch")
+    if changed_tracked or changed_staged:
+        lines.append("     # Save a patch of tracked+staged changes:")
+        lines.append(f"     cd {pr_quoted}")
+        lines.append(f"     git diff > /tmp/guard-recovery.patch")
+        lines.append(f"     git diff --cached >> /tmp/guard-recovery.patch")
+    if changed_untracked:
+        lines.append("     # Archive untracked files (named as data above):")
+        lines.append(f"     cd {pr_quoted}")
+        lines.append(f"     tar czf {recovery_tarball} \\")
+        # List untracked files as separate lines (readable, not interpolated into commands)
+        for p in changed_untracked:
+            lines.append(f"       -C {pr_quoted} {shlex.quote(p)} \\")
+        # Remove trailing backslash on last line
+        if changed_untracked:
+            lines[-1] = lines[-1].rstrip(" \\")
     lines.append("")
-    lines.append("  4. Review the worktree state before proceeding.")
+    lines.append("  3. Inspect the recovery archive before restoring:")
+    if changed_untracked:
+        lines.append(f"     tar tzf {recovery_tarball}")
+    lines.append("")
+    lines.append("  4. Restore to the worktree (review first, do NOT blindly overwrite):")
+    if changed_tracked or changed_staged:
+        lines.append(f"     cd {wt_quoted}")
+        lines.append(f"     patch -p1 < /tmp/guard-recovery.patch")
+    if changed_untracked:
+        lines.append(f"     cd {wt_quoted}")
+        lines.append(f"     tar xzf {recovery_tarball}")
+    lines.append("")
+    lines.append("  5. After restoring, verify the worktree state before proceeding.")
     lines.append("")
     lines.append("  DO NOT run 'git checkout', 'git reset --hard', or 'rm' on")
     lines.append("  the primary checkout — you will lose your work.")

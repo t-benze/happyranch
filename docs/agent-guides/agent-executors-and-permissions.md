@@ -43,14 +43,18 @@ script (``worktree_guard.py``) alongside its ``SKILL.md``. The guard runs at
 worktree setup and verify points, validates repository/worktree identity
 (same git common directory + registered worktree), records canonical absolute
 primary and task-worktree roots, snapshots the primary checkout baseline
-with content hashes, and at verify detects accidental primary-checkout edits —
-including mutations of already-dirty paths, new staged files, and new untracked
-files. The guard fails with preservation-first recovery (``git diff`` +
-``patch``) and never suggests destructive commands. It is a narrow,
-non-permission tool with no DB, API, schema, audit, auth, notification, or
-sandbox footprint. It is available to all executors via the delivered skill
-script at ``.claude/skills/make-worktree/worktree_guard.py`` or
-``.agents/skills/make-worktree/worktree_guard.py``.
+with content hashes (including untracked files — not just names), and at
+verify detects accidental primary-checkout edits — including mutations of
+already-dirty tracked paths, already-staged files, and already-untracked
+files. The guard fails with preservation-first recovery: ``git diff`` +
+``patch`` for tracked and staged changes, ``tar`` archive for untracked
+content, with all path-bearing shell commands shell-quoted via
+``shlex.quote()``. It never suggests destructive commands. The delivered
+skill computes the workspace root as 5 parents above the task worktree
+(``$WORKTREE_ROOT/../../../../..``) and locates the guard under
+``.claude/skills/`` then ``.agents/skills/``, failing loudly if neither
+exists. It is a narrow, non-permission tool with no DB, API, schema, audit,
+auth, notification, or sandbox footprint.
 
 **Custom CLI profiles** (example — OpenClaw):
 

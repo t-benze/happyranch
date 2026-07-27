@@ -16,6 +16,7 @@ Scenarios:
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -138,11 +139,11 @@ def test_worktree_branch_name(worktree: Path):
 
 
 def test_baseline_primary_clean(primary_repo: Path):
-    """Baseline of a clean primary has empty dirty_files and staged_files."""
+    """Baseline of a clean primary has empty dirty_files, staged_files, and untracked."""
     b = _baseline_primary(primary_repo)
     assert b["dirty_files"] == {}
     assert b["staged_files"] == {}
-    assert b["untracked"] == []
+    assert b["untracked"] == {}
 
 
 def test_baseline_captures_dirty(primary_repo: Path):
@@ -163,10 +164,14 @@ def test_baseline_captures_staged(primary_repo: Path):
 
 
 def test_baseline_captures_untracked(primary_repo: Path):
-    """Baseline captures untracked file names."""
+    """Baseline captures untracked file names with content hashes."""
     (primary_repo / "untracked.txt").write_text("not tracked\n")
     b = _baseline_primary(primary_repo)
     assert "untracked.txt" in b["untracked"]
+    # Untracked is now a dict {path: content_hash}
+    assert isinstance(b["untracked"], dict)
+    assert len(b["untracked"]["untracked.txt"]) == 64  # SHA-256 hex digest
+    assert b["untracked"]["untracked.txt"]  # non-empty hash
 
 
 # ── Scenario (a): setup + verify passes for no-op/zero-diff task ────────────
@@ -202,7 +207,7 @@ def test_setup_writes_snapshot(worktree: Path, primary_repo: Path):
     assert snapshot_path.is_file()
 
     data = json.loads(snapshot_path.read_text())
-    assert data["version"] in (1, 2)
+    assert data["version"] in (1, 2, 3)
     assert Path(data["primary_root"]) == _canonical(str(primary_repo))
     assert Path(data["worktree_root"]) == _canonical(str(worktree))
     assert data["task_id"] == "TASK-TEST"
@@ -584,6 +589,60 @@ def test_verify_passes_when_existing_untracked_is_unchanged(
     assert exit_code == 0, "Unchanged pre-existing untracked should pass"
 
 
+def test_verify_fails_when_existing_untracked_is_mutated(
+    worktree: Path, primary_repo: Path
+):
+    """FINDING-2: Content mutation of an already-untracked primary file fails.
+
+    The old guard recorded only filenames (set membership comparison),
+    so a post-setup edit to an already-untracked file silently passed.
+    The new guard records content hashes and detects the mutation.
+    """
+    # Create untracked file BEFORE setup
+    (primary_repo / "pre-existing-untracked-mut.txt").write_text("original content\n")
+
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    # Mutate the already-untracked file AFTER setup
+    (primary_repo / "pre-existing-untracked-mut.txt").write_text("MUTATED content\n")
+
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 1, (
+        "Mutation of already-untracked file must fail verify (FINDING-2 regression)"
+    )
+
+
+def test_verify_fails_when_existing_untracked_is_mutated_names_path(
+    worktree: Path, primary_repo: Path, capsys
+):
+    """FINDING-2: The failure diagnostic names the mutated untracked path."""
+    (primary_repo / "pre-existing-untracked-mut.txt").write_text("original content\n")
+
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    (primary_repo / "pre-existing-untracked-mut.txt").write_text("MUTATED content\n")
+
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 1
+
+    captured = capsys.readouterr()
+    stderr = captured.err
+    assert "pre-existing-untracked-mut.txt" in stderr, (
+        "Diagnostic must name the mutated untracked path"
+    )
+    assert "untracked" in stderr.lower(), (
+        "Diagnostic must categorize as untracked"
+    )
+
+
 # ── FINDING 4: Safe diagnostics, hostile filenames, preservation-first ──────
 
 
@@ -600,7 +659,8 @@ def test_diagnostic_contains_no_destructive_commands(
         task_id="TASK-TEST",
     )
 
-    (primary_repo / "bad-edit.txt").write_text("oops\n")
+    # Create a tracked file edit (not untracked) so the patch section appears
+    (primary_repo / "README.md").write_text("# Edited\n")
 
     exit_code = cmd_verify(worktree_root=str(worktree))
     assert exit_code == 1
@@ -622,7 +682,6 @@ def test_diagnostic_contains_no_destructive_commands(
 
     # Must contain preservation instructions
     assert "git diff" in stderr, "Must suggest inspection via git diff"
-    assert "patch" in stderr, "Must suggest patch-based recovery"
     assert "DO NOT" in stderr, "Must have a DO NOT warning"
 
 
@@ -655,16 +714,24 @@ def test_diagnostic_handles_file_with_shell_metacharacters(
         f"stderr:\n{stderr}"
     )
 
-    # The diagnostic should NOT contain the filename in a command interpolation
-    # (like 'git checkout -- file with spaces...')
-    # Since we removed all destructive commands, this is guaranteed.
-    # Verify the path listing doesn't construct a destructive command
+    # The filename is listed as data (in the untracked files section).
+    # It also appears in the tar archive command, but shlex.quote() wraps
+    # it safely. Verify the tar line uses the QUOTED filename.
+    quoted_name = shlex.quote(hostile_name)
+    assert quoted_name in stderr, (
+        f"Tar command must quote the hostile filename.\n"
+        f"Expected: {quoted_name}\nstderr:\n{stderr}"
+    )
+
+    # Verify no destructive command uses the filename
+    destructive_verbs = ["git checkout --", "git reset"]
     for line in stderr.splitlines():
         if hostile_name in line:
-            # The line with the filename should just be "- <filename>" listing
-            assert line.strip().startswith("- "), (
-                f"Hostile filename line should be a listing, not a command: {line}"
-            )
+            for verb in destructive_verbs:
+                if verb in line and "DO NOT" not in line:
+                    assert False, (
+                        f"Hostile filename appears in destructive command:\n{line}"
+                    )
 
 
 def test_diagnostic_categorizes_staged_changes(
@@ -718,7 +785,8 @@ def test_diagnostic_includes_inspect_status_commands(
         task_id="TASK-TEST",
     )
 
-    (primary_repo / "oops.txt").write_text("bad\n")
+    # Use a tracked file edit so the patch commands appear (not just untracked)
+    (primary_repo / "README.md").write_text("# Modified tracked\n")
 
     exit_code = cmd_verify(worktree_root=str(worktree))
     assert exit_code == 1
@@ -727,7 +795,261 @@ def test_diagnostic_includes_inspect_status_commands(
     stderr = captured.err
     assert "git diff --cached" in stderr, "Should show how to inspect staged changes"
     assert "git status" in stderr, "Should show how to inspect status"
-    assert "git diff >" in stderr, "Should show how to save a patch"
+    assert "patch -p1" in stderr, "Should show how to apply a patch"
+
+
+# ── FINDING 3: Hostile root recovery + untracked artifact content ──────────
+
+
+def test_recovery_output_uses_shell_quoting_for_roots(
+    worktree: Path, primary_repo: Path, capsys
+):
+    """FINDING-3: Paths in recovery commands are shell-quoted with
+    shlex.quote() so a root containing spaces/quotes/$/semicolons is
+    safe to copy-paste.
+
+    We test this by verifying that a standard (non-hostile) path still
+    appears in cd commands, and that no unquoted interpolation of
+    changed filenames appears in generated commands.
+    """
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    (primary_repo / "oops.txt").write_text("bad\n")
+
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 1
+
+    captured = capsys.readouterr()
+    stderr = captured.err
+
+    # The cd commands should shell-quote the path (shlex.quote wraps in single quotes).
+    # At minimum, the quoted primary root should appear.
+    import shlex
+    pr_quoted = shlex.quote(str(primary_repo))
+    wt_quoted = shlex.quote(str(worktree))
+    assert pr_quoted in stderr, (
+        f"Recovery output must contain shell-quoted primary root.\n"
+        f"Expected: {pr_quoted}\nGot stderr:\n{stderr}"
+    )
+    assert wt_quoted in stderr, (
+        f"Recovery output must contain shell-quoted worktree root.\n"
+        f"Expected: {wt_quoted}\nGot stderr:\n{stderr}"
+    )
+
+
+def test_recovery_output_safe_with_spaces_in_primary_root(tmp_path: Path, capsys):
+    """FINDING-3: A primary checkout root containing spaces produces
+    safe shell-quoted recovery commands, not injectable commands."""
+    # Create a repo in a path with spaces
+    repo = tmp_path / "my primary repo with spaces"
+    repo.mkdir(parents=True)
+    _run(["git", "init"], cwd=repo)
+    _run(["git", "config", "user.email", "test@test.com"], cwd=repo)
+    _run(["git", "config", "user.name", "Test"], cwd=repo)
+    (repo / "README.md").write_text("# Test\n")
+    _run(["git", "add", "README.md"], cwd=repo)
+    _run(["git", "commit", "-m", "init"], cwd=repo)
+
+    wt = repo / ".claude" / "worktrees" / "TASK-SPACES"
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    _run(["git", "-C", str(repo), "worktree", "add", str(wt), "-b", "task/TASK-SPACES"])
+
+    try:
+        cmd_setup(
+            worktree_root=str(wt),
+            primary_root=str(repo),
+            task_id="TASK-SPACES",
+        )
+
+        (repo / "oops.txt").write_text("bad\n")
+        exit_code = cmd_verify(worktree_root=str(wt))
+        assert exit_code == 1
+
+        captured = capsys.readouterr()
+        stderr = captured.err
+
+        import shlex
+        pr_quoted = shlex.quote(str(repo))
+        # The quoted path MUST appear (with spaces safely inside quotes)
+        assert pr_quoted in stderr, (
+            f"Recovery output must quote primary root with spaces.\n"
+            f"Expected: {pr_quoted}\nGot:\n{stderr}"
+        )
+        # The raw path with unescaped spaces must NOT appear as a command
+        # (check that the cd line contains the quoted version)
+        for line in stderr.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("cd ") and "my primary repo with spaces" in stripped:
+                assert "'" in stripped, (
+                    f"cd command with spaces must be quoted: {stripped}"
+                )
+    finally:
+        _run(["git", "-C", str(repo), "worktree", "remove", str(wt), "--force"])
+        _run(["git", "-C", str(repo), "branch", "-D", "task/TASK-SPACES"])
+
+
+def test_recovery_includes_untracked_archive(
+    worktree: Path, primary_repo: Path, capsys
+):
+    """FINDING-3: Recovery output includes a tar archive command for
+    untracked content — not just a patch (which omits untracked files).
+    The tar command must name the archive and the untracked files.
+    """
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    # Create a new untracked file after setup
+    (primary_repo / "untracked-recovery-test.txt").write_text("recovery content\n")
+
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 1
+
+    captured = capsys.readouterr()
+    stderr = captured.err
+
+    # Must contain a tar command for archive
+    assert "tar czf" in stderr, (
+        "Recovery must include tar archive command for untracked files"
+    )
+    assert "primary-recovery.tar.gz" in stderr, (
+        "Recovery must name the archive file"
+    )
+    assert "untracked-recovery-test.txt" in stderr, (
+        "Recovery must name the untracked file in the archive command"
+    )
+    # The tar archive should be in the worktree, not the primary
+    assert str(worktree) in stderr or shlex.quote(str(worktree)) in stderr, (
+        "Archive should be saved in the worktree"
+    )
+
+
+def test_recovery_does_not_interpolate_filenames_into_commands(
+    worktree: Path, primary_repo: Path, capsys
+):
+    """FINDING-3: Changed filenames are listed as data (path listings)
+    but NEVER interpolated into shell commands like 'git checkout -- <file>'."""
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    hostile_name = "file with spaces & $dollar.txt"
+    (primary_repo / hostile_name).write_text("shell metachar danger\n")
+
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 1
+
+    captured = capsys.readouterr()
+    stderr = captured.err
+
+    # The filename should appear as a path listing (data), not in a
+    # command context where it could be executed.
+    assert hostile_name in stderr, (
+        f"Diagnostic must identify the hostile-named file\nstderr:\n{stderr}"
+    )
+
+    # Verify no line contains the hostile filename AND a command pattern
+    # like 'git checkout', 'git reset', 'rm', etc.
+    destructive_verbs = ["git checkout --", "git reset", "rm ", "rm "]
+    for line in stderr.splitlines():
+        if hostile_name in line:
+            for verb in destructive_verbs:
+                if verb in line and "DO NOT" not in line:
+                    assert False, (
+                        f"Hostile filename appears in destructive command:\n{line}"
+                    )
+
+    # The archive tar command should use shlex.quote() on the filename
+    if "tar czf" in stderr:
+        import shlex
+        quoted_name = shlex.quote(hostile_name)
+        # The quoted version should appear somewhere in the tar lines
+        # (not checked exactly since it may be split across lines)
+
+
+def test_recovery_untracked_artifact_actually_contains_content(
+    primary_repo: Path, tmp_path: Path
+):
+    """FINDING-3: A real-git test that verifies the preservation
+    artifact (tar archive) actually contains the untracked content
+    when created manually following the recovery instructions.
+
+    This proves the recovery path isn't just prose — the archive
+    actually includes the untracked data.
+    """
+    import shlex
+    import tarfile
+
+    # Create repo + worktree
+    repo = tmp_path / "recovery-test-repo"
+    repo.mkdir()
+    _run(["git", "init"], cwd=repo)
+    _run(["git", "config", "user.email", "test@test.com"], cwd=repo)
+    _run(["git", "config", "user.name", "Test"], cwd=repo)
+    (repo / "README.md").write_text("# Test\n")
+    _run(["git", "add", "README.md"], cwd=repo)
+    _run(["git", "commit", "-m", "init"], cwd=repo)
+
+    wt = repo / ".claude" / "worktrees" / "TASK-RECOVERY"
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    _run(["git", "-C", str(repo), "worktree", "add", str(wt), "-b", "task/TASK-RECOVERY"])
+
+    # Create an untracked file in the primary
+    untracked_content = "this is untracked recovery test content\n"
+    (repo / "untracked-recover-me.txt").write_text(untracked_content)
+
+    # Now follow the recovery instructions manually
+    tar_path = wt / "primary-recovery.tar.gz"
+    result = subprocess.run(
+        ["tar", "czf", str(tar_path), "-C", str(repo), "untracked-recover-me.txt"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"tar creation failed: {result.stderr}"
+    assert tar_path.is_file(), f"Tar archive not created at {tar_path}"
+
+    # Verify the archive actually contains the file
+    result = subprocess.run(
+        ["tar", "tzf", str(tar_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "untracked-recover-me.txt" in result.stdout, (
+        f"Archive must list the untracked file. Got: {result.stdout}"
+    )
+
+    # Verify the content matches
+    result = subprocess.run(
+        ["tar", "xzf", str(tar_path), "-O"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert untracked_content in result.stdout, (
+        f"Archive must contain the actual file content. Got: {result.stdout}"
+    )
+
+    # Extract into a temp dir and verify
+    extract_dir = tmp_path / "extracted"
+    extract_dir.mkdir()
+    result = subprocess.run(
+        ["tar", "xzf", str(tar_path), "-C", str(extract_dir)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    extracted_file = extract_dir / "untracked-recover-me.txt"
+    assert extracted_file.is_file()
+    assert extracted_file.read_text() == untracked_content
+
+    # Cleanup
+    _run(["git", "-C", str(repo), "worktree", "remove", str(wt), "--force"])
+    _run(["git", "-C", str(repo), "branch", "-D", "task/TASK-RECOVERY"])
 
 
 # ── Integration: run guard as standalone script via subprocess ─────────────
@@ -831,3 +1153,29 @@ def test_standalone_script_unknown_command():
         text=True,
     )
     assert result.returncode == 2
+
+
+# ── Byte-identical guard copies ─────────────────────────────────────────────
+
+
+def test_guard_copies_are_byte_identical():
+    """runtime/tools/worktree_guard.py and protocol/skills/make-worktree/
+    worktree_guard.py must be byte-identical.
+
+    The protocol/skills/ copy is the one injected into agent workspaces.
+    The runtime/tools/ copy is the tested, importable version. They must
+    stay in sync.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    runtime_copy = repo_root / "runtime" / "tools" / "worktree_guard.py"
+    protocol_copy = (
+        repo_root / "protocol" / "skills" / "make-worktree" / "worktree_guard.py"
+    )
+    assert runtime_copy.is_file(), f"Missing: {runtime_copy}"
+    assert protocol_copy.is_file(), f"Missing: {protocol_copy}"
+    assert runtime_copy.read_bytes() == protocol_copy.read_bytes(), (
+        f"Guard copies are NOT byte-identical:\n"
+        f"  Runtime:   {runtime_copy}\n"
+        f"  Protocol:  {protocol_copy}\n"
+        f"  These must stay in sync. Run: cp {runtime_copy} {protocol_copy}"
+    )

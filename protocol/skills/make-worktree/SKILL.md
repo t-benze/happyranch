@@ -35,11 +35,19 @@ echo "PRIMARY_ROOT=$PRIMARY_ROOT"
 # 3. Locate the guard script — delivered alongside this skill file.
 #    The skill is injected into .claude/skills/make-worktree/ (Claude)
 #    or .agents/skills/make-worktree/ (AGENTS.md-based executors).
-#    The workspace root is 3 levels above the worktree:
-WORKSPACE_ROOT=$(cd "$WORKTREE_ROOT/../../.." && pwd -P)
+#    The workspace root is 5 parents above the task worktree
+#    (<workspace>/repos/<repo>/.claude/worktrees/<task_id>):
+WORKSPACE_ROOT=$(cd "$WORKTREE_ROOT/../../../../.." && pwd -P)
 GUARD="$WORKSPACE_ROOT/.claude/skills/make-worktree/worktree_guard.py"
 if [ ! -f "$GUARD" ]; then
     GUARD="$WORKSPACE_ROOT/.agents/skills/make-worktree/worktree_guard.py"
+fi
+if [ ! -f "$GUARD" ]; then
+    echo "ERROR: Cannot locate worktree_guard.py in .claude/skills/ or .agents/skills/" >&2
+    echo "  Workspace root: $WORKSPACE_ROOT" >&2
+    echo "  Expected at: .claude/skills/make-worktree/worktree_guard.py" >&2
+    echo "  or:          .agents/skills/make-worktree/worktree_guard.py" >&2
+    exit 2
 fi
 
 # 4. Activate the worktree-root guard — this snapshots the primary checkout
