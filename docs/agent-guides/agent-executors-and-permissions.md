@@ -258,8 +258,11 @@ store for LIST + REMOVE (standard daemon bearer auth — same posture as
 management reads/writes, not registration):
 
 - `GET /api/v1/executors/runtime/profiles` — lists every custom profile
-  in the runtime store: `name`, `command`, `adapter`, `command_adapter`,
-  plus a `present`/`path` signal mirroring `/health/prereqs`. **Custom profiles**
+  in the runtime store: `name`, `command`, canonical `workspace_adapter_id`
+  (workspace adapter selector) and `command_adapter_id` (command adapter
+  selector), plus deprecated aliases `adapter`, `adapter_id` (workspace
+  aliases only), and `command_adapter` (command alias only), with a
+  `present`/`path` signal mirroring `/health/prereqs`. **Custom profiles**
   derive `present`/`path` from the profile's declared `command`
   resolvability on the daemon's PATH (via `shutil.which`) — no
   `executors.json` entry is required. **Built-in** presence remains
