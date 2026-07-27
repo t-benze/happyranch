@@ -229,7 +229,7 @@ Queue behavior:
 
 ## Failure Handling
 
-- Executor failure: mark `failed`, preserve error summary, do not advance the successful-dream window.
+- Executor failure: mark `failed`, preserve error summary, do not advance the successful-dream window. When the executor produces a structured terminal result (e.g. Claude's ``--output-format json`` result envelope indicating session-limit or transport error), the classified terminal reason is used as the error summary instead of raw stderr; otherwise the pre-existing stderr-based error summary is preserved (THR-116).
 - Timeout: mark `timeout`, preserve timeout error, do not advance the successful-dream window.
 - Missing callback: mark `failed` or `timeout` using the same timeout boundary as invocation timeout.
 - Callback validation failure: mark `failed`, preserve validation error, do not write learnings or candidates.

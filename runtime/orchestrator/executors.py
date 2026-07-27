@@ -55,6 +55,12 @@ class ExecutorResult:
     # it over its legacy stdout/stderr string heuristic, and the per-provider
     # throttle uses it to drive 429 backoff.
     rate_limited: bool = False
+    # Classified terminal failure reason extracted from structured executor
+    # output (e.g. Claude's --output-format json result envelope).  None when
+    # no structured terminal result is available — callers fall back to
+    # ``error`` (THR-116).  Examples: ``session_limit``,
+    # ``transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR``.
+    terminal_error: str | None = None
 
 
 _TAIL_BYTES = 2000
@@ -254,6 +260,87 @@ def _parse_claude_session_id(stdout: str) -> str | None:
         return None
     sid = obj.get("session_id")
     return sid if isinstance(sid, str) and sid else None
+
+
+def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
+    """Parse Claude Code ``--output-format json`` stdout for a structured
+    terminal error reason on non-zero exit.
+
+    THR-116: When Claude exits non-zero, its stdout may carry a structured
+    JSON result envelope with a deterministic terminal error (e.g.
+    session-limit or UNKNOWN_CERTIFICATE_VERIFICATION_ERROR), while stderr
+    contains an unrelated workspace-trust warning.  This function extracts
+    the structured reason so dream-runner failures carry a classified reason
+    instead of incidental stderr noise.
+
+    Only the single documented in-repo terminal failure envelope shape is
+    validated: ``{"type": "result", "subtype": "error_during_execution",
+    "is_error": true, ...}`` (tests/test_headless_assistant.py
+    CLAUDE_RESULT_ERROR fixture).  Every other shape — ``subtype:
+    success``, non-``result`` event types, ``error_max_turns``,
+    ``error_lookalike``, ``error_unknown``, ``error/errors`` outside a
+    terminal result envelope, arbitrary ``error_*`` subtypes, missing
+    ``is_error: true``, malformed/non-dict JSON, and no-structured-output —
+    returns None so the compatible stderr-first error fallback wins.  No
+    generic ``claude_<suffix>`` or provider-taxonomy reasons are fabricated.
+
+    Returns a classified reason string like ``session_limit`` or
+    ``transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR``, or None
+    when no usable structured terminal result is available.
+    """
+    if not stdout or not stdout.strip():
+        return None
+    try:
+        obj = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+
+    # Only parse type:result events — ignore progress, system, and other
+    # non-terminal event types.
+    if obj.get("type") != "result":
+        return None
+
+    # Only parse the single documented terminal failure subtype —
+    # {type: result, subtype: success, ...} and every other error_*
+    # subtype (error_max_turns, error_lookalike, error_unknown, ...)
+    # must NOT produce a classified terminal error; they return None
+    # so the existing stderr-first raw error fallback wins.
+    subtype = obj.get("subtype")
+    if not isinstance(subtype, str) or subtype != "error_during_execution":
+        return None
+
+    # Require is_error: true — the documented terminal failure envelope
+    # (CLAUDE_RESULT_ERROR in test_headless_assistant.py) carries this
+    # marker.  Envelopes without it are incomplete and fall back to the
+    # raw error.
+    if obj.get("is_error") is not True:
+        return None
+
+    # ── Inspect result / errors for known terminal classifications ──
+    result = obj.get("result")
+    if isinstance(result, str) and result:
+        result_lower = result.lower()
+        if "certificate" in result_lower:
+            return "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+        if "session" in result_lower and ("limit" in result_lower or "max" in result_lower):
+            return "session_limit"
+
+    errors = obj.get("errors")
+    if isinstance(errors, list):
+        for err in errors:
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            if isinstance(msg, str):
+                msg_lower = msg.lower()
+                if "certificate" in msg_lower:
+                    return "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+                if "session" in msg_lower and "limit" in msg_lower:
+                    return "session_limit"
+
+    # Unrecognized / ambiguous error content → no classified reason;
+    # the existing stderr-first error fallback wins.
+    return None
 
 
 def _parse_codex_usage(stdout: str) -> TokenUsage | None:
@@ -521,6 +608,7 @@ def _run_command(
     session_id_parser: Callable[[str], "str | None"] | None = None,
     provider: str = "claude",
     on_throttle_event: "OnThrottleEvent | None" = None,
+    error_parser: Callable[[str, str], "str | None"] | None = None,
 ) -> ExecutorResult:
     """Run one agent subprocess under the per-provider throttle (issue #85).
 
@@ -579,6 +667,17 @@ def _run_command(
             error_summary = (full_stderr or full_stdout or "").strip()
             if error_summary:
                 error_summary = f": {error_summary}"
+            # THR-116: extract a classified terminal failure reason from
+            # structured executor output (e.g. Claude's JSON result envelope)
+            # so callers like dream_runner can persist a deterministic reason
+            # instead of incidental stderr noise.
+            terminal_error = None
+            if error_parser is not None:
+                try:
+                    terminal_error = error_parser(full_stdout, full_stderr)
+                except Exception as exc:
+                    logger.warning("error parser raised: %s", exc)
+                    terminal_error = None
             return ExecutorResult(
                 success=False,
                 duration_seconds=int(time.monotonic() - start_time),
@@ -588,6 +687,7 @@ def _run_command(
                 stderr_tail=stderr_tail,
                 error=f"Command exited with code {proc.returncode}{error_summary}",
                 rate_limited=rate_limited,
+                terminal_error=terminal_error,
             )
         token_usage: TokenUsage | None = None
         if usage_parser is not None:
@@ -753,6 +853,7 @@ class ClaudeExecutor:
             session_id_parser=_parse_claude_session_id,
             provider="claude",
             on_throttle_event=on_throttle_event,
+            error_parser=_parse_claude_terminal_error,
         )
 
 

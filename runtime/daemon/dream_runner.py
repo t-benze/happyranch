@@ -260,6 +260,11 @@ async def run_dream(
         AuditLogger(org_state.db).log_dream_failed(dream_id, dream.agent_name, reason="no_callback")
         return
     error = str(getattr(result, "error", "") or "executor_failed")
+    # THR-116: prefer a classified terminal reason extracted from structured
+    # executor output (e.g. Claude's JSON result envelope) over the raw
+    # stderr-based error summary so dream failures carry a deterministic
+    # reason instead of incidental noise.
+    reason = (getattr(result, "terminal_error", None) or error)
     if _is_timeout(result):
         # Spec "Failure Handling": timeout is a distinct terminal status; the
         # successful-dream window is not advanced (get_last_successful_dream
@@ -276,6 +281,6 @@ async def run_dream(
         dream_id,
         status=DreamStatus.FAILED,
         ended_at=datetime.now(timezone.utc),
-        error=error,
+        error=reason,
     )
-    AuditLogger(org_state.db).log_dream_failed(dream_id, dream.agent_name, reason=error)
+    AuditLogger(org_state.db).log_dream_failed(dream_id, dream.agent_name, reason=reason)

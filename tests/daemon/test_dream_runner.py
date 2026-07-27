@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from runtime.config import Settings
 from runtime.daemon.dream_runner import build_dream_prompt, run_dream
 from runtime.models import DreamRecord, DreamStatus, TokenUsage
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.executors import ClaudeExecutor
 from runtime.orchestrator.org_config import OrgConfig
 
 
@@ -202,3 +205,506 @@ async def test_run_dream_passes_org_paths_to_executor_factory(org_state):
 
     assert isinstance(captured["paths"], OrgPaths)
     assert captured["paths"].root == org_state.root
+
+
+# ── THR-116: terminal_error on executor failures ───────────────────────
+
+class FakeSessionLimitResult:
+    """Claude exited non-zero with a structured result envelope indicating
+    session-limit, plus unrelated stderr noise (workspace-trust warning)."""
+    success = False
+    error = "Command exited with code 1: Workspace trust warning: ..."
+    returncode = 1
+    session_id = "executor-session"
+    agent_session_id = None
+    token_usage = None
+    terminal_error = "session_limit"
+
+
+class FakeCertificateErrorResult:
+    """Claude exited non-zero with a structured result envelope indicating
+    UNKNOWN_CERTIFICATE_VERIFICATION_ERROR, plus unrelated stderr noise."""
+    success = False
+    error = "Command exited with code 1: Workspace trust warning: ..."
+    returncode = 1
+    session_id = "executor-session"
+    agent_session_id = None
+    token_usage = None
+    terminal_error = "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+
+
+class FakeNoStructuredResult:
+    """Executor exited non-zero with no structured terminal result —
+    terminal_error is None, so the fallback error should be used."""
+    success = False
+    error = "Command exited with code 2: fatal: something broke"
+    returncode = 2
+    session_id = "executor-session"
+    agent_session_id = None
+    token_usage = None
+    terminal_error = None
+
+
+class FakeStructuredResultExecutor:
+    def __init__(self, result):
+        self._result = result
+
+    def run(self, **kwargs):
+        return self._result
+
+
+async def test_run_dream_session_limit_classified_terminal_error(org_state):
+    """(a) Structured terminal session-limit result + unrelated stderr:
+    persisted dream.error and dream_failed audit reason must be the
+    classified 'session_limit', not the raw stderr-based error."""
+    _insert_pending_dream(org_state)
+    fake = FakeStructuredResultExecutor(FakeSessionLimitResult())
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_a, **_k: fake)
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert dream.error == "session_limit"
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == "session_limit"
+    # Must NOT contain the stderr noise.
+    assert "Workspace trust warning" not in dream.error
+
+
+async def test_run_dream_certificate_error_classified_terminal_error(org_state):
+    """(b) Structured UNKNOWN_CERTIFICATE_VERIFICATION_ERROR result +
+    unrelated stderr: persisted error and audit reason must be the
+    classified transport_error reason."""
+    _insert_pending_dream(org_state)
+    fake = FakeStructuredResultExecutor(FakeCertificateErrorResult())
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_a, **_k: fake)
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert dream.error == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+    # Must NOT contain the stderr noise.
+    assert "Workspace trust warning" not in dream.error
+
+
+async def test_run_dream_timeout_unchanged_by_terminal_error(org_state):
+    """(c) Existing timeout path remains distinct — timeout status and
+    dream_timeout audit action are unchanged."""
+    _insert_pending_dream(org_state)
+    fake = FakeExecutor(FakeTimeoutResult)
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_a, **_k: fake)
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.TIMEOUT
+    assert "timed out" in dream.error
+    actions = [r["action"] for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert "dream_timeout" in actions
+    assert "dream_failed" not in actions
+
+
+async def test_run_dream_no_callback_unchanged_by_terminal_error(org_state):
+    """(c) Existing successful/no-callback path remains distinct —
+    FAILED status with 'no_callback' error."""
+    _insert_pending_dream(org_state)
+    fake = FakeExecutor(FakeResult)
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_a, **_k: fake)
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert "no_callback" in dream.error
+    audit_rows = list(org_state.db.get_audit_logs("DREAM-001"))
+    actions = [r["action"] for r in audit_rows]
+    assert "dream_failed" in actions
+
+
+async def test_run_dream_no_structured_result_falls_back_to_error(org_state):
+    """(d) When terminal_error is None (no structured result), dream.error
+    and audit reason fall back to the pre-existing raw error string."""
+    _insert_pending_dream(org_state)
+    fake = FakeStructuredResultExecutor(FakeNoStructuredResult())
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_a, **_k: fake)
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert dream.error == "Command exited with code 2: fatal: something broke"
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == "Command exited with code 2: fatal: something broke"
+
+
+# ── THR-116 repair: real shipping-chain dream-runner tests ─────────────
+# These go through the real chain:
+#   mocked subprocess → ClaudeExecutor → production _run_command +
+#   _parse_claude_terminal_error → run_dream → dream.error + audit
+# The executors fixture provides a real ClaudeExecutor, not a lookalike
+# FakeStructuredResultExecutor with prepopulated terminal_error.
+
+
+def _popen_mock(returncode=0, stdout="", stderr="", pid=4242):
+    proc = MagicMock()
+    proc.pid = pid
+    proc.returncode = returncode
+    proc.communicate.return_value = (stdout, stderr)
+    return proc
+
+
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_session_limit(
+    mock_subprocess, _mock_resolve_binary, org_state,
+):
+    """Real-chain (session-limit): mocked subprocess produces
+    {type:result, subtype:error_during_execution} + workspace-trust stderr →
+    ClaudeExecutor.run() with production parser → run_dream →
+    dream.error == dream_failed.payload.reason == 'session_limit'."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_during_execution","is_error":true,'
+               '"result":"Session limit reached"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    mock_subprocess.Popen.assert_called_once()
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert dream.error == "session_limit"
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == "session_limit"
+    # Must NOT contain the stderr noise.
+    assert "Workspace trust warning" not in dream.error
+
+
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_certificate_error(
+    mock_subprocess, _mock_resolve_binary, org_state,
+):
+    """Real-chain (certificate): mocked subprocess produces
+    {type:result, subtype:error_during_execution, result: certificate...}
+    + workspace-trust stderr → ClaudeExecutor.run() with production parser
+    → run_dream → dream.error == dream_failed.payload.reason ==
+    'transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR'."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_during_execution","is_error":true,'
+               '"result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    mock_subprocess.Popen.assert_called_once()
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert dream.error == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+    assert "Workspace trust warning" not in dream.error
+
+
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_no_structured_result_fallback(
+    mock_subprocess, _mock_resolve_binary, org_state,
+):
+    """Real-chain (fallback): mocked subprocess produces non-JSON stdout
+    → ClaudeExecutor with production parser returns None → raw error wins."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=2,
+        stdout="not json",
+        stderr="fatal: something broke\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    mock_subprocess.Popen.assert_called_once()
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert "Command exited with code 2" in dream.error
+    assert "fatal: something broke" in dream.error
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert "Command exited with code 2" in actions[-1]["payload"]["reason"]
+
+
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_subtype_success_no_terminal_error(
+    mock_subprocess, _mock_resolve_binary, org_state,
+):
+    """Real-chain (false-precedence): mocked subprocess produces
+    {type:result, subtype:success, result: certificate...} —
+    must NOT produce a terminal_error; raw error wins."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"success",'
+               '"result":"certificate verification failed"}',
+        stderr="Workspace trust warning\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    mock_subprocess.Popen.assert_called_once()
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    # Raw error must contain the stderr noise — no classified reason available.
+    assert "Workspace trust warning" in dream.error
+    assert "certificate" not in dream.error.lower() or "session" not in dream.error.lower()
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+
+
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_error_lookalike_falls_back_to_raw(
+    mock_subprocess, _mock_resolve_binary, org_state,
+):
+    """Real-chain (error_lookalike): mocked subprocess produces
+    {type:result, subtype:error_lookalike, is_error:true, result: irrelevant}
+    + unrelated workspace-trust stderr → ClaudeExecutor → run_dream →
+    dream.error == dream_failed.payload.reason == raw stderr-first fallback
+    (NOT a synthetic terminal reason)."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_lookalike","is_error":true,'
+               '"result":"some irrelevant message"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    mock_subprocess.Popen.assert_called_once()
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    # error_lookalike is unsupported → raw stderr-first fallback, no
+    # synthetic terminal reason.
+    assert "Command exited with code 1" in dream.error
+    assert "Workspace trust warning" in dream.error
+    assert dream.error != "claude_lookalike"
+    assert "session_limit" not in dream.error
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == dream.error
+
+
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_error_unknown_falls_back_to_raw(
+    mock_subprocess, _mock_resolve_binary, org_state,
+):
+    """Real-chain (error_unknown): mocked subprocess produces
+    {type:result, subtype:error_unknown, is_error:true, result: ...}
+    + unrelated workspace-trust stderr → ClaudeExecutor → run_dream →
+    dream.error == dream_failed.payload.reason == raw stderr-first fallback
+    (NOT a synthetic terminal reason)."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=2,
+        stdout='{"type":"result","subtype":"error_unknown","is_error":true,'
+               '"result":"something went wrong"}',
+        stderr="fatal: something broke\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    mock_subprocess.Popen.assert_called_once()
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    # error_unknown is unsupported → raw stderr-first fallback, no
+    # synthetic terminal reason.
+    assert "Command exited with code 2" in dream.error
+    assert "fatal: something broke" in dream.error
+    assert dream.error != "claude_unknown"
+    assert "session_limit" not in dream.error
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == dream.error
+
+
+# ── THR-116 adversarial real-chain dream tests (formerly faulty) ──────
+# These tests prove that unsupported error_* subtypes with recognised signal
+# text do NOT produce a structured terminal reason through the full
+# ClaudeExecutor → _run_command → production parser → run_dream chain.
+# Both dream.error and dream_failed.payload.reason must contain the raw
+# stderr-first fallback, not a classified reason.
+
+
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_error_lookalike_session_limit_raw_fallback(
+    mock_subprocess, _mock_resolve_binary, org_state,
+):
+    """Real-chain adversarial (error_lookalike + session-limit text):
+    {type:result, subtype:error_lookalike, is_error:true,
+    result: "Session limit reached"} + unrelated workspace-trust stderr →
+    dream.error == dream_failed.payload.reason == raw stderr-first fallback.
+
+    This enters the formerly faulty classification condition: under the
+    earlier startswith("error_") check, the parser would have classified
+    this as session_limit.  With the strict subtype == error_during_execution
+    check, the parser returns None and the raw fallback wins.
+    (MEM-380 coverage)."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_lookalike","is_error":true,'
+               '"result":"Session limit reached"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    mock_subprocess.Popen.assert_called_once()
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    # error_lookalike is unsupported → raw stderr-first fallback.
+    assert "Command exited with code 1" in dream.error
+    assert "Workspace trust warning" in dream.error
+    assert "session_limit" not in dream.error, (
+        f"error_lookalike must not produce session_limit in dream.error; got {dream.error!r}"
+    )
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == dream.error
+    assert "session_limit" not in actions[-1]["payload"]["reason"], (
+        f"dream_failed reason must not be session_limit; got {actions[-1]['payload']['reason']!r}"
+    )
+
+
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_error_unknown_certificate_raw_fallback(
+    mock_subprocess, _mock_resolve_binary, org_state,
+):
+    """Real-chain adversarial (error_unknown + certificate text):
+    {type:result, subtype:error_unknown, is_error:true,
+    result: "UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}
+    + unrelated workspace-trust stderr →
+    dream.error == dream_failed.payload.reason == raw stderr-first fallback.
+
+    This enters the formerly faulty classification condition: under the
+    earlier startswith("error_") check, the parser would have classified
+    this as transport_error.  With the strict subtype == error_during_execution
+    check, the parser returns None and the raw fallback wins.
+    (MEM-377 coverage)."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_unknown","is_error":true,'
+               '"result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    mock_subprocess.Popen.assert_called_once()
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    # error_unknown is unsupported → raw stderr-first fallback.
+    assert "Command exited with code 1" in dream.error
+    assert "Workspace trust warning" in dream.error
+    assert "transport_error" not in dream.error, (
+        f"error_unknown must not produce transport_error in dream.error; got {dream.error!r}"
+    )
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == dream.error
+    assert "transport_error" not in actions[-1]["payload"]["reason"], (
+        f"dream_failed reason must not contain transport_error; got {actions[-1]['payload']['reason']!r}"
+    )
