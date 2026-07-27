@@ -341,6 +341,7 @@ class SkillLifecycleService:
                 db, version_id, new_status,
                 publication_decision_id=event,
             )
+            pkg.publication_decision_id = event
 
         return pkg
 
