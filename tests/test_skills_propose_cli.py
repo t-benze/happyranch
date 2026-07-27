@@ -399,6 +399,27 @@ class TestBearerFreeTransport:
         assert "error (500): " in err
         assert "Internal Server Error" in err
 
+    def test_non_json_response_raises_before_renderer(self, capsys):
+        """A non-JSON daemon response (e.g. HTML 502) raises ValueError.
+
+        The CLI unconditionally calls resp.json() (cli/commands/skills.py:685);
+        a non-JSON response raises before the error renderer or exit handling.
+        There is no fallback to response text.
+        """
+        p = _write_proposal_json(_VALID_PROPOSAL)
+        # _mock_response with json_body=None -> json() raises ValueError
+        post_resp = _mock_response(502, json_body=None, text="<html>502 Bad Gateway</html>")
+
+        with patch(_PORT_FILE_PATCH) as port_mock, \
+             patch(_HTTPX_CLIENT_PATCH) as client_mock:
+            _setup_transport_mocks(port_mock, client_mock, post_response=post_resp)
+            with pytest.raises(ValueError, match="not json"):
+                _run_propose({
+                    "from_file": p,
+                    "session_id": "sess-1",
+                    "org": "alpha",
+                }, capsys, expect_exit=False)
+
     def test_daemon_not_running_exits(self, capsys):
         """When daemon port file doesn't exist, exit with clear message."""
         p = _write_proposal_json(_VALID_PROPOSAL)
