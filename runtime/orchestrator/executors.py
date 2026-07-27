@@ -1224,4 +1224,405 @@ class GenericCliExecutor:
         )
 
 
+class CustomAdapterExecutor:
+    """Executor for custom adapter profiles (THR-107 D7B).
+
+    Launches only the resolved, approved, hash-verified absolute adapter
+    executable as a subprocess. Passes the exact version-1 ``AdapterInput``
+    JSON on stdin and accepts exactly one valid version-1 ``AdapterOutput``
+    JSON on stdout, mapping it conservatively into the existing
+    ``ExecutorResult`` lifecycle.
+
+    The adapter must be durably APPROVED and its on-disk executable must
+    pass the full path/regular-file/executable/SHA-256 verification at
+    construction time and at every launch. A tampered, removed, or
+    unexecutable artifact fails closed with a deterministic error.
+
+    Never imports or discovers third-party Python. Never alters stored
+    hashes, profile definitions, or adapter approval state.
+    """
+
+    def __init__(
+        self,
+        *,
+        profile_name: str,
+        adapter_entry_id: str,
+        adapter_executable: str,
+        adapter_hash: str,
+        adapter_version: str,
+        adapter_contract_version: int,
+        provider: str,
+        invocation_context: dict | None = None,
+    ) -> None:
+        self._profile_name = profile_name
+        self._adapter_entry_id = adapter_entry_id
+        self._adapter_executable = adapter_executable
+        self._adapter_hash = adapter_hash
+        self._adapter_version = adapter_version
+        self._adapter_contract_version = adapter_contract_version
+        self._provider = provider
+        # invocation_context is a dict with truthful invocation fields
+        # set by the caller (orchestrator, thread_runner, etc.).
+        # Must contain at minimum: agent, org, invocation_kind.
+        self._invocation_context = invocation_context or {}
+
+    def set_invocation_context(
+        self,
+        *,
+        agent: str,
+        org: str,
+        invocation_kind: str,
+        task_id: str | None = None,
+    ) -> None:
+        """Set truthful invocation context BEFORE run().
+
+        Called by the runner (orchestrator, thread_runner, wake_runner,
+        dream_runner, schedule_runner) after build_executor returns.
+        Must supply all required fields; the CustomAdapterExecutor fails
+        closed if any field is missing at run() time.
+        """
+        self._invocation_context = {
+            "agent": agent,
+            "org": org,
+            "invocation_kind": invocation_kind,
+            "task_id": task_id,
+        }
+
+    def run(
+        self,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        timeout_seconds: int = 1800,
+        on_started: Callable[[int], None] | None = None,
+        on_throttle_event: "OnThrottleEvent | None" = None,
+        model: str | None = None,
+    ) -> ExecutorResult:
+        """Launch the custom adapter subprocess with AdapterInput on stdin.
+
+        Builds an AdapterInput v1 contract with truthful invocation
+        context, passes it as JSON on stdin, and parses the AdapterOutput
+        v1 contract from stdout. Maps the output conservatively into
+        ExecutorResult.
+
+        Rejects: missing/malformed/unknown-version/non-object output,
+        identity/version/contract mismatch, success/returncode
+        inconsistency, and oversized output.
+        """
+        from runtime.orchestrator.adapter_contract import (
+            AdapterInput,
+            AdapterOutput,
+            ExecutorContext,
+            InvocationInfo,
+            TimeoutInfo,
+        )
+        from runtime.orchestrator.adapter_store import compute_sha256
+
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+
+        # ── D7B: Fail closed if invocation context is missing/incomplete ──
+        ctx = self._invocation_context
+        missing = []
+        if not ctx.get("agent"):
+            missing.append("agent")
+        if not ctx.get("org"):
+            missing.append("org")
+        if not ctx.get("invocation_kind"):
+            missing.append("invocation_kind")
+        if missing:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=session_id or "",
+                error=(
+                    f"Custom adapter {self._adapter_entry_id!r} requires "
+                    f"truthful invocation context but the caller did not "
+                    f"supply: {', '.join(missing)}. "
+                    f"The caller must call set_invocation_context() before run()."
+                ),
+            )
+
+        # ── D7B: Verify executable integrity at every launch ─────────
+        adapter_path = Path(self._adapter_executable)
+        if not adapter_path.exists():
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=session_id or "",
+                error=(
+                    f"Custom adapter {self._adapter_entry_id!r} executable "
+                    f"{self._adapter_executable!r} no longer exists. "
+                    f"Re-register the adapter."
+                ),
+            )
+        if not adapter_path.is_file():
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=session_id or "",
+                error=(
+                    f"Custom adapter {self._adapter_entry_id!r} path "
+                    f"{self._adapter_executable!r} is not a regular file. "
+                    f"Re-register the adapter."
+                ),
+            )
+        if not os.access(adapter_path, os.X_OK):
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=session_id or "",
+                error=(
+                    f"Custom adapter {self._adapter_entry_id!r} executable "
+                    f"{self._adapter_executable!r} is not executable. "
+                    f"Re-register the adapter."
+                ),
+            )
+        current_hash = compute_sha256(self._adapter_executable)
+        if current_hash != self._adapter_hash:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=session_id or "",
+                error=(
+                    f"Custom adapter {self._adapter_entry_id!r} hash mismatch: "
+                    f"expected {self._adapter_hash[:12]}..., "
+                    f"got {current_hash[:12]}... "
+                    f"Re-register and re-approve the adapter."
+                ),
+            )
+
+        # ── Build AdapterInput with truthful invocation context ────
+        sid = session_id or f"sess-{uuid.uuid4().hex}"
+        ctx = self._invocation_context
+        invocation_info = InvocationInfo(
+            invocation_id=sid,
+            task_id=ctx.get("task_id"),
+            agent=ctx.get("agent", "unknown"),
+            org=ctx.get("org", "unknown"),
+            invocation_kind=ctx.get("invocation_kind", "task"),
+        )
+        adapter_input = AdapterInput(
+            contract_version=1,
+            invocation=invocation_info,
+            prompt=prompt,
+            workspace=str(workspace),
+            timeout=TimeoutInfo(
+                deadline_seconds=timeout_seconds,
+                max_runtime_seconds=timeout_seconds,
+            ),
+            executor_context=ExecutorContext(
+                provider=self._provider,
+                adapter_id=self._adapter_entry_id,
+                adapter_version=self._adapter_version,
+                permission_mode=None,
+            ),
+        )
+        input_json = adapter_input.model_dump_json()
+
+        # ── Launch adapter subprocess ───────────────────────────────
+        cmd = [self._adapter_executable]
+        start_time = time.monotonic()
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(workspace),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=_callee_env(),
+            )
+        except (FileNotFoundError, OSError, PermissionError) as exc:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                error=(
+                    f"Failed to launch custom adapter "
+                    f"{self._adapter_executable!r}: {exc}"
+                ),
+            )
+
+        if on_started is not None:
+            on_started(proc.pid)
+
+        try:
+            stdout, stderr = proc.communicate(
+                input=input_json, timeout=timeout_seconds
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                error=f"Custom adapter session timed out after {timeout_seconds}s",
+            )
+
+        full_stdout = stdout or ""
+        full_stderr = stderr or ""
+        stdout_tail = full_stdout[-_TAIL_BYTES:]
+        stderr_tail = full_stderr[-_TAIL_BYTES:]
+
+        if proc.returncode != 0:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                returncode=proc.returncode,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                error=(
+                    f"Custom adapter exited with code {proc.returncode}"
+                    + (": " + stderr_tail[:500] if stderr_tail else "")
+                ),
+            )
+
+        # ── Parse AdapterOutput ────────────────────────────────────
+        # Reject oversized output (same 1MB limit as conformance probe)
+        MAX_OUTPUT_BYTES = 1_048_576
+        stdout_bytes = full_stdout.encode("utf-8")
+        if len(stdout_bytes) > MAX_OUTPUT_BYTES:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                error=(
+                    f"Custom adapter stdout exceeds {MAX_OUTPUT_BYTES} byte limit "
+                    f"({len(stdout_bytes)} bytes)"
+                ),
+            )
+
+        # Parse JSON
+        try:
+            output_dict = json.loads(full_stdout)
+        except json.JSONDecodeError:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                error="Custom adapter stdout is not valid JSON",
+            )
+
+        if not isinstance(output_dict, dict):
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                error=(
+                    f"Custom adapter stdout is not a JSON object; "
+                    f"got {type(output_dict).__name__}"
+                ),
+            )
+
+        # Validate AdapterOutput schema
+        try:
+            output = AdapterOutput.model_validate(output_dict)
+        except Exception as exc:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                error=f"Custom adapter output does not match AdapterOutput contract: {exc}",
+            )
+
+        # Verify contract version
+        if output.adapter_metadata.contract_version != 1:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                error=(
+                    f"Custom adapter contract version "
+                    f"{output.adapter_metadata.contract_version} "
+                    f"not supported; expected 1"
+                ),
+            )
+
+        # Verify adapter identity
+        if output.adapter_metadata.adapter != self._adapter_entry_id:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                error=(
+                    f"Custom adapter identity mismatch: expected "
+                    f"{self._adapter_entry_id!r}, got "
+                    f"{output.adapter_metadata.adapter!r}"
+                ),
+            )
+
+        # Verify success/returncode consistency
+        if output.success and output.returncode is not None and output.returncode != 0:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                returncode=output.returncode,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                error=(
+                    f"Adapter reported success=true but agent subprocess "
+                    f"exit code was {output.returncode}"
+                ),
+            )
+        if not output.success and (output.returncode is None or output.returncode == 0):
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                returncode=proc.returncode,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                error=(
+                    f"Adapter reported success=false but subprocess "
+                    f"exit code was 0"
+                ),
+            )
+
+        # ── Map to ExecutorResult ──────────────────────────────────
+        token_usage: "TokenUsage | None" = None
+        if output.token_usage is not None:
+            from runtime.models import TokenUsage
+            token_usage = TokenUsage(
+                input_tokens=output.token_usage.input_tokens,
+                output_tokens=output.token_usage.output_tokens,
+                cache_read_tokens=output.token_usage.cache_read_tokens,
+                cache_creation_tokens=output.token_usage.cache_creation_tokens,
+                reasoning_tokens=output.token_usage.reasoning_tokens,
+                model=output.token_usage.model or self._provider,
+                usage_raw_json=output.token_usage.usage_raw_json,
+            )
+
+        return ExecutorResult(
+            success=output.success,
+            duration_seconds=output.duration_seconds,
+            session_id=sid,
+            returncode=output.returncode,
+            stdout_tail=output.stdout_tail or stdout_tail,
+            stderr_tail=output.stderr_tail or stderr_tail,
+            error=output.error,
+            token_usage=token_usage,
+            agent_session_id=output.agent_session_id,
+            rate_limited=output.rate_limited,
+        )
+
+
 AgentExecutor = ClaudeExecutor

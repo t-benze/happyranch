@@ -511,6 +511,15 @@ async def run_invocation(
 
     executor = _build_executor_for_provider(executor_name, settings, paths)
 
+    # ── D7B: CustomAdapterExecutor invocation context ──────────────────
+    if hasattr(executor, 'set_invocation_context'):
+        executor.set_invocation_context(
+            agent=inv.agent_name,
+            org=org_state.slug,
+            invocation_kind="thread",
+            task_id=inv.thread_id,
+        )
+
     # Load org config once: it feeds both the timeout override and the
     # current_time injection on every thread prompt below. A malformed/missing
     # config falls back to defaults (which resolve to machine-local/UTC).

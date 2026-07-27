@@ -227,6 +227,15 @@ async def run_wake(
         else _build_executor_for_provider(executor_name, settings, paths)
     )
 
+    # ── D7B: CustomAdapterExecutor invocation context ──────────────────
+    if hasattr(executor, 'set_invocation_context'):
+        executor.set_invocation_context(
+            agent=record.agent_name,
+            org=org_state.slug,
+            invocation_kind="wake",
+            task_id=work_hour_id,
+        )
+
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: executor.run(
         workspace=workspace,

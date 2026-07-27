@@ -294,15 +294,18 @@ class ExecutorRegistry:
                 f"the profiles to resolve the collision."
             )
         if profile.kind != "builtin":
-            if profile.argv_template is None:
-                raise ValueError(
-                    f"Custom profile {profile.name!r} requires argv_template"
-                )
-            errors = validate_argv_template(profile.argv_template)
-            if errors:
-                raise ValueError(
-                    f"Invalid argv_template for {profile.name!r}: {'; '.join(errors)}"
-                )
+            # D7B: custom-adapter profiles skip argv_template validation
+            cmd_adapter = profile.command_adapter_id or ""
+            if not cmd_adapter.startswith("custom-adapter:"):
+                if profile.argv_template is None:
+                    raise ValueError(
+                        f"Custom profile {profile.name!r} requires argv_template"
+                    )
+                errors = validate_argv_template(profile.argv_template)
+                if errors:
+                    raise ValueError(
+                        f"Invalid argv_template for {profile.name!r}: {'; '.join(errors)}"
+                    )
         self._profiles[key] = profile
 
     def unregister_custom_profile(self, name: str) -> bool:
@@ -360,17 +363,61 @@ class ExecutorRegistry:
             )
         # Validate argv_template for custom profiles (same as register_custom_profile)
         if profile.kind != "builtin":
-            if profile.argv_template is None:
-                raise ValueError(
-                    f"Custom profile {profile.name!r} requires argv_template"
-                )
-            errors = validate_argv_template(profile.argv_template)
-            if errors:
-                raise ValueError(
-                    f"Invalid argv_template for {profile.name!r}: {'; '.join(errors)}"
-                )
+            cmd_adapter = profile.command_adapter_id or ""
+            if not cmd_adapter.startswith("custom-adapter:"):
+                if profile.argv_template is None:
+                    raise ValueError(
+                        f"Custom profile {profile.name!r} requires argv_template"
+                    )
+                errors = validate_argv_template(profile.argv_template)
+                if errors:
+                    raise ValueError(
+                        f"Invalid argv_template for {profile.name!r}: {'; '.join(errors)}"
+                    )
         self._profiles[key] = profile
         return existing is not None
+
+    @classmethod
+    def _validate_custom_adapter_binding(cls, adapter_id: str) -> dict:
+        """Validate that an adapter id refers to an APPROVED, hash-verified adapter.
+
+        Returns a dict with adapter metadata (executable, hash, version,
+        contract_version) on success.
+
+        Raises ValueError when:
+          - adapter is unknown
+          - adapter is not APPROVED (PENDING or other status)
+          - adapter executable no longer exists / not regular file / not executable
+          - adapter hash doesn't match (tampered)
+        """
+        from runtime.orchestrator.custom_adapter_registry import resolve_adapter
+        entry = resolve_adapter(adapter_id)
+        if entry is None:
+            # Check if it exists but isn't approved/hash-verified
+            from runtime.orchestrator.adapter_store import get_adapter
+            existing = get_adapter(adapter_id)
+            if existing is None:
+                raise ValueError(
+                    f"Unknown adapter {adapter_id!r}. Register the adapter "
+                    f"executable first, then approve it before binding."
+                )
+            if existing.status != "approved":
+                raise ValueError(
+                    f"Adapter {adapter_id!r} is status={existing.status!r}, "
+                    f"not APPROVED. Founder approval is required before "
+                    f"binding to a profile."
+                )
+            raise ValueError(
+                f"Adapter {adapter_id!r} is approved but the on-disk "
+                f"executable is missing, not a regular file, not executable, "
+                f"or has a hash mismatch. Re-register the adapter."
+            )
+        return {
+            "executable": entry.executable,
+            "hash": entry.executable_hash,
+            "version": entry.version,
+            "contract_version": entry.contract_version,
+        }
 
     @classmethod
     def validate_custom_profile_config(
@@ -439,24 +486,30 @@ class ExecutorRegistry:
                 f"{adapter!r}"
             )
         # ── end workspace adapter dual-read ───────────────────────────────
-        if not isinstance(argv_template, list) or not argv_template:
-            raise ValueError(
-                f"executor_profiles.{name}.argv_template required"
-            )
         # ── D6: dual-read command adapter (canonical command_adapter_id
         #     wins over deprecated command_adapter; conflict → error) ─────
         command_adapter = cfg.get("command_adapter")
         command_adapter_id_from_cfg = cfg.get("command_adapter_id")
+        # ── D7B: detect custom-adapter binding early ────────────────
+        custom_adapter_id: str | None = None
         if command_adapter_id_from_cfg is not None:
             if not isinstance(command_adapter_id_from_cfg, str):
                 raise ValueError(
                     f"executor_profiles.{name}.command_adapter_id must be "
                     f"a string, got {type(command_adapter_id_from_cfg).__name__}"
                 )
-            if command_adapter_id_from_cfg not in {"generic-cli"}:
+            if command_adapter_id_from_cfg.startswith("custom-adapter:"):
+                custom_adapter_id = command_adapter_id_from_cfg[len("custom-adapter:"):]
+                if not custom_adapter_id:
+                    raise ValueError(
+                        f"executor_profiles.{name}.command_adapter_id: "
+                        f"'custom-adapter:' requires a non-empty adapter id"
+                    )
+                # Defer adapter validation until after conflict check
+            elif command_adapter_id_from_cfg not in {"generic-cli"}:
                 raise ValueError(
                     f"executor_profiles.{name}.command_adapter_id must be "
-                    f"'generic-cli' (the only supported value), got "
+                    f"'generic-cli' or 'custom-adapter:<id>', got "
                     f"{command_adapter_id_from_cfg!r}"
                 )
             if command_adapter is not None and command_adapter != command_adapter_id_from_cfg:
@@ -471,71 +524,84 @@ class ExecutorRegistry:
             command_adapter = command_adapter_id_from_cfg
         elif command_adapter is None:
             command_adapter = "generic-cli"
-        if command_adapter is not None:
+        elif command_adapter is not None:
             if not isinstance(command_adapter, str):
                 raise ValueError(
                     f"executor_profiles.{name}.command_adapter must be a "
                     f"string, got {type(command_adapter).__name__}"
                 )
-            if command_adapter not in {"generic-cli"}:
+            if command_adapter.startswith("custom-adapter:"):
+                custom_adapter_id = command_adapter[len("custom-adapter:"):]
+                if not custom_adapter_id:
+                    raise ValueError(
+                        f"executor_profiles.{name}.command_adapter: "
+                        f"'custom-adapter:' requires a non-empty adapter id"
+                    )
+                # Defer adapter validation until after conflict check
+            elif command_adapter not in {"generic-cli"}:
                 raise ValueError(
                     f"executor_profiles.{name}.command_adapter must be "
-                    f"'generic-cli' (the only supported value), got "
+                    f"'generic-cli' or 'custom-adapter:<id>', got "
                     f"{command_adapter!r}"
                 )
         # ── end command adapter dual-read ────────────────────────────────
-        # Validate argv_template placeholders
-        argv_errors = validate_argv_template([str(e) for e in argv_template])
-        if argv_errors:
-            raise ValueError(
-                f"Invalid argv_template for {name!r}: {'; '.join(argv_errors)}"
-            )
-        # Resolve command — None means skip which (e.g., in tests)
-        if command is not None and not isinstance(command, str):
-            raise ValueError(
-                f"executor_profiles.{name}.command must be a string"
-            )
-        resolved_command: str | None = None
-        if command is not None:
-            resolved_command = shutil.which(command)
-            if resolved_command is None:
+        # ── D7B: custom-adapter profiles skip argv_template/command validation ─
+        # Validate the adapter binding AFTER conflict checks complete
+        if custom_adapter_id is not None:
+            cls._validate_custom_adapter_binding(custom_adapter_id)
+        is_custom_adapter = custom_adapter_id is not None
+        if not is_custom_adapter:
+            # Validate argv_template placeholders (generic-cli only)
+            if not isinstance(argv_template, list) or not argv_template:
                 raise ValueError(
-                    f"executor_profiles.{name}: command {command!r} "
-                    f"not found on PATH"
+                    f"executor_profiles.{name}.argv_template required "
+                    f"for generic-cli profiles"
                 )
-            # Canonicalize to resolve symlinks/aliases for parity check
-            resolved_command = str(Path(resolved_command).resolve())
+            argv_errors = validate_argv_template([str(e) for e in argv_template])
+            if argv_errors:
+                raise ValueError(
+                    f"Invalid argv_template for {name!r}: {'; '.join(argv_errors)}"
+                )
+            # Resolve command — None means skip which (e.g., in tests)
+            if command is not None and not isinstance(command, str):
+                raise ValueError(
+                    f"executor_profiles.{name}.command must be a string"
+                )
+            resolved_command: str | None = None
+            if command is not None:
+                resolved_command = shutil.which(command)
+                if resolved_command is None:
+                    raise ValueError(
+                        f"executor_profiles.{name}: command {command!r} "
+                        f"not found on PATH"
+                    )
+                resolved_command = str(Path(resolved_command).resolve())
 
-        # Validate argv_template[0] resolves to the same executable as command.
-        # ``command`` is the DECLARED executable; ``argv_template[0]`` is the
-        # executable GenericCliExecutor actually launches. They must be the
-        # same binary — otherwise the executor will launch something different
-        # from what the profile's ``command`` declares (issue #490).
-        argv0 = [str(e) for e in argv_template][0]
-        if command is not None and argv0:
-            resolved_argv0 = shutil.which(argv0)
-            if resolved_argv0 is None:
+            argv0 = [str(e) for e in argv_template][0]
+            if command is not None and argv0:
+                resolved_argv0 = shutil.which(argv0)
+                if resolved_argv0 is None:
+                    raise ValueError(
+                        f"executor_profiles.{name}: argv_template[0] {argv0!r} "
+                        f"not found on PATH. The first element of argv_template "
+                        f"must be a launchable executable matching 'command'."
+                    )
+                resolved_argv0 = str(Path(resolved_argv0).resolve())
+                if resolved_command != resolved_argv0:
+                    raise ValueError(
+                        f"executor_profiles.{name}: command {command!r} resolves "
+                        f"to {resolved_command!r} but argv_template[0] {argv0!r} "
+                        f"resolves to {resolved_argv0!r}. They must be the same "
+                        f"executable — 'command' is the declared name, "
+                        f"argv_template[0] is the binary actually launched by "
+                        f"GenericCliExecutor. See issue #490."
+                    )
+            elif command is not None and not argv0:
                 raise ValueError(
-                    f"executor_profiles.{name}: argv_template[0] {argv0!r} "
-                    f"not found on PATH. The first element of argv_template "
-                    f"must be a launchable executable matching 'command'."
+                    f"executor_profiles.{name}: argv_template[0] is empty. "
+                    f"The first element must be the executable name matching "
+                    f"'command'."
                 )
-            resolved_argv0 = str(Path(resolved_argv0).resolve())
-            if resolved_command != resolved_argv0:
-                raise ValueError(
-                    f"executor_profiles.{name}: command {command!r} resolves "
-                    f"to {resolved_command!r} but argv_template[0] {argv0!r} "
-                    f"resolves to {resolved_argv0!r}. They must be the same "
-                    f"executable — 'command' is the declared name, "
-                    f"argv_template[0] is the binary actually launched by "
-                    f"GenericCliExecutor. See issue #490."
-                )
-        elif command is not None and not argv0:
-            raise ValueError(
-                f"executor_profiles.{name}: argv_template[0] is empty. "
-                f"The first element must be the executable name matching "
-                f"'command'."
-            )
         # ── D7A: envelope policy validation ─────────────────────────
         envelope_policy = cfg.get("envelope_policy")
         if envelope_policy is not None:
@@ -550,6 +616,19 @@ class ExecutorRegistry:
                     f"(the only supported value), got {envelope_policy!r}"
                 )
         # ── end envelope policy validation ──────────────────────────
+        # ── D7B: custom-adapter profiles skip argv_template/command ────────
+        if is_custom_adapter:
+            marker = "AGENTS.md" if adapter in {"codex", "opencode", "pi"} else ".claude/skills/start-task/SKILL.md"
+            return ExecutorProfile(
+                name=name,
+                kind="custom",
+                workspace_adapter_id=adapter,
+                command_adapter_id=command_adapter,
+                readiness_marker_fragment=marker,
+                argv_template=None,  # custom adapter uses AdapterInput, not argv_template
+                command=None,  # adapter executable is resolved from adapter store, not PATH
+                envelope_policy=None,  # custom adapters speak AdapterOutput contract natively
+            )
         marker = "AGENTS.md" if adapter in {"codex", "opencode", "pi"} else ".claude/skills/start-task/SKILL.md"
         return ExecutorProfile(
             name=name,
@@ -676,6 +755,23 @@ def build_executor(
     factory = _BUILTIN_EXECUTOR_FACTORIES.get(profile.name.lower())
     if factory is not None:
         return factory(settings, paths, profile, adapter_instance)
+
+    # ── D7B: Custom-adapter profile routing ──────────────────────────────
+    cmd_adapter = profile.command_adapter_id or ""
+    if cmd_adapter.startswith("custom-adapter:"):
+        adapter_id = cmd_adapter[len("custom-adapter:"):]
+        # Validate adapter is still approved + hash-verified at launch time
+        binding = ExecutorRegistry._validate_custom_adapter_binding(adapter_id)
+        from runtime.orchestrator.executors import CustomAdapterExecutor
+        return CustomAdapterExecutor(
+            profile_name=name,
+            adapter_entry_id=adapter_id,
+            adapter_executable=binding["executable"],
+            adapter_hash=binding["hash"],
+            adapter_version=binding["version"],
+            adapter_contract_version=binding["contract_version"],
+            provider=name,
+        )
 
     # Custom profile — GenericCliExecutor (unchanged, no adapter injected)
     assert profile.argv_template is not None
