@@ -34,7 +34,7 @@ closed if the registry is unavailable — no static fallback.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body as RequestBody, Depends, HTTPException, Query, Request, status
 
 from runtime.daemon.auth import _check_optional_token, optional_bearer, require_token
 from runtime.daemon.org_state import OrgState
@@ -224,12 +224,27 @@ def _enforce_agent_pilot_policy(agent_name: str, slug: str) -> None:
 # Agent-only route (opaque session-binding, NO bearer token)
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ── Prohibited body identity/authority keys ───────────────────────────
+# The agent-only route MUST reject the *presence* of every client-supplied
+# trusted identity or authority field (including empty strings) BEFORE any
+# session lookup, pilot-policy evaluation, artifact write, or ledger/event
+# row. Server derives the canonical org/task/agent/session solely from the
+# active context-bearing SessionTracker session.
+_PROHIBITED_BODY_KEYS: frozenset[str] = frozenset({
+    # Fields already in ProposalRequest (reject presence, not truthiness)
+    "task_id", "session_id", "proposer_agent",
+    # Fields Pydantic would silently drop — must inspect raw body
+    "org", "org_slug", "agent", "agent_name",
+    "actor", "eligibility", "permission", "permissions",
+})
+
+
 @dual_router.post("/proposals/agent", status_code=201)
 def submit_proposal_agent_only(
     slug: str,
     org: OrgDep,
-    body: ProposalRequest,
     request: Request,
+    body_raw: dict = RequestBody(..., description="Proposal package metadata and content (no identity fields)"),
     session_id: str = Query(..., min_length=1),
     has_bearer: bool = Depends(_check_optional_token),
 ) -> dict:
@@ -248,12 +263,16 @@ def submit_proposal_agent_only(
     - The fixed agent-id × canonical-slug pilot policy is enforced
       BEFORE any artifact creation or ledger write.
     - Body claims for org, agent, task, session, proposer_agent,
-      eligibility, or permission identity are rejected/ignored.
+      eligibility, or permission identity are rejected BEFORE model
+      parsing — exact 403 body_identity_rejected for every prohibited
+      key, including empty values and keys the Pydantic model would
+      otherwise silently drop.
 
     Returns 403 for:
     - Inactive, expired, unknown, ambiguous, colliding, or mismatched session
     - Cross-org session (session belongs to a different org than the URL path)
     - Bearer token present (agent path only)
+    - Any prohibited body identity/authority key present (including empty values)
     - Agent not in pilot
     - Agent submitting a slug not matching their canonical slug
     """
@@ -268,34 +287,24 @@ def submit_proposal_agent_only(
             },
         )
 
-    # Reject body identity claims early
-    if body.proposer_agent:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "code": "body_identity_rejected",
-                "detail": "proposer_agent must not be set in the proposal body. "
-                          "Agent identity is derived from the server's verified session context.",
-            },
-        )
-    if body.task_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "code": "body_identity_rejected",
-                "detail": "task_id must not be set in the proposal body. "
-                          "Task identity is derived from the server's verified session context.",
-            },
-        )
-    if body.session_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "code": "body_identity_rejected",
-                "detail": "session_id must not be set in the proposal body. "
-                          "Session identity is derived from the server's verified session context.",
-            },
-        )
+    # ── Reject ANY prohibited body identity/authority key BEFORE
+    #    Pydantic parsing, session lookup, or any persistence. ──
+    # This catches non-empty values, empty strings, and keys the
+    # ProposalRequest model would otherwise silently drop (e.g., org,
+    # agent_name, eligibility, permission).
+    for key in _PROHIBITED_BODY_KEYS:
+        if key in body_raw:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "body_identity_rejected",
+                    "detail": f"{key} must not be set in the proposal body. "
+                              "Identity is derived from the server's verified session context.",
+                },
+            )
+
+    # Parse the now-clean body through Pydantic for normal field validation
+    body = ProposalRequest(**body_raw)
 
     # Step 1: Resolve (org_slug, task_id, agent_name) from opaque session.
     # This is a read-only lookup under _lock with no binding lease held.

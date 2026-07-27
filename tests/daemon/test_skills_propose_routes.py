@@ -44,6 +44,46 @@ def _read_test_token() -> str:
     return paths_mod.read_token()
 
 
+def _assert_zero_residue(org_state, skill_id: str = "hr:frontend-development") -> None:
+    """Assert zero persistence residue across ALL surfaces:
+    - skill_lifecycle_packages (package version inventory)
+    - skill_lifecycle_events (lifecycle event ledger)
+    - skill_lifecycle_materializations (operational records)
+    - ArtifactStore (correct org-scoped prefix)
+    """
+    from runtime.skills.lifecycle import stores as lifecycle_stores
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+
+    # 1. Zero package versions
+    packages = lifecycle_stores.list_package_versions(org_state.db, skill_id=skill_id)
+    assert len(packages) == 0, (
+        f"Package residue: expected 0, got {len(packages)}"
+    )
+
+    # 2. Zero lifecycle events
+    events = lifecycle_stores.list_lifecycle_events(org_state.db, skill_id=skill_id)
+    assert len(events) == 0, (
+        f"Event/ledger residue: expected 0, got {len(events)}"
+    )
+
+    # 3. Zero operational materializations
+    slug = skill_id.replace("hr:", "")
+    mat = lifecycle_stores.get_latest_materialization(org_state.db, skill_id, "frontend_engineer")
+    assert mat is None, (
+        f"Materialization residue: expected None, got {mat}"
+    )
+
+    # 4. Zero proposal artifacts in ArtifactStore (org-scoped prefix)
+    artifact_store = ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
+    proposal_artifacts = artifact_store.list_artifacts(
+        prefix=f"skill-lifecycle/{slug}",
+    )
+    assert len(proposal_artifacts) == 0, (
+        f"Artifact-store residue: expected 0, got {len(proposal_artifacts)}"
+    )
+
+
 class TestProposalRouteE2E:
     """End-to-end tests through the dedicated agent-only proposal route:
     POST /skill-lifecycle/proposals/agent (opaque session-binding, no bearer).
@@ -107,6 +147,8 @@ class TestProposalRouteE2E:
         )
         detail = resp.json()["detail"]
         assert detail["code"] == "body_identity_rejected"
+        # Verify zero residue across ALL persistence surfaces
+        _assert_zero_residue(org)
 
     def test_body_session_id_rejected_strict_403(
         self, client_with_runtime
@@ -133,6 +175,8 @@ class TestProposalRouteE2E:
         )
         detail = resp.json()["detail"]
         assert detail["code"] == "body_identity_rejected"
+        # Verify zero residue across ALL persistence surfaces
+        _assert_zero_residue(org)
 
     def test_body_proposer_agent_rejected_strict_403(
         self, client_with_runtime
@@ -159,6 +203,86 @@ class TestProposalRouteE2E:
         )
         detail = resp.json()["detail"]
         assert detail["code"] == "body_identity_rejected"
+        # Verify zero residue across ALL persistence surfaces
+        _assert_zero_residue(org)
+
+    # ── Empty-string identity rejection (closes truthiness-bypass gap) ──
+
+    @pytest.mark.parametrize("key,value", [
+        ("task_id", ""),
+        ("session_id", ""),
+        ("proposer_agent", ""),
+    ])
+    def test_body_identity_empty_string_rejected_403(
+        self, client_with_runtime, key, value
+    ):
+        """Empty-string identity claims are strictly rejected with 403
+        body_identity_rejected — the old truthiness check is closed."""
+        client, org = client_with_runtime
+
+        org.sessions.set_active(
+            "TASK-3510", "frontend_engineer", "sess-body-empty",
+            org_slug="alpha",
+        )
+
+        body = dict(_VALID_PROPOSAL, **{key: value})
+
+        client.headers.pop("Authorization", None)
+        resp = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": "sess-body-empty"},
+        )
+        assert resp.status_code == 403, (
+            f"Expected 403 for empty {key} claim, got {resp.status_code}: {resp.json()}"
+        )
+        detail = resp.json()["detail"]
+        assert detail["code"] == "body_identity_rejected"
+        assert key in detail.get("detail", "")
+        # Verify zero residue — identity rejection before any persistence
+        _assert_zero_residue(org)
+
+    # ── Extra-key identity rejection (keys Pydantic would silently drop) ──
+
+    @pytest.mark.parametrize("key,value", [
+        ("org", "evil-org"),
+        ("org_slug", "evil-org"),
+        ("agent", "evil-agent"),
+        ("agent_name", "evil-agent"),
+        ("actor", "evil-actor"),
+        ("eligibility", "true"),
+        ("permission", "admin"),
+        ("permissions", ["admin"]),
+    ])
+    def test_body_extra_identity_key_rejected_403(
+        self, client_with_runtime, key, value
+    ):
+        """Every prohibited identity/authority key (including those Pydantic
+        would silently drop) is rejected with exact 403 body_identity_rejected.
+        This closes the model-silently-ignores gap."""
+        client, org = client_with_runtime
+
+        org.sessions.set_active(
+            "TASK-3510", "frontend_engineer", "sess-body-extra",
+            org_slug="alpha",
+        )
+
+        body = dict(_VALID_PROPOSAL, **{key: value})
+
+        client.headers.pop("Authorization", None)
+        resp = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": "sess-body-extra"},
+        )
+        assert resp.status_code == 403, (
+            f"Expected 403 for prohibited {key} claim, got {resp.status_code}: {resp.json()}"
+        )
+        detail = resp.json()["detail"]
+        assert detail["code"] == "body_identity_rejected"
+        assert key in detail.get("detail", "")
+        # Verify zero residue — identity rejection before any persistence
+        _assert_zero_residue(org)
 
     # ── Clean-body success: server derives exact provenance ──
 
@@ -201,6 +325,48 @@ class TestProposalRouteE2E:
         assert sdata["proposal_task_id"] == "TASK-PROV"
         assert sdata["proposer_agent"] == "frontend_engineer"
 
+        # ── Prove exact four-part provenance directly from stored record ──
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        # 1. Exactly one immutable proposed package version
+        packages = lifecycle_stores.list_package_versions(org.db, skill_id=skill_id)
+        assert len(packages) == 1, (
+            f"Expected exactly 1 proposed package, got {len(packages)}"
+        )
+        pkg = packages[0]
+        assert pkg.status.value == "proposed"
+        assert pkg.proposal_task_id == "TASK-PROV"
+        assert pkg.proposer_agent == "frontend_engineer"
+        assert pkg.proposal_session_id == "sess-prov", (
+            f"Stored proposal_session_id mismatch: expected sess-prov, got {pkg.proposal_session_id}"
+        )
+
+        # 2. Exactly one lifecycle event (proposed)
+        events = lifecycle_stores.list_lifecycle_events(org.db, skill_id=skill_id)
+        assert len(events) == 1, (
+            f"Expected exactly 1 lifecycle event, got {len(events)}"
+        )
+        event = events[0]
+        assert event.event_type == "proposed"
+        assert event.actor == "frontend_engineer"
+
+        # 3. Zero materialization before founder publication
+        mat = lifecycle_stores.get_latest_materialization(
+            org.db, skill_id, "frontend_engineer"
+        )
+        assert mat is None, f"Unexpected materialization before publication: {mat}"
+
+        # 4. Artifact store has proposal artifacts (org-scoped prefix)
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        artifact_store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
+        proposal_artifacts = artifact_store.list_artifacts(
+            prefix="skill-lifecycle/frontend-development",
+        )
+        assert len(proposal_artifacts) > 0, (
+            "Expected proposal artifacts in org-scoped artifact store"
+        )
+
     # ── Missing org context denial ──
 
     def test_missing_org_context_denied_403_no_residue(
@@ -227,15 +393,11 @@ class TestProposalRouteE2E:
         detail = resp.json()["detail"]
         assert detail["code"] == "missing_org_context"
 
-        # Verify zero residue: no proposal artifact exists under this session
-        client.headers["Authorization"] = f"Bearer {_read_test_token()}"
-        catalog_resp = client.get("/api/v1/orgs/alpha/skill-lifecycle/catalog/custom")
-        assert catalog_resp.status_code == 200
-        skills = catalog_resp.json()["skills"]
-        skill_ids = [s["skill_id"] for s in skills]
-        assert "hr:frontend-development" not in skill_ids, (
-            "Missing-org denial must leave zero artifact residue"
-        )
+        # Verify zero residue across ALL persistence surfaces:
+        # package versions, lifecycle events, materializations, and
+        # ArtifactStore (not just catalog invisibility which would miss
+        # proposed-but-not-published packages).
+        _assert_zero_residue(org)
 
     # ── Cross-org denial ──
 
@@ -261,6 +423,8 @@ class TestProposalRouteE2E:
         assert resp.status_code == 403
         detail = resp.json()["detail"]
         assert detail["code"] == "cross_org_session"
+        # Verify zero residue — cross-org denial must happen BEFORE persistence
+        _assert_zero_residue(org)
 
     def test_unknown_session_binding_rejected(
         self, client_with_runtime
