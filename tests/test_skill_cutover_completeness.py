@@ -18,6 +18,8 @@ regresses), this guard MUST fail — it is a fail-closed integrity check.
 from __future__ import annotations
 
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -572,12 +574,15 @@ class TestMakeWorktreeGuardInDeliveredSkill:
         source = _REPO_ROOT / "protocol" / "skills" / "make-worktree" / "SKILL.md"
         body = source.read_text()
 
-        # Guard setup command must be present
-        assert "worktree_guard setup" in body, (
-            "Source make-worktree SKILL.md must contain 'worktree_guard setup' command"
+        # Guard setup command must be present (via GUARD variable or literal)
+        assert ("worktree_guard" in body) or ("GUARD" in body), (
+            "Source make-worktree SKILL.md must reference the worktree guard"
         )
-        assert "worktree_guard verify" in body, (
-            "Source make-worktree SKILL.md must contain 'worktree_guard verify' command"
+        assert "python \"$GUARD\" setup" in body or "worktree_guard setup" in body, (
+            "Source make-worktree SKILL.md must contain guard setup command"
+        )
+        assert "python \"$GUARD\" verify" in body or "worktree_guard verify" in body, (
+            "Source make-worktree SKILL.md must contain guard verify command"
         )
 
         # Canonical root computation
@@ -614,8 +619,8 @@ class TestMakeWorktreeGuardInDeliveredSkill:
         )
 
         body = delivered.read_text()
-        assert "worktree_guard setup" in body
-        assert "worktree_guard verify" in body
+        assert ("python \"$GUARD\" setup" in body) or ("worktree_guard setup" in body)
+        assert ("python \"$GUARD\" verify" in body) or ("worktree_guard verify" in body)
         assert "WORKTREE_ROOT" in body
         assert "PRIMARY_ROOT" in body
 
@@ -635,7 +640,262 @@ class TestMakeWorktreeGuardInDeliveredSkill:
         )
 
         body = delivered.read_text()
-        assert "worktree_guard setup" in body
-        assert "worktree_guard verify" in body
+        assert ("python \"$GUARD\" setup" in body) or ("worktree_guard setup" in body)
+        assert ("python \"$GUARD\" verify" in body) or ("worktree_guard verify" in body)
         assert "WORKTREE_ROOT" in body
         assert "PRIMARY_ROOT" in body
+
+    # ── FINDING-3: Runnable delivery regression tests ───────────────
+    # The guard script must be deliverable AND executable in a
+    # non-HappyRanch git repo (no runtime/ package available).
+
+    def test_delivered_claude_guard_script_exists(self, test_settings: Settings,
+                                                    test_runtime: OrgPaths,
+                                                    tmp_path: Path):
+        """FINDING-3: The worktree_guard.py script is delivered alongside
+        SKILL.md to .claude/skills/make-worktree/."""
+        from runtime.orchestrator.workspace_adapters import inject_system_contracts
+
+        ws = _build_ws(tmp_path, "guard_script_claude", has_repos=True)
+        inject_system_contracts(ws, test_settings, slug="test", context="task")
+
+        guard_script = ws / ".claude" / "skills" / "make-worktree" / "worktree_guard.py"
+        assert guard_script.is_file(), (
+            f"Guard script not delivered to .claude/skills/make-worktree/: {guard_script}"
+        )
+
+        body = guard_script.read_text()
+        assert "def cmd_setup" in body, "Delivered guard must contain cmd_setup"
+        assert "def cmd_verify" in body, "Delivered guard must contain cmd_verify"
+        assert '__name__ == "__main__"' in body or "if __name__" in body, (
+            "Delivered guard must have a __main__ entry point"
+        )
+        assert "from runtime" not in body, (
+            "Delivered guard must not import from runtime (must be standalone)"
+        )
+
+    def test_delivered_agents_guard_script_exists(self, test_settings: Settings,
+                                                    test_runtime: OrgPaths,
+                                                    tmp_path: Path):
+        """FINDING-3: The worktree_guard.py script is delivered alongside
+        SKILL.md to .agents/skills/make-worktree/."""
+        from runtime.orchestrator.workspace_adapters import inject_system_contracts
+
+        ws = _build_ws(tmp_path, "guard_script_agents", has_repos=True)
+        inject_system_contracts(ws, test_settings, slug="test", context="task")
+
+        guard_script = ws / ".agents" / "skills" / "make-worktree" / "worktree_guard.py"
+        assert guard_script.is_file(), (
+            f"Guard script not delivered to .agents/skills/make-worktree/: {guard_script}"
+        )
+
+        body = guard_script.read_text()
+        assert "def cmd_setup" in body
+        assert "def cmd_verify" in body
+
+    def test_delivered_guard_executes_in_non_happyranch_repo(
+        self, test_settings: Settings, test_runtime: OrgPaths, tmp_path: Path,
+    ):
+        """FINDING-3: The delivered guard actually runs in a temp git repo
+        that does NOT have the HappyRanch runtime/ package available.
+
+        This proves the guard is a standalone, deliverable, executable asset
+        rather than requiring ``python -m runtime.tools.worktree_guard``.
+        """
+        from runtime.orchestrator.workspace_adapters import inject_system_contracts
+
+        # 1. Materialize the skill into a workspace
+        ws = _build_ws(tmp_path, "guard_exec", has_repos=True)
+        inject_system_contracts(ws, test_settings, slug="test", context="task")
+
+        guard_script = ws / ".claude" / "skills" / "make-worktree" / "worktree_guard.py"
+        assert guard_script.is_file()
+
+        # 2. Create a temp non-HappyRanch git repo (no runtime/ dir)
+        test_repo = tmp_path / "test-project"
+        test_repo.mkdir()
+        subprocess.run(
+            ["git", "init"], cwd=test_repo, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=test_repo, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=test_repo, capture_output=True, text=True,
+        )
+        (test_repo / "README.md").write_text("# Test\n")
+        subprocess.run(
+            ["git", "add", "README.md"], cwd=test_repo, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=test_repo, capture_output=True, text=True,
+        )
+
+        # 3. Create a worktree from this repo
+        worktree_dir = test_repo / ".claude" / "worktrees" / "TASK-DELIVERY"
+        worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(
+            ["git", "-C", str(test_repo), "worktree", "add", str(worktree_dir),
+             "-b", "task/TASK-DELIVERY"],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, f"worktree add failed: {r.stderr}"
+
+        try:
+            # 4. Run setup via the delivered guard script
+            r = subprocess.run(
+                [
+                    sys.executable, str(guard_script),
+                    "setup",
+                    "--worktree-root", str(worktree_dir),
+                    "--primary-root", str(test_repo),
+                    "--task-id", "TASK-DELIVERY",
+                ],
+                capture_output=True, text=True,
+                # No cwd — the guard is a standalone script
+            )
+            assert r.returncode == 0, (
+                f"delivered guard setup failed (exit {r.returncode}):\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}"
+            )
+            assert "WORKTREE_ROOT=" in r.stdout
+            assert "PRIMARY_ROOT=" in r.stdout
+
+            # 5. Run verify (no changes — should pass)
+            r = subprocess.run(
+                [
+                    sys.executable, str(guard_script),
+                    "verify",
+                    "--worktree-root", str(worktree_dir),
+                ],
+                capture_output=True, text=True,
+            )
+            assert r.returncode == 0, (
+                f"delivered guard verify (noop) failed:\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}"
+            )
+            assert "GUARD PASS" in r.stdout
+
+            # 6. Make a primary edit — verify must fail
+            (test_repo / "accidental.md").write_text("primary edit\n")
+            r = subprocess.run(
+                [
+                    sys.executable, str(guard_script),
+                    "verify",
+                    "--worktree-root", str(worktree_dir),
+                ],
+                capture_output=True, text=True,
+            )
+            assert r.returncode == 1, (
+                f"delivered guard verify should fail after primary edit:\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}"
+            )
+            assert "GUARD FAILED" in r.stderr
+            assert "accidental.md" in r.stderr
+
+        finally:
+            # Cleanup
+            subprocess.run(
+                ["git", "-C", str(test_repo), "worktree", "remove",
+                 str(worktree_dir), "--force"],
+                capture_output=True, text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(test_repo), "branch", "-D", "task/TASK-DELIVERY"],
+                capture_output=True, text=True,
+            )
+
+    def test_delivered_guard_executes_via_agents_destination(
+        self, test_settings: Settings, test_runtime: OrgPaths, tmp_path: Path,
+    ):
+        """FINDING-3: The guard delivered to .agents/skills/ also runs in a
+        temp non-HappyRanch git repo (covering Codex/Opencode/Pi)."""
+        from runtime.orchestrator.workspace_adapters import inject_system_contracts
+
+        # 1. Materialize
+        ws = _build_ws(tmp_path, "guard_exec_agents", has_repos=True)
+        inject_system_contracts(ws, test_settings, slug="test", context="task")
+
+        guard_script = ws / ".agents" / "skills" / "make-worktree" / "worktree_guard.py"
+        assert guard_script.is_file()
+
+        # 2. Create a temp repo + worktree
+        test_repo = tmp_path / "test-project-agents"
+        test_repo.mkdir()
+        subprocess.run(["git", "init"], cwd=test_repo, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=test_repo, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=test_repo, capture_output=True, text=True,
+        )
+        (test_repo / "README.md").write_text("# Test\n")
+        subprocess.run(
+            ["git", "add", "README.md"], cwd=test_repo, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=test_repo, capture_output=True, text=True,
+        )
+
+        worktree_dir = test_repo / ".claude" / "worktrees" / "TASK-AGENTS"
+        worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(test_repo), "worktree", "add", str(worktree_dir),
+             "-b", "task/TASK-AGENTS"],
+            capture_output=True, text=True,
+        )
+
+        try:
+            r = subprocess.run(
+                [
+                    sys.executable, str(guard_script),
+                    "setup",
+                    "--worktree-root", str(worktree_dir),
+                    "--primary-root", str(test_repo),
+                    "--task-id", "TASK-AGENTS",
+                ],
+                capture_output=True, text=True,
+            )
+            assert r.returncode == 0, f"agents-destination setup failed: {r.stderr}"
+            assert "WORKTREE_ROOT=" in r.stdout
+
+            r = subprocess.run(
+                [
+                    sys.executable, str(guard_script),
+                    "verify",
+                    "--worktree-root", str(worktree_dir),
+                ],
+                capture_output=True, text=True,
+            )
+            assert r.returncode == 0, f"agents-destination verify failed: {r.stderr}"
+            assert "GUARD PASS" in r.stdout
+
+            # Primary edit → fail
+            (test_repo / "oops.md").write_text("primary edit\n")
+            r = subprocess.run(
+                [
+                    sys.executable, str(guard_script),
+                    "verify",
+                    "--worktree-root", str(worktree_dir),
+                ],
+                capture_output=True, text=True,
+            )
+            assert r.returncode == 1, "agents-destination should detect primary edit"
+            assert "GUARD FAILED" in r.stderr
+
+        finally:
+            subprocess.run(
+                ["git", "-C", str(test_repo), "worktree", "remove",
+                 str(worktree_dir), "--force"],
+                capture_output=True, text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(test_repo), "branch", "-D", "task/TASK-AGENTS"],
+                capture_output=True, text=True,
+            )

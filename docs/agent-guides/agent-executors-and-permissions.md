@@ -38,15 +38,19 @@ Custom/self-registered profiles do not currently support `model_arg` (separate f
 Missing values default to `claude`. All executors share `protocol/skills/`.
 
 **Worktree-root guard.** The ``make-worktree`` skill (injected as a system
-contract per §4.7 of the orchestrator protocol) includes a stdlib-only guard
-that runs at worktree setup and verify points. It records canonical absolute
-primary and task-worktree roots, snapshots the primary checkout baseline,
-and at verify detects accidental primary-checkout edits (the agent bug where
-absolute ``repos/<repo>/...`` paths land edits in the primary checkout while
-tests/build run in the isolated worktree). The guard is a narrow, non-permission
-tool with no DB, API, schema, audit, auth, notification, or sandbox footprint.
-It is available to all executors via the skill body and the
-``runtime/tools/worktree_guard.py`` module.
+contract per §4.7 of the orchestrator protocol) delivers a stdlib-only guard
+script (``worktree_guard.py``) alongside its ``SKILL.md``. The guard runs at
+worktree setup and verify points, validates repository/worktree identity
+(same git common directory + registered worktree), records canonical absolute
+primary and task-worktree roots, snapshots the primary checkout baseline
+with content hashes, and at verify detects accidental primary-checkout edits —
+including mutations of already-dirty paths, new staged files, and new untracked
+files. The guard fails with preservation-first recovery (``git diff`` +
+``patch``) and never suggests destructive commands. It is a narrow,
+non-permission tool with no DB, API, schema, audit, auth, notification, or
+sandbox footprint. It is available to all executors via the delivered skill
+script at ``.claude/skills/make-worktree/worktree_guard.py`` or
+``.agents/skills/make-worktree/worktree_guard.py``.
 
 **Custom CLI profiles** (example — OpenClaw):
 

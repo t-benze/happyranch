@@ -32,14 +32,24 @@ PRIMARY_ROOT=$(cd ../.. && pwd -P)        # canonical absolute primary checkout 
 echo "WORKTREE_ROOT=$WORKTREE_ROOT"
 echo "PRIMARY_ROOT=$PRIMARY_ROOT"
 
-# 3. Activate the worktree-root guard — this snapshots the primary checkout
+# 3. Locate the guard script — delivered alongside this skill file.
+#    The skill is injected into .claude/skills/make-worktree/ (Claude)
+#    or .agents/skills/make-worktree/ (AGENTS.md-based executors).
+#    The workspace root is 3 levels above the worktree:
+WORKSPACE_ROOT=$(cd "$WORKTREE_ROOT/../../.." && pwd -P)
+GUARD="$WORKSPACE_ROOT/.claude/skills/make-worktree/worktree_guard.py"
+if [ ! -f "$GUARD" ]; then
+    GUARD="$WORKSPACE_ROOT/.agents/skills/make-worktree/worktree_guard.py"
+fi
+
+# 4. Activate the worktree-root guard — this snapshots the primary checkout
 #    state so later steps can detect accidental primary-checkout edits.
-python -m runtime.tools.worktree_guard setup \
+python "$GUARD" setup \
     --worktree-root "$WORKTREE_ROOT" \
     --primary-root "$PRIMARY_ROOT" \
     --task-id "<task_id>"
 
-# 4. All subsequent repo commands MUST use $WORKTREE_ROOT:
+# 5. All subsequent repo commands MUST use $WORKTREE_ROOT:
 #    cd "$WORKTREE_ROOT"
 #    uv run pytest "$WORKTREE_ROOT/tests/" -v
 #    git -C "$WORKTREE_ROOT" diff --stat
@@ -60,12 +70,15 @@ Before running tests, committing, or reporting completion, verify that
 no accidental primary-checkout edits have occurred:
 
 ```bash
-python -m runtime.tools.worktree_guard verify --worktree-root "$WORKTREE_ROOT"
+python "$GUARD" verify --worktree-root "$WORKTREE_ROOT"
 ```
 
 A successful verification prints `GUARD PASS`. A failure prints a loud
-diagnostic naming the primary root, the task worktree root, and every
-changed primary-checkout path, plus recovery instructions.
+diagnostic naming the primary root, the task worktree root, every
+changed primary-checkout path (categorized as tracked, staged, or
+untracked), and preservation-first recovery instructions that use
+safe `git diff` inspection and `patch` application — no destructive
+`git checkout`, `git reset`, or `rm` commands are ever suggested.
 
 The guard does NOT inspect the task worktree diff — a zero-diff task
 passes when the primary checkout is unchanged. Edits in the task
