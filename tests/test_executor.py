@@ -1062,21 +1062,23 @@ def test_parse_claude_terminal_error_session_limit():
 
 
 def test_parse_claude_terminal_error_session_limit_from_result_field():
-    """Type=result with result field containing 'session limit' → session_limit."""
+    """type:result without error_* subtype → None (not a terminal error).
+    Only terminal error events (subtype starts with error_) are parsed."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
     stdout = '{"type":"result","result":"Error: session limit exceeded"}'
     reason = _parse_claude_terminal_error(stdout, "")
-    assert reason == "session_limit"
+    assert reason is None
 
 
 def test_parse_claude_terminal_error_certificate_from_result_field():
-    """Type=result with result field containing 'certificate' → transport_error."""
+    """type:result without error_* subtype → None (not a terminal error).
+    Certificate text in a non-terminal result field must not be parsed."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
     stdout = '{"type":"result","result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}'
     reason = _parse_claude_terminal_error(stdout, "unrelated warning\n")
-    assert reason == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+    assert reason is None
 
 
 def test_parse_claude_terminal_error_generic_error_subtype():
@@ -1114,21 +1116,23 @@ def test_parse_claude_terminal_error_invalid_json_returns_none():
 
 
 def test_parse_claude_terminal_error_error_object_pattern():
-    """JSON with {error: {message: ...}} → extracted message."""
+    """Arbitrary {error: {message: ...}} without type:result → None.
+    Generic error objects are NOT terminal failure envelopes."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
     stdout = '{"error":{"message":"session limit hit"}}'
     reason = _parse_claude_terminal_error(stdout, "")
-    assert reason == "session_limit"
+    assert reason is None
 
 
 def test_parse_claude_terminal_error_errors_array_pattern():
-    """JSON with {errors: [{message: ...}]} → extracted message."""
+    """Arbitrary {errors: [{message: ...}]} without type:result → None.
+    Generic errors arrays are NOT terminal failure envelopes."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
     stdout = '{"errors":[{"message":"certificate verification failed"}]}'
     reason = _parse_claude_terminal_error(stdout, "")
-    assert reason == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+    assert reason is None
 
 
 def test_parse_claude_terminal_error_not_a_dict_returns_none():
@@ -1137,6 +1141,68 @@ def test_parse_claude_terminal_error_not_a_dict_returns_none():
 
     reason = _parse_claude_terminal_error("[1, 2, 3]", "")
     assert reason is None
+
+
+def test_parse_claude_terminal_error_success_subtype_with_certificate_text():
+    """type:result + subtype:success with certificate result text → None.
+    This is the exact false-precedence case from TASK-3438 review:
+    {type: result, subtype: success, result: 'certificate verification failed'}."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = '{"type":"result","subtype":"success","result":"certificate verification failed"}'
+    reason = _parse_claude_terminal_error(stdout, "")
+    assert reason is None
+
+
+def test_parse_claude_terminal_error_progress_type_with_error_object():
+    """type:progress with error object → None.
+    This is the exact false-precedence case from TASK-3438 review:
+    {type: progress, error: {message: 'session limit hit'}}."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = '{"type":"progress","error":{"message":"session limit hit"}}'
+    reason = _parse_claude_terminal_error(stdout, "")
+    assert reason is None
+
+
+def test_parse_claude_terminal_error_certificate_via_error_subtype_result():
+    """type:result + subtype:error_during_execution with certificate
+    result text → transport_error (valid terminal error envelope)."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = '{"type":"result","subtype":"error_during_execution","result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}'
+    reason = _parse_claude_terminal_error(stdout, "unrelated workspace trust warning\n")
+    assert reason == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+
+
+def test_parse_claude_terminal_error_certificate_via_error_subtype_errors():
+    """type:result + subtype:error_during_execution with errors array
+    containing certificate → transport_error (valid terminal error)."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = '{"type":"result","subtype":"error_during_execution","errors":[{"message":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"}]}'
+    reason = _parse_claude_terminal_error(stdout, "")
+    assert reason == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+
+
+def test_parse_claude_terminal_error_session_limit_via_error_subtype_result():
+    """type:result + subtype:error_during_execution with session-limit
+    result text → session_limit (valid terminal error envelope)."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = '{"type":"result","subtype":"error_during_execution","result":"Error: session limit exceeded"}'
+    reason = _parse_claude_terminal_error(stdout, "")
+    assert reason == "session_limit"
+
+
+def test_parse_claude_terminal_error_unknown_error_subtype_fallback():
+    """type:result + unrecognized error_* subtype with no known patterns
+    → generic claude_<subtype> fallback."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = '{"type":"result","subtype":"error_unknown","result":"something went wrong"}'
+    reason = _parse_claude_terminal_error(stdout, "")
+    assert reason == "claude_unknown"
 
 
 # ── THR-116: _run_command error_parser integration ────────────────────
@@ -1270,4 +1336,145 @@ def test_run_command_terminal_error_not_set_on_success(mock_subprocess, tmp_path
     )
 
     assert result.success is True
+    assert result.terminal_error is None
+
+
+# ── THR-116 repair: real shipping-chain tests ─────────────────────────
+# These go through the real executor (ClaudeExecutor.run) with the
+# production _parse_claude_terminal_error parser and mocked subprocess,
+# rather than lookalike result classes with prepopulated terminal_error.
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_executor_session_limit_terminal_error(mock_subprocess, tmp_path, runtime):
+    """Real-chain: mocked subprocess with session-limit terminal result +
+    unrelated workspace-trust stderr → ClaudeExecutor.run() →
+    production _parse_claude_terminal_error → ExecutorResult.terminal_error."""
+    from runtime.config import Settings
+    from runtime.orchestrator.executors import ClaudeExecutor
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_max_turns","result":"Session limit reached"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    executor = ClaudeExecutor(
+        claude_cli_path="claude", permission_mode="auto",
+        settings=Settings(), paths=runtime,
+    )
+    result = executor.run(
+        workspace=workspace, prompt="hello",
+        timeout_seconds=30, session_id="sess-test",
+    )
+
+    assert result.success is False
+    assert result.terminal_error == "session_limit"
+    # stderr noise is still in the raw error
+    assert "Workspace trust warning" in result.error
+    assert result.returncode == 1
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_executor_certificate_terminal_error(mock_subprocess, tmp_path, runtime):
+    """Real-chain: mocked subprocess with certificate transport error +
+    unrelated workspace-trust stderr → ClaudeExecutor.run() →
+    production _parse_claude_terminal_error →
+    ExecutorResult.terminal_error == transport_error."""
+    from runtime.config import Settings
+    from runtime.orchestrator.executors import ClaudeExecutor
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_during_execution",'
+               '"result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    executor = ClaudeExecutor(
+        claude_cli_path="claude", permission_mode="auto",
+        settings=Settings(), paths=runtime,
+    )
+    result = executor.run(
+        workspace=workspace, prompt="hello",
+        timeout_seconds=30, session_id="sess-test",
+    )
+
+    assert result.success is False
+    assert result.terminal_error == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+    assert "Workspace trust warning" in result.error
+    assert result.returncode == 1
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_executor_no_structured_result_falls_back_to_error(
+    mock_subprocess, tmp_path, runtime,
+):
+    """Real-chain: mocked subprocess with no structured terminal result
+    → terminal_error is None, raw error is preserved."""
+    from runtime.config import Settings
+    from runtime.orchestrator.executors import ClaudeExecutor
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=2,
+        stdout="not json at all",
+        stderr="fatal: something broke\n",
+    )
+
+    executor = ClaudeExecutor(
+        claude_cli_path="claude", permission_mode="auto",
+        settings=Settings(), paths=runtime,
+    )
+    result = executor.run(
+        workspace=workspace, prompt="hello",
+        timeout_seconds=30, session_id="sess-test",
+    )
+
+    assert result.success is False
+    assert result.terminal_error is None
+    assert "Command exited with code 2" in result.error
+    assert "fatal: something broke" in result.error
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_executor_success_subtype_does_not_produce_terminal_error(
+    mock_subprocess, tmp_path, runtime,
+):
+    """Real-chain: mocked subprocess with {type:result, subtype:success,
+    result: 'certificate verification failed'} — must NOT produce a
+    terminal_error (the reviewer's false-precedence bug fix)."""
+    from runtime.config import Settings
+    from runtime.orchestrator.executors import ClaudeExecutor
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"success",'
+               '"result":"certificate verification failed"}',
+        stderr="Workspace trust warning\n",
+    )
+
+    executor = ClaudeExecutor(
+        claude_cli_path="claude", permission_mode="auto",
+        settings=Settings(), paths=runtime,
+    )
+    result = executor.run(
+        workspace=workspace, prompt="hello",
+        timeout_seconds=30, session_id="sess-test",
+    )
+
+    # The process exited non-zero, but subtype:success means no structured
+    # terminal failure — terminal_error must be None.
+    assert result.success is False
     assert result.terminal_error is None
