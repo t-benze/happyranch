@@ -713,17 +713,19 @@ class TestValidateSkill:
             "/api/v1/orgs/alpha/skills/hr:nonexistent/validate",
             headers=auth_headers,
         )
-        assert r.status_code == 404
+        # Legacy validate route now returns 410 Gone for all calls
+        assert r.status_code == 410
 
     def test_validate_managed_skill_409(self, tmp_home, app, org_state, auth_headers):
-        """Validating a managed skill returns 409."""
+        """THR-055: legacy validate returns 410 even for managed skills."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
         r = client.post(
             "/api/v1/orgs/alpha/skills/hr:standard-skill/validate",
             headers=auth_headers,
         )
-        assert r.status_code == 409
+        # Legacy validate route now returns 410 Gone for all calls
+        assert r.status_code == 410
 
     def test_validate_requires_auth(self, tmp_home, app, org_state):
         """401 without bearer token."""
@@ -733,10 +735,17 @@ class TestValidateSkill:
         assert r.status_code == 401
 
     def test_validate_records_validation_event(self, tmp_home, app, org_state, auth_headers):
-        """THR-055: legacy route returns 410 Gone."""
+        """THR-055: legacy validate route returns 410 Gone with lifecycle migration guidance."""
         _seed_skills_and_config(org_state.root)
-        # This legacy route has been cut over — 410 Gone
-        assert True  # Legacy route test; 410 assertion already verified elsewhere
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:test-skill/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 410
+        body = r.json()
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
+        assert "skill-lifecycle/validate" in body.get("detail", {}).get("detail", "")
 
 
 class TestEditSkill:
@@ -769,20 +778,34 @@ class TestEditSkill:
         assert body.get("detail", {}).get("code") == "legacy_cutover"
 
     def test_edit_no_fields_returns_422(self, tmp_home, app, org_state, auth_headers):
-        """THR-055: legacy route returns 410 Gone."""
+        """THR-055: legacy PATCH /skills/{id} returns 410 Gone regardless of body."""
         _seed_skills_and_config(org_state.root)
-        # This legacy route has been cut over — 410 Gone
-        assert True  # Legacy route test; 410 assertion already verified elsewhere
+        client = TestClient(app)
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:test-skill",
+            json={},
+            headers=auth_headers,
+        )
+        assert r.status_code == 410
+        body = r.json()
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
 
 class TestSkillsValidation:
     """GET /api/v1/orgs/{slug}/skills/validation"""
 
     def test_validation_returns_events(self, tmp_home, app, org_state, auth_headers):
-        """THR-055: legacy route returns 410 Gone."""
+        """THR-055: legacy validation list endpoint still serves read-only data."""
         _seed_skills_and_config(org_state.root)
-        # This legacy route has been cut over — 410 Gone
-        assert True  # Legacy route test; 410 assertion already verified elsewhere
+        client = TestClient(app)
+        r = client.get(
+            "/api/v1/orgs/alpha/skills/validation",
+            headers=auth_headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert "events" in body
+        assert body.get("label") == "Runtime Validation"
 
 
 class TestValidationGuard:
@@ -1002,10 +1025,30 @@ class TestPhase2FullFlow:
     """End-to-end Phase 2 lifecycle: create → validate → edit → re-validate."""
 
     def test_full_create_edit_revalidate_flow(self, tmp_home, app, org_state, auth_headers):
-        """THR-055: legacy route returns 410 Gone."""
+        """THR-055: legacy create + edit + validate all return 410 Gone."""
         _seed_skills_and_config(org_state.root)
-        # This legacy route has been cut over — 410 Gone
-        assert True  # Legacy route test; 410 assertion already verified elsewhere
+        client = TestClient(app)
+        # Create → 410
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json={"slug": "new-skill", "name": "New", "description": "desc", "skill_md": "# Test"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 410
+        assert r.json().get("detail", {}).get("code") == "legacy_cutover"
+        # Edit → 410
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:test-skill",
+            json={"name": "Renamed"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 410
+        # Validate → 410
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:test-skill/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 410
 
 class TestAssignSkill:
     """POST /api/v1/orgs/{slug}/agents/{agent_id}/skills/{skill_id}/assign"""
@@ -1026,7 +1069,210 @@ class TestAssignSkill:
         assert body.get("detail", {}).get("code") == "legacy_cutover"
 
     def test_assign_writes_eligibility_to_config(self, tmp_home, app, org_state, auth_headers):
-        """THR-055: legacy route returns 410 Gone."""
+        """THR-055: legacy assign route returns 410 Gone."""
         _seed_skills_and_config(org_state.root)
-        # This legacy route has been cut over — 410 Gone
-        assert True  # Legacy route test; 410 assertion already verified elsewhere
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
+            json={"action": "allow"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 410
+        body = r.json()
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
+        assert "skill-lifecycle/assign" in body.get("detail", {}).get("detail", "")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-055: Daemon HTTP lifecycle route authority, spoof, residue tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+import json
+
+
+class TestLifecycleHTTPAuthority:
+    """Daemon HTTP-route tests proving:
+    - Founder bearer can submit proposals
+    - Legacy routes return 410 with no side effects
+    """
+
+    def test_founder_bearer_submits_proposal_returns_201(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Founder with bearer token can submit a proposal (human path)."""
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            headers=auth_headers,
+            json={
+                "slug": "founder-proposal",
+                "name": "Founder Test",
+                "description": "A proposal from founder",
+                "skill_md": "# Test\n",
+                "version": "0.1.0",
+            },
+        )
+        assert r.status_code == 201, f"Expected 201, got {r.status_code}: {r.json()}"
+        body = r.json()
+        assert body["skill_id"] == "hr:founder-proposal"
+        assert body["status"] == "proposed"
+        assert body["content_hash"]
+
+    def test_body_spoof_claims_ignored_with_bearer(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Body spoof claims are ignored — identity derives from bearer token."""
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            headers=auth_headers,
+            json={
+                "slug": "body-spoof-2",
+                "name": "Spoof Test",
+                "description": "Body spoof test via bearer",
+                "skill_md": "# Test\n",
+                "task_id": "SPOOF-TASK",
+                "session_id": "SPOOF-SESSION",
+                "proposer_agent": "SPOOF-AGENT",
+            },
+        )
+        assert r.status_code == 201, f"Expected 201, got {r.status_code}: {r.json()}"
+
+    def test_legacy_validate_returns_410_no_side_effects(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Legacy validate route returns 410 with no filesystem/ledger side effects."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills/hr:test-skill/validate",
+            headers=auth_headers,
+        )
+        assert r.status_code == 410
+        body = r.json()
+        assert body["detail"]["code"] == "legacy_cutover"
+
+    def test_legacy_create_returns_410_no_side_effects(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Legacy create route returns 410 with no filesystem/ledger side effects."""
+        _seed_skills_and_config(org_state.root)
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skills",
+            json={"slug": "new-legacy", "name": "New", "description": "d", "skill_md": "# T"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 410
+        assert r.json()["detail"]["code"] == "legacy_cutover"
+
+
+class TestLifecycleRollbackResidue:
+    """Daemon HTTP route tests proving rollback workspace residue cleanup."""
+
+    def test_rollback_cleans_materialized_workspace_residue(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Rollback removes prior materialized skill dirs from agent workspaces."""
+        import shutil
+
+        # Create a materialized workspace to simulate prior materialization
+        workspaces_dir = org_state.root / "workspaces"
+        agent_ws = workspaces_dir / "dev_agent"
+        agent_ws.mkdir(parents=True, exist_ok=True)
+        # Create materialized skill dirs in both .claude/skills/ and .agents/skills/
+        for skills_dir_name in (".claude", ".agents"):
+            skill_dir = agent_ws / skills_dir_name / "skills" / "test-rb-skill"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text("# Test materialized skill\n")
+
+        # Submit a proposal via bearer, then publish, assign, and rollback
+        client = TestClient(app)
+        # Submit proposal
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            headers=auth_headers,
+            json={
+                "slug": "test-rb-skill",
+                "name": "Test Rollback Skill",
+                "description": "For rollback residue test",
+                "skill_md": "# Rollback Test\n\nThis is a test skill for rollback.\n",
+            },
+        )
+        assert r.status_code == 201, f"Proposal failed: {r.json()}"
+        skill_id = r.json()["skill_id"]
+        version_id = r.json()["version_id"]
+
+        # Lifecycle flow: claim → validate → submit → review → publish → assign
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/{skill_id}/claim",
+            headers=auth_headers,
+            json={"proposal_version_id": version_id},
+        )
+        assert r.status_code == 200, f"Claim failed: {r.json()}"
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/validate",
+            headers=auth_headers,
+            params={"version_id": version_id},
+        )
+        assert r.status_code == 200, f"Validate failed: {r.json()}"
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/submit-review",
+            headers=auth_headers,
+            json={"version_id": version_id},
+        )
+        assert r.status_code == 200, f"Submit review failed: {r.json()}"
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/review",
+            headers=auth_headers,
+            json={"version_id": version_id, "decision": "approved", "rationale": "OK"},
+        )
+        assert r.status_code == 200, f"Review failed: {r.json()}"
+
+        # Get approval event ID from events
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/events/{skill_id}",
+            headers=auth_headers,
+        )
+        events = r.json()["events"]
+        approval_event = next(e for e in events if e["event_type"] == "approved")
+        approval_event_id = approval_event["id"]
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/publish",
+            headers=auth_headers,
+            json={"version_id": version_id, "approval_event_id": approval_event_id},
+        )
+        assert r.status_code == 200, f"Publish failed: {r.json()}"
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/assign",
+            headers=auth_headers,
+            json={"skill_id": skill_id, "agent_name": "dev_agent", "version_id": version_id},
+        )
+        assert r.status_code == 200, f"Assign failed: {r.json()}"
+
+        # Verify materialized dirs exist BEFORE rollback
+        for skills_dir_name in (".claude", ".agents"):
+            skill_dir = agent_ws / skills_dir_name / "skills" / "test-rb-skill"
+            assert skill_dir.exists(), f"Pre-rollback: {skill_dir} should exist"
+
+        # Rollback
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/rollback",
+            headers=auth_headers,
+            params={"skill_id": skill_id, "reason": "Test rollback residue cleanup"},
+        )
+        assert r.status_code == 200, f"Rollback failed: {r.json()}"
+        body = r.json()
+        assert body["assignments_deactivated"] >= 1
+
+        # Verify materialized dirs are GONE after rollback
+        for skills_dir_name in (".claude", ".agents"):
+            skill_dir = agent_ws / skills_dir_name / "skills" / "test-rb-skill"
+            assert not skill_dir.exists(), (
+                f"Post-rollback: {skill_dir} should be removed; residue cleanup failed"
+            )

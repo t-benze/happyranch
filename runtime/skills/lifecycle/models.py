@@ -88,19 +88,14 @@ class PackageVersion(BaseModel):
     publication_decision_id: int | None = None  # FK to lifecycle event
 
     @staticmethod
-    def compute_content_hash(skill_md: str, references: dict[str, str] | None = None, assets: dict[str, str] | None = None) -> str:
-        """Compute a deterministic SHA-256 hash of the package content."""
-        h = hashlib.sha256()
-        h.update(skill_md.encode("utf-8"))
-        if references:
-            for k in sorted(references):
-                h.update(k.encode("utf-8"))
-                h.update(references[k].encode("utf-8"))
-        if assets:
-            for k in sorted(assets):
-                h.update(k.encode("utf-8"))
-                h.update(assets[k].encode("utf-8"))
-        return h.hexdigest()
+    def compute_content_hash(skill_md: str) -> str:
+        """Compute a deterministic SHA-256 hash of the canonical SKILL.md bytes.
+
+        This hash matches exactly the bytes stored in the artifact store under
+        the content-addressed key. References and assets are stored as independent
+        artifacts with their own hashes recorded in the lifecycle event metadata.
+        """
+        return hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
 
     @field_validator("version")
     @classmethod

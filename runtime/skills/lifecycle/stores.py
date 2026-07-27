@@ -632,4 +632,3 @@ def quarantine_legacy_user_skills(db, org_root, settings) -> int:
             pass
 
     return count
-

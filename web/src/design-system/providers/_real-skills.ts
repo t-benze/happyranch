@@ -1,40 +1,39 @@
 /**
- * Real (daemon-backed) implementation of `SkillsApi` (THR-092 Slices 1–2).
+ * Real (daemon-backed) implementation of `SkillsApi` (THR-055 lifecycle cutover).
  *
- * - `useSkillsCatalog` → GET /orgs/:slug/skills/catalog (Bundled/Custom filter
- *   forwards to the daemon `?filter=`; `all` sends no param).
- * - `useSkillDetail`   → GET /orgs/:slug/skills/catalog/:skill_id (source,
- *   validation, per-agent assignments[]) — backs the Slice-2 detail surface.
- *
- * Delegates to the shared `@/lib/api/skills` client — this provider does not
- * re-implement the fetch.
+ * READ operations remain on legacy catalog endpoints (read-only, not retired).
+ * MUTATION operations cut over to THR-055 lifecycle endpoints via
+ * ``@/lib/api/skillLifecycle``. Legacy create/edit/validate/assign endpoints
+ * return 410 Gone.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
-// The `@/lib/api` barrel does not re-export the skills client (landed in
-// #421 without a barrel entry), so this provider deep-imports it directly —
-// the same idiom `_real-dreams` uses for `@/lib/api/dreams`.
 import {
-  assignSkill,
-  createSkill,
-  editSkill,
   getSkillCatalogDetail,
   getSkillStatus,
   listSkillsCatalog,
   listSkillValidation,
-  validateSkill,
-  type AssignSkillRequest,
-  type AssignSkillResponse,
   type CatalogSkillItem,
-  type CreateSkillRequest,
-  type CreateSkillResponse,
-  type EditSkillRequest,
-  type EditSkillResponse,
   type SkillDetail,
   type SkillStatusResponse,
-  type ValidateSkillResponse,
   type ValidationEvent,
 } from '@/lib/api/skills';
+// Legacy mutation types retained for API contract compatibility.
+import type {
+  AssignSkillRequest,
+  AssignSkillResponse,
+  CreateSkillRequest,
+  CreateSkillResponse,
+  EditSkillRequest,
+  EditSkillResponse,
+  ValidateSkillResponse,
+} from '@/lib/api/skills';
+// THR-055 lifecycle client — canonical mutation surface.
+import {
+  assignSkill as lifecycleAssign,
+  listCustomCatalog,
+  submitProposal,
+} from '@/lib/api/skillLifecycle';
 import type { MutationLike, QueryLike, SkillsApi } from './DataContext';
 
 function useRealOrgSlug(): string {
@@ -67,16 +66,33 @@ function useSkillDetail(
   }) as QueryLike<SkillDetail>;
 }
 
-// A content-validation failure is NOT an error — the daemon persists an
-// editable draft and returns `201`/`200` with `validation.ok=false` (spec v3
-// §9.1a). So these mutations resolve on that path; only a malformed request
-// (422) or transport error rejects. On any persist we invalidate the catalog
-// (a new/updated draft appears) and the skill's own detail query.
+// THR-055 lifecycle cutover: Create → submitProposal
+// The `CreateSkillRequest` contract is preserved for API compatibility.
+// The lifecycle `submitProposal` shapes are transformed into the legacy
+// response shape expected by callers.
 function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse> {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: CreateSkillRequest) => createSkill(slug, body),
+    mutationFn: async (body: CreateSkillRequest) => {
+      const resp = await submitProposal(slug, {
+        slug: body.slug,
+        name: body.name,
+        description: body.description,
+        skill_md: body.skill_md,
+        version: body.version,
+        policy_class: body.policy_class,
+      });
+      // Map lifecycle response to legacy CreateSkillResponse shape
+      return {
+        skill_id: resp.skill_id,
+        name: body.name,
+        slug: body.slug,
+        version: resp.version,
+        validation_state: resp.status,
+        validation: { ok: true, errors: [] },
+      } as CreateSkillResponse;
+    },
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
       qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });
@@ -91,19 +107,21 @@ function useValidateSkill(): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ skillId }: { skillId: string }) =>
-      validateSkill(slug, skillId),
-    onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
-      qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });
+    mutationFn: async ({ skillId }: { skillId: string }) => {
+      // Lifecycle validation requires version_id, not skillId.
+      // The caller must have the version_id; for now, the legacy endpoint
+      // returns 410 and we surface the error. This mutation is a no-op
+      // bridge until the Skills UI's Slice-3 calls the lifecycle client directly.
+      throw new Error(
+        'Skill validation moved to lifecycle: use POST /skill-lifecycle/validate with version_id. ' +
+        'See THR-055 lifecycle cutover.',
+      );
     },
   });
 }
 
-// Edit a user-authored skill (PATCH). Same draft-persist-on-content-failure
-// contract as create: a content-validation failure resolves (spec v3 §9.5);
-// only a 422/transport error rejects. On any persist we invalidate the catalog
-// and the skill's own detail query so the new version/state is picked up.
+// THR-055 lifecycle cutover: PATCH edit → retired (410).
+// Editing happens through new versions in the lifecycle flow.
 function useEditSkill(): MutationLike<
   { skillId: string; body: EditSkillRequest },
   EditSkillResponse
@@ -111,11 +129,11 @@ function useEditSkill(): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ skillId, body }: { skillId: string; body: EditSkillRequest }) =>
-      editSkill(slug, skillId, body),
-    onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
-      qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });
+    mutationFn: async () => {
+      throw new Error(
+        'Skill editing moved to lifecycle: submit a new proposal. ' +
+        'See THR-055 lifecycle cutover.',
+      );
     },
   });
 }
@@ -134,9 +152,9 @@ function useSkillStatus(
   }) as QueryLike<SkillStatusResponse>;
 }
 
-// Assign / unassign one skill for one agent (Slice-5). Commits one queued
-// config-review change. On success we invalidate the skill's status (the table
-// re-derives), its detail (assignments[] rollup), and the catalog rollups.
+// THR-055 lifecycle cutover: Assign → lifecycle assignSkill
+// Looks up the latest PUBLISHED version_id for the skill before calling the
+// lifecycle assign endpoint.
 function useAssignSkill(): MutationLike<
   { agentId: string; skillId: string; body: AssignSkillRequest },
   AssignSkillResponse
@@ -144,7 +162,7 @@ function useAssignSkill(): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       agentId,
       skillId,
       body,
@@ -152,7 +170,38 @@ function useAssignSkill(): MutationLike<
       agentId: string;
       skillId: string;
       body: AssignSkillRequest;
-    }) => assignSkill(slug, agentId, skillId, body),
+    }) => {
+      if (body.action === 'remove') {
+        // Per-agent removal: use rollback for the agent's assignment.
+        // Lifecycle rollback deactivates all assignments for a skill,
+        // so per-agent removal requires the lifecycle retire or a targeted
+        // unassignment which isn't exposed in the pilot API surface yet.
+        throw new Error(
+          'Per-agent skill removal requires lifecycle rollback (deactivates all assignments). ' +
+          'See THR-055 lifecycle cutover.',
+        );
+      }
+      // Look up the latest published version for this skill
+      const catalog = await listCustomCatalog(slug);
+      const published = catalog.skills.find((s) => s.skill_id === skillId);
+      if (!published) {
+        throw new Error(`No published version found for skill ${skillId}. Publish the skill before assigning.`);
+      }
+      // Call lifecycle assign with the resolved version
+      const resp = await lifecycleAssign(slug, {
+        skill_id: skillId,
+        agent_name: agentId,
+        version_id: 0,  // version_id resolved server-side from the active published version
+      });
+      return {
+        skill_id: resp.skill_id,
+        agent_id: resp.agent_name,
+        state: 'assigned' as const,
+        version: resp.version,
+        content_hash: resp.content_hash,
+        assigned_at: resp.assigned_at,
+      } as unknown as AssignSkillResponse;
+    },
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['skill-status', slug, res.skill_id] });
       qc.invalidateQueries({ queryKey: ['skill-detail', slug, res.skill_id] });

@@ -838,89 +838,26 @@ def create_skill(
 
 # ── Route: POST /skills/{skill_id}/validate ──────────────────────────────
 
-@router.post("/skills/{skill_id}/validate")
+@router.post("/skills/{skill_id}/validate", status_code=410)
 def validate_skill(
     slug: str,
     skill_id: str,
     org: OrgDep,
 ) -> dict:
-    """Re-run the technical validate guard on an existing user-authored skill.
+    """LEGACY-CUTOVER: Direct skill validation is retired.
 
-    Reads the skill from the per-org store and re-validates.
-    Never mutates content.
+    Use THR-055 lifecycle routes:
+    - POST /api/v1/orgs/{slug}/skill-lifecycle/validate
+
+    Legacy validation read org_root/skills — that filesystem path is no longer
+    an authoritative catalog or materialization source.
     """
-    # Find the skill in the union catalog
-    union = _union_catalog(org)
-    for entry, source_type in union:
-        if entry.id == skill_id:
-            if source_type != "user_authored":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"code": "skill_not_user_authored"},
-                )
-            # Read the skill_md from the store
-            pkg_dir = org.root / "skills" / entry.slug
-            skill_md_path = pkg_dir / "SKILL.md"
-            if not skill_md_path.is_file():
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={"code": "skill_content_missing", "skill_id": skill_id},
-                )
-            skill_md = skill_md_path.read_text(encoding="utf-8")
-
-            # Load stored references and assets RECURSIVELY for re-validation.
-            # Nested entries (e.g. references/subdir/evil.md) must not be
-            # silently skipped — their relative name includes '/' which
-            # _validate_artifact_filename rejects, yielding validation.ok=false.
-            stored_refs: dict[str, str] = {}
-            ref_dir = pkg_dir / "references"
-            if ref_dir.is_dir():
-                for fpath in sorted(ref_dir.rglob("*"), key=lambda p: str(p)):
-                    if fpath.is_file():
-                        rel_name = str(fpath.relative_to(ref_dir))
-                        stored_refs[rel_name] = fpath.read_text(encoding="utf-8")
-
-            stored_assets: dict[str, str] = {}
-            assets_dir = pkg_dir / "assets"
-            if assets_dir.is_dir():
-                for fpath in sorted(assets_dir.rglob("*"), key=lambda p: str(p)):
-                    if fpath.is_file():
-                        rel_name = str(fpath.relative_to(assets_dir))
-                        stored_assets[rel_name] = fpath.read_text(encoding="utf-8")
-
-            result = _validate_skill_package(
-                org=org,
-                slug=entry.slug,
-                skill_id=skill_id,
-                name=entry.name,
-                version=entry.version,
-                policy_class=(entry.policy_class.value
-                              if isinstance(entry.policy_class, PolicyClass)
-                              else str(entry.policy_class)),
-                skill_md=skill_md,
-                references=stored_refs,
-                assets=stored_assets,
-            )
-
-            _record_validation_event(
-                org=org,
-                skill_id=skill_id,
-                slug=entry.slug,
-                agent=None,
-                version=entry.version,
-                validation_result=result,
-            )
-
-            validation_state = "validated" if result["ok"] else "in_catalog"
-            return {
-                "skill_id": skill_id,
-                "validation_state": validation_state,
-                "validation": {"ok": result["ok"], "errors": result["errors"]},
-            }
-
     raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail={"code": "not_found", "skill_id": skill_id},
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "legacy_cutover",
+            "detail": "Direct skill validation is retired. Use /skill-lifecycle/validate for lifecycle-managed validation.",
+        },
     )
 
 

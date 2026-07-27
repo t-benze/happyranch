@@ -597,9 +597,14 @@ def rollback(
     from pathlib import Path
 
     db = _get_db(org)
+    conn = db._conn if hasattr(db, '_conn') else db
+    # Disable implicit transactions so explicit BEGIN IMMEDIATE works.
+    # The route manages transactions explicitly.
+    prev_isolation = getattr(conn, 'isolation_level', None)
     try:
-        # Explicit transaction wrapping for atomicity
-        db.execute("BEGIN IMMEDIATE")
+        conn.isolation_level = None
+        # Explicit transaction wrapping for atomicity on the raw connection
+        conn.execute("BEGIN IMMEDIATE")
         count = _service.rollback(
             db=db,
             actor_kind="human",
@@ -608,33 +613,39 @@ def rollback(
             rolled_back_by="founder",
             target_version_id=target_version_id,
         )
-        db.execute("COMMIT")
-    except Exception:
-        try:
-            db.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"code": "rollback_failed", "skill_id": skill_id},
-        )
+        conn.execute("COMMIT")
     except LifecycleError as e:
         try:
-            db.execute("ROLLBACK")
+            conn.execute("ROLLBACK")
         except Exception:
             pass
         raise HTTPException(
             status_code=e.status_code,
             detail={"code": e.code, "detail": e.detail},
         )
+    except Exception as e:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "rollback_failed", "skill_id": skill_id, "error": str(e)},
+        )
+    finally:
+        if prev_isolation is not None:
+            conn.isolation_level = prev_isolation
 
     # Clean prior materialized custom-skill workspace residue.
     # The ledger transaction has committed; now remove the old skill
     # directories from all agent workspaces so no stale content lingers.
+    # Uses the declared OrgPaths seam (not an invented field on OrgState).
     slug_match = skill_id
     if skill_id.startswith("hr:"):
         slug_match = skill_id[3:]
-    workspaces_dir = Path(org.workspaces_root) if org.workspaces_root else org.root / "workspaces"
+    from runtime.orchestrator._paths import OrgPaths
+    workspaces_dir = OrgPaths(org.root).workspaces_dir
+    cleanup_errors: list[str] = []
     if workspaces_dir.is_dir():
         for agent_ws in workspaces_dir.iterdir():
             if not agent_ws.is_dir():
@@ -642,12 +653,25 @@ def rollback(
             for skills_dir_name in (".claude", ".agents"):
                 skill_dir = agent_ws / skills_dir_name / "skills" / slug_match
                 if skill_dir.exists():
-                    shutil.rmtree(skill_dir, ignore_errors=True)
+                    try:
+                        shutil.rmtree(skill_dir)
+                    except Exception as e:
+                        cleanup_errors.append(f"{skill_dir}: {e}")
+    if cleanup_errors:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "rollback_cleanup_failed",
+                "detail": f"Ledger rollback committed ({count} assignments deactivated) but workspace cleanup failed.",
+                "cleanup_errors": cleanup_errors,
+            },
+        )
 
     return {
         "skill_id": skill_id,
         "assignments_deactivated": count,
         "reason": reason,
+        "cleanup_errors": cleanup_errors if cleanup_errors else None,
     }
 
 

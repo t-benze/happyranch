@@ -101,10 +101,11 @@ class SkillLifecycleService:
         protected_slugs: frozenset | None = None,
         org_root: Path | str | None = None,
     ) -> PackageVersion:
-        """Submit a task/session-bound agent proposal.
+        """Submit a task/session-bound proposal.
 
-        Only agent callers (actor_kind="agent") may submit proposals.
-        Proposal identity derives from verified task/session, never body claims.
+        Both agents (via verified task/session) and humans (via bearer token)
+        may submit proposals. Proposal identity derives from verified
+        task/session when agent, or from bearer when human.
 
         Package content (skill_md) is stored in the org ArtifactStore under
         ``skill-lifecycle/<slug>/<version>/SKILL.md`` when ``org_root`` is
@@ -115,13 +116,13 @@ class SkillLifecycleService:
         - policy_class must be standard_operational
         - task_id + session_id required for agent proposals
         """
-        self._ensure_agent(actor_kind, "submit proposal")
         self._ensure_non_empty(skill_md, "skill_md")
         self._ensure_protected_slug(slug, protected_slugs)
         self._ensure_policy_class(policy_class)
 
-        # Agent proposals require verified task/session binding
-        if not task_id or not session_id:
+        # Agent proposals require verified task/session binding.
+        # Human/founder proposals (bearer token) don't need this.
+        if actor_kind == "agent" and (not task_id or not session_id):
             raise LifecycleError(
                 code="missing_session_binding",
                 detail="Agent proposals require verified task_id + session_id binding.",
@@ -130,15 +131,18 @@ class SkillLifecycleService:
 
         skill_id = f"hr:{slug}"
 
-        # Compute content hash
-        content_hash = PackageVersion.compute_content_hash(skill_md, references, assets)
+        # Compute content hash from canonical SKILL.md bytes alone.
+        # This hash MUST match exactly the bytes stored in the artifact store.
+        content_hash = PackageVersion.compute_content_hash(skill_md)
 
         # Check for duplicate content hash (idempotency)
         existing = stores.get_package_version_by_hash(db, skill_id, content_hash)
         if existing is not None:
             return existing  # Idempotent — return existing proposal
 
-        # Persist SKILL.md content to the org ArtifactStore (task-artifact policy).
+        # Persist SKILL.md content to the org ArtifactStore (task-artifact policy)
+        # under a CONTENT-ADDRESSED immutable key. Same slug/version with
+        # different bytes produces a different hash → different key → no overwrite.
         # CRITICAL: artifact write failure MUST abort the entire operation —
         # no durable inline skill_md fallback, no partial package/version/event state.
         content_artifact_key: str | None = None
@@ -149,7 +153,8 @@ class SkillLifecycleService:
 
                 org_root_path = Path(org_root) if not isinstance(org_root, Path) else org_root
                 store = ArtifactStore(OrgPaths(org_root_path).artifacts_dir)
-                artifact_key = f"skill-lifecycle/{slug}/{version}/SKILL.md"
+                # Immutable content-addressed key — same slug/version cannot overwrite
+                artifact_key = f"skill-lifecycle/{slug}/{content_hash[:16]}/SKILL.md"
                 store.put(artifact_key, skill_md.encode("utf-8"))
                 content_artifact_key = artifact_key
             except Exception as exc:
@@ -159,7 +164,8 @@ class SkillLifecycleService:
                     status_code=500,
                 ) from exc
 
-        # Create the proposed package version (ledger stores metadata, not bytes)
+        # Create the proposed package version (ledger stores metadata, never inline bytes).
+        # skill_md is empty string — the artifact store holds the sole canonical copy.
         pkg = PackageVersion(
             skill_id=skill_id,
             slug=slug,
@@ -168,7 +174,7 @@ class SkillLifecycleService:
             content_hash=content_hash,
             policy_class=policy_class,
             description=description,
-            skill_md=skill_md,  # Transient cache; artifact store holds canonical bytes
+            skill_md="",  # Artifact store is canonical; ledger never holds inline content
             content_artifact_key=content_artifact_key,
             status=LifecycleStatus.PROPOSED,
             created_by=proposer_agent or "",
