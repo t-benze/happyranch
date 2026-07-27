@@ -19,7 +19,7 @@ import shutil
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from runtime.daemon.auth import require_registration_token, require_token
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX
@@ -225,6 +225,7 @@ class ExecutorRegisterRequest(BaseModel):
     The ``name`` is not in the body — it comes from the registration
     token's scope, ensuring one token = one named profile.
     """
+    model_config = ConfigDict(extra="allow")
     command: str = Field(..., min_length=1)
     argv_template: list[str] = Field(..., min_length=1)
     adapter: str = Field("pi", min_length=1, deprecated=True)
@@ -232,7 +233,8 @@ class ExecutorRegisterRequest(BaseModel):
     # D6 canonical request fields (optional — allow mixed old/new payloads)
     workspace_adapter_id: str | None = Field(
         None, min_length=1,
-        description="Canonical workspace adapter id (D6). Overrides deprecated 'adapter' and 'adapter_id'."
+        description="Canonical workspace adapter id (D6). Overrides deprecated 'adapter' and 'adapter_id'. "
+        "Obsolete spelling 'workspace_adapter' is rejected."
     )
     command_adapter_id: str | None = Field(
         None,
@@ -491,6 +493,18 @@ def register_executor(
             detail=f"Conformance incomplete. Pending steps: {pending}",
         )
 
+    # 2a. Reject the obsolete "workspace_adapter" spelling before any
+    #     store/registry/audit/token side effect. D6 canonical field is
+    #     workspace_adapter_id; adapter and adapter_id are the only
+    #     documented deprecated aliases.
+    if body.model_extra and "workspace_adapter" in body.model_extra:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'workspace_adapter' is not a valid field. "
+                   "Use 'workspace_adapter_id' (canonical) or "
+                   "'adapter' (deprecated alias).",
+        )
+
     # 3. Static validation — drive through the CANONICAL validation path
     #    so the route can never silently diverge from startup config validation.
     #
@@ -513,8 +527,11 @@ def register_executor(
         config_cfg["workspace_adapter_id"] = workspace_adapter_from_body
     if command_adapter_id_from_body is not None:
         config_cfg["command_adapter_id"] = command_adapter_id_from_body
-    elif command_adapter_from_body is not None:
-        config_cfg["command_adapter"] = command_adapter_from_body
+    # Always include deprecated command_adapter when explicitly supplied,
+    # so the validator can detect conflicts with command_adapter_id.
+    # Omitted default None is not an explicit supply.
+    if "command_adapter" in body.model_fields_set and body.command_adapter is not None:
+        config_cfg["command_adapter"] = body.command_adapter
     try:
         candidate = ExecutorRegistry.validate_custom_profile_config(
             profile_name, config_cfg
@@ -598,13 +615,17 @@ def register_executor(
 
         # 8. Durable: write the machine-global runtime store (THR-107 —
         #    the per-org config.yaml executor_profiles surface is removed).
+        #    D6: persist resolved canonical identity + matching compatibility
+        #    aliases so canonical-only registrations survive restart/reload.
         config_entry: dict[str, object] = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
-            "adapter": body.adapter,
+            "adapter": candidate.workspace_adapter_id,
+            "workspace_adapter_id": candidate.workspace_adapter_id,
         }
-        if command_adapter_from_body is not None:
-            config_entry["command_adapter"] = command_adapter_from_body
+        if candidate.command_adapter_id is not None:
+            config_entry["command_adapter_id"] = candidate.command_adapter_id
+            config_entry["command_adapter"] = candidate.command_adapter_id
         before_snapshot = dict(load_runtime_profiles())
         try:
             save_runtime_profile(profile_name, config_entry)
@@ -785,6 +806,16 @@ def runtime_register_executor(
             detail=f"Conformance incomplete. Pending steps: {pending}",
         )
 
+    # 2a. Reject the obsolete "workspace_adapter" spelling before any
+    #     store/registry/audit/token side effect.
+    if body.model_extra and "workspace_adapter" in body.model_extra:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'workspace_adapter' is not a valid field. "
+                   "Use 'workspace_adapter_id' (canonical) or "
+                   "'adapter' (deprecated alias).",
+        )
+
     # 3. Static validation — D6: canonical fields accepted alongside deprecated
     workspace_adapter_from_body = getattr(body, "workspace_adapter_id", None)
     command_adapter_from_body = getattr(body, "command_adapter", None)
@@ -803,8 +834,11 @@ def runtime_register_executor(
         config_cfg["workspace_adapter_id"] = workspace_adapter_from_body
     if command_adapter_id_from_body is not None:
         config_cfg["command_adapter_id"] = command_adapter_id_from_body
-    elif command_adapter_from_body is not None:
-        config_cfg["command_adapter"] = command_adapter_from_body
+    # Always include deprecated command_adapter when explicitly supplied,
+    # so the validator can detect conflicts with command_adapter_id.
+    # Omitted default None is not an explicit supply.
+    if "command_adapter" in body.model_fields_set and body.command_adapter is not None:
+        config_cfg["command_adapter"] = body.command_adapter
     try:
         candidate = ExecutorRegistry.validate_custom_profile_config(
             profile_name, config_cfg
@@ -858,18 +892,17 @@ def runtime_register_executor(
                 )
 
         # 7. Durable: write runtime store
+        #    D6: persist resolved canonical identity + matching compatibility
+        #    aliases so canonical-only registrations survive restart/reload.
         config_entry: dict[str, object] = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
-            "adapter": body.adapter,
+            "adapter": candidate.workspace_adapter_id,
+            "workspace_adapter_id": candidate.workspace_adapter_id,
         }
-        # D6: persist canonical fields alongside deprecated for downgrade safety
-        if workspace_adapter_from_body is not None:
-            config_entry["workspace_adapter_id"] = workspace_adapter_from_body
-        if command_adapter_id_from_body is not None:
-            config_entry["command_adapter_id"] = command_adapter_id_from_body
-        if command_adapter_from_body is not None:
-            config_entry["command_adapter"] = command_adapter_from_body
+        if candidate.command_adapter_id is not None:
+            config_entry["command_adapter_id"] = candidate.command_adapter_id
+            config_entry["command_adapter"] = candidate.command_adapter_id
         try:
             save_runtime_profile(profile_name, config_entry)
         except Exception as exc:
@@ -904,7 +937,7 @@ def runtime_register_executor(
             profile_name=profile_name,
             command=body.command,
             argv_template=body.argv_template,
-            adapter=body.adapter,
+            adapter=candidate.workspace_adapter_id,
         )
         store.commit_runtime(token_value)
     finally:
