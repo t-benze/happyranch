@@ -880,6 +880,46 @@ in the guard test, then removed in Phase 4.
 having at least one cloned git repository under ``repos/``. Agents with no
 repo write surface never receive ``make-worktree``.
 
+**Worktree-root guard (THR-117).** The ``make-worktree`` skill delivers a
+stdlib-only worktree guard script (``worktree_guard.py``) alongside its
+``SKILL.md`` via the system-contract injection path. The guard runs at
+setup and at verify points (before test, commit, and report).
+
+At setup it validates repository/worktree identity — the worktree and
+primary must share the same git common directory and the worktree must be
+registered under the primary — and rejects unrelated repo pairings with
+diagnostics naming both resolved roots and corrective action. It records
+canonical absolute primary and task worktree roots, captures a robust
+primary checkout baseline (content hashes for dirty tracked, staged, and
+untracked files — not just path membership), and exports ``WORKTREE_ROOT``
+for all subsequent repo commands.
+
+At verify it detects new changes in the primary checkout — including
+mutations of already-dirty tracked paths, new or mutated staged files,
+and new or mutated untracked files (using content-hash comparison, not
+mere path-set membership) — and fails loudly, naming both canonical roots
+and every changed primary-checkout path categorized as tracked, staged, or
+untracked. The failure diagnostic offers preservation-first recovery
+instructions (``git diff`` inspection, ``patch``-based save for tracked and
+staged changes, ``tar`` archive for untracked content) with all paths
+shell-quoted via ``shlex.quote()`` when they appear in generated shell
+commands, and never suggests destructive commands (``git checkout``,
+``git reset``, ``rm``). Changes in the task worktree are never falsely
+accused; an empty worktree diff is never the sole criterion.
+
+The delivered skill locates the guard by computing the workspace root as
+five parents above the task worktree
+(``<workspace>/repos/<repo>/.claude/worktrees/<task_id>`` → workspace root =
+``$WORKTREE_ROOT/../../../../..``), then checking both ``.claude/skills/``
+and ``.agents/skills/`` for the injected script. If neither destination
+holds the guard, the skill fails loudly with a non-destructive exit code.
+
+The guard catches the recurring agent bug where absolute
+``repos/<repo>/...`` paths land edits in the primary checkout while
+tests/build run in the isolated worktree. It is a narrow, non-permission
+tool — no DB, API, schema, audit, auth, notification, or sandbox
+involvement.
+
 **Debug visibility.** ``happyranch skills effective --agent <name>`` displays
 a distinct "System Contracts (runtime-injected)" section separate from managed
 catalog skills. The optional ``--context`` flag filters the display by session
