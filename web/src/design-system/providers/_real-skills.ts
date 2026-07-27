@@ -122,6 +122,24 @@ export function lifecycleStatusToValidationState(
   }
 }
 
+/**
+ * Seam-level response builder — the pure mapping from a raw lifecycle status
+ * response to the ``ValidateSkillResponse`` shape consumed by callers.
+ * Directly testable: proposed yields validation_state=proposed + ok=false;
+ * validated yields validation_state=validated + ok=true.
+ */
+export function buildValidationFromLifecycleStatus(status: {
+  current_status: string | null;
+  skill_id: string;
+}): ValidateSkillResponse {
+  const state = lifecycleStatusToValidationState(status.current_status);
+  return {
+    skill_id: status.skill_id,
+    validation_state: state,
+    validation: { ok: state === 'validated', errors: [] },
+  };
+}
+
 function useValidateSkill(): MutationLike<
   { skillId: string },
   ValidateSkillResponse
@@ -130,12 +148,7 @@ function useValidateSkill(): MutationLike<
   return useMutation({
     mutationFn: async ({ skillId }: { skillId: string }) => {
       const status = await getLifecycleStatus(slug, skillId);
-      const state = lifecycleStatusToValidationState(status.current_status);
-      return {
-        skill_id: status.skill_id,
-        validation_state: state,
-        validation: { ok: state === 'validated', errors: [] },
-      };
+      return buildValidationFromLifecycleStatus(status);
     },
   });
 }

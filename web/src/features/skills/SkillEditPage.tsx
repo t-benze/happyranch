@@ -273,9 +273,8 @@ export function SkillEditPage(): JSX.Element {
           <div className="min-w-0">
             <h1 className="text-h2 text-fg">Edit a custom skill</h1>
             <p className="text-fg-muted text-body-sm mt-1 max-w-xl leading-relaxed">
-              Update this skill’s guidance. Changes are checked for technical
-              correctness and saved as an editable draft — a failed check never
-              loses your work.
+              Update this skill’s guidance. Changes are saved as a proposal —
+              they will be reviewed before becoming available to agents.
             </p>
             <p className="text-fg-subtle text-mono-sm mt-2 break-all">
               {detail.skill_id} · v{baselineVersion}
@@ -403,8 +402,7 @@ export function SkillEditPage(): JSX.Element {
             {edit.isPending ? 'Saving…' : 'Save & re-validate'}
           </Button>
           <span className="text-fg-subtle text-body-sm">
-            A failed check keeps your edited draft in the catalog — nothing is
-            lost.
+            Your proposal will be reviewed before becoming available to agents.
           </span>
         </div>
       </form>

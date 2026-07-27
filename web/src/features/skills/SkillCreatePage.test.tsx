@@ -163,4 +163,19 @@ describe('SkillCreatePage — add custom skill (THR-092 Slice 3)', () => {
     expect(main).not.toMatch(forbidden);
     expect(main).not.toMatch(/\bactive\b/i);
   });
+
+  test('proposed page contains NO catalog or editable-draft claim (entire page, not only result section)', async () => {
+    mount();
+    await screen.findByRole('heading', { name: /Add a custom skill/i });
+    await fillMinimalForm();
+    await userEvent.click(screen.getByRole('button', { name: /Validate & save/i }));
+    await screen.findByLabelText('Validation result');
+    // The ENTIRE rendered page must contain no catalog claim or editable-draft
+    // language — the form footer still renders after submission, so a result-
+    // scoped assertion misses residual copy (TASK-3491 finding 1).
+    const main = document.querySelector('main')?.textContent ?? '';
+    expect(main).not.toMatch(/in the catalog/i);
+    expect(main).not.toMatch(/editable draft/i);
+    expect(main).not.toMatch(/failed check/i);
+  });
 });

@@ -280,8 +280,7 @@ export function SkillCreatePage(): JSX.Element {
             {create.isPending ? 'Validating…' : 'Validate & save'}
           </Button>
           <span className="text-fg-subtle text-body-sm">
-            A failed check keeps an editable draft in the catalog — nothing is
-            lost.
+            A proposal awaits human review before becoming available to agents.
           </span>
         </div>
       </form>
