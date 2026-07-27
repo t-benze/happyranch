@@ -1342,55 +1342,6 @@ class CustomAdapterExecutor:
                 ),
             )
 
-        # ── D7B: Verify executable integrity at every launch ─────────
-        adapter_path = Path(self._adapter_executable)
-        if not adapter_path.exists():
-            return ExecutorResult(
-                success=False,
-                duration_seconds=0,
-                session_id=session_id or "",
-                error=(
-                    f"Custom adapter {self._adapter_entry_id!r} executable "
-                    f"{self._adapter_executable!r} no longer exists. "
-                    f"Re-register the adapter."
-                ),
-            )
-        if not adapter_path.is_file():
-            return ExecutorResult(
-                success=False,
-                duration_seconds=0,
-                session_id=session_id or "",
-                error=(
-                    f"Custom adapter {self._adapter_entry_id!r} path "
-                    f"{self._adapter_executable!r} is not a regular file. "
-                    f"Re-register the adapter."
-                ),
-            )
-        if not os.access(adapter_path, os.X_OK):
-            return ExecutorResult(
-                success=False,
-                duration_seconds=0,
-                session_id=session_id or "",
-                error=(
-                    f"Custom adapter {self._adapter_entry_id!r} executable "
-                    f"{self._adapter_executable!r} is not executable. "
-                    f"Re-register the adapter."
-                ),
-            )
-        current_hash = compute_sha256(self._adapter_executable)
-        if current_hash != self._adapter_hash:
-            return ExecutorResult(
-                success=False,
-                duration_seconds=0,
-                session_id=session_id or "",
-                error=(
-                    f"Custom adapter {self._adapter_entry_id!r} hash mismatch: "
-                    f"expected {self._adapter_hash[:12]}..., "
-                    f"got {current_hash[:12]}... "
-                    f"Re-register and re-approve the adapter."
-                ),
-            )
-
         # ── Build AdapterInput with truthful invocation context ────
         sid = session_id or f"sess-{uuid.uuid4().hex}"
         ctx = self._invocation_context
@@ -1429,6 +1380,59 @@ class CustomAdapterExecutor:
 
         def _launch() -> ExecutorResult:
             start_time = time.monotonic()
+
+            # ── D7B: Verify executable integrity at EVERY actual launch attempt ──
+            # This MUST be inside _launch, not pre-throttle: ProviderThrottle
+            # can retry a rate-limited launch, and each retry MUST re-verify
+            # the exact approved artifact (path type, executable bit, SHA-256)
+            # immediately before its own Popen.
+            adapter_launch_path = Path(self._adapter_executable)
+            if not adapter_launch_path.exists():
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error=(
+                        f"Custom adapter {self._adapter_entry_id!r} executable "
+                        f"{self._adapter_executable!r} no longer exists. "
+                        f"Re-register the adapter."
+                    ),
+                )
+            if not adapter_launch_path.is_file():
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error=(
+                        f"Custom adapter {self._adapter_entry_id!r} path "
+                        f"{self._adapter_executable!r} is not a regular file. "
+                        f"Re-register the adapter."
+                    ),
+                )
+            if not os.access(adapter_launch_path, os.X_OK):
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error=(
+                        f"Custom adapter {self._adapter_entry_id!r} executable "
+                        f"{self._adapter_executable!r} is not executable. "
+                        f"Re-register the adapter."
+                    ),
+                )
+            current_launch_hash = compute_sha256(self._adapter_executable)
+            if current_launch_hash != self._adapter_hash:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error=(
+                        f"Custom adapter {self._adapter_entry_id!r} hash mismatch: "
+                        f"expected {self._adapter_hash[:12]}..., "
+                        f"got {current_launch_hash[:12]}... "
+                        f"Re-register and re-approve the adapter."
+                    ),
+                )
 
             try:
                 proc = subprocess.Popen(

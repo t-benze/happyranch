@@ -1281,6 +1281,225 @@ class TestThrottleIntegration:
         assert len(on_event_captured) == 1
         assert on_event_captured[0] is my_callback
 
+    def test_hash_verified_on_every_launch_attempt(self, tmp_path):
+        """CRITICAL: hash re-verified on every launch attempt, including retries.
+
+        Adversarial shipping-seam test:
+        1. Attempt 1: adapter returns valid rate-limited AdapterOutput
+           (success=false, rate_limited=true) AND rewrites own executable.
+        2. ProviderThrottle retries without delay (backoff_seconds=[0]).
+        3. Attempt 2: _launch re-verifies hash BEFORE Popen, detects
+           changed bytes, rejects with hash mismatch error.
+        4. Assert: no false success, actionable hash/remediation error,
+           exact bounded attempt count (2 launches observed), unmodified
+           valid retry behavior preserved.
+        """
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+        import sys as _sys
+        import stat
+        from runtime.orchestrator.adapter_store import compute_sha256
+
+        # Track how many times the adapter launched
+        launch_counter_file = tmp_path / "launch_count.txt"
+        launch_counter_file.write_text("0")
+
+        valid_output = _valid_adapter_output()
+        rate_limited_output = {
+            "success": False,
+            "duration_seconds": 1,
+            "session_id": "test-sess",
+            "returncode": 429,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "adapter_metadata": {
+                "adapter": "test-adapter",
+                "adapter_version": "1.0.0",
+                "contract_version": 1,
+            },
+            "error": "rate limited",
+            "rate_limited": True,
+        }
+        rate_limited_json = json.dumps(rate_limited_output)
+        valid_json = json.dumps(valid_output)
+
+        # Create an adapter that self-modifies on first launch
+        script = textwrap.dedent(f'''\
+            #!{_sys.executable}
+            import sys, json, os
+
+            # Read and increment launch counter
+            counter_file = {str(launch_counter_file)!r}
+            count = int(open(counter_file).read())
+            count += 1
+            open(counter_file, 'w').write(str(count))
+
+            if count == 1:
+                # First invocation: rewrite this script with different bytes,
+                # then return a rate-limited result to trigger throttle retry
+                script_path = sys.argv[0]
+                with open(script_path, 'r') as f:
+                    content = f.read()
+                # Append a comment to change the hash
+                content += '\\n# tampered at launch ' + str(count) + '\\n'
+                with open(script_path, 'w') as f:
+                    f.write(content)
+                os.chmod(script_path, os.stat(script_path).st_mode | 0o111)
+                sys.stdout.write({rate_limited_json!r})
+            else:
+                # Second invocation: return valid output (but hash check
+                # should have already rejected the retry before Popen)
+                sys.stdout.write({valid_json!r})
+            sys.stdout.flush()
+        ''')
+        exe = tmp_path / "self-mod-adapter"
+        exe.write_text(script)
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        exe_path = str(exe)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = CustomAdapterExecutor(
+            profile_name="test",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test-provider",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task", task_id="TASK-001"
+        )
+
+        # Use a throttle that retries rate-limited failures with zero backoff
+        old = get_throttle()
+        set_throttle(
+            ProviderThrottle(
+                ceiling_default=10,
+                spacing_seconds=0,
+                backoff_seconds=[0],  # immediate retry
+            )
+        )
+        try:
+            result = executor.run(
+                workspace=tmp_path,
+                prompt="test prompt",
+                session_id="test-sess",
+            )
+        finally:
+            set_throttle(old)
+
+        # ── Assertions ──────────────────────────────────────────────
+        # No false success: the retry must be rejected on hash mismatch
+        assert not result.success, (
+            f"Retry should fail on hash mismatch, got success={result.success}, "
+            f"error={result.error}"
+        )
+        assert "hash mismatch" in (result.error or "").lower(), (
+            f"Expected hash mismatch error, got: {result.error!r}"
+        )
+
+        # Actionable remediation message
+        assert "re-register" in (result.error or "").lower()
+
+        # Exact bounded attempt count: adapter launched exactly once
+        # (the first attempt), then hash check on retry blocks before Popen
+        launch_count = int(launch_counter_file.read_text())
+        assert launch_count == 1, (
+            f"Expected exactly 1 launch (first attempt only), "
+            f"got {launch_count}. Hash check on retry must reject BEFORE Popen."
+        )
+
+    def test_valid_retry_behavior_preserved(self, tmp_path):
+        """Unmodified valid retry: hash unchanged across retries → success."""
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+        import sys as _sys
+        import stat
+        from runtime.orchestrator.adapter_store import compute_sha256
+
+        # Track how many times the adapter launched
+        launch_counter_file = tmp_path / "launch_count_ok.txt"
+        launch_counter_file.write_text("0")
+
+        rate_limited_output = {
+            "success": False,
+            "duration_seconds": 0,
+            "session_id": "test-sess",
+            "returncode": 429,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "adapter_metadata": {
+                "adapter": "test-adapter",
+                "adapter_version": "1.0.0",
+                "contract_version": 1,
+            },
+            "error": "rate limited",
+            "rate_limited": True,
+        }
+        valid_output = _valid_adapter_output()
+        rate_limited_json = json.dumps(rate_limited_output)
+        valid_json = json.dumps(valid_output)
+
+        script = textwrap.dedent(f'''\
+            #!{_sys.executable}
+            import sys
+            counter_file = {str(launch_counter_file)!r}
+            count = int(open(counter_file).read())
+            count += 1
+            open(counter_file, 'w').write(str(count))
+            if count == 1:
+                sys.stdout.write({rate_limited_json!r})
+            else:
+                sys.stdout.write({valid_json!r})
+            sys.stdout.flush()
+        ''')
+        exe = tmp_path / "retry-ok-adapter"
+        exe.write_text(script)
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        exe_path = str(exe)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = CustomAdapterExecutor(
+            profile_name="test",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test-provider",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task", task_id="TASK-001"
+        )
+
+        old = get_throttle()
+        set_throttle(
+            ProviderThrottle(
+                ceiling_default=10,
+                spacing_seconds=0,
+                backoff_seconds=[0],
+            )
+        )
+        try:
+            result = executor.run(
+                workspace=tmp_path,
+                prompt="test prompt",
+                session_id="test-sess",
+            )
+        finally:
+            set_throttle(old)
+
+        # Retry succeeded because hash didn't change
+        assert result.success, f"Valid retry should succeed, got: {result.error}"
+        launch_count = int(launch_counter_file.read_text())
+        assert launch_count == 2, (
+            f"Expected 2 launches (first rate-limited, second success), "
+            f"got {launch_count}"
+        )
+        assert result.token_usage is not None
+        assert result.token_usage.input_tokens == 100
+
     def test_generic_cli_still_uses_throttle(self, tmp_path):
         """GenericCliExecutor still routes through _run_command → throttle (regression)."""
         from runtime.orchestrator.throttle import get_throttle, set_throttle

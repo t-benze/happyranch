@@ -14,9 +14,14 @@ D3: conformance-probe validation at registration time.
 D7B: runtime enforcement — every custom-adapter launch requires a valid v1
 AdapterOutput; ``CustomAdapterExecutor`` rejects mismatched adapter identity,
 adapter version, contract version, and session-id-echo before mapping any
-result or accounting data.
+result or accounting data. The exact approved artifact SHA-256 is verified
+on EVERY launch attempt (inside the per-attempt launch closure, so throttle
+retries after a rate-limited response re-verify the artifact before the next
+Popen — D4 fail-closed trust boundary).
 D12: finalized stable external contract — this module is the authoritative
-reference; the unified-adapter architecture spec §2 is the normative prose.
+code-level reference; the unified-adapter architecture spec §2 is the
+normative prose. Protocol/05b, 05c, executor guide, and envelope design spec
+parity shipped in the same PR.
 """
 from __future__ import annotations
 
