@@ -830,10 +830,12 @@ class TestD7AShippingSeamEnforcement:
         )
         assert strict_candidate.envelope_policy == "strict"
 
-        # Register the updated profile. The existing profile collides with
-        # a different definition — the route handles this by allowing
-        # re-registration when the YAML changes. We simulate the same effect
-        # by directly replacing the in-memory profile.
+        # Register the updated profile. The route now authorizes the
+        # legacy→strict transition (TASK-3552) by unregistering the old
+        # profile first within its per-profile-name lock — we simulate
+        # the same in-process path here. Real HTTP shipping-seam tests
+        # for BOTH org and runtime routes (with mint→conformance→register)
+        # are in tests/daemon/test_d7a_real_route_legacy_to_strict.py.
         registry.unregister_custom_profile("d7a-shipping-rereg")
         registry.register_custom_profile(strict_candidate)
 

@@ -152,6 +152,42 @@ def _audit_runtime_removal(
 # ---------------------------------------------------------------------------
 
 
+def _allow_legacy_to_strict_replacement(
+    existing: ExecutorProfile,
+    candidate: ExecutorProfile,
+) -> bool:
+    """Authorize re-registration when the ONLY difference is legacy→strict policy.
+
+    Founder-authorized transition (TASK-3552 / TASK-3549 review HIGH blocker):
+    allow re-registration iff existing and candidate are identical in every
+    material behavior/identity field except existing ``envelope_policy`` is
+    ``None`` and candidate ``envelope_policy`` is exactly ``"strict"``.
+
+    Does NOT permit: changed command/argv/workspace adapter/command adapter/
+    aliases, strict downgrade (strict→None), strict mismatch (different
+    values), built-in override, or broad profile overwrite.
+
+    The deprecated D6 alias fields (``adapter_id``, ``command_adapter``)
+    are checked only via the canonical fields since ``ExecutorProfile.__post_init__``
+    enforces their consistency.
+    """
+    if existing.envelope_policy is not None:
+        return False
+    if candidate.envelope_policy != "strict":
+        return False
+    # Compare all material behavior/identity fields except envelope_policy.
+    return (
+        existing.name == candidate.name
+        and existing.kind == candidate.kind
+        and existing.workspace_adapter_id == candidate.workspace_adapter_id
+        and existing.command_adapter_id == candidate.command_adapter_id
+        and existing.readiness_marker_fragment == candidate.readiness_marker_fragment
+        and existing.argv_template == candidate.argv_template
+        and existing.command == candidate.command
+        and existing.model_arg == candidate.model_arg
+    )
+
+
 def _extract_token(request: Request) -> str:
     """Extract the Bearer token plaintext from the Authorization header.
 
@@ -584,9 +620,12 @@ def register_executor(
                         "detail": f"Cannot override built-in executor {profile_name!r}.",
                     },
                 )
-            # Custom collision — only reject if the definition differs.
+            # Custom collision — only reject if the definition differs AND
+            # it is NOT an authorized legacy→strict transition (TASK-3552).
             # Identical definitions pass through (idempotent re-registration).
-            if existing != candidate:
+            if existing != candidate and not _allow_legacy_to_strict_replacement(
+                existing, candidate
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Custom executor profile {profile_name!r} is already "
@@ -630,11 +669,16 @@ def register_executor(
         if registry.is_registered(profile_name):
             existing_inside = registry.get_profile(profile_name)
             if existing_inside is not None and existing_inside != candidate:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Custom executor profile {profile_name!r} is already "
-                    f"registered with a different definition.",
-                )
+                # Authorized legacy→strict transition (TASK-3552): allow,
+                # but only when it is materially the same profile.
+                if not _allow_legacy_to_strict_replacement(
+                    existing_inside, candidate
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Custom executor profile {profile_name!r} is already "
+                        f"registered with a different definition.",
+                    )
 
         # 8. Durable: write the machine-global runtime store (THR-107 —
         #    the per-org config.yaml executor_profiles surface is removed).
@@ -665,6 +709,17 @@ def register_executor(
             )
 
         # 9. In-memory: register the profile in the process-wide registry.
+        #    For authorized legacy→strict replacement (TASK-3552): unregister
+        #    the old profile first so that register_custom_profile does not
+        #    raise ExecutorProfileCollisionError on the envelope_policy change.
+        #    Both unregister + register happen inside the per-profile-name lock,
+        #    so no concurrent registration can observe the gap.
+        if (
+            registry.is_registered(profile_name)
+            and existing_inside is not None
+            and _allow_legacy_to_strict_replacement(existing_inside, candidate)
+        ):
+            registry.unregister_custom_profile(profile_name)
         try:
             registry.register_custom_profile(candidate)
         except ExecutorProfileCollisionError as exc:
@@ -903,7 +958,9 @@ def runtime_register_executor(
                         "detail": f"Cannot override built-in executor {profile_name!r}.",
                     },
                 )
-            if existing != candidate:
+            if existing != candidate and not _allow_legacy_to_strict_replacement(
+                existing, candidate
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Custom executor profile {profile_name!r} is already "
@@ -925,11 +982,16 @@ def runtime_register_executor(
         if registry.is_registered(profile_name):
             existing_inside = registry.get_profile(profile_name)
             if existing_inside is not None and existing_inside != candidate:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Custom executor profile {profile_name!r} is already "
-                    f"registered with a different definition.",
-                )
+                # Authorized legacy→strict transition (TASK-3552): allow,
+                # but only when it is materially the same profile.
+                if not _allow_legacy_to_strict_replacement(
+                    existing_inside, candidate
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Custom executor profile {profile_name!r} is already "
+                        f"registered with a different definition.",
+                    )
 
         # 7. Durable: write runtime store
         #    D6: persist resolved canonical identity + matching compatibility
@@ -955,7 +1017,18 @@ def runtime_register_executor(
                 detail=f"Runtime profile write error: {exc}",
             )
 
-        # 8. In-memory: register the profile
+        # 8. In-memory: register the profile.
+        #    For authorized legacy→strict replacement (TASK-3552): unregister
+        #    the old profile first so that register_custom_profile does not
+        #    raise ExecutorProfileCollisionError on the envelope_policy change.
+        #    Both unregister + register happen inside the per-profile-name lock,
+        #    so no concurrent registration can observe the gap.
+        if (
+            registry.is_registered(profile_name)
+            and existing_inside is not None
+            and _allow_legacy_to_strict_replacement(existing_inside, candidate)
+        ):
+            registry.unregister_custom_profile(profile_name)
         try:
             registry.register_custom_profile(candidate)
         except ExecutorProfileCollisionError as exc:
