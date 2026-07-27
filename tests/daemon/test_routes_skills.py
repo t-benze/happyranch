@@ -1304,7 +1304,7 @@ class TestVerifiedAgentSessionAuthority:
         task_id = "TASK-200"
         session_id = "sess-agent-auth-001"
         agent_name = "frontend_engineer"
-        org_state.sessions.set_active(task_id, agent_name, session_id)
+        org_state.sessions.set_active(task_id, agent_name, session_id, org_slug='alpha')
 
         # Submit as agent via the dedicated agent-only route (no bearer token)
         r = client.post(
@@ -1342,7 +1342,7 @@ class TestVerifiedAgentSessionAuthority:
         task_id = "TASK-201"
         session_id = "sess-agent-auth-002"
         agent_name = "dev_agent"
-        org_state.sessions.set_active(task_id, agent_name, session_id)
+        org_state.sessions.set_active(task_id, agent_name, session_id, org_slug='alpha')
 
         # Put SPOOF values in the body — the agent-only route rejects them
         r = client.post(
@@ -1373,7 +1373,7 @@ class TestVerifiedAgentSessionAuthority:
         task_id = "TASK-202"
         session_id = "sess-agent-auth-003"
         agent_name = "dev_agent"
-        org_state.sessions.set_active(task_id, agent_name, session_id)
+        org_state.sessions.set_active(task_id, agent_name, session_id, org_slug='alpha')
 
         params = {
             "task_id": task_id,
@@ -1448,7 +1448,7 @@ class TestVerifiedAgentSessionAuthority:
         task_id = "TASK-200"
         session_id = "sess-legacy-reject"
         agent_name = "dev_agent"
-        org_state.sessions.set_active(task_id, agent_name, session_id)
+        org_state.sessions.set_active(task_id, agent_name, session_id, org_slug='alpha')
 
         r = client.post(
             "/api/v1/orgs/alpha/skill-lifecycle/proposals",
@@ -1498,7 +1498,7 @@ class TestVerifiedAgentSessionAuthority:
         task_id = "TASK-203"
         agent_name = "dev_agent"
         real_session = "sess-real-001"
-        org_state.sessions.set_active(task_id, agent_name, real_session)
+        org_state.sessions.set_active(task_id, agent_name, real_session, org_slug='alpha')
 
         # Use a completely different session ID — won't match any active
         r = client.post(
@@ -1651,7 +1651,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_frontend_engineer_with_active_session_succeeds(self, app, org_state):
         """Valid proposal from frontend_engineer with their canonical slug."""
-        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-001")
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-001", org_slug='alpha')
         client = TestClient(app)  # No auth headers — agent route
 
         r = client.post(
@@ -1667,7 +1667,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_product_lead_with_product_manager_prd_succeeds(self, app, org_state):
         """Valid proposal from product_lead with their canonical slug."""
-        org_state.sessions.set_active("TASK-300", "product_lead", "sess-pm-001")
+        org_state.sessions.set_active("TASK-300", "product_lead", "sess-pm-001", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -1684,7 +1684,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_rejects_bearer_token(self, app, org_state):
         """Agent-only route returns 401 when bearer token is present."""
-        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-001")
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-001", org_slug='alpha')
         from runtime.daemon import paths as paths_mod
         client = TestClient(app)
         client.headers["Authorization"] = f"Bearer {paths_mod.read_token()}"
@@ -1708,7 +1708,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_non_pilot_agent_returns_403(self, app, org_state):
         """Agent not in pilot (dev_agent) returns 403."""
-        org_state.sessions.set_active("TASK-100", "dev_agent", "sess-dev-001")
+        org_state.sessions.set_active("TASK-100", "dev_agent", "sess-dev-001", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -1722,7 +1722,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_frontend_engineer_wrong_slug_returns_403(self, app, org_state):
         """frontend_engineer with product-manager-prd slug returns 403."""
-        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-002")
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-002", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -1736,7 +1736,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_product_lead_wrong_slug_returns_403(self, app, org_state):
         """product_lead with frontend-development slug returns 403."""
-        org_state.sessions.set_active("TASK-300", "product_lead", "sess-pm-002")
+        org_state.sessions.set_active("TASK-300", "product_lead", "sess-pm-002", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -1750,7 +1750,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_body_task_id_rejected(self, app, org_state):
         """proposal body containing task_id is rejected."""
-        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-003")
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-003", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -1762,7 +1762,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_body_session_id_rejected(self, app, org_state):
         """proposal body containing session_id is rejected."""
-        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-003")
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-003", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -1774,7 +1774,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_body_proposer_agent_rejected(self, app, org_state):
         """proposal body containing proposer_agent is rejected."""
-        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-003")
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-003", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -1786,7 +1786,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_proposal_stored_with_server_derived_provenance(self, app, org_state):
         """The stored proposal provenance derives from server context, not body."""
-        org_state.sessions.set_active("TASK-222", "frontend_engineer", "sess-fe-prov")
+        org_state.sessions.set_active("TASK-222", "frontend_engineer", "sess-fe-prov", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -1811,7 +1811,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_proposal_not_in_catalog_before_publication(self, app, org_state):
         """Proposed but unpublished skills are invisible to the catalog."""
-        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-cat")
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-cat", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -1830,7 +1830,7 @@ class TestAgentOnlyProposalRoute:
 
     def test_all_non_proposal_mutations_403_for_agent_session(self, app, org_state):
         """Every non-proposal lifecycle mutation returns 403 for agent sessions."""
-        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-mut")
+        org_state.sessions.set_active("TASK-200", "frontend_engineer", "sess-fe-mut", org_slug='alpha')
         client = TestClient(app)
 
         # First, submit a proposal via human bearer path so we have a skill_id
@@ -1984,7 +1984,7 @@ class TestNoWriteResidueBeforeDenials:
 
     def test_no_artifact_for_denied_non_pilot_agent(self, app, org_state, tmp_path):
         """Non-pilot agent gets 403 and leaves no artifact residue."""
-        org_state.sessions.set_active("TASK-NR-1", "dev_agent", "sess-nr-001")
+        org_state.sessions.set_active("TASK-NR-1", "dev_agent", "sess-nr-001", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -2005,7 +2005,7 @@ class TestNoWriteResidueBeforeDenials:
 
     def test_no_artifact_for_wrong_slug(self, app, org_state):
         """Permitted agent with wrong slug gets 403 and leaves no residue."""
-        org_state.sessions.set_active("TASK-NR-2", "frontend_engineer", "sess-nr-002")
+        org_state.sessions.set_active("TASK-NR-2", "frontend_engineer", "sess-nr-002", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -2048,7 +2048,7 @@ class TestProposalFences:
 
     def test_proposal_not_in_catalog(self, app, org_state):
         """Proposed skills are invisible in the custom catalog."""
-        org_state.sessions.set_active("TASK-FEN-1", "frontend_engineer", "sess-fen-001")
+        org_state.sessions.set_active("TASK-FEN-1", "frontend_engineer", "sess-fen-001", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -2066,7 +2066,7 @@ class TestProposalFences:
 
     def test_proposal_not_in_effective_for_agents(self, app, org_state):
         """Proposed skills are invisible in effective skill resolution."""
-        org_state.sessions.set_active("TASK-FEN-2", "frontend_engineer", "sess-fen-002")
+        org_state.sessions.set_active("TASK-FEN-2", "frontend_engineer", "sess-fen-002", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -2093,7 +2093,7 @@ class TestFixedPolicyEnforcement:
 
     def test_product_lead_acceptance(self, app, org_state):
         """product_lead with product-manager-prd is accepted."""
-        org_state.sessions.set_active("TASK-FP-1", "product_lead", "sess-fp-001")
+        org_state.sessions.set_active("TASK-FP-1", "product_lead", "sess-fp-001", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -2112,7 +2112,7 @@ class TestFixedPolicyEnforcement:
 
     def test_product_lead_with_frontend_slug_denied(self, app, org_state):
         """product_lead with frontend-development slug is denied."""
-        org_state.sessions.set_active("TASK-FP-2", "product_lead", "sess-fp-002")
+        org_state.sessions.set_active("TASK-FP-2", "product_lead", "sess-fp-002", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -2124,7 +2124,7 @@ class TestFixedPolicyEnforcement:
 
     def test_frontend_engineer_with_pm_slug_denied(self, app, org_state):
         """frontend_engineer with product-manager-prd slug is denied."""
-        org_state.sessions.set_active("TASK-FP-3", "frontend_engineer", "sess-fp-003")
+        org_state.sessions.set_active("TASK-FP-3", "frontend_engineer", "sess-fp-003", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -2141,7 +2141,7 @@ class TestFixedPolicyEnforcement:
 
     def test_non_pilot_agent_with_pilot_slug_denied(self, app, org_state):
         """A non-pilot agent submitting a pilot slug is denied."""
-        org_state.sessions.set_active("TASK-FP-4", "dev_agent", "sess-fp-004")
+        org_state.sessions.set_active("TASK-FP-4", "dev_agent", "sess-fp-004", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -2156,7 +2156,7 @@ class TestFixedPolicyEnforcement:
         """The legacy /proposals route returns 403 for agent callers.
         There must be no agent path that can create a proposal except
         the correct /proposals/agent endpoint."""
-        org_state.sessions.set_active("TASK-FP-5", "frontend_engineer", "sess-fp-005")
+        org_state.sessions.set_active("TASK-FP-5", "frontend_engineer", "sess-fp-005", org_slug='alpha')
         client = TestClient(app)
 
         r = client.post(
@@ -2177,7 +2177,7 @@ class TestBearerFreeTransport:
 
     def test_agent_route_accepts_no_authorization_header(self, app, org_state):
         """The agent-only route succeeds when no Authorization header is present."""
-        org_state.sessions.set_active("TASK-BF-1", "frontend_engineer", "sess-bf-001")
+        org_state.sessions.set_active("TASK-BF-1", "frontend_engineer", "sess-bf-001", org_slug='alpha')
         client = TestClient(app)
         # Explicitly assert no Authorization header is set on the client
         assert "Authorization" not in client.headers or not client.headers.get("Authorization")
@@ -2326,7 +2326,7 @@ class TestCLIShippingSeam:
 
     def test_cli_propose_denied_non_pilot(self, app, org_state):
         """Non-pilot agent using CLI gets proper error exit."""
-        org_state.sessions.set_active("TASK-CLI-2", "dev_agent", "sess-cli-002")
+        org_state.sessions.set_active("TASK-CLI-2", "dev_agent", "sess-cli-002", org_slug='alpha')
 
         import pytest
         from cli.commands.skills import cmd_skills_propose
@@ -2659,7 +2659,7 @@ class TestProposalConcurrentClearRace:
 
     Each (task_id, agent) pair has its own independent threading.Lock
     that linearizes the agent proposal route's authorization+persistence
-    span against clear() and set_active() on the SAME binding.
+    span against clear() and set_active(, org_slug='alpha') on the SAME binding.
     Unrelated bindings use different Lock objects and are NOT blocked.
 
     Two complementary test seams (both None in production):
@@ -2674,7 +2674,7 @@ class TestProposalConcurrentClearRace:
 
     Terminal wins (pre-lease barrier):
       The proposal route resolves session context, then pauses at the
-      pre-lease barrier.  Same-binding clear()/set_active() completes
+      pre-lease barrier.  Same-binding clear()/set_active(, org_slug='alpha') completes
       first.  When the barrier releases, the route resolves to an
       inactive session → 403 with zero artifact/ledger/operational
       residue.
@@ -2683,14 +2683,14 @@ class TestProposalConcurrentClearRace:
       The proposal route acquires the binding lease, performs session
       revalidation + fixed-policy enforcement, then pauses at the
       post-authorization barrier (still holding the lease).
-      Same-binding clear()/set_active() demonstrably block.  On
+      Same-binding clear()/set_active(, org_slug='alpha') demonstrably block.  On
       release, exactly one immutable proposal commits with correct
       server-derived provenance.  The blocking terminal operation
       returns only AFTER the proposal commits.
 
     Unrelated-task nonblocking:
       TASK-A proposal held at the post-authorization barrier.
-      TASK-B clear() and set_active() complete immediately — no
+      TASK-B clear() and set_active(, org_slug='alpha') complete immediately — no
       SessionTracker-wide serialization.
 
     Sequential regression: preserved from prior revisions.
@@ -2860,13 +2860,13 @@ class TestProposalConcurrentClearRace:
     def test_terminal_replacement_wins_pre_lease_403_no_residue(
         self, app, org_state,
     ):
-        """Same-binding set_active() replacement wins the race before
+        """Same-binding set_active(, org_slug='alpha') replacement wins the race before
         the proposal acquires the binding lease.
 
         Sequence:
         1. Install pre-lease barrier.
         2. Start proposal route (pauses at pre-lease barrier).
-        3. Same-binding set_active() replaces with a new session_id.
+        3. Same-binding set_active(, org_slug='alpha') replaces with a new session_id.
         4. Release the pre-lease barrier.
         5. Proposal route resolves to old (invalidated) session → 403.
         6. Zero artifact/ledger/operational residue.
@@ -3195,7 +3195,7 @@ class TestProposalConcurrentClearRace:
         self, app, org_state,
     ):
         """Proposal is held at the post-authorization barrier.
-        Same-binding set_active() replacement demonstrably blocks.
+        Same-binding set_active(, org_slug='alpha') replacement demonstrably blocks.
         On release: exactly one 201 immutable proposal with correct
         provenance; replacement returns only afterward.
         """
@@ -3242,7 +3242,7 @@ class TestProposalConcurrentClearRace:
 
             t_repl.join(timeout=1.0)
             assert t_repl.is_alive(), (
-                "set_active() must block while proposal holds binding lease"
+                "set_active(, org_slug='alpha') must block while proposal holds binding lease"
             )
             assert not repl_done["done"], "replacement must not have finished"
 
@@ -3385,7 +3385,7 @@ class TestProposalConcurrentClearRace:
 
             t_repl.join(timeout=5.0)
             assert not t_repl.is_alive(), (
-                "set_active() must complete after proposal"
+                "set_active(, org_slug='alpha') must complete after proposal"
             )
             assert repl_done["done"], "replacement must have finished"
 
@@ -3466,7 +3466,7 @@ class TestProposalConcurrentClearRace:
         self, app, org_state,
     ):
         """TASK-A proposal at post-authorization barrier; TASK-B
-        set_active() replacement completes immediately — per-binding
+        set_active(, org_slug='alpha') replacement completes immediately — per-binding
         isolation, not SessionTracker-wide locking.
         """
         from threading import Thread
@@ -3510,7 +3510,7 @@ class TestProposalConcurrentClearRace:
             )
             elapsed = time.monotonic() - start
             assert elapsed < 0.5, (
-                f"Unrelated set_active() must not block (took {elapsed:.2f}s)"
+                f"Unrelated set_active(, org_slug='alpha') must not block (took {elapsed:.2f}s)"
             )
 
             assert org_state.sessions.get_active(

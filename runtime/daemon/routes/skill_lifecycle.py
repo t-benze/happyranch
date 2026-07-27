@@ -317,10 +317,11 @@ def submit_proposal_agent_only(
                 },
             )
     else:
-        # Legacy fallback: session was activated without org context.
-        # Still derive (task_id, agent_name) but org is caller-selected.
+        # No org context for this session. Check whether the session
+        # exists at all (active but without context) or is truly unknown.
         resolved = org.sessions.get_by_session(session_id)
         if resolved is None:
+            # Truly unknown / inactive session
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
@@ -329,7 +330,20 @@ def submit_proposal_agent_only(
                               "The session may be inactive, expired, or never existed.",
                 },
             )
-        task_id, agent_name = resolved
+        # Session exists but missing org context — deny before any policy
+        # check or artifact write. The agent-only route requires a current,
+        # context-bearing session whose server-owned context supplies all
+        # four dimensions (org, task, agent, session).
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "missing_org_context",
+                "detail": f"Session {session_id} has no org context. "
+                          "The agent-only proposal route requires a context-bearing "
+                          "active session with all four dimensions (org, task, agent, session). "
+                          "Use set_active with org_slug to establish context.",
+            },
+        )
 
     # Step 2 (test seam): pre-lease barrier — pause BEFORE the
     # per-binding lease is acquired so terminal-wins concurrency

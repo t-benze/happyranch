@@ -10,8 +10,10 @@ Covers the approved shipping interface with its real semantics:
 - Only session_id query param — no caller-supplied task_id or agent_name
 - No Authorization header required (bearer-free transport)
 - Bearer token rejected on agent route (401)
-- Body identity claims (proposer_agent, task_id, session_id) rejected
+- Body identity claims (proposer_agent, task_id, session_id) strictly rejected (403)
 - Unknown/inactive session → 403 unknown_session
+- Missing org context → 403 missing_org_context (no residue)
+- Cross-org session → 403 cross_org_session
 - Missing session_id → FastAPI 422
 - Non-proposal lifecycle routes → 403 for agent callers (human_only)
 - Stored provenance is verified binding (not body spoofs)
@@ -78,52 +80,187 @@ class TestProposalRouteE2E:
         assert "content_hash" in data
         assert data["proposal_task_id"] == "TASK-3510"
 
-    def test_proposal_stored_provenance_is_verified_binding(
+    # ── Strict body-identity rejection (each claimed field → exact 403) ──
+
+    def test_body_task_id_rejected_strict_403(
         self, client_with_runtime
     ):
-        """Stored provenance is the verified task/session/agent, not body spoofs."""
+        """Proposal body containing task_id is strictly rejected with 403
+        body_identity_rejected. No permissive 201 path exists."""
         client, org = client_with_runtime
 
         org.sessions.set_active(
-            "TASK-3510", "frontend_engineer", "sess-real",
+            "TASK-3510", "frontend_engineer", "sess-body-task",
             org_slug="alpha",
         )
 
-        spoof_body = dict(
-            _VALID_PROPOSAL,
-            task_id="TASK-spoof",
-            session_id="sess-spoof",
-            proposer_agent="engineering_manager",
+        body = dict(_VALID_PROPOSAL, task_id="TASK-spoof")
+
+        client.headers.pop("Authorization", None)
+        resp = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": "sess-body-task"},
+        )
+        assert resp.status_code == 403, (
+            f"Expected 403 for body task_id claim, got {resp.status_code}: {resp.json()}"
+        )
+        detail = resp.json()["detail"]
+        assert detail["code"] == "body_identity_rejected"
+
+    def test_body_session_id_rejected_strict_403(
+        self, client_with_runtime
+    ):
+        """Proposal body containing session_id is strictly rejected with 403
+        body_identity_rejected. No permissive 201 path exists."""
+        client, org = client_with_runtime
+
+        org.sessions.set_active(
+            "TASK-3510", "frontend_engineer", "sess-body-sid",
+            org_slug="alpha",
+        )
+
+        body = dict(_VALID_PROPOSAL, session_id="sess-spoof")
+
+        client.headers.pop("Authorization", None)
+        resp = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": "sess-body-sid"},
+        )
+        assert resp.status_code == 403, (
+            f"Expected 403 for body session_id claim, got {resp.status_code}: {resp.json()}"
+        )
+        detail = resp.json()["detail"]
+        assert detail["code"] == "body_identity_rejected"
+
+    def test_body_proposer_agent_rejected_strict_403(
+        self, client_with_runtime
+    ):
+        """Proposal body containing proposer_agent is strictly rejected with 403
+        body_identity_rejected. No permissive 201 path exists."""
+        client, org = client_with_runtime
+
+        org.sessions.set_active(
+            "TASK-3510", "frontend_engineer", "sess-body-pa",
+            org_slug="alpha",
+        )
+
+        body = dict(_VALID_PROPOSAL, proposer_agent="engineering_manager")
+
+        client.headers.pop("Authorization", None)
+        resp = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": "sess-body-pa"},
+        )
+        assert resp.status_code == 403, (
+            f"Expected 403 for body proposer_agent claim, got {resp.status_code}: {resp.json()}"
+        )
+        detail = resp.json()["detail"]
+        assert detail["code"] == "body_identity_rejected"
+
+    # ── Clean-body success: server derives exact provenance ──
+
+    def test_clean_body_success_proves_server_provenance(
+        self, client_with_runtime
+    ):
+        """Clean proposal body (no identity claims) succeeds with server-derived
+        exact org/task/agent/session provenance."""
+        client, org = client_with_runtime
+
+        org.sessions.set_active(
+            "TASK-PROV", "frontend_engineer", "sess-prov",
+            org_slug="alpha",
+        )
+
+        # Clean body — no task_id, session_id, or proposer_agent
+        clean_body = dict(_VALID_PROPOSAL)
+
+        client.headers.pop("Authorization", None)
+        resp = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=clean_body,
+            params={"session_id": "sess-prov"},
+        )
+        assert resp.status_code == 201, f"Got {resp.status_code}: {resp.json()}"
+        data = resp.json()
+        # Server-derived provenance — NOT from body
+        assert data["proposal_task_id"] == "TASK-PROV"
+        assert data["skill_id"] == "hr:frontend-development"
+
+        # Verify through the read endpoint
+        client.headers["Authorization"] = f"Bearer {_read_test_token()}"
+        skill_id = data["skill_id"]
+        status_resp = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/{skill_id}",
+            params={"slug": "alpha"},
+        )
+        assert status_resp.status_code == 200
+        sdata = status_resp.json()
+        assert sdata["proposal_task_id"] == "TASK-PROV"
+        assert sdata["proposer_agent"] == "frontend_engineer"
+
+    # ── Missing org context denial ──
+
+    def test_missing_org_context_denied_403_no_residue(
+        self, client_with_runtime
+    ):
+        """Session activated without org_slug is denied with 403
+        missing_org_context BEFORE any artifact/ledger write. Zero residue."""
+        client, org = client_with_runtime
+
+        # Set active WITHOUT org_slug — no context stored
+        org.sessions.set_active(
+            "TASK-NOORG", "frontend_engineer", "sess-noorg",
         )
 
         client.headers.pop("Authorization", None)
         resp = client.post(
             "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
-            json=spoof_body,
-            params={"session_id": "sess-real"},
+            json=_VALID_PROPOSAL,
+            params={"session_id": "sess-noorg"},
         )
-        # Body claims for task_id/session_id/proposer_agent are rejected
-        # by the route's body-identity-rejection guards.
-        assert resp.status_code in (201, 403)
+        assert resp.status_code == 403, (
+            f"Expected 403 for missing org context, got {resp.status_code}: {resp.json()}"
+        )
+        detail = resp.json()["detail"]
+        assert detail["code"] == "missing_org_context"
 
-        if resp.status_code == 201:
-            data = resp.json()
-            assert data["proposal_task_id"] == "TASK-3510"
+        # Verify zero residue: no proposal artifact exists under this session
+        client.headers["Authorization"] = f"Bearer {_read_test_token()}"
+        catalog_resp = client.get("/api/v1/orgs/alpha/skill-lifecycle/catalog/custom")
+        assert catalog_resp.status_code == 200
+        skills = catalog_resp.json()["skills"]
+        skill_ids = [s["skill_id"] for s in skills]
+        assert "hr:frontend-development" not in skill_ids, (
+            "Missing-org denial must leave zero artifact residue"
+        )
 
-            skill_id = data["skill_id"]
-            client.headers["Authorization"] = f"Bearer {_read_test_token()}"
-            status_resp = client.get(
-                f"/api/v1/orgs/alpha/skill-lifecycle/{skill_id}",
-                params={"slug": "alpha"},
-            )
-            assert status_resp.status_code == 200
-            sdata = status_resp.json()
-            assert sdata["proposal_task_id"] == "TASK-3510"
-            assert sdata["proposer_agent"] == "frontend_engineer"
-        else:
-            # Body identity rejection path — verify the rejection code
-            detail = resp.json()["detail"]
-            assert detail["code"] == "body_identity_rejected"
+    # ── Cross-org denial ──
+
+    def test_cross_org_session_denied_403(
+        self, client_with_runtime
+    ):
+        """Session belonging to a different org than the URL path is denied with
+        403 cross_org_session."""
+        client, org = client_with_runtime
+
+        # Session belongs to org 'beta', but URL targets 'alpha'
+        org.sessions.set_active(
+            "TASK-XORG", "frontend_engineer", "sess-xorg",
+            org_slug="beta",
+        )
+
+        client.headers.pop("Authorization", None)
+        resp = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=_VALID_PROPOSAL,
+            params={"session_id": "sess-xorg"},
+        )
+        assert resp.status_code == 403
+        detail = resp.json()["detail"]
+        assert detail["code"] == "cross_org_session"
 
     def test_unknown_session_binding_rejected(
         self, client_with_runtime
