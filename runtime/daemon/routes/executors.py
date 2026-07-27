@@ -502,8 +502,13 @@ def register_executor(
     config_cfg: dict[str, object] = {
         "command": body.command,
         "argv_template": body.argv_template,
-        "adapter": body.adapter,
     }
+    # Only include deprecated adapter if explicitly provided by caller.
+    # Default pi is NOT an explicit supply, so canonical-only requests
+    # (e.g. {workspace_adapter_id: "claude"}) are not conflated with
+    # the conflicting {adapter: "pi", workspace_adapter_id: "claude"}.
+    if "adapter" in body.model_fields_set:
+        config_cfg["adapter"] = body.adapter
     if workspace_adapter_from_body is not None:
         config_cfg["workspace_adapter_id"] = workspace_adapter_from_body
     if command_adapter_id_from_body is not None:
@@ -787,8 +792,13 @@ def runtime_register_executor(
     config_cfg: dict[str, object] = {
         "command": body.command,
         "argv_template": body.argv_template,
-        "adapter": body.adapter,
     }
+    # Only include deprecated adapter if explicitly provided by caller.
+    # Default pi is NOT an explicit supply, so canonical-only requests
+    # (e.g. {workspace_adapter_id: "claude"}) are not conflated with
+    # the conflicting {adapter: "pi", workspace_adapter_id: "claude"}.
+    if "adapter" in body.model_fields_set:
+        config_cfg["adapter"] = body.adapter
     if workspace_adapter_from_body is not None:
         config_cfg["workspace_adapter_id"] = workspace_adapter_from_body
     if command_adapter_id_from_body is not None:
