@@ -422,7 +422,7 @@ Repos are cloned into the agent's workspace on `happyranch init-agent` and auto-
 
 The per-session timeout (default 1800s / 30 min) is resolved in three layers, highest precedence first:
 
-1. **Per-task**: pass `--session-timeout-seconds <int>` when revisiting a stuck task: `happyranch revisit --org <slug> <task-id> --session-timeout-seconds 7200`. The override is stored on the new root and inherited by every child the orchestrator spawns from it (delegated children, auto-revisits, later founder-revisits when the flag is omitted).
+1. **Per-task**: pass `--session-timeout-seconds <int>` when revisiting a stuck task: `happyranch revisit --org <slug> <task-id> --session-timeout-seconds 7200`. The override is stored on the new root and inherited by every delegated child the orchestrator spawns from it.
 2. **Per-org**: create `<runtime>/orgs/<slug>/org/config.yaml` with `session_timeout_seconds: <int>`. Use this to bump every agent in this org above the global default.
 3. **Global default**: `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` env var (or the built-in 1800s).
 

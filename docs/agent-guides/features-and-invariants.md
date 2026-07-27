@@ -103,7 +103,7 @@ Eligible predecessor states: failed, cancelled (incl. historical founder-cancell
 Traps:
 
 - `revisit_of_task_id` is a sideways reference, not an ancestor edge. `walk_ancestors` must not follow it.
-- Per-task overrides copied to revisit roots are narrow; auto-revisit copies only `session_timeout_seconds`.
+- Per-task overrides copied to revisit roots are narrow; explicit human revisit copies only `session_timeout_seconds`.
 - Auto-resolve to `superseded` must NEVER fire without a recorded successor task_id / thread ruling in the audit citation. The negative case (un-ruled escalation stays blocked) is a tested invariant.
 - On the thread-dispatch path the continuation carries an optional `resolves <task_id>`, honored **only** for a manager-authorized dispatch (the founder supersedes via `revisit`). A worker self-dispatch naming `resolves` is rejected `403 thread_supersede_not_authorized` and never closes the predecessor — the maker-checker boundary, tested both directions.
 
@@ -217,7 +217,7 @@ When a task dispatched from a thread reaches true terminal state, `_maybe_post_t
 
 Traps:
 
-- Helper runs after `_maybe_spawn_auto_revisit`.
+- Helper runs after task failure is finalized (no auto-revisit spawns; the task is already terminal FAILED).
 - Only root tasks fire followups.
 - Dispatcher identity comes from the `task_dispatched` audit row.
 - Cross-thread enqueue uses `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`.

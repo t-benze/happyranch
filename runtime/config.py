@@ -88,8 +88,8 @@ class Settings(BaseSettings):
     executor_launch_spacing_seconds: float = Field(default=1.5, ge=0)
     # Reactive 429 backoff schedule (seconds per retry). On a detected rate
     # limit the launch releases its slot, sleeps backoff[attempt], re-acquires,
-    # and retries; after the schedule is exhausted it falls through to the
-    # existing auto-revisit classifier. Empty list disables retries.
+    # and retries; after the schedule is exhausted the task is marked terminal
+    # FAILED under normal failure handling. Empty list disables retries.
     executor_rate_limit_backoff_seconds: list[int] = Field(
         default_factory=lambda: [5, 15, 45]
     )

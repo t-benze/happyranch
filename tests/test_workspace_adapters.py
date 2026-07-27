@@ -363,6 +363,13 @@ def test_claude_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
     # Mentions the flags so the agent knows what to fill on the submit form
     assert "persistent" in content
     assert "review_required" in content
+    # TASK-3604: no auto-revisit — the warning must NOT promise automatic retries
+    assert "auto-revisit" not in content
+    assert "auto_revisit" not in content.lower()
+    # Must deny automatic retries
+    assert "no automatic retries" in content.lower()
+    # TASK-3604: contract states terminal FAILED
+    assert "FAILED" in content
 
 
 def test_codex_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
@@ -377,6 +384,9 @@ def test_codex_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
     content = (workspace / "AGENTS.md").read_text()
     assert "## Long-running and non-stop commands" in content
     assert "protocol/skills/jobs/SKILL.md" in content
+    # TASK-3604: no auto-revisit in generated instruction
+    assert "auto-revisit" not in content.lower()
+    assert "FAILED" in content
 
 
 def test_opencode_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
@@ -391,6 +401,49 @@ def test_opencode_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> Non
     content = (workspace / "AGENTS.md").read_text()
     assert "## Long-running and non-stop commands" in content
     assert "protocol/skills/jobs/SKILL.md" in content
+    # TASK-3604: no auto-revisit in generated instruction
+    assert "auto-revisit" not in content.lower()
+    assert "FAILED" in content
+
+
+def test_non_stop_command_warning_section_contract(tmp_path: Path) -> None:
+    """The builder output must state terminal FAILED, no auto-revisit (TASK-3604).
+
+    The injected instruction is read by every agent every session — a stale
+    auto-revisit promise is an operational contract violation per MEM-380.
+    """
+    from runtime.orchestrator.workspace_adapters import (
+        _non_stop_command_warning_section,
+    )
+
+    lines = _non_stop_command_warning_section()
+    text = "".join(lines)
+
+    # Core contract: terminal FAILED, no automatic successor
+    assert "FAILED" in text, (
+        "non-stop command warning must state terminal FAILED"
+    )
+    assert "auto-revisit" not in text, (
+        "non-stop command warning must not promise auto-revisit"
+    )
+    assert "twice per failure" not in text, (
+        "non-stop command warning must not claim twice-per-failure retries"
+    )
+    assert "auto_revisit" not in text.lower(), (
+        "non-stop command warning must not reference auto-revisit mechanism"
+    )
+    # Still recommends jobs as the remedy
+    assert "protocol/skills/jobs/SKILL.md" in text
+    # Mentions explicit recovery paths
+    assert ("happyranch revisit" in text or "FAILED" in text), (
+        "non-stop command warning must reference terminal failure or explicit recovery"
+    )
+
+    # The returned list is the literals injected into every bootstrap doc —
+    # verify specific line shape hasn't accidentally dropped the section heading.
+    assert any("## Long-running and non-stop commands" in l for l in lines), (
+        "missing section heading"
+    )
 
 
 def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:

@@ -156,8 +156,14 @@ class SystemContractMaterializationError(RuntimeError):
     fires with an explicit, actionable message naming the missing contract(s)
     and workspace — never a bare ``[Errno 2]`` from an unguarded file read.
 
-    This is retry-eligible: ``run_step_impl`` catches ``Exception`` →
-    classifies as "agent_exception" → triggers auto-revisit.
+    This is a terminal materialization failure: ``run_step_impl`` catches
+    ``Exception``, marks the task FAILED, and hands to the existing
+    parent/founder recovery paths (bounded manager-wake, escalation,
+    explicit founder revisit). No daemon successor is spawned.
+
+    Recovery requires fixing the underlying filesystem/permission issue
+    and explicitly re-dispatching the task via ``happyranch revisit`` or
+    a manager decision.
     """
 
     def __init__(
@@ -927,9 +933,13 @@ def _non_stop_command_warning_section() -> list[str]:
 
     A `bash` tool call that doesn't return blocks the session until the
     executor's wall-clock timeout fires (default 1800s). The orchestrator
-    then auto-revisits up to twice per failure kind, burning multiple
-    session budgets on a command that was never going to exit. The session
-    completes no useful work in the meantime.
+    marks the task terminal FAILED under normal failure handling — no
+    automatic successor is spawned and no retries are attempted. The
+    session completes no useful work in the meantime and consumes one
+    session budget.
+
+    Recovery requires explicit manager or founder action (``happyranch
+    revisit`` or a manager re-delegation).
 
     The remedy is the `jobs` skill: the daemon spawns the subprocess
     out-of-process, the agent's session continues, and the agent polls
@@ -939,7 +949,9 @@ def _non_stop_command_warning_section() -> list[str]:
         "## Long-running and non-stop commands\n",
         "**Never** run a command synchronously via `bash` if it doesn't return on its",
         "own. Examples that will block your session until the wall-clock timeout",
-        "kills it (and waste at least one full session budget):\n",
+        "kills it. The task is marked terminal FAILED under normal failure",
+        "handling — no automatic retries or successor tasks are spawned. The",
+        "session completes no useful work and consumes one budget.\n",
         "- Dev servers: `npm run dev`, `python -m http.server`, `cargo watch`",
         "- Log/file watchers: `tail -f`, `fswatch`, `entr`",
         "- Polling loops: `while true; do …; sleep N; done`",
