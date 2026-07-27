@@ -89,11 +89,33 @@ ledger stores only the artifact reference key, never the mutable filesystem path
 Quarantined content is never resolved by `inject_managed_skills`.
 
 **Content retention (task-artifact policy).** Lifecycle proposal content
-(SKILL.md) is stored in the org ArtifactStore under
-`skill-lifecycle/<slug>/<version>/SKILL.md`. The ledger tables store immutable
-metadata (hash, version, provenance) and an artifact reference key — not
-unbounded inline byte columns. Materialization loads the exact pinned bytes
-from the ArtifactStore and verifies the hash before writing to the workspace.
+is stored in the org ArtifactStore under content-addressed immutable keys:
+- ``skill-lifecycle/<slug>/<hash[:16]>/SKILL.md`` — SKILL.md
+- ``skill-lifecycle/<slug>/<hash[:16]>/references/<name>`` — each reference
+- ``skill-lifecycle/<slug>/<hash[:16]>/assets/<name>`` — each asset
+- ``skill-lifecycle/<slug>/<manifest_hash[:16]>/manifest.json`` — canonical manifest
+
+The manifest is a JSON document listing every package member with its
+normalized relative path, SHA-256 hash, artifact key, and size in bytes.
+The package-version ``content_hash`` in the lifecycle ledger is the SHA-256
+of the manifest (binding full-package provenance, distinct from individual
+member hashes). The ``content_artifact_key`` points to the manifest artifact.
+
+The ledger tables store only immutable metadata (hash, version, provenance);
+the artifact store holds the sole canonical copy of every package byte.
+Materialization loads the manifest from the ArtifactStore, validates each
+member's hash byte-for-byte, and writes the complete directory tree
+(SKILL.md + references/ + assets/) fail-closed into the target workspace.
+Legacy single-SKILL.md artifacts (pre-manifest format) are still supported
+by the materializer as backward compatibility.
+
+**Failure-atomic persistence.** All ledger writes (package row insert +
+lifecycle event insert) execute inside an explicit ``BEGIN IMMEDIATE`` /
+``COMMIT`` transaction. Any SQLite failure rolls back both rows atomically.
+Artifacts newly created during the request are cleaned up on ledger failure
+(compensation); pre-existing artifacts from content-addressed deduplication
+are never deleted. An ArtifactStore write failure before any ledger row
+aborts without any side effects.
 
 **Session-bound authority.** Agent proposal submission requires verified
 task/session binding via the SessionTracker (`org.sessions.get_active()`).

@@ -84,6 +84,7 @@ export const getLifecycleStatus = (
 // ── Published custom catalog (dual-auth) ────────────────────────────────
 
 export interface CustomCatalogSkill {
+  version_id: number;
   skill_id: string;
   slug: string;
   name: string;

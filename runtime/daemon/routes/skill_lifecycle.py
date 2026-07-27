@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from runtime.daemon.auth import optional_bearer, require_token
+from runtime.daemon.auth import _check_optional_token, optional_bearer, require_token
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.skills.lifecycle.models import (
@@ -61,7 +61,7 @@ dual_router = APIRouter(prefix="/skill-lifecycle")
 _service = SkillLifecycleService()
 
 
-def _require_human(has_bearer: bool = Depends(optional_bearer)):
+def _require_human(has_bearer: bool = Depends(_check_optional_token)):
     """Return 403 for non-bearer (agent-session) callers.
 
     Human-only lifecycle mutations must use the master bearer token.
@@ -190,7 +190,7 @@ def submit_proposal(
     task_id: str | None = Query(None),
     session_id: str | None = Query(None),
     agent_name: str | None = Query(None),
-    has_bearer: bool = Depends(optional_bearer),
+    has_bearer: bool = Depends(_check_optional_token),
 ) -> dict:
     """Submit a skill proposal.
 
@@ -251,7 +251,7 @@ def get_lifecycle_status(
     slug: str,
     skill_id: str,
     org: OrgDep,
-    has_bearer: bool = Depends(optional_bearer),
+    has_bearer: bool = Depends(_check_optional_token),
 ) -> dict:
     """Read the full lifecycle status for a skill.
 
@@ -310,7 +310,7 @@ def get_lifecycle_status(
 def list_custom_catalog(
     slug: str,
     org: OrgDep,
-    has_bearer: bool = Depends(optional_bearer),
+    has_bearer: bool = Depends(_check_optional_token),
 ) -> dict:
     """List published custom skills for the catalog.
 
@@ -322,6 +322,7 @@ def list_custom_catalog(
     return {
         "skills": [
             {
+                "version_id": p.id,
                 "skill_id": p.skill_id,
                 "slug": p.slug,
                 "name": p.name,
@@ -342,7 +343,7 @@ def get_events(
     skill_id: str,
     org: OrgDep,
     limit: int = Query(100, ge=1, le=500),
-    has_bearer: bool = Depends(optional_bearer),
+    has_bearer: bool = Depends(_check_optional_token),
 ) -> dict:
     """Read event history for a skill.
 

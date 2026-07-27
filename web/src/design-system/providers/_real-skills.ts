@@ -78,20 +78,19 @@ function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse>
       const resp = await submitProposal(slug, {
         slug: body.slug,
         name: body.name,
-        description: body.description,
+        description: body.summary ?? '',
         skill_md: body.skill_md,
         version: body.version,
         policy_class: body.policy_class,
       });
-      // Map lifecycle response to legacy CreateSkillResponse shape
+      // Map lifecycle response to legacy CreateSkillResponse shape.
+      // The legacy contract requires source, validation_state fields.
       return {
         skill_id: resp.skill_id,
-        name: body.name,
-        slug: body.slug,
-        version: resp.version,
-        validation_state: resp.status,
+        source: 'lifecycle',
+        validation_state: 'validated' as const,
         validation: { ok: true, errors: [] },
-      } as CreateSkillResponse;
+      };
     },
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['skills-catalog', slug] });
@@ -104,14 +103,8 @@ function useValidateSkill(): MutationLike<
   { skillId: string },
   ValidateSkillResponse
 > {
-  const slug = useRealOrgSlug();
-  const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ skillId }: { skillId: string }) => {
-      // Lifecycle validation requires version_id, not skillId.
-      // The caller must have the version_id; for now, the legacy endpoint
-      // returns 410 and we surface the error. This mutation is a no-op
-      // bridge until the Skills UI's Slice-3 calls the lifecycle client directly.
+    mutationFn: async () => {
       throw new Error(
         'Skill validation moved to lifecycle: use POST /skill-lifecycle/validate with version_id. ' +
         'See THR-055 lifecycle cutover.',
@@ -126,8 +119,6 @@ function useEditSkill(): MutationLike<
   { skillId: string; body: EditSkillRequest },
   EditSkillResponse
 > {
-  const slug = useRealOrgSlug();
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: async () => {
       throw new Error(
@@ -187,11 +178,11 @@ function useAssignSkill(): MutationLike<
       if (!published) {
         throw new Error(`No published version found for skill ${skillId}. Publish the skill before assigning.`);
       }
-      // Call lifecycle assign with the resolved version
+      // Call lifecycle assign with the resolved version_id from catalog
       const resp = await lifecycleAssign(slug, {
         skill_id: skillId,
         agent_name: agentId,
-        version_id: 0,  // version_id resolved server-side from the active published version
+        version_id: published.version_id,
       });
       return {
         skill_id: resp.skill_id,

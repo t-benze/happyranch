@@ -708,11 +708,24 @@ custom skills; `standard_operational` policy class only; two internal use cases
 (frontend-development, product-manager PRD); founder-only review/publish/
 assignment/retire/rollback.
 
-**Immutable artifact retention.** Proposal SKILL.md content is stored in the
-org ArtifactStore (`skill-lifecycle/<slug>/<version>/SKILL.md`). Ledger tables
-store immutable metadata (hash, version, provenance) and artifact reference
-keys — not unbounded inline bytes. Materialization at session spawn loads exact
-pinned bytes from the ArtifactStore and verifies the hash/version provenance.
+**Immutable artifact retention.** All package members (SKILL.md, each
+reference file, each asset) are stored as independent content-addressed
+immutable artifacts in the org ArtifactStore. A canonical JSON manifest
+lists every member with its normalized relative path, SHA-256 hash, artifact
+key, and size. The ``content_hash`` in the ledger is the SHA-256 of the
+manifest (binding full-package provenance, distinct from individual member
+hashes). The ``content_artifact_key`` points to the manifest artifact.
+
+Ledger tables store only immutable metadata (hash, version, provenance); the
+artifact store holds the sole canonical copy of every package byte. All
+ledger writes (package row + event insert) execute inside an explicit
+``BEGIN IMMEDIATE``/``COMMIT`` transaction so both rows commit or roll back
+together. On ledger failure, newly created artifacts are cleaned up via
+compensation; pre-existing artifacts from content-addressed deduplication
+are never deleted. Materialization loads the manifest, validates each
+member hash, and writes the complete directory tree (SKILL.md + references/
++ assets/) fail-closed into the workspace. Legacy single-SKILL.md artifacts
+are still supported by the materializer for backward compatibility.
 
 **Legacy migration/quarantine.** On startup, existing `<org_root>/skills/`
 content is quarantined into the ledger with status `LEGACY_QUARANTINED`. Content

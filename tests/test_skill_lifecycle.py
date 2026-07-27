@@ -1202,11 +1202,11 @@ class TestArtifactImmutability:
         assert pkg2.skill_md == ""
 
     def test_content_hash_matches_exact_stored_bytes(self, db, service, tmp_path):
-        """The content_hash computed from SKILL.md bytes must exactly match
-        the bytes stored in the artifact store."""
+        """The content_hash binds the full manifest, distinct from each member.
+        The SKILL.md member hash is independently verifiable from the artifact store."""
         import hashlib
+        import json
         skill_md = "# Exact hash test\n\nContent for hash verification.\n"
-        expected_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
 
         pkg = service.submit_proposal(
             db=db,
@@ -1215,17 +1215,32 @@ class TestArtifactImmutability:
             org_root=str(tmp_path),
         )
 
-        assert pkg.content_hash == expected_hash
-        # Read from artifact store, verify stored bytes match the hash
-        if pkg.content_artifact_key:
-            from runtime.infrastructure.artifact_store import ArtifactStore
-            from runtime.orchestrator._paths import OrgPaths
+        # content_hash is the manifest hash (not SKILL.md hash)
+        assert pkg.content_hash
+        assert pkg.content_artifact_key
 
-            store = ArtifactStore(OrgPaths(tmp_path).artifacts_dir)
-            stored_bytes = store.read(pkg.content_artifact_key)
-            assert stored_bytes is not None
-            stored_hash = hashlib.sha256(stored_bytes).hexdigest()
-            assert stored_hash == pkg.content_hash
+        # Read manifest from artifact store
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        store = ArtifactStore(OrgPaths(tmp_path).artifacts_dir)
+        manifest_bytes = store.read(pkg.content_artifact_key)
+        manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+        assert manifest_hash == pkg.content_hash, (
+            "Manifest hash must match package content_hash"
+        )
+
+        # SKILL.md member hash must match separately
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+        skill_md_member = next(
+            (m for m in manifest["members"] if m["path"] == "SKILL.md"), None
+        )
+        assert skill_md_member is not None
+        skill_bytes = store.read(skill_md_member["artifact_key"])
+        assert skill_bytes is not None
+        stored_hash = hashlib.sha256(skill_bytes).hexdigest()
+        expected_hex = skill_md_member["hash"].split(":", 1)[-1]
+        assert stored_hash == expected_hex
 
     def test_artifact_write_failure_aborts_entire_proposal(self, db, service, tmp_path):
         """ArtifactStore write failure raises LifecycleError with status 500
@@ -1316,3 +1331,535 @@ class TestMaterializationFailClosed:
         assert stored_hash != original_hash, (
             "Tampered artifact should produce a different hash than the ledger"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-055 REVISE 5: Failure-atomic retention + transaction guarantees
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestFailureAtomicRetention:
+    """CRITICAL (TASK-3474 §1): Artifact, package, and event writes must be
+    failure-atomic. After each physical step failure, no durable partial state
+    remains. Pre-existing artifacts from deduplication are never destroyed."""
+
+    def test_event_insert_failure_rolls_back_package_and_artifact(
+        self, db, service, tmp_path,
+    ):
+        """Failure during event insertion after package insert must leave
+        no newly durable package row, event row, or orphaned artifact.
+        Package + event counts = 0/0 after the failure."""
+        from unittest.mock import patch
+
+        org_root = str(tmp_path)
+        # Force event insertion to fail AFTER package insert succeeds
+        with patch.object(
+            lifecycle_stores, "insert_lifecycle_event",
+            side_effect=RuntimeError("Simulated event-insert failure"),
+        ):
+            with pytest.raises(RuntimeError, match="Simulated"):
+                service.submit_proposal(
+                    db=db,
+                    actor_kind="agent",
+                    **_proposal_kwargs(slug="atomic-event-fail"),
+                    org_root=org_root,
+                )
+
+        # Verify NO package version and NO lifecycle event are durable
+        pkg_count = db.execute(
+            "SELECT COUNT(*) FROM skill_lifecycle_packages WHERE slug = ?",
+            ("atomic-event-fail",),
+        ).fetchone()[0]
+        event_count = db.execute(
+            "SELECT COUNT(*) FROM skill_lifecycle_events",
+        ).fetchone()[0]
+        assert pkg_count == 0, (
+            f"Expected 0 package rows after event-insert failure, got {pkg_count}"
+        )
+        assert event_count == 0, (
+            f"Expected 0 event rows after event-insert failure, got {event_count}"
+        )
+
+        # Verify no orphaned artifact key remains for the failed proposal
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        store = ArtifactStore(OrgPaths(tmp_path).artifacts_dir)
+        # List all keys in the artifact store
+        all_keys = _list_artifact_keys(store)
+        matching = [k for k in all_keys if "atomic-event-fail" in k]
+        assert len(matching) == 0, (
+            f"Expected 0 artifact keys for failed proposal, got {matching}"
+        )
+
+    def test_package_insert_failure_leaves_no_artifact(
+        self, db, service, tmp_path,
+    ):
+        """Failure during package insert must leave no orphaned artifact."""
+        from unittest.mock import patch
+
+        org_root = str(tmp_path)
+        with patch.object(
+            lifecycle_stores, "insert_package_version",
+            side_effect=RuntimeError("Simulated package-insert failure"),
+        ):
+            with pytest.raises(RuntimeError, match="Simulated"):
+                service.submit_proposal(
+                    db=db,
+                    actor_kind="agent",
+                    **_proposal_kwargs(slug="atomic-pkg-fail"),
+                    org_root=org_root,
+                )
+
+        # No package row
+        pkg_count = db.execute(
+            "SELECT COUNT(*) FROM skill_lifecycle_packages WHERE slug = ?",
+            ("atomic-pkg-fail",),
+        ).fetchone()[0]
+        assert pkg_count == 0
+
+        # No orphaned artifact
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        store = ArtifactStore(OrgPaths(tmp_path).artifacts_dir)
+        all_keys = _list_artifact_keys(store)
+        matching = [k for k in all_keys if "atomic-pkg-fail" in k]
+        assert len(matching) == 0
+
+    def test_deduplication_does_not_delete_existing_artifact_on_failure(
+        self, db, service, tmp_path,
+    ):
+        """When content-addressed dedup finds an existing artifact that was
+        created by a PREVIOUS successful proposal, a subsequent ledger failure
+        must NOT delete that pre-existing artifact."""
+        from unittest.mock import patch
+
+        org_root = str(tmp_path)
+        # First: successful proposal that creates artifact A
+        kwargs = _proposal_kwargs(slug="dedup-skill-1", skill_md="# Dedup content\n")
+        pkg1 = service.submit_proposal(
+            db=db, actor_kind="agent", org_root=org_root, **kwargs,
+        )
+        assert pkg1.content_artifact_key is not None
+        artifact_key_1 = pkg1.content_artifact_key
+
+        # Second: new slug, same content bytes → same artifact key
+        # But force ledger failure
+        with patch.object(
+            lifecycle_stores, "insert_lifecycle_event",
+            side_effect=RuntimeError("Simulated event failure"),
+        ):
+            with pytest.raises(RuntimeError, match="Simulated"):
+                service.submit_proposal(
+                    db=db,
+                    actor_kind="agent",
+                    **_proposal_kwargs(slug="dedup-skill-2", skill_md="# Dedup content\n"),
+                    org_root=org_root,
+                )
+
+        # Verify the pre-existing artifact from pkg1 is STILL intact.
+        # content_artifact_key now points to the manifest artifact,
+        # but individual members (SKILL.md) should still exist via their
+        # own artifact keys listed in the manifest.
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        import json
+
+        store = ArtifactStore(OrgPaths(tmp_path).artifacts_dir)
+
+        # The manifest should still be readable
+        manifest_stored = store.read(artifact_key_1)
+        assert manifest_stored is not None
+        manifest_data = json.loads(manifest_stored.decode("utf-8"))
+
+        # The SKILL.md member should be intact
+        skill_md_member = next(
+            (m for m in manifest_data["members"] if m["path"] == "SKILL.md"), None
+        )
+        assert skill_md_member is not None
+        skill_bytes = store.read(skill_md_member["artifact_key"])
+        assert skill_bytes.decode("utf-8") == "# Dedup content\n"
+
+    def test_successful_proposal_is_fully_durable(self, db, service, tmp_path):
+        """A successful proposal must have all three: artifact stored,
+        package row present, event row present."""
+        org_root = str(tmp_path)
+        pkg = service.submit_proposal(
+            db=db,
+            actor_kind="agent",
+            **_proposal_kwargs(slug="fully-durable"),
+            org_root=org_root,
+        )
+
+        # Package row present
+        pkg_count = db.execute(
+            "SELECT COUNT(*) FROM skill_lifecycle_packages WHERE id = ?",
+            (pkg.id,),
+        ).fetchone()[0]
+        assert pkg_count == 1
+
+        # Event row present
+        event_count = db.execute(
+            "SELECT COUNT(*) FROM skill_lifecycle_events "
+            "WHERE package_version_id = ?",
+            (pkg.id,),
+        ).fetchone()[0]
+        assert event_count >= 1
+
+        # Artifact stored — content_artifact_key points to the manifest.
+        # Verify the manifest is valid and contains the SKILL.md member.
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        import json
+
+        store = ArtifactStore(OrgPaths(tmp_path).artifacts_dir)
+        stored_manifest = store.read(pkg.content_artifact_key)
+        assert stored_manifest is not None
+        manifest_data = json.loads(stored_manifest.decode("utf-8"))
+        skill_md_member = next(
+            (m for m in manifest_data["members"] if m["path"] == "SKILL.md"), None
+        )
+        assert skill_md_member is not None
+        stored_skill = store.read(skill_md_member["artifact_key"])
+        assert stored_skill.decode("utf-8") == _proposal_kwargs()["skill_md"]
+
+
+# ── Helper: list artifact store keys ────────────────────────────────────
+
+
+def _list_artifact_keys(store) -> list[str]:
+    """List all artifact keys in the store by walking the filesystem."""
+    import os
+    keys = []
+    root = store.root
+    if not root.exists():
+        return keys
+    for dirpath, _, filenames in os.walk(str(root)):
+        for fn in filenames:
+            full = Path(dirpath) / fn
+            rel = full.relative_to(root)
+            keys.append(str(rel))
+    return keys
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-055 REVISE 5: Full-package retention (references + assets + manifest)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestFullPackageRetention:
+    """HIGH (TASK-3474 §2): References and assets must be retained immutably
+    alongside SKILL.md. The full package manifest binds artifact keys, hashes,
+    and relative paths. Materialization reconstructs the entire package
+    fail-closed."""
+
+    def test_proposal_stores_references_as_separate_artifacts(
+        self, db, service, tmp_path,
+    ):
+        """Each reference is stored as an independent artifact with its own hash."""
+        org_root = str(tmp_path)
+        refs = {
+            "setup.md": "# Setup Guide\n\nStep 1: Install dependencies.\n",
+            "faq.md": "# FAQ\n\nQ: Why?\nA: Because.\n",
+        }
+        pkg = service.submit_proposal(
+            db=db,
+            actor_kind="agent",
+            **_proposal_kwargs(slug="full-pkg-refs"),
+            references=refs,
+            org_root=org_root,
+        )
+
+        # Verify artifact keys for references exist
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        store = ArtifactStore(OrgPaths(tmp_path).artifacts_dir)
+        all_keys = _list_artifact_keys(store)
+
+        # Should have SKILL.md + 2 references = 3 artifacts
+        matching = [k for k in all_keys if "full-pkg-refs" in k]
+        assert len(matching) >= 3, f"Expected >= 3 artifacts, got {matching}"
+
+        # Verify each reference is readable and content matches
+        for rel_path, content in refs.items():
+            ref_key = next(
+                (k for k in all_keys if f"references/{rel_path}" in k), None
+            )
+            assert ref_key is not None, f"No artifact key for reference {rel_path}"
+            stored = store.read(ref_key)
+            assert stored.decode("utf-8") == content
+
+    def test_proposal_stores_assets_as_separate_artifacts(
+        self, db, service, tmp_path,
+    ):
+        """Each asset is stored as an independent artifact with its own hash."""
+        org_root = str(tmp_path)
+        assets = {
+            "diagram.png": "fake-png-bytes",
+            "screenshot.jpg": "fake-jpg-bytes",
+        }
+        pkg = service.submit_proposal(
+            db=db,
+            actor_kind="agent",
+            **_proposal_kwargs(slug="full-pkg-assets"),
+            assets=assets,
+            org_root=org_root,
+        )
+
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        store = ArtifactStore(OrgPaths(tmp_path).artifacts_dir)
+        all_keys = _list_artifact_keys(store)
+        matching = [k for k in all_keys if "full-pkg-assets" in k]
+        assert len(matching) >= 3
+
+        for rel_path, content in assets.items():
+            asset_key = next(
+                (k for k in all_keys if f"assets/{rel_path}" in k), None
+            )
+            assert asset_key is not None, f"No artifact key for asset {rel_path}"
+            stored = store.read(asset_key)
+            assert stored.decode("utf-8") == content
+
+    def test_proposal_creates_manifest_with_all_members(
+        self, db, service, tmp_path,
+    ):
+        """A manifest artifact lists all package members with their paths and hashes."""
+        import json
+
+        org_root = str(tmp_path)
+        refs = {"guide.md": "# Guide\n"}
+        assets = {"logo.png": "fake-png"}
+        pkg = service.submit_proposal(
+            db=db,
+            actor_kind="agent",
+            **_proposal_kwargs(slug="manifest-skill"),
+            references=refs,
+            assets=assets,
+            org_root=org_root,
+        )
+
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+
+        store = ArtifactStore(OrgPaths(tmp_path).artifacts_dir)
+        all_keys = _list_artifact_keys(store)
+
+        # Find manifest artifact (exact filename)
+        manifest_keys = [k for k in all_keys if k.endswith("/manifest.json")]
+        assert len(manifest_keys) == 1, f"Expected 1 manifest, got {manifest_keys}"
+
+        manifest_bytes = store.read(manifest_keys[0])
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+
+        # Manifest must list all members
+        member_paths = {m["path"] for m in manifest["members"]}
+        assert "SKILL.md" in member_paths
+        assert "references/guide.md" in member_paths
+        assert "assets/logo.png" in member_paths
+
+        # Each member has hash, artifact_key, and path
+        for member in manifest["members"]:
+            assert "path" in member
+            assert "hash" in member
+            assert "artifact_key" in member
+            assert member["path"].startswith(
+                ("SKILL.md", "references/", "assets/")
+            )
+
+        # Package hash binds to manifest (the manifest hash IS the package hash)
+        assert "skill_id" in manifest
+        assert manifest["skill_id"] == pkg.skill_id
+        assert "members" in manifest
+
+    def test_references_with_path_traversal_rejected(
+        self, db, service, tmp_path,
+    ):
+        """Reference paths with '..' traversal are rejected."""
+        org_root = str(tmp_path)
+        with pytest.raises(LifecycleError) as exc_info:
+            service.submit_proposal(
+                db=db,
+                actor_kind="agent",
+                **_proposal_kwargs(slug="traversal-ref"),
+                references={"../escape.md": "# Escape\n"},
+                org_root=org_root,
+            )
+        assert exc_info.value.code == "unsafe_path"
+
+    def test_assets_with_absolute_path_rejected(
+        self, db, service, tmp_path,
+    ):
+        """Asset paths with leading '/' are rejected."""
+        org_root = str(tmp_path)
+        with pytest.raises(LifecycleError) as exc_info:
+            service.submit_proposal(
+                db=db,
+                actor_kind="agent",
+                **_proposal_kwargs(slug="abs-path"),
+                assets={"/etc/passwd": "content"},
+                org_root=org_root,
+            )
+        assert exc_info.value.code == "unsafe_path"
+
+    def test_package_content_hash_differs_from_skill_md_hash(
+        self, db, service, tmp_path,
+    ):
+        """The package-version content_hash must bind to the full manifest,
+        distinct from each individual member hash."""
+        import hashlib
+        skill_md = "# Skill\n"
+        skill_md_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
+
+        pkg = service.submit_proposal(
+            db=db,
+            actor_kind="agent",
+            **_proposal_kwargs(slug="pkg-hash-skill", skill_md=skill_md),
+            references={"ref.md": "# Ref\n"},
+            org_root=str(tmp_path),
+        )
+
+        # Package hash must differ from SKILL.md hash because it binds
+        # the manifest (which includes all members).
+        assert pkg.content_hash != skill_md_hash, (
+            f"Package hash {pkg.content_hash} should differ from "
+            f"SKILL.md hash {skill_md_hash} when references are present"
+        )
+
+    def test_proposal_without_references_assets_still_works(
+        self, db, service, tmp_path,
+    ):
+        """Proposal without references/assets still creates a valid manifest."""
+        pkg = service.submit_proposal(
+            db=db,
+            actor_kind="agent",
+            **_proposal_kwargs(slug="minimal-skill"),
+            org_root=str(tmp_path),
+        )
+        assert pkg.content_hash
+        assert pkg.content_artifact_key
+
+    def test_materialization_reconstructs_all_package_members(
+        self, db, service, tmp_path,
+    ):
+        """Full package materialization reconstructs SKILL.md, references,
+        and assets from the manifest."""
+        import json, hashlib
+
+        org_root = Path(tmp_path)
+        refs = {"guide.md": "# Guide\nGuidance here.\n"}
+        assets = {"diagram.txt": "ASCII art"}
+        pkg = service.submit_proposal(
+            db=db,
+            actor_kind="agent",
+            **_proposal_kwargs(slug="full-materialize", skill_md="# Skill\nContent.\n"),
+            references=refs,
+            assets=assets,
+            org_root=str(org_root),
+        )
+        # Publish and assign
+        pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
+        pkg = service.review_decision(
+            db=db, actor_kind="human", version_id=pkg.id,
+            decision="approved", rationale="ok", reviewer="founder",
+        )
+        pkg = service.publish(
+            db=db, actor_kind="human", version_id=pkg.id,
+            approval_event_id=pkg.publication_decision_id,
+        )
+        service.assign(
+            db=db, actor_kind="human", skill_id=pkg.skill_id,
+            agent_name="dev_agent", version_id=pkg.id,
+        )
+
+        # Materialize
+        workspace = org_root / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        from runtime.orchestrator.workspace_adapters import _materialize_lifecycle_skills
+        _materialize_lifecycle_skills(
+            workspace=workspace,
+            org_root=org_root,
+            db=db,
+            agent_name="dev_agent",
+            slug="test-org",
+        )
+
+        # Verify SKILL.md
+        for skills_dir in (".claude/skills/full-materialize", ".agents/skills/full-materialize"):
+            skill_md_path = workspace / skills_dir / "SKILL.md"
+            assert skill_md_path.exists(), f"{skill_md_path} missing"
+            content = skill_md_path.read_text()
+            assert "Content." in content
+
+            # Verify references
+            ref_path = workspace / skills_dir / "references" / "guide.md"
+            assert ref_path.exists(), f"{ref_path} missing"
+            assert ref_path.read_text() == "# Guide\nGuidance here.\n"
+
+            # Verify assets
+            asset_path = workspace / skills_dir / "assets" / "diagram.txt"
+            assert asset_path.exists(), f"{asset_path} missing"
+            assert asset_path.read_text() == "ASCII art"
+
+    def test_partial_materialization_failure_leaves_no_residue(
+        self, db, service, tmp_path,
+    ):
+        """If a reference/asset fails to write during materialization,
+        the entire skill directory is cleaned up (no partial state)."""
+        from unittest.mock import patch
+
+        org_root = Path(tmp_path)
+        refs = {"guide.md": "# Guide\n"}
+        pkg = service.submit_proposal(
+            db=db,
+            actor_kind="agent",
+            **_proposal_kwargs(slug="partial-fail", skill_md="# Skill\n"),
+            references=refs,
+            org_root=str(org_root),
+        )
+        pkg = service.claim_proposal(db=db, actor_kind="human", version_id=pkg.id)
+        pkg = service.record_validation(db=db, actor_kind="human", version_id=pkg.id, ok=True)
+        pkg = service.submit_for_review(db=db, actor_kind="human", version_id=pkg.id)
+        pkg = service.review_decision(
+            db=db, actor_kind="human", version_id=pkg.id,
+            decision="approved", rationale="ok", reviewer="founder",
+        )
+        pkg = service.publish(
+            db=db, actor_kind="human", version_id=pkg.id,
+            approval_event_id=pkg.publication_decision_id,
+        )
+        service.assign(
+            db=db, actor_kind="human", skill_id=pkg.skill_id,
+            agent_name="dev_agent", version_id=pkg.id,
+        )
+
+        workspace = org_root / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        from runtime.orchestrator.workspace_adapters import (
+            _materialize_lifecycle_skills,
+            LifecycleMaterializationError,
+        )
+
+        # Force reference write failure
+        with patch.object(Path, "write_bytes", side_effect=OSError("Disk full")):
+            with pytest.raises((LifecycleMaterializationError, OSError)):
+                _materialize_lifecycle_skills(
+                    workspace=workspace,
+                    org_root=org_root,
+                    db=db,
+                    agent_name="dev_agent",
+                    slug="test-org",
+                )
+
+        # Verify no partial skill directory remains
+        for skills_dir in (".claude/skills/partial-fail", ".agents/skills/partial-fail"):
+            skill_path = workspace / skills_dir
+            assert not skill_path.exists() or not any(skill_path.iterdir()), (
+                f"Partial residue at {skill_path}"
+            )

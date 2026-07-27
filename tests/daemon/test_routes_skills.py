@@ -1276,3 +1276,348 @@ class TestLifecycleRollbackResidue:
             assert not skill_dir.exists(), (
                 f"Post-rollback: {skill_dir} should be removed; residue cleanup failed"
             )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-055 REVISE 5: Daemon HTTP authority evidence (TASK-3474 §4)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestVerifiedAgentSessionAuthority:
+    """Daemon HTTP tests proving:
+    - Active verified agent session can submit a proposal
+    - Body claims cannot override verified session identity
+    - Human-only routes return 403 (not 401) for agent-session callers
+    - No-active/expired/mismatched sessions return 403
+    """
+
+    def test_agent_session_submits_proposal_with_verified_context(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """An active verified agent session can submit a proposal.
+        The proposal provenance must derive from the verified session,
+        not from body claims."""
+        client = TestClient(app)
+
+        # Set up an active session for the agent
+        task_id = "TASK-200"
+        session_id = "sess-agent-auth-001"
+        agent_name = "dev_agent"
+        org_state.sessions.set_active(task_id, agent_name, session_id)
+
+        # Submit as agent (no bearer token, use session query params)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            params={
+                "task_id": task_id,
+                "session_id": session_id,
+                "agent_name": agent_name,
+            },
+            json={
+                "slug": "agent-auth-skill",
+                "name": "Agent Auth Skill",
+                "description": "Testing agent session authority",
+                "skill_md": "# Agent Auth Test\n",
+            },
+        )
+        assert r.status_code == 201, f"Expected 201, got {r.status_code}: {r.json()}"
+        body = r.json()
+        assert body["skill_id"] == "hr:agent-auth-skill"
+        assert body["proposal_task_id"] == task_id
+
+        # Verify stored provenance matches verified session
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:agent-auth-skill",
+        )
+        assert pkg is not None
+        assert pkg.proposal_task_id == task_id
+        assert pkg.proposer_agent == agent_name
+
+    def test_body_spoof_claims_ignored_for_agent_session(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Body claims for task_id/session_id/proposer_agent are IGNORED
+        for agent-session callers. Only the verified session binds identity."""
+        client = TestClient(app)
+
+        task_id = "TASK-201"
+        session_id = "sess-agent-auth-002"
+        agent_name = "dev_agent"
+        org_state.sessions.set_active(task_id, agent_name, session_id)
+
+        # Put SPOOF values in the body — they must be ignored
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            params={
+                "task_id": task_id,
+                "session_id": session_id,
+                "agent_name": agent_name,
+            },
+            json={
+                "slug": "spoof-body-skill",
+                "name": "Spoof Body Test",
+                "description": "Body spoof should be ignored",
+                "skill_md": "# Test\n",
+                "task_id": "SPOOF-TASK",
+                "session_id": "SPOOF-SESSION",
+                "proposer_agent": "SPOOF-AGENT",
+            },
+        )
+        assert r.status_code == 201, f"Expected 201, got {r.status_code}: {r.json()}"
+
+        # Verify stored provenance comes from verified session, NOT body spoof
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:spoof-body-skill",
+        )
+        assert pkg is not None
+        assert pkg.proposal_task_id == task_id, (
+            f"Expected real task_id {task_id}, got {pkg.proposal_task_id}"
+        )
+        assert pkg.proposer_agent == agent_name, (
+            f"Expected real agent {agent_name}, got {pkg.proposer_agent}"
+        )
+        assert pkg.proposal_task_id != "SPOOF-TASK"
+        assert pkg.proposer_agent != "SPOOF-AGENT"
+
+    def test_agent_session_403_on_human_only_routes(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Every human-only lifecycle mutation must return 403 (not 401)
+        when called from an agent-session context."""
+        client = TestClient(app)
+
+        task_id = "TASK-202"
+        session_id = "sess-agent-auth-003"
+        agent_name = "dev_agent"
+        org_state.sessions.set_active(task_id, agent_name, session_id)
+
+        params = {
+            "task_id": task_id,
+            "session_id": session_id,
+            "agent_name": agent_name,
+        }
+
+        # Agent calling claim → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/hr:test/claim",
+            json={"proposal_version_id": 1},
+            params=params,
+        )
+        assert r.status_code == 403, (
+            f"Claim: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+        # Agent calling publish → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/publish",
+            json={"version_id": 1, "approval_event_id": 1},
+            params=params,
+        )
+        assert r.status_code == 403, (
+            f"Publish: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+        # Agent calling assign → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/assign",
+            json={"skill_id": "hr:test", "agent_name": "dev_agent", "version_id": 1},
+            params=params,
+        )
+        assert r.status_code == 403, (
+            f"Assign: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+        # Agent calling rollback → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/rollback",
+            params={**params, "skill_id": "hr:test", "reason": "test"},
+        )
+        assert r.status_code == 403, (
+            f"Rollback: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+        # Agent calling review → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/review",
+            json={"version_id": 1, "decision": "approved", "rationale": "ok"},
+            params=params,
+        )
+        assert r.status_code == 403, (
+            f"Review: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+        # Agent calling retire → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/retire",
+            params={**params, "skill_id": "hr:test", "reason": "test"},
+        )
+        assert r.status_code == 403, (
+            f"Retire: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+    def test_no_active_session_returns_403(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Agent proposal with no active session binding returns 403."""
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            params={
+                "task_id": "TASK-NONEXISTENT",
+                "session_id": "sess-nonexistent",
+                "agent_name": "dev_agent",
+            },
+            json={
+                "slug": "no-session-skill",
+                "name": "No Session",
+                "description": "Should get 403",
+                "skill_md": "# Test\n",
+            },
+        )
+        assert r.status_code == 403, (
+            f"Expected 403 for no active session, got {r.status_code}: {r.json()}"
+        )
+        assert r.json()["detail"]["code"] == "unknown_session"
+
+    def test_mismatched_session_returns_403(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Agent proposal with a session ID that doesn't match the active
+        session returns 403."""
+        client = TestClient(app)
+
+        task_id = "TASK-203"
+        agent_name = "dev_agent"
+        real_session = "sess-real-001"
+        org_state.sessions.set_active(task_id, agent_name, real_session)
+
+        # Use a different session ID
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            params={
+                "task_id": task_id,
+                "session_id": "sess-WRONG",
+                "agent_name": agent_name,
+            },
+            json={
+                "slug": "mismatch-session-skill",
+                "name": "Mismatch Session",
+                "description": "Wrong session should get 403",
+                "skill_md": "# Test\n",
+            },
+        )
+        assert r.status_code == 403, (
+            f"Expected 403 for mismatched session, got {r.status_code}: {r.json()}"
+        )
+        assert r.json()["detail"]["code"] == "session_mismatch"
+
+    def test_founder_bearer_can_submit_proposal(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Founder with bearer token can submit a proposal (human path).
+        Not a 403 — auth is trusted from bearer token."""
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            headers=auth_headers,
+            json={
+                "slug": "founder-auth-skill",
+                "name": "Founder Auth Test",
+                "description": "Founder proposal should succeed",
+                "skill_md": "# Founder Test\n",
+            },
+        )
+        assert r.status_code == 201, (
+            f"Expected 201 for founder, got {r.status_code}: {r.json()}"
+        )
+        body = r.json()
+        assert body["status"] == "proposed"
+
+    def test_founder_bearer_input_not_distorted_by_403(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Founder with bearer token gets proper HTTP responses on all
+        lifecycle routes — not 403, not 401."""
+        client = TestClient(app)
+
+        # Submit a proposal first
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            headers=auth_headers,
+            json={
+                "slug": "founder-flow-skill",
+                "name": "Founder Flow",
+                "description": "Full flow test",
+                "skill_md": "# Test\n",
+            },
+        )
+        assert r.status_code == 201
+        skill_id = r.json()["skill_id"]
+        version_id = r.json()["version_id"]
+
+        # Founder can claim
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/{skill_id}/claim",
+            headers=auth_headers,
+            json={"proposal_version_id": version_id},
+        )
+        assert r.status_code == 200, f"Claim got {r.status_code}"
+
+        # Founder can validate
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/validate",
+            headers=auth_headers,
+            params={"version_id": version_id},
+        )
+        assert r.status_code == 200, f"Validate got {r.status_code}"
+
+        # Founder can submit for review
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/submit-review",
+            headers=auth_headers,
+            json={"version_id": version_id},
+        )
+        assert r.status_code == 200, f"Submit review got {r.status_code}"
+
+        # Founder can review (approve)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/review",
+            headers=auth_headers,
+            json={"version_id": version_id, "decision": "approved", "rationale": "OK"},
+        )
+        assert r.status_code == 200, f"Review got {r.status_code}"
+
+        # Get approval event ID
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/events/{skill_id}",
+            headers=auth_headers,
+        )
+        events = r.json()["events"]
+        approval_event = next(e for e in events if e["event_type"] == "approved")
+        approval_event_id = approval_event["id"]
+
+        # Founder can publish
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/publish",
+            headers=auth_headers,
+            json={"version_id": version_id, "approval_event_id": approval_event_id},
+        )
+        assert r.status_code == 200, f"Publish got {r.status_code}"
+
+        # Founder can assign
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/assign",
+            headers=auth_headers,
+            json={"skill_id": skill_id, "agent_name": "dev_agent", "version_id": version_id},
+        )
+        assert r.status_code == 200, f"Assign got {r.status_code}"
+
+        # Founder can rollback
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/rollback",
+            headers=auth_headers,
+            params={"skill_id": skill_id, "reason": "test"},
+        )
+        assert r.status_code == 200, f"Rollback got {r.status_code}"

@@ -1906,6 +1906,10 @@
       "POST": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -1920,6 +1924,10 @@
       "GET": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -1933,6 +1941,10 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/events/{skill_id}": {
       "GET": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "limit",
             "query"
@@ -1960,6 +1972,10 @@
             "query"
           ],
           [
+            "authorization",
+            "header"
+          ],
+          [
             "session_id",
             "query"
           ],
@@ -1982,6 +1998,10 @@
       "POST": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -1995,6 +2015,10 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/retire": {
       "POST": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "reason",
             "query"
@@ -2018,6 +2042,10 @@
       "POST": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -2031,6 +2059,10 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/rollback": {
       "POST": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "reason",
             "query"
@@ -2058,6 +2090,10 @@
       "POST": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -2071,6 +2107,10 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/validate": {
       "POST": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "slug",
             "path"
@@ -2090,6 +2130,10 @@
       "GET": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "skill_id",
             "path"
           ],
@@ -2107,6 +2151,10 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/{skill_id}/claim": {
       "POST": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "skill_id",
             "path"

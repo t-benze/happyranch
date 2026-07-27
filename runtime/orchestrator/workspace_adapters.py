@@ -573,10 +573,11 @@ def _materialize_lifecycle_skills(
                 reason=error_msg,
             )
 
-        # Load content from the org ArtifactStore
-        content_bytes: bytes
+        # Load and validate the manifest artifact.
+        # The manifest hash IS the package content_hash (binds full provenance).
+        manifest_bytes: bytes
         try:
-            content_bytes = artifact_store.read(pkg.content_artifact_key)
+            manifest_bytes = artifact_store.read(pkg.content_artifact_key)
         except ArtifactNotFound:
             error_msg = f"Artifact not found: {pkg.content_artifact_key}"
             _record_and_cleanup(
@@ -600,11 +601,12 @@ def _materialize_lifecycle_skills(
                 reason=error_msg,
             ) from exc
 
-        # Validate exact hash BEFORE writing to workspace
-        actual_hash = hashlib.sha256(content_bytes).hexdigest()
-        if actual_hash != pkg.content_hash:
+        # Validate manifest hash against ledger content_hash
+        actual_manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+        if actual_manifest_hash != pkg.content_hash:
             error_msg = (
-                f"Hash mismatch: expected {pkg.content_hash}, got {actual_hash}"
+                f"Manifest hash mismatch: expected {pkg.content_hash}, "
+                f"got {actual_manifest_hash}"
             )
             _record_and_cleanup(
                 service, db, pkg, agent_name, dest_claude, dest_agents,
@@ -616,37 +618,139 @@ def _materialize_lifecycle_skills(
                 reason=error_msg,
             )
 
-        # Write validated content to workspace skill directories.
-        # Apply org-slug substitution BEFORE the final write so the
-        # bytes on disk are the bytes whose hash we record.
+        # Parse manifest — if the artifact content is valid JSON with
+        # a "members" field, it's a manifest-based package. Otherwise
+        # fall back to legacy single-SKILL.md artifact for backward compat.
+        import json
+        manifest: dict | None = None
         try:
-            text = content_bytes.decode("utf-8")
-            text = text.replace("{ORG_SLUG}", slug)
-            content_bytes = text.encode("utf-8")
-        except UnicodeDecodeError:
-            pass  # Non-text content, keep original bytes
+            parsed = json.loads(manifest_bytes.decode("utf-8"))
+            if isinstance(parsed, dict) and "members" in parsed:
+                manifest = parsed
+        except Exception:
+            pass  # Not a manifest — treat as legacy raw SKILL.md
 
-        # Compute hash of the ACTUAL bytes written (post-substitution)
-        final_hash = hashlib.sha256(content_bytes).hexdigest()
+        if manifest is not None:
+            # ── Manifest-based full-package materialization ──────
+            members = manifest["members"]
+            if not members:
+                error_msg = "Manifest has no members"
+                _record_and_cleanup(
+                    service, db, pkg, agent_name, dest_claude, dest_agents,
+                    error_msg,
+                )
+                raise LifecycleMaterializationError(
+                    skill_slug=skill_slug,
+                    agent_name=agent_name,
+                    reason=error_msg,
+                )
 
-        try:
-            dest_claude.mkdir(parents=True, exist_ok=True)
-            dest_agents.mkdir(parents=True, exist_ok=True)
-            (dest_claude / "SKILL.md").write_bytes(content_bytes)
-            (dest_agents / "SKILL.md").write_bytes(content_bytes)
-        except Exception as exc:
-            error_msg = f"Write error: {exc}"
-            _record_and_cleanup(
-                service, db, pkg, agent_name, dest_claude, dest_agents,
-                error_msg,
-            )
-            raise LifecycleMaterializationError(
-                skill_slug=skill_slug,
-                agent_name=agent_name,
-                reason=error_msg,
-            ) from exc
+            # Materialize every member from the manifest.
+            try:
+                dest_claude.mkdir(parents=True, exist_ok=True)
+                dest_agents.mkdir(parents=True, exist_ok=True)
 
-        # Record successful materialization with proven bytes hash
+                for member in members:
+                    member_path = member["path"]
+                    member_hash = member["hash"]  # e.g. "sha256:abc123..."
+                    member_artifact_key = member["artifact_key"]
+
+                    # Load member content from ArtifactStore
+                    try:
+                        member_bytes = artifact_store.read(member_artifact_key)
+                    except ArtifactNotFound:
+                        error_msg = (
+                            f"Member artifact not found: {member_artifact_key} "
+                            f"(path={member_path})"
+                        )
+                        _record_and_cleanup(
+                            service, db, pkg, agent_name, dest_claude, dest_agents,
+                            error_msg,
+                        )
+                        raise LifecycleMaterializationError(
+                            skill_slug=skill_slug,
+                            agent_name=agent_name,
+                            reason=error_msg,
+                        )
+
+                    # Validate member hash against stored bytes
+                    expected_hash_hex = member_hash.split(":", 1)[-1] if ":" in member_hash else member_hash
+                    actual_member_hash = hashlib.sha256(member_bytes).hexdigest()
+                    if actual_member_hash != expected_hash_hex:
+                        error_msg = (
+                            f"Member hash mismatch for {member_path}: "
+                            f"expected {expected_hash_hex[:16]}..., got {actual_member_hash[:16]}..."
+                        )
+                        _record_and_cleanup(
+                            service, db, pkg, agent_name, dest_claude, dest_agents,
+                            error_msg,
+                        )
+                        raise LifecycleMaterializationError(
+                            skill_slug=skill_slug,
+                            agent_name=agent_name,
+                            reason=error_msg,
+                        )
+
+                    # Apply org-slug substitution to text files
+                    try:
+                        text = member_bytes.decode("utf-8")
+                        text = text.replace("{ORG_SLUG}", slug)
+                        member_bytes = text.encode("utf-8")
+                    except UnicodeDecodeError:
+                        pass
+
+                    # Write to both target directories
+                    dest_path = member_path
+                    for target_base in (dest_claude, dest_agents):
+                        target_file = target_base / dest_path
+                        target_file.parent.mkdir(parents=True, exist_ok=True)
+                        target_file.write_bytes(member_bytes)
+
+            except LifecycleMaterializationError:
+                raise
+            except Exception as exc:
+                error_msg = f"Write error: {exc}"
+                _record_and_cleanup(
+                    service, db, pkg, agent_name, dest_claude, dest_agents,
+                    error_msg,
+                )
+                raise LifecycleMaterializationError(
+                    skill_slug=skill_slug,
+                    agent_name=agent_name,
+                    reason=error_msg,
+                ) from exc
+
+        else:
+            # ── Legacy single-SKILL.md artifact ─────────────────
+            # Backward compatibility: content_artifact_key points to
+            # a raw SKILL.md file (no manifest). Treat the artifact
+            # content directly as the SKILL.md to materialize.
+            content_bytes = manifest_bytes
+            try:
+                text = content_bytes.decode("utf-8")
+                text = text.replace("{ORG_SLUG}", slug)
+                content_bytes = text.encode("utf-8")
+            except UnicodeDecodeError:
+                pass
+
+            try:
+                dest_claude.mkdir(parents=True, exist_ok=True)
+                dest_agents.mkdir(parents=True, exist_ok=True)
+                (dest_claude / "SKILL.md").write_bytes(content_bytes)
+                (dest_agents / "SKILL.md").write_bytes(content_bytes)
+            except Exception as exc:
+                error_msg = f"Write error: {exc}"
+                _record_and_cleanup(
+                    service, db, pkg, agent_name, dest_claude, dest_agents,
+                    error_msg,
+                )
+                raise LifecycleMaterializationError(
+                    skill_slug=skill_slug,
+                    agent_name=agent_name,
+                    reason=error_msg,
+                ) from exc
+
+        # Record successful materialization
         try:
             service.record_materialization(
                 db=db,
@@ -654,13 +758,11 @@ def _materialize_lifecycle_skills(
                 agent_name=agent_name,
                 version_id=pkg.id,
                 version=pkg.version,
-                content_hash=final_hash,
+                content_hash=pkg.content_hash,
                 success=True,
                 session_context="session_spawn",
             )
         except Exception:
-            # Materialization event recording is best-effort;
-            # the skill bytes are already safely on disk.
             pass
 
 

@@ -67,6 +67,102 @@ class AgentForbiddenError(LifecycleError):
         )
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+
+def _get_raw_connection(db):
+    """Extract the raw sqlite3.Connection from either a raw connection
+    or a Database wrapper (which stores it as ``_conn``)."""
+    if hasattr(db, '_conn'):
+        return db._conn
+    return db
+
+
+def _persist_package_to_artifact_store(
+    store, slug: str, skill_md: str,
+    references: dict[str, str],
+    assets: dict[str, str],
+) -> tuple[str, str, list[str]]:
+    """Persist all package members (SKILL.md, references, assets) to the
+    ArtifactStore as content-addressed immutable artifacts, then build and
+    store a manifest artifact.
+
+    Returns (package_content_hash, manifest_artifact_key, new_artifact_keys)
+    where package_content_hash is the SHA-256 of the manifest JSON,
+    manifest_artifact_key is the artifact key of the manifest, and
+    new_artifact_keys tracks all artifact keys we created (for rollback).
+    """
+    import json
+
+    members: list[dict] = []
+    new_keys: list[str] = []
+    prefix = f"skill-lifecycle/{slug}"
+
+    def _put_if_new(artifact_key: str, content: bytes) -> None:
+        """Put content into ArtifactStore; track if newly created."""
+        try:
+            store.read(artifact_key)
+        except Exception:
+            new_keys.append(artifact_key)
+        store.put(artifact_key, content)
+
+    # ── Store SKILL.md ───────────────────────────────────────────────
+    skill_md_bytes = skill_md.encode("utf-8")
+    skill_hash = hashlib.sha256(skill_md_bytes).hexdigest()
+    skill_key = f"{prefix}/{skill_hash[:16]}/SKILL.md"
+    _put_if_new(skill_key, skill_md_bytes)
+    members.append({
+        "path": "SKILL.md",
+        "hash": f"sha256:{skill_hash}",
+        "artifact_key": skill_key,
+        "size_bytes": len(skill_md_bytes),
+    })
+
+    # ── Store references ─────────────────────────────────────────────
+    for rel_path, content in sorted(references.items()):
+        content_bytes = content.encode("utf-8")
+        ref_hash = hashlib.sha256(content_bytes).hexdigest()
+        ref_key = f"{prefix}/{ref_hash[:16]}/references/{rel_path}"
+        _put_if_new(ref_key, content_bytes)
+        members.append({
+            "path": f"references/{rel_path}",
+            "hash": f"sha256:{ref_hash}",
+            "artifact_key": ref_key,
+            "size_bytes": len(content_bytes),
+        })
+
+    # ── Store assets ─────────────────────────────────────────────────
+    for rel_path, content in sorted(assets.items()):
+        content_bytes = content.encode("utf-8")
+        asset_hash = hashlib.sha256(content_bytes).hexdigest()
+        asset_key = f"{prefix}/{asset_hash[:16]}/assets/{rel_path}"
+        _put_if_new(asset_key, content_bytes)
+        members.append({
+            "path": f"assets/{rel_path}",
+            "hash": f"sha256:{asset_hash}",
+            "artifact_key": asset_key,
+            "size_bytes": len(content_bytes),
+        })
+
+    # ── Build and store manifest ─────────────────────────────────────
+    manifest = {
+        "schema_version": 1,
+        "skill_id": f"hr:{slug}",
+        "slug": slug,
+        "members": members,
+    }
+    manifest_json = json.dumps(manifest, sort_keys=True, indent=2)
+    manifest_bytes = manifest_json.encode("utf-8")
+    manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest_key = f"{prefix}/{manifest_hash[:16]}/manifest.json"
+    _put_if_new(manifest_key, manifest_bytes)
+    new_keys.append(manifest_key)  # Manifest is always "new" for this call
+
+    # The package content_hash is the manifest's SHA-256.
+    # This binds the full-package provenance (not just SKILL.md).
+    return manifest_hash, manifest_key, new_keys
+
+
 # ── Service ───────────────────────────────────────────────────────────────
 
 class SkillLifecycleService:
@@ -107,21 +203,31 @@ class SkillLifecycleService:
         may submit proposals. Proposal identity derives from verified
         task/session when agent, or from bearer when human.
 
-        Package content (skill_md) is stored in the org ArtifactStore under
-        ``skill-lifecycle/<slug>/<version>/SKILL.md`` when ``org_root`` is
-        provided. The ledger stores only the artifact key and metadata.
+        Package content is fully retained in the org ArtifactStore:
+        - SKILL.md, each reference, and each asset stored as independent
+          content-addressed immutable artifacts.
+        - A manifest artifact lists all members with normalized paths,
+          hashes, and artifact keys.
+        - The package content_hash binds the full manifest (distinct from
+          individual member hashes).
+        - The ledger stores only metadata; artifact store is canonical.
 
         Constraints:
         - slug must not collide with protected slugs
         - policy_class must be standard_operational
         - task_id + session_id required for agent proposals
+        - All member paths must be safe (no traversal, no absolute paths)
         """
         self._ensure_non_empty(skill_md, "skill_md")
         self._ensure_protected_slug(slug, protected_slugs)
         self._ensure_policy_class(policy_class)
 
+        # Validate safe paths for all package members
+        refs = references or {}
+        asts = assets or {}
+        self._validate_safe_paths(slug, refs, asts)
+
         # Agent proposals require verified task/session binding.
-        # Human/founder proposals (bearer token) don't need this.
         if actor_kind == "agent" and (not task_id or not session_id):
             raise LifecycleError(
                 code="missing_session_binding",
@@ -131,21 +237,12 @@ class SkillLifecycleService:
 
         skill_id = f"hr:{slug}"
 
-        # Compute content hash from canonical SKILL.md bytes alone.
-        # This hash MUST match exactly the bytes stored in the artifact store.
-        content_hash = PackageVersion.compute_content_hash(skill_md)
-
-        # Check for duplicate content hash (idempotency)
-        existing = stores.get_package_version_by_hash(db, skill_id, content_hash)
-        if existing is not None:
-            return existing  # Idempotent — return existing proposal
-
-        # Persist SKILL.md content to the org ArtifactStore (task-artifact policy)
-        # under a CONTENT-ADDRESSED immutable key. Same slug/version with
-        # different bytes produces a different hash → different key → no overwrite.
-        # CRITICAL: artifact write failure MUST abort the entire operation —
-        # no durable inline skill_md fallback, no partial package/version/event state.
+        # Persist all package members to ArtifactStore under content-addressed
+        # immutable keys, then build a manifest artifact. The manifest's hash
+        # becomes the package content_hash (binding full package provenance).
         content_artifact_key: str | None = None
+        content_hash: str
+        new_artifact_keys: list[str] = []  # Track artifacts we created
         if org_root is not None:
             try:
                 from runtime.infrastructure.artifact_store import ArtifactStore
@@ -153,59 +250,128 @@ class SkillLifecycleService:
 
                 org_root_path = Path(org_root) if not isinstance(org_root, Path) else org_root
                 store = ArtifactStore(OrgPaths(org_root_path).artifacts_dir)
-                # Immutable content-addressed key — same slug/version cannot overwrite
-                artifact_key = f"skill-lifecycle/{slug}/{content_hash[:16]}/SKILL.md"
-                store.put(artifact_key, skill_md.encode("utf-8"))
-                content_artifact_key = artifact_key
+
+                # Build manifest by storing each member independently
+                content_hash, content_artifact_key, new_artifact_keys = (
+                    _persist_package_to_artifact_store(
+                        store, slug, skill_md, refs, asts,
+                    )
+                )
+            except LifecycleError:
+                raise
             except Exception as exc:
                 raise LifecycleError(
                     code="artifact_store_failed",
-                    detail=f"Failed to persist proposal SKILL.md to artifact store: {exc}",
+                    detail=f"Failed to persist proposal to artifact store: {exc}",
                     status_code=500,
                 ) from exc
+        else:
+            content_hash = PackageVersion.compute_content_hash(skill_md)
 
-        # Create the proposed package version (ledger stores metadata, never inline bytes).
-        # skill_md is empty string — the artifact store holds the sole canonical copy.
-        pkg = PackageVersion(
-            skill_id=skill_id,
-            slug=slug,
-            name=name,
-            version=version,
-            content_hash=content_hash,
-            policy_class=policy_class,
-            description=description,
-            skill_md="",  # Artifact store is canonical; ledger never holds inline content
-            content_artifact_key=content_artifact_key,
-            status=LifecycleStatus.PROPOSED,
-            created_by=proposer_agent or "",
-            proposal_task_id=task_id,
-            proposal_session_id=session_id,
-            proposer_agent=proposer_agent,
-        )
+        # Check for duplicate content hash (idempotency)
+        existing = stores.get_package_version_by_hash(db, skill_id, content_hash)
+        if existing is not None:
+            return existing  # Idempotent — return existing proposal
 
-        version_id = stores.insert_package_version(db, pkg)
-        pkg.id = version_id
+        # Wrap ledger writes in an explicit transaction so package + event
+        # rows commit or roll back together atomically.
+        conn = _get_raw_connection(db)
+        prev_isolation = getattr(conn, 'isolation_level', 'auto')
+        try:
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE")
 
-        # Record lifecycle event
-        stores.insert_lifecycle_event(db, LifecycleEvent(
-            skill_id=skill_id,
-            package_version_id=version_id,
-            event_type="proposed",
-            actor=proposer_agent or "",
-            actor_role="agent",
-            previous_status=None,
-            new_status=LifecycleStatus.PROPOSED.value,
-            content_hash=content_hash,
-            metadata={
-                "purpose": purpose,
-                "target_agent_suggestion": target_agent_suggestion,
-                "content_artifact_key": content_artifact_key,
-            },
-            task_id=task_id,
-            session_id=session_id,
-        ))
+            pkg = PackageVersion(
+                skill_id=skill_id,
+                slug=slug,
+                name=name,
+                version=version,
+                content_hash=content_hash,
+                policy_class=policy_class,
+                description=description,
+                skill_md="",  # Artifact store is canonical
+                content_artifact_key=content_artifact_key,
+                status=LifecycleStatus.PROPOSED,
+                created_by=proposer_agent or "",
+                proposal_task_id=task_id,
+                proposal_session_id=session_id,
+                proposer_agent=proposer_agent,
+            )
+
+            version_id = stores.insert_package_version(db, pkg)
+            pkg.id = version_id
+
+            stores.insert_lifecycle_event(db, LifecycleEvent(
+                skill_id=skill_id,
+                package_version_id=version_id,
+                event_type="proposed",
+                actor=proposer_agent or "",
+                actor_role="agent",
+                previous_status=None,
+                new_status=LifecycleStatus.PROPOSED.value,
+                content_hash=content_hash,
+                metadata={
+                    "purpose": purpose,
+                    "target_agent_suggestion": target_agent_suggestion,
+                    "content_artifact_key": content_artifact_key,
+                },
+                task_id=task_id,
+                session_id=session_id,
+            ))
+
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            # Clean up artifacts ONLY we created (never delete pre-existing).
+            if org_root is not None:
+                try:
+                    org_root_path = Path(org_root) if not isinstance(org_root, Path) else org_root
+                    from runtime.infrastructure.artifact_store import ArtifactStore
+                    from runtime.orchestrator._paths import OrgPaths
+                    cleanup_store = ArtifactStore(OrgPaths(org_root_path).artifacts_dir)
+                    for key in new_artifact_keys:
+                        try:
+                            cleanup_store.delete(key)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            raise
+        finally:
+            conn.isolation_level = prev_isolation
 
         return pkg
+
+    def _validate_safe_paths(
+        self, slug: str, references: dict[str, str], assets: dict[str, str],
+    ) -> None:
+        """Validate that all reference and asset paths are safe.
+
+        Rejects paths with '..' traversal, absolute paths (starting with /),
+        and empty names.
+        """
+        for rel_path in list(references.keys()) + list(assets.keys()):
+            if not rel_path or not rel_path.strip():
+                raise LifecycleError(
+                    code="unsafe_path",
+                    detail=f"Member path must not be empty.",
+                    status_code=400,
+                )
+            if rel_path.startswith("/") or "\\" in rel_path:
+                raise LifecycleError(
+                    code="unsafe_path",
+                    detail=f"Member path '{rel_path}' must be relative.",
+                    status_code=400,
+                )
+            if ".." in rel_path.split("/"):
+                raise LifecycleError(
+                    code="unsafe_path",
+                    detail=f"Member path '{rel_path}' contains '..' traversal.",
+                    status_code=400,
+                )
 
     # ── Claim proposal → draft ────────────────────────────────────────────
 
