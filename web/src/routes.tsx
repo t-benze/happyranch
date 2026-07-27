@@ -38,6 +38,7 @@ import { WakesView as WorkHoursWakesView } from '@/features/work-hours-config/Wa
 import { AgentDetailPage as WorkHoursAgentDetailPage } from '@/features/work-hours-config/AgentDetailPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
+import { TodosPage } from '@/features/todos/TodosPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
 import { DESIGN_ROUTE_DISABLED, designRoutes } from '@/design-system/__design__';
 
@@ -130,6 +131,8 @@ export function AppRoutes(): JSX.Element {
           <Route path="schedule" element={<ScheduleRedirect />} />
           <Route path="work-hours" element={<WorkHoursSurface />} />
           <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
+          <Route path="todos" element={<TodosPage />} />
+          <Route path="todos/:scheduleId" element={<TodosPage />} />
           <Route path="artifacts" element={<ArtifactsPage />} />
           <Route path="settings/*" element={<SettingsPage />} />
         </Route>

@@ -3,6 +3,7 @@ import * as SelectPrimitive from '@radix-ui/react-select';
 import {
   Activity,
   BookOpen,
+  CalendarCheck,
   ChevronDown,
   Clock,
   type LucideIcon,
@@ -235,6 +236,9 @@ export function Sidebar(): JSX.Element {
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
             Work Hours
+          </SidebarNavItem>
+          <SidebarNavItem {...sidebarLink('todos', true)} icon={CalendarCheck}>
+            Todos
           </SidebarNavItem>
           <SidebarNavItem
             {...sidebarLink('audit', true)}
