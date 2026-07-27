@@ -97,7 +97,7 @@ def _checksum_file(repo: Path, relpath: str) -> str:
     Uses ``git hash-object`` on the working-tree version so staged
     content and unstaged modifications are captured.
     """
-    out = _git_out(repo, "hash-object", relpath)
+    out = _git_out(repo, "hash-object", "--", relpath)
     return out
 
 

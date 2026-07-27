@@ -1331,6 +1331,121 @@ def test_recovery_untracked_leading_dash_archive_preserved(
         _run(["git", "-C", str(repo), "branch", "-D", "task/TASK-DASH"])
 
 
+# ── FINDING-3 (TASK-3442): leading-dash tracked filenames ────────────────────
+
+
+def test_verify_fails_when_leading_dash_tracked_dirty_is_mutated(
+    worktree: Path, primary_repo: Path
+):
+    """FINDING-3: A dirty tracked file with a leading-dash name is fingerprinted.
+
+    Before the ``git hash-object --`` fix, ``_checksum_file`` called
+    ``git hash-object relpath`` without ``--``, so a path like
+    ``--tracked-option`` was parsed as a git option, producing empty output.
+    The snapshot lacked a content fingerprint and a post-setup mutation
+    silently passed. After the fix, the guard must detect the mutation.
+    """
+    # Create tracked file with leading-dash name, commit it, then make it dirty
+    dash_name = "--tracked-option"
+    (primary_repo / dash_name).write_text("initial content\n")
+    _run(["git", "-C", str(primary_repo), "add", dash_name])
+    _run(["git", "-C", str(primary_repo), "commit", "-m", "add tracked dash file"])
+
+    # Make it dirty BEFORE setup
+    (primary_repo / dash_name).write_text("dirty before setup\n")
+
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    # Mutate the already-dirty file AFTER setup
+    (primary_repo / dash_name).write_text("dirty before setup + NEW accidental edit\n")
+
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 1, (
+        "Should detect mutation of leading-dash dirty tracked file via content hash change"
+    )
+
+
+def test_verify_passes_when_leading_dash_tracked_dirty_is_unchanged(
+    worktree: Path, primary_repo: Path
+):
+    """FINDING-3: Unchanged leading-dash dirty tracked file passes."""
+    dash_name = "--tracked-option"
+    (primary_repo / dash_name).write_text("initial content\n")
+    _run(["git", "-C", str(primary_repo), "add", dash_name])
+    _run(["git", "-C", str(primary_repo), "commit", "-m", "add tracked dash file"])
+    (primary_repo / dash_name).write_text("dirty before setup\n")
+
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    # No further changes — should pass
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 0, "Unchanged leading-dash dirty tracked file should pass"
+
+
+def test_verify_fails_when_leading_dash_tracked_staged_is_mutated(
+    worktree: Path, primary_repo: Path
+):
+    """FINDING-3: Mutation of a leading-dash staged tracked file is caught.
+
+    ``_checksum_file`` is also called for staged-file fingerprints (via
+    ``git diff --cached --name-only -z``). The ``--`` fix applies to both
+    dirty (unstaged) and staged tracked files.
+    """
+    dash_name = "--staged-option"
+    (primary_repo / dash_name).write_text("initial staged\n")
+    _run(["git", "-C", str(primary_repo), "add", dash_name])
+    _run(["git", "-C", str(primary_repo), "commit", "-m", "add tracked staged dash file"])
+
+    # Make it dirty AND staged BEFORE setup
+    (primary_repo / dash_name).write_text("staged before setup\n")
+    _run(["git", "-C", str(primary_repo), "add", dash_name])
+
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    # Mutate and re-stage AFTER setup
+    (primary_repo / dash_name).write_text("mutated staged after setup\n")
+    _run(["git", "-C", str(primary_repo), "add", dash_name])
+
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 1, (
+        "Should detect mutation of leading-dash staged tracked file via content hash change"
+    )
+
+
+def test_verify_passes_when_leading_dash_tracked_staged_is_unchanged(
+    worktree: Path, primary_repo: Path
+):
+    """FINDING-3: Unchanged leading-dash staged tracked file passes."""
+    dash_name = "--staged-option"
+    (primary_repo / dash_name).write_text("initial staged\n")
+    _run(["git", "-C", str(primary_repo), "add", dash_name])
+    _run(["git", "-C", str(primary_repo), "commit", "-m", "add tracked staged dash file"])
+    (primary_repo / dash_name).write_text("staged before setup\n")
+    _run(["git", "-C", str(primary_repo), "add", dash_name])
+
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    # No further changes — should pass
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 0, "Unchanged leading-dash staged tracked file should pass"
+
+
 # ── Byte-identical guard copies ─────────────────────────────────────────────
 
 
@@ -1354,4 +1469,19 @@ def test_guard_copies_are_byte_identical():
         f"  Runtime:   {runtime_copy}\n"
         f"  Protocol:  {protocol_copy}\n"
         f"  These must stay in sync. Run: cp {runtime_copy} {protocol_copy}"
+    )
+
+    # Explicit regression: both copies must contain the hash-object -- fix
+    runtime_text = runtime_copy.read_text()
+    protocol_text = protocol_copy.read_text()
+    needle = '"hash-object", "--"'
+    assert needle in runtime_text, (
+        f"Runtime guard missing hash-object -- option terminator.\n"
+        f"  Expected: git hash-object -- <relpath>\n"
+        f"  File: {runtime_copy}"
+    )
+    assert needle in protocol_text, (
+        f"Protocol guard missing hash-object -- option terminator.\n"
+        f"  Expected: git hash-object -- <relpath>\n"
+        f"  File: {protocol_copy}"
     )
