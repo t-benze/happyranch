@@ -371,14 +371,34 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
         if proc.stdin is not None:
             proc.stdin.write(input_json.encode("utf-8"))
             proc.stdin.close()
+        conformance_start = time.monotonic()
         stdout_bytes, stderr_bytes = _read_bounded(
             proc,
             stdout_limit=CONFORMANCE_PROBE_MAX_STDOUT_BYTES,
             stderr_limit=CONFORMANCE_PROBE_MAX_STDERR_BYTES,
             timeout=CONFORMANCE_PROBE_TIMEOUT_SECONDS,
         )
-        # Wait for the subprocess to finish
-        proc.wait(timeout=5)
+        # Both streams reached EOF — wait for the process with the
+        # REMAINING budget from the original monotonic deadline.
+        # A fresh unconditional timeout would let an adapter escape
+        # the deadline merely by closing its streams before hanging.
+        remaining = CONFORMANCE_PROBE_TIMEOUT_SECONDS - (
+            time.monotonic() - conformance_start
+        )
+        if remaining <= 0:
+            _kill_and_reap(proc)
+            raise ValueError(
+                f"Conformance probe timed out after "
+                f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}"
+            )
+        try:
+            proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            _kill_and_reap(proc)
+            raise ValueError(
+                f"Conformance probe timed out after "
+                f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}"
+            )
     except subprocess.TimeoutExpired:
         _kill_and_reap(proc)
         raise ValueError(

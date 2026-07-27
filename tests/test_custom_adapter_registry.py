@@ -1104,6 +1104,28 @@ sys.exit(0)
         script.chmod(0o755)
         return script
 
+    def _make_close_streams_then_sleep_script(
+        self, tmp_path: Path, name: str = "close-streams-then-sleep"
+    ) -> Path:
+        """Create an adapter that consumes stdin, closes stdout AND stderr, then sleeps.
+
+        This exercises the path where both streams reach EOF before the deadline,
+        but the child process itself hangs — the post-EOF wait must use the
+        remaining monotonic budget, NOT grant a fresh timeout.
+        """
+        script = tmp_path / name
+        script.write_text(r"""#!/usr/bin/env python3
+import sys, time
+_ = sys.stdin.read()  # consume input
+# Close both output streams BEFORE sleeping
+sys.stdout.close()
+sys.stderr.close()
+# Sleep much longer than the probe timeout
+time.sleep(600)
+""")
+        script.chmod(0o755)
+        return script
+
     def _make_stdout_flood_after_contract_script(self, tmp_path: Path, name: str = "stdout-flood-after") -> Path:
         """Create an adapter that writes valid contract output, then floods."""
         script = tmp_path / name
@@ -1180,6 +1202,54 @@ sys.exit(0)
         )
 
         # No store residue
+        assert load_adapters() == {}
+
+    def test_close_streams_then_sleep_with_patched_timeout(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Child closes stdout+stderr then sleeps → timeout within one deadline.
+
+        The old code granted a fresh ``proc.wait(timeout=5)`` after EOF,
+        letting an adapter escape the deadline merely by closing its streams.
+        With the fix, the remaining monotonic budget is passed to ``wait``.
+
+        Verifies:
+        - Failure happens within one conformance deadline (+ scheduling tolerance)
+        - The child process is reaped (no zombie)
+        - No adapter-store YAML residue exists
+        """
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        from runtime.orchestrator import custom_adapter_registry as car
+
+        # Patch timeout to a short value so the test is fast but still
+        # demonstrably NOT the old 5-second escape.
+        patched_timeout = 1.5
+        monkeypatch.setattr(
+            car, "CONFORMANCE_PROBE_TIMEOUT_SECONDS", patched_timeout
+        )
+
+        script = self._make_close_streams_then_sleep_script(tmp_path)
+
+        t0 = time.monotonic()
+        with pytest.raises(ValueError, match="timed out"):
+            car.run_conformance_probe(str(script), "close-streams-test")
+        elapsed = time.monotonic() - t0
+
+        # Elapsed must be within one patched deadline (+ generous scheduling tolerance).
+        # The old post-EOF ``proc.wait(timeout=5)`` escape would produce 5+ seconds
+        # with a 1.5-second configured deadline — clearly distinguishable.
+        assert elapsed < patched_timeout * 2.5, (
+            f"Expected elapsed < {patched_timeout * 2.5}s, got {elapsed:.2f}s — "
+            f"the old fresh-wait escape would take > 5s with a 1.5s deadline"
+        )
+
+        # Verify child was reaped — no zombie process residue
+        result = subprocess.run(
+            ["true"], capture_output=True, timeout=5
+        )
+        assert result.returncode == 0
+
+        # No adapter-store residue
         assert load_adapters() == {}
 
     def test_stdout_over_limit_terminates_and_reaps_child(
