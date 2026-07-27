@@ -201,3 +201,95 @@ class GenericCliAdapter:
             model=model,
             usage_raw_json=usage_raw_json_val,
         )
+
+    @staticmethod
+    def validate_strict(stdout: str) -> str | None:
+        """Validate that stdout contains a valid v1 result-envelope (D7A).
+
+        Used as the ``strict_envelope_validator`` callback in
+        ``_run_command`` for custom CLI profiles with
+        ``envelope_policy="strict"``.
+
+        Returns:
+            ``None`` when stdout contains a valid v1 envelope.
+            An error message string (suitable for ``ExecutorResult.error``)
+            when the envelope is missing, malformed, has an incorrect
+            ``envelope_version``, or otherwise fails validation.
+
+        The error message includes actionable remediation guidance:
+        re-register after verifying the CLI emits a valid envelope.
+        """
+        _REMEDIATION = (
+            "Re-register the profile after verifying the CLI emits "
+            "a valid __HR_ENVELOPE_BEGIN__/__HR_ENVELOPE_END__ block "
+            "on stdout with envelope_version=1 (integer). "
+            "To restore legacy optional-envelope behavior, revert to "
+            "a stored profile entry without envelope_policy."
+        )
+
+        if not stdout or not stdout.strip():
+            return (
+                f"Strict envelope policy violation: stdout is empty. "
+                f"Profile requires mandatory v1 result-envelope (D7A). "
+                f"{_REMEDIATION}"
+            )
+
+        # Find the last envelope occurrence (rfind — same as parse_output).
+        begin_pos = stdout.rfind(_HR_ENVELOPE_BEGIN)
+        if begin_pos == -1:
+            return (
+                f"Strict envelope policy violation: no "
+                f"{_HR_ENVELOPE_BEGIN} sentinel found in stdout. "
+                f"Profile requires mandatory v1 result-envelope (D7A). "
+                f"{_REMEDIATION}"
+            )
+
+        end_pos = stdout.find(
+            _HR_ENVELOPE_END, begin_pos + len(_HR_ENVELOPE_BEGIN)
+        )
+        if end_pos == -1:
+            return (
+                f"Strict envelope policy violation: missing "
+                f"{_HR_ENVELOPE_END} sentinel after "
+                f"{_HR_ENVELOPE_BEGIN}. "
+                f"Profile requires mandatory v1 result-envelope (D7A). "
+                f"{_REMEDIATION}"
+            )
+
+        block = stdout[begin_pos + len(_HR_ENVELOPE_BEGIN) : end_pos].strip()
+        if not block:
+            return (
+                f"Strict envelope policy violation: envelope block is empty. "
+                f"Profile requires mandatory v1 result-envelope (D7A). "
+                f"{_REMEDIATION}"
+            )
+
+        try:
+            obj = json.loads(block)
+        except json.JSONDecodeError as exc:
+            return (
+                f"Strict envelope policy violation: envelope is not valid JSON. "
+                f"{exc}. "
+                f"Profile requires mandatory v1 result-envelope (D7A). "
+                f"{_REMEDIATION}"
+            )
+
+        if not isinstance(obj, dict):
+            return (
+                f"Strict envelope policy violation: envelope content must be a "
+                f"JSON object, got {type(obj).__name__}. "
+                f"Profile requires mandatory v1 result-envelope (D7A). "
+                f"{_REMEDIATION}"
+            )
+
+        version = obj.get("envelope_version")
+        if not isinstance(version, int) or isinstance(version, bool) or version != 1:
+            return (
+                f"Strict envelope policy violation: envelope_version must be "
+                f"integer 1, got {version!r} (type {type(version).__name__}). "
+                f"Profile requires mandatory v1 result-envelope (D7A). "
+                f"{_REMEDIATION}"
+            )
+
+        # Valid v1 envelope.
+        return None

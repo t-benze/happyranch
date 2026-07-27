@@ -49,6 +49,7 @@ describe('runtime-executors api', () => {
           command_adapter: 'generic-cli',
           present: true,
           path: '/usr/local/bin/openclaw',
+          envelope_policy: null,
         },
         {
           name: 'legacy-runner',
@@ -60,6 +61,7 @@ describe('runtime-executors api', () => {
           command_adapter: 'generic-cli',
           present: false,
           path: null,
+          envelope_policy: null,
         },
       ],
     } satisfies import('./runtime-executors').RuntimeProfileList;
@@ -95,6 +97,7 @@ describe('runtime-executors api', () => {
       command_adapter: 'generic-cli',
       present: true,
       path: '/usr/bin/test-cli',
+      envelope_policy: null,
     };
     expect(entry.workspace_adapter_id).toBe('claude');
     expect(entry.command_adapter_id).toBe('generic-cli');

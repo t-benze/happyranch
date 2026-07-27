@@ -27,8 +27,20 @@ can run on different executors in the same org.
 by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
 ``__HR_ENVELOPE_BEGIN__`` and ``__HR_ENVELOPE_END__``. The daemon parses the
 envelope via a generic best-effort parser (``_parse_generic_cli_usage`` in
-``runtime/orchestrator/executors.py``). The envelope is optional — absence
-preserves existing behavior (no token accounting). The envelope schema maps 1:1 to
+``runtime/orchestrator/executors.py``).
+
+**D7A strict enforcement (2026-07-27):** new custom-CLI registrations and
+re-registrations durably record ``envelope_policy: "strict"`` and enforce
+mandatory v1 envelope compliance at the ``GenericCliExecutor`` launch/result
+seam. A strict profile whose stdout lacks a valid v1 envelope returns a
+deterministic failed ``ExecutorResult`` with actionable re-registration/verification
+guidance (tails preserved, forensic accounting intact). Existing stored profiles
+without the ``envelope_policy`` field are LEGACY COMPATIBILITY entries with
+unchanged optional-envelope behavior. The envelope is **optional for legacy
+entries, mandatory for strict entries** — absence preserves legacy behavior
+(no token accounting) for legacy profiles; strict profiles fail closed.
+
+The envelope schema maps 1:1 to
 the ``TokenUsage`` model (``runtime/models.py:302``) with identical key names.
 Token-accounting invariants (``total`` excludes cache reads, nullable tolerance,
 model-null backfill to provider label) apply uniformly to envelope-reported tokens.

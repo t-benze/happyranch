@@ -609,6 +609,7 @@ def _run_command(
     provider: str = "claude",
     on_throttle_event: "OnThrottleEvent | None" = None,
     error_parser: Callable[[str, str], "str | None"] | None = None,
+    strict_envelope_validator: Callable[[str], "str | None"] | None = None,
 ) -> ExecutorResult:
     """Run one agent subprocess under the per-provider throttle (issue #85).
 
@@ -710,6 +711,32 @@ def _run_command(
             except Exception as exc:  # parser must never break the task
                 logger.warning("session-id parser raised: %s", exc)
                 agent_session_id = None
+
+        # ── D7A strict envelope enforcement (post-parse gate) ─────────
+        # Runs AFTER the usage parser so forensic token data is already
+        # captured. A non-None return value is the failure reason string;
+        # None means the envelope is valid (or this validator isn't active).
+        if strict_envelope_validator is not None:
+            try:
+                violation = strict_envelope_validator(full_stdout)
+            except Exception as exc:
+                logger.warning("strict-envelope validator raised: %s", exc)
+                violation = f"Strict envelope validation error: {exc}"
+            if violation is not None:
+                # Envelope violation — fail closed with preserved tails
+                # and actionable remediation in the error message.
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    returncode=proc.returncode,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=violation,
+                    rate_limited=rate_limited,
+                )
+        # ── end D7A strict enforcement ───────────────────────────────
+
         return ExecutorResult(
             success=True,
             duration_seconds=int(time.monotonic() - start_time),
@@ -1128,6 +1155,14 @@ class GenericCliExecutor:
 
     The session-lifetime preamble is prepended to the prompt before
     substitution, same as every other executor.
+
+    ``envelope_policy`` (D7A) controls result-envelope enforcement:
+    - ``None`` (default): legacy compatibility — the v1 envelope is
+      optional and absence preserves pre-D7A behavior.
+    - ``"strict"``: mandatory v1 enforcement — a missing, malformed,
+      invalid-version, or absent envelope fails closed with a
+      deterministic error message including re-registration/verification
+      guidance.
     """
 
     def __init__(
@@ -1136,10 +1171,12 @@ class GenericCliExecutor:
         profile_name: str,
         argv_template: list[str],
         provider: str,
+        envelope_policy: str | None = None,
     ) -> None:
         self._profile_name = profile_name
         self._argv_template = list(argv_template)
         self._provider = provider
+        self._envelope_policy = envelope_policy
 
     def run(
         self,
@@ -1162,6 +1199,18 @@ class GenericCliExecutor:
             timeout_seconds=timeout_seconds,
             resolve_binary=_resolve_binary(self._argv_template[0]),
         )
+
+        # ── D7A strict envelope enforcement ─────────────────────────
+        # When envelope_policy is "strict", add a post-launch validator
+        # that checks stdout for a valid v1 envelope. The validator runs
+        # inside _run_command with access to the full stdout (not just
+        # the tail), so it can detect all failure modes: missing markers,
+        # malformed JSON, missing/incorrect envelope_version, non-dict
+        # content, etc.
+        strict_validator = None
+        if self._envelope_policy == "strict":
+            strict_validator = GenericCliAdapter.validate_strict
+
         return _run_command(
             cmd,
             workspace,
@@ -1171,6 +1220,7 @@ class GenericCliExecutor:
             usage_parser=_parse_generic_cli_usage,
             provider=self._provider,
             on_throttle_event=on_throttle_event,
+            strict_envelope_validator=strict_validator,
         )
 
 

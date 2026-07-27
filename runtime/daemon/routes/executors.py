@@ -152,6 +152,78 @@ def _audit_runtime_removal(
 # ---------------------------------------------------------------------------
 
 
+def _rollback_runtime_profile(
+    name: str,
+    before_durable_snapshot: dict,
+    before_registry_profile: ExecutorProfile | None,
+) -> None:
+    """Compensating rollback: restore durable store and active registry.
+
+    D7A rollback seam (TASK-3567): after a durable write + atomic replacement
+    succeed but the subsequent audit step fails, this helper restores both the
+    durable runtime store and the active in-memory registry to their exact
+    pre-request state.  No audit row, temp file, or registry residue.
+
+    Args:
+        name: the profile name being registered.
+        before_durable_snapshot: the full ``load_runtime_profiles()`` dict
+            captured BEFORE the durable write.
+        before_registry_profile: the ``ExecutorProfile`` obtained from
+            ``registry.get_profile(name)`` BEFORE the atomic replacement,
+            or None when the profile did not exist (first-time registration).
+    """
+    # Restore durable store: either overwrite with the saved entry or remove
+    # the profile entirely if it was not present before the request.
+    if name in before_durable_snapshot:
+        save_runtime_profile(name, before_durable_snapshot[name])
+    else:
+        remove_runtime_profile(name)
+
+    # Restore active in-memory registry: replace with the saved profile or
+    # unregister if it was absent.
+    registry = get_registry()
+    if before_registry_profile is not None:
+        registry.replace_custom_profile(before_registry_profile)
+    else:
+        registry.unregister_custom_profile(name)
+
+
+def _allow_legacy_to_strict_replacement(
+    existing: ExecutorProfile,
+    candidate: ExecutorProfile,
+) -> bool:
+    """Authorize re-registration when the ONLY difference is legacy→strict policy.
+
+    Founder-authorized transition (TASK-3552 / TASK-3549 review HIGH blocker):
+    allow re-registration iff existing and candidate are identical in every
+    material behavior/identity field except existing ``envelope_policy`` is
+    ``None`` and candidate ``envelope_policy`` is exactly ``"strict"``.
+
+    Does NOT permit: changed command/argv/workspace adapter/command adapter/
+    aliases, strict downgrade (strict→None), strict mismatch (different
+    values), built-in override, or broad profile overwrite.
+
+    The deprecated D6 alias fields (``adapter_id``, ``command_adapter``)
+    are checked only via the canonical fields since ``ExecutorProfile.__post_init__``
+    enforces their consistency.
+    """
+    if existing.envelope_policy is not None:
+        return False
+    if candidate.envelope_policy != "strict":
+        return False
+    # Compare all material behavior/identity fields except envelope_policy.
+    return (
+        existing.name == candidate.name
+        and existing.kind == candidate.kind
+        and existing.workspace_adapter_id == candidate.workspace_adapter_id
+        and existing.command_adapter_id == candidate.command_adapter_id
+        and existing.readiness_marker_fragment == candidate.readiness_marker_fragment
+        and existing.argv_template == candidate.argv_template
+        and existing.command == candidate.command
+        and existing.model_arg == candidate.model_arg
+    )
+
+
 def _extract_token(request: Request) -> str:
     """Extract the Bearer token plaintext from the Authorization header.
 
@@ -266,6 +338,16 @@ class ExecutorRegisterResponse(BaseModel):
     )
     command: str
     argv_template: list[str]
+    # D7A envelope enforcement
+    envelope_policy: str | None = Field(
+        None,
+        description=(
+            "Result-envelope enforcement posture (D7A). "
+            "'strict' = mandatory v1 envelope enforcement; "
+            "null = legacy compatibility (optional envelope). "
+            "New registrations always receive 'strict'."
+        ),
+    )
 
 
 # Allowed token_usage keys — must match TokenUsage field names
@@ -542,6 +624,9 @@ def register_executor(
     # Omitted default None is not an explicit supply.
     if "command_adapter" in body.model_fields_set and body.command_adapter is not None:
         config_cfg["command_adapter"] = body.command_adapter
+    # D7A: new registrations and re-registrations always receive
+    #      envelope_policy: "strict" in the active in-memory profile.
+    config_cfg["envelope_policy"] = "strict"
     try:
         candidate = ExecutorRegistry.validate_custom_profile_config(
             profile_name, config_cfg
@@ -571,9 +656,12 @@ def register_executor(
                         "detail": f"Cannot override built-in executor {profile_name!r}.",
                     },
                 )
-            # Custom collision — only reject if the definition differs.
+            # Custom collision — only reject if the definition differs AND
+            # it is NOT an authorized legacy→strict transition (TASK-3552).
             # Identical definitions pass through (idempotent re-registration).
-            if existing != candidate:
+            if existing != candidate and not _allow_legacy_to_strict_replacement(
+                existing, candidate
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Custom executor profile {profile_name!r} is already "
@@ -617,16 +705,22 @@ def register_executor(
         if registry.is_registered(profile_name):
             existing_inside = registry.get_profile(profile_name)
             if existing_inside is not None and existing_inside != candidate:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Custom executor profile {profile_name!r} is already "
-                    f"registered with a different definition.",
-                )
+                # Authorized legacy→strict transition (TASK-3552): allow,
+                # but only when it is materially the same profile.
+                if not _allow_legacy_to_strict_replacement(
+                    existing_inside, candidate
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Custom executor profile {profile_name!r} is already "
+                        f"registered with a different definition.",
+                    )
 
         # 8. Durable: write the machine-global runtime store (THR-107 —
         #    the per-org config.yaml executor_profiles surface is removed).
         #    D6: persist resolved canonical identity + matching compatibility
         #    aliases so canonical-only registrations survive restart/reload.
+        #    D7A: new registrations always receive envelope_policy: "strict".
         config_entry: dict[str, object] = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
@@ -637,7 +731,18 @@ def register_executor(
         if candidate.command_adapter_id is not None:
             config_entry["command_adapter_id"] = candidate.command_adapter_id
             config_entry["command_adapter"] = candidate.command_adapter_id
-        before_snapshot = dict(load_runtime_profiles())
+        # D7A: new/re-registered profiles always get strict enforcement.
+        # The stored envelope_policy reflects what was written — for new
+        # registrations that's always "strict" (no user choice).
+        config_entry["envelope_policy"] = "strict"
+        # Capture pre-request state for compensating rollback (TASK-3567).
+        # When the durable write and atomic replacement succeed but a
+        # subsequent audit step fails, this snapshot allows us to restore
+        # the exact pre-request state — no durable/registry/audit/token residue.
+        before_durable_snapshot = dict(load_runtime_profiles())
+        before_registry_profile = registry.get_profile(profile_name)
+        durable_committed = False
+
         try:
             save_runtime_profile(profile_name, config_entry)
         except Exception as exc:
@@ -647,18 +752,24 @@ def register_executor(
             )
 
         # 9. In-memory: register the profile in the process-wide registry.
+        #    D7A atomic-replacement seam (TASK-3558): use replace_custom_profile
+        #    to atomically swap the legacy profile for the strict definition
+        #    in a single dict assignment.  Concurrent readers (build_executor,
+        #    get_profile) observe either the complete legacy profile or the
+        #    complete strict profile — never absent.
+        #    For authorized legacy→strict replacement the replace is always
+        #    applied (the double-check already confirmed the transition is
+        #    authorized); for idempotent same-profile re-registration it is
+        #    a no-op; for first-time registration, replace_custom_profile
+        #    registers fresh.
         try:
-            registry.register_custom_profile(candidate)
-        except ExecutorProfileCollisionError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Profile collision: {exc}",
-            )
+            registry.replace_custom_profile(candidate)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             )
+        durable_committed = True
 
         # 10. Audit the write. THR-107: the durable write went to the
         #     machine-global runtime store, so the before/after snapshots
@@ -671,11 +782,20 @@ def register_executor(
         logger.log_org_config_write(
             section="executor_profiles",
             tiers=[profile_name],
-            before=before_snapshot,
+            before=before_durable_snapshot,
             after=after_snapshot,
             actor="founder",
         )
     except BaseException:
+        if durable_committed:
+            # D7A compensating rollback (TASK-3567): the durable write and
+            # atomic registry replacement succeeded but a subsequent step
+            # (audit) failed.  Restore the exact pre-request durable and
+            # active-registry state so no strict/residue state leaks out
+            # and the client sees a consistent failure.
+            _rollback_runtime_profile(
+                profile_name, before_durable_snapshot, before_registry_profile,
+            )
         # Release reservation on ANY failure so the token stays valid
         # for retry within its unexpired TTL.
         store.release(token_value, slug)
@@ -697,6 +817,8 @@ def register_executor(
         command_adapter=candidate.command_adapter_id,
         command=body.command,
         argv_template=[str(e) for e in body.argv_template],
+        # D7A: new registrations always strict
+        envelope_policy="strict",
     )
 
 
@@ -856,6 +978,9 @@ def runtime_register_executor(
     # Omitted default None is not an explicit supply.
     if "command_adapter" in body.model_fields_set and body.command_adapter is not None:
         config_cfg["command_adapter"] = body.command_adapter
+    # D7A: new registrations and re-registrations always receive
+    #      envelope_policy: "strict" in the active in-memory profile.
+    config_cfg["envelope_policy"] = "strict"
     try:
         candidate = ExecutorRegistry.validate_custom_profile_config(
             profile_name, config_cfg
@@ -880,7 +1005,9 @@ def runtime_register_executor(
                         "detail": f"Cannot override built-in executor {profile_name!r}.",
                     },
                 )
-            if existing != candidate:
+            if existing != candidate and not _allow_legacy_to_strict_replacement(
+                existing, candidate
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Custom executor profile {profile_name!r} is already "
@@ -902,15 +1029,21 @@ def runtime_register_executor(
         if registry.is_registered(profile_name):
             existing_inside = registry.get_profile(profile_name)
             if existing_inside is not None and existing_inside != candidate:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Custom executor profile {profile_name!r} is already "
-                    f"registered with a different definition.",
-                )
+                # Authorized legacy→strict transition (TASK-3552): allow,
+                # but only when it is materially the same profile.
+                if not _allow_legacy_to_strict_replacement(
+                    existing_inside, candidate
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Custom executor profile {profile_name!r} is already "
+                        f"registered with a different definition.",
+                    )
 
         # 7. Durable: write runtime store
         #    D6: persist resolved canonical identity + matching compatibility
         #    aliases so canonical-only registrations survive restart/reload.
+        #    D7A: new registrations always receive envelope_policy: "strict".
         config_entry: dict[str, object] = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
@@ -921,6 +1054,13 @@ def runtime_register_executor(
         if candidate.command_adapter_id is not None:
             config_entry["command_adapter_id"] = candidate.command_adapter_id
             config_entry["command_adapter"] = candidate.command_adapter_id
+        # D7A: new/re-registered profiles always get strict enforcement
+        config_entry["envelope_policy"] = "strict"
+        # Capture pre-request state for compensating rollback (TASK-3567).
+        before_durable_snapshot = dict(load_runtime_profiles())
+        before_registry_profile = registry.get_profile(profile_name)
+        durable_committed = False
+
         try:
             save_runtime_profile(profile_name, config_entry)
         except Exception as exc:
@@ -929,23 +1069,26 @@ def runtime_register_executor(
                 detail=f"Runtime profile write error: {exc}",
             )
 
-        # 8. In-memory: register the profile
+        # 8. In-memory: register the profile in the process-wide registry.
+        #    D7A atomic-replacement seam (TASK-3558): use replace_custom_profile
+        #    to atomically swap the legacy profile for the strict definition
+        #    in a single dict assignment.  Concurrent readers (build_executor,
+        #    get_profile) observe either the complete legacy profile or the
+        #    complete strict profile — never absent.
+        #    For authorized legacy→strict replacement the replace is always
+        #    applied (the double-check already confirmed the transition is
+        #    authorized); for idempotent same-profile re-registration it is
+        #    a no-op; for first-time registration, replace_custom_profile
+        #    registers fresh.
         try:
-            registry.register_custom_profile(candidate)
-        except ExecutorProfileCollisionError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Profile collision: {exc}",
-            )
+            registry.replace_custom_profile(candidate)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             )
-    except BaseException:
-        store.release_runtime(token_value)
-        raise
-    else:
+        durable_committed = True
+
         # 9. Audit the successful runtime-level registration.
         #    Runtime-level registration is org-agnostic, so audit
         #    rows go to a dedicated runtime-audit.db (co-located
@@ -957,6 +1100,19 @@ def runtime_register_executor(
             argv_template=body.argv_template,
             adapter=candidate.workspace_adapter_id,
         )
+    except BaseException:
+        if durable_committed:
+            # D7A compensating rollback (TASK-3567): the durable write and
+            # atomic registry replacement succeeded but a subsequent step
+            # (audit) failed.  Restore the exact pre-request durable and
+            # active-registry state so no strict/residue state leaks out
+            # and the client sees a consistent failure.
+            _rollback_runtime_profile(
+                profile_name, before_durable_snapshot, before_registry_profile,
+            )
+        store.release_runtime(token_value)
+        raise
+    else:
         store.commit_runtime(token_value)
     finally:
         profile_lock.release()
@@ -972,6 +1128,8 @@ def runtime_register_executor(
         command_adapter=candidate.command_adapter_id,
         command=body.command,
         argv_template=[str(e) for e in body.argv_template],
+        # D7A: new registrations always strict
+        envelope_policy="strict",
     )
 
 
@@ -1138,6 +1296,16 @@ class RuntimeProfileEntry(BaseModel):
     path: str | None = Field(
         None, description="The resolved absolute path when present, else None"
     )
+    # D7A envelope enforcement
+    envelope_policy: str | None = Field(
+        None,
+        description=(
+            "Result-envelope enforcement posture (D7A). "
+            "'strict' = mandatory v1 envelope enforcement; "
+            "null = legacy compatibility (optional envelope). "
+            "Truthfully reflects the stored profile definition."
+        ),
+    )
 
 
 class RuntimeProfileList(BaseModel):
@@ -1214,6 +1382,14 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
                 adapter_id_val = entry.get("adapter_id")
                 if isinstance(adapter_id_val, str):
                     resolved_adapter = adapter_id_val
+        # D7A: truthfully report envelope_policy from the stored definition.
+        # null = legacy compatibility; "strict" = mandatory v1 enforcement.
+        stored_policy = entry.get("envelope_policy")
+        if isinstance(stored_policy, str):
+            envelope_policy = stored_policy
+        else:
+            envelope_policy = None
+
         entries.append(RuntimeProfileEntry(
             name=name,
             command=command if isinstance(command, str) else None,
@@ -1226,6 +1402,8 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
             command_adapter=resolved_command_adapter,
             present=present,
             path=path,
+            # D7A
+            envelope_policy=envelope_policy,
         ))
     return RuntimeProfileList(profiles=entries)
 
