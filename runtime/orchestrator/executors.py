@@ -273,13 +273,15 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
     the structured reason so dream-runner failures carry a classified reason
     instead of incidental stderr noise.
 
-    Only valid *terminal* failure envelopes are parsed:
-    ``{"type": "result", "subtype": "error_*", ...}``  — a documented
-    Claude terminal result event with an error subtype.  Non-terminal
-    events (progress, user, ...), ``subtype: success``, and arbitrary
-    generic ``error`` / ``errors`` objects without a terminal result
-    envelope are NOT parsed — those return None so the compatible
-    stderr-first error fallback wins.
+    Only the single documented in-repo terminal failure envelope shape is
+    validated: ``{"type": "result", "subtype": "error_*", "is_error": true,
+    ...}`` (tests/test_headless_assistant.py CLAUDE_RESULT_ERROR fixture).
+    Non-terminal events (progress, user, ...), ``subtype: success``,
+    missing ``is_error: true``, and arbitrary generic ``error`` / ``errors``
+    objects without a terminal result envelope are NOT parsed — those return
+    None so the compatible stderr-first error fallback wins.  Unsupported /
+    ambiguous ``error_*`` subtypes with no recognised error signal also
+    return None; no generic ``claude_<suffix>`` reasons are fabricated.
 
     Returns a classified reason string like ``session_limit`` or
     ``transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR``, or None
@@ -305,7 +307,12 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
     if not isinstance(subtype, str) or not subtype.startswith("error_"):
         return None
 
-    err_kind = subtype[len("error_"):]  # e.g. max_turns, during_execution
+    # Require is_error: true — the documented terminal failure envelope
+    # (CLAUDE_RESULT_ERROR in test_headless_assistant.py) carries this
+    # marker.  Envelopes without it are incomplete and fall back to the
+    # raw error.
+    if obj.get("is_error") is not True:
+        return None
 
     # ── Inspect result / errors for known terminal classifications ──
     result = obj.get("result")
@@ -315,8 +322,6 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
             return "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
         if "session" in result_lower and ("limit" in result_lower or "max" in result_lower):
             return "session_limit"
-        if "rate" in result_lower and "limit" in result_lower:
-            return "rate_limit"
 
     errors = obj.get("errors")
     if isinstance(errors, list):
@@ -329,10 +334,9 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
                 if "session" in msg_lower and "limit" in msg_lower:
                     return "session_limit"
 
-    # ── Fall back to subtype-based classification ──
-    if err_kind in ("max_turns",) or "session" in err_kind.lower():
-        return "session_limit"
-    return f"claude_{err_kind}"
+    # Unrecognized / ambiguous error content → no classified reason;
+    # the existing stderr-first error fallback wins.
+    return None
 
 
 def _parse_codex_usage(stdout: str) -> TokenUsage | None:

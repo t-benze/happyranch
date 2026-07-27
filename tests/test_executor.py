@@ -1053,10 +1053,11 @@ def test_pi_model_omitted_when_unset(mock_subprocess, tmp_path):
 
 
 def test_parse_claude_terminal_error_session_limit():
-    """Claude --output-format json with error_max_turns subtype → session_limit."""
+    """type:result + error_max_turns + is_error:true with session-limit
+    content → session_limit (valid documented terminal envelope)."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
-    stdout = '{"type":"result","subtype":"error_max_turns","result":"Session limit reached"}'
+    stdout = '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"Session limit reached"}'
     reason = _parse_claude_terminal_error(stdout, "Workspace trust warning\n")
     assert reason == "session_limit"
 
@@ -1081,13 +1082,14 @@ def test_parse_claude_terminal_error_certificate_from_result_field():
     assert reason is None
 
 
-def test_parse_claude_terminal_error_generic_error_subtype():
-    """Type=result with error_during_execution → claude_<subtype>."""
+def test_parse_claude_terminal_error_generic_error_subtype_without_is_error():
+    """type:result + error_during_execution WITHOUT is_error:true → None
+    (missing the required terminal marker)."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
     stdout = '{"type":"result","subtype":"error_during_execution","result":"Tool error"}'
     reason = _parse_claude_terminal_error(stdout, "")
-    assert reason == "claude_during_execution"
+    assert reason is None
 
 
 def test_parse_claude_terminal_error_success_ignored():
@@ -1166,43 +1168,63 @@ def test_parse_claude_terminal_error_progress_type_with_error_object():
 
 
 def test_parse_claude_terminal_error_certificate_via_error_subtype_result():
-    """type:result + subtype:error_during_execution with certificate
+    """type:result + subtype:error_during_execution + is_error:true with certificate
     result text → transport_error (valid terminal error envelope)."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
-    stdout = '{"type":"result","subtype":"error_during_execution","result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}'
+    stdout = '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}'
     reason = _parse_claude_terminal_error(stdout, "unrelated workspace trust warning\n")
     assert reason == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
 
 
 def test_parse_claude_terminal_error_certificate_via_error_subtype_errors():
-    """type:result + subtype:error_during_execution with errors array
+    """type:result + subtype:error_during_execution + is_error:true with errors array
     containing certificate → transport_error (valid terminal error)."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
-    stdout = '{"type":"result","subtype":"error_during_execution","errors":[{"message":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"}]}'
+    stdout = '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":[{"message":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"}]}'
     reason = _parse_claude_terminal_error(stdout, "")
     assert reason == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
 
 
 def test_parse_claude_terminal_error_session_limit_via_error_subtype_result():
-    """type:result + subtype:error_during_execution with session-limit
+    """type:result + subtype:error_during_execution + is_error:true with session-limit
     result text → session_limit (valid terminal error envelope)."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
-    stdout = '{"type":"result","subtype":"error_during_execution","result":"Error: session limit exceeded"}'
+    stdout = '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Error: session limit exceeded"}'
     reason = _parse_claude_terminal_error(stdout, "")
     assert reason == "session_limit"
 
 
-def test_parse_claude_terminal_error_unknown_error_subtype_fallback():
-    """type:result + unrecognized error_* subtype with no known patterns
-    → generic claude_<subtype> fallback."""
+def test_parse_claude_terminal_error_unknown_error_subtype_returns_none():
+    """type:result + error_unknown + is_error:true with no recognised error
+    signal → None (no fabricated claude_<suffix> reason)."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
-    stdout = '{"type":"result","subtype":"error_unknown","result":"something went wrong"}'
+    stdout = '{"type":"result","subtype":"error_unknown","is_error":true,"result":"something went wrong"}'
     reason = _parse_claude_terminal_error(stdout, "")
-    assert reason == "claude_unknown"
+    assert reason is None
+
+
+def test_parse_claude_terminal_error_lookalike_subtype_returns_none():
+    """type:result + error_lookalike + is_error:true with no recognised error
+    signal → None (no fabricated claude_<suffix> reason)."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = '{"type":"result","subtype":"error_lookalike","is_error":true,"result":"irrelevant"}'
+    reason = _parse_claude_terminal_error(stdout, "")
+    assert reason is None
+
+
+def test_parse_claude_terminal_error_lookalike_without_is_error_returns_none():
+    """type:result + error_lookalike WITHOUT is_error:true → None
+    (missing the required terminal marker)."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = '{"type":"result","subtype":"error_lookalike","result":"irrelevant"}'
+    reason = _parse_claude_terminal_error(stdout, "")
+    assert reason is None
 
 
 # ── THR-116: _run_command error_parser integration ────────────────────
@@ -1358,7 +1380,7 @@ def test_claude_executor_session_limit_terminal_error(mock_subprocess, tmp_path,
 
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
-        stdout='{"type":"result","subtype":"error_max_turns","result":"Session limit reached"}',
+        stdout='{"type":"result","subtype":"error_max_turns","is_error":true,"result":"Session limit reached"}',
         stderr="Workspace trust warning: untrusted directory\n",
     )
 
@@ -1392,7 +1414,7 @@ def test_claude_executor_certificate_terminal_error(mock_subprocess, tmp_path, r
 
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
-        stdout='{"type":"result","subtype":"error_during_execution",'
+        stdout='{"type":"result","subtype":"error_during_execution","is_error":true,'
                '"result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}',
         stderr="Workspace trust warning: untrusted directory\n",
     )
@@ -1478,3 +1500,71 @@ def test_claude_executor_success_subtype_does_not_produce_terminal_error(
     # terminal failure — terminal_error must be None.
     assert result.success is False
     assert result.terminal_error is None
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_executor_error_lookalike_returns_none(
+    mock_subprocess, tmp_path, runtime,
+):
+    """Real-chain: mocked subprocess with {type:result, subtype:error_lookalike,
+    is_error:true, result: irrelevant} + unrelated stderr →
+    terminal_error is None (unsupported error subtype, no synthetic reason)."""
+    from runtime.config import Settings
+    from runtime.orchestrator.executors import ClaudeExecutor
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_lookalike","is_error":true,'
+               '"result":"some irrelevant message"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    executor = ClaudeExecutor(
+        claude_cli_path="claude", permission_mode="auto",
+        settings=Settings(), paths=runtime,
+    )
+    result = executor.run(
+        workspace=workspace, prompt="hello",
+        timeout_seconds=30, session_id="sess-test",
+    )
+
+    assert result.success is False
+    assert result.terminal_error is None
+    assert "Workspace trust warning" in result.error
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_executor_error_unknown_returns_none(
+    mock_subprocess, tmp_path, runtime,
+):
+    """Real-chain: mocked subprocess with {type:result, subtype:error_unknown,
+    is_error:true} + unrelated stderr →
+    terminal_error is None (unsupported error subtype, no synthetic reason)."""
+    from runtime.config import Settings
+    from runtime.orchestrator.executors import ClaudeExecutor
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=2,
+        stdout='{"type":"result","subtype":"error_unknown","is_error":true,'
+               '"result":"something went wrong"}',
+        stderr="fatal: something broke\n",
+    )
+
+    executor = ClaudeExecutor(
+        claude_cli_path="claude", permission_mode="auto",
+        settings=Settings(), paths=runtime,
+    )
+    result = executor.run(
+        workspace=workspace, prompt="hello",
+        timeout_seconds=30, session_id="sess-test",
+    )
+
+    assert result.success is False
+    assert result.terminal_error is None
+    assert "Command exited with code 2" in result.error

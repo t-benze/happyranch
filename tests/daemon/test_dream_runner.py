@@ -367,7 +367,7 @@ async def test_run_dream_real_chain_session_limit(
 
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
-        stdout='{"type":"result","subtype":"error_max_turns",'
+        stdout='{"type":"result","subtype":"error_max_turns","is_error":true,'
                '"result":"Session limit reached"}',
         stderr="Workspace trust warning: untrusted directory\n",
     )
@@ -406,7 +406,7 @@ async def test_run_dream_real_chain_certificate_error(
 
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
-        stdout='{"type":"result","subtype":"error_during_execution",'
+        stdout='{"type":"result","subtype":"error_during_execution","is_error":true,'
                '"result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}',
         stderr="Workspace trust warning: untrusted directory\n",
     )
@@ -499,3 +499,87 @@ async def test_run_dream_real_chain_subtype_success_no_terminal_error(
     assert "certificate" not in dream.error.lower() or "session" not in dream.error.lower()
     actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
     assert actions[-1]["action"] == "dream_failed"
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_error_lookalike_falls_back_to_raw(
+    mock_subprocess, org_state,
+):
+    """Real-chain (error_lookalike): mocked subprocess produces
+    {type:result, subtype:error_lookalike, is_error:true, result: irrelevant}
+    + unrelated workspace-trust stderr → ClaudeExecutor → run_dream →
+    dream.error == dream_failed.payload.reason == raw stderr-first fallback
+    (NOT a synthetic terminal reason)."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_lookalike","is_error":true,'
+               '"result":"some irrelevant message"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    # error_lookalike is unsupported → raw stderr-first fallback, no
+    # synthetic terminal reason.
+    assert "Command exited with code 1" in dream.error
+    assert "Workspace trust warning" in dream.error
+    assert dream.error != "claude_lookalike"
+    assert "session_limit" not in dream.error
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == dream.error
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_error_unknown_falls_back_to_raw(
+    mock_subprocess, org_state,
+):
+    """Real-chain (error_unknown): mocked subprocess produces
+    {type:result, subtype:error_unknown, is_error:true, result: ...}
+    + unrelated workspace-trust stderr → ClaudeExecutor → run_dream →
+    dream.error == dream_failed.payload.reason == raw stderr-first fallback
+    (NOT a synthetic terminal reason)."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=2,
+        stdout='{"type":"result","subtype":"error_unknown","is_error":true,'
+               '"result":"something went wrong"}',
+        stderr="fatal: something broke\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    # error_unknown is unsupported → raw stderr-first fallback, no
+    # synthetic terminal reason.
+    assert "Command exited with code 2" in dream.error
+    assert "fatal: something broke" in dream.error
+    assert dream.error != "claude_unknown"
+    assert "session_limit" not in dream.error
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == dream.error
