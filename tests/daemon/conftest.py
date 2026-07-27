@@ -57,7 +57,7 @@ def org_state(daemon_state: DaemonState) -> OrgState:
 
 
 @pytest.fixture
-def app(daemon_state: DaemonState):
+def app(tmp_home: Path, daemon_state: DaemonState):
     return create_app(daemon_state)
 
 
