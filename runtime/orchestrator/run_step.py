@@ -1803,19 +1803,26 @@ def _enqueue_parent_if_waiting(
     """Idempotent: advance the parent only if it's actually waiting on THIS
     lineage (in_progress+delegated) AND all its children are now terminal.
 
-    Three outcomes (TASK-573 bounded failure-recovery):
+    Per-slice revisit-lineage rule (THR-078, TASK-573 bounded failure-recovery):
       - every subtask COMPLETED → enqueue parent for its next manager
         decision step (unchanged happy path).
-      - a subtask FAILED, but fewer than 2 prior failed subtasks exist in
-        this delegation slot → clear any active chain, enqueue the parent
-        for a bounded manager-wake decision step. The parent receives the
-        failed subtask's reason so it can author an updated brief.
-      - a subtask FAILED and 2+ prior failed subtasks already exist (bound
-        exhausted) → escalate the parent to escalated via
-        try_escalate, carrying the last failure reason. The parent does NOT
-        cascade-fail — the founder can resolve the escalation per existing
-        routes. The round count is derived from the count of FAILED subtask
-        siblings in the DB (no schema migration).
+      - a subtask FAILED, and no other failed child in this delegation
+        slot has exhausted its retry ceiling → clear any active chain,
+        enqueue the parent for a bounded manager-wake decision step. The
+        parent receives the failed subtask's reason so it can author an
+        updated brief.
+      - a subtask FAILED and its per-slice retry ceiling is exhausted
+        (this slice was already retried once — its ``revisit_of_task_id``
+        ancestor is a FAILED child of this same parent) → escalate a root
+        parent to ``escalated`` via ``try_escalate``, carrying the last
+        failure reason; or, for a non-root parent, fail it and recurse
+        upward (THR-033 root-only escalation). The parent does NOT
+        cascade-fail — the founder or upstream manager resolves the
+        termination per existing routes. The ceiling is
+        ``_SLICE_RETRY_CEILING = 1`` (exactly one retry after a slice's
+        first failure), evaluated per-slice via ``_is_slice_retry_exhausted``
+        from the failing child's ``revisit_of_task_id`` lineage (no schema
+        migration).
 
     ``root_auto_revisit_spawned`` is a retained compatibility/bookkeeping
     input. All current production callers (opaque-failure branches and
@@ -1826,9 +1833,9 @@ def _enqueue_parent_if_waiting(
     2026-05-25-session-timeout-auto-route-design.md §6 for historical context.
 
     Chain handling: a FAILED chain leg clears the active chain and falls
-    through to the bounded-wake logic (same round bound + escalation). A
-    COMPLETED chain leg tries to auto-advance as before; on mismatch it
-    clears the chain and wakes the parent.
+    through to the bounded-wake logic below. A COMPLETED chain leg tries
+    to auto-advance as before; on mismatch it clears the chain and wakes
+    the parent.
     """
     task = orch._db.get_task(task_id)
     if task is None or task.parent_task_id is None:
@@ -2215,38 +2222,44 @@ def _maybe_post_thread_followup(
 ) -> None:
     """Post a task-followup system message + mint a re-invocation for the dispatcher.
 
-    Fire predicate (spec §4, §4.1 — revised THR-046 msg99):
+    Fire predicate (spec §4, §4.1):
       - status == COMPLETED                                → always fire
       - status == SUPERSEDED                      → always fire (terminal,
                                                              completion-class — a
                                                              thread-originated task
                                                              auto-resolved by a
                                                              continuation; THR-018 §3a)
-      - status == FAILED and not auto_revisit_spawned      → true terminal, fire
-      - status == FAILED and auto_revisit_spawned          → fire system-message-only
-                                                             (carries revisit_task_id
-                                                             so the thread surface can
-                                                             render 'revisiting as
-                                                             <SUCCESSOR>'; dispatcher
-                                                             re-invocation is suppressed
-                                                             — the revisit successor
-                                                             will fire its own followup
-                                                             at its terminal)
+      - status == FAILED                                   → true terminal, fire
+                                                             (TASK-3604: daemon
+                                                             auto-revisit removed;
+                                                             all current production
+                                                             callers pass
+                                                             ``auto_revisit_spawned=False``)
 
-    Only root tasks fire. Child terminals cascade-fail through the parent,
-    which re-enters this helper there. The originating thread is found by
-    walking ``walk_revisit_chain`` backward to the earliest predecessor and
-    reading ``dispatched_from_thread_id`` off that row.
+    Only root tasks fire. Non-root child terminals wake the parent via
+    bounded recovery (``_enqueue_parent_if_waiting``) — the parent may
+    produce a followup at its own terminal, not via cascade. The originating
+    thread is found by walking ``walk_revisit_chain`` backward to the
+    earliest predecessor and reading ``dispatched_from_thread_id`` off that
+    row.
+
+    ``auto_revisit_spawned`` is a retained compatibility parameter.
+    Since TASK-3604 removed daemon auto-revisit creation, all current
+    production callers pass ``False``. The parameter and its conditional
+    ``reinvoke`` logic are preserved for compatibility with the
+    ``_append_followup_system_and_reinvoke`` contract; the
+    ``revisit_task_id`` path is historical and never populated by current
+    code paths.
 
     Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
     # Predicate gate — first pass using caller's claim (cheap early-out).
     # CANCELLED is a terminal followup status (Path B, THR-037): a founder cancel
     # writes the stored terminal CANCELLED and replays in the task_failed class.
-    # THR-046 msg99: FAILED+auto_revisit_spawned is no longer a no-op — the
-    # system message (with revisit_task_id) fires so the thread surface can
-    # render 'revisiting as <SUCCESSOR>', but the dispatcher re-invocation is
-    # suppressed (performed conditionally at the end).
+    # TASK-3604: daemon auto-revisit removed — all current production
+    # callers pass auto_revisit_spawned=False, so the system-message-only
+    # path with revisit_task_id is historical. The parameter and conditional
+    # are retained for compatibility with _append_followup_system_and_reinvoke.
     if status not in (
         TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SUPERSEDED,
         TaskStatus.CANCELLED,

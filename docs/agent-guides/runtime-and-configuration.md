@@ -302,25 +302,28 @@ decision step — NOT cascade-failed. This replaces the pre-TASK-573 behavior wh
 any subtask FAILED unconditionally cascade-failed the parent without giving the
 task owner a chance to re-ground.
 
-Contract (founder-approved in THR-028):
+Contract (founder-approved in THR-028, refined in THR-078):
 
-1. **Bounded wake.** On subtask failure, re-enqueue the parent for a fresh
+1. **Bounded wake.** On child failure, re-enqueue the parent for a fresh
    decision step. The failed subtask's reason (`note` + completion report /
    error context) is available so the task owner can author an updated brief.
 
-2. **Round bound.** At most 2 re-spawn rounds per delegation slot. The round
-   count is derived from EXISTING database state (count of FAILED subtask
-   siblings) — no schema migration, no new/alter/overload column.
+2. **Per-slice retry ceiling (THR-078).** A delegated slot gets exactly one
+   retry: the ceiling is `_SLICE_RETRY_CEILING = 1` — a slice whose
+   `revisit_of_task_id` ancestor (a FAILED child of the same parent) failed
+   again exhausts the ceiling. The ceiling is evaluated per-slice via
+   `_is_slice_retry_exhausted` from the failing child's `revisit_of_task_id`
+   lineage (no schema migration).
 
-3. **Escalation on exhaustion.** When the bound is exhausted (> 2 FAILED
-   subtasks in this delegation slot), the parent transitions to
-   `escalated` via `try_escalate()`, carrying the last failure
-   reason. The parent does NOT cascade-fail — the founder can resolve the
-   escalation per existing routes.
+3. **Escalation on exhaustion.** When a slice's retry ceiling is exhausted
+   (its 2nd failure), a root parent transitions to `escalated` via
+   `try_escalate()`; a non-root parent fails and recurses upward (THR-033
+   root-only escalation). The parent does NOT cascade-fail — the founder or
+   upstream manager resolves the termination per existing routes.
 
 4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
    COMPLETED) clears the active chain and hands the parent back to its
-   bounded-wake path (same 2-round bound + escalation).
+   bounded-wake path (same per-slice ceiling + escalation).
 
 5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
@@ -332,7 +335,7 @@ Contract (founder-approved in THR-028):
 
 Implementation: `runtime/orchestrator/run_step.py` —
 `_enqueue_parent_if_waiting`, `_advance_chain_for_completed_child`,
-`_FAILURE_ROUND_BOUND`. See also
+`_is_slice_retry_exhausted`, `_SLICE_RETRY_CEILING`. See also
 `docs/agent-guides/features-and-invariants.md#bounded-failure-recovery` and
 `docs/agent-guides/orchestrator-contracts.md`.
 
