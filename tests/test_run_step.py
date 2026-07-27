@@ -632,11 +632,13 @@ def test_run_step_opaque_failure_on_exception_no_auto_revisit(
     assert len(all_audit) == 0
 
 
-def test_run_step_auto_revisit_capped_at_two(
+def test_run_step_terminal_failed_no_successor_with_legacy_audit(
     runtime, db, monkeypatch,
 ):
-    """After 2 prior auto-revisits in the chain, no more are spawned —
-    the cascade still runs but the queue stays empty."""
+    """After 2 prior auto-revisits in the audit chain, opaque failure is
+    terminal FAILED with no successor spawned. The legacy audit entries
+    (auto_revisit_of) are readable but no new revisit is created.
+    Since TASK-3604, auto-revisit spawning is removed; the queue stays empty."""
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator
 
