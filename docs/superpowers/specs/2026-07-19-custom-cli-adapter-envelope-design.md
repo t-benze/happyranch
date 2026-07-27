@@ -1,12 +1,23 @@
 # Standard Daemon↔CLI Interface: Adapter Contract for Custom CLIs — Design Spike
 
-**THR-107** | **2026-07-19** | **DESIGN ONLY — no production code, no protocol/ edits, no implementation PR**
+**THR-107** | **2026-07-19** | **Phase 1 shipped; D7A strict-enforcement slice merged**
 
 > **Phase 1 shipped.** The v1 sentinel-envelope contract (envelope_version=1,
 > `__HR_ENVELOPE_BEGIN__`/`__HR_ENVELOPE_END__` markers, optional envelope,
 > `emit_envelope` conformance step) is **shipped and founder-signed**
 > (THR-107 seq57/58). The optional/best-effort backward-compatibility
 > posture (§5) and token-accounting invariants (§1.2) remain authoritative.
+>
+> **D7A strict enforcement** (THR-107 D7A, TASK-3529, July 2026): new
+> custom-CLI registrations and re-registrations through either shipping
+> route now durably record ``envelope_policy: "strict"`` and enforce
+> mandatory v1 envelope compliance at the ``GenericCliExecutor``
+> launch/result seam. A strict profile whose stdout lacks a valid
+> v1 envelope returns a deterministic failed ``ExecutorResult``
+> with actionable re-registration/verification guidance. Existing
+> stored profiles without the ``envelope_policy`` field are LEGACY
+> COMPATIBILITY entries with unchanged optional-envelope behavior.
+> D7B custom-adapter executable launch/binding is still outstanding.
 >
 > **Unified adapter-runtime architecture** (THR-107 seq84): a DESIGN-ONLY
 > follow-up spec at

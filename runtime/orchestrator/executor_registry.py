@@ -111,6 +111,16 @@ class ExecutorProfile:
     when the agent has a model set. Unset (None) → CLI default model.
     Pre-seeded on the four built-in profiles with each CLI's verified flag.
 
+    ``envelope_policy`` (D7A, custom profiles only) is the result-envelope
+    enforcement posture. ``None`` (the default) is LEGACY COMPATIBILITY:
+    the v1 envelope is optional and absence preserves pre-D7A behavior.
+    ``"strict"`` is D7A mandatory enforcement: GenericCliExecutor fails
+    closed on any missing, malformed, or invalid-version envelope with a
+    deterministic error message guiding re-registration/verification.
+    New registrations through either shipping route automatically receive
+    ``"strict"``; existing stored profiles without this field are never
+    auto-mutated. Built-in profiles always have ``None``.
+
     **D6 migration:** ``workspace_adapter_id`` and ``command_adapter_id`` are
     the canonical identity fields. ``adapter_id`` and ``command_adapter`` are
     deprecated read-compatible aliases that MUST match their canonical
@@ -131,6 +141,10 @@ class ExecutorProfile:
     # MUST match canonical fields; conflict → ValueError.
     adapter_id: str = "claude"
     command_adapter: str | None = None
+
+    # ── D7A envelope enforcement (custom profiles only) ────────────────
+    # None = legacy compatibility, "strict" = mandatory v1 enforcement
+    envelope_policy: str | None = None
 
     def __post_init__(self):
         """Enforce D6 canonical-alias consistency.
@@ -483,6 +497,20 @@ class ExecutorRegistry:
                 f"The first element must be the executable name matching "
                 f"'command'."
             )
+        # ── D7A: envelope policy validation ─────────────────────────
+        envelope_policy = cfg.get("envelope_policy")
+        if envelope_policy is not None:
+            if not isinstance(envelope_policy, str):
+                raise ValueError(
+                    f"executor_profiles.{name}.envelope_policy must be a string, "
+                    f"got {type(envelope_policy).__name__}"
+                )
+            if envelope_policy not in {"strict"}:
+                raise ValueError(
+                    f"executor_profiles.{name}.envelope_policy must be 'strict' "
+                    f"(the only supported value), got {envelope_policy!r}"
+                )
+        # ── end envelope policy validation ──────────────────────────
         marker = "AGENTS.md" if adapter in {"codex", "opencode", "pi"} else ".claude/skills/start-task/SKILL.md"
         return ExecutorProfile(
             name=name,
@@ -492,6 +520,7 @@ class ExecutorRegistry:
             readiness_marker_fragment=marker,
             argv_template=[str(e) for e in argv_template],
             command=command,
+            envelope_policy=envelope_policy,
         )
 
 
@@ -615,4 +644,5 @@ def build_executor(
         profile_name=name,
         argv_template=profile.argv_template,
         provider=name,
+        envelope_policy=profile.envelope_policy,
     )

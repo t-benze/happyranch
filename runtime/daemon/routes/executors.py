@@ -266,6 +266,16 @@ class ExecutorRegisterResponse(BaseModel):
     )
     command: str
     argv_template: list[str]
+    # D7A envelope enforcement
+    envelope_policy: str | None = Field(
+        None,
+        description=(
+            "Result-envelope enforcement posture (D7A). "
+            "'strict' = mandatory v1 envelope enforcement; "
+            "null = legacy compatibility (optional envelope). "
+            "New registrations always receive 'strict'."
+        ),
+    )
 
 
 # Allowed token_usage keys — must match TokenUsage field names
@@ -627,6 +637,7 @@ def register_executor(
         #    the per-org config.yaml executor_profiles surface is removed).
         #    D6: persist resolved canonical identity + matching compatibility
         #    aliases so canonical-only registrations survive restart/reload.
+        #    D7A: new registrations always receive envelope_policy: "strict".
         config_entry: dict[str, object] = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
@@ -637,6 +648,10 @@ def register_executor(
         if candidate.command_adapter_id is not None:
             config_entry["command_adapter_id"] = candidate.command_adapter_id
             config_entry["command_adapter"] = candidate.command_adapter_id
+        # D7A: new/re-registered profiles always get strict enforcement.
+        # The stored envelope_policy reflects what was written — for new
+        # registrations that's always "strict" (no user choice).
+        config_entry["envelope_policy"] = "strict"
         before_snapshot = dict(load_runtime_profiles())
         try:
             save_runtime_profile(profile_name, config_entry)
@@ -697,6 +712,8 @@ def register_executor(
         command_adapter=candidate.command_adapter_id,
         command=body.command,
         argv_template=[str(e) for e in body.argv_template],
+        # D7A: new registrations always strict
+        envelope_policy="strict",
     )
 
 
@@ -911,6 +928,7 @@ def runtime_register_executor(
         # 7. Durable: write runtime store
         #    D6: persist resolved canonical identity + matching compatibility
         #    aliases so canonical-only registrations survive restart/reload.
+        #    D7A: new registrations always receive envelope_policy: "strict".
         config_entry: dict[str, object] = {
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
@@ -921,6 +939,8 @@ def runtime_register_executor(
         if candidate.command_adapter_id is not None:
             config_entry["command_adapter_id"] = candidate.command_adapter_id
             config_entry["command_adapter"] = candidate.command_adapter_id
+        # D7A: new/re-registered profiles always get strict enforcement
+        config_entry["envelope_policy"] = "strict"
         try:
             save_runtime_profile(profile_name, config_entry)
         except Exception as exc:
@@ -972,6 +992,8 @@ def runtime_register_executor(
         command_adapter=candidate.command_adapter_id,
         command=body.command,
         argv_template=[str(e) for e in body.argv_template],
+        # D7A: new registrations always strict
+        envelope_policy="strict",
     )
 
 
@@ -1138,6 +1160,16 @@ class RuntimeProfileEntry(BaseModel):
     path: str | None = Field(
         None, description="The resolved absolute path when present, else None"
     )
+    # D7A envelope enforcement
+    envelope_policy: str | None = Field(
+        None,
+        description=(
+            "Result-envelope enforcement posture (D7A). "
+            "'strict' = mandatory v1 envelope enforcement; "
+            "null = legacy compatibility (optional envelope). "
+            "Truthfully reflects the stored profile definition."
+        ),
+    )
 
 
 class RuntimeProfileList(BaseModel):
@@ -1214,6 +1246,14 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
                 adapter_id_val = entry.get("adapter_id")
                 if isinstance(adapter_id_val, str):
                     resolved_adapter = adapter_id_val
+        # D7A: truthfully report envelope_policy from the stored definition.
+        # null = legacy compatibility; "strict" = mandatory v1 enforcement.
+        stored_policy = entry.get("envelope_policy")
+        if isinstance(stored_policy, str):
+            envelope_policy = stored_policy
+        else:
+            envelope_policy = None
+
         entries.append(RuntimeProfileEntry(
             name=name,
             command=command if isinstance(command, str) else None,
@@ -1226,6 +1266,8 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
             command_adapter=resolved_command_adapter,
             present=present,
             path=path,
+            # D7A
+            envelope_policy=envelope_policy,
         ))
     return RuntimeProfileList(profiles=entries)
 

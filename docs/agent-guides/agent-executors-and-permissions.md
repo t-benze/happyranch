@@ -130,8 +130,16 @@ __HR_ENVELOPE_BEGIN__
 __HR_ENVELOPE_END__
 ```
 
-The envelope is **optional** — absence preserves existing behavior (no token
-accounting). The ``envelope_version`` must be ``1`` (integer). The
+**D7A strict enforcement (2026-07-27):** new registrations and re-registrations
+automatically receive ``envelope_policy: "strict"``. A strict profile MUST
+emit a valid v1 envelope on every execution — missing, malformed, or
+invalid-version envelopes fail closed with an actionable error. Existing
+profiles without ``envelope_policy`` are LEGACY COMPATIBILITY (optional
+envelope). To opt into strict enforcement: verify your CLI emits a valid
+v1 envelope, then re-register.
+
+The envelope is **mandatory for strict profiles, optional for legacy**.
+The ``envelope_version`` must be ``1`` (integer). The
 ``token_usage`` object maps 1:1 to the ``TokenUsage`` model with identical
 key names. A top-level ``model`` field backfills ``token_usage.model`` when
 absent. Multiple envelopes are last-wins. A minimal valid sample is:

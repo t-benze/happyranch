@@ -82,6 +82,10 @@ export interface RuntimeProfileEntry {
   present: boolean;
   /** The resolved absolute path when present, else null. */
   path: string | null;
+  /** D7A: result-envelope enforcement posture.
+   *  'strict' = mandatory v1 envelope enforcement;
+   *  null = legacy compatibility (optional envelope). */
+  envelope_policy: string | null;
 }
 
 /** All custom profiles in the machine-global runtime store. */
