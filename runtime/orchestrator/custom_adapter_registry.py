@@ -629,15 +629,167 @@ def list_adapters() -> list[AdapterEntry]:
     return list(load_adapters().values())
 
 
+def approve_adapter(
+    adapter_id: str,
+    executable: str,
+    executable_hash: str,
+    version: str,
+    capabilities: list[str],
+    contract_version: int,
+    workspace_adapter: str,
+    approved_by: str = "founder/master-bearer",
+) -> AdapterEntry:
+    """Approve a pending custom adapter (D4 founder-gated approval gate).
+
+    This is a deliberate, explicit transition from durable PENDING to durable
+    APPROVED. The approval request MUST bind the exact durable artifact
+    snapshot the founder inspected — every material identity fact is compared
+    against the durable store entry.
+
+    Exact-idempotence: if the adapter is already APPROVED with identical
+    stored immutable facts, the existing entry is returned unchanged (no
+    duplicate writes, no provenance overwrite).
+
+    Raises ``ValueError`` with an actionable message when:
+      - The adapter id is unknown
+      - The entry is not PENDING (e.g., already-approved incompatible
+        repeat, or a malformed state)
+      - Any snapshot fact mismatches the store: executable, hash, version,
+        capabilities, contract_version, or workspace_adapter
+      - Any malformed/empty values are provided
+
+    This is NOT authorization for D5/D7/D12 changes — only the approval
+    transition within D4 scope.
+    """
+    # Guard: validate all inputs are non-empty and well-typed
+    if not adapter_id or not isinstance(adapter_id, str):
+        raise ValueError("adapter_id must be a non-empty string")
+    if not executable or not isinstance(executable, str):
+        raise ValueError("executable must be a non-empty string")
+    if not executable_hash or not isinstance(executable_hash, str):
+        raise ValueError("executable_hash must be a non-empty string")
+    if not version or not isinstance(version, str):
+        raise ValueError("version must be a non-empty string")
+    if not isinstance(capabilities, list):
+        raise ValueError("capabilities must be a list")
+    if not isinstance(contract_version, int) or isinstance(contract_version, bool):
+        raise ValueError("contract_version must be an integer")
+    if not workspace_adapter or not isinstance(workspace_adapter, str):
+        raise ValueError("workspace_adapter must be a non-empty string")
+
+    # Look up the adapter in the durable store
+    entry = get_adapter(adapter_id)
+    if entry is None:
+        raise ValueError(
+            f"Unknown adapter {adapter_id!r}. Register the adapter first; "
+            f"it must be in PENDING state before approval."
+        )
+
+    # Exact-idempotence: if already APPROVED with identical facts, return as-is
+    if entry.status == "approved":
+        if (entry.executable == executable and
+                entry.executable_hash == executable_hash and
+                entry.version == version and
+                entry.capabilities == capabilities and
+                entry.contract_version == contract_version and
+                entry.workspace_adapter == workspace_adapter):
+            logger.info(
+                "approve_adapter: adapter %r already approved with identical "
+                "facts — idempotent no-op", adapter_id
+            )
+            return entry
+        # Already approved but facts differ → reject
+        raise ValueError(
+            f"Adapter {adapter_id!r} is already APPROVED with different "
+            f"immutable facts. Re-register (which resets to PENDING), then "
+            f"re-approve with the new snapshot. Current stored hash: "
+            f"{entry.executable_hash[:12]}..., current version: {entry.version}."
+        )
+
+    # Must be PENDING — reject any other state
+    if entry.status != "pending":
+        raise ValueError(
+            f"Adapter {adapter_id!r} is status={entry.status!r}, not PENDING. "
+            f"Only PENDING adapters may be approved."
+        )
+
+    # Verify EVERY material identity fact matches the durable store
+    if entry.executable != executable:
+        raise ValueError(
+            f"executable mismatch for {adapter_id!r}: "
+            f"store has {entry.executable!r}, approval request has {executable!r}"
+        )
+    if entry.executable_hash != executable_hash:
+        raise ValueError(
+            f"executable_hash mismatch for {adapter_id!r}: "
+            f"store has {entry.executable_hash[:12]}..., "
+            f"approval request has {executable_hash[:12]}..."
+        )
+    if entry.version != version:
+        raise ValueError(
+            f"version mismatch for {adapter_id!r}: "
+            f"store has {entry.version!r}, approval request has {version!r}"
+        )
+    if entry.capabilities != capabilities:
+        raise ValueError(
+            f"capabilities mismatch for {adapter_id!r}: "
+            f"store has {entry.capabilities!r}, "
+            f"approval request has {capabilities!r}"
+        )
+    if entry.contract_version != contract_version:
+        raise ValueError(
+            f"contract_version mismatch for {adapter_id!r}: "
+            f"store has {entry.contract_version}, "
+            f"approval request has {contract_version}"
+        )
+    if entry.workspace_adapter != workspace_adapter:
+        raise ValueError(
+            f"workspace_adapter mismatch for {adapter_id!r}: "
+            f"store has {entry.workspace_adapter!r}, "
+            f"approval request has {workspace_adapter!r}"
+        )
+
+    # Transition from PENDING → APPROVED
+    now = datetime.now(timezone.utc).isoformat()
+    approved_entry = AdapterEntry(
+        id=entry.id,
+        name=entry.name,
+        executable=entry.executable,
+        executable_hash=entry.executable_hash,
+        version=entry.version,
+        capabilities=entry.capabilities,
+        contract_version=entry.contract_version,
+        workspace_adapter=entry.workspace_adapter,
+        status="approved",
+        registered_at=entry.registered_at,
+        registered_by=entry.registered_by,
+        approved_at=now,
+        approved_by=approved_by,
+    )
+    save_adapter(approved_entry)
+    logger.info(
+        "approve_adapter: adapter %r approved at %s by %s",
+        adapter_id, now, approved_by,
+    )
+    return approved_entry
+
+
 def resolve_adapter(adapter_id: str) -> AdapterEntry | None:
     """Resolve an adapter by id for launch/binding.
 
-    D3: REJECTS pending adapters — only approved adapters may be resolved
-    for launch or profile binding. Returns None for pending entries with
-    an actionable log message.
+    D4: gated on APPROVED status + on-disk hash verification.
+
+    For APPROVED adapters, the on-disk executable MUST still:
+      - Exist at its pinned absolute path
+      - Be a regular file
+      - Be executable by the current user
+      - Have the stored SHA-256 hash
+
+    A tampered, removed, non-regular, or unexecutable artifact does NOT
+    resolve — returns None with actionable re-registration guidance.
+    The daemon NEVER silently updates the stored hash or status.
 
     Use ``get_adapter`` for read-only inspection (e.g. GET route).
-    D4: will gate on approved status.
     """
     entry = get_adapter(adapter_id)
     if entry is None:
@@ -650,4 +802,46 @@ def resolve_adapter(adapter_id: str) -> AdapterEntry | None:
             entry.status,
         )
         return None
+
+    # D4: verify on-disk executable integrity for APPROVED adapters
+    import os as _os
+    from pathlib import Path as _Path
+
+    exe_path = _Path(entry.executable)
+    if not exe_path.exists():
+        logger.warning(
+            "resolve_adapter: approved adapter %r executable %r no longer exists. "
+            "Re-register the adapter to restore.",
+            adapter_id, entry.executable,
+        )
+        return None
+    if not exe_path.is_file():
+        logger.warning(
+            "resolve_adapter: approved adapter %r path %r is not a regular file. "
+            "Re-register the adapter with a valid executable.",
+            adapter_id, entry.executable,
+        )
+        return None
+    if not _os.access(exe_path, _os.X_OK):
+        logger.warning(
+            "resolve_adapter: approved adapter %r executable %r is not executable. "
+            "Re-register the adapter with a valid executable.",
+            adapter_id, entry.executable,
+        )
+        return None
+
+    # Hash verification
+    current_hash = compute_sha256(str(exe_path))
+    if current_hash != entry.executable_hash:
+        logger.warning(
+            "resolve_adapter: approved adapter %r hash mismatch — "
+            "stored=%s, current=%s. "
+            "The executable has been modified since approval. "
+            "Re-register to update the hash and re-approve.",
+            adapter_id,
+            entry.executable_hash[:12],
+            current_hash[:12],
+        )
+        return None
+
     return entry

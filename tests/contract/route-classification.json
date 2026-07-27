@@ -164,6 +164,7 @@
     "POST /api/v1/executors/runtime/register-binary": "cli-only runtime-level binary registration via scoped token (THR-088)",
     "GET /api/v1/runtime/adapters": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
     "POST /api/v1/runtime/adapters/register": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
-    "GET /api/v1/runtime/adapters/{adapter_id}": "agent-only adapter administration route — no browser consumer (THR-107 D3)"
+    "GET /api/v1/runtime/adapters/{adapter_id}": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
+    "POST /api/v1/runtime/adapters/{adapter_id}/approve": "agent-only adapter administration route — founder-gated explicit approval gate (THR-107 D4)"
   }
 }
