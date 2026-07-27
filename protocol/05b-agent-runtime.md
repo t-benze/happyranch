@@ -250,7 +250,11 @@ carries two canonical identity fields:
 - ``command_adapter_id`` — selects the command execution adapter (argv
   construction and output parsing). For built-in profiles this matches
   ``workspace_adapter_id`` (each carries its own first-party adapter); for
-  custom profiles this is always ``"generic-cli"``.
+  custom profiles this may be ``"generic-cli"`` (template-based generic CLI)
+  or ``"custom-adapter:<id>"`` (bound to a separately registered,
+  founder-approved, hash-verified custom adapter executable — D7B,
+  subprocess-only, mandatory v1 AdapterInput/AdapterOutput, D5 baseline-only
+  posture).
 
 Legacy fields ``adapter_id``/``adapter`` (deprecated alias for
 ``workspace_adapter_id``) and ``command_adapter`` (deprecated alias for

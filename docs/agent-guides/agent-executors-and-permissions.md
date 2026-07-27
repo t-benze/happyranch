@@ -91,7 +91,9 @@ openclaw:
   # D6 (2026-07-27): adapter is the DEPRECATED alias for workspace_adapter_id.
   # For new profiles, use workspace_adapter_id: pi instead.
   workspace_adapter_id: pi
-  # Optional — THR-107 D9 / Phase 3. Sole accepted value: generic-cli.
+  # Optional — THR-107 D9 / Phase 3. Accepted values: generic-cli (template-based
+  # generic CLI) or custom-adapter:<id> (D7B — separately registered,
+  # founder-approved, hash-verified custom adapter executable).
   # D6: command_adapter is the DEPRECATED alias for command_adapter_id.
   # For new profiles, use command_adapter_id: generic-cli instead.
   command_adapter_id: generic-cli
@@ -108,8 +110,11 @@ composable. The canonical workspace `workspace_adapter_id` (deprecated alias:
 `adapter`) controls which bootstrap files are written (e.g., `CLAUDE.md` with
 `--allowedTools` for claude, or `AGENTS.md` for pi). The canonical
 `command_adapter_id` (deprecated alias: `command_adapter`) controls which
-execution template builds argv and parses result output — currently always
-`generic-cli` for custom profiles.
+execution template builds argv and parses result output. For custom profiles
+this is `generic-cli` (template-based generic CLI) or `custom-adapter:<id>`
+(D7B — separately registered, founder-approved, hash-verified custom adapter
+executable, subprocess-only, mandatory v1 AdapterInput/AdapterOutput,
+D5 baseline-only posture).
 
 *Concrete example:* A custom profile with `workspace_adapter_id: claude` and
 `command_adapter_id: generic-cli` gets a Claude workspace (CLAUDE.md,

@@ -83,7 +83,7 @@ The full generic-CLI envelope contract is in
 carries two canonical identity fields: ``workspace_adapter_id`` (workspace
 preparation bootstrap-file/permission-surface selector) and
 ``command_adapter_id`` (execution adapter selector — built-in profiles carry
-their own first-party adapter, custom profiles are ``"generic-cli"``). Legacy
+their own first-party adapter, custom profiles may be ``"generic-cli"`` or ``"custom-adapter:<id>"`` (D7B)). Legacy
 fields ``adapter_id``, ``adapter``, and ``command_adapter`` are preserved as
 deprecated read-compatible aliases. Dual-read resolves deterministically;
 conflicting canonical vs deprecated values raise ``ValueError`` before any

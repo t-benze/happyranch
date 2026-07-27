@@ -623,7 +623,7 @@ canonical fields:
 | Field | Purpose |
 |---|---|
 | `workspace_adapter_id` | Selects workspace preparation (CLAUDE.md vs AGENTS.md, permission files). Canonical field on `ExecutorProfile`. |
-| `command_adapter_id` | Selects which command adapter builds argv and parses result output. Built-in profiles carry their own first-party adapter (`claude`/`codex`/`opencode`/`pi`); custom profiles are always `"generic-cli"`. |
+| `command_adapter_id` | Selects which command adapter builds argv and parses result output. Built-in profiles carry their own first-party adapter (`claude`/`codex`/`opencode`/`pi`); custom profiles may be `"generic-cli"` (template-based generic CLI) or `"custom-adapter:<id>"` (bound to a separately registered, founder-approved, hash-verified custom adapter executable — D7B, §4, subprocess-only, mandatory v1 AdapterInput/AdapterOutput, D5 baseline-only posture). |
 
 **Deprecated aliases** (preserved for read compatibility):
 - `adapter_id` / `adapter` → deprecated alias for `workspace_adapter_id`
