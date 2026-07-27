@@ -91,7 +91,11 @@ class ExecutorProfile:
     adapter — which executor builds argv and parses output. For built-in
     profiles this is the same as ``workspace_adapter_id`` (each built-in
     carries its own first-party command adapter). For custom profiles
-    this is always ``"generic-cli"`` (the only supported command adapter).
+    this may be ``"generic-cli"`` (template/PATH-based generic CLI) or
+    ``"custom-adapter:<id>"`` (bound to a separately registered,
+    founder-approved, hash-verified custom-adapter executable — D7B,
+    subprocess-only, mandatory v1 AdapterInput/AdapterOutput, D5
+    baseline-only posture, no permission expansion).
     ``command_adapter`` is a deprecated read-compatible alias.
 
     ``readiness_marker_fragment`` is a relative path within the workspace

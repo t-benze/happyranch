@@ -291,8 +291,12 @@ class ExecutorRegisterRequest(BaseModel):
     ``adapter`` (DEPRECATED by D6) must be one of claude/codex/opencode/pi.
     For new code, use ``workspace_adapter_id`` (the canonical field).
     ``command_adapter`` (DEPRECATED by D6) is optional, defaults to
-    ``"generic-cli"`` — the only supported value for now. For new code,
-    use ``command_adapter_id`` (the canonical field).
+    ``"generic-cli"``. Accepts ``"generic-cli"`` (template/PATH-based
+    generic CLI) or ``"custom-adapter:<id>"`` (bound to a separately
+    registered, founder-approved, hash-verified custom adapter — D7B,
+    subprocess-only, mandatory v1 AdapterInput/AdapterOutput, D5
+    baseline-only posture). For new code, use ``command_adapter_id``
+    (the canonical field).
 
     The ``name`` is not in the body — it comes from the registration
     token's scope, ensuring one token = one named profile.

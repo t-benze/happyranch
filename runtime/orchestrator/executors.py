@@ -1146,11 +1146,14 @@ class GenericCliExecutor:
     This class delegates to it for bit-for-bit compatibility while
     preserving the existing public factory contract in ``build_executor``.
 
-    Custom profiles use this executor through the (unchanged) custom
-    branch of ``build_executor``. Each profile's ``adapter`` field
-    (claude/codex/opencode/pi) still controls workspace preparation
-    only; command execution always routes through the ``generic-cli``
-    adapter. No model selection is performed — custom profile model_arg
+    Custom profiles with ``command_adapter_id`` set to ``"generic-cli"``
+    (template/PATH-based) use this executor through the (unchanged)
+    custom branch of ``build_executor``. Custom profiles bound to
+    ``"custom-adapter:<id>"`` (separately registered, founder-approved,
+    hash-verified executable — D7B) route through ``CustomAdapterExecutor``
+    instead. Each profile's ``adapter`` field (claude/codex/opencode/pi)
+    still controls workspace preparation only. No model selection is
+    performed — custom profile model_arg
     is out of scope per founder gate (THR-067).
 
     The session-lifetime preamble is prepended to the prompt before
