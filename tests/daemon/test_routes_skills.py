@@ -3104,15 +3104,77 @@ class TestProposalConcurrentClearRace:
                 f"No materialization for proposal: {mat}"
             )
 
-            # ── Artifacts exist in alpha org's store ──
+            # ── Artifacts: exact immutable artifact set ──
+            import hashlib
+            import json as _json
             artifact_store = ArtifactStore(
                 OrgPaths(org_state.root).artifacts_dir,
             )
             proposal_artifacts = artifact_store.list_artifacts(
                 prefix="skill-lifecycle/frontend-development",
             )
-            assert len(proposal_artifacts) > 0, (
-                "Proposal artifacts must exist in alpha org's ArtifactStore"
+            # Exactly 2 artifacts: manifest.json + SKILL.md (no extras).
+            artifact_names = {a.name for a in proposal_artifacts}
+            assert len(proposal_artifacts) == 2, (
+                f"Expected exactly 2 artifacts (manifest + SKILL.md), "
+                f"got {len(proposal_artifacts)}: "
+                f"{[a.name for a in proposal_artifacts]}"
+            )
+            # The package content_artifact_key must identify the manifest.
+            assert pkg.content_artifact_key is not None, (
+                "content_artifact_key must be set"
+            )
+            manifest_key = pkg.content_artifact_key
+            assert manifest_key in artifact_names, (
+                f"Manifest artifact '{manifest_key}' not found in "
+                f"{sorted(artifact_names)}"
+            )
+            # Read and verify the manifest.
+            manifest_bytes = artifact_store.read(manifest_key)
+            manifest = _json.loads(manifest_bytes)
+            assert manifest["schema_version"] == 1, (
+                f"Manifest schema_version: {manifest['schema_version']}"
+            )
+            assert manifest["skill_id"] == "hr:frontend-development", (
+                f"Manifest skill_id: {manifest['skill_id']}"
+            )
+            assert manifest["slug"] == "frontend-development", (
+                f"Manifest slug: {manifest['slug']}"
+            )
+            # Exactly one member: SKILL.md (no references, no assets).
+            assert len(manifest["members"]) == 1, (
+                f"Manifest members: expected 1 (SKILL.md only), "
+                f"got {len(manifest['members'])}: {manifest['members']}"
+            )
+            member = manifest["members"][0]
+            assert member["path"] == "SKILL.md", f"Member path: {member['path']}"
+            assert member["hash"].startswith("sha256:"), (
+                f"Member hash: {member['hash']}"
+            )
+            assert member["size_bytes"] > 0, f"Member size: {member['size_bytes']}"
+            # The member's artifact key must exist in the store.
+            assert member["artifact_key"] in artifact_names, (
+                f"Member artifact_key '{member['artifact_key']}' "
+                f"not found in store"
+            )
+            # content_hash in ledger must equal SHA-256 of manifest bytes.
+            computed_manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+            assert pkg.content_hash == computed_manifest_hash, (
+                f"Package content_hash {pkg.content_hash} != "
+                f"manifest SHA-256 {computed_manifest_hash}"
+            )
+            # SKILL.md member content must match what was submitted.
+            skill_artifact_bytes = artifact_store.read(member["artifact_key"])
+            expected_skill_md = AGENT_PROPOSAL_BODY["skill_md"]
+            assert skill_artifact_bytes.decode("utf-8") == expected_skill_md, (
+                "SKILL.md artifact content does not match submitted skill_md"
+            )
+            # SKILL.md member hash must match the artifact bytes.
+            member_hash_value = member["hash"].split(":", 1)[1]
+            actual_skill_hash = hashlib.sha256(skill_artifact_bytes).hexdigest()
+            assert member_hash_value == actual_skill_hash, (
+                f"SKILL.md member hash {member_hash_value} != "
+                f"artifact SHA-256 {actual_skill_hash}"
             )
 
             # clear() must now complete (acquires just-released lease).
@@ -3248,15 +3310,77 @@ class TestProposalConcurrentClearRace:
             )
             assert mat is None, f"No materialization for proposal: {mat}"
 
-            # ── Artifacts exist in alpha org's store ──
+            # ── Artifacts: exact immutable artifact set ──
+            import hashlib
+            import json as _json
             artifact_store = ArtifactStore(
                 OrgPaths(org_state.root).artifacts_dir,
             )
             proposal_artifacts = artifact_store.list_artifacts(
                 prefix="skill-lifecycle/frontend-development",
             )
-            assert len(proposal_artifacts) > 0, (
-                "Proposal artifacts must exist in alpha org's ArtifactStore"
+            # Exactly 2 artifacts: manifest.json + SKILL.md (no extras).
+            artifact_names = {a.name for a in proposal_artifacts}
+            assert len(proposal_artifacts) == 2, (
+                f"Expected exactly 2 artifacts (manifest + SKILL.md), "
+                f"got {len(proposal_artifacts)}: "
+                f"{[a.name for a in proposal_artifacts]}"
+            )
+            # The package content_artifact_key must identify the manifest.
+            assert pkg.content_artifact_key is not None, (
+                "content_artifact_key must be set"
+            )
+            manifest_key = pkg.content_artifact_key
+            assert manifest_key in artifact_names, (
+                f"Manifest artifact '{manifest_key}' not found in "
+                f"{sorted(artifact_names)}"
+            )
+            # Read and verify the manifest.
+            manifest_bytes = artifact_store.read(manifest_key)
+            manifest = _json.loads(manifest_bytes)
+            assert manifest["schema_version"] == 1, (
+                f"Manifest schema_version: {manifest['schema_version']}"
+            )
+            assert manifest["skill_id"] == "hr:frontend-development", (
+                f"Manifest skill_id: {manifest['skill_id']}"
+            )
+            assert manifest["slug"] == "frontend-development", (
+                f"Manifest slug: {manifest['slug']}"
+            )
+            # Exactly one member: SKILL.md (no references, no assets).
+            assert len(manifest["members"]) == 1, (
+                f"Manifest members: expected 1 (SKILL.md only), "
+                f"got {len(manifest['members'])}: {manifest['members']}"
+            )
+            member = manifest["members"][0]
+            assert member["path"] == "SKILL.md", f"Member path: {member['path']}"
+            assert member["hash"].startswith("sha256:"), (
+                f"Member hash: {member['hash']}"
+            )
+            assert member["size_bytes"] > 0, f"Member size: {member['size_bytes']}"
+            # The member's artifact key must exist in the store.
+            assert member["artifact_key"] in artifact_names, (
+                f"Member artifact_key '{member['artifact_key']}' "
+                f"not found in store"
+            )
+            # content_hash in ledger must equal SHA-256 of manifest bytes.
+            computed_manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+            assert pkg.content_hash == computed_manifest_hash, (
+                f"Package content_hash {pkg.content_hash} != "
+                f"manifest SHA-256 {computed_manifest_hash}"
+            )
+            # SKILL.md member content must match what was submitted.
+            skill_artifact_bytes = artifact_store.read(member["artifact_key"])
+            expected_skill_md = AGENT_PROPOSAL_BODY["skill_md"]
+            assert skill_artifact_bytes.decode("utf-8") == expected_skill_md, (
+                "SKILL.md artifact content does not match submitted skill_md"
+            )
+            # SKILL.md member hash must match the artifact bytes.
+            member_hash_value = member["hash"].split(":", 1)[1]
+            actual_skill_hash = hashlib.sha256(skill_artifact_bytes).hexdigest()
+            assert member_hash_value == actual_skill_hash, (
+                f"SKILL.md member hash {member_hash_value} != "
+                f"artifact SHA-256 {actual_skill_hash}"
             )
 
             t_repl.join(timeout=5.0)
