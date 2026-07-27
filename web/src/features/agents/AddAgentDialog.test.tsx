@@ -66,7 +66,7 @@ function stubStandardExecutors() {
   });
   vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
     profiles: [
-      { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null },
+      { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null },
     ],
   });
 }
@@ -348,7 +348,7 @@ describe('AddAgentDialog', () => {
     });
     vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
       profiles: [
-        { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw' },
+        { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw' },
       ],
     });
 
@@ -418,7 +418,7 @@ describe('AddAgentDialog', () => {
     // A custom profile with a non-four-name executor.
     vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
       profiles: [
-        { name: 'my-runner', command: 'my-runner', adapter: 'pi', workspace_adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null },
+        { name: 'my-runner', command: 'my-runner', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null },
       ],
     });
 
