@@ -274,14 +274,15 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
     instead of incidental stderr noise.
 
     Only the single documented in-repo terminal failure envelope shape is
-    validated: ``{"type": "result", "subtype": "error_*", "is_error": true,
-    ...}`` (tests/test_headless_assistant.py CLAUDE_RESULT_ERROR fixture).
-    Non-terminal events (progress, user, ...), ``subtype: success``,
-    missing ``is_error: true``, and arbitrary generic ``error`` / ``errors``
-    objects without a terminal result envelope are NOT parsed — those return
-    None so the compatible stderr-first error fallback wins.  Unsupported /
-    ambiguous ``error_*`` subtypes with no recognised error signal also
-    return None; no generic ``claude_<suffix>`` reasons are fabricated.
+    validated: ``{"type": "result", "subtype": "error_during_execution",
+    "is_error": true, ...}`` (tests/test_headless_assistant.py
+    CLAUDE_RESULT_ERROR fixture).  Every other shape — ``subtype:
+    success``, non-``result`` event types, ``error_max_turns``,
+    ``error_lookalike``, ``error_unknown``, ``error/errors`` outside a
+    terminal result envelope, arbitrary ``error_*`` subtypes, missing
+    ``is_error: true``, malformed/non-dict JSON, and no-structured-output —
+    returns None so the compatible stderr-first error fallback wins.  No
+    generic ``claude_<suffix>`` or provider-taxonomy reasons are fabricated.
 
     Returns a classified reason string like ``session_limit`` or
     ``transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR``, or None
@@ -301,10 +302,13 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
     if obj.get("type") != "result":
         return None
 
-    # Only parse error_* subtypes — {type: result, subtype: success, ...}
-    # must NOT produce a terminal error.
+    # Only parse the single documented terminal failure subtype —
+    # {type: result, subtype: success, ...} and every other error_*
+    # subtype (error_max_turns, error_lookalike, error_unknown, ...)
+    # must NOT produce a classified terminal error; they return None
+    # so the existing stderr-first raw error fallback wins.
     subtype = obj.get("subtype")
-    if not isinstance(subtype, str) or not subtype.startswith("error_"):
+    if not isinstance(subtype, str) or subtype != "error_during_execution":
         return None
 
     # Require is_error: true — the documented terminal failure envelope

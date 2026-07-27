@@ -1053,11 +1053,11 @@ def test_pi_model_omitted_when_unset(mock_subprocess, tmp_path):
 
 
 def test_parse_claude_terminal_error_session_limit():
-    """type:result + error_max_turns + is_error:true with session-limit
+    """type:result + error_during_execution + is_error:true with session-limit
     content → session_limit (valid documented terminal envelope)."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
 
-    stdout = '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"Session limit reached"}'
+    stdout = '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Session limit reached"}'
     reason = _parse_claude_terminal_error(stdout, "Workspace trust warning\n")
     assert reason == "session_limit"
 
@@ -1227,6 +1227,50 @@ def test_parse_claude_terminal_error_lookalike_without_is_error_returns_none():
     assert reason is None
 
 
+# ── THR-116 adversarial subtype tests (formerly faulty branch) ────────
+# These tests prove that unsupported error_* subtypes return None even
+# when they carry recognised error signal text.  Under the earlier
+# startswith("error_") check, both would have been INCORRECTLY classified.
+
+
+def test_parse_claude_terminal_error_lookalike_session_limit_text():
+    """error_lookalike + session-limit wording → None.
+    This enters the formerly faulty classification condition: the subtype
+    begins "error_" but is NOT the documented error_during_execution, and
+    the result carries session-limit text that the text inspection would
+    match.  With the stricter subtype check, the parser short-circuits
+    before reaching text inspection.  (MEM-380 / MEM-377 coverage)."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = (
+        '{"type":"result","subtype":"error_lookalike","is_error":true,'
+        '"result":"Session limit reached"}'
+    )
+    reason = _parse_claude_terminal_error(stdout, "")
+    assert reason is None, (
+        f"error_lookalike must return None even with session-limit text; got {reason!r}"
+    )
+
+
+def test_parse_claude_terminal_error_unknown_certificate_text():
+    """error_unknown + certificate wording → None.
+    This enters the formerly faulty classification condition: the subtype
+    begins "error_" but is NOT the documented error_during_execution, and
+    the result carries certificate text that the text inspection would
+    match.  With the stricter subtype check, the parser short-circuits
+    before reaching text inspection.  (MEM-380 / MEM-377 coverage)."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = (
+        '{"type":"result","subtype":"error_unknown","is_error":true,'
+        '"result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}'
+    )
+    reason = _parse_claude_terminal_error(stdout, "")
+    assert reason is None, (
+        f"error_unknown must return None even with certificate text; got {reason!r}"
+    )
+
+
 # ── THR-116: _run_command error_parser integration ────────────────────
 
 
@@ -1241,7 +1285,7 @@ def test_run_command_populates_terminal_error_on_nonzero_with_parser(mock_subpro
 
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
-        stdout='{"type":"result","subtype":"error_max_turns"}',
+        stdout='{"type":"result","subtype":"error_during_execution"}',
         stderr="Workspace trust warning\n",
     )
 
@@ -1250,7 +1294,7 @@ def test_run_command_populates_terminal_error_on_nonzero_with_parser(mock_subpro
         try:
             obj = json.loads(stdout.strip())
             if obj.get("type") == "result" and isinstance(obj.get("subtype"), str):
-                if "max_turns" in obj["subtype"]:
+                if obj["subtype"] == "error_during_execution":
                     return "session_limit"
         except Exception:
             pass
@@ -1380,7 +1424,7 @@ def test_claude_executor_session_limit_terminal_error(mock_subprocess, tmp_path,
 
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
-        stdout='{"type":"result","subtype":"error_max_turns","is_error":true,"result":"Session limit reached"}',
+        stdout='{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Session limit reached"}',
         stderr="Workspace trust warning: untrusted directory\n",
     )
 
@@ -1568,3 +1612,95 @@ def test_claude_executor_error_unknown_returns_none(
     assert result.success is False
     assert result.terminal_error is None
     assert "Command exited with code 2" in result.error
+
+
+# ── THR-116 adversarial real-chain executor tests (formerly faulty) ───
+# These tests prove that unsupported error_* subtypes with recognised signal
+# text do NOT produce a terminal_error through the real ClaudeExecutor →
+# _run_command → production _parse_claude_terminal_error chain.
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_executor_error_lookalike_session_limit_text_raw_fallback(
+    mock_subprocess, tmp_path, runtime,
+):
+    """Real-chain adversarial: error_lookalike + session-limit wording +
+    unrelated stderr → terminal_error is None, raw error preserved.
+
+    This enters the formerly faulty classification condition: under the
+    earlier startswith("error_") check the parser would have classified
+    the session-limit text.  With the strict subtype == error_during_execution
+    check, the parser returns None and the raw stderr-first fallback wins.
+    (MEM-380 coverage)."""
+    from runtime.config import Settings
+    from runtime.orchestrator.executors import ClaudeExecutor
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_lookalike","is_error":true,'
+               '"result":"Session limit reached"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    executor = ClaudeExecutor(
+        claude_cli_path="claude", permission_mode="auto",
+        settings=Settings(), paths=runtime,
+    )
+    result = executor.run(
+        workspace=workspace, prompt="hello",
+        timeout_seconds=30, session_id="sess-test",
+    )
+
+    assert result.success is False
+    assert result.terminal_error is None, (
+        f"error_lookalike must not produce terminal_error; got {result.terminal_error!r}"
+    )
+    # Raw stderr-first fallback preserved.
+    assert "Workspace trust warning" in result.error
+    assert "Command exited with code 1" in result.error
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_executor_error_unknown_certificate_text_raw_fallback(
+    mock_subprocess, tmp_path, runtime,
+):
+    """Real-chain adversarial: error_unknown + certificate wording +
+    unrelated stderr → terminal_error is None, raw error preserved.
+
+    This enters the formerly faulty classification condition: under the
+    earlier startswith("error_") check the parser would have classified
+    the certificate text.  With the strict subtype == error_during_execution
+    check, the parser returns None and the raw stderr-first fallback wins.
+    (MEM-377 coverage)."""
+    from runtime.config import Settings
+    from runtime.orchestrator.executors import ClaudeExecutor
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_unknown","is_error":true,'
+               '"result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    executor = ClaudeExecutor(
+        claude_cli_path="claude", permission_mode="auto",
+        settings=Settings(), paths=runtime,
+    )
+    result = executor.run(
+        workspace=workspace, prompt="hello",
+        timeout_seconds=30, session_id="sess-test",
+    )
+
+    assert result.success is False
+    assert result.terminal_error is None, (
+        f"error_unknown must not produce terminal_error; got {result.terminal_error!r}"
+    )
+    # Raw stderr-first fallback preserved.
+    assert "Workspace trust warning" in result.error
+    assert "Command exited with code 1" in result.error

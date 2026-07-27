@@ -360,14 +360,14 @@ async def test_run_dream_real_chain_session_limit(
     mock_subprocess, org_state,
 ):
     """Real-chain (session-limit): mocked subprocess produces
-    {type:result, subtype:error_max_turns} + workspace-trust stderr →
+    {type:result, subtype:error_during_execution} + workspace-trust stderr →
     ClaudeExecutor.run() with production parser → run_dream →
     dream.error == dream_failed.payload.reason == 'session_limit'."""
     _insert_pending_dream(org_state)
 
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
-        stdout='{"type":"result","subtype":"error_max_turns","is_error":true,'
+        stdout='{"type":"result","subtype":"error_during_execution","is_error":true,'
                '"result":"Session limit reached"}',
         stderr="Workspace trust warning: untrusted directory\n",
     )
@@ -583,3 +583,112 @@ async def test_run_dream_real_chain_error_unknown_falls_back_to_raw(
     actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
     assert actions[-1]["action"] == "dream_failed"
     assert actions[-1]["payload"]["reason"] == dream.error
+
+
+# ── THR-116 adversarial real-chain dream tests (formerly faulty) ──────
+# These tests prove that unsupported error_* subtypes with recognised signal
+# text do NOT produce a structured terminal reason through the full
+# ClaudeExecutor → _run_command → production parser → run_dream chain.
+# Both dream.error and dream_failed.payload.reason must contain the raw
+# stderr-first fallback, not a classified reason.
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_error_lookalike_session_limit_raw_fallback(
+    mock_subprocess, org_state,
+):
+    """Real-chain adversarial (error_lookalike + session-limit text):
+    {type:result, subtype:error_lookalike, is_error:true,
+    result: "Session limit reached"} + unrelated workspace-trust stderr →
+    dream.error == dream_failed.payload.reason == raw stderr-first fallback.
+
+    This enters the formerly faulty classification condition: under the
+    earlier startswith("error_") check, the parser would have classified
+    this as session_limit.  With the strict subtype == error_during_execution
+    check, the parser returns None and the raw fallback wins.
+    (MEM-380 coverage)."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_lookalike","is_error":true,'
+               '"result":"Session limit reached"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    # error_lookalike is unsupported → raw stderr-first fallback.
+    assert "Command exited with code 1" in dream.error
+    assert "Workspace trust warning" in dream.error
+    assert "session_limit" not in dream.error, (
+        f"error_lookalike must not produce session_limit in dream.error; got {dream.error!r}"
+    )
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == dream.error
+    assert "session_limit" not in actions[-1]["payload"]["reason"], (
+        f"dream_failed reason must not be session_limit; got {actions[-1]['payload']['reason']!r}"
+    )
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_error_unknown_certificate_raw_fallback(
+    mock_subprocess, org_state,
+):
+    """Real-chain adversarial (error_unknown + certificate text):
+    {type:result, subtype:error_unknown, is_error:true,
+    result: "UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}
+    + unrelated workspace-trust stderr →
+    dream.error == dream_failed.payload.reason == raw stderr-first fallback.
+
+    This enters the formerly faulty classification condition: under the
+    earlier startswith("error_") check, the parser would have classified
+    this as transport_error.  With the strict subtype == error_during_execution
+    check, the parser returns None and the raw fallback wins.
+    (MEM-377 coverage)."""
+    _insert_pending_dream(org_state)
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_unknown","is_error":true,'
+               '"result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}',
+        stderr="Workspace trust warning: untrusted directory\n",
+    )
+
+    def _factory(_name, _settings, _paths):
+        return ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=Settings(), paths=_paths,
+        )
+
+    await run_dream(
+        org_state=org_state, dream_id="DREAM-001",
+        executor_factory=_factory,
+    )
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    # error_unknown is unsupported → raw stderr-first fallback.
+    assert "Command exited with code 1" in dream.error
+    assert "Workspace trust warning" in dream.error
+    assert "transport_error" not in dream.error, (
+        f"error_unknown must not produce transport_error in dream.error; got {dream.error!r}"
+    )
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == dream.error
+    assert "transport_error" not in actions[-1]["payload"]["reason"], (
+        f"dream_failed reason must not contain transport_error; got {actions[-1]['payload']['reason']!r}"
+    )
