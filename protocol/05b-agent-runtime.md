@@ -134,8 +134,16 @@ plus a human-only legacy route:
   (``get_context_by_session()``) — never from body/query/env/client claims,
   task lookup by agent, team membership, or YAML eligibility. Path-selected
   org is cross-checked against the session's org; cross-org and mismatched
-  contexts are denied with 403. Body identity claims (task_id, session_id,
-  proposer_agent) are rejected server-side with 403. This is the sole agent
+  contexts are denied with 403. The server rejects the **presence** of every client-controlled trusted
+  identity/authority field in the direct HTTP body — ``task_id``,
+  ``session_id``, ``proposer_agent``, ``org``, ``org_slug``, ``agent``,
+  ``agent_name``, ``actor``, ``eligibility``, ``permission``, and
+  ``permissions`` — before request-model parsing, session lookup,
+  policy checks, or any persistence. Presence includes empty values.
+  Rejection returns exact HTTP 403 with error code
+  ``body_identity_rejected``; no lifecycle package, event,
+  materialization, or ArtifactStore residue is produced. This is the
+  sole agent
   authoring workflow — there is no alternate agent-capable path.
 
 - **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``

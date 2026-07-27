@@ -284,6 +284,49 @@ class TestProposalRouteE2E:
         # Verify zero residue — identity rejection before any persistence
         _assert_zero_residue(org)
 
+    # ── Empty-value extra-key rejection (presence boundary, not truthiness) ──
+
+    @pytest.mark.parametrize("key,value", [
+        ("org", ""),
+        ("org_slug", ""),
+        ("agent", ""),
+        ("agent_name", ""),
+        ("actor", ""),
+        ("eligibility", ""),
+        ("permission", ""),
+        ("permissions", []),
+    ])
+    def test_body_extra_identity_key_empty_value_rejected_403(
+        self, client_with_runtime, key, value
+    ):
+        """Every prohibited identity/authority key with an empty/falsey value
+        is rejected with exact 403 body_identity_rejected. The boundary is
+        key *presence* — not truthiness — so empty strings and empty lists
+        are just as prohibited as non-empty values."""
+        client, org = client_with_runtime
+
+        org.sessions.set_active(
+            "TASK-3510", "frontend_engineer", "sess-body-empty-extra",
+            org_slug="alpha",
+        )
+
+        body = dict(_VALID_PROPOSAL, **{key: value})
+
+        client.headers.pop("Authorization", None)
+        resp = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=body,
+            params={"session_id": "sess-body-empty-extra"},
+        )
+        assert resp.status_code == 403, (
+            f"Expected 403 for empty {key} claim, got {resp.status_code}: {resp.json()}"
+        )
+        detail = resp.json()["detail"]
+        assert detail["code"] == "body_identity_rejected"
+        assert key in detail.get("detail", "")
+        # Verify zero residue across ALL persistence surfaces
+        _assert_zero_residue(org)
+
     # ── Clean-body success: server derives exact provenance ──
 
     def test_clean_body_success_proves_server_provenance(

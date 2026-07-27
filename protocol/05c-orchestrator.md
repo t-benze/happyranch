@@ -716,8 +716,11 @@ agent-only route. The legacy dual-auth path is human/founder-only:
    --session-id <session-id> [--org <slug>]``. The proposal file contains only
    package metadata/content accepted by ``ProposalRequest`` (slug, name,
    description, skill_md, version, policy_class, references, assets, purpose,
-   target_agent_suggestion). It must NOT contain org, agent, task, session,
-   proposer_agent, eligibility, or permission identity. The CLI builds a
+   target_agent_suggestion). It must NOT contain any client-controlled
+   trusted identity/authority field: ``org``, ``org_slug``, ``agent``,
+   ``agent_name``, ``task_id``, ``session_id``, ``proposer_agent``,
+   ``actor``, ``eligibility``, ``permission``, or ``permissions``.
+   The CLI builds a
    token-free transport (no bearer token read or sent) using only the daemon
    port. It resolves org via the established ``resolve_org_slug(args_org=,
    available=)`` convention. The opaque session ID is sent to
@@ -726,8 +729,15 @@ agent-only route. The legacy dual-auth path is human/founder-only:
    identity dimensions (org_slug, task_id, agent_name, active session_id) from
    the SessionTracker's additive context index — never from body, query,
    environment, task lookup by agent, team membership, or client-asserted
-   identity. Body identity claims (task_id, session_id, proposer_agent) are
-   rejected with 403. Path-selected org is cross-checked against the session's
+   identity. The server rejects the **presence** of every client-controlled
+   trusted identity/authority field in the direct HTTP body — ``task_id``,
+   ``session_id``, ``proposer_agent``, ``org``, ``org_slug``, ``agent``,
+   ``agent_name``, ``actor``, ``eligibility``, ``permission``, and
+   ``permissions`` — before request-model parsing, session lookup, policy
+   checks, or any persistence. Presence includes empty values. Rejection
+   returns exact HTTP 403 with error code ``body_identity_rejected``; no
+   lifecycle package, event, materialization, or ArtifactStore residue is
+   produced. Path-selected org is cross-checked against the session's
    org; cross-org and mismatched contexts are denied.
 
 2. **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
@@ -766,7 +776,10 @@ SessionTracker context — never from CLI flags, query fields, body claims,
 namespace inspection, or client-asserted identity. The transport is
 bearer-free: the CLI reads only the daemon port and builds a plain
 ``httpx.Client`` with NO ``Authorization`` header. Callers cannot supply
-trusted identity; body identity claims are rejected with 403.
+trusted identity; body identity claims (presence of all eleven
+prohibited trusted keys, including empty values) are rejected with exact
+HTTP 403 ``body_identity_rejected`` before any persistence — see §4.5
+Agent authority.
 
 Malformed JSON, missing ``--from-file`` or ``--session-id`` flags, and body
 identity-key attacks fail locally with exit code 1 or 2. Lifecycle validation
