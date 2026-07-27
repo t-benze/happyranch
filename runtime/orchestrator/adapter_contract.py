@@ -1,19 +1,22 @@
-"""Versioned adapter input/output contract (THR-107 D3).
+"""Versioned adapter input/output contract (THR-107 D3/D7B/D12).
 
 Defines the canonical ``AdapterInput`` and ``AdapterOutput`` Pydantic models
 that form the stdin/stdout contract between the daemon and custom adapter
-executables. These models are the authoritative shape for the conformance
-probe run at registration time (§4.4 of the unified adapter architecture).
+executables. These models are the authoritative shape for both the conformance
+probe run at registration time (D3) AND the runtime launch path (D7B) where
+``CustomAdapterExecutor`` maps the adapter's AdapterOutput into the existing
+``ExecutorResult`` lifecycle.
 
 The contract is additive — it does not alter ``ExecutorResult``, any
-existing audit shape, or any SQLite column. ``AdapterOutput`` is validated
-during the conformance probe only; at launch time the adapter's output is
-mapped back into the existing ``ExecutorResult`` by the command-adapter
-boundary (D6 `command_adapter_id`).
+existing audit shape, or any SQLite column.
 
-D3 scope: conformance-probe use only. The fields here are the CONTRACT the
-custom adapter executable must speak; the daemon-side adapter maps this
-into ``ExecutorResult`` during actual launches (a later slice).
+D3: conformance-probe validation at registration time.
+D7B: runtime enforcement — every custom-adapter launch requires a valid v1
+AdapterOutput; ``CustomAdapterExecutor`` rejects mismatched adapter identity,
+adapter version, contract version, and session-id-echo before mapping any
+result or accounting data.
+D12: finalized stable external contract — this module is the authoritative
+reference; the unified-adapter architecture spec §2 is the normative prose.
 """
 from __future__ import annotations
 

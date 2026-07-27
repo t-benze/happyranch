@@ -231,7 +231,7 @@ async def run_dream(
             agent=dream.agent_name,
             org=org_state.slug,
             invocation_kind="dream",
-            task_id=dream_id,
+            task_id=None,
         )
 
     loop = asyncio.get_running_loop()

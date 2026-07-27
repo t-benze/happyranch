@@ -233,7 +233,7 @@ async def run_wake(
             agent=record.agent_name,
             org=org_state.slug,
             invocation_kind="wake",
-            task_id=work_hour_id,
+            task_id=None,
         )
 
     loop = asyncio.get_running_loop()

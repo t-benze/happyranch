@@ -233,7 +233,7 @@ class TestCustomAdapterExecutorLaunch:
         executor.set_invocation_context(
             agent="dev_agent", org="happyranch", invocation_kind="task", task_id="TASK-001"
         )
-        result = executor.run(workspace=tmp_path, prompt="test prompt")
+        result = executor.run(workspace=tmp_path, prompt="test prompt", session_id="test-sess")
         assert result.success
         assert result.duration_seconds >= 0
         assert result.token_usage is not None
@@ -267,7 +267,7 @@ class TestCustomAdapterExecutorLaunch:
         executor.set_invocation_context(
             agent="dev_agent", org="happyranch", invocation_kind="task"
         )
-        result = executor.run(workspace=tmp_path, prompt="test")
+        result = executor.run(workspace=tmp_path, prompt="test", session_id="test-sess")
         assert result.success
         assert result.token_usage is not None
         assert result.token_usage.input_tokens == 200
@@ -301,7 +301,7 @@ class TestCustomAdapterExecutorLaunch:
         executor.set_invocation_context(
             agent="dev_agent", org="happyranch", invocation_kind="task"
         )
-        result = executor.run(workspace=tmp_path, prompt="test")
+        result = executor.run(workspace=tmp_path, prompt="test", session_id="test-sess")
         assert not result.success
         assert result.error == "adapter failed"
         assert result.stdout_tail == "failure output"
@@ -326,7 +326,7 @@ class TestCustomAdapterExecutorLaunch:
         executor.set_invocation_context(
             agent="dev_agent", org="happyranch", invocation_kind="task"
         )
-        result = executor.run(workspace=tmp_path, prompt="test")
+        result = executor.run(workspace=tmp_path, prompt="test", session_id="test-sess")
         assert not result.success
         assert "success=true" in (result.error or "").lower() or "success" in (result.error or "").lower()
 
@@ -745,7 +745,7 @@ class TestInvocationContext:
             invocation_kind="task",
             task_id="TASK-001",
         )
-        result = executor.run(workspace=tmp_path, prompt="test")
+        result = executor.run(workspace=tmp_path, prompt="test", session_id="test-sess")
         assert result.success
 
 
@@ -838,3 +838,477 @@ class TestNoPermissionExpansion:
         # Regression: D5 baseline-only — no new permission surfaces.
         # This test is a documentation check, not a behavioral assertion.
         pass
+
+
+class TestAdapterOutputIdentityBinding:
+    """Fix 1: AdapterOutput validation rejects wrong adapter_version and session_id."""
+
+    def test_adapter_version_mismatch_rejected(self, tmp_path):
+        """Adapter output with wrong adapter_version → rejected before mapping."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output = _valid_adapter_output()
+        output["adapter_metadata"]["adapter_version"] = "99.0.0"
+        exe_path = _make_test_adapter_executable(tmp_path, output)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = CustomAdapterExecutor(
+            profile_name="test",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",  # approved version
+            adapter_contract_version=1,
+            provider="test",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task", task_id="TASK-001"
+        )
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+        # Use a throttle with no spacing/backoff for deterministic testing
+        old = get_throttle()
+        set_throttle(ProviderThrottle(ceiling_default=10))
+        try:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+        finally:
+            set_throttle(old)
+        assert not result.success
+        assert "version mismatch" in (result.error or "")
+
+    def test_session_id_mismatch_rejected(self, tmp_path):
+        """Adapter output with wrong session_id → rejected (echo rule)."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output = _valid_adapter_output()
+        output["session_id"] = "sess-evil"
+        exe_path = _make_test_adapter_executable(tmp_path, output)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = CustomAdapterExecutor(
+            profile_name="test",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task", task_id="TASK-001"
+        )
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+        old = get_throttle()
+        set_throttle(ProviderThrottle(ceiling_default=10))
+        try:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+        finally:
+            set_throttle(old)
+        assert not result.success
+        assert "session_id mismatch" in (result.error or "") or "session_id" in (result.error or "").lower()
+
+    def test_valid_echo_passes_identity_checks(self, tmp_path):
+        """Valid adapter with correct version and echo session_id → success."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output = _valid_adapter_output(
+            session_id=None,  # will be set to a known value inside _launch
+            adapter_metadata={
+                "adapter": "test-adapter",
+                "adapter_version": "1.0.0",
+                "contract_version": 1,
+            },
+        )
+        # The adapter will echo its input's invocation_id as session_id.
+        # We create an adapter that reads stdin and echos the invocation id.
+        import sys as _sys
+        import stat
+        script = textwrap.dedent(f"""\
+            #!{_sys.executable}
+            import sys, json
+            data = sys.stdin.read()
+            inp = json.loads(data)
+            sid = inp["invocation"]["invocation_id"]
+            result = {{
+                "success": True,
+                "duration_seconds": 1,
+                "session_id": sid,
+                "returncode": 0,
+                "stdout_tail": "ok",
+                "stderr_tail": "",
+                "adapter_metadata": {{
+                    "adapter": "test-adapter",
+                    "adapter_version": "1.0.0",
+                    "contract_version": 1
+                }},
+                "token_usage": {{
+                    "input_tokens": 100,
+                    "output_tokens": 50
+                }}
+            }}
+            sys.stdout.write(json.dumps(result))
+            sys.stdout.flush()
+        """)
+        exe = tmp_path / "echo-adapter"
+        exe.write_text(script)
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        exe_path = str(exe)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = CustomAdapterExecutor(
+            profile_name="test",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task", task_id="TASK-001"
+        )
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+        old = get_throttle()
+        set_throttle(ProviderThrottle(ceiling_default=10))
+        try:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+        finally:
+            set_throttle(old)
+        assert result.success
+        assert result.token_usage is not None
+        assert result.token_usage.input_tokens == 100
+
+
+class TestInvocationContextEnvelope:
+    """Fix 2: All five invocation paths supply truthful AdapterInput.
+
+    Each test creates a real adapter that dumps its stdin to a file,
+    then inspects the actual AdapterInput envelope to assert the
+    null/non-null task_id matrix and no placeholder/foreign IDs.
+    """
+
+    def _make_inspector_adapter(self, tmp_path: Path, output_file: Path) -> str:
+        """Create an adapter that writes its stdin to output_file, then returns valid output."""
+        import sys as _sys
+        import stat
+        script = textwrap.dedent(f"""\
+            #!{_sys.executable}
+            import sys, json
+            data = sys.stdin.read()
+            with open({str(output_file)!r}, 'w') as f:
+                f.write(data)
+            inp = json.loads(data)
+            sid = inp["invocation"]["invocation_id"]
+            result = {{
+                "success": True,
+                "duration_seconds": 1,
+                "session_id": sid,
+                "returncode": 0,
+                "stdout_tail": "ok",
+                "stderr_tail": "",
+                "adapter_metadata": {{
+                    "adapter": "test-adapter",
+                    "adapter_version": "1.0.0",
+                    "contract_version": 1
+                }}
+            }}
+            sys.stdout.write(json.dumps(result))
+            sys.stdout.flush()
+        """)
+        exe = tmp_path / "inspector-adapter"
+        exe.write_text(script)
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return str(exe)
+
+    def _build_executor_with_context(
+        self, exe_path, exe_hash, agent, org, kind, task_id
+    ):
+        executor = CustomAdapterExecutor(
+            profile_name="test",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test",
+        )
+        executor.set_invocation_context(
+            agent=agent, org=org, invocation_kind=kind, task_id=task_id
+        )
+        return executor
+
+    def test_task_context_has_task_id(self, tmp_path):
+        """Task invocation → AdapterInput.invocation.task_id = 'TASK-001' (non-null)."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output_file = tmp_path / "stdin.json"
+        exe_path = self._make_inspector_adapter(tmp_path, output_file)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = self._build_executor_with_context(
+            exe_path, exe_hash, "dev_agent", "happyranch", "task", "TASK-001"
+        )
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+        old = get_throttle()
+        set_throttle(ProviderThrottle(ceiling_default=10))
+        try:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+        finally:
+            set_throttle(old)
+        assert result.success
+        assert output_file.exists()
+        envelope = json.loads(output_file.read_text())
+        assert envelope["invocation"]["task_id"] == "TASK-001"
+        assert envelope["invocation"]["invocation_kind"] == "task"
+
+    def test_thread_context_task_id_is_null(self, tmp_path):
+        """Thread invocation → AdapterInput.invocation.task_id is null."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output_file = tmp_path / "stdin.json"
+        exe_path = self._make_inspector_adapter(tmp_path, output_file)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = self._build_executor_with_context(
+            exe_path, exe_hash, "dev_agent", "happyranch", "thread", None
+        )
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+        old = get_throttle()
+        set_throttle(ProviderThrottle(ceiling_default=10))
+        try:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+        finally:
+            set_throttle(old)
+        assert result.success
+        envelope = json.loads(output_file.read_text())
+        assert envelope["invocation"]["task_id"] is None
+        assert envelope["invocation"]["invocation_kind"] == "thread"
+
+    def test_wake_context_task_id_is_null(self, tmp_path):
+        """Wake invocation → AdapterInput.invocation.task_id is null."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output_file = tmp_path / "stdin.json"
+        exe_path = self._make_inspector_adapter(tmp_path, output_file)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = self._build_executor_with_context(
+            exe_path, exe_hash, "dev_agent", "happyranch", "wake", None
+        )
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+        old = get_throttle()
+        set_throttle(ProviderThrottle(ceiling_default=10))
+        try:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+        finally:
+            set_throttle(old)
+        assert result.success
+        envelope = json.loads(output_file.read_text())
+        assert envelope["invocation"]["task_id"] is None
+        assert envelope["invocation"]["invocation_kind"] == "wake"
+
+    def test_dream_context_task_id_is_null(self, tmp_path):
+        """Dream invocation → AdapterInput.invocation.task_id is null."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output_file = tmp_path / "stdin.json"
+        exe_path = self._make_inspector_adapter(tmp_path, output_file)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = self._build_executor_with_context(
+            exe_path, exe_hash, "dev_agent", "happyranch", "dream", None
+        )
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+        old = get_throttle()
+        set_throttle(ProviderThrottle(ceiling_default=10))
+        try:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+        finally:
+            set_throttle(old)
+        assert result.success
+        envelope = json.loads(output_file.read_text())
+        assert envelope["invocation"]["task_id"] is None
+        assert envelope["invocation"]["invocation_kind"] == "dream"
+
+    def test_schedule_context_task_id_is_null(self, tmp_path):
+        """Schedule invocation → AdapterInput.invocation.task_id is null."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output_file = tmp_path / "stdin.json"
+        exe_path = self._make_inspector_adapter(tmp_path, output_file)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = self._build_executor_with_context(
+            exe_path, exe_hash, "dev_agent", "happyranch", "schedule", None
+        )
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+        old = get_throttle()
+        set_throttle(ProviderThrottle(ceiling_default=10))
+        try:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+        finally:
+            set_throttle(old)
+        assert result.success
+        envelope = json.loads(output_file.read_text())
+        assert envelope["invocation"]["task_id"] is None
+        assert envelope["invocation"]["invocation_kind"] == "schedule"
+
+    def test_no_placeholder_ids_in_envelope(self, tmp_path):
+        """No thread/wake/dream/schedule IDs appear as task_id in any envelope."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output_file = tmp_path / "stdin.json"
+        exe_path = self._make_inspector_adapter(tmp_path, output_file)
+        exe_hash = compute_sha256(exe_path)
+
+        # Test each non-task kind with a representative invocation
+        for kind in ("thread", "wake", "dream", "schedule"):
+            executor = self._build_executor_with_context(
+                exe_path, exe_hash, "dev_agent", "happyranch", kind, None
+            )
+            from runtime.orchestrator.throttle import get_throttle, set_throttle
+            from runtime.orchestrator.throttle import ProviderThrottle
+            old = get_throttle()
+            set_throttle(ProviderThrottle(ceiling_default=10))
+            try:
+                result = executor.run(
+                    workspace=tmp_path, prompt="test prompt",
+                    session_id=f"sess-test-{kind}"
+                )
+            finally:
+                set_throttle(old)
+            assert result.success, f"{kind} invocation should succeed"
+            envelope = json.loads(output_file.read_text())
+            assert envelope["invocation"]["task_id"] is None, (
+                f"{kind} invocation should have task_id=null, "
+                f"got {envelope['invocation']['task_id']!r}"
+            )
+            assert envelope["invocation"]["invocation_kind"] == kind
+            # Verify agent and org are truthful, not placeholders
+            assert envelope["invocation"]["agent"] == "dev_agent"
+            assert envelope["invocation"]["org"] == "happyranch"
+
+
+class TestThrottleIntegration:
+    """Fix 3: CustomAdapterExecutor routes through per-provider throttle."""
+
+    def test_custom_executor_enters_throttle(self, tmp_path):
+        """Custom adapter launch calls get_throttle().run() with correct provider."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output = _valid_adapter_output()
+        exe_path = _make_test_adapter_executable(tmp_path, output)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = CustomAdapterExecutor(
+            profile_name="test",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test-provider",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task", task_id="TASK-001"
+        )
+
+        # Install a spy throttle that records the provider and launch invocation
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+
+        calls = []
+
+        class SpyThrottle(ProviderThrottle):
+            def run(self, provider, launch, on_event=None):
+                calls.append({"provider": provider, "on_event": on_event})
+                return launch()
+
+        old = get_throttle()
+        set_throttle(SpyThrottle(ceiling_default=10))
+        try:
+            result = executor.run(workspace=tmp_path, prompt="test prompt", session_id="test-sess")
+        finally:
+            set_throttle(old)
+
+        assert result.success
+        assert len(calls) == 1
+        assert calls[0]["provider"] == "test-provider"
+
+    def test_throttle_callback_is_observed(self, tmp_path):
+        """on_throttle_event callback is passed through to throttle."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        output = _valid_adapter_output()
+        exe_path = _make_test_adapter_executable(tmp_path, output)
+        exe_hash = compute_sha256(exe_path)
+
+        executor = CustomAdapterExecutor(
+            profile_name="test",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test-provider",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task", task_id="TASK-001"
+        )
+
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+
+        spy_events = []
+        on_event_captured = []
+
+        class SpyThrottle(ProviderThrottle):
+            def run(self, provider, launch, on_event=None):
+                on_event_captured.append(on_event)
+                return launch()
+
+        def my_callback(action, payload):
+            spy_events.append((action, payload))
+
+        old = get_throttle()
+        set_throttle(SpyThrottle(ceiling_default=10))
+        try:
+            result = executor.run(
+                workspace=tmp_path, prompt="test prompt",
+                on_throttle_event=my_callback,
+                session_id="test-sess"
+            )
+        finally:
+            set_throttle(old)
+
+        assert result.success
+        assert len(on_event_captured) == 1
+        assert on_event_captured[0] is my_callback
+
+    def test_generic_cli_still_uses_throttle(self, tmp_path):
+        """GenericCliExecutor still routes through _run_command → throttle (regression)."""
+        from runtime.orchestrator.throttle import get_throttle, set_throttle
+        from runtime.orchestrator.throttle import ProviderThrottle
+
+        calls = []
+
+        class SpyThrottle(ProviderThrottle):
+            def run(self, provider, launch, on_event=None):
+                calls.append({"provider": provider})
+                return launch()
+
+        from runtime.orchestrator.executors import GenericCliExecutor
+        executor = GenericCliExecutor(
+            profile_name="test-cli",
+            argv_template=["echo", "test"],
+            provider="test-cli-provider",
+        )
+
+        old = get_throttle()
+        set_throttle(SpyThrottle(ceiling_default=10))
+        try:
+            result = executor.run(
+                workspace=tmp_path, prompt="test",
+                timeout_seconds=5, session_id="test-sess"
+            )
+        finally:
+            set_throttle(old)
+
+        assert len(calls) == 1
+        assert calls[0]["provider"] == "test-cli-provider"

@@ -99,7 +99,7 @@ TARGET (this spec):
 ### 2.1 Adapter Input Contract (what the daemon passes to EVERY adapter)
 
 ```jsonc
-// AdapterInput — normative type example (not yet materialized in code)
+// AdapterInput — normative type (canonical, materialized in adapter_contract.py)
 {
   "contract_version": 1,                    // int, required. Version of THIS input contract.
   "invocation": {

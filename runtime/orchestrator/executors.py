@@ -1419,210 +1419,254 @@ class CustomAdapterExecutor:
         )
         input_json = adapter_input.model_dump_json()
 
-        # ── Launch adapter subprocess ───────────────────────────────
-        cmd = [self._adapter_executable]
-        start_time = time.monotonic()
+        # ── D7B: route through per-provider throttle (Fix 3) ──────
+        # The Popen+communicate+parse+validate body is wrapped in _launch
+        # and handed to ProviderThrottle — same pattern as _run_command.
+        # Acquires a per-provider slot, honors inter-launch spacing, and
+        # on a detected rate limit releases the slot, sleeps the backoff,
+        # and re-launches.
+        workspace.mkdir(parents=True, exist_ok=True)
 
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(workspace),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=_callee_env(),
-            )
-        except (FileNotFoundError, OSError, PermissionError) as exc:
-            return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
-                session_id=sid,
-                error=(
-                    f"Failed to launch custom adapter "
-                    f"{self._adapter_executable!r}: {exc}"
-                ),
-            )
+        def _launch() -> ExecutorResult:
+            start_time = time.monotonic()
 
-        if on_started is not None:
-            on_started(proc.pid)
-
-        try:
-            stdout, stderr = proc.communicate(
-                input=input_json, timeout=timeout_seconds
-            )
-        except subprocess.TimeoutExpired:
-            proc.kill()
             try:
-                proc.communicate(timeout=5)
+                proc = subprocess.Popen(
+                    [self._adapter_executable],
+                    cwd=str(workspace),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=_callee_env(),
+                )
+            except (FileNotFoundError, OSError, PermissionError) as exc:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error=(
+                        f"Failed to launch custom adapter "
+                        f"{self._adapter_executable!r}: {exc}"
+                    ),
+                )
+
+            if on_started is not None:
+                on_started(proc.pid)
+
+            try:
+                stdout, stderr = proc.communicate(
+                    input=input_json, timeout=timeout_seconds
+                )
             except subprocess.TimeoutExpired:
-                pass
-            return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
-                session_id=sid,
-                error=f"Custom adapter session timed out after {timeout_seconds}s",
-            )
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error=f"Custom adapter session timed out after {timeout_seconds}s",
+                )
 
-        full_stdout = stdout or ""
-        full_stderr = stderr or ""
-        stdout_tail = full_stdout[-_TAIL_BYTES:]
-        stderr_tail = full_stderr[-_TAIL_BYTES:]
+            full_stdout = stdout or ""
+            full_stderr = stderr or ""
+            stdout_tail = full_stdout[-_TAIL_BYTES:]
+            stderr_tail = full_stderr[-_TAIL_BYTES:]
 
-        if proc.returncode != 0:
-            return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
-                session_id=sid,
-                returncode=proc.returncode,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                error=(
-                    f"Custom adapter exited with code {proc.returncode}"
-                    + (": " + stderr_tail[:500] if stderr_tail else "")
-                ),
-            )
+            if proc.returncode != 0:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    returncode=proc.returncode,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=(
+                        f"Custom adapter exited with code {proc.returncode}"
+                        + (": " + stderr_tail[:500] if stderr_tail else "")
+                    ),
+                )
 
-        # ── Parse AdapterOutput ────────────────────────────────────
-        # Reject oversized output (same 1MB limit as conformance probe)
-        MAX_OUTPUT_BYTES = 1_048_576
-        stdout_bytes = full_stdout.encode("utf-8")
-        if len(stdout_bytes) > MAX_OUTPUT_BYTES:
-            return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
-                session_id=sid,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                error=(
-                    f"Custom adapter stdout exceeds {MAX_OUTPUT_BYTES} byte limit "
-                    f"({len(stdout_bytes)} bytes)"
-                ),
-            )
+            # ── Parse AdapterOutput ────────────────────────────────
+            # Reject oversized output (same 1MB limit as conformance probe)
+            MAX_OUTPUT_BYTES = 1_048_576
+            stdout_bytes = full_stdout.encode("utf-8")
+            if len(stdout_bytes) > MAX_OUTPUT_BYTES:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=(
+                        f"Custom adapter stdout exceeds {MAX_OUTPUT_BYTES} byte limit "
+                        f"({len(stdout_bytes)} bytes)"
+                    ),
+                )
 
-        # Parse JSON
-        try:
-            output_dict = json.loads(full_stdout)
-        except json.JSONDecodeError:
-            return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
-                session_id=sid,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                error="Custom adapter stdout is not valid JSON",
-            )
+            # Parse JSON
+            try:
+                output_dict = json.loads(full_stdout)
+            except json.JSONDecodeError:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error="Custom adapter stdout is not valid JSON",
+                )
 
-        if not isinstance(output_dict, dict):
-            return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
-                session_id=sid,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                error=(
-                    f"Custom adapter stdout is not a JSON object; "
-                    f"got {type(output_dict).__name__}"
-                ),
-            )
+            if not isinstance(output_dict, dict):
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=(
+                        f"Custom adapter stdout is not a JSON object; "
+                        f"got {type(output_dict).__name__}"
+                    ),
+                )
 
-        # Validate AdapterOutput schema
-        try:
-            output = AdapterOutput.model_validate(output_dict)
-        except Exception as exc:
-            return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
-                session_id=sid,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                error=f"Custom adapter output does not match AdapterOutput contract: {exc}",
-            )
+            # Validate AdapterOutput schema
+            try:
+                output = AdapterOutput.model_validate(output_dict)
+            except Exception as exc:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=f"Custom adapter output does not match AdapterOutput contract: {exc}",
+                )
 
-        # Verify contract version
-        if output.adapter_metadata.contract_version != 1:
-            return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
-                session_id=sid,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                error=(
-                    f"Custom adapter contract version "
-                    f"{output.adapter_metadata.contract_version} "
-                    f"not supported; expected 1"
-                ),
-            )
+            # ── D7B: Verify adapter provenance (Fix 1) ─────────────
+            # Reject before mapping/accounting when the adapter's output
+            # metadata disagrees with the approved bound adapter.
 
-        # Verify adapter identity
-        if output.adapter_metadata.adapter != self._adapter_entry_id:
-            return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
-                session_id=sid,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                error=(
-                    f"Custom adapter identity mismatch: expected "
-                    f"{self._adapter_entry_id!r}, got "
-                    f"{output.adapter_metadata.adapter!r}"
-                ),
-            )
+            # Verify contract version
+            if output.adapter_metadata.contract_version != 1:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=(
+                        f"Custom adapter contract version "
+                        f"{output.adapter_metadata.contract_version} "
+                        f"not supported; expected 1"
+                    ),
+                )
 
-        # Verify success/returncode consistency
-        if output.success and output.returncode is not None and output.returncode != 0:
+            # Verify adapter identity
+            if output.adapter_metadata.adapter != self._adapter_entry_id:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=(
+                        f"Custom adapter identity mismatch: expected "
+                        f"{self._adapter_entry_id!r}, got "
+                        f"{output.adapter_metadata.adapter!r}"
+                    ),
+                )
+
+            # Verify adapter version matches approved binding
+            if output.adapter_metadata.adapter_version != self._adapter_version:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=(
+                        f"Custom adapter version mismatch: approved "
+                        f"{self._adapter_version!r}, adapter returned "
+                        f"{output.adapter_metadata.adapter_version!r}"
+                    ),
+                )
+
+            # Verify session_id echo (invocation integrity)
+            if output.session_id != sid:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=(
+                        f"Custom adapter session_id mismatch: expected "
+                        f"{sid!r}, adapter returned "
+                        f"{output.session_id!r}"
+                    ),
+                )
+
+            # Verify success/returncode consistency
+            if output.success and output.returncode is not None and output.returncode != 0:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    returncode=output.returncode,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=(
+                        f"Adapter reported success=true but agent subprocess "
+                        f"exit code was {output.returncode}"
+                    ),
+                )
+            if not output.success and (output.returncode is None or output.returncode == 0):
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    returncode=proc.returncode,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    error=(
+                        f"Adapter reported success=false but subprocess "
+                        f"exit code was 0"
+                    ),
+                )
+
+            # ── Map to ExecutorResult ──────────────────────────────
+            token_usage: "TokenUsage | None" = None
+            if output.token_usage is not None:
+                from runtime.models import TokenUsage
+                token_usage = TokenUsage(
+                    input_tokens=output.token_usage.input_tokens,
+                    output_tokens=output.token_usage.output_tokens,
+                    cache_read_tokens=output.token_usage.cache_read_tokens,
+                    cache_creation_tokens=output.token_usage.cache_creation_tokens,
+                    reasoning_tokens=output.token_usage.reasoning_tokens,
+                    model=output.token_usage.model or self._provider,
+                    usage_raw_json=output.token_usage.usage_raw_json,
+                )
+
             return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
+                success=output.success,
+                duration_seconds=output.duration_seconds,
                 session_id=sid,
                 returncode=output.returncode,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                error=(
-                    f"Adapter reported success=true but agent subprocess "
-                    f"exit code was {output.returncode}"
-                ),
-            )
-        if not output.success and (output.returncode is None or output.returncode == 0):
-            return ExecutorResult(
-                success=False,
-                duration_seconds=int(time.monotonic() - start_time),
-                session_id=sid,
-                returncode=proc.returncode,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                error=(
-                    f"Adapter reported success=false but subprocess "
-                    f"exit code was 0"
-                ),
+                stdout_tail=output.stdout_tail or stdout_tail,
+                stderr_tail=output.stderr_tail or stderr_tail,
+                error=output.error,
+                token_usage=token_usage,
+                agent_session_id=output.agent_session_id,
+                rate_limited=output.rate_limited,
             )
 
-        # ── Map to ExecutorResult ──────────────────────────────────
-        token_usage: "TokenUsage | None" = None
-        if output.token_usage is not None:
-            from runtime.models import TokenUsage
-            token_usage = TokenUsage(
-                input_tokens=output.token_usage.input_tokens,
-                output_tokens=output.token_usage.output_tokens,
-                cache_read_tokens=output.token_usage.cache_read_tokens,
-                cache_creation_tokens=output.token_usage.cache_creation_tokens,
-                reasoning_tokens=output.token_usage.reasoning_tokens,
-                model=output.token_usage.model or self._provider,
-                usage_raw_json=output.token_usage.usage_raw_json,
-            )
-
-        return ExecutorResult(
-            success=output.success,
-            duration_seconds=output.duration_seconds,
-            session_id=sid,
-            returncode=output.returncode,
-            stdout_tail=output.stdout_tail or stdout_tail,
-            stderr_tail=output.stderr_tail or stderr_tail,
-            error=output.error,
-            token_usage=token_usage,
-            agent_session_id=output.agent_session_id,
-            rate_limited=output.rate_limited,
-        )
+        from runtime.orchestrator.throttle import get_throttle
+        return get_throttle().run(self._provider, _launch, on_throttle_event)
 
 
 AgentExecutor = ClaudeExecutor

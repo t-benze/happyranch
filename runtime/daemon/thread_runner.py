@@ -517,7 +517,7 @@ async def run_invocation(
             agent=inv.agent_name,
             org=org_state.slug,
             invocation_kind="thread",
-            task_id=inv.thread_id,
+            task_id=None,
         )
 
     # Load org config once: it feeds both the timeout override and the
