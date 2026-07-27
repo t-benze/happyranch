@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,10 +83,14 @@ def validate_version(version: str) -> str:
     """Validate an adapter version string.
 
     Must be a non-empty string. Returns the trimmed version.
+    Rejects strings that become empty after trimming whitespace.
     """
     if not version or not isinstance(version, str):
         raise ValueError("version must be a non-empty string")
-    return version.strip()
+    trimmed = version.strip()
+    if not trimmed:
+        raise ValueError("version must be a non-empty string after trimming whitespace")
+    return trimmed
 
 
 def validate_capabilities(capabilities: list[str]) -> list[str]:
@@ -130,6 +135,114 @@ CONFORMANCE_PROBE_TIMEOUT_SECONDS = 30
 # Maximum bytes to read from the adapter's stdout during the probe.
 # Guards against a misbehaving adapter that writes an unbounded stream.
 CONFORMANCE_PROBE_MAX_STDOUT_BYTES = 1_048_576  # 1 MB
+
+# Maximum bytes to read from the adapter's stderr during the probe.
+CONFORMANCE_PROBE_MAX_STDERR_BYTES = 1_048_576  # 1 MB
+
+
+class BoundedReadError(ValueError):
+    """Raised when a bounded read exceeds its byte limit."""
+
+    def __init__(self, stream: str, limit: int, actual: int, executable: str):
+        super().__init__(
+            f"Conformance probe {stream} exceeded {limit} byte limit "
+            f"({actual} bytes) for {executable!r}"
+        )
+        self.stream = stream
+        self.limit = limit
+        self.actual = actual
+        self.executable = executable
+
+
+def _drain_proc(proc: subprocess.Popen) -> None:
+    """Drain remaining output from a killed subprocess to prevent zombie."""
+    try:
+        proc.communicate(timeout=5)
+    except Exception:
+        pass
+
+
+def _read_stream_worker(pipe, chunks: list[bytes], limit: int,
+                         stream_name: str, error_container: list):
+    """Worker function for _read_bounded — reads a single pipe."""
+    total = 0
+    try:
+        while True:
+            chunk = pipe.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                if not error_container:
+                    error_container.append(
+                        BoundedReadError(stream_name, limit, total, "")
+                    )
+                return
+            chunks.append(chunk)
+    except Exception as exc:
+        if not error_container:
+            error_container.append(exc)
+
+
+def _read_bounded(
+    proc: subprocess.Popen,
+    stdout_limit: int,
+    stderr_limit: int,
+    timeout: float,
+) -> tuple[bytes, bytes]:
+    """Read stdout and stderr concurrently with per-stream byte limits.
+
+    Reads from both pipes in parallel (using threads) until both are closed
+    or a limit is exceeded. On limit breach, raises ``BoundedReadError``
+    immediately — the caller MUST kill and drain the child.
+
+    Returns (stdout_bytes, stderr_bytes) on successful bounded read.
+
+    Precondition: stdin has already been closed by the caller.
+    """
+    if proc.stdout is None or proc.stderr is None:
+        raise ValueError(
+            "Subprocess stdout/stderr pipes are not available"
+        )
+
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    error_container: list = []  # mutable container shared across threads
+
+    t_stdout = threading.Thread(
+        target=_read_stream_worker,
+        args=(proc.stdout, stdout_chunks, stdout_limit, "stdout", error_container),
+        daemon=True,
+    )
+    t_stderr = threading.Thread(
+        target=_read_stream_worker,
+        args=(proc.stderr, stderr_chunks, stderr_limit, "stderr", error_container),
+        daemon=True,
+    )
+
+    t_stdout.start()
+    t_stderr.start()
+
+    # Wait for both threads to finish, with timeout
+    t_stdout.join(timeout=timeout)
+    t_stderr.join(timeout=timeout)
+
+    if t_stdout.is_alive() or t_stderr.is_alive():
+        # Timeout — one or both threads are still reading
+        raise subprocess.TimeoutExpired(
+            proc.args, timeout,
+            output=b"".join(stdout_chunks),
+            stderr=b"".join(stderr_chunks),
+        )
+
+    if error_container:
+        error = error_container[0]
+        if isinstance(error, BoundedReadError):
+            error.executable = proc.args[0] if proc.args else ""
+        raise error
+
+    # Both streams closed cleanly within limits
+    return b"".join(stdout_chunks), b"".join(stderr_chunks)
 
 
 def build_probe_input(adapter_name: str) -> AdapterInput:
@@ -206,18 +319,34 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
             f"Failed to launch adapter executable {executable!r}: {exc}"
         ) from exc
 
+    # Read stdout and stderr concurrently with byte limits.
+    # Do NOT use communicate() — it fully buffers both streams before we can
+    # enforce limits. Instead, send stdin, close it, then read from both pipes
+    # in a bounded loop.
     try:
-        stdout_bytes, stderr_bytes = proc.communicate(
-            input=input_json.encode("utf-8"),
+        # Send stdin and close it so the adapter can start processing
+        if proc.stdin is not None:
+            proc.stdin.write(input_json.encode("utf-8"))
+            proc.stdin.close()
+        stdout_bytes, stderr_bytes = _read_bounded(
+            proc,
+            stdout_limit=CONFORMANCE_PROBE_MAX_STDOUT_BYTES,
+            stderr_limit=CONFORMANCE_PROBE_MAX_STDERR_BYTES,
             timeout=CONFORMANCE_PROBE_TIMEOUT_SECONDS,
         )
+        # Wait for the subprocess to finish
+        proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.communicate()  # Drain
+        _drain_proc(proc)
         raise ValueError(
             f"Conformance probe timed out after "
             f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}"
         )
+    except BoundedReadError as exc:
+        proc.kill()
+        _drain_proc(proc)
+        raise ValueError(str(exc)) from exc
 
     if proc.returncode != 0:
         stderr_tail = ""
@@ -233,7 +362,8 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
             f"Conformance probe produced no stdout for {executable!r}"
         )
 
-    # Decode and parse stdout as JSON
+    # Decode and parse stdout — enforce byte limits while reading both streams.
+    # Reject over-limit, non-UTF8, or non-JSON output with ZERO durable residue.
     try:
         stdout_text = stdout_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -241,9 +371,12 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
             f"Conformance probe stdout is not valid UTF-8 for {executable!r}: {exc}"
         ) from exc
 
-    # Trim to max allowed bytes before parsing
-    if len(stdout_text) > CONFORMANCE_PROBE_MAX_STDOUT_BYTES:
-        stdout_text = stdout_text[:CONFORMANCE_PROBE_MAX_STDOUT_BYTES]
+    # Reject stdout exceeding the byte limit — do not silently truncate
+    if len(stdout_bytes) > CONFORMANCE_PROBE_MAX_STDOUT_BYTES:
+        raise ValueError(
+            f"Conformance probe stdout exceeds {CONFORMANCE_PROBE_MAX_STDOUT_BYTES} "
+            f"byte limit ({len(stdout_bytes)} bytes) for {executable!r}"
+        )
 
     try:
         output_dict = json.loads(stdout_text)
@@ -258,6 +391,29 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
             f"got {type(output_dict).__name__}"
         )
 
+    # Check contract_version in adapter_metadata BEFORE Pydantic validation.
+    # Pydantic v2 coerces bool → int, so we must inspect the raw JSON dict to
+    # detect booleans, None, floats, and other non-integer values.
+    raw_meta = output_dict.get("adapter_metadata")
+    if isinstance(raw_meta, dict):
+        raw_cv = raw_meta.get("contract_version")
+        if raw_cv is None:
+            raise ValueError(
+                f"Conformance probe output has missing contract_version "
+                f"for {executable!r}; must be the integer 1"
+            )
+        if not isinstance(raw_cv, int) or isinstance(raw_cv, bool):
+            raise ValueError(
+                f"Conformance probe output has non-integer contract_version "
+                f"{raw_cv!r} (type {type(raw_cv).__name__}) for {executable!r}; "
+                f"must be the integer 1"
+            )
+        if raw_cv != 1:
+            raise ValueError(
+                f"Conformance probe output has unsupported contract_version "
+                f"{raw_cv} for {executable!r}; only version 1 is supported in D3"
+            )
+
     # Validate against AdapterOutput schema
     try:
         output = AdapterOutput.model_validate(output_dict)
@@ -266,14 +422,6 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
             f"Conformance probe output does not match AdapterOutput contract "
             f"for {executable!r}: {exc}"
         ) from exc
-
-    # Validate contract_version in adapter_metadata
-    if output.adapter_metadata.contract_version < 1:
-        raise ValueError(
-            f"Conformance probe output has unknown contract_version "
-            f"{output.adapter_metadata.contract_version} for {executable!r}; "
-            f"minimum supported version is 1"
-        )
 
     # Basic sanity: success must be true
     if not output.success:
@@ -335,6 +483,8 @@ def register_custom_adapter(
     # Step 1–4: Validate inputs (no side effects)
     executable_path = validate_executable_path(executable)
     version = validate_version(version)
+    if not version:
+        raise ValueError("version must be a non-empty string after trimming whitespace")
     capabilities = validate_capabilities(capabilities)
     workspace_adapter = validate_workspace_adapter(workspace_adapter)
 
@@ -419,9 +569,24 @@ def list_adapters() -> list[AdapterEntry]:
 
 
 def resolve_adapter(adapter_id: str) -> AdapterEntry | None:
-    """Resolve an adapter by id.
+    """Resolve an adapter by id for launch/binding.
 
-    D3: returns the entry regardless of status (all are pending).
+    D3: REJECTS pending adapters — only approved adapters may be resolved
+    for launch or profile binding. Returns None for pending entries with
+    an actionable log message.
+
+    Use ``get_adapter`` for read-only inspection (e.g. GET route).
     D4: will gate on approved status.
     """
-    return get_adapter(adapter_id)
+    entry = get_adapter(adapter_id)
+    if entry is None:
+        return None
+    if entry.status != "approved":
+        logger.warning(
+            "resolve_adapter: adapter %r is status=%r (not approved) — "
+            "refusing to resolve for launch/binding. D4 approval is required.",
+            adapter_id,
+            entry.status,
+        )
+        return None
+    return entry

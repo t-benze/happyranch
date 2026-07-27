@@ -3174,15 +3174,26 @@
     },
     "/api/v1/runtime/adapters": {
       "GET": {
-        "params": [],
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
         "responses": [
-          "200"
+          "200",
+          "422"
         ]
       }
     },
     "/api/v1/runtime/adapters/register": {
       "POST": {
-        "params": [],
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
         "responses": [
           "200",
           "422"
@@ -3195,6 +3206,10 @@
           [
             "adapter_id",
             "path"
+          ],
+          [
+            "authorization",
+            "header"
           ]
         ],
         "responses": [

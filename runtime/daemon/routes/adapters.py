@@ -9,16 +9,18 @@ permission/sandbox expansion (D5), no SQLite changes.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from runtime.daemon.auth import require_token
 from runtime.orchestrator.custom_adapter_registry import (
+    get_adapter,
     list_adapters,
     register_custom_adapter,
     resolve_adapter,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[require_token()])
 
 
 # ---------------------------------------------------------------------------
@@ -141,11 +143,15 @@ def list_registered_adapters() -> list[AdapterEntryResponse]:
 
 @router.get("/runtime/adapters/{adapter_id}")
 def get_adapter_entry(adapter_id: str) -> AdapterEntryResponse:
-    """Get a single registered custom adapter by id.
+    """Get a single registered custom adapter by id (read-only inspection).
+
+    Uses the internal read-only ``get_adapter`` query — NOT ``resolve_adapter``,
+    which is the binding/launch seam that rejects PENDING entries. This GET
+    route exposes inspection regardless of status.
 
     Returns 404 if not found.
     """
-    entry = resolve_adapter(adapter_id)
+    entry = get_adapter(adapter_id)
     if entry is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

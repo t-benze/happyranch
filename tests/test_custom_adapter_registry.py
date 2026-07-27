@@ -41,6 +41,8 @@ from runtime.orchestrator.adapter_store import (
     _store_path,
 )
 from runtime.orchestrator.custom_adapter_registry import (
+    BoundedReadError,
+    get_adapter,
     list_adapters,
     register_custom_adapter,
     resolve_adapter,
@@ -442,7 +444,7 @@ class TestConformanceProbe:
                 "raw_forensics_ref": None,
             },
         )
-        with pytest.raises(ValueError, match="unknown contract_version"):
+        with pytest.raises(ValueError, match="unsupported contract_version"):
             run_conformance_probe(str(script), "bad-version-adapter")
 
     def test_adapter_malformed_output_success_false_fails(self, tmp_path: Path):
@@ -754,9 +756,9 @@ class TestPendingAdapterBoundary:
     def test_resolve_returns_entry_but_pending_flag_is_set(self, tmp_path: Path, monkeypatch):
         """resolve_adapter returns the entry, but status is pending.
         
-        D4 will add the approval gate — in D3, resolve just returns the entry.
-        The caller (executor runtime) is responsible for checking status==approved
-        before launching (D7)."""
+        D4 will add the approval gate — in D3, resolve returns None for
+        pending adapters (the binding/launch seam). Use get_adapter for
+        read-only inspection."""
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
         script = _make_fake_adapter_script(tmp_path, "pending-adapter")
         entry = register_custom_adapter(
@@ -764,10 +766,13 @@ class TestPendingAdapterBoundary:
             version="1.0.0",
             capabilities=[],
         )
+        # resolve_adapter rejects pending entries (D3 pending boundary)
         resolved = resolve_adapter(entry.id)
-        assert resolved is not None
-        assert resolved.status == "pending"
-        # D3: the entry exists but is pending — launch gating is D4/D7
+        assert resolved is None
+        # But get_adapter returns the entry for read-only inspection
+        inspection = get_adapter(entry.id)
+        assert inspection is not None
+        assert inspection.status == "pending"
 
     def test_list_adapters_returns_pending_entries(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
@@ -787,7 +792,7 @@ class TestNoPythonImportDiscovery:
     """Verify no Python import or discovery path exists for custom adapters."""
 
     def test_registration_uses_subprocess_not_import(self, tmp_path: Path, monkeypatch):
-        """The registration path spawns the executable as a subprocess — 
+        """The registration path spawns the executable as a subprocess —
         it never attempts to import it as a Python module."""
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
         script = _make_fake_adapter_script(tmp_path, "subprocess-only-adapter")
@@ -894,3 +899,498 @@ class TestStoreIntegrity:
         assert (tmp_path / "adapters.yaml").exists()
         loaded = load_adapters()
         assert "test" in loaded
+
+
+# ============================================================================
+# Finding 1 (CRITICAL): Authentication — unauthenticated route tests
+# ============================================================================
+
+
+class TestAdapterRoutesAuthentication:
+    """Every /api/v1/runtime/adapters endpoint must require bearer auth.
+
+    Unauthenticated requests must return 401 and the adapter executable
+    must NEVER be invoked, with zero store/registry/operational residue.
+    """
+
+    @pytest.fixture
+    def route_setup(self, tmp_path, monkeypatch):
+        """Set up daemon home, token, and app with real adapters router."""
+        from runtime.daemon import paths as paths_mod
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+        return tmp_path
+
+    @pytest.fixture
+    def app(self, route_setup):
+        """Create a FastAPI app with the real adapters router."""
+        from fastapi import FastAPI
+        from runtime.daemon.routes.adapters import router
+        app = FastAPI()
+        app.include_router(router, prefix="/api/v1")
+        return app
+
+    def test_post_register_rejects_without_token(self, route_setup, app):
+        """POST /runtime/adapters/register without auth → 401."""
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.post("/api/v1/runtime/adapters/register", json={
+            "executable": "/bin/true",
+            "version": "1.0.0",
+            "capabilities": [],
+            "workspace_adapter": "pi",
+        })
+        assert r.status_code == 401
+
+    def test_get_list_rejects_without_token(self, route_setup, app):
+        """GET /runtime/adapters without auth → 401."""
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/v1/runtime/adapters")
+        assert r.status_code == 401
+
+    def test_get_detail_rejects_without_token(self, route_setup, app):
+        """GET /runtime/adapters/{id} without auth → 401."""
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/v1/runtime/adapters/fake-id")
+        assert r.status_code == 401
+
+    def test_unauthenticated_never_invokes_executable(self, tmp_path, monkeypatch, route_setup):
+        """Unauthenticated POST must never invoke the executable."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from runtime.daemon.routes.adapters import router
+        script = _make_fake_adapter_script(tmp_path, "never-invoke-me")
+        app = FastAPI()
+        app.include_router(router, prefix="/api/v1")
+        client = TestClient(app)
+        r = client.post("/api/v1/runtime/adapters/register", json={
+            "executable": str(script),
+            "version": "1.0.0",
+            "capabilities": [],
+            "workspace_adapter": "pi",
+        })
+        assert r.status_code == 401
+        # No store residue
+        store_path = tmp_path / ".happyranch" / "adapters.yaml"
+        assert not store_path.exists()
+
+    def test_authenticated_registration_still_works(self, tmp_path, monkeypatch):
+        """Authenticated POST registration must work as before."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from runtime.daemon import paths as paths_mod
+        from runtime.daemon.routes.adapters import router
+        from runtime.orchestrator.adapter_store import load_adapters
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+        token = paths_mod.read_token()
+        script = _make_fake_adapter_script(tmp_path, "auth-works-adapter")
+        app = FastAPI()
+        app.include_router(router, prefix="/api/v1")
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        r = client.post("/api/v1/runtime/adapters/register", json={
+            "executable": str(script),
+            "version": "1.0.0",
+            "capabilities": ["token_metering"],
+            "workspace_adapter": "pi",
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "pending"
+        assert body["executable"] == str(script)
+        # Verify persisted
+        loaded = load_adapters()
+        assert body["id"] in loaded
+
+    def test_authenticated_list_and_detail_disclosure(self, tmp_path, monkeypatch):
+        """Authenticated GET list and detail must return entries."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from runtime.daemon import paths as paths_mod
+        from runtime.daemon.routes.adapters import router
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+        token = paths_mod.read_token()
+        script = _make_fake_adapter_script(tmp_path, "disclosure-adapter")
+        app = FastAPI()
+        app.include_router(router, prefix="/api/v1")
+        client = TestClient(app)
+        client.headers.update({"Authorization": f"Bearer {token}"})
+        # Register
+        r = client.post("/api/v1/runtime/adapters/register", json={
+            "executable": str(script),
+            "version": "1.0.0",
+            "capabilities": [],
+            "workspace_adapter": "pi",
+        })
+        assert r.status_code == 200
+        adapter_id = r.json()["id"]
+        # List
+        r_list = client.get("/api/v1/runtime/adapters")
+        assert r_list.status_code == 200
+        entries = r_list.json()
+        assert len(entries) >= 1
+        assert any(e["id"] == adapter_id for e in entries)
+        # Detail
+        r_detail = client.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert r_detail.status_code == 200
+        assert r_detail.json()["executable"] == str(script)
+        assert r_detail.json()["executable_hash"] != ""
+
+
+# ============================================================================
+# Finding 2 (HIGH): Bounded conformance — over-limit stdout/stderr
+# ============================================================================
+
+
+class TestBoundedConformance:
+    """Test bounded stdin/stdout conformance with byte limits.
+
+    Over-limit stdout or stderr must terminate the child and reject
+    registration with no durable residue.
+    """
+
+    def test_bounded_read_stdout_limit_via_mock(self):
+        """_read_bounded raises BoundedReadError when stdout exceeds limit."""
+        import io
+        from runtime.orchestrator.custom_adapter_registry import _read_bounded, BoundedReadError
+
+        # Use BytesIO to simulate a pipe that produces >limit bytes
+        class FakePopen:
+            args = ["fake"]
+            stdout = io.BytesIO(b"x" * 200000)
+            stderr = io.BytesIO(b"")
+        # BytesIO.read(n) returns up to n bytes, then empty
+        proc = FakePopen()
+        with pytest.raises(BoundedReadError, match="stdout.*byte limit"):
+            _read_bounded(proc, stdout_limit=50000, stderr_limit=1_048_576, timeout=5)
+
+    def test_bounded_read_stderr_limit_via_mock(self):
+        """_read_bounded raises BoundedReadError when stderr exceeds limit."""
+        import io
+        from runtime.orchestrator.custom_adapter_registry import _read_bounded, BoundedReadError
+
+        class FakePopen:
+            args = ["fake"]
+            stdout = io.BytesIO(b"ok")
+            stderr = io.BytesIO(b"x" * 200000)
+        proc = FakePopen()
+        with pytest.raises(BoundedReadError, match="stderr.*byte limit"):
+            _read_bounded(proc, stdout_limit=1_048_576, stderr_limit=50000, timeout=5)
+
+    def test_bounded_read_within_limits_succeeds(self):
+        """_read_bounded returns correctly when both streams are within limits."""
+        import io
+        from runtime.orchestrator.custom_adapter_registry import _read_bounded
+
+        class FakePopen:
+            args = ["fake"]
+            stdout = io.BytesIO(b"hello from adapter")
+            stderr = io.BytesIO(b"")
+        proc = FakePopen()
+        out, err = _read_bounded(proc, stdout_limit=1_048_576, stderr_limit=1_048_576, timeout=5)
+        assert out == b"hello from adapter"
+        assert err == b""
+
+    def test_valid_registration_within_limits_works(self, tmp_path: Path, monkeypatch):
+        """Normal valid registration within byte limits still succeeds."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = _make_fake_adapter_script(tmp_path, "normal-adapter")
+        entry = register_custom_adapter(
+            executable=str(script),
+            version="1.0.0",
+            capabilities=[],
+        )
+        assert entry.status == "pending"
+        assert entry.id in load_adapters()
+
+
+# ============================================================================
+# Finding 3 (HIGH): Contract version — exact version 1 only
+# ============================================================================
+
+
+class TestContractVersionExact:
+    """D3 supports EXACTLY contract_version == 1.
+
+    Reject: missing, 0, future (2+), non-integers, booleans.
+    """
+
+    def _make_version_adapter(self, tmp_path, contract_version, name="vers-adapter"):
+        """Create adapter that outputs a specific contract_version.
+
+        The generated script writes the value as a Python literal in a dict
+        that gets JSON-serialized by the script itself. This ensures correct
+        type-roundtripping through JSON (Python → JSON → subprocess → JSON → Python).
+        """
+        script = tmp_path / name
+        # Serialize contract_version as a Python repr that is also valid JSON when stringified
+        # For booleans: Python True → JSON true. Use repr(True) = 'True' then lowercase.
+        # For None: omit entirely from metadata.
+        if contract_version is None:
+            cv_py = None  # signal to omit
+        elif isinstance(contract_version, bool):
+            cv_py = "True" if contract_version else "False"
+        else:
+            cv_py = repr(contract_version)
+        # Build the adapter_metadata as Python code
+        meta_lines = [
+            '        "adapter": "fake",',
+            '        "adapter_version": "1.0.0",',
+        ]
+        if cv_py is not None:
+            meta_lines.append(f'        "contract_version": {cv_py},')
+        meta_block = "\n".join(meta_lines)
+        script.write_text(f"""#!/usr/bin/env python3
+import sys, json
+_ = sys.stdin.read()
+sys.stdout.write(json.dumps({{
+    "success": True,
+    "duration_seconds": 0,
+    "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+    "returncode": 0,
+    "stdout_tail": "ok",
+    "stderr_tail": "",
+    "result": {{"text": "ok"}},
+    "token_usage": None,
+    "error": None,
+    "agent_session_id": None,
+    "rate_limited": False,
+    "adapter_metadata": {{
+{meta_block}
+    }},
+    "child_session_id": None,
+    "raw_forensics_ref": None,
+}}))
+sys.exit(0)
+""")
+        script.chmod(0o755)
+        return script
+
+    def test_version_1_accepted(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = self._make_version_adapter(tmp_path, 1, "vers-1-ok")
+        entry = register_custom_adapter(
+            executable=str(script),
+            version="1.0.0",
+            capabilities=[],
+        )
+        assert entry.status == "pending"
+
+    def test_version_0_rejected(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = self._make_version_adapter(tmp_path, 0, "vers-0")
+        with pytest.raises(ValueError, match="unsupported contract_version"):
+            register_custom_adapter(
+                executable=str(script),
+                version="1.0.0",
+                capabilities=[],
+            )
+        assert load_adapters() == {}
+
+    def test_version_2_rejected(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = self._make_version_adapter(tmp_path, 2, "vers-2")
+        with pytest.raises(ValueError, match="unsupported contract_version"):
+            register_custom_adapter(
+                executable=str(script),
+                version="1.0.0",
+                capabilities=[],
+            )
+        assert load_adapters() == {}
+
+    def test_version_boolean_rejected(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = self._make_version_adapter(tmp_path, True, "vers-bool")
+        with pytest.raises(ValueError, match="non-integer contract_version"):
+            register_custom_adapter(
+                executable=str(script),
+                version="1.0.0",
+                capabilities=[],
+            )
+        assert load_adapters() == {}
+
+    def test_version_null_rejected(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = self._make_version_adapter(tmp_path, None, "vers-null")
+        with pytest.raises(ValueError, match="missing contract_version"):
+            register_custom_adapter(
+                executable=str(script),
+                version="1.0.0",
+                capabilities=[],
+            )
+        assert load_adapters() == {}
+
+
+# ============================================================================
+# Finding 4 (HIGH): Pending boundary — resolve_adapter rejects pending
+# ============================================================================
+
+
+class TestPendingAdapterResolutionBoundary:
+    """resolve_adapter must reject PENDING entries (launch/binding seam).
+
+    get_adapter provides read-only inspection via the authenticated GET route.
+    """
+
+    def test_resolve_adapter_returns_none_for_pending(self, tmp_path: Path, monkeypatch):
+        """resolve_adapter returns None for pending entries."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = _make_fake_adapter_script(tmp_path, "pending-resolve")
+        entry = register_custom_adapter(
+            executable=str(script),
+            version="1.0.0",
+            capabilities=[],
+        )
+        assert entry.status == "pending"
+        # resolve rejects pending
+        assert resolve_adapter(entry.id) is None
+
+    def test_get_adapter_returns_pending_for_inspection(self, tmp_path: Path, monkeypatch):
+        """get_adapter returns pending entries for read-only inspection."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = _make_fake_adapter_script(tmp_path, "pending-inspect")
+        entry = register_custom_adapter(
+            executable=str(script),
+            version="1.0.0",
+            capabilities=[],
+        )
+        # get_adapter returns entry for inspection
+        inspection = get_adapter(entry.id)
+        assert inspection is not None
+        assert inspection.status == "pending"
+        assert inspection.executable == str(script)
+
+    def test_resolve_nonexistent_returns_none(self):
+        """resolve_adapter returns None for nonexistent id."""
+        assert resolve_adapter("nonexistent-adapter-id") is None
+
+    def test_list_adapters_includes_pending(self, tmp_path: Path, monkeypatch):
+        """list_adapters includes pending entries (read-only listing)."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = _make_fake_adapter_script(tmp_path, "pending-list")
+        register_custom_adapter(
+            executable=str(script),
+            version="1.0.0",
+            capabilities=[],
+        )
+        adapters = list_adapters()
+        assert len(adapters) >= 1
+        for a in adapters:
+            assert a.status == "pending"
+
+
+# ============================================================================
+# Finding 5 (MEDIUM): Whitespace-only version rejection
+# ============================================================================
+
+
+class TestWhitespaceVersionRejection:
+    """Version strings that become empty after trimming must be rejected."""
+
+    def test_whitespace_only_version_rejected_by_validator(self):
+        """validate_version rejects '   ' (whitespace-only)."""
+        with pytest.raises(ValueError, match="non-empty string after trimming"):
+            validate_version("   ")
+
+    def test_whitespace_only_version_rejected_at_registration(self, tmp_path: Path, monkeypatch):
+        """Registration pipeline rejects whitespace-only version with no residue."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script = _make_fake_adapter_script(tmp_path, "ws-version-adapter")
+        with pytest.raises(ValueError, match="non-empty string after trimming"):
+            register_custom_adapter(
+                executable=str(script),
+                version="   ",
+                capabilities=[],
+            )
+        assert load_adapters() == {}
+
+    def test_tab_and_newline_version_rejected(self):
+        """Version with only tabs and newlines is rejected after trimming."""
+        with pytest.raises(ValueError, match="non-empty string after trimming"):
+            validate_version("\t\n  \t")
+
+
+# ============================================================================
+# Finding 1+4 (combined): Changed artifact re-registration remains pending
+# ============================================================================
+
+
+class TestReRegistrationPreservesPending:
+    """Changed artifact re-registration must remain PENDING and never
+    silently retain/acquire approval state."""
+
+    def test_changed_artifact_remains_pending_no_approval_retained(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script1 = _make_fake_adapter_script(tmp_path, "re-reg-v1")
+        entry1 = register_custom_adapter(
+            executable=str(script1),
+            version="1.0.0",
+            capabilities=["a"],
+        )
+        assert entry1.status == "pending"
+        assert entry1.approved_at is None
+        assert entry1.approved_by is None
+
+        # Change capabilities — re-register
+        entry2 = register_custom_adapter(
+            executable=str(script1),
+            version="1.0.0",
+            capabilities=["a", "b"],
+        )
+        assert entry2.status == "pending"
+        assert entry2.approved_at is None
+        assert entry2.approved_by is None
+        # Resolve still rejects
+        assert resolve_adapter(entry2.id) is None
+
+    def test_changed_hash_remains_pending(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        script1 = _make_fake_adapter_script(tmp_path, "adapter")
+        entry1 = register_custom_adapter(
+            executable=str(script1),
+            version="1.0.0",
+            capabilities=[],
+        )
+        # Modify the executable — replace content, same name
+        script1.unlink()
+        script2 = _make_fake_adapter_script(tmp_path, "adapter",
+            output={
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": "v2",
+                "stderr_tail": "",
+                "result": {"text": "v2"},
+                "token_usage": None,
+                "error": None,
+                "agent_session_id": None,
+                "rate_limited": False,
+                "adapter_metadata": {
+                    "adapter": "fake",
+                    "adapter_version": "2.0.0",
+                    "contract_version": 1,
+                },
+                "child_session_id": None,
+                "raw_forensics_ref": None,
+            },
+        )
+        entry2 = register_custom_adapter(
+            executable=str(script2),
+            version="2.0.0",
+            capabilities=[],
+        )
+        assert entry2.status == "pending"
+        assert entry2.approved_at is None
+        assert entry1.executable_hash != entry2.executable_hash
+        # Only one entry in store
+        assert len(load_adapters()) == 1
