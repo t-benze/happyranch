@@ -133,24 +133,28 @@ def _baseline_primary(primary: Path) -> dict:
         "status": _git_out(primary, "status", "--porcelain"),
     }
 
-    # Unstaged tracked modifications
+    # Unstaged tracked modifications — use -z for NUL-safe filename collection
     dirty_files: dict[str, str] = {}
-    diff_names = _git_out(primary, "diff", "--name-only")
+    diff_names = _git_out(primary, "diff", "-z", "--name-only")
     if diff_names:
-        for relpath in diff_names.splitlines():
-            relpath = relpath.strip()
+        fields = diff_names.split("\0")
+        if fields and not fields[-1]:
+            fields = fields[:-1]
+        for relpath in fields:
             if relpath:
                 h = _checksum_file(primary, relpath)
                 if h:
                     dirty_files[relpath] = h
     baseline["dirty_files"] = dirty_files
 
-    # Staged files
+    # Staged files — use -z for NUL-safe filename collection
     staged_files: dict[str, str] = {}
-    staged_names = _git_out(primary, "diff", "--cached", "--name-only")
+    staged_names = _git_out(primary, "diff", "-z", "--cached", "--name-only")
     if staged_names:
-        for relpath in staged_names.splitlines():
-            relpath = relpath.strip()
+        fields = staged_names.split("\0")
+        if fields and not fields[-1]:
+            fields = fields[:-1]
+        for relpath in fields:
             if relpath:
                 h = _checksum_file(primary, relpath)
                 if h:
@@ -158,12 +162,18 @@ def _baseline_primary(primary: Path) -> dict:
     baseline["staged_files"] = staged_files
 
     # Untracked files: capture path + content hash so mutations are detected.
-    # Use -z for NUL-separated output (safe for filenames with spaces).
+    # Use -z for NUL-separated output (safe for filenames with spaces,
+    # newlines, and leading/trailing whitespace).
+    # Strip is NOT applied — NUL fields are preserved verbatim; only the
+    # terminal empty field produced by the trailing delimiter is discarded.
     untracked_raw = _git_out(primary, "ls-files", "--others", "--exclude-standard", "-z")
     untracked_hashes: dict[str, str] = {}
     if untracked_raw:
-        for relpath in untracked_raw.split("\0"):
-            relpath = relpath.strip()
+        fields = untracked_raw.split("\0")
+        # Last field after trailing \0 is empty — discard it
+        if fields and not fields[-1]:
+            fields = fields[:-1]
+        for relpath in fields:
             if relpath:
                 h = _checksum_untracked(primary, relpath)
                 if h:
@@ -323,7 +333,9 @@ def cmd_verify(worktree_root: str) -> int:
 
     new_changed_paths: set[str] = set()
 
-    # Extract filenames from new porcelain-status lines (strip status prefix)
+    # Extract filenames from new porcelain-status lines (strip status prefix).
+    # Porcelain quotes paths containing spaces with double-quotes.
+    # Do NOT .strip() the path — it mutates leading/trailing whitespace.
     for line in new_status:
         # Porcelain format: XY PATH or XY PATH -> RENAMED_PATH
         # Status chars are the first 2, then a space, then the filename
@@ -332,7 +344,12 @@ def cmd_verify(worktree_root: str) -> int:
             if " -> " in path_part:
                 # Rename: take the NEW path
                 path_part = path_part.split(" -> ")[1]
-            new_changed_paths.add(path_part.strip().strip('"'))
+            # Strip only the optional double-quote pair (porcelain quoting),
+            # not arbitrary whitespace.  If quoted, strip both quotes; if
+            # unquoted, preserve the path verbatim.
+            if path_part.startswith('"') and path_part.endswith('"'):
+                path_part = path_part[1:-1]
+            new_changed_paths.add(path_part)
 
     # 2. Check dirty files: content hash mutation
     baseline_dirty = baseline.get("dirty_files", {})
@@ -461,10 +478,11 @@ def cmd_verify(worktree_root: str) -> int:
     if changed_untracked:
         lines.append("     # Archive untracked files (named as data above):")
         lines.append(f"     cd {pr_quoted}")
-        lines.append(f"     tar czf {recovery_tarball} \\")
-        # List untracked files as separate lines (readable, not interpolated into commands)
+        # Single -C <primary> then -- before ALL safely-quoted filenames.
+        # -- protects leading-dash names from being parsed as tar options.
+        lines.append(f"     tar czf {recovery_tarball} -C {pr_quoted} -- \\")
         for p in changed_untracked:
-            lines.append(f"       -C {pr_quoted} {shlex.quote(p)} \\")
+            lines.append(f"       {shlex.quote(p)} \\")
         # Remove trailing backslash on last line
         if changed_untracked:
             lines[-1] = lines[-1].rstrip(" \\")

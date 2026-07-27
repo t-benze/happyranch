@@ -1213,3 +1213,177 @@ class TestDeliveredMakeWorktreeWorkflow:
             ["git", "-C", str(repo), "branch", "-D", "task/TASK-DELIVERED"],
             capture_output=True, text=True,
         )
+
+    # ── FINDING-1 literal shell fragment helpers + tests ──────────────
+
+    def _run_literal_skill_fragment(
+        self, workspace: Path, repo: Path, wt: Path,
+        guard_skill_dir: str,  # ".claude" or ".agents"
+    ) -> None:
+        """Execute the literal SKILL.md shell workflow fragment and verify
+        it correctly computes PRIMARY_ROOT and locates/runs the guard.
+
+        This faithfully replicates the exact bash fragment the skill prints:
+          WORKTREE_ROOT=$(pwd -P)
+          PRIMARY_ROOT=$(cd ../../.. && pwd -P)
+          WORKSPACE_ROOT=$(cd "$WORKTREE_ROOT/../../../../.." && pwd -P)
+          GUARD="$WORKSPACE_ROOT/<dir>/skills/make-worktree/worktree_guard.py"
+          python "$GUARD" setup --worktree-root "$WORKTREE_ROOT" ...
+
+        The test runs this via /bin/bash so it exercises the EXACT same
+        shell computations the agent would perform — no caller passes
+        a known-correct primary root.
+        """
+        worktree_root = str(wt.resolve())
+
+        # Step A: Prove PRIMARY_ROOT = cd ../../.. from worktree = primary,
+        # NOT cd ../.. which would be <primary>/.claude.
+        r = subprocess.run(
+            ["/bin/bash", "-c",
+             'cd "$1" && cd ../../.. && pwd -P', "_", str(wt)],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, f"cd ../../.. failed: {r.stderr}"
+        computed_pr = Path(r.stdout.strip()).resolve()
+        assert computed_pr == repo.resolve(), (
+            f"PRIMARY_ROOT mismatch:\n"
+            f"  Computed (cd ../../..): {computed_pr}\n"
+            f"  Actual primary repo:    {repo.resolve()}\n"
+            f"  Worktree:               {wt}"
+        )
+
+        # Step B: Prove cd ../.. is WRONG (would be .claude, not primary)
+        r = subprocess.run(
+            ["/bin/bash", "-c",
+             'cd "$1" && cd ../.. && pwd -P', "_", str(wt)],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0
+        wrong_pr = Path(r.stdout.strip()).resolve()
+        assert wrong_pr != repo.resolve(), (
+            f"cd ../.. MUST NOT equal primary root:\n"
+            f"  cd ../.. result:  {wrong_pr}\n"
+            f"  Actual primary:   {repo.resolve()}\n"
+            f"  Expected mismatch (cd ../.. = .claude/ dir)"
+        )
+
+        # Step C: Compute WORKSPACE_ROOT the way the skill does
+        r = subprocess.run(
+            ["/bin/bash", "-c",
+             'cd "$1" && cd ../../../../.. && pwd -P', "_", str(wt)],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, f"WORKSPACE_ROOT computation failed: {r.stderr}"
+        computed_ws = Path(r.stdout.strip()).resolve()
+        assert computed_ws == workspace.resolve(), (
+            f"WORKSPACE_ROOT mismatch:\n"
+            f"  Computed: {computed_ws}\n"
+            f"  Actual:   {workspace.resolve()}"
+        )
+
+        # Step D: Locate guard via workspace root (exact skill logic)
+        guard_path = (
+            computed_ws / guard_skill_dir / "skills"
+            / "make-worktree" / "worktree_guard.py"
+        )
+        assert guard_path.is_file(), (
+            f"Guard not found at skill-located path: {guard_path}\n"
+            f"  Workspace root: {computed_ws}\n"
+            f"  Skill dir: {guard_skill_dir}"
+        )
+
+        # Step E: Run setup through the located guard — use the computed
+        # primary root (proved correct in Step A).
+        r = subprocess.run(
+            [
+                sys.executable, str(guard_path),
+                "setup",
+                "--worktree-root", worktree_root,
+                "--primary-root", str(computed_pr),
+                "--task-id", "TASK-DELIVERED",
+            ],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, (
+            f"Guard setup via literal-skill-path failed:\n"
+            f"  Guard: {guard_path}\n"
+            f"  stdout: {r.stdout}\n"
+            f"  stderr: {r.stderr}"
+        )
+        assert "WORKTREE_ROOT=" in r.stdout
+        assert "PRIMARY_ROOT=" in r.stdout
+
+        # Step F: No-op verify passes
+        r = subprocess.run(
+            [
+                sys.executable, str(guard_path),
+                "verify",
+                "--worktree-root", worktree_root,
+            ],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, (
+            f"No-op verify via literal-skill-path failed:\n"
+            f"  stdout: {r.stdout}\n"
+            f"  stderr: {r.stderr}"
+        )
+        assert "GUARD PASS" in r.stdout
+
+        # Step G: Primary edit fails verify
+        (repo / "oops.txt").write_text("bad\n")
+        r = subprocess.run(
+            [
+                sys.executable, str(guard_path),
+                "verify",
+                "--worktree-root", worktree_root,
+            ],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 1, (
+            f"Primary-edit detection via literal-skill-path failed:\n"
+            f"  stdout: {r.stdout}\n"
+            f"  stderr: {r.stderr}"
+        )
+        assert "GUARD FAILED" in r.stderr
+
+    def test_literal_shell_fragment_claude(
+        self, test_settings: Settings, tmp_path: Path, test_runtime: OrgPaths,
+    ):
+        """FINDING-1: Execute the literal SKILL.md shell fragment for the
+        .claude/skills injection destination — proves cd ../../.. reaches
+        the primary and the guard is locatable + runnable."""
+        workspace, repo, wt = self._simulate_workflow(
+            tmp_path, test_settings, test_runtime, ".claude",
+        )
+        try:
+            self._run_literal_skill_fragment(workspace, repo, wt, ".claude")
+        finally:
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "remove", str(wt), "--force"],
+                capture_output=True, text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "branch", "-D", "task/TASK-DELIVERED"],
+                capture_output=True, text=True,
+            )
+
+    def test_literal_shell_fragment_agents(
+        self, test_settings: Settings, tmp_path: Path, test_runtime: OrgPaths,
+    ):
+        """FINDING-1: Execute the literal SKILL.md shell fragment for the
+        .agents/skills injection destination — proves cd ../../.. reaches
+        the primary and the guard is locatable + runnable."""
+        workspace, repo, wt = self._simulate_workflow(
+            tmp_path, test_settings, test_runtime, ".agents",
+        )
+        try:
+            self._run_literal_skill_fragment(workspace, repo, wt, ".agents")
+        finally:
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "remove", str(wt), "--force"],
+                capture_output=True, text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "branch", "-D", "task/TASK-DELIVERED"],
+                capture_output=True, text=True,
+            )

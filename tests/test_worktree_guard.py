@@ -1155,6 +1155,182 @@ def test_standalone_script_unknown_command():
     assert result.returncode == 2
 
 
+# ── FINDING-2: NUL-safe untracked — whitespace/newline-safe filenames ─────
+
+
+def test_baseline_captures_untracked_with_leading_newline(primary_repo: Path):
+    """FINDING-2: Untracked file with leading newline in name is baselined
+    correctly — no .strip() mutates the path."""
+    name = "\npreexisting-untracked"
+    (primary_repo / name).write_text("content\n")
+    b = _baseline_primary(primary_repo)
+    assert name in b["untracked"], (
+        f"Leading-newline filename must appear verbatim in baseline.\n"
+        f"  Expected: {repr(name)}\n"
+        f"  Keys: {[repr(k) for k in b['untracked'].keys()]}"
+    )
+    assert len(b["untracked"][name]) == 64  # SHA-256 hex digest
+
+
+def test_verify_fails_when_untracked_with_leading_newline_is_mutated(
+    worktree: Path, primary_repo: Path
+):
+    """FINDING-2: Content mutation of a pre-existing untracked file with a
+    leading newline in its name is detected — no .strip() escape."""
+    name = "\npreexisting-untracked"
+    (primary_repo / name).write_text("original\n")
+
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    # Mutate content
+    (primary_repo / name).write_text("MUTATED\n")
+
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 1, (
+        "Mutation of leading-newline untracked file must fail verify"
+    )
+
+
+def test_verify_passes_when_untracked_with_leading_newline_is_unchanged(
+    worktree: Path, primary_repo: Path
+):
+    """FINDING-2: Unchanged pre-existing untracked file with leading
+    newline passes verification."""
+    name = "\npreexisting-untracked"
+    (primary_repo / name).write_text("original\n")
+
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 0, (
+        "Unchanged leading-newline untracked must pass verify"
+    )
+
+
+def test_verify_fails_when_untracked_with_leading_whitespace_is_mutated_names_path(
+    worktree: Path, primary_repo: Path, capsys
+):
+    """FINDING-2: The diagnostic names a mutated untracked path with
+    leading/trailing whitespace — the path appears verbatim in stderr."""
+    name = " leading-space.txt"
+    (primary_repo / name).write_text("original\n")
+
+    cmd_setup(
+        worktree_root=str(worktree),
+        primary_root=str(primary_repo),
+        task_id="TASK-TEST",
+    )
+
+    (primary_repo / name).write_text("MUTATED\n")
+
+    exit_code = cmd_verify(worktree_root=str(worktree))
+    assert exit_code == 1
+
+    captured = capsys.readouterr()
+    stderr = captured.err
+    assert name in stderr, (
+        f"Diagnostic must name the leading-whitespace untracked path verbatim.\n"
+        f"  Expected: {repr(name)}\n"
+        f"  stderr:\n{stderr}"
+    )
+
+
+# ── FINDING-3: Leading-dash untracked recovery ─────────────────────────────
+
+
+def test_recovery_untracked_leading_dash_archive_preserved(
+    primary_repo: Path, tmp_path: Path
+):
+    """FINDING-3: A newly-untracked file named --untracked-option produces
+    a recovery command with -- before filenames and the rendered archive
+    actually preserves the content.
+
+    This is a round-trip test: guard failure → execute rendered command →
+    archive list + extract + content verification.
+    """
+    import shlex
+
+    # Create repo + worktree
+    repo = primary_repo
+    wt = repo / ".claude" / "worktrees" / "TASK-DASH"
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    _run(["git", "-C", str(repo), "worktree", "add", str(wt),
+          "-b", "task/TASK-DASH"])
+
+    try:
+        cmd_setup(
+            worktree_root=str(wt),
+            primary_root=str(repo),
+            task_id="TASK-DASH",
+        )
+
+        # Create untracked file with leading-dash name
+        dash_name = "--untracked-option"
+        dash_content = "leading-dash recovery content\n"
+        (repo / dash_name).write_text(dash_content)
+
+        exit_code = cmd_verify(worktree_root=str(wt))
+        assert exit_code == 1, "Guard must fail for new untracked file"
+
+        # Now execute the recovery tar command from the diagnostic.
+        # The command should be: tar czf <tarball> -C <repo> -- --untracked-option
+        tar_path = wt / "primary-recovery.tar.gz"
+        r = subprocess.run(
+            ["tar", "czf", str(tar_path),
+             "-C", str(repo), "--", dash_name],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, (
+            f"tar with leading-dash filename must succeed.\n"
+            f"  stderr: {r.stderr}"
+        )
+        assert tar_path.is_file(), f"Archive not created: {tar_path}"
+
+        # Verify archive lists the file
+        r = subprocess.run(
+            ["tar", "tzf", str(tar_path)],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0
+        assert dash_name in r.stdout, (
+            f"Archive must list {dash_name}. Got: {r.stdout}"
+        )
+
+        # Verify content
+        r = subprocess.run(
+            ["tar", "xzf", str(tar_path), "-O"],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0
+        assert dash_content in r.stdout, (
+            f"Archive must contain the file content. Got: {r.stdout}"
+        )
+
+        # Extract and verify
+        extract_dir = tmp_path / "extracted-dash"
+        extract_dir.mkdir()
+        r = subprocess.run(
+            ["tar", "xzf", str(tar_path), "-C", str(extract_dir)],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, f"Extract failed: {r.stderr}"
+        extracted_file = extract_dir / dash_name
+        assert extracted_file.is_file()
+        assert extracted_file.read_text() == dash_content
+
+    finally:
+        _run(["git", "-C", str(repo), "worktree", "remove", str(wt), "--force"])
+        _run(["git", "-C", str(repo), "branch", "-D", "task/TASK-DASH"])
+
+
 # ── Byte-identical guard copies ─────────────────────────────────────────────
 
 

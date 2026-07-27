@@ -28,7 +28,7 @@ git worktree add .claude/worktrees/<task_id> -b task/<task_id>
 # 2. Compute canonical absolute roots
 cd .claude/worktrees/<task_id>
 WORKTREE_ROOT=$(pwd -P)                   # canonical absolute worktree root
-PRIMARY_ROOT=$(cd ../.. && pwd -P)        # canonical absolute primary checkout root
+PRIMARY_ROOT=$(cd ../../.. && pwd -P)      # canonical absolute primary checkout root
 echo "WORKTREE_ROOT=$WORKTREE_ROOT"
 echo "PRIMARY_ROOT=$PRIMARY_ROOT"
 
@@ -38,6 +38,8 @@ echo "PRIMARY_ROOT=$PRIMARY_ROOT"
 #    The workspace root is 5 parents above the task worktree
 #    (<workspace>/repos/<repo>/.claude/worktrees/<task_id>):
 WORKSPACE_ROOT=$(cd "$WORKTREE_ROOT/../../../../.." && pwd -P)
+#    The primary checkout root is 3 parents above the task worktree
+#    (<primary>/.claude/worktrees/<task_id> → cd ../../.. → <primary>):
 GUARD="$WORKSPACE_ROOT/.claude/skills/make-worktree/worktree_guard.py"
 if [ ! -f "$GUARD" ]; then
     GUARD="$WORKSPACE_ROOT/.agents/skills/make-worktree/worktree_guard.py"
