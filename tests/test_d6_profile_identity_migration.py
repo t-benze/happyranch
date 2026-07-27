@@ -1187,10 +1187,12 @@ class TestListCanonicalConsistency:
         assert len(list_test) == 1
         entry = list_test[0]
         assert entry["workspace_adapter_id"] == "codex"
-        # Deprecated alias present (no contradiction)
+        # Deprecated aliases present (no contradiction)
         assert entry["adapter"] == "codex"
+        assert entry["adapter_id"] == "codex"
         # No contradictory workspace identity
         assert entry["workspace_adapter_id"] == entry["adapter"]
+        assert entry["workspace_adapter_id"] == entry["adapter_id"]
 
 
 # ── Round 3: Stored-shape persistence and restart/reload ───────────────
@@ -2445,3 +2447,5 @@ class TestAdapterIdResponseList:
         found = [p for p in list_body["profiles"] if p["name"] == "aid-resp-rt"]
         assert len(found) == 1
         assert found[0]["workspace_adapter_id"] == "codex"
+        assert found[0]["adapter"] == "codex"
+        assert found[0]["adapter_id"] == "codex"

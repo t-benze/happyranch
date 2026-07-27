@@ -631,6 +631,7 @@ def register_executor(
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
             "adapter": candidate.workspace_adapter_id,
+            "adapter_id": candidate.workspace_adapter_id,
             "workspace_adapter_id": candidate.workspace_adapter_id,
         }
         if candidate.command_adapter_id is not None:
@@ -914,6 +915,7 @@ def runtime_register_executor(
             "command": body.command,
             "argv_template": [str(e) for e in body.argv_template],
             "adapter": candidate.workspace_adapter_id,
+            "adapter_id": candidate.workspace_adapter_id,
             "workspace_adapter_id": candidate.workspace_adapter_id,
         }
         if candidate.command_adapter_id is not None:
@@ -1115,6 +1117,10 @@ class RuntimeProfileEntry(BaseModel):
     adapter: str | None = Field(
         None, deprecated=True, description="Deprecated. Use workspace_adapter_id."
     )
+    adapter_id: str | None = Field(
+        None, deprecated=True,
+        description="Deprecated alias for workspace_adapter_id. Same meaning as adapter.",
+    )
     command_adapter: str | None = Field(
         None, deprecated=True, description="Deprecated. Use command_adapter_id."
     )
@@ -1216,6 +1222,7 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
             command_adapter_id=resolved_command_adapter,
             # D6 deprecated aliases (preserved for backward compat)
             adapter=resolved_adapter,
+            adapter_id=resolved_adapter,
             command_adapter=resolved_command_adapter,
             present=present,
             path=path,

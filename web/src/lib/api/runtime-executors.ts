@@ -71,6 +71,8 @@ export interface RuntimeProfileEntry {
   command_adapter_id: string | null;
   /** @deprecated Use workspace_adapter_id instead. Preserved for backward compat. */
   adapter: string | null;
+  /** @deprecated Alias for workspace_adapter_id. Same meaning as adapter. */
+  adapter_id: string | null;
   /** @deprecated Use command_adapter_id instead. Preserved for backward compat. */
   command_adapter: string | null;
   /** True when the profile's declared command resolves to an executable

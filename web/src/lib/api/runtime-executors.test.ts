@@ -43,6 +43,7 @@ describe('runtime-executors api', () => {
           name: 'openclaw',
           command: 'openclaw',
           adapter: 'pi',
+          adapter_id: 'pi',
           workspace_adapter_id: 'pi',
           command_adapter_id: 'generic-cli',
           command_adapter: 'generic-cli',
@@ -53,6 +54,7 @@ describe('runtime-executors api', () => {
           name: 'legacy-runner',
           command: 'legacy-runner',
           adapter: 'pi',
+          adapter_id: 'pi',
           workspace_adapter_id: 'pi',
           command_adapter_id: 'generic-cli',
           command_adapter: 'generic-cli',
@@ -71,10 +73,12 @@ describe('runtime-executors api', () => {
     expect(result.profiles[0].workspace_adapter_id).toBe('pi');
     expect(result.profiles[0].command_adapter_id).toBe('generic-cli');
     expect(result.profiles[0].adapter).toBe('pi'); // deprecated alias preserved
+    expect(result.profiles[0].adapter_id).toBe('pi'); // deprecated alias preserved
     expect(result.profiles[0].command_adapter).toBe('generic-cli'); // deprecated alias preserved
     expect(result.profiles[1].workspace_adapter_id).toBe('pi');
     expect(result.profiles[1].command_adapter_id).toBe('generic-cli');
     expect(result.profiles[1].adapter).toBe('pi');
+    expect(result.profiles[1].adapter_id).toBe('pi');
     expect(result.profiles[1].command_adapter).toBe('generic-cli');
   });
 
@@ -85,6 +89,7 @@ describe('runtime-executors api', () => {
       name: 'test',
       command: 'test-cli',
       adapter: 'claude',
+      adapter_id: 'claude',
       workspace_adapter_id: 'claude',
       command_adapter_id: 'generic-cli',
       command_adapter: 'generic-cli',
@@ -95,5 +100,6 @@ describe('runtime-executors api', () => {
     expect(entry.command_adapter_id).toBe('generic-cli');
     expect(entry.command_adapter).toBe('generic-cli');
     expect(entry.adapter).toBe('claude');
+    expect(entry.adapter_id).toBe('claude');
   });
 });
