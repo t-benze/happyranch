@@ -1968,24 +1968,12 @@
       "POST": {
         "params": [
           [
-            "agent_name",
-            "query"
-          ],
-          [
             "authorization",
             "header"
           ],
           [
-            "session_id",
-            "query"
-          ],
-          [
             "slug",
             "path"
-          ],
-          [
-            "task_id",
-            "query"
           ]
         ],
         "responses": [

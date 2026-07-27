@@ -118,30 +118,34 @@ are never deleted. An ArtifactStore write failure before any ledger row
 aborts without any side effects.
 
 **Session-bound authority.** Agent proposal submission requires verified
-task/session binding via the SessionTracker. Two paths exist:
+task/session binding via the SessionTracker. A single agent-only path exists,
+plus a human-only legacy route:
 
 - **Opaque session path (agent CLI).** The agent commands
-  ``happyranch skills propose --from-file <proposal.json> --session-id <session-id>``.
-  The CLI sends the opaque session ID to
+  ``happyranch skills propose --from-file <proposal.json> --session-id <session-id> [--org <slug>]``.
+  The CLI builds a token-free transport (no bearer token read or sent) using
+  only the daemon port. Org is resolved via the established
+  ``resolve_org_slug(args_org=, available=)`` convention. The CLI sends the
+  opaque session ID to
   ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent`` — an agent-only
-  route that does NOT accept the master bearer token. The server resolves the
-  org from the route slug, then uses SessionTracker reverse lookup
-  (``get_by_session()``) to derive (task_id, agent_name) from the opaque
-  session ID. The proposal file must contain only package metadata/content
-  (slug, name, description, skill_md, version, policy_class, references,
-  assets). It must NOT contain org, agent, task, session, proposer_agent,
-  eligibility, or permission identity — body identity claims are rejected
-  server-side with 403. This is the intended agent authoring workflow.
+  route that does NOT accept the master bearer token. The server independently
+  derives all four identity dimensions (org_slug, task_id, agent_name,
+  active session_id) from the SessionTracker's additive context index
+  (``get_context_by_session()``) — never from body/query/env/client claims,
+  task lookup by agent, team membership, or YAML eligibility. Path-selected
+  org is cross-checked against the session's org; cross-org and mismatched
+  contexts are denied with 403. Body identity claims (task_id, session_id,
+  proposer_agent) are rejected server-side with 403. This is the sole agent
+  authoring workflow — there is no alternate agent-capable path.
 
-- **Dual-auth path (existing, for human/founder).** ``POST /skill-lifecycle/proposals``
-  accepts either the master bearer token (human/founder) or explicit
-  task_id + session_id + agent_name query params (agent, verified via
-  ``org.sessions.get_active()``).
+- **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
+  is restricted to bearer-authenticated human/founder callers. Non-bearer
+  (agent) callers receive 403 directing them to the dedicated
+  ``/proposals/agent`` endpoint. The legacy dual-auth bypass has been closed.
 
-Both paths derive identity exclusively from the server's verified context.
-Body claims for task_id, session_id, proposer_agent are ignored.
+All identity derives exclusively from the server's verified context.
 
-**Agent-id × canonical-slug pilot policy (THR-055 corrective).** The
+**Agent-id × canonical-slug pilot policy (THR-055 seq 127 corrective).** The
 agent-only route enforces a fixed server-side policy BEFORE any artifact
 creation or ledger write. The policy does NOT inspect team membership,
 prompts, org config/YAML eligibility, request metadata, or body identity
@@ -152,18 +156,19 @@ claims:
 | ``frontend_engineer`` | ``frontend-development`` |
 | ``product_lead`` | ``product-manager-prd`` (lowercase) |
 
-Every other agent is denied. Either permitted agent with the wrong slug
-is denied. Human/founder lifecycle authority (claim, draft, edit, validate,
+Every other agent is denied (403). Either permitted agent with the wrong slug
+is denied (403). Human/founder lifecycle authority (claim, draft, edit, validate,
 submit-review, review, publish, assign, retire, rollback, all eligibility/
 permission/config mutations) remains unchanged and returns 403 for agent
 invocations. Proposals remain immutable and task/session-provenanced,
 ``standard_operational`` only, with content excluded from catalog/effective
 resolution/materialization until founder publication.
 
-Human/founder lifecycle mutations (claim, validate, review, publish, assign, rollback, retire) require
-the master bearer token and are gated behind bearer-only routes with no agent
-path. Agent callers receive server-side 403 for all lifecycle mutations other
-than their own active pilot task/session-bound proposal submission.
+Human/founder lifecycle mutations (claim, validate, review, publish, assign,
+rollback, retire) require the master bearer token and are gated behind
+bearer-only routes with no agent path. Agent callers receive server-side
+403 for all lifecycle mutations other than their own active pilot
+task/session-bound proposal submission.
 
 **FAIL-CLOSED materialization.** Any error during materialization raises
 immediately. A failed materialization must NOT leave a partially-populated

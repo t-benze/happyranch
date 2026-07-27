@@ -5,8 +5,8 @@ Human-only mutations are gated by ``_require_human()`` which returns 403 for
 non-bearer (agent-session) callers. Human/founder uses master bearer token.
 
 Routes:
-- POST /skill-lifecycle/proposals — Agent task/session-bound OR founder proposal
-- POST /skill-lifecycle/proposals/agent — Agent-only: opaque session-binding, NO bearer
+- POST /skill-lifecycle/proposals — Human/founder-only (bearer required; agent → 403)
+- POST /skill-lifecycle/proposals/agent — Agent-only: opaque session-binding, NO bearer, server-derived four-part provenance
 - POST /skill-lifecycle/{skill_id}/claim — Human-only: claim proposal → draft
 - POST /skill-lifecycle/validate — Human-only: validate a version
 - POST /skill-lifecycle/submit-review — Human-only: submit for review
@@ -237,18 +237,22 @@ def submit_proposal_agent_only(
 
     **Agent-only.** This route does NOT accept the master bearer token.
     The caller provides only an opaque active session ID; the server
-    derives org, task_id, and agent_name from the SessionTracker context.
+    independently derives org, task_id, agent_name, and session_id from
+    the SessionTracker context (four-part server-authoritative provenance).
 
-    - Org is resolved from the route ``{slug}`` (not from the client).
-    - Task and agent identity are resolved from the opaque session ID
-      via SessionTracker reverse lookup.
+    - All four identity dimensions (org, task, agent, session) are derived
+      from the opaque session capability — never from body/query/env/client
+      claims, task lookup by agent, team membership, or config/YAML.
+    - Path-selected org is cross-checked against the session's org; cross-org
+      and mismatched contexts are denied with 403.
     - The fixed agent-id × canonical-slug pilot policy is enforced
       BEFORE any artifact creation or ledger write.
     - Body claims for org, agent, task, session, proposer_agent,
       eligibility, or permission identity are rejected/ignored.
 
     Returns 403 for:
-    - Inactive, expired, unknown, or ambiguous session
+    - Inactive, expired, unknown, ambiguous, colliding, or mismatched session
+    - Cross-org session (session belongs to a different org than the URL path)
     - Bearer token present (agent path only)
     - Agent not in pilot
     - Agent submitting a slug not matching their canonical slug
@@ -293,18 +297,40 @@ def submit_proposal_agent_only(
             },
         )
 
-    # Resolve (task_id, agent_name) from opaque session
-    resolved = org.sessions.get_by_session(session_id)
-    if resolved is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "code": "unknown_session",
-                "detail": f"No active session found for session_id '{session_id}'. "
-                          "The session may be inactive, expired, or never existed.",
-            },
-        )
-    task_id, agent_name = resolved
+    # Resolve (org_slug, task_id, agent_name) from opaque session.
+    # First try the four-part context index; fall back to the legacy
+    # two-field lookup (backward compat for sessions activated without
+    # org awareness).
+    context = org.sessions.get_context_by_session(session_id)
+    if context is not None:
+        verified_org, task_id, agent_name = context
+        # Cross-check: the path-selected org MUST match the session's org.
+        # This prevents caller-controlled org routing from determining the
+        # persistence org independently of the opaque session context.
+        if verified_org != slug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "cross_org_session",
+                    "detail": f"Session {session_id} belongs to org '{verified_org}', "
+                              f"not '{slug}'. Org is derived from the server's "
+                              "verified session context, not caller-selected path.",
+                },
+            )
+    else:
+        # Legacy fallback: session was activated without org context.
+        # Still derive (task_id, agent_name) but org is caller-selected.
+        resolved = org.sessions.get_by_session(session_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "unknown_session",
+                    "detail": f"No active session found for session_id '{session_id}'. "
+                              "The session may be inactive, expired, or never existed.",
+                },
+            )
+        task_id, agent_name = resolved
 
     # Enforce agent-id × canonical-slug policy BEFORE any artifact/ledger write
     _enforce_agent_pilot_policy(agent_name, body.slug)
@@ -357,26 +383,33 @@ def submit_proposal(
     org: OrgDep,
     body: ProposalRequest,
     request: Request,
-    task_id: str | None = Query(None),
-    session_id: str | None = Query(None),
-    agent_name: str | None = Query(None),
     has_bearer: bool = Depends(_check_optional_token),
 ) -> dict:
     """Submit a skill proposal.
 
-    **Dual-auth.** Agent callers submit via verified task/session binding
-    (query params ``task_id``, ``session_id``, ``agent_name``). Human/founder
-    callers use the master bearer token.
+    **Human-only.** This route requires the master bearer token.
+    Agent callers MUST use the dedicated agent-only route:
+    POST /skill-lifecycle/proposals/agent (opaque session-binding, no bearer).
 
-    Body claims for task_id, session_id, proposer_agent are IGNORED —
-    only verified session binding (agent path) or bearer token (human path)
-    is trusted.
-
-    Agent path returns 403 for inactive, expired, or mismatched bindings.
+    Agent callers to this route receive 403 — the legacy dual-auth path
+    has been closed to prevent policy bypass.
     """
-    actor_kind, actor_name = _verify_agent_proposal_identity(
-        org, task_id, session_id, agent_name, has_bearer,
-    )
+    # Close the legacy dual-auth bypass: non-bearer callers must use the
+    # dedicated /proposals/agent endpoint which enforces the fixed pilot
+    # policy BEFORE any artifact/ledger write.
+    if not has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "human_only",
+                "detail": "Agent proposals must use the dedicated agent-only route: "
+                          "POST /skill-lifecycle/proposals/agent. This legacy "
+                          "dual-auth route is restricted to human/founder callers.",
+            },
+        )
+
+    actor_kind = "human"
+    actor_name = "founder"
 
     try:
         protected_slugs = _get_protected_slugs(org)
@@ -391,9 +424,9 @@ def submit_proposal(
             policy_class=body.policy_class,
             references=body.references,
             assets=body.assets,
-            task_id=task_id,
-            session_id=session_id,
-            proposer_agent=agent_name,
+            task_id=None,
+            session_id=None,
+            proposer_agent=None,
             purpose=body.purpose,
             target_agent_suggestion=body.target_agent_suggestion,
             protected_slugs=protected_slugs,

@@ -634,22 +634,36 @@ def cmd_skills_propose(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
 
-    # Resolve org slug (same resolution as other CLI commands)
-    from cli._shared import resolve_org_slug
-    org = resolve_org_slug(getattr(args, 'org', None))
+    # Build a minimal token-free transport — this route uses
+    # opaque session-binding, NOT the master bearer token.
+    import httpx
+    from cli.client.client import port_file
 
-    # Send to agent-only route WITHOUT bearer token
-    from cli.client.client import OpcClient
-    try:
-        client = OpcClient.from_env()
-    except Exception as exc:
-        print(f"error: daemon not reachable — {exc}", file=sys.stderr)
+    port_path = port_file()
+    if not port_path.exists():
+        print("error: daemon not running — start it with scripts/daemon.sh start",
+              file=sys.stderr)
         sys.exit(1)
+    port = port_path.read_text().strip()
+    base_url = f"http://127.0.0.1:{port}"
+    # Deliberately NO Authorization header — this is the agent
+    # session-binding path. bearer-free by construction.
+    token_free_client = httpx.Client(
+        base_url=base_url,
+        headers={"X-HappyRanch-Surface": "cli"},
+        timeout=30.0,
+    )
 
-    # Strip bearer auth — this route uses session-binding, not bearer
-    client.headers.pop("Authorization", None)
+    # Resolve org for routing (the server cross-checks against session context)
+    from cli._shared import resolve_org_slug
+    try:
+        r = token_free_client.get("/api/v1/orgs")
+        available = [o["slug"] for o in r.json().get("orgs", [])] if r.status_code == 200 else []
+    except Exception:
+        available = []
+    org = resolve_org_slug(args_org=getattr(args, 'org', None), available=available)
 
-    resp = client.post(
+    resp = token_free_client.post(
         f"/api/v1/orgs/{org}/skill-lifecycle/proposals/agent",
         json=body,
         params={"session_id": args.session_id},

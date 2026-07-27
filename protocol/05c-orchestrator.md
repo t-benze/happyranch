@@ -708,25 +708,32 @@ replacing the legacy per-org filesystem store (`<org_root>/skills/`).
 → published → assigned`. `rolled_back` and `retired` are terminal re-assignment
 states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
 
-**Agent authority.** Agents may submit proposals through two paths:
+**Agent authority.** Agents may submit proposals ONLY through the dedicated
+agent-only route. The legacy dual-auth path is human/founder-only:
 
-1. **Opaque session CLI (THR-055 corrective).** The single safe agent authoring
-   workflow: ``happyranch skills propose --from-file <proposal.json> --session-id <session-id>``.
-   The proposal file contains only package metadata/content accepted by
-   ``ProposalRequest`` (slug, name, description, skill_md, version, policy_class,
-   references, assets, purpose, target_agent_suggestion). It must NOT contain
-   org, agent, task, session, proposer_agent, eligibility, or permission identity.
-   The CLI sends the opaque session ID to
+1. **Opaque session CLI (THR-055 seq 127 corrective).** The single safe agent
+   authoring workflow: ``happyranch skills propose --from-file <proposal.json>
+   --session-id <session-id> [--org <slug>]``. The proposal file contains only
+   package metadata/content accepted by ``ProposalRequest`` (slug, name,
+   description, skill_md, version, policy_class, references, assets, purpose,
+   target_agent_suggestion). It must NOT contain org, agent, task, session,
+   proposer_agent, eligibility, or permission identity. The CLI builds a
+   token-free transport (no bearer token read or sent) using only the daemon
+   port. It resolves org via the established ``resolve_org_slug(args_org=,
+   available=)`` convention. The opaque session ID is sent to
    ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent``, which does NOT
-   accept the master bearer token. The server resolves org from the route slug
-   and derives (task_id, agent_name) from the opaque session via
-   ``SessionTracker.get_by_session()`` — not from body, query, environment, task
-   lookup by agent, team membership, or client-asserted identity.
-   Body identity claims (task_id, session_id, proposer_agent) are rejected with 403.
+   accept the master bearer token. The server independently derives all four
+   identity dimensions (org_slug, task_id, agent_name, active session_id) from
+   the SessionTracker's additive context index — never from body, query,
+   environment, task lookup by agent, team membership, or client-asserted
+   identity. Body identity claims (task_id, session_id, proposer_agent) are
+   rejected with 403. Path-selected org is cross-checked against the session's
+   org; cross-org and mismatched contexts are denied.
 
-2. **Existing dual-auth route.** ``POST /skill-lifecycle/proposals`` accepts
-   either the master bearer token (human/founder) or explicit task_id + session_id
-   + agent_name query params (agent, verified via SessionTracker).
+2. **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
+   is restricted to bearer-authenticated human/founder callers. Non-bearer
+   (agent) callers receive 403 directing them to the dedicated
+   ``/proposals/agent`` endpoint. The legacy dual-auth bypass has been closed.
 
 **Agent-id × canonical-slug pilot policy.** The agent-only route enforces a fixed
 server-side policy BEFORE any artifact creation or ledger/event write:
