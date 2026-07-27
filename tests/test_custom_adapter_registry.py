@@ -755,7 +755,7 @@ class TestPendingAdapterBoundary:
 
     def test_resolve_returns_entry_but_pending_flag_is_set(self, tmp_path: Path, monkeypatch):
         """resolve_adapter returns the entry, but status is pending.
-        
+
         D4 will add the approval gate — in D3, resolve returns None for
         pending adapters (the binding/launch seam). Use get_adapter for
         read-only inspection."""
