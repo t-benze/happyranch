@@ -202,3 +202,135 @@ async def test_run_dream_passes_org_paths_to_executor_factory(org_state):
 
     assert isinstance(captured["paths"], OrgPaths)
     assert captured["paths"].root == org_state.root
+
+
+# ── THR-116: terminal_error on executor failures ───────────────────────
+
+class FakeSessionLimitResult:
+    """Claude exited non-zero with a structured result envelope indicating
+    session-limit, plus unrelated stderr noise (workspace-trust warning)."""
+    success = False
+    error = "Command exited with code 1: Workspace trust warning: ..."
+    returncode = 1
+    session_id = "executor-session"
+    agent_session_id = None
+    token_usage = None
+    terminal_error = "session_limit"
+
+
+class FakeCertificateErrorResult:
+    """Claude exited non-zero with a structured result envelope indicating
+    UNKNOWN_CERTIFICATE_VERIFICATION_ERROR, plus unrelated stderr noise."""
+    success = False
+    error = "Command exited with code 1: Workspace trust warning: ..."
+    returncode = 1
+    session_id = "executor-session"
+    agent_session_id = None
+    token_usage = None
+    terminal_error = "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+
+
+class FakeNoStructuredResult:
+    """Executor exited non-zero with no structured terminal result —
+    terminal_error is None, so the fallback error should be used."""
+    success = False
+    error = "Command exited with code 2: fatal: something broke"
+    returncode = 2
+    session_id = "executor-session"
+    agent_session_id = None
+    token_usage = None
+    terminal_error = None
+
+
+class FakeStructuredResultExecutor:
+    def __init__(self, result):
+        self._result = result
+
+    def run(self, **kwargs):
+        return self._result
+
+
+async def test_run_dream_session_limit_classified_terminal_error(org_state):
+    """(a) Structured terminal session-limit result + unrelated stderr:
+    persisted dream.error and dream_failed audit reason must be the
+    classified 'session_limit', not the raw stderr-based error."""
+    _insert_pending_dream(org_state)
+    fake = FakeStructuredResultExecutor(FakeSessionLimitResult())
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_a, **_k: fake)
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert dream.error == "session_limit"
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == "session_limit"
+    # Must NOT contain the stderr noise.
+    assert "Workspace trust warning" not in dream.error
+
+
+async def test_run_dream_certificate_error_classified_terminal_error(org_state):
+    """(b) Structured UNKNOWN_CERTIFICATE_VERIFICATION_ERROR result +
+    unrelated stderr: persisted error and audit reason must be the
+    classified transport_error reason."""
+    _insert_pending_dream(org_state)
+    fake = FakeStructuredResultExecutor(FakeCertificateErrorResult())
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_a, **_k: fake)
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert dream.error == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+    # Must NOT contain the stderr noise.
+    assert "Workspace trust warning" not in dream.error
+
+
+async def test_run_dream_timeout_unchanged_by_terminal_error(org_state):
+    """(c) Existing timeout path remains distinct — timeout status and
+    dream_timeout audit action are unchanged."""
+    _insert_pending_dream(org_state)
+    fake = FakeExecutor(FakeTimeoutResult)
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_a, **_k: fake)
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.TIMEOUT
+    assert "timed out" in dream.error
+    actions = [r["action"] for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert "dream_timeout" in actions
+    assert "dream_failed" not in actions
+
+
+async def test_run_dream_no_callback_unchanged_by_terminal_error(org_state):
+    """(c) Existing successful/no-callback path remains distinct —
+    FAILED status with 'no_callback' error."""
+    _insert_pending_dream(org_state)
+    fake = FakeExecutor(FakeResult)
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_a, **_k: fake)
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert "no_callback" in dream.error
+    audit_rows = list(org_state.db.get_audit_logs("DREAM-001"))
+    actions = [r["action"] for r in audit_rows]
+    assert "dream_failed" in actions
+
+
+async def test_run_dream_no_structured_result_falls_back_to_error(org_state):
+    """(d) When terminal_error is None (no structured result), dream.error
+    and audit reason fall back to the pre-existing raw error string."""
+    _insert_pending_dream(org_state)
+    fake = FakeStructuredResultExecutor(FakeNoStructuredResult())
+
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda *_a, **_k: fake)
+
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.status == DreamStatus.FAILED
+    assert dream.error == "Command exited with code 2: fatal: something broke"
+    actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
+    assert actions[-1]["action"] == "dream_failed"
+    assert actions[-1]["payload"]["reason"] == "Command exited with code 2: fatal: something broke"

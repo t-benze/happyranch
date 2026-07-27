@@ -55,6 +55,12 @@ class ExecutorResult:
     # it over its legacy stdout/stderr string heuristic, and the per-provider
     # throttle uses it to drive 429 backoff.
     rate_limited: bool = False
+    # Classified terminal failure reason extracted from structured executor
+    # output (e.g. Claude's --output-format json result envelope).  None when
+    # no structured terminal result is available — callers fall back to
+    # ``error`` (THR-116).  Examples: ``session_limit``,
+    # ``transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR``.
+    terminal_error: str | None = None
 
 
 _TAIL_BYTES = 2000
@@ -254,6 +260,86 @@ def _parse_claude_session_id(stdout: str) -> str | None:
         return None
     sid = obj.get("session_id")
     return sid if isinstance(sid, str) and sid else None
+
+
+def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
+    """Parse Claude Code ``--output-format json`` stdout for a structured
+    terminal error reason on non-zero exit.
+
+    THR-116: When Claude exits non-zero, its stdout may carry a structured
+    JSON result envelope with a deterministic terminal error (e.g.
+    session-limit or UNKNOWN_CERTIFICATE_VERIFICATION_ERROR), while stderr
+    contains an unrelated workspace-trust warning.  This function extracts
+    the structured reason so dream-runner failures carry a classified reason
+    instead of incidental stderr noise.
+
+    Returns a classified reason string like ``session_limit`` or
+    ``transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR``, or None
+    when no usable structured result is available (caller falls back to the
+    existing ``error`` / stderr-based summary).
+    """
+    if not stdout or not stdout.strip():
+        return None
+    try:
+        obj = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+
+    # ── Terminal result event (type: "result" + subtype) ──
+    if obj.get("type") == "result":
+        subtype = obj.get("subtype")
+        if isinstance(subtype, str) and subtype.startswith("error_"):
+            err_type = subtype[len("error_"):]  # e.g. max_turns, during_execution
+            if err_type in ("max_turns",) or "session" in err_type.lower():
+                return "session_limit"
+            return f"claude_{err_type}"
+
+        # result field may carry a human-readable terminal outcome
+        result = obj.get("result")
+        if isinstance(result, str) and result and result not in ("ok", "success"):
+            result_lower = result.lower()
+            if "session" in result_lower and ("limit" in result_lower or "max" in result_lower):
+                return "session_limit"
+            if "certificate" in result_lower:
+                return "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+            if "rate" in result_lower and "limit" in result_lower:
+                return "rate_limit"
+            # Preserve a bounded prefix of the structured result string.
+            return result[:200]
+        return None
+
+    # ── Generic error-object patterns (non-result-type JSON) ──
+    # Some Claude versions emit {error: {message: ...}, ...} or
+    # {errors: [{message: ...}]}
+    error_obj = obj.get("error")
+    if isinstance(error_obj, dict):
+        msg = error_obj.get("message")
+        if isinstance(msg, str) and msg:
+            msg_lower = msg.lower()
+            if "session" in msg_lower and "limit" in msg_lower:
+                return "session_limit"
+            if "certificate" in msg_lower:
+                return "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+            return msg[:200]
+    if isinstance(error_obj, str) and error_obj:
+        return error_obj[:200]
+
+    errors = obj.get("errors")
+    if isinstance(errors, list) and errors:
+        first = errors[0]
+        if isinstance(first, dict) and first.get("message"):
+            msg = str(first["message"])[:200]
+            if "session" in msg.lower() and "limit" in msg.lower():
+                return "session_limit"
+            if "certificate" in msg.lower():
+                return "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+            return msg
+        if isinstance(first, str):
+            return first[:200]
+
+    return None
 
 
 def _parse_codex_usage(stdout: str) -> TokenUsage | None:
@@ -521,6 +607,7 @@ def _run_command(
     session_id_parser: Callable[[str], "str | None"] | None = None,
     provider: str = "claude",
     on_throttle_event: "OnThrottleEvent | None" = None,
+    error_parser: Callable[[str, str], "str | None"] | None = None,
 ) -> ExecutorResult:
     """Run one agent subprocess under the per-provider throttle (issue #85).
 
@@ -579,6 +666,17 @@ def _run_command(
             error_summary = (full_stderr or full_stdout or "").strip()
             if error_summary:
                 error_summary = f": {error_summary}"
+            # THR-116: extract a classified terminal failure reason from
+            # structured executor output (e.g. Claude's JSON result envelope)
+            # so callers like dream_runner can persist a deterministic reason
+            # instead of incidental stderr noise.
+            terminal_error = None
+            if error_parser is not None:
+                try:
+                    terminal_error = error_parser(full_stdout, full_stderr)
+                except Exception as exc:
+                    logger.warning("error parser raised: %s", exc)
+                    terminal_error = None
             return ExecutorResult(
                 success=False,
                 duration_seconds=int(time.monotonic() - start_time),
@@ -588,6 +686,7 @@ def _run_command(
                 stderr_tail=stderr_tail,
                 error=f"Command exited with code {proc.returncode}{error_summary}",
                 rate_limited=rate_limited,
+                terminal_error=terminal_error,
             )
         token_usage: TokenUsage | None = None
         if usage_parser is not None:
@@ -753,6 +852,7 @@ class ClaudeExecutor:
             session_id_parser=_parse_claude_session_id,
             provider="claude",
             on_throttle_event=on_throttle_event,
+            error_parser=_parse_claude_terminal_error,
         )
 
 
