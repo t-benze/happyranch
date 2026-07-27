@@ -164,7 +164,7 @@ describe('SkillEditPage — edit + re-validate a custom skill (THR-092 Slice 4)'
     expect(screen.queryByLabelText('Validation result')).toBeNull();
   });
 
-  test('PASS + version bump: submits proposal, confirms next-session effect, and shows every already-effective agent as "takes effect next session"', async () => {
+  test('PROPOSED + version bump: submits proposal, shows proposed state, confirmation, and View skill link', async () => {
     mount(CUSTOM_DETAIL);
     await screen.findByRole('heading', { name: /Edit a custom skill/i });
     await userEvent.clear(screen.getByLabelText(/Version/i));
@@ -172,16 +172,10 @@ describe('SkillEditPage — edit + re-validate a custom skill (THR-092 Slice 4)'
     await userEvent.click(screen.getByRole('button', { name: /Save & re-validate/i }));
 
     const result = await screen.findByLabelText('Validation result');
-    expect(result).toHaveAttribute('data-result', 'validated');
-    expect(within(result).getByText('Validated')).toBeInTheDocument();
-    expect(within(result).getByText(/takes effect for each assigned agent at its next session/i)).toBeInTheDocument();
-    // The two previously-effective agents are now assigned-not-yet-effective.
-    const liaison = within(result).getByText('partner_liaison').closest('li')!;
-    expect(liaison).toHaveAttribute('data-status', 'not_yet_effective');
-    expect(within(liaison).getByText('Takes effect next session')).toBeInTheDocument();
-    const planner = within(result).getByText('itinerary_planner').closest('li')!;
-    expect(planner).toHaveAttribute('data-status', 'not_yet_effective');
-    // View skill points at the Slice-2 detail route; no Re-validate on success.
+    expect(result).toHaveAttribute('data-result', 'proposed');
+    expect(within(result).getByText('Proposed')).toBeInTheDocument();
+    expect(within(result).getByText(/awaiting review/i)).toBeInTheDocument();
+    // Proposed state adds a View skill link and no Re-validate.
     expect(within(result).getByRole('link', { name: /View skill/i })).toHaveAttribute(
       'href',
       `/orgs/${SLUG}/skills/${CUSTOM_ID}`,
@@ -225,7 +219,7 @@ describe('SkillEditPage — edit + re-validate a custom skill (THR-092 Slice 4)'
     expect(main).not.toMatch(/\bactive\b/i);
   });
 
-  test('copy discipline: the PASS edited-effective state also stays clean', async () => {
+  test('copy discipline: the proposed edit state also stays clean', async () => {
     mount(CUSTOM_DETAIL);
     await screen.findByRole('heading', { name: /Edit a custom skill/i });
     await userEvent.click(screen.getByRole('button', { name: /Save & re-validate/i }));

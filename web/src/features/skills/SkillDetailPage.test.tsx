@@ -24,7 +24,7 @@ interface Detail {
   policy_class: string;
   status: string;
   version: string;
-  validation_state: 'in_catalog' | 'validated' | 'failed_validation';
+  validation_state: 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
   summary: string;
   description: string;
   when_to_use: string;

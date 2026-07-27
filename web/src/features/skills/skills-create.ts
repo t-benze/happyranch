@@ -131,7 +131,7 @@ export function isCreateFormSubmittable(
 
 // ── Validation result ───────────────────────────────────────────────────
 
-export type ValidationState = 'in_catalog' | 'validated' | 'failed_validation';
+export type ValidationState = 'in_catalog' | 'validated' | 'failed_validation' | 'proposed';
 
 /** Minimal structural shape of a CreateSkillResponse / ValidateSkillResponse. */
 export interface ValidationResultFacts {
@@ -143,6 +143,9 @@ export interface ValidationResultFacts {
 /** Did the technical validation pass? A validated result is the only success;
  *  everything else persisted an editable draft that "needs attention". */
 export function isValidationPassed(facts: ValidationResultFacts): boolean {
+  // proposed is never a pass — validation requires a founder-only lifecycle
+  // transition. Fabricated ok=true on a proposed response must not mislead.
+  if (facts.validation_state === 'proposed') return false;
   if (facts.validation && facts.validation.ok === false) return false;
   if (facts.validation && facts.validation.ok === true) return true;
   return facts.validation_state === 'validated';

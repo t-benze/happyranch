@@ -70,8 +70,9 @@ function useSkillDetail(
 // THR-055 lifecycle cutover: Create → submitProposal
 // The `CreateSkillRequest` contract is preserved for API compatibility.
 // The lifecycle `submitProposal` response is mapped into the legacy
-// response shape expected by callers. A successful proposal submission
-// is the lifecycle-native equivalent of a technical-validation pass.
+// response shape expected by callers. A proposal submission reflects the
+// true lifecycle status (proposed) — NOT a fabricated validation pass.
+// Validation requires a founder-only lifecycle transition.
 function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse> {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
@@ -87,14 +88,11 @@ function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse>
         references: body.references,
         assets: body.assets,
       });
-      // Map lifecycle response to legacy CreateSkillResponse shape.
-      // A successful proposal = lifecycle-native "validated" (the draft
-      // was accepted and persisted).
       return {
         skill_id: resp.skill_id,
         source: 'lifecycle',
-        validation_state: 'validated' as const,
-        validation: { ok: true, errors: [] },
+        validation_state: 'proposed' as const,
+        validation: { ok: false, errors: [] },
       };
     },
     onSuccess: (res) => {
@@ -105,8 +103,25 @@ function useCreateSkill(): MutationLike<CreateSkillRequest, CreateSkillResponse>
 }
 
 // THR-055 lifecycle cutover: Validate → read lifecycle status.
-// Agent-side "validate" reflects the current lifecycle state of the proposal.
-// A proposal that exists is a lifecycle-native success.
+// Agent-side "validate" reflects the CURRENT lifecycle state of the proposal.
+// Does NOT fabricate validated — only the founder-only lifecycle validation
+// transition sets the validated state.
+function lifecycleStatusToValidationState(
+  status: string | null,
+): 'proposed' | 'validated' | 'failed_validation' {
+  switch (status) {
+    case 'validation_failed':
+      return 'failed_validation';
+    case 'validated':
+    case 'approved':
+    case 'published':
+      return 'validated';
+    case 'proposed':
+    default:
+      return 'proposed';
+  }
+}
+
 function useValidateSkill(): MutationLike<
   { skillId: string },
   ValidateSkillResponse
@@ -115,11 +130,11 @@ function useValidateSkill(): MutationLike<
   return useMutation({
     mutationFn: async ({ skillId }: { skillId: string }) => {
       const status = await getLifecycleStatus(slug, skillId);
-      // A proposal that exists and is readable is lifecycle-validated.
+      const state = lifecycleStatusToValidationState(status.current_status);
       return {
         skill_id: status.skill_id,
-        validation_state: 'validated' as const,
-        validation: { ok: true, errors: [] },
+        validation_state: state,
+        validation: { ok: state === 'validated', errors: [] },
       };
     },
   });
@@ -127,6 +142,7 @@ function useValidateSkill(): MutationLike<
 
 // THR-055 lifecycle cutover: PATCH edit → new proposal submission.
 // Editing creates a new version via the submitProposal lifecycle endpoint.
+// Reflects the true lifecycle status (proposed) — NOT a fabricated validated.
 function useEditSkill(): MutationLike<
   { skillId: string; body: EditSkillRequest },
   EditSkillResponse
@@ -157,8 +173,8 @@ function useEditSkill(): MutationLike<
       return {
         skill_id: resp.skill_id,
         source: 'lifecycle',
-        validation_state: 'validated' as const,
-        validation: { ok: true, errors: [] },
+        validation_state: 'proposed' as const,
+        validation: { ok: false, errors: [] },
         version: resp.version,
       };
     },

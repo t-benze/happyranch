@@ -101,22 +101,22 @@ describe('SkillCreatePage — add custom skill (THR-092 Slice 3)', () => {
     expect(screen.queryByLabelText('Validation result')).toBeNull();
   });
 
-  test('SUCCESS path: renders Validated badge, confirmation, and a View skill link to the detail route', async () => {
+  test('SUCCESS path: renders Proposed badge, confirmation, and a View skill link to the detail route', async () => {
     mount();
     await screen.findByRole('heading', { name: /Add a custom skill/i });
     await fillMinimalForm();
     await userEvent.click(screen.getByRole('button', { name: /Validate & save/i }));
 
     const result = await screen.findByLabelText('Validation result');
-    expect(result).toHaveAttribute('data-result', 'validated');
-    expect(within(result).getByText('Validated')).toBeInTheDocument();
-    expect(within(result).getByText(/technical checks passed/i)).toBeInTheDocument();
+    expect(result).toHaveAttribute('data-result', 'proposed');
+    expect(within(result).getByText('Proposed')).toBeInTheDocument();
+    expect(within(result).getByText(/awaiting review/i)).toBeInTheDocument();
     const view = within(result).getByRole('link', { name: /View skill/i });
     expect(view).toHaveAttribute(
       'href',
       `/orgs/${SLUG}/skills/${encodeURIComponent('hr:incident-postmortem')}`,
     );
-    // Success does not offer Re-validate.
+    // Proposed state does not offer Re-validate.
     expect(within(result).queryByRole('button', { name: /Re-validate/i })).toBeNull();
   });
 
@@ -143,7 +143,7 @@ describe('SkillCreatePage — add custom skill (THR-092 Slice 3)', () => {
     await fillMinimalForm();
     await userEvent.click(screen.getByRole('button', { name: /Validate & save/i }));
     const result = await screen.findByLabelText('Validation result');
-    // Success state never offers Re-validate — proposal acceptance is terminal
+    // Proposed state never offers Re-validate — proposal acceptance is terminal
     // from the agent's perspective (human review comes later). Scoped to result
     // section so the submit button "Validate & save" isn't matched.
     expect(within(result).queryByRole('button', { name: /Re-validate/i })).toBeNull();
