@@ -381,8 +381,7 @@ def test_run_step_session_failure_cascades_to_parent_no_retry(
 ):
     """TASK-573 bounded failure-recovery: when a delegated subtask fails,
     the parent gets a bounded manager-wake decision step (enqueued),
-    NOT cascade-failed. The auto-revisit that fires is a SEPARATE,
-    independent root. See test_run_step_opaque_failure_spawns_auto_revisit."""
+    NOT cascade-failed. TASK-3604: no auto-revisit successor is spawned."""
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -413,20 +412,12 @@ def test_run_step_session_failure_cascades_to_parent_no_retry(
     parent = db.get_task("T-PAR")
     assert parent.status == TaskStatus.IN_PROGRESS
     assert parent.block_kind == BlockKind.DELEGATED
-    # Queue holds BOTH the auto-revisit root (spawned first) AND the
-    # parent re-enqueue (decision step). Call order: _maybe_spawn_auto_revisit
-    # fires before _enqueue_parent_if_waiting.
-    assert q.qsize() == 2
-    # First: the auto-revisit root.
-    slug1, revisit_id = q.get_nowait()
+    # TASK-3604: queue holds ONLY the parent re-enqueue (decision step).
+    # No auto-revisit successor root is spawned.
+    assert q.qsize() == 1
+    slug1, tid1 = q.get_nowait()
     assert slug1 == "test"
-    assert revisit_id != "T-PAR"
-    revisit = db.get_task(revisit_id)
-    assert revisit.parent_task_id is None
-    assert revisit.revisit_of_task_id == "T-PAR"
-    # Second: the parent re-enqueue for the bounded-wake decision step.
-    slug2, tid2 = q.get_nowait()
-    assert tid2 == "T-PAR"
+    assert tid1 == "T-PAR"
 
 
 def test_run_step_session_failure_cascades_up_chain(
@@ -469,17 +460,9 @@ def test_run_step_session_failure_cascades_up_chain(
     # T-ROOT stays in_progress(delegated) — not reachable until T-MID advances.
     assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-ROOT").block_kind == BlockKind.DELEGATED
-    # Queue holds auto-revisit root (spawned first) + T-MID enqueue.
-    # Call order: _maybe_spawn_auto_revisit fires before _enqueue_parent_if_waiting.
-    assert orch._queue.qsize() == 2
-    # First: the auto-revisit root (SEPARATE independent root).
-    slug, revisit_id = orch._queue.get_nowait()
-    assert slug == "test"
-    assert revisit_id not in ("T-ROOT", "T-MID", "T-LEAF")
-    revisit = db.get_task(revisit_id)
-    assert revisit.parent_task_id is None
-    assert revisit.revisit_of_task_id == "T-ROOT"
-    # Second: T-MID bounded-wake enqueue.
+    # TASK-3604: queue holds ONLY T-MID bounded-wake enqueue.
+    # No auto-revisit successor root is spawned.
+    assert orch._queue.qsize() == 1
     slug_mid, tid_mid = orch._queue.get_nowait()
     assert tid_mid == "T-MID"
 
@@ -518,13 +501,13 @@ def test_run_step_session_failure_note_includes_diagnostics(
     assert "wrote ExplorePage.tsx" in note
 
 
-def test_run_step_opaque_failure_spawns_auto_revisit_with_error_context(
+def test_run_step_opaque_failure_no_auto_revisit(
     runtime, db, monkeypatch,
 ):
-    """On the 3 opaque failures, the orchestrator packs structured error
-    context and spawns a NEW root linked to the predecessor root via
-    revisit_of_task_id. The team manager owns the new root and can decide
-    what to do next."""
+    """TASK-3604: When a delegated subtask hits an opaque failure, the task
+    is marked FAILED but NO auto-revisit successor root is created. The
+    failure note includes diagnostics (rc, missing callback flag, stdout
+    tail) so post-mortems don't need to grep daemon.log."""
     import asyncio
     from runtime.orchestrator.executors import ExecutorResult
     from runtime.orchestrator.orchestrator import Orchestrator
@@ -555,37 +538,32 @@ def test_run_step_opaque_failure_spawns_auto_revisit_with_error_context(
 
     orch.run_step("T-CHD")
 
-    slug, revisit_id = orch._queue.get_nowait()
+    # Child is FAILED with diagnostic note.
+    child = db.get_task("T-CHD")
+    assert child.status == TaskStatus.FAILED
+    assert "no completion callback" in (child.note or "")
+    assert "wrote ExplorePage.tsx" in (child.note or "")
+
+    # TASK-3604: NO auto-revisit successor root.
+    # Queue holds ONLY the parent re-enqueue for bounded-wake.
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
     assert slug == "test"
-    revisit = db.get_task(revisit_id)
-    # New root inherits brief + team from the predecessor root.
-    assert revisit.brief == "parent brief"
-    assert revisit.team == "engineering"
-    assert revisit.assigned_agent == "engineering_head"
-    assert revisit.parent_task_id is None
-    assert revisit.revisit_of_task_id == "T-PAR"
-    assert revisit.status == TaskStatus.PENDING
+    assert tid == "T-PAR"
 
-    # Audit on the new root carries the structured error context.
-    rows = db.get_audit_logs(revisit_id)
-    auto_entry = next(r for r in rows if r["action"] == "auto_revisit_of")
-    payload = auto_entry["payload"]
-    assert payload["predecessor_root"] == "T-PAR"
-    assert payload["failed_task"] == "T-CHD"
-    assert payload["failed_agent"] == "dev_agent"
-    assert payload["attempt"] == 1
-    err = payload["error_context"]
-    assert err["mode"] == "session_failure"
-    assert err["rc"] == 0
-    assert err["missing_callback"] is True
-    assert "wrote ExplorePage.tsx" in err["stdout_tail"]
+    # No auto_revisit_of audit row anywhere.
+    all_audit = db.fetch_all_readonly(
+        "SELECT action FROM audit_log "
+        "WHERE action IN ('auto_revisit_of', 'revisit_spawned')"
+    )
+    assert len(all_audit) == 0
 
 
-def test_run_step_opaque_failure_on_root_manager_spawns_auto_revisit(
+def test_run_step_opaque_failure_on_root_manager_no_auto_revisit(
     runtime, db, monkeypatch,
 ):
-    """Manager-level opaque failure (root task itself crashes) also
-    triggers auto-revisit. Predecessor is the failed root itself."""
+    """TASK-3604: Manager-level opaque failure (root task itself crashes)
+    marks the task FAILED but spawns NO auto-revisit successor."""
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -602,18 +580,25 @@ def test_run_step_opaque_failure_on_root_manager_spawns_auto_revisit(
 
     orch.run_step("T-ROOT")
 
+    # Task is FAILED.
     assert db.get_task("T-ROOT").status == TaskStatus.FAILED
-    slug, revisit_id = orch._queue.get_nowait()
-    assert slug == "test"
-    revisit = db.get_task(revisit_id)
-    assert revisit.revisit_of_task_id == "T-ROOT"
-    assert revisit.brief == "root brief"
+
+    # TASK-3604: no successor root is spawned.
+    assert orch._queue.qsize() == 0
+
+    # No auto_revisit_of audit anywhere.
+    all_audit = db.fetch_all_readonly(
+        "SELECT action FROM audit_log "
+        "WHERE action IN ('auto_revisit_of', 'revisit_spawned')"
+    )
+    assert len(all_audit) == 0
 
 
-def test_run_step_opaque_failure_on_exception_spawns_auto_revisit(
+def test_run_step_opaque_failure_on_exception_no_auto_revisit(
     runtime, db, monkeypatch,
 ):
-    """Exception escaping _run_agent triggers auto-revisit with mode=exception."""
+    """TASK-3604: Exception escaping _run_agent marks the task FAILED
+    but spawns NO auto-revisit successor."""
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -630,13 +615,21 @@ def test_run_step_opaque_failure_on_exception_spawns_auto_revisit(
 
     orch.run_step("T-1")
 
-    slug, revisit_id = orch._queue.get_nowait()
-    assert slug == "test"
-    rows = db.get_audit_logs(revisit_id)
-    auto_entry = next(r for r in rows if r["action"] == "auto_revisit_of")
-    err = auto_entry["payload"]["error_context"]
-    assert err["mode"] == "exception"
-    assert "workspace not initialized" in err["detail"]
+    # Task is FAILED with diagnostic note.
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert "agent invocation failed" in (t.note or "")
+    assert "workspace not initialized" in (t.note or "")
+
+    # TASK-3604: no successor root is spawned.
+    assert orch._queue.qsize() == 0
+
+    # No auto_revisit_of audit anywhere.
+    all_audit = db.fetch_all_readonly(
+        "SELECT action FROM audit_log "
+        "WHERE action IN ('auto_revisit_of', 'revisit_spawned')"
+    )
+    assert len(all_audit) == 0
 
 
 def test_run_step_auto_revisit_capped_at_two(

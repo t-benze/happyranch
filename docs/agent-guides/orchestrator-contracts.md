@@ -151,20 +151,20 @@ Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the r
    (as `result_summary`), so the manager can ground its next decision on the
    failure cause rather than treating it as a code bug.
 
-2. **Parked-ancestor discriminant (THR-064).** Before auto-revisiting, the sweep
-   walks the killed child's ancestors. If any STRICT ancestor (exclude the
-   failed task itself) is a parked, non-terminal, recoverable manager
-   (`in_progress` + `block_kind` in `{DELEGATED, BLOCKED_ON_JOB}`), auto-revisit
-   is **skipped** — the parked ancestor's bounded-wake (Branch 2/3) recovers
-   the child directly. This eliminates the duplicate-twin-root bug where both
-   the sweep's auto-revisit AND the parent's bounded-wake re-dispatched the
-   same work.
+2. **Parked-ancestor discriminant (THR-064).** Before doing bounded parent-wake,
+   the sweep walks the killed child's ancestors. If any STRICT ancestor
+   (exclude the failed task itself) is a parked, non-terminal, recoverable
+   manager (`in_progress` + `block_kind` in `{DELEGATED, BLOCKED_ON_JOB}`),
+   the parent-wake path recovers the child directly. This eliminates the
+   duplicate-twin-root bug where both the sweep and the parent's bounded-wake
+   re-dispatched the same work.
 
-3. **Genuine root-level death still auto-revisits.** A task with no parked
-   non-terminal ancestor (a worker/leaf root, or an EM root mid-decision with
-   no delegated children yet) still spawns an auto-revisit via
-   `_maybe_spawn_auto_revisit` exactly as before. The discriminant only
-   suppresses the visit when a recoverable parent already exists.
+3. **No auto-revisit (THR-079 + TASK-3604).** Startup recovery does NOT spawn
+   an auto-revisit successor — the THR-079 ruling superseded the earlier
+   heartbeat/revisit approach, and TASK-3604 removed automatic successor
+   creation entirely from the run_step path. Dead in_progress tasks are
+   fail-closed; the founder receives a `daemon_restart_failure` audit row
+   and decides whether to re-dispatch.
 
 4. **Fan-out barrier preserved.** A restart-killed child among still-live
    siblings does NOT wake the parked root early — only marking the killed

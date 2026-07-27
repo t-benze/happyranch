@@ -14,7 +14,7 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 - **Task status model.** The canonical task status vocabulary and transition rules (`pending`, `in_progress`, `escalated`, `completed`, `failed`, `cancelled`, `superseded`). Under THR-037 Change B (Path B) a parent waiting on its children/jobs is `in_progress` with the reason in `block_kind`; the await-founder state is the top-level `escalated`; `cancelled` is a founder-initiated terminal. Specs `docs/superpowers/specs/2026-04-19-task-status-redesign.md` + `docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md` (current); current vocabulary `docs/agent-guides/orchestrator-contracts.md`.
 - **Subtask / composite tasks.** Subtask agents spawn bounded subtasks under a parent task, for decomposing a single delegation into iterative steps. Spec `docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md`; impl in `runtime/orchestrator/run_step.py`.
 - **Revisit.** `happyranch revisit <task-id>` spawns a fresh root task inheriting brief and team from a terminal predecessor; old lineage freezes. Specs `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`, `docs/superpowers/specs/2026-04-23-revisit-root-link-design.md`. See [Revisit](#revisit) below for traps.
-- **Session-timeout auto-route.** Silent auto-revisit on opaque agent failures (timeout, no-callback, rate-limit, executor error, etc.), capped per failure kind. Spec `docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md`. See [Session-Timeout Auto-Route](#session-timeout-auto-route) below for traps.
+- **Session-timeout auto-route (RETIRED — TASK-3604).** Automatic daemon successor creation on opaque agent failures has been removed per founder direction. Opaque failures now end FAILED and hand to the existing parent/founder recovery paths (bounded manager-wake, escalation, explicit founder revisit). Legacy `auto_revisit_of` audit rows remain readable for historical compatibility. Original spec `docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md` (retired).
 - **Cancel (race + actor attribution).** Founder/agent task cancellation with race-safe state handling and audit attribution of who cancelled. Specs `docs/superpowers/specs/2026-05-26-cancel-race-design.md`, `docs/superpowers/specs/2026-06-06-cancel-actor-attribution-design.md`; impl in task routes and run-step helpers.
 - **Bounded failure-recovery (TASK-573).** When a subtask fails, the parent task is re-enqueued for a bounded manager-wake decision step (not cascade-failed). At most 2 re-spawn rounds per delegation slot; round count derived from existing DB state (count of FAILED subtasks). On exhaustion the parent escalates to `escalated` rather than failing silently. Failed chain legs also wake the parent instead of cascading. Happy path (all subtasks COMPLETED) and REVISE-verdict auto-advance are unchanged. Thread: THR-028. Implementation: `runtime/orchestrator/run_step.py:_enqueue_parent_if_waiting`. See [Bounded failure-recovery](#bounded-failure-recovery).
 
@@ -107,24 +107,33 @@ Traps:
 - Auto-resolve to `superseded` must NEVER fire without a recorded successor task_id / thread ruling in the audit citation. The negative case (un-ruled escalation stays blocked) is a tested invariant.
 - On the thread-dispatch path the continuation carries an optional `resolves <task_id>`, honored **only** for a manager-authorized dispatch (the founder supersedes via `revisit`). A worker self-dispatch naming `resolves` is rejected `403 thread_supersede_not_authorized` and never closes the predecessor — the maker-checker boundary, tested both directions.
 
-## Session-Timeout Auto-Route
+## Session-Timeout Auto-Route (RETIRED — TASK-3604)
 
-Auto-revisit on opaque agent failures is the silent retry path. Spec: `docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md`.
+Automatic daemon successor creation on opaque agent failures (timeout, no-callback,
+rate-limit, executor error, agent exception) has been **removed** per founder
+direction (TASK-3604). Opaque failures now mark the task FAILED and route through
+the existing recovery paths: bounded parent-wake for delegated subtasks,
+escalation for root exhaustion, and explicit founder `happyranch revisit` for
+human-authorized retries.
 
-Failure kinds: `session_timeout`, `no_callback`, `rate_limit`, `executor_error`, `agent_exception`, `session_failed`; `daemon_restart` is injected by startup recovery.
+Legacy `auto_revisit_of` audit rows and the `_auto_revisit_header` / `_revisit_header_if_applicable`
+readers remain for historical compatibility — existing DB rows must not become
+unreadable. The `AuditLogger.log_auto_revisit_of` method is preserved for the
+same reason.
 
-Traps:
+Original spec: `docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md` (retired).
 
-- `_AUTO_REVISIT_CAP_PER_KIND = 1`; it is per kind, not global.
-- `_maybe_spawn_auto_revisit` must run before `_enqueue_parent_if_waiting`.
-- `failure_kind` is top-level on `auto_revisit_of`, not under `error_context`.
-- Bounded failure-recovery wakes the parent (not cascade-fail) on subtask failure;
-  the bound (2 FAILED subtasks per delegation slot) escalates the parent on
-  exhaustion (TASK-573). See [Bounded failure-recovery](#bounded-failure-recovery).
-- Startup sweep dedups with `revisited_roots: set[str]`.
-- Startup sweep also reaps ALL pending thread invocations to `failed`
-  with `decline_reason='daemon_restart'` (Branch 6) — every reply subprocess
-  is dead after a restart, so every pending invocation is orphaned.
+Traps (historical):
+
+- The `_maybe_spawn_auto_revisit` function and its helpers (`_classify_failure_kind`,
+  `_count_prior_auto_revisits_by_kind`, `_executor_failure_context`) have been removed.
+- `_enqueue_parent_if_waiting` no longer receives `root_auto_revisit_spawned=True` —
+  all call sites pass `False`.
+- `_maybe_post_thread_followup` no longer receives `auto_revisit_spawned=True` or
+  `revisit_task_id` from the opaque-failure branches — all pass `False` and
+  omit `revisit_task_id`.
+- Startup sweep already fails dead sessions without spawning an auto-revisit
+  (THR-079 ruling); this is unchanged.
 
 ## Bounded Failure-Recovery (TASK-573)
 

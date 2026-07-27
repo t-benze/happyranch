@@ -1,7 +1,11 @@
 # Session-Timeout Auto-Route — Design Spec
 
 **Date:** 2026-05-25
-**Status:** Draft, pending implementation.
+**Status:** Retired (TASK-3604, 2026-07-27). Automatic daemon successor creation
+on opaque agent failures has been removed per founder direction. Opaque failures
+now end FAILED and route through bounded parent-wake, escalation, or explicit
+founder revisit. Legacy `auto_revisit_of` audit rows remain readable. Current
+guide: `docs/agent-guides/features-and-invariants.md`.
 **Origin:** Founder-ratified at TALK-037 (2026-05-25), efficiency review proposal B.1.
 **Relates to:**
 - `docs/superpowers/specs/2026-04-21-opc-revisit-design.md` — the revisit primitive this builds on; auto-revisit already exists, this spec refines its routing.
