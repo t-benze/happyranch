@@ -331,29 +331,28 @@ def submit_proposal_agent_only(
             )
         task_id, agent_name = resolved
 
-    # Step 2: Acquire the per-binding lease for the resolved
+    # Step 2 (test seam): pre-lease barrier — pause BEFORE the
+    # per-binding lease is acquired so terminal-wins concurrency
+    # tests can drive clear()/set_active() to completion while
+    # the route is still in its initial resolution phase.
+    pre_lease = org.sessions._pre_lease_barrier
+    if pre_lease is not None:
+        reached = org.sessions._pre_lease_barrier_reached
+        if reached is not None:
+            reached.set()
+        pre_lease.wait()
+
+    # Step 3: Acquire the per-binding lease for the resolved
     # (task_id, agent_name) to linearize authorization + persistence
     # against concurrent clear()/set_active() on the SAME binding.
     # Unrelated bindings are NOT blocked — each (task_id, agent) pair
     # has its own independent Lock.
     binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
     with binding_lease:
-        # Test seam: if a barrier is set, pause here so tests can
-        # drive concurrent clear()/set_active() and prove correct
-        # interleaving (blocking for same binding, nonblocking for
-        # unrelated bindings).
-        barrier = org.sessions._proposal_barrier
-        if barrier is not None:
-            # Signal that the route has reached the barrier.
-            reached = org.sessions._barrier_reached
-            if reached is not None:
-                reached.set()
-            barrier.wait()
-
-        # Step 3: Under the binding lease, re-verify the session is
+        # Step 3a: Under the binding lease, re-verify the session is
         # still CURRENTLY active for the (task_id, agent_name) binding.
-        # This catches concurrent clear()/set_active() that may have run
-        # between Step 1 (resolution) and Step 2 (lease acquisition).
+        # This catches concurrent clear()/set_active() that won the
+        # race before the lease was acquired (Step 3).
         expected_session = org.sessions.get_active(task_id, agent_name)
         if expected_session != session_id:
             raise HTTPException(
@@ -366,9 +365,23 @@ def submit_proposal_agent_only(
                 },
             )
 
-        # Step 4: Enforce agent-id × canonical-slug policy BEFORE any
+        # Step 3b: Enforce agent-id × canonical-slug policy BEFORE any
         # artifact/ledger write.
         _enforce_agent_pilot_policy(agent_name, body.slug)
+
+        # Step 3c (test seam): post-authorization barrier — pause
+        # AFTER session revalidation + policy enforcement but BEFORE
+        # persistence.  Tests use this to prove proposal-wins
+        # interleavings: an already-authorized proposal is held
+        # pending, same-binding terminal mutations demonstrably block,
+        # and exactly one immutable proposal commits on release.
+        barrier = org.sessions._proposal_barrier
+        if barrier is not None:
+            # Signal that the route has reached the barrier.
+            reached = org.sessions._barrier_reached
+            if reached is not None:
+                reached.set()
+            barrier.wait()
 
         try:
             protected_slugs = _get_protected_slugs(org)

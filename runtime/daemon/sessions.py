@@ -34,15 +34,22 @@ class SessionTracker:
         # Guarded by self._lock during creation only; the Lock objects
         # themselves provide the per-binding synchronization.
         self._binding_leases: dict[tuple[str, str], Lock] = {}
-        # Test seam: threading.Event that, when set (non-None), pauses
-        # the proposal route after acquiring the binding lease and
-        # re-verifying the session but BEFORE persistence.  Tests use
-        # this to prove clear()/set_active() blocking and nonblocking
-        # interleaving.  None in production.
+        # Two-phase test seam for deterministic concurrency proofs.
+        # Both are None in production — no runtime overhead.
+        #
+        # Phase 1 — pre-lease barrier: pauses the proposal route AFTER
+        # initial session/context resolution but BEFORE binding-lease
+        # acquisition.  Tests use this to prove terminal-wins interleavings
+        # (clear/set_active win before the route acquires the lease).
+        self._pre_lease_barrier: threading.Event | None = None
+        self._pre_lease_barrier_reached: threading.Event | None = None
+        # Phase 2 — post-authorization barrier: pauses the proposal route
+        # AFTER session revalidation + fixed-policy enforcement but BEFORE
+        # _service.submit_proposal (persistence).  Tests use this to prove
+        # proposal-wins interleavings (already-authorized proposal held
+        # pending, same-binding terminal mutations block).
         self._proposal_barrier: threading.Event | None = None
-        # Test seam: set by the route when it reaches _proposal_barrier.
-        # Tests wait on this to know the barrier has been reached before
-        # driving concurrent clear()/set_active().
+        # Signal: set by the route when it reaches _proposal_barrier.
         self._barrier_reached: threading.Event | None = None
 
     def _get_binding_lease(self, task_id: str, agent: str) -> Lock:
