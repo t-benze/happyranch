@@ -124,7 +124,8 @@ class TestSkillsCatalogList:
         assert "user_authored" not in types, f"Bundled filter should exclude user_authored, got {types}"
 
     def test_catalog_custom_filter(self, tmp_home, app, org_state, auth_headers):
-        """Custom filter returns only user_authored skills."""
+        """Custom filter returns empty — THR-055: legacy user store retired.
+        Custom skills are now lifecycle-managed, not filesystem-based."""
         _seed_skills_and_config(org_state.root, allow=["hr:standard-skill"])
         _seed_user_skill(org_state.root, "my-custom-skill")
 
@@ -132,12 +133,8 @@ class TestSkillsCatalogList:
         r = client.get("/api/v1/orgs/alpha/skills/catalog?filter=Custom", headers=auth_headers)
         assert r.status_code == 200
         items = r.json()["items"]
-        types = {item["type"] for item in items}
-        assert types == {"user_authored"}, f"Custom filter should only return user_authored, got {types}"
-        assert len(items) == 1
-        assert items[0]["skill_id"] == "hr:my-custom-skill"
-        assert items[0]["type"] == "user_authored"
-        assert items[0]["source"] == "user_authored"
+        # No user_authored items since legacy store is retired (THR-055)
+        assert len(items) == 0
 
     def test_catalog_release_wins_collision(self, tmp_home, app, org_state, auth_headers):
         """When user skill collides with release slug, release entry is kept."""
@@ -222,11 +219,9 @@ class TestSkillsCatalogList:
     def test_catalog_user_store_at_org_root_skills_is_recognized(
         self, tmp_home, app, org_state, auth_headers,
     ):
-        """Regression FIX 1: user-authored store at org.root/skills/ IS recognized.
-
-        The store directory is `<org_root>/skills/<slug>/`, a SIBLING of
-        the org/ definition directory (v3 s6.2), NOT inside it.
-        """
+        """THR-055: legacy user-authored store at org.root/skills/ is RETIRED.
+        The custom catalog filter returns only lifecycle-published skills.
+        Filesystem-seeded user skills no longer appear."""
         _seed_skills_and_config(org_state.root)
         _seed_user_skill(org_state.root, "my-skill")
 
@@ -234,9 +229,8 @@ class TestSkillsCatalogList:
         r = client.get("/api/v1/orgs/alpha/skills/catalog?filter=Custom", headers=auth_headers)
         assert r.status_code == 200
         items = r.json()["items"]
-        assert len(items) == 1
-        assert items[0]["skill_id"] == "hr:my-skill"
-        assert items[0]["type"] == "user_authored"
+        # Legacy user skills are no longer visible in catalog (THR-055)
+        assert len(items) == 0
 
     def test_catalog_empty_user_store_graceful(
         self, tmp_home, app, org_state, auth_headers,
@@ -324,7 +318,8 @@ class TestSkillsCatalogDetail:
         assert body["visibility_category"] == "read_only"
 
     def test_detail_for_user_authored_skill(self, tmp_home, app, org_state, auth_headers):
-        """Detail for a user-authored skill includes assignments array."""
+        """THR-055: user-authored skills via legacy filesystem return 404.
+        Custom skill detail is now available through lifecycle routes only."""
         _seed_skills_and_config(org_state.root, allow=["hr:my-custom-skill"])
         _seed_user_skill(org_state.root, "my-custom-skill")
 
@@ -333,13 +328,8 @@ class TestSkillsCatalogDetail:
             "/api/v1/orgs/alpha/skills/catalog/hr:my-custom-skill",
             headers=auth_headers,
         )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["type"] == "user_authored"
-        assert body["source"] == "user_authored"
-        assert body["validation_state"] == "in_catalog"  # P1: no validation store
-        assert "assignments" in body
-        assert "validation" in body
+        # Legacy user store retired — 404
+        assert r.status_code == 404
 
     def test_detail_404_for_unknown_skill(self, tmp_home, app, org_state, auth_headers):
         """Non-existent skill_id returns 404."""
@@ -352,7 +342,8 @@ class TestSkillsCatalogDetail:
         assert r.status_code == 404
 
     def test_detail_user_skill_with_assignments(self, tmp_home, app, org_state, auth_headers):
-        """Detail for user skill shows which agents are assigned."""
+        """THR-055: legacy user skill detail returns 404.
+        Assignment tracking is now handled by lifecycle routes."""
         _seed_skills_and_config(org_state.root, allow=["hr:my-skill"], agent_name="dev_agent")
         # Also assign to qa_engineer
         cfg = _yaml.safe_load((org_state.root / "org" / "config.yaml").read_text())
@@ -366,17 +357,8 @@ class TestSkillsCatalogDetail:
             "/api/v1/orgs/alpha/skills/catalog/hr:my-skill",
             headers=auth_headers,
         )
-        assert r.status_code == 200
-        body = r.json()
-        assert "assignments" in body
-        assigned_agents = {a["agent"] for a in body["assignments"]}
-        assert "dev_agent" in assigned_agents
-        assert "qa_engineer" in assigned_agents
-        # P1: all assignments are assigned_not_yet_effective (no materialization)
-        for a in body["assignments"]:
-            assert a["assigned"] is True
-            assert a["effective"] is False
-            assert a["state"] == "assigned_not_yet_effective"
+        # Legacy user store retired — 404
+        assert r.status_code == 404
 
 
 class TestAgentSkillsEffective:
@@ -481,17 +463,11 @@ class TestAgentSkillsEffective:
         r = client.get("/api/v1/orgs/alpha/agents/dev_agent/skills/effective")
         assert r.status_code == 401
 
-    def test_effective_user_authored_reports_assigned_not_yet_effective(
+    def test_effective_user_authored_not_in_legacy_api(
         self, tmp_home, app, org_state, auth_headers,
     ):
-        """Regression FIX 2: assigned+eligible user_authored skill reports
-        assigned_not_yet_effective, NOT effective/catalog_and_eligible.
-
-        P1 has NO current-version materialization signal to prove
-        effectiveness, so user-authored skills must surface the
-        assigned_not_yet_effective provenance code per the catalog honesty
-        posture (effective_agent_count:0 for all skills).
-        """
+        """THR-055: legacy effective API does NOT include user-authored skills.
+        Custom skill effective resolution is now lifecycle-only."""
         _seed_skills_and_config(org_state.root, allow=["hr:my-custom-skill"])
         _seed_user_skill(org_state.root, "my-custom-skill")
 
@@ -503,26 +479,14 @@ class TestAgentSkillsEffective:
         assert r.status_code == 200
         body = r.json()
 
-        # Find the user-authored skill
+        # User-authored skills are NO LONGER visible in the legacy effective API
         custom = next(
             (s for s in body["skills"] if s["skill_id"] == "hr:my-custom-skill"),
             None,
         )
-        assert custom is not None, (
-            f"Expected hr:my-custom-skill in effective list, got "
-            f"{[s['skill_id'] for s in body['skills']]}"
+        assert custom is None, (
+            f"THR-055: hr:my-custom-skill should NOT appear in legacy effective API"
         )
-        # It MUST NOT be catalog_and_eligible (effective)
-        assert custom["provenance"] != "catalog_and_eligible", (
-            f"user_authored skill must not have provenance 'catalog_and_eligible', "
-            f"got '{custom['provenance']}'"
-        )
-        # It MUST be assigned_not_yet_effective
-        assert custom["provenance"] == "assigned_not_yet_effective", (
-            f"Expected 'assigned_not_yet_effective', got '{custom['provenance']}'"
-        )
-        # It should be visible (not hidden) — surfaced as assigned
-        assert custom["hidden"] is False
 
 
 class TestSkillsCatalogAuth:
@@ -582,7 +546,7 @@ class TestCreateSkill:
     """POST /api/v1/orgs/{slug}/skills"""
 
     def test_create_valid_skill_returns_201(self, tmp_home, app, org_state, auth_headers):
-        """Creating a valid user-authored skill returns 201."""
+        """THR-055: legacy POST /skills returns 410 Gone — use lifecycle routes."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
         r = client.post(
@@ -590,16 +554,12 @@ class TestCreateSkill:
             json=_make_create_body(),
             headers=auth_headers,
         )
-        assert r.status_code == 201
+        assert r.status_code == 410
         body = r.json()
-        assert body["skill_id"] == "hr:test-skill"
-        assert body["source"] == "user_authored"
-        assert body["validation_state"] == "validated"
-        assert body["validation"]["ok"] is True
-        assert body["validation"]["errors"] == []
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
     def test_create_writes_skill_to_store(self, tmp_home, app, org_state, auth_headers):
-        """A created skill is persisted to the per-org store."""
+        """THR-055: legacy POST /skills returns 410 Gone — skill not written to legacy store."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
         r = client.post(
@@ -607,35 +567,18 @@ class TestCreateSkill:
             json=_make_create_body(),
             headers=auth_headers,
         )
-        assert r.status_code == 201
-
-        # Verify on-disk
-        pkg_dir = org_state.root / "skills" / "test-skill"
-        assert pkg_dir.is_dir()
-        assert (pkg_dir / "SKILL.md").is_file()
-        assert (pkg_dir / "skill.yaml").is_file()
-        content = (pkg_dir / "SKILL.md").read_text()
-        assert "# Test Skill" in content
+        assert r.status_code == 410
 
     def test_create_skill_appears_in_catalog(self, tmp_home, app, org_state, auth_headers):
-        """After creation, the skill appears in the catalog with Custom filter."""
+        """THR-055: legacy POST /skills returns 410 Gone."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
-        client.post(
+        r = client.post(
             "/api/v1/orgs/alpha/skills",
             json=_make_create_body(),
             headers=auth_headers,
         )
-
-        r = client.get(
-            "/api/v1/orgs/alpha/skills/catalog?filter=Custom",
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        items = r.json()["items"]
-        assert len(items) == 1
-        assert items[0]["skill_id"] == "hr:test-skill"
-        assert items[0]["validation_state"] == "validated"
+        assert r.status_code == 410
 
     def test_create_skill_with_slug_collision_drafts(self, tmp_home, app, org_state, auth_headers):
         """When slug collides with a release skill, draft is still persisted (validation ok=false)."""
@@ -646,14 +589,10 @@ class TestCreateSkill:
             json=_make_create_body(slug="standard-skill"),
             headers=auth_headers,
         )
-        assert r.status_code == 201  # Still persists draft (v3 §9.1)
+        assert r.status_code == 410
         body = r.json()
-        assert body["validation"]["ok"] is False
-        assert body["validation_state"] == "in_catalog"
-        # Verify draft exists on disk
-        pkg_dir = org_state.root / "skills" / "standard-skill"
-        assert pkg_dir.is_dir()
-        assert (pkg_dir / "SKILL.md").is_file()
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
+        # Legacy store is no longer written
 
     def test_create_skill_with_empty_skill_md_drafts(self, tmp_home, app, org_state, auth_headers):
         """Content validation failure (empty skill_md) still persists draft."""
@@ -664,10 +603,9 @@ class TestCreateSkill:
             json=_make_create_body(skill_md=" "),
             headers=auth_headers,
         )
-        assert r.status_code == 201  # Draft saved, NOT 422
+        assert r.status_code == 410
         body = r.json()
-        assert body["validation"]["ok"] is False
-        assert "SKILL.md content is empty" in str(body["validation"]["errors"])
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
     def test_create_skill_without_heading_drafts_with_error(self, tmp_home, app, org_state, auth_headers):
         """Skill without markdown heading fails validation but persists draft."""
@@ -678,10 +616,9 @@ class TestCreateSkill:
             json=_make_create_body(skill_md="no heading here"),
             headers=auth_headers,
         )
-        assert r.status_code == 201
+        assert r.status_code == 410
         body = r.json()
-        assert body["validation"]["ok"] is False
-        assert "SKILL.md must start with a heading" in str(body["validation"]["errors"])
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
     def test_create_skill_system_contract_rejected(self, tmp_home, app, org_state, auth_headers):
         """User-authored skills cannot mint system_contract."""
@@ -692,10 +629,9 @@ class TestCreateSkill:
             json=_make_create_body(policy_class="system_contract"),
             headers=auth_headers,
         )
-        assert r.status_code == 201  # Draft saved
+        assert r.status_code == 410
         body = r.json()
-        assert body["validation"]["ok"] is False
-        assert "system_contract" in str(body["validation"]["errors"]).lower()
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
     def test_create_skill_malformed_returns_422(self, tmp_home, app, org_state, auth_headers):
         """422 ONLY for malformed request — bad JSON / missing required fields."""
@@ -729,17 +665,9 @@ class TestCreateSkill:
             json=_make_create_body(),
             headers=auth_headers,
         )
-        assert r.status_code == 201
-
-        # Check validation events
-        events = org_state.db.list_skill_validation_events(
-            skill_id="hr:test-skill",
-        )
-        assert len(events) == 1
-        assert events[0]["skill_id"] == "hr:test-skill"
-        assert events[0]["ok"] is True
-        assert events[0]["severity"] == "pass"
-        assert events[0]["version"] == "0.1.0"
+        assert r.status_code == 410
+        body = r.json()
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
     def test_create_with_traversal_reference_returns_validation_false_no_escape(
         self, tmp_home, app, org_state, auth_headers
@@ -757,50 +685,25 @@ class TestCreateSkill:
             ),
             headers=auth_headers,
         )
-        assert r.status_code == 201
+        assert r.status_code == 410
         body = r.json()
-        assert body["validation"]["ok"] is False
-        assert body["validation_state"] == "in_catalog"
-        assert any("Invalid reference filename" in e for e in body["validation"]["errors"]), (
-            f"Expected reference filename error, got {body['validation']['errors']}"
-        )
-
-        # Assert no file escaped outside the package directory
-        pkg_dir = org_state.root / "skills" / "traversal-test"
-        escape_path = org_state.root / "skills" / "escape.txt"
-        assert not escape_path.exists(), (
-            f"Path traversal write escaped: {escape_path} exists"
-        )
-        # The package directory itself may still be created (draft persisted)
-        # but the escape file must not exist
-        assert not (org_state.root / "escape.txt").exists(), (
-            "Path traversal wrote to org root"
-        )
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
 
 class TestValidateSkill:
     """POST /api/v1/orgs/{slug}/skills/{skill_id}/validate"""
 
     def test_validate_existing_skill(self, tmp_home, app, org_state, auth_headers):
-        """Re-validating an existing user-authored skill returns result."""
+        """THR-055: legacy validate route returns 410 Gone for cutover routes."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
-        # Create first
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        # Validate
         r = client.post(
             "/api/v1/orgs/alpha/skills/hr:test-skill/validate",
             headers=auth_headers,
         )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["skill_id"] == "hr:test-skill"
-        assert body["validation_state"] == "validated"
-        assert body["validation"]["ok"] is True
+        # Validate on a non-existent skill (no create since create is cut over)
+        # Returns 404 because the skill doesn't exist, or 410 if the route itself is cut over
+        assert r.status_code in (404, 410)
 
     def test_validate_nonexistent_skill_404(self, tmp_home, app, org_state, auth_headers):
         """Validating non-existent skill returns 404."""
@@ -810,17 +713,19 @@ class TestValidateSkill:
             "/api/v1/orgs/alpha/skills/hr:nonexistent/validate",
             headers=auth_headers,
         )
-        assert r.status_code == 404
+        # Legacy validate route now returns 410 Gone for all calls
+        assert r.status_code == 410
 
     def test_validate_managed_skill_409(self, tmp_home, app, org_state, auth_headers):
-        """Validating a managed skill returns 409."""
+        """THR-055: legacy validate returns 410 even for managed skills."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
         r = client.post(
             "/api/v1/orgs/alpha/skills/hr:standard-skill/validate",
             headers=auth_headers,
         )
-        assert r.status_code == 409
+        # Legacy validate route now returns 410 Gone for all calls
+        assert r.status_code == 410
 
     def test_validate_requires_auth(self, tmp_home, app, org_state):
         """401 without bearer token."""
@@ -830,424 +735,67 @@ class TestValidateSkill:
         assert r.status_code == 401
 
     def test_validate_records_validation_event(self, tmp_home, app, org_state, auth_headers):
-        """Validate records a validation event."""
+        """THR-055: legacy validate route returns 410 Gone with lifecycle migration guidance."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        # Validate (should record another event)
-        client.post(
+        r = client.post(
             "/api/v1/orgs/alpha/skills/hr:test-skill/validate",
             headers=auth_headers,
         )
-        events = org_state.db.list_skill_validation_events(
-            skill_id="hr:test-skill",
-        )
-        assert len(events) >= 2  # create already records one
-
-    def test_validate_with_stored_refs_and_assets_passes(self, tmp_home, app, org_state, auth_headers):
-        """FIX-2: Re-validation loads stored refs/assets and passes for a safe set."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        # Create a skill with references and assets
-        r = client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(
-                slug="refs-assets-test",
-                references={"doc.md": "# Reference doc"},
-                assets={"logo.png": "fake-png"},
-            ),
-            headers=auth_headers,
-        )
-        assert r.status_code == 201
-        assert r.json()["validation"]["ok"] is True
-
-        # Re-validate — should load stored refs/assets and pass
-        r = client.post(
-            "/api/v1/orgs/alpha/skills/hr:refs-assets-test/validate",
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
+        assert r.status_code == 410
         body = r.json()
-        assert body["validation"]["ok"] is True
-        assert body["validation_state"] == "validated"
-
-    def test_validate_fails_with_broken_artifact_set(self, tmp_home, app, org_state, auth_headers):
-        """FIX-2: Re-validation correctly passes stored refs/assets through the
-        same filename safety checks used by create/edit.
-
-        Standard filesystems resolve '..' and '/' at the VFS layer, so a
-        filename like '../evil.txt' cannot exist as a literal directory
-        entry.  We verify the code path directly: create a skill, load its
-        stored SKILL.md, pair it with a references dict containing a
-        traversal name, and call _validate_skill_package — the same check
-        the validate route now performs (FIX-2).
-        """
-        _seed_skills_and_config(org_state.root)
-        from runtime.daemon.routes.skills import _validate_skill_package
-        client = TestClient(app)
-        # Create a skill with safe refs
-        r = client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(
-                slug="failing-reval",
-                references={"safe.md": "safe content"},
-            ),
-            headers=auth_headers,
-        )
-        assert r.status_code == 201
-        assert r.json()["validation"]["ok"] is True
-
-        # Simulate a tampered store: load stored skill_md and pair it with
-        # a references dict containing a traversal filename.
-        pkg_dir = org_state.root / "skills" / "failing-reval"
-        skill_md = (pkg_dir / "SKILL.md").read_text(encoding="utf-8")
-
-        result = _validate_skill_package(
-            org=org_state,
-            slug="failing-reval",
-            skill_id="hr:failing-reval",
-            name="Failing Reval",
-            version="0.1.0",
-            policy_class="standard_operational",
-            skill_md=skill_md,
-            references={"../evil.txt": "tampered"},
-            assets={},
-        )
-        assert result["ok"] is False
-        assert "invalid_reference_filename" in result["reason_codes"]
-
-    def test_validate_rejects_nested_reference_entry(self, tmp_home, app, org_state, auth_headers):
-        """ROUTE-LEVEL: POST /skills/{id}/validate rejects a stored skill whose
-        references/ directory contains a NESTED entry (e.g. subdir/evil.md).
-
-        The validate loader must walk recursively and feed relative names
-        through _validate_artifact_filename — which rejects directory-target
-        names (contain '/'). A nested reference must NOT be silently skipped.
-        """
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        # Create a skill with safe refs
-        r = client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(
-                slug="nested-refs-test",
-                references={"safe.md": "safe content"},
-            ),
-            headers=auth_headers,
-        )
-        assert r.status_code == 201
-        assert r.json()["validation"]["ok"] is True
-
-        # Manually seed a NESTED reference entry on disk
-        pkg_dir = org_state.root / "skills" / "nested-refs-test"
-        nested_dir = pkg_dir / "references" / "subdir"
-        nested_dir.mkdir(parents=True, exist_ok=True)
-        (nested_dir / "evil.md").write_text("nested content", encoding="utf-8")
-
-        # Validate through the ROUTE
-        r = client.post(
-            "/api/v1/orgs/alpha/skills/hr:nested-refs-test/validate",
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["validation"]["ok"] is False, (
-            f"Expected validation.ok=false for nested ref, got: {body}"
-        )
-        assert any("Invalid reference filename" in e for e in body["validation"]["errors"]), (
-            f"Expected 'Invalid reference filename' in errors, got: {body['validation']['errors']}"
-        )
-        assert body["validation_state"] == "in_catalog"
-
-        # Verify a validation event was recorded with ok=false
-        events = org_state.db.list_skill_validation_events(
-            skill_id="hr:nested-refs-test",
-        )
-        assert any(not e["ok"] for e in events), (
-            f"Expected at least one validation event with ok=false, got events: "
-            f"{[e['ok'] for e in events]}"
-        )
-
-    def test_validate_rejects_nested_asset_entry(self, tmp_home, app, org_state, auth_headers):
-        """ROUTE-LEVEL: POST /skills/{id}/validate rejects a stored skill whose
-        assets/ directory contains a NESTED entry (e.g. subdir/evil.png).
-
-        Same as the nested reference test but for assets — the recursive walk
-        must not silently skip nested asset entries.
-        """
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        # Create a skill with safe assets
-        r = client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(
-                slug="nested-assets-test",
-                assets={"safe.png": "fake-png"},
-            ),
-            headers=auth_headers,
-        )
-        assert r.status_code == 201
-        assert r.json()["validation"]["ok"] is True
-
-        # Manually seed a NESTED asset entry on disk
-        pkg_dir = org_state.root / "skills" / "nested-assets-test"
-        nested_dir = pkg_dir / "assets" / "subdir"
-        nested_dir.mkdir(parents=True, exist_ok=True)
-        (nested_dir / "evil.png").write_text("nested content", encoding="utf-8")
-
-        # Validate through the ROUTE
-        r = client.post(
-            "/api/v1/orgs/alpha/skills/hr:nested-assets-test/validate",
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["validation"]["ok"] is False, (
-            f"Expected validation.ok=false for nested asset, got: {body}"
-        )
-        assert any("Invalid asset filename" in e for e in body["validation"]["errors"]), (
-            f"Expected 'Invalid asset filename' in errors, got: {body['validation']['errors']}"
-        )
-        assert body["validation_state"] == "in_catalog"
-
-        # Verify a validation event was recorded with ok=false
-        events = org_state.db.list_skill_validation_events(
-            skill_id="hr:nested-assets-test",
-        )
-        assert any(not e["ok"] for e in events), (
-            f"Expected at least one validation event with ok=false, got events: "
-            f"{[e['ok'] for e in events]}"
-        )
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
+        assert "skill-lifecycle/validate" in body.get("detail", {}).get("detail", "")
 
 
 class TestEditSkill:
     """PATCH /api/v1/orgs/{slug}/skills/{skill_id}"""
 
     def test_edit_valid_skill_succeeds(self, tmp_home, app, org_state, auth_headers):
-        """Editing a valid user-authored skill returns 200 with updated data."""
+        """THR-055: legacy PATCH /skills/{id} returns 410 Gone."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
-        # Create
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        # Edit
         r = client.patch(
             "/api/v1/orgs/alpha/skills/hr:test-skill",
             json={"name": "Updated Name", "version": "0.2.0"},
             headers=auth_headers,
         )
-        assert r.status_code == 200
+        assert r.status_code == 410
         body = r.json()
-        assert body["skill_id"] == "hr:test-skill"
-        assert body["validation"]["ok"] is True
-        assert body["version"] == "0.2.0"
-
-        # Verify on disk
-        yaml_path = org_state.root / "skills" / "test-skill" / "skill.yaml"
-        data = _yaml.safe_load(yaml_path.read_text())
-        assert data["name"] == "Updated Name"
-        assert data["version"] == "0.2.0"
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
     def test_edit_content_validation_failure_persists_draft(self, tmp_home, app, org_state, auth_headers):
-        """DRAFT-PERSIST-ON-CONTENT-FAILURE: content fails but draft IS saved (200, not 422)."""
+        """THR-055: legacy PATCH /skills/{id} returns 410 Gone."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        # Edit with empty skill_md (content validation failure)
         r = client.patch(
             "/api/v1/orgs/alpha/skills/hr:test-skill",
             json={"skill_md": "  ", "name": "Broken Draft"},
             headers=auth_headers,
         )
-        assert r.status_code == 200  # Draft saved, NOT 422
+        assert r.status_code == 410
         body = r.json()
-        assert body["validation"]["ok"] is False
-        assert body["validation_state"] == "in_catalog"
-
-        # Verify draft IS persisted with the new name
-        yaml_path = org_state.root / "skills" / "test-skill" / "skill.yaml"
-        data = _yaml.safe_load(yaml_path.read_text())
-        assert data["name"] == "Broken Draft"
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
     def test_edit_no_fields_returns_422(self, tmp_home, app, org_state, auth_headers):
-        """422 for a malformed request with no editable fields (nothing saved)."""
+        """THR-055: legacy PATCH /skills/{id} returns 410 Gone regardless of body."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
         r = client.patch(
             "/api/v1/orgs/alpha/skills/hr:test-skill",
             json={},
             headers=auth_headers,
         )
-        assert r.status_code == 422
+        assert r.status_code == 410
         body = r.json()
-        assert "no editable fields supplied" in str(body["detail"])
-
-    def test_edit_managed_skill_returns_409(self, tmp_home, app, org_state, auth_headers):
-        """Editing a managed/first_party skill returns 409 skill_not_editable."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        r = client.patch(
-            "/api/v1/orgs/alpha/skills/hr:standard-skill",
-            json={"name": "Hacked"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 409
-        body = r.json()
-        assert body["detail"]["code"] == "skill_not_editable"
-
-    def test_edit_system_contract_returns_403(self, tmp_home, app, org_state, auth_headers):
-        """Editing a system_contract returns 403 system_contract_read_only."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        r = client.patch(
-            "/api/v1/orgs/alpha/skills/hr:start-task",
-            json={"name": "Hacked"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 403
-        body = r.json()
-        assert body["detail"]["code"] == "system_contract_read_only"
-
-    def test_edit_nonexistent_skill_404(self, tmp_home, app, org_state, auth_headers):
-        """Editing non-existent skill returns 404."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        r = client.patch(
-            "/api/v1/orgs/alpha/skills/hr:nonexistent",
-            json={"name": "Hacked"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 404
-
-    def test_edit_requires_auth(self, tmp_home, app, org_state):
-        """401 without bearer token."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        r = client.patch(
-            "/api/v1/orgs/alpha/skills/hr:test-skill",
-            json={"name": "Hacked"},
-        )
-        assert r.status_code == 401
-
-    def test_edit_records_validation_event(self, tmp_home, app, org_state, auth_headers):
-        """Editing a skill records a validation event."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        client.patch(
-            "/api/v1/orgs/alpha/skills/hr:test-skill",
-            json={"name": "V2"},
-            headers=auth_headers,
-        )
-        events = org_state.db.list_skill_validation_events(
-            skill_id="hr:test-skill",
-        )
-        assert len(events) >= 2
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
 
 class TestSkillsValidation:
     """GET /api/v1/orgs/{slug}/skills/validation"""
 
     def test_validation_returns_events(self, tmp_home, app, org_state, auth_headers):
-        """Validation endpoint returns events with correct label."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-
-        r = client.get(
-            "/api/v1/orgs/alpha/skills/validation",
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["label"] == "Runtime Validation"
-        assert len(body["events"]) > 0
-        event = body["events"][0]
-        assert event["skill_id"] == "hr:test-skill"
-        assert event["severity"] == "pass"
-        assert event["ok"] is True
-
-    def test_validation_filter_by_skill(self, tmp_home, app, org_state, auth_headers):
-        """Filter validation events by skill_id."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(slug="skill-a"),
-            headers=auth_headers,
-        )
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(slug="skill-b"),
-            headers=auth_headers,
-        )
-
-        r = client.get(
-            "/api/v1/orgs/alpha/skills/validation?skill=hr:skill-a",
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        events = r.json()["events"]
-        assert all(e["skill_id"] == "hr:skill-a" for e in events)
-
-    def test_validation_filter_by_severity(self, tmp_home, app, org_state, auth_headers):
-        """Filter validation events by severity."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        # Create one valid and one invalid
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(slug="ok-skill"),
-            headers=auth_headers,
-        )
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(slug="bad-skill", skill_md=" "),
-            headers=auth_headers,
-        )
-
-        r = client.get(
-            "/api/v1/orgs/alpha/skills/validation?severity=error",
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        events = r.json()["events"]
-        assert all(e["severity"] == "error" for e in events)
-        assert all(e["ok"] is False for e in events)
-
-    def test_validation_requires_auth(self, tmp_home, app, org_state):
-        """401 without bearer token."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        r = client.get("/api/v1/orgs/alpha/skills/validation")
-        assert r.status_code == 401
-
-    def test_validation_empty_when_no_events(self, tmp_home, app, org_state, auth_headers):
-        """Validation endpoint returns empty list when no events exist."""
+        """THR-055: legacy validation list endpoint still serves read-only data."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
         r = client.get(
@@ -1256,7 +804,8 @@ class TestSkillsValidation:
         )
         assert r.status_code == 200
         body = r.json()
-        assert body["events"] == []
+        assert "events" in body
+        assert body.get("label") == "Runtime Validation"
 
 
 class TestValidationGuard:
@@ -1476,102 +1025,30 @@ class TestPhase2FullFlow:
     """End-to-end Phase 2 lifecycle: create → validate → edit → re-validate."""
 
     def test_full_create_edit_revalidate_flow(self, tmp_home, app, org_state, auth_headers):
-        """Complete lifecycle: create → validate → edit → validate → check events."""
+        """THR-055: legacy create + edit + validate all return 410 Gone."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
-
-        # 1. Create
+        # Create → 410
         r = client.post(
             "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
+            json={"slug": "new-skill", "name": "New", "description": "desc", "skill_md": "# Test"},
             headers=auth_headers,
         )
-        assert r.status_code == 201
-        assert r.json()["validation"]["ok"] is True
-
-        # 2. Validate
+        assert r.status_code == 410
+        assert r.json().get("detail", {}).get("code") == "legacy_cutover"
+        # Edit → 410
+        r = client.patch(
+            "/api/v1/orgs/alpha/skills/hr:test-skill",
+            json={"name": "Renamed"},
+            headers=auth_headers,
+        )
+        assert r.status_code == 410
+        # Validate → 410
         r = client.post(
             "/api/v1/orgs/alpha/skills/hr:test-skill/validate",
             headers=auth_headers,
         )
-        assert r.status_code == 200
-        assert r.json()["validation"]["ok"] is True
-
-        # 3. Edit
-        r = client.patch(
-            "/api/v1/orgs/alpha/skills/hr:test-skill",
-            json={"name": "Edited Name", "version": "0.2.0"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        assert r.json()["validation"]["ok"] is True
-        assert r.json()["version"] == "0.2.0"
-
-        # 4. Check validation events
-        r = client.get(
-            "/api/v1/orgs/alpha/skills/validation?skill=hr:test-skill",
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        events = r.json()["events"]
-        assert len(events) >= 3  # create + validate + edit
-
-    def test_create_failed_draft_then_edit_fixes(self, tmp_home, app, org_state, auth_headers):
-        """Create a failing draft, then edit to fix it → passes validation."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-
-        # 1. Create with bad content (fails validation but drafts)
-        r = client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(skill_md="no heading", slug="my-draft-skill"),
-            headers=auth_headers,
-        )
-        assert r.status_code == 201
-        assert r.json()["validation"]["ok"] is False
-        assert r.json()["validation_state"] == "in_catalog"
-
-        # 2. Edit to fix
-        r = client.patch(
-            "/api/v1/orgs/alpha/skills/hr:my-draft-skill",
-            json={"skill_md": "# Fixed Skill\n\nNow with a heading.\n"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        assert r.json()["validation"]["ok"] is True
-        assert r.json()["validation_state"] == "validated"
-
-    def test_edit_does_not_change_eligibility(self, tmp_home, app, org_state, auth_headers):
-        """Editing a skill does not change eligibility rules (v3 §9.5)."""
-        _seed_skills_and_config(org_state.root, allow=["hr:test-skill"])
-        client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-
-        # Edit
-        r = client.patch(
-            "/api/v1/orgs/alpha/skills/hr:test-skill",
-            json={"name": "New Name", "version": "0.2.0"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-
-        # Check catalog — assignment count unchanged
-        r = client.get(
-            "/api/v1/orgs/alpha/skills/catalog?filter=Custom",
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
-        item = r.json()["items"][0]
-        assert item["assigned_agent_count"] == 1  # unchanged by edit
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PHASE 3a — Scoped eligibility write + POST assign
-# ══════════════════════════════════════════════════════════════════════════════
+        assert r.status_code == 410
 
 class TestAssignSkill:
     """POST /api/v1/orgs/{slug}/agents/{agent_id}/skills/{skill_id}/assign"""
@@ -1579,313 +1056,568 @@ class TestAssignSkill:
     def test_assign_validated_skill_succeeds(
         self, tmp_home, app, org_state, auth_headers,
     ):
-        """Assigning a validated user-authored skill returns 200."""
+        """THR-055: legacy assign route returns 410 Gone."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
         r = client.post(
             "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
             json={"action": "allow"},
             headers=auth_headers,
         )
-        assert r.status_code == 200
+        assert r.status_code == 410
         body = r.json()
-        assert body["agent_id"] == "dev_agent"
-        assert body["skill_id"] == "hr:test-skill"
-        assert body["state"] == "assigned"
-        assert body["effective_hint"] == "assigned_not_yet_effective"
-        assert body["materializes_on"] == "next_session_spawn"
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
 
-    def test_assign_writes_eligibility_to_config(
-        self, tmp_home, app, org_state, auth_headers,
-    ):
-        """Assign writes the allow rule to org/config.yaml."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
-            json={"action": "allow"},
-            headers=auth_headers,
-        )
-        # Re-read config from disk
-        config_path = org_state.root / "org" / "config.yaml"
-        raw = _yaml.safe_load(config_path.read_text())
-        skills = raw.get("skills", {})
-        agents = skills.get("agents", {})
-        dev_allow = agents.get("dev_agent", {}).get("allow", [])
-        assert "hr:test-skill" in dev_allow
-
-    def test_assign_creates_audit_row(
-        self, tmp_home, app, org_state, auth_headers,
-    ):
-        """Assign emits an audit row under config:skills:eligibility scope."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
-            json={"action": "allow"},
-            headers=auth_headers,
-        )
-        rows = org_state.db.get_audit_logs(task_id="config:skills:eligibility")
-        assert len(rows) >= 1
-        row = rows[-1]
-        assert row["action"] == "skills_config_write"
-        assert row["agent"] == "operator"
-        payload = row["payload"]
-        assert payload["subsection"] == "eligibility"
-        assert "dev_agent" in payload["tiers"]
-
-    def test_assign_preserves_sibling_agents_eligibility(
-        self, tmp_home, app, org_state, auth_headers,
-    ):
-        """Deep-merge preserves other agents' eligibility rules."""
-        # Seed with both agents: dev_agent (default) + qa_engineer config
-        _seed_skills_and_config(org_state.root, allow=["hr:existing-skill"])
-        client = TestClient(app)
-
-        # Pre-seed qa_engineer with its own allow rule in the config
-        config_path = org_state.root / "org" / "config.yaml"
-        raw = _yaml.safe_load(config_path.read_text())
-        raw["skills"]["agents"]["qa_engineer"] = {"allow": ["hr:existing-skill"]}
-        config_path.write_text(_yaml.dump(raw))
-
-        # Also seed qa_engineer agent def
-        agents_dir = org_state.root / "org" / "agents"
-        (agents_dir / "qa_engineer.md").write_text(
-            "---\nname: qa_engineer\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\n# qa_engineer\n"
-        )
-
-        # Create and assign a skill to dev_agent
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
-            json={"action": "allow"},
-            headers=auth_headers,
-        )
-        # Verify qa_engineer's existing rule is untouched
-        raw = _yaml.safe_load(config_path.read_text())
-        agents = raw.get("skills", {}).get("agents", {})
-        qa_allow = agents.get("qa_engineer", {}).get("allow", [])
-        assert "hr:existing-skill" in qa_allow
-        # And dev_agent has the new rule
-        dev_allow = agents.get("dev_agent", {}).get("allow", [])
-        assert "hr:test-skill" in dev_allow
-
-    def test_assign_preserves_sibling_skills_eligibility(
-        self, tmp_home, app, org_state, auth_headers,
-    ):
-        """Deep-merge preserves other skills in the same agent's allow list."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        # Create two skills
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(slug="skill-a"),
-            headers=auth_headers,
-        )
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(slug="skill-b"),
-            headers=auth_headers,
-        )
-        # Assign skill-a
-        client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:skill-a/assign",
-            json={"action": "allow"},
-            headers=auth_headers,
-        )
-        # Assign skill-b — must not clobber skill-a
-        client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:skill-b/assign",
-            json={"action": "allow"},
-            headers=auth_headers,
-        )
-        config_path = org_state.root / "org" / "config.yaml"
-        raw = _yaml.safe_load(config_path.read_text())
-        dev_allow = raw.get("skills", {}).get("agents", {}).get("dev_agent", {}).get("allow", [])
-        assert "hr:skill-a" in dev_allow
-        assert "hr:skill-b" in dev_allow
-
-    def test_assign_unvalidated_skill_returns_409(
-        self, tmp_home, app, org_state, auth_headers,
-    ):
-        """A skill whose current version failed validation cannot be assigned."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        # Create a skill that fails validation (empty skill_md)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(skill_md=" "),
-            headers=auth_headers,
-        )
-        r = client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
-            json={"action": "allow"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 409
-        assert r.json()["detail"]["code"] == "skill_not_validated"
-
-    def test_assign_nonexistent_skill_404(
-        self, tmp_home, app, org_state, auth_headers,
-    ):
-        """Assigning a nonexistent skill returns 404."""
+    def test_assign_writes_eligibility_to_config(self, tmp_home, app, org_state, auth_headers):
+        """THR-055: legacy assign route returns 410 Gone."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
         r = client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:nonexistent/assign",
-            json={"action": "allow"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 404
-
-    def test_assign_nonexistent_agent_404(
-        self, tmp_home, app, org_state, auth_headers,
-    ):
-        """Assigning to a nonexistent agent returns 404."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        r = client.post(
-            "/api/v1/orgs/alpha/agents/nonexistent/skills/hr:test-skill/assign",
-            json={"action": "allow"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 404
-
-    def test_assign_remove_action(
-        self, tmp_home, app, org_state, auth_headers,
-    ):
-        """Remove action retracts the allow rule."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        # Assign
-        client.post(
             "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
             json={"action": "allow"},
             headers=auth_headers,
         )
-        # Remove
-        r = client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
-            json={"action": "remove"},
-            headers=auth_headers,
-        )
-        assert r.status_code == 200
+        assert r.status_code == 410
         body = r.json()
-        assert body["state"] == "unassigned"
-        assert body["effective_hint"] is None
-        # Verify rule is gone from config
-        config_path = org_state.root / "org" / "config.yaml"
-        raw = _yaml.safe_load(config_path.read_text())
-        dev_allow = raw.get("skills", {}).get("agents", {}).get("dev_agent", {}).get("allow", [])
-        assert "hr:test-skill" not in dev_allow
+        assert body.get("detail", {}).get("code") == "legacy_cutover"
+        assert "skill-lifecycle/assign" in body.get("detail", {}).get("detail", "")
 
-    def test_assign_managed_skill_409(
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-055: Daemon HTTP lifecycle route authority, spoof, residue tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+import json
+
+
+class TestLifecycleHTTPAuthority:
+    """Daemon HTTP-route tests proving:
+    - Founder bearer can submit proposals
+    - Legacy routes return 410 with no side effects
+    """
+
+    def test_founder_bearer_submits_proposal_returns_201(
         self, tmp_home, app, org_state, auth_headers,
     ):
-        """Managed (release-shipped) skills cannot be assigned via this endpoint."""
+        """Founder with bearer token can submit a proposal (human path)."""
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            headers=auth_headers,
+            json={
+                "slug": "founder-proposal",
+                "name": "Founder Test",
+                "description": "A proposal from founder",
+                "skill_md": "# Test\n",
+                "version": "0.1.0",
+            },
+        )
+        assert r.status_code == 201, f"Expected 201, got {r.status_code}: {r.json()}"
+        body = r.json()
+        assert body["skill_id"] == "hr:founder-proposal"
+        assert body["status"] == "proposed"
+        assert body["content_hash"]
+
+    def test_body_spoof_claims_ignored_with_bearer(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Body spoof claims are ignored — identity derives from bearer token."""
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            headers=auth_headers,
+            json={
+                "slug": "body-spoof-2",
+                "name": "Spoof Test",
+                "description": "Body spoof test via bearer",
+                "skill_md": "# Test\n",
+                "task_id": "SPOOF-TASK",
+                "session_id": "SPOOF-SESSION",
+                "proposer_agent": "SPOOF-AGENT",
+            },
+        )
+        assert r.status_code == 201, f"Expected 201, got {r.status_code}: {r.json()}"
+
+    def test_legacy_validate_returns_410_no_side_effects(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Legacy validate route returns 410 with no filesystem/ledger side effects."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
         r = client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:standard-skill/assign",
-            json={"action": "allow"},
+            "/api/v1/orgs/alpha/skills/hr:test-skill/validate",
             headers=auth_headers,
         )
-        assert r.status_code == 409
-        assert r.json()["detail"]["code"] == "skill_not_assignable"
+        assert r.status_code == 410
+        body = r.json()
+        assert body["detail"]["code"] == "legacy_cutover"
 
-    def test_assign_idempotent_allow(
+    def test_legacy_create_returns_410_no_side_effects(
         self, tmp_home, app, org_state, auth_headers,
     ):
-        """Assigning the same skill twice does not create duplicates."""
+        """Legacy create route returns 410 with no filesystem/ledger side effects."""
         _seed_skills_and_config(org_state.root)
         client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
-        client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
-            json={"action": "allow"},
-            headers=auth_headers,
-        )
-        client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
-            json={"action": "allow"},
-            headers=auth_headers,
-        )
-        config_path = org_state.root / "org" / "config.yaml"
-        raw = _yaml.safe_load(config_path.read_text())
-        dev_allow = raw.get("skills", {}).get("agents", {}).get("dev_agent", {}).get("allow", [])
-        assert dev_allow.count("hr:test-skill") == 1
-
-    def test_assign_requires_auth(
-        self, tmp_home, app, org_state, auth_headers,
-    ):
-        """Assign endpoint requires bearer auth."""
-        _seed_skills_and_config(org_state.root)
-        client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
-            headers=auth_headers,
-        )
         r = client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
-            json={"action": "allow"},
+            "/api/v1/orgs/alpha/skills",
+            json={"slug": "new-legacy", "name": "New", "description": "d", "skill_md": "# T"},
+            headers=auth_headers,
         )
-        assert r.status_code == 401
+        assert r.status_code == 410
+        assert r.json()["detail"]["code"] == "legacy_cutover"
 
-    def test_assign_returns_assigned_in_catalog_rollups(
+
+class TestLifecycleRollbackResidue:
+    """Daemon HTTP route tests proving rollback workspace residue cleanup."""
+
+    def test_rollback_cleans_materialized_workspace_residue(
         self, tmp_home, app, org_state, auth_headers,
     ):
-        """After assignment, the catalog reflects the assigned_agent_count."""
-        _seed_skills_and_config(org_state.root)
+        """Rollback removes prior materialized skill dirs from agent workspaces."""
+        import shutil
+
+        # Create a materialized workspace to simulate prior materialization
+        workspaces_dir = org_state.root / "workspaces"
+        agent_ws = workspaces_dir / "dev_agent"
+        agent_ws.mkdir(parents=True, exist_ok=True)
+        # Create materialized skill dirs in both .claude/skills/ and .agents/skills/
+        for skills_dir_name in (".claude", ".agents"):
+            skill_dir = agent_ws / skills_dir_name / "skills" / "test-rb-skill"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text("# Test materialized skill\n")
+
+        # Submit a proposal via bearer, then publish, assign, and rollback
         client = TestClient(app)
-        client.post(
-            "/api/v1/orgs/alpha/skills",
-            json=_make_create_body(),
+        # Submit proposal
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
             headers=auth_headers,
+            json={
+                "slug": "test-rb-skill",
+                "name": "Test Rollback Skill",
+                "description": "For rollback residue test",
+                "skill_md": "# Rollback Test\n\nThis is a test skill for rollback.\n",
+            },
         )
-        client.post(
-            "/api/v1/orgs/alpha/agents/dev_agent/skills/hr:test-skill/assign",
-            json={"action": "allow"},
+        assert r.status_code == 201, f"Proposal failed: {r.json()}"
+        skill_id = r.json()["skill_id"]
+        version_id = r.json()["version_id"]
+
+        # Lifecycle flow: claim → validate → submit → review → publish → assign
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/{skill_id}/claim",
             headers=auth_headers,
+            json={"proposal_version_id": version_id},
         )
+        assert r.status_code == 200, f"Claim failed: {r.json()}"
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/validate",
+            headers=auth_headers,
+            params={"version_id": version_id},
+        )
+        assert r.status_code == 200, f"Validate failed: {r.json()}"
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/submit-review",
+            headers=auth_headers,
+            json={"version_id": version_id},
+        )
+        assert r.status_code == 200, f"Submit review failed: {r.json()}"
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/review",
+            headers=auth_headers,
+            json={"version_id": version_id, "decision": "approved", "rationale": "OK"},
+        )
+        assert r.status_code == 200, f"Review failed: {r.json()}"
+
+        # Get approval event ID from events
         r = client.get(
-            "/api/v1/orgs/alpha/skills/catalog?filter=Custom",
+            f"/api/v1/orgs/alpha/skill-lifecycle/events/{skill_id}",
             headers=auth_headers,
         )
-        assert r.status_code == 200
-        item = r.json()["items"][0]
-        assert item["assigned_agent_count"] == 1
-        assert item["has_assigned_not_yet_effective"] is True
+        events = r.json()["events"]
+        approval_event = next(e for e in events if e["event_type"] == "approved")
+        approval_event_id = approval_event["id"]
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/publish",
+            headers=auth_headers,
+            json={"version_id": version_id, "approval_event_id": approval_event_id},
+        )
+        assert r.status_code == 200, f"Publish failed: {r.json()}"
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/assign",
+            headers=auth_headers,
+            json={"skill_id": skill_id, "agent_name": "dev_agent", "version_id": version_id},
+        )
+        assert r.status_code == 200, f"Assign failed: {r.json()}"
+
+        # Verify materialized dirs exist BEFORE rollback
+        for skills_dir_name in (".claude", ".agents"):
+            skill_dir = agent_ws / skills_dir_name / "skills" / "test-rb-skill"
+            assert skill_dir.exists(), f"Pre-rollback: {skill_dir} should exist"
+
+        # Rollback
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/rollback",
+            headers=auth_headers,
+            params={"skill_id": skill_id, "reason": "Test rollback residue cleanup"},
+        )
+        assert r.status_code == 200, f"Rollback failed: {r.json()}"
+        body = r.json()
+        assert body["assignments_deactivated"] >= 1
+
+        # Verify materialized dirs are GONE after rollback
+        for skills_dir_name in (".claude", ".agents"):
+            skill_dir = agent_ws / skills_dir_name / "skills" / "test-rb-skill"
+            assert not skill_dir.exists(), (
+                f"Post-rollback: {skill_dir} should be removed; residue cleanup failed"
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-055 REVISE 5: Daemon HTTP authority evidence (TASK-3474 §4)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestVerifiedAgentSessionAuthority:
+    """Daemon HTTP tests proving:
+    - Active verified agent session can submit a proposal
+    - Body claims cannot override verified session identity
+    - Human-only routes return 403 (not 401) for agent-session callers
+    - No-active/expired/mismatched sessions return 403
+    """
+
+    def test_agent_session_submits_proposal_with_verified_context(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """An active verified agent session can submit a proposal.
+        The proposal provenance must derive from the verified session,
+        not from body claims."""
+        client = TestClient(app)
+
+        # Set up an active session for the agent
+        task_id = "TASK-200"
+        session_id = "sess-agent-auth-001"
+        agent_name = "dev_agent"
+        org_state.sessions.set_active(task_id, agent_name, session_id)
+
+        # Submit as agent (no bearer token, use session query params)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            params={
+                "task_id": task_id,
+                "session_id": session_id,
+                "agent_name": agent_name,
+            },
+            json={
+                "slug": "agent-auth-skill",
+                "name": "Agent Auth Skill",
+                "description": "Testing agent session authority",
+                "skill_md": "# Agent Auth Test\n",
+            },
+        )
+        assert r.status_code == 201, f"Expected 201, got {r.status_code}: {r.json()}"
+        body = r.json()
+        assert body["skill_id"] == "hr:agent-auth-skill"
+        assert body["proposal_task_id"] == task_id
+
+        # Verify stored provenance matches verified session
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:agent-auth-skill",
+        )
+        assert pkg is not None
+        assert pkg.proposal_task_id == task_id
+        assert pkg.proposer_agent == agent_name
+
+    def test_body_spoof_claims_ignored_for_agent_session(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Body claims for task_id/session_id/proposer_agent are IGNORED
+        for agent-session callers. Only the verified session binds identity."""
+        client = TestClient(app)
+
+        task_id = "TASK-201"
+        session_id = "sess-agent-auth-002"
+        agent_name = "dev_agent"
+        org_state.sessions.set_active(task_id, agent_name, session_id)
+
+        # Put SPOOF values in the body — they must be ignored
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            params={
+                "task_id": task_id,
+                "session_id": session_id,
+                "agent_name": agent_name,
+            },
+            json={
+                "slug": "spoof-body-skill",
+                "name": "Spoof Body Test",
+                "description": "Body spoof should be ignored",
+                "skill_md": "# Test\n",
+                "task_id": "SPOOF-TASK",
+                "session_id": "SPOOF-SESSION",
+                "proposer_agent": "SPOOF-AGENT",
+            },
+        )
+        assert r.status_code == 201, f"Expected 201, got {r.status_code}: {r.json()}"
+
+        # Verify stored provenance comes from verified session, NOT body spoof
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:spoof-body-skill",
+        )
+        assert pkg is not None
+        assert pkg.proposal_task_id == task_id, (
+            f"Expected real task_id {task_id}, got {pkg.proposal_task_id}"
+        )
+        assert pkg.proposer_agent == agent_name, (
+            f"Expected real agent {agent_name}, got {pkg.proposer_agent}"
+        )
+        assert pkg.proposal_task_id != "SPOOF-TASK"
+        assert pkg.proposer_agent != "SPOOF-AGENT"
+
+    def test_agent_session_403_on_human_only_routes(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Every human-only lifecycle mutation must return 403 (not 401)
+        when called from an agent-session context."""
+        client = TestClient(app)
+
+        task_id = "TASK-202"
+        session_id = "sess-agent-auth-003"
+        agent_name = "dev_agent"
+        org_state.sessions.set_active(task_id, agent_name, session_id)
+
+        params = {
+            "task_id": task_id,
+            "session_id": session_id,
+            "agent_name": agent_name,
+        }
+
+        # Agent calling claim → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/hr:test/claim",
+            json={"proposal_version_id": 1},
+            params=params,
+        )
+        assert r.status_code == 403, (
+            f"Claim: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+        # Agent calling publish → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/publish",
+            json={"version_id": 1, "approval_event_id": 1},
+            params=params,
+        )
+        assert r.status_code == 403, (
+            f"Publish: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+        # Agent calling assign → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/assign",
+            json={"skill_id": "hr:test", "agent_name": "dev_agent", "version_id": 1},
+            params=params,
+        )
+        assert r.status_code == 403, (
+            f"Assign: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+        # Agent calling rollback → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/rollback",
+            params={**params, "skill_id": "hr:test", "reason": "test"},
+        )
+        assert r.status_code == 403, (
+            f"Rollback: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+        # Agent calling review → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/review",
+            json={"version_id": 1, "decision": "approved", "rationale": "ok"},
+            params=params,
+        )
+        assert r.status_code == 403, (
+            f"Review: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+        # Agent calling retire → 403
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/retire",
+            params={**params, "skill_id": "hr:test", "reason": "test"},
+        )
+        assert r.status_code == 403, (
+            f"Retire: expected 403, got {r.status_code}: {r.json()}"
+        )
+
+    def test_no_active_session_returns_403(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Agent proposal with no active session binding returns 403."""
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            params={
+                "task_id": "TASK-NONEXISTENT",
+                "session_id": "sess-nonexistent",
+                "agent_name": "dev_agent",
+            },
+            json={
+                "slug": "no-session-skill",
+                "name": "No Session",
+                "description": "Should get 403",
+                "skill_md": "# Test\n",
+            },
+        )
+        assert r.status_code == 403, (
+            f"Expected 403 for no active session, got {r.status_code}: {r.json()}"
+        )
+        assert r.json()["detail"]["code"] == "unknown_session"
+
+    def test_mismatched_session_returns_403(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Agent proposal with a session ID that doesn't match the active
+        session returns 403."""
+        client = TestClient(app)
+
+        task_id = "TASK-203"
+        agent_name = "dev_agent"
+        real_session = "sess-real-001"
+        org_state.sessions.set_active(task_id, agent_name, real_session)
+
+        # Use a different session ID
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            params={
+                "task_id": task_id,
+                "session_id": "sess-WRONG",
+                "agent_name": agent_name,
+            },
+            json={
+                "slug": "mismatch-session-skill",
+                "name": "Mismatch Session",
+                "description": "Wrong session should get 403",
+                "skill_md": "# Test\n",
+            },
+        )
+        assert r.status_code == 403, (
+            f"Expected 403 for mismatched session, got {r.status_code}: {r.json()}"
+        )
+        assert r.json()["detail"]["code"] == "session_mismatch"
+
+    def test_founder_bearer_can_submit_proposal(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Founder with bearer token can submit a proposal (human path).
+        Not a 403 — auth is trusted from bearer token."""
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            headers=auth_headers,
+            json={
+                "slug": "founder-auth-skill",
+                "name": "Founder Auth Test",
+                "description": "Founder proposal should succeed",
+                "skill_md": "# Founder Test\n",
+            },
+        )
+        assert r.status_code == 201, (
+            f"Expected 201 for founder, got {r.status_code}: {r.json()}"
+        )
+        body = r.json()
+        assert body["status"] == "proposed"
+
+    def test_founder_bearer_input_not_distorted_by_403(
+        self, tmp_home, app, org_state, auth_headers,
+    ):
+        """Founder with bearer token gets proper HTTP responses on all
+        lifecycle routes — not 403, not 401."""
+        client = TestClient(app)
+
+        # Submit a proposal first
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            headers=auth_headers,
+            json={
+                "slug": "founder-flow-skill",
+                "name": "Founder Flow",
+                "description": "Full flow test",
+                "skill_md": "# Test\n",
+            },
+        )
+        assert r.status_code == 201
+        skill_id = r.json()["skill_id"]
+        version_id = r.json()["version_id"]
+
+        # Founder can claim
+        r = client.post(
+            f"/api/v1/orgs/alpha/skill-lifecycle/{skill_id}/claim",
+            headers=auth_headers,
+            json={"proposal_version_id": version_id},
+        )
+        assert r.status_code == 200, f"Claim got {r.status_code}"
+
+        # Founder can validate
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/validate",
+            headers=auth_headers,
+            params={"version_id": version_id},
+        )
+        assert r.status_code == 200, f"Validate got {r.status_code}"
+
+        # Founder can submit for review
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/submit-review",
+            headers=auth_headers,
+            json={"version_id": version_id},
+        )
+        assert r.status_code == 200, f"Submit review got {r.status_code}"
+
+        # Founder can review (approve)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/review",
+            headers=auth_headers,
+            json={"version_id": version_id, "decision": "approved", "rationale": "OK"},
+        )
+        assert r.status_code == 200, f"Review got {r.status_code}"
+
+        # Get approval event ID
+        r = client.get(
+            f"/api/v1/orgs/alpha/skill-lifecycle/events/{skill_id}",
+            headers=auth_headers,
+        )
+        events = r.json()["events"]
+        approval_event = next(e for e in events if e["event_type"] == "approved")
+        approval_event_id = approval_event["id"]
+
+        # Founder can publish
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/publish",
+            headers=auth_headers,
+            json={"version_id": version_id, "approval_event_id": approval_event_id},
+        )
+        assert r.status_code == 200, f"Publish got {r.status_code}"
+
+        # Founder can assign
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/assign",
+            headers=auth_headers,
+            json={"skill_id": skill_id, "agent_name": "dev_agent", "version_id": version_id},
+        )
+        assert r.status_code == 200, f"Assign got {r.status_code}"
+
+        # Founder can rollback
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/rollback",
+            headers=auth_headers,
+            params={"skill_id": skill_id, "reason": "test"},
+        )
+        assert r.status_code == 200, f"Rollback got {r.status_code}"

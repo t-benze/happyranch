@@ -136,6 +136,15 @@ class Database:
         self.work_hours = WorkHoursStore(self._conn, self._lock)
         self.schedules = ScheduleStore(self._conn, self._lock)
 
+    def execute(self, sql: str, parameters=()):
+        """Passthrough to the underlying sqlite3 connection's execute().
+
+        Enables lifecycle stores that accept either raw connections (tests)
+        or Database wrappers (production) to call ``db.execute()`` uniformly.
+        """
+        with self._lock:
+            return self._conn.execute(sql, parameters)
+
     @property
     def path(self) -> Path:
         """Alias for ``db_path``. Convenience for callers that prefer ``.path``."""
@@ -931,6 +940,100 @@ class Database:
                 ON skill_validation_events(skill_id);
             CREATE INDEX IF NOT EXISTS idx_sve_agent
                 ON skill_validation_events(agent);
+
+            -- THR-055: custom-skill lifecycle ledger (additive, immutable)
+            CREATE TABLE IF NOT EXISTS skill_lifecycle_packages (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id    TEXT NOT NULL,
+                slug        TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                version     TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                policy_class TEXT NOT NULL DEFAULT 'standard_operational',
+                description TEXT NOT NULL DEFAULT '',
+                skill_md    TEXT NOT NULL DEFAULT '',
+                content_artifact_key TEXT,
+                status      TEXT NOT NULL DEFAULT 'proposed',
+                created_at  TEXT NOT NULL,
+                created_by  TEXT NOT NULL DEFAULT '',
+                proposal_task_id    TEXT,
+                proposal_session_id TEXT,
+                proposer_agent      TEXT,
+                reviewer          TEXT,
+                review_decision   TEXT,
+                review_rationale  TEXT,
+                reviewed_at       TEXT,
+                publisher              TEXT,
+                published_at           TEXT,
+                publication_decision_id INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_lifecycle_packages_skill_id
+                ON skill_lifecycle_packages(skill_id);
+            CREATE INDEX IF NOT EXISTS idx_lifecycle_packages_status
+                ON skill_lifecycle_packages(status);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_lifecycle_packages_hash
+                ON skill_lifecycle_packages(skill_id, content_hash);
+
+            CREATE TABLE IF NOT EXISTS skill_lifecycle_events (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id            TEXT NOT NULL,
+                package_version_id  INTEGER,
+                event_type          TEXT NOT NULL,
+                actor               TEXT NOT NULL DEFAULT '',
+                actor_role          TEXT NOT NULL DEFAULT '',
+                previous_status     TEXT,
+                new_status          TEXT,
+                content_hash        TEXT,
+                metadata_json       TEXT,
+                created_at          TEXT NOT NULL,
+                task_id             TEXT,
+                session_id          TEXT,
+                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_lifecycle_events_skill_id
+                ON skill_lifecycle_events(skill_id);
+            CREATE INDEX IF NOT EXISTS idx_lifecycle_events_created_at
+                ON skill_lifecycle_events(created_at);
+
+            CREATE TABLE IF NOT EXISTS skill_lifecycle_assignments (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id            TEXT NOT NULL,
+                agent_name          TEXT NOT NULL,
+                package_version_id  INTEGER NOT NULL,
+                version             TEXT NOT NULL,
+                content_hash        TEXT NOT NULL,
+                assigned_by         TEXT NOT NULL DEFAULT '',
+                assigned_at         TEXT NOT NULL,
+                active              INTEGER NOT NULL DEFAULT 1,
+                rolled_back_by            TEXT,
+                rolled_back_at            TEXT,
+                rollback_reason           TEXT,
+                rollback_target_version_id INTEGER,
+                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_lifecycle_assignments_skill
+                ON skill_lifecycle_assignments(skill_id);
+            CREATE INDEX IF NOT EXISTS idx_lifecycle_assignments_agent
+                ON skill_lifecycle_assignments(agent_name);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_lifecycle_assignments_unique_active
+                ON skill_lifecycle_assignments(skill_id, agent_name)
+                WHERE active = 1;
+
+            CREATE TABLE IF NOT EXISTS skill_lifecycle_materializations (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id            TEXT NOT NULL,
+                agent_name          TEXT NOT NULL,
+                package_version_id  INTEGER NOT NULL,
+                version             TEXT NOT NULL,
+                content_hash        TEXT NOT NULL,
+                success             INTEGER NOT NULL DEFAULT 0,
+                error_message       TEXT,
+                session_context     TEXT,
+                created_at          TEXT NOT NULL,
+                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_lifecycle_materializations_skill_agent
+                ON skill_lifecycle_materializations(skill_id, agent_name);
             """)
         self._migrate_session_token_usage_scope_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite
@@ -953,6 +1056,13 @@ class Database:
         try:
             self._conn.execute(
                 "ALTER TABLE thread_message_attachments ADD COLUMN thread_attachment_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        # THR-055: content_artifact_key column for artifact-backed package retention
+        try:
+            self._conn.execute(
+                "ALTER TABLE skill_lifecycle_packages ADD COLUMN content_artifact_key TEXT"
             )
         except sqlite3.OperationalError:
             pass

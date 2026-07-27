@@ -243,6 +243,7 @@ export function SkillEditPage(): JSX.Element {
   };
 
   const passed = result ? isValidationPassed(result) : false;
+  const isProposed = result?.validation_state === 'proposed';
   const issues = result ? plainValidationErrors(result.validation?.errors) : [];
   const resultVersion =
     result && 'version' in result ? (result.version as string) : baselineVersion;
@@ -272,9 +273,8 @@ export function SkillEditPage(): JSX.Element {
           <div className="min-w-0">
             <h1 className="text-h2 text-fg">Edit a custom skill</h1>
             <p className="text-fg-muted text-body-sm mt-1 max-w-xl leading-relaxed">
-              Update this skill’s guidance. Changes are checked for technical
-              correctness and saved as an editable draft — a failed check never
-              loses your work.
+              Update this skill’s guidance. Changes are saved as a proposal —
+              they will be reviewed before becoming available to agents.
             </p>
             <p className="text-fg-subtle text-mono-sm mt-2 break-all">
               {detail.skill_id} · v{baselineVersion}
@@ -402,8 +402,7 @@ export function SkillEditPage(): JSX.Element {
             {edit.isPending ? 'Saving…' : 'Save & re-validate'}
           </Button>
           <span className="text-fg-subtle text-body-sm">
-            A failed check keeps your edited draft in the catalog — nothing is
-            lost.
+            Your proposal will be reviewed before becoming available to agents.
           </span>
         </div>
       </form>
@@ -414,32 +413,36 @@ export function SkillEditPage(): JSX.Element {
           className={`mt-4 rounded-md border p-5 md:p-6 ${
             passed
               ? 'border-status-open/40 bg-tier-green-tint'
-              : 'border-attention/40 bg-attention-soft'
+              : isProposed
+                ? 'border-border-default bg-surface-subtle'
+                : 'border-attention/40 bg-attention-soft'
           }`}
           aria-label="Validation result"
-          data-result={passed ? 'validated' : 'failed_validation'}
+          data-result={result.validation_state}
         >
           <div className="flex flex-wrap items-center gap-2">
             <SkillStatusBadge
-              state={
-                (passed ? 'validated' : 'failed_validation') as
-                  | 'in_catalog'
-                  | 'validated'
-                  | 'failed_validation'
-              }
+              state={result.validation_state}
             />
             <span className="text-fg-subtle text-mono-sm break-all">
               {result.skill_id} · v{resultVersion}
             </span>
           </div>
 
-          <p className="text-fg mt-3 text-sm font-semibold">
-            {passed
-              ? editSuccessHeadline(versionBumped)
-              : failureHeadline(issues.length)}
-          </p>
+          {isProposed ? (
+            <p className="text-fg mt-3 text-sm font-semibold">
+              Edit proposal submitted — awaiting review. Your changes have been submitted
+              as a new proposal and will be reviewed before becoming available to agents.
+            </p>
+          ) : (
+            <p className="text-fg mt-3 text-sm font-semibold">
+              {passed
+                ? editSuccessHeadline(versionBumped)
+                : failureHeadline(issues.length)}
+            </p>
+          )}
 
-          {!passed && issues.length > 0 && (
+          {!passed && !isProposed && issues.length > 0 && (
             <div className="mt-3">
               <Eyebrow>What to fix</Eyebrow>
               <ul className="text-fg-muted text-body-sm list-disc space-y-1 pl-5">
@@ -451,7 +454,7 @@ export function SkillEditPage(): JSX.Element {
           )}
 
           {/* Guidance: every technical check, in plain language (failure only). */}
-          {!passed && <ValidationChecklist />}
+          {!passed && !isProposed && <ValidationChecklist />}
 
           {/* Edited-effective: after a version-bumping pass, already-effective
               agents move to "takes effect next session" (spec v3 §7.1). Reuses
@@ -496,6 +499,7 @@ export function SkillEditPage(): JSX.Element {
             </div>
           )}
 
+          {!isProposed && (
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <Link
               to={detailPath}
@@ -519,6 +523,7 @@ export function SkillEditPage(): JSX.Element {
               </button>
             )}
           </div>
+          )}
         </section>
       )}
 

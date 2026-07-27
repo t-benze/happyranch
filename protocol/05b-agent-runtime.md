@@ -69,17 +69,62 @@ operations — are materialized into the agent's workspace on every session spaw
 by `inject_managed_skills` (`workspace_adapters.py`). This runs on all four spawn
 contexts (task, thread, wake, dream).
 
-**Two sources, unioned with release-and-system-contracts-wins.** Skills come from two directories:
-- **Bundled / release-shipped:** `<project_root>/runtime/skills/<slug>/` — ships
-  inside the repo, read-only at runtime.
-- **User-authored:** `<org_root>/skills/<slug>/` — per-org writable store for
-  operator-authored custom skills (§6, THR-092).
+**Release-shipped managed-catalog skills.** Bundled skills ship inside the
+repo at `<project_root>/runtime/skills/<slug>/` and are read-only at runtime.
+These are resolved via the `SkillRegistry` and unioned with system contracts;
+release and system-contract slugs win on collision.
 
-On slug collision (a user-authored skill reuses a slug from a bundled skill
-or a system-contract skill), the bundled or system-contract entry wins — a
-user-authored skill can never shadow a release-shipped or system-contract
-package. The protected-slug set matches the daemon catalog path
-`_union_catalog` (release slugs union SYSTEM_CONTRACTS slugs).
+**Lifecycle-ledger custom skills (THR-055).** User-authored/operator-authored
+custom skills are governed exclusively by the immutable lifecycle ledger
+(`skill_lifecycle_packages`, `skill_lifecycle_assignments`). Only PUBLISHED
+skills with an active version-pinned assignment for the target agent are
+materialized. Proposed, draft, validated, approved-but-unpublished, rolled_back,
+retired, and legacy-quarantined content never reaches the workspace.
+
+**Legacy quarantine.** The pre-THR-055 per-org user-authored filesystem store
+(`<org_root>/skills/`) is retired and quarantined. During migration, legacy
+SKILL.md content is copied to the org ArtifactStore under
+`skill-lifecycle/legacy/<slug>/<hash>/SKILL.md` for immutable retention; the
+ledger stores only the artifact reference key, never the mutable filesystem path.
+Quarantined content is never resolved by `inject_managed_skills`.
+
+**Content retention (task-artifact policy).** Lifecycle proposal content
+is stored in the org ArtifactStore under content-addressed immutable keys:
+- ``skill-lifecycle/<slug>/<hash[:16]>/SKILL.md`` — SKILL.md
+- ``skill-lifecycle/<slug>/<hash[:16]>/references/<name>`` — each reference
+- ``skill-lifecycle/<slug>/<hash[:16]>/assets/<name>`` — each asset
+- ``skill-lifecycle/<slug>/<manifest_hash[:16]>/manifest.json`` — canonical manifest
+
+The manifest is a JSON document listing every package member with its
+normalized relative path, SHA-256 hash, artifact key, and size in bytes.
+The package-version ``content_hash`` in the lifecycle ledger is the SHA-256
+of the manifest (binding full-package provenance, distinct from individual
+member hashes). The ``content_artifact_key`` points to the manifest artifact.
+
+The ledger tables store only immutable metadata (hash, version, provenance);
+the artifact store holds the sole canonical copy of every package byte.
+Materialization loads the manifest from the ArtifactStore, validates each
+member's hash byte-for-byte, and writes the complete directory tree
+(SKILL.md + references/ + assets/) fail-closed into the target workspace.
+Legacy single-SKILL.md artifacts (pre-manifest format) are still supported
+by the materializer as backward compatibility.
+
+**Failure-atomic persistence.** All ledger writes (package row insert +
+lifecycle event insert) execute inside an explicit ``BEGIN IMMEDIATE`` /
+``COMMIT`` transaction. Any SQLite failure rolls back both rows atomically.
+Artifacts newly created during the request are cleaned up on ledger failure
+(compensation); pre-existing artifacts from content-addressed deduplication
+are never deleted. An ArtifactStore write failure before any ledger row
+aborts without any side effects.
+
+**Session-bound authority.** Agent proposal submission requires verified
+task/session binding via the SessionTracker (`org.sessions.get_active()`).
+Body claims for task_id, session_id, proposer_agent are ignored — identity
+derives exclusively from the verified session context. Human/founder lifecycle
+mutations (claim, validate, review, publish, assign, rollback, retire) require
+the master bearer token and are gated behind bearer-only routes with no agent
+path. Agent callers receive server-side 403 for all lifecycle mutations other
+than their own active pilot task/session-bound proposal submission.
 
 **FAIL-CLOSED materialization.** Any error during materialization raises
 immediately. A failed materialization must NOT leave a partially-populated
@@ -88,17 +133,11 @@ skills directory passing as complete. All four caller contexts (orchestrator
 database-terminal failure and return BEFORE executor spawn — a materialization
 error in any spawn path blocks the agent launch, never silently skipped.
 
-**Version-aware effective state (v3, THR-092 Phase 3b).** After each successful
-copy, a materialization event is recorded in the `skill_validation_events` store
-with the materialized version. A skill is `effective` for an agent iff:
-1. The agent has an `allow` eligibility rule for the skill, AND
-2. The last-materialized version equals the current store version.
-
-When a user-authored skill is edited (version bumped in the store), the OLD
-materialized version stays live and functional on disk until the next spawn
-re-materializes the NEW version. A failed re-validation of the edit does NOT
-remove the working old version. The agent is `assigned_not_yet_effective` until
-the new version lands.
+**Atomic emergency rollback.** The `POST /skill-lifecycle/rollback` handler wraps
+package status change, assignment deactivation, and event insertion in an explicit
+`BEGIN IMMEDIATE`/`COMMIT` transaction — all three mutations roll back together
+on failure. Workspace residue is cleaned up on the next spawn by fail-closed
+materialization.
 
 **Visibility only — NO capability change.** Skills govern which guidance
 playbooks an agent sees. They grant no tools, credentials, network access,

@@ -116,6 +116,36 @@ describe('skills-create — validation result state', () => {
       isValidationPassed({ skill_id: 'x', validation_state: 'validated', validation: undefined }),
     ).toBe(true);
   });
+
+  test('proposed is NOT a validation pass — fabrication regression (THR-055)', () => {
+    // A proposal submission IS NOT human validation.
+    // proposed must never be reported as validated/ok=true.
+    expect(
+      isValidationPassed({
+        skill_id: 'hr:test',
+        validation_state: 'proposed',
+        validation: { ok: false, errors: [] },
+      }),
+    ).toBe(false);
+    // Even with a spurious ok=true, proposed-state is NOT a pass.
+    expect(
+      isValidationPassed({
+        skill_id: 'hr:test',
+        validation_state: 'proposed',
+        validation: { ok: true, errors: [] },
+      }),
+    ).toBe(false);
+  });
+
+  test('validated with ok=true is still a pass (honest lifecycle)', () => {
+    expect(
+      isValidationPassed({
+        skill_id: 'hr:test',
+        validation_state: 'validated',
+        validation: { ok: true, errors: [] },
+      }),
+    ).toBe(true);
+  });
 });
 
 describe('skills-create — plain-language error mapper', () => {

@@ -114,6 +114,7 @@ export function SkillCreatePage(): JSX.Element {
   );
 
   const passed = result ? isValidationPassed(result) : false;
+  const isProposed = result?.validation_state === 'proposed';
   const issues = result ? plainValidationErrors(result.validation?.errors) : [];
   const detailPath = result
     ? `/orgs/${slug ?? ''}/skills/${encodeURIComponent(result.skill_id)}`
@@ -279,8 +280,7 @@ export function SkillCreatePage(): JSX.Element {
             {create.isPending ? 'Validating…' : 'Validate & save'}
           </Button>
           <span className="text-fg-subtle text-body-sm">
-            A failed check keeps an editable draft in the catalog — nothing is
-            lost.
+            A proposal awaits human review before becoming available to agents.
           </span>
         </div>
       </form>
@@ -291,30 +291,34 @@ export function SkillCreatePage(): JSX.Element {
           className={`mt-4 rounded-md border p-5 md:p-6 ${
             passed
               ? 'border-status-open/40 bg-tier-green-tint'
-              : 'border-attention/40 bg-attention-soft'
+              : isProposed
+                ? 'border-border-default bg-surface-subtle'
+                : 'border-attention/40 bg-attention-soft'
           }`}
           aria-label="Validation result"
-          data-result={passed ? 'validated' : 'failed_validation'}
+          data-result={result.validation_state}
         >
           <div className="flex flex-wrap items-center gap-2">
             <SkillStatusBadge
-              state={
-                (passed ? 'validated' : 'failed_validation') as
-                  | 'in_catalog'
-                  | 'validated'
-                  | 'failed_validation'
-              }
+              state={result.validation_state}
             />
             <span className="text-fg-subtle text-mono-sm break-all">
               {result.skill_id}
             </span>
           </div>
 
-          <p className="text-fg mt-3 text-sm font-semibold">
-            {passed ? successHeadline() : failureHeadline(issues.length)}
-          </p>
+          {isProposed ? (
+            <p className="text-fg mt-3 text-sm font-semibold">
+              Proposal submitted — awaiting review. Your skill has been submitted
+              as a proposal and will be reviewed before becoming available to agents.
+            </p>
+          ) : (
+            <p className="text-fg mt-3 text-sm font-semibold">
+              {passed ? successHeadline() : failureHeadline(issues.length)}
+            </p>
+          )}
 
-          {!passed && issues.length > 0 && (
+          {!passed && !isProposed && issues.length > 0 && (
             <div className="mt-3">
               <Eyebrow>What to fix</Eyebrow>
               <ul className="text-fg-muted text-body-sm list-disc space-y-1 pl-5">
@@ -326,8 +330,9 @@ export function SkillCreatePage(): JSX.Element {
           )}
 
           {/* Guidance: every technical check, in plain language (failure only). */}
-          {!passed && <ValidationChecklist />}
+          {!passed && !isProposed && <ValidationChecklist />}
 
+          {!isProposed && (
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <Link
               to={detailPath}
@@ -351,6 +356,7 @@ export function SkillCreatePage(): JSX.Element {
               </button>
             )}
           </div>
+          )}
         </section>
       )}
 

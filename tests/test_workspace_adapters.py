@@ -699,63 +699,71 @@ def test_task_completion_format_does_not_inline_json_schema(tmp_path: Path) -> N
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Phase 3b: user-authored skill materialization + staleness (TDD)
+# Phase 3b: lifecycle-ledger skill materialization (TDD, THR-055)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 class TestUserAuthoredSkillMaterialization:
-    """TDD: inject_managed_skills materializes user_authored skills from the
-    per-org store, records materialized version, and preserves the old working
-    version when edits bump the store version (MEM-288 / v3 §7.1, §9.5)."""
+    """TDD: inject_managed_skills materializes lifecycle-ledger custom skills
+    from the published+assigned ledger. Legacy filesystem paths (org_root/skills/)
+    are no longer resolved — only the lifecycle ledger is the runtime source."""
 
-    def test_user_authored_skill_materialized_and_version_recorded(
-        self, tmp_dir, test_settings, db
-    ):
-        """A user_authored skill in the org store is materialized by
-        inject_managed_skills with its version recorded."""
+    def test_lifecycle_skill_materialized_from_artifact(self, tmp_dir, test_settings, db):
+        """A lifecycle-published+assigned skill is materialized from the ArtifactStore."""
         from runtime.orchestrator.workspace_adapters import inject_managed_skills
-        from runtime.skills.registry import SkillRegistry
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        from runtime.skills.lifecycle.service import SkillLifecycleService
 
-        # Create a user-authored skill in the org store
+        service = SkillLifecycleService()
         org_root = tmp_dir / "org"
-        skill_dir = org_root / "skills" / "custom-skill"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# Custom Skill\n\nTest content.")
-        (skill_dir / "skill.yaml").write_text(
-            "id: hr:custom-skill\n"
-            "slug: custom-skill\n"
-            "name: Custom Skill\n"
-            "version: 1.0.0\n"
-            "description: A custom skill\n"
-            "when_to_use: ''\n"
-            "owner: operator\n"
-            "source: user_authored\n"
-            "policy_class: standard_operational\n"
-            "status: enabled\n"
+
+        # Create a published+assigned lifecycle skill
+        skill_md = "# Custom Skill\n\nTest content."
+        import hashlib
+        content_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
+
+        # Store artifact
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
+        artifact_key = "skill-lifecycle/custom-skill/1.0.0/SKILL.md"
+        artifact_store.put(artifact_key, skill_md.encode("utf-8"))
+
+        # Seed the lifecycle ledger directly (bypass HTTP routes)
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:custom-skill",
+            slug="custom-skill",
+            name="Custom Skill",
+            version="1.0.0",
+            content_hash=content_hash,
+            policy_class="standard_operational",
+            description="A custom skill",
+            skill_md=skill_md,
+            content_artifact_key=artifact_key,
+            status=lifecycle_stores.LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
         )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
 
-        # Create eligibility policy assigning the skill to dev_agent
-        org_config_dir = org_root / "org"
-        org_config_dir.mkdir(parents=True)
-        import yaml
-        policy = {
-            "skills": {
-                "agents": {
-                    "dev_agent": {
-                        "allow": ["hr:custom-skill"],
-                    }
-                }
-            }
-        }
-        (org_config_dir / "config.yaml").write_text(yaml.dump(policy))
+        # Create active assignment
+        import datetime
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:custom-skill",
+            agent_name="dev_agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=content_hash,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
 
-        # Also create a release-managed skills root
         managed_root = tmp_dir / "managed"
         managed_root.mkdir()
-
         workspace = tmp_dir / "ws"
 
-        # Materialize with org_root
         inject_managed_skills(
             workspace, test_settings,
             slug="test",
@@ -766,45 +774,26 @@ class TestUserAuthoredSkillMaterialization:
             db=db,
         )
 
-        # The user-authored skill should be on disk
+        # The lifecycle skill should be on disk, loaded from ArtifactStore
         claude_skill = workspace / ".claude" / "skills" / "custom-skill" / "SKILL.md"
         agents_skill = workspace / ".agents" / "skills" / "custom-skill" / "SKILL.md"
         assert claude_skill.is_file(), (
-            "user-authored skill must be materialized to .claude/skills/"
+            "lifecycle skill must be materialized to .claude/skills/"
         )
         assert agents_skill.is_file(), (
-            "user-authored skill must be materialized to .agents/skills/"
+            "lifecycle skill must be materialized to .agents/skills/"
         )
         assert "Custom Skill" in claude_skill.read_text()
 
-        # A materialization event should be recorded with the version
-        events = db.list_skill_validation_events(
-            skill_id="hr:custom-skill", agent="dev_agent"
-        )
-        mat_events = [e for e in events if e["source"] == "materialization"]
-        assert len(mat_events) == 1, (
-            f"Expected 1 materialization event, got {len(mat_events)}"
-        )
-        assert mat_events[0]["version"] == "1.0.0"
-        assert mat_events[0]["ok"] is True
-
-    def test_edit_preserves_old_version_on_disk_until_next_spawn(
-        self, tmp_dir, test_settings, db
-    ):
-        """When a user_authored skill that is effective is edited (version
-        bumped), the OLD materialized version stays live and functional on disk
-        until the next spawn re-materializes the NEW version.
-
-        A FAILED re-validation of the edit must NOT remove the working old
-        version (MEM-288).
-        """
+    def test_legacy_filesystem_skills_not_materialized(self, tmp_dir, test_settings, db):
+        """Legacy filesystem skills (org_root/skills/) are NEVER materialized —
+        only lifecycle-ledger published+assigned skills reach the workspace."""
         from runtime.orchestrator.workspace_adapters import inject_managed_skills
 
-        # Create a user-authored skill in the org store (v1.0.0)
         org_root = tmp_dir / "org"
         skill_dir = org_root / "skills" / "custom-skill"
         skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# Custom Skill v1\n\nv1 content.")
+        (skill_dir / "SKILL.md").write_text("# Custom Skill\n\nLegacy content.")
         (skill_dir / "skill.yaml").write_text(
             "id: hr:custom-skill\n"
             "slug: custom-skill\n"
@@ -818,16 +807,14 @@ class TestUserAuthoredSkillMaterialization:
             "status: enabled\n"
         )
 
-        # Eligibility policy
+        # Eligibility policy (legacy — should be ignored for materialization)
         org_config_dir = org_root / "org"
         org_config_dir.mkdir(parents=True)
         import yaml
         policy = {
             "skills": {
                 "agents": {
-                    "dev_agent": {
-                        "allow": ["hr:custom-skill"],
-                    }
+                    "dev_agent": {"allow": ["hr:custom-skill"]},
                 }
             }
         }
@@ -837,7 +824,6 @@ class TestUserAuthoredSkillMaterialization:
         managed_root.mkdir()
         workspace = tmp_dir / "ws"
 
-        # ── First spawn: materialize v1.0.0 ─────────────────────────
         inject_managed_skills(
             workspace, test_settings,
             slug="test",
@@ -848,192 +834,43 @@ class TestUserAuthoredSkillMaterialization:
             db=db,
         )
 
+        # Legacy filesystem skill must NOT be materialized (THR-055 quarantine)
         claude_skill = workspace / ".claude" / "skills" / "custom-skill" / "SKILL.md"
-        assert claude_skill.is_file()
-        assert "v1 content" in claude_skill.read_text()
-
-        # ── Edit the skill in the store: bump to v2.0.0 ─────────────
-        (skill_dir / "SKILL.md").write_text("# Custom Skill v2\n\nv2 content.")
-        (skill_dir / "skill.yaml").write_text(
-            "id: hr:custom-skill\n"
-            "slug: custom-skill\n"
-            "name: Custom Skill\n"
-            "version: 2.0.0\n"
-            "description: A custom skill v2\n"
-            "when_to_use: ''\n"
-            "owner: operator\n"
-            "source: user_authored\n"
-            "policy_class: standard_operational\n"
-            "status: enabled\n"
+        assert not claude_skill.is_file(), (
+            "Legacy filesystem skills must NOT be materialized — "
+            "only lifecycle-ledger published+assigned skills reach the workspace"
         )
 
-        # ── BEFORE re-materialization: old v1.0.0 is STILL on disk ─
-        # This is the key invariant: edit does NOT remove the working old version
-        assert claude_skill.is_file(), (
-            "OLD materialized version must stay on disk after edit "
-            "(edit must NOT pull/remove the working version)"
-        )
-        assert "v1 content" in claude_skill.read_text(), (
-            "OLD content must be preserved until next spawn re-materializes"
-        )
-
-        # ── Second spawn: re-materialize, now v2.0.0 lands ──────────
-        inject_managed_skills(
-            workspace, test_settings,
-            slug="test",
-            agent_name="dev_agent",
-            team="engineering",
-            skills_root=managed_root,
-            org_root=org_root,
-            db=db,
-        )
-
-        # After re-materialization, v2.0.0 should be on disk
-        assert claude_skill.is_file()
-        assert "v2 content" in claude_skill.read_text(), (
-            "NEW version must land on next spawn"
-        )
-
-        # Both materialization events should be recorded
-        events = db.list_skill_validation_events(
-            skill_id="hr:custom-skill", agent="dev_agent"
-        )
-        mat_events = [e for e in events if e["source"] == "materialization"]
-        versions = sorted(e["version"] for e in mat_events)
-        assert versions == ["1.0.0", "2.0.0"], (
-            f"Expected materialization events for v1.0.0 and v2.0.0, got {versions}"
-        )
-
-    def test_user_authored_skill_release_wins_on_slug_collision(
-        self, tmp_dir, test_settings, db
-    ):
-        """Release-shipped skills beat user-authored on slug collision."""
+    def test_proposed_skill_not_materialized(self, tmp_dir, test_settings, db):
+        """Skills in non-PUBLISHED status (proposed, draft, etc.) must NOT materialize."""
         from runtime.orchestrator.workspace_adapters import inject_managed_skills
+        from runtime.skills.lifecycle import stores as lifecycle_stores
 
-        # Create a user-authored skill with same slug as a release skill
         org_root = tmp_dir / "org"
-        skill_dir = org_root / "skills" / "reflection"  # collides with release 'reflection'
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# Bogus Reflection\n\nEvil content.")
-        (skill_dir / "skill.yaml").write_text(
-            "id: hr:reflection\n"
-            "slug: reflection\n"
-            "name: Bogus Reflection\n"
-            "version: 9.9.9\n"
-            "description: Bogus\n"
-            "when_to_use: ''\n"
-            "owner: operator\n"
-            "source: user_authored\n"
-            "policy_class: standard_operational\n"
-            "status: enabled\n"
+        skill_md = "# Proposed Skill\n\nShould not appear."
+        import hashlib
+        content_hash = hashlib.sha256(skill_md.encode("utf-8")).hexdigest()
+
+        # Seed a PROPOSED skill (not published, not assigned)
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:proposed-skill",
+            slug="proposed-skill",
+            name="Proposed Skill",
+            version="0.1.0",
+            content_hash=content_hash,
+            policy_class="standard_operational",
+            description="Should be invisible",
+            skill_md=skill_md,
+            content_artifact_key="skill-lifecycle/proposed-skill/0.1.0/SKILL.md",
+            status=lifecycle_stores.LifecycleStatus.PROPOSED,
+            created_by="dev_agent",
         )
-
-        # Eligibility policy — agent is eligible for 'reflection'
-        org_config_dir = org_root / "org"
-        org_config_dir.mkdir(parents=True)
-        import yaml
-        policy = {
-            "skills": {
-                "agents": {
-                    "dev_agent": {
-                        "allow": ["reflection"],
-                    }
-                }
-            }
-        }
-        (org_config_dir / "config.yaml").write_text(yaml.dump(policy))
-
-        # Create release-managed skill 'reflection'
-        managed_root = tmp_dir / "managed"
-        managed_root.mkdir()
-        release_review = managed_root / "reflection"
-        release_review.mkdir()
-        (release_review / "SKILL.md").write_text("# Real Reflection\n\nLegit content.")
-        (release_review / "skill.yaml").write_text(
-            "id: reflection\n"
-            "slug: reflection\n"
-            "name: Reflection\n"
-            "version: 1.2.0\n"
-            "description: Legit reflection skill\n"
-            "when_to_use: ''\n"
-            "owner: runtime\n"
-            "source: first_party\n"
-            "policy_class: standard_operational\n"
-            "status: enabled\n"
-        )
-
-        workspace = tmp_dir / "ws"
-
-        inject_managed_skills(
-            workspace, test_settings,
-            slug="test",
-            agent_name="dev_agent",
-            team="engineering",
-            skills_root=managed_root,
-            org_root=org_root,
-            db=db,
-        )
-
-        claude_skill = workspace / ".claude" / "skills" / "reflection" / "SKILL.md"
-        assert claude_skill.is_file()
-        content = claude_skill.read_text()
-        # The RELEASE version must be on disk, NOT the user-authored imposter
-        assert "Legit" in content, (
-            f"Release skill must win on slug collision, got: {content}"
-        )
-        assert "Evil" not in content, (
-            "User-authored imposter must NOT be materialized"
-        )
-
-    def test_materialization_fail_closed_no_partial_state(
-        self, tmp_dir, test_settings, db
-    ):
-        """FAIL-CLOSED: a materialization error must not leave a partially-
-        populated skills dir passing as complete."""
-        from runtime.orchestrator.workspace_adapters import inject_managed_skills
-
-        # Create a valid user-authored skill AND one with no SKILL.md
-        # (the copy logic handles missing src_dir gracefully, so we simulate
-        # a post-copy failure differently — verify that an error mid-copy
-        # leaves the workspace clean)
-        org_root = tmp_dir / "org"
-        # Create valid skill
-        valid_dir = org_root / "skills" / "valid-skill"
-        valid_dir.mkdir(parents=True)
-        (valid_dir / "SKILL.md").write_text("# Valid\n\ncontent.")
-        (valid_dir / "skill.yaml").write_text(
-            "id: hr:valid-skill\n"
-            "slug: valid-skill\n"
-            "name: Valid\n"
-            "version: 1.0.0\n"
-            "description: Valid\n"
-            "when_to_use: ''\n"
-            "owner: operator\n"
-            "source: user_authored\n"
-            "policy_class: standard_operational\n"
-            "status: enabled\n"
-        )
-
-        # Eligibility — assign both skills
-        org_config_dir = org_root / "org"
-        org_config_dir.mkdir(parents=True)
-        import yaml
-        policy = {
-            "skills": {
-                "agents": {
-                    "dev_agent": {
-                        "allow": ["hr:valid-skill"],
-                    }
-                }
-            }
-        }
-        (org_config_dir / "config.yaml").write_text(yaml.dump(policy))
+        lifecycle_stores.insert_package_version(db, pkg)
 
         managed_root = tmp_dir / "managed"
         managed_root.mkdir()
         workspace = tmp_dir / "ws"
 
-        # Materialization should succeed for the valid skill
         inject_managed_skills(
             workspace, test_settings,
             slug="test",
@@ -1044,120 +881,105 @@ class TestUserAuthoredSkillMaterialization:
             db=db,
         )
 
-        claude_skill = workspace / ".claude" / "skills" / "valid-skill" / "SKILL.md"
-        assert claude_skill.is_file(), (
-            "Valid skill must be materialized"
+        # PROPOSED skill must NOT be materialized
+        claude_skill = workspace / ".claude" / "skills" / "proposed-skill" / "SKILL.md"
+        assert not claude_skill.is_file(), (
+            "Proposed (non-PUBLISHED) skills must NOT be materialized"
         )
-        # No partial state — only the valid skill landed
-        assert claude_skill.read_text().startswith("# Valid")
+
+    def test_materialization_fail_closed_no_partial_state(self, tmp_dir, test_settings, db):
+        """FAIL-CLOSED: materialization failure must raise and leave no partial workspace residue."""
+        from runtime.orchestrator.workspace_adapters import (
+            inject_managed_skills,
+            LifecycleMaterializationError,
+        )
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+
+        org_root = tmp_dir / "org"
+        import hashlib
+        content_hash = hashlib.sha256(b"valid").hexdigest()
+
+        # Seed a skill with a content_artifact_key that does NOT exist in ArtifactStore
+        pkg = lifecycle_stores.PackageVersion(
+            skill_id="hr:missing-artifact",
+            slug="missing-artifact",
+            name="Missing Artifact",
+            version="1.0.0",
+            content_hash=content_hash,
+            policy_class="standard_operational",
+            description="Artifact will not be found",
+            skill_md="",
+            content_artifact_key="skill-lifecycle/missing/1.0.0/SKILL.md",
+            status=lifecycle_stores.LifecycleStatus.PUBLISHED,
+            created_by="founder",
+            publisher="founder",
+        )
+        version_id = lifecycle_stores.insert_package_version(db, pkg)
+
+        import datetime
+        assign = lifecycle_stores.AssignmentRecord(
+            skill_id="hr:missing-artifact",
+            agent_name="dev_agent",
+            package_version_id=version_id,
+            version="1.0.0",
+            content_hash=content_hash,
+            assigned_by="founder",
+            assigned_at=datetime.datetime.now(datetime.timezone.utc),
+            active=True,
+        )
+        lifecycle_stores.insert_assignment(db, assign)
+
+        managed_root = tmp_dir / "managed"
+        managed_root.mkdir()
+        workspace = tmp_dir / "ws"
+
+        # Must raise because the artifact is missing (fail-closed)
+        with pytest.raises(LifecycleMaterializationError, match="not found"):
+            inject_managed_skills(
+                workspace, test_settings,
+                slug="test",
+                agent_name="dev_agent",
+                team="engineering",
+                skills_root=managed_root,
+                org_root=org_root,
+                db=db,
+            )
+
+        # No partial state — missing artifact should not have created a skill dir
+        claude_skill = workspace / ".claude" / "skills" / "missing-artifact" / "SKILL.md"
+        assert not claude_skill.is_file(), (
+            "Missing artifact must NOT leave partial workspace residue"
+        )
 
     def test_system_contract_slug_protected_from_user_authored(
         self, tmp_dir, test_settings, db
     ):
-        """A user-authored package with a system-contract slug is skipped
-        even when NO matching release package exists — the protection comes
-        solely from SYSTEM_CONTRACTS (sc_slugs), not release_slugs (REVISE TASK-2836).
+        """Lifecycle-proposed skills with system-contract slugs are rejected at
+        proposal time (protected-slug check), so they never reach materialization.
 
-        The original TASK-2829 test was a false positive: it created BOTH a
-        release-managed skill AND a user-authored imposter with the same slug,
-        so the release-wins path (not sc_slugs) masked the true protection."""
+        The protection comes from the live release/system catalog check in the
+        proposal route and service layer."""
         from runtime.orchestrator.workspace_adapters import inject_managed_skills
+        from runtime.skills.lifecycle.service import SkillLifecycleService, LifecycleError
         from runtime.skills.system_contracts import SYSTEM_CONTRACTS
 
-        # Pick a real system-contract slug
         sc_slugs = {sc.id for sc in SYSTEM_CONTRACTS}
         assert len(sc_slugs) > 0, "need at least one system contract"
         test_slug = sorted(sc_slugs)[0]
 
-        # Create a user-authored imposter with that slug
-        org_root = tmp_dir / "org"
-        skill_dir = org_root / "skills" / test_slug
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# Imposter\n\nEvil content.")
-        imposter_id = f"hr:{test_slug}"
-        (skill_dir / "skill.yaml").write_text(
-            f"id: {imposter_id}\n"
-            f"slug: {test_slug}\n"
-            f"name: Imposter {test_slug}\n"
-            "version: 9.9.9\n"
-            "description: Bogus\n"
-            "when_to_use: ''\n"
-            "owner: operator\n"
-            "source: user_authored\n"
-            "policy_class: standard_operational\n"
-            "status: enabled\n"
-        )
+        service = SkillLifecycleService()
 
-        # Eligibility policy — allow the imposter's full skill_id so it passes
-        # eligibility and the only blocker is protected_slugs (sc_slugs).
-        org_config_dir = org_root / "org"
-        org_config_dir.mkdir(parents=True)
-        import yaml
-        policy = {
-            "skills": {
-                "agents": {
-                    "dev_agent": {
-                        "allow": [imposter_id],
-                    }
-                }
-            }
-        }
-        (org_config_dir / "config.yaml").write_text(yaml.dump(policy))
-
-        # Managed root with NO release package for this slug.
-        # The protection comes SOLELY from sc_slugs (SYSTEM_CONTRACTS).
-        managed_root = tmp_dir / "managed"
-        managed_root.mkdir()
-
-        workspace = tmp_dir / "ws"
-
-        # Pre-materialize a legit system-contract stub at the destination.
-        # Mirrors production: system-contract injection runs before managed
-        # injection (orchestrator.py:586 then :602). After inject_managed_skills
-        # the stub must remain — the user-authored imposter must NOT overwrite it.
-        dest_dir = workspace / ".claude" / "skills" / test_slug
-        dest_dir.mkdir(parents=True)
-        (dest_dir / "SKILL.md").write_text(
-            f"# {test_slug.capitalize()}\n\nLegit system contract content."
-        )
-
-        inject_managed_skills(
-            workspace, test_settings,
-            slug="test",
-            agent_name="dev_agent",
-            team="engineering",
-            skills_root=managed_root,
-            org_root=org_root,
-            db=db,
-        )
-
-        # (a) The system-contract stub must survive — the imposter must NOT
-        # overwrite it.
-        claude_skill = dest_dir / "SKILL.md"
-        assert claude_skill.is_file(), (
-            f"System-contract skill {test_slug} must survive materialization"
-        )
-        content = claude_skill.read_text()
-        assert "Legit" in content, (
-            f"System-contract stub must survive for slug {test_slug}, "
-            f"got: {content}"
-        )
-        assert "Evil" not in content, (
-            f"User-authored imposter with system-contract slug {test_slug} "
-            f"must NOT overwrite the destination (sc_slugs protection)"
-        )
-
-        # (b) No materialization record for the imposter — the user-authored
-        # package with a SYSTEM_CONTRACTS slug must never be recorded as
-        # materialized.
-        events = db.list_skill_validation_events(
-            skill_id=imposter_id, agent="dev_agent"
-        )
-        imposter_events = [
-            e for e in events
-            if e["source"] == "materialization"
-        ]
-        assert len(imposter_events) == 0, (
-            f"No materialization event should exist for user-authored imposter "
-            f"with system-contract slug {test_slug} (got {len(imposter_events)})"
-        )
+        # Attempting to propose with a system contract slug must fail
+        with pytest.raises(LifecycleError, match="protected"):
+            service.submit_proposal(
+                db=db,
+                actor_kind="agent",
+                slug=test_slug,
+                name="Imposter",
+                description="Attempting to use protected slug",
+                skill_md="# Evil",
+                version="0.1.0",
+                task_id="TASK-100",
+                session_id="sess-001",
+                proposer_agent="dev_agent",
+            )
