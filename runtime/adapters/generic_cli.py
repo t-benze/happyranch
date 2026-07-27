@@ -6,9 +6,12 @@ plugin surface. This adapter encapsulates generic-CLI template expansion
 parsing behind :meth:`build_argv` and :meth:`parse_output`,
 respectively.
 
-This adapter is the **command adapter** for ALL custom profiles
-registered in the machine-global runtime store. It is statically
-imported and never discovered or loaded at runtime.
+This adapter is the **command adapter** for ``generic-cli`` custom
+profiles (template-based PATH profiles) registered in the machine-global
+runtime store. ``custom-adapter:<id>`` profiles (D7B — separately
+registered, founder-approved, hash-verified custom adapter executables)
+route through ``CustomAdapterExecutor`` instead. This adapter is
+statically imported and never discovered or loaded at runtime.
 """
 
 from __future__ import annotations
@@ -40,10 +43,11 @@ class GenericCliAdapter:
     - :meth:`parse_output` — result-envelope parsing identical to
       the current ``_parse_generic_cli_usage`` in executors.py.
 
-    This adapter is the command-adapter for all custom profiles.
-    Workspace preparation remains controlled by each profile's
-    ``adapter_id`` (pi/claude/codex/opencode) — this adapter has
-    no workspace-side effects.
+    This adapter is the command-adapter for ``generic-cli`` custom
+    profiles only. ``custom-adapter:<id>`` profiles (D7B) route through
+    ``CustomAdapterExecutor`` instead. Workspace preparation remains
+    controlled by each profile's ``adapter_id`` (pi/claude/codex/opencode)
+    — this adapter has no workspace-side effects.
     """
 
     @staticmethod

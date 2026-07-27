@@ -16,12 +16,15 @@ Agents run through a configured coding-agent CLI. The runtime ships with four
 built-in adapter profiles: Claude Code (`claude -p` with `--permission-mode auto`),
 Codex (`codex exec --json -`), opencode (`opencode run`), and Pi (`pi -p ... --mode json`).
 Any agentic CLI that can accept a prompt argument and produce structured output may
-register as a custom executor profile via org configuration — the runtime validates
+register as a custom executor profile via the machine-global runtime store
+(``~/.happyranch/executor_profiles.yaml``) — the runtime validates
 argv templates against supported placeholders and builds per-profile subprocess
-launches generically (THR-052 seq 6 founder ruling). This gives every agent full
-coding-agent capabilities: file system access, shell commands, web search, and git
-operations. Executor selection is stored per workspace in `agent.yaml`, so agents
-can run on different executors in the same org.
+launches generically (THR-052 seq 6 founder ruling). Registration uses a founder-minted
+scoped token and a four-step conformance challenge (workspace_access, loopback_reachable,
+cli_callback, emit_envelope). This gives every agent full coding-agent capabilities:
+file system access, shell commands, web search, and git operations. Executor selection
+is stored in the org agent frontmatter (``AgentDef.executor``), so agents can run on
+different executors in the same org.
 
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
 by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
@@ -46,6 +49,45 @@ Token-accounting invariants (``total`` excludes cache reads, nullable tolerance,
 model-null backfill to provider label) apply uniformly to envelope-reported tokens.
 The full contract is documented in
 ``docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md``.
+
+**Custom adapter contract (THR-107 D7B — custom-adapter profiles).** Custom
+executor profiles with ``command_adapter_id: custom-adapter:<id>`` bind to exactly
+one registered, conformance-passed, founder-APPROVED custom adapter executable.
+The CustomAdapterExecutor launches the adapter as a subprocess, passing a v1
+``AdapterInput`` JSON on stdin and parsing a v1 ``AdapterOutput`` JSON from stdout.
+The stable v1 contract (``runtime/orchestrator/adapter_contract.py``) is the
+authoritative definition. Key invariants:
+
+- **Registration → conformance → founder approval:** a custom adapter executable
+  is registered with its absolute path, SHA-256 hash, version, and capabilities;
+  submitted to a bounded stdin/stdout conformance probe; and explicitly approved by
+  the founder binding the exact artifact snapshot. The adapter enters PENDING on
+  registration and cannot bind to any profile or launch until APPROVED.
+- **Exact hash verified at EVERY launch:** before each ``Popen``, the
+  ``CustomAdapterExecutor`` re-verifies path type (exists, regular file, executable)
+  and SHA-256 against the approved binding. Hash mismatch, removal, non-regular, or
+  non-executable → launch fails closed with actionable re-registration/approval error.
+  The hash is checked *inside* the per-attempt launch closure, so a throttle retry
+  after a rate-limited response re-verifies the artifact before the next Popen.
+- **Mandatory AdapterOutput:** custom-adapter profiles require a valid v1
+  ``AdapterOutput`` JSON object. Missing, malformed, non-object, unknown-version,
+  oversized (>1MB), identity/version/contract mismatch, or success/returncode
+  inconsistency → deterministic failed ``ExecutorResult``. The adapter must echo
+  the daemon-generated invocation ``session_id`` and match the approved
+  ``adapter_version`` and ``contract_version``.
+- **Subprocess-only — no Python import/discovery.** Custom adapters run as separate
+  subprocesses. The daemon never imports, discovers, or executes third-party Python
+  modules from adapter executables.
+- **Legacy generic-cli profiles remain readable** and are never auto-mutated.
+  The operator path to adopt custom adapters is: register executable → conformance
+  → founder approval → bind profile (``command_adapter_id: custom-adapter:<id>``)
+  → re-register → launch/verify. Rollback: re-register the profile as
+  ``generic-cli`` or revert the deployment.
+- **D5 baseline-only posture:** the custom adapter contract introduces no allow-rule,
+  sandbox, network-access, filesystem-access, or permission changes.
+
+The signed architecture is at
+``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``.
 
 Each agent's configuration specifies context and workspace:
 
@@ -208,7 +250,11 @@ carries two canonical identity fields:
 - ``command_adapter_id`` — selects the command execution adapter (argv
   construction and output parsing). For built-in profiles this matches
   ``workspace_adapter_id`` (each carries its own first-party adapter); for
-  custom profiles this is always ``"generic-cli"``.
+  custom profiles this may be ``"generic-cli"`` (template-based generic CLI)
+  or ``"custom-adapter:<id>"`` (bound to a separately registered,
+  founder-approved, hash-verified custom adapter executable — D7B,
+  subprocess-only, mandatory v1 AdapterInput/AdapterOutput, D5 baseline-only
+  posture).
 
 Legacy fields ``adapter_id``/``adapter`` (deprecated alias for
 ``workspace_adapter_id``) and ``command_adapter`` (deprecated alias for

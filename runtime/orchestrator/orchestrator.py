@@ -666,6 +666,15 @@ class Orchestrator:
         model_name = self._resolve_model_name(agent_name)
         executor = self._build_executor(provider)
 
+        # ── D7B: CustomAdapterExecutor invocation context ──────────────
+        if hasattr(executor, 'set_invocation_context'):
+            executor.set_invocation_context(
+                agent=agent_name,
+                org=self._slug,
+                invocation_kind="task",
+                task_id=task_id,
+            )
+
         # TASK-2511: materialize system-contract skills BEFORE the readiness
         # marker check. Post-Phase-4 cutover, inject_system_contracts is the
         # sole delivery path; a fresh/reset workspace has no marker until

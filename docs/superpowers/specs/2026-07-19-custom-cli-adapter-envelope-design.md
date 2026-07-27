@@ -1,6 +1,6 @@
 # Standard Daemon↔CLI Interface: Adapter Contract for Custom CLIs — Design Spike
 
-**THR-107** | **2026-07-19** | **Phase 1 shipped; D7A strict-enforcement slice in review (PR #512)**
+**THR-107** | **2026-07-19** | **D7A shipped; D7B shipped (PR #514)**
 
 > **Phase 1 shipped.** The v1 sentinel-envelope contract (envelope_version=1,
 > `__HR_ENVELOPE_BEGIN__`/`__HR_ENVELOPE_END__` markers, optional envelope,
@@ -8,11 +8,27 @@
 > (THR-107 seq57/58). The optional/best-effort backward-compatibility
 > posture (§5) and token-accounting invariants (§1.2) remain authoritative.
 >
-> **D7A strict enforcement** (THR-107 D7A, TASK-3529, July 2026): new
-> custom-CLI registrations and re-registrations through either shipping
+> **D7A strict enforcement shipped** (THR-107 D7A, TASK-3529, July 2026):
+> new custom-CLI registrations and re-registrations through either shipping
 > route now durably record ``envelope_policy: "strict"`` in both the
 > durable YAML store AND the active in-memory registry profile, so
-> enforcement activates immediately (no daemon restart required).
+> enforcement activates immediately (no daemon restart required). Legacy
+> stored profiles remain readable and are never auto-mutated.
+>
+> **D7B custom-adapter contract shipped** (THR-107 D7B, TASK-3589 + TASK-3597
+> + TASK-3605, July 2026): the unified adapter-runtime architecture at
+> [`docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md`](./2026-07-24-unified-adapter-runtime-architecture.md)
+> generalizes this envelope contract into a full adapter boundary. Custom
+> adapter profiles (``command_adapter_id: custom-adapter:<id>``) use the v1
+> ``AdapterInput``/``AdapterOutput`` stdin/stdout contract defined in
+> ``runtime/orchestrator/adapter_contract.py`` — a stricter, mandatory
+> contract with exact hash-at-every-launch verification, adapter identity/
+> version/session-id echo enforcement, and founder-gated PENDING→APPROVED
+> lifecycle. This spec's generic-CLI v1 envelope schema, sentinel transport,
+> parser algorithm, backward-compatibility guarantees, and conformance step
+> remain authoritative for D7A generic-cli profiles and are carried forward
+> unchanged. Custom-adapter profiles do NOT use sentinel markers — they
+> speak the adapter contract natively on stdin/stdout.
 > ``GenericCliExecutor`` enforces mandatory v1 envelope compliance
 > at the launch/result seam. A strict profile whose stdout lacks a valid
 > v1 envelope returns a deterministic failed ``ExecutorResult``

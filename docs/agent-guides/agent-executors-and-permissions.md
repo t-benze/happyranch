@@ -91,25 +91,34 @@ openclaw:
   # D6 (2026-07-27): adapter is the DEPRECATED alias for workspace_adapter_id.
   # For new profiles, use workspace_adapter_id: pi instead.
   workspace_adapter_id: pi
-  # Optional — THR-107 D9 / Phase 3. Sole accepted value: generic-cli.
+  # Optional — THR-107 D9 / Phase 3. Accepted values: generic-cli (template-based
+  # generic CLI) or custom-adapter:<id> (D7B — separately registered,
+  # founder-approved, hash-verified custom adapter executable).
   # D6: command_adapter is the DEPRECATED alias for command_adapter_id.
   # For new profiles, use command_adapter_id: generic-cli instead.
   command_adapter_id: generic-cli
   command_adapter: generic-cli
 ```
 
-Custom profiles use the `GenericCliExecutor` which validates the argv template
-at registration time and substitutes placeholders at launch. No shell string
-is constructed — each template element becomes exactly one argv element, with
-placeholders replaced by their resolved values.
+**Generic-cli profiles** use the `GenericCliExecutor` which validates the
+argv template at registration time and substitutes placeholders at launch.
+No shell string is constructed — each template element becomes exactly one
+argv element, with placeholders replaced by their resolved values.
+
+**Custom-adapter profiles** (D7B, ``command_adapter_id: custom-adapter:<id>``)
+route through ``CustomAdapterExecutor`` instead — see
+[Custom adapter profiles](#custom-adapter-profiles-thr-107-d7b) below.
 
 **Adapter vs command_adapter (THR-107 D9 / Phase 3 + D6).** These are separately
 composable. The canonical workspace `workspace_adapter_id` (deprecated alias:
 `adapter`) controls which bootstrap files are written (e.g., `CLAUDE.md` with
 `--allowedTools` for claude, or `AGENTS.md` for pi). The canonical
 `command_adapter_id` (deprecated alias: `command_adapter`) controls which
-execution template builds argv and parses result output — currently always
-`generic-cli` for custom profiles.
+execution template builds argv and parses result output. For custom profiles
+this is `generic-cli` (template-based generic CLI) or `custom-adapter:<id>`
+(D7B — separately registered, founder-approved, hash-verified custom adapter
+executable, subprocess-only, mandatory v1 AdapterInput/AdapterOutput,
+D5 baseline-only posture).
 
 *Concrete example:* A custom profile with `workspace_adapter_id: claude` and
 `command_adapter_id: generic-cli` gets a Claude workspace (CLAUDE.md,
@@ -148,8 +157,56 @@ absent. Multiple envelopes are last-wins. A minimal valid sample is:
 {"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1}}
 ```
 
-The full contract is documented in
+The full generic-cli envelope contract is in
 ``docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md``.
+
+**Custom adapter profiles (THR-107 D7B).** Profiles with
+``command_adapter_id: custom-adapter:<id>`` bind to exactly one registered,
+conformance-passed, founder-APPROVED custom adapter executable. The
+``CustomAdapterExecutor`` spawns the adapter as a subprocess with the v1
+``AdapterInput`` JSON on stdin and parses the v1 ``AdapterOutput`` JSON from
+stdout. No ``argv_template``, ``command``, or PATH resolution is used — the
+adapter executable's absolute path is resolved from the approved adapter entry.
+
+**Adapter lifecycle:**
+
+1. **Register** — operator submits executable path, version, capabilities via
+   ``POST /api/v1/runtime/adapters/register`` → PENDING adapter entry with
+   SHA-256 hash computed at registration.
+2. **Conform** — bounded stdin/stdout conformance probe (``POST
+   /api/v1/runtime/adapters/{id}/conformance``) validates the adapter speaks v1
+   ``AdapterInput``/``AdapterOutput``.
+3. **Approve** — founder explicitly approves the exact artifact snapshot
+   (``POST /api/v1/runtime/adapters/{id}/approve``) binding path, hash, version,
+   capabilities, and contract_version. Only APPROVED adapters can bind to
+   profiles or launch.
+4. **Bind → re-register → launch → verify** — operator sets
+   ``command_adapter_id: custom-adapter:<id>`` on a profile and re-registers.
+   The registration route rejects binding to PENDING, unknown, removed,
+   tampered, non-regular, or non-executable adapters before any durable
+   mutation, registry mutation, audit write, or token consumption.
+
+**Per-launch hash verification:** the ``CustomAdapterExecutor`` re-verifies
+path type (exists, regular file, executable) and SHA-256 immediately before
+EACH ``Popen``. The check is inside the per-attempt launch closure, so a
+throttle retry after a rate-limited response re-verifies the artifact.
+Hash mismatch, removal, non-regular, or non-executable → launch fails closed
+with actionable re-registration/approval error.
+
+**Mandatory v1 AdapterOutput:** custom-adapter profiles require a valid v1
+``AdapterOutput`` JSON object. Rejected: missing, malformed, non-object,
+unknown-version, oversized (>1MB) output; adapter identity/version/contract
+mismatch; session-id echo mismatch; success/returncode inconsistency.
+
+**Rollback:** re-register the profile with ``command_adapter_id: generic-cli``
+or revert the deployment. Legacy stored profiles are never auto-mutated.
+
+**D5 baseline-only:** the custom adapter contract introduces no allow-rule,
+sandbox, network-access, filesystem-access, or permission changes.
+
+The authoritative contract is ``runtime/orchestrator/adapter_contract.py``;
+normative prose is the signed architecture §2
+(``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``).
 
 ## Self-Registration (custom executors)
 

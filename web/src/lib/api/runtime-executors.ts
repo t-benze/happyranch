@@ -67,7 +67,10 @@ export interface RuntimeProfileEntry {
   command: string | null;
   /** D6 canonical: workspace adapter id (claude/codex/opencode/pi), or null. */
   workspace_adapter_id: string | null;
-  /** D6 canonical: command adapter id (currently always 'generic-cli'). */
+  /** D6 canonical: command adapter id. May be 'generic-cli' (template-based generic CLI)
+   *  or 'custom-adapter:<id>' (bound to a separately registered, founder-approved,
+   *  hash-verified custom adapter executable — D7B, subprocess-only, mandatory v1
+   *  AdapterInput/AdapterOutput, D5 baseline-only posture). */
   command_adapter_id: string | null;
   /** @deprecated Use workspace_adapter_id instead. Preserved for backward compat. */
   adapter: string | null;
