@@ -2049,11 +2049,16 @@ def _append_followup_system_and_reinvoke(
     )
 
     if not reinvoke:
-        # System-message-only path: the thread surface receives the
-        # task_failed notification (with revisit_task_id for 'revisiting as
-        # <SUCCESSOR>' rendering), but the dispatcher is NOT re-invoked.
-        # The revisit successor will fire its own followup (with
-        # re-invocation) at its terminal.
+        # Historical legacy stored-payload compatibility path.
+        # TASK-3604 removed daemon auto-revisit creation; all current
+        # production callers pass ``auto_revisit_spawned=False`` (and thus
+        # ``reinvoke=True``). No current code path populates
+        # ``revisit_task_id`` or enters this branch.  The branch, audit
+        # log, and conditional are retained for compatibility with
+        # ``_maybe_post_thread_followup``'s ``auto_revisit_spawned``
+        # contract so that any pre-TASK-3604 stored system payload whose
+        # stored ``reinvoke`` field resolved to ``False`` is still handled
+        # correctly.
         audit.log_thread_followup_skipped(
             thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
             reason="auto_revisit_spawned",

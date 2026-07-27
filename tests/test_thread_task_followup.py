@@ -398,12 +398,16 @@ def _payload(row: dict) -> dict:
     return p if isinstance(p, dict) else _json.loads(p)
 
 
-# --- Truth table (spec §4, §4.1 — revised THR-046 msg99) ---
+# --- Truth table (spec §4, §4.1) ---
 #
-# Row 2 (FAILED+spawned) changed in THR-046 msg99: the system message now
-# fires (with revisit_task_id) so the thread surface can render 'revisiting
-# as <SUCCESSOR>', but the dispatcher re-invocation (TASK_FOLLOWUP) is
-# suppressed — the successor will fire its own followup at its terminal.
+# Row 2 (FAILED+spawned, ``auto_revisit_spawned=True``) is legacy
+# historical stored-payload coverage.  TASK-3604 removed daemon
+# auto-revisit creation; no current production call path supplies
+# ``auto_revisit_spawned=True`` or ``revisit_task_id``.  The row is
+# retained to protect the helper's conditional ``reinvoke`` seam and
+# to verify that the system-message fires but the re-invocation is
+# suppressed as required by the original ``_maybe_post_thread_followup``
+# contract.
 @_pytest.mark.parametrize("status,spawned,cancelled,should_fire,should_invoke", [
     (TaskStatus.COMPLETED, False, False, True,  True),   # row 1: normal completion
     (TaskStatus.FAILED,    True,  False, True,  False),  # row 2: revisit spawned → system msg fires, no re-invoke
@@ -1107,8 +1111,13 @@ def test_thread_forward_renders_task_escalated():
 
 
 def test_revisit_task_id_in_system_payload(orch_with_db):
-    """When a task_failed followup fires with revisit_task_id set, the
-    system_payload carries the successor task id."""
+    """Legacy historical stored-payload coverage: when
+    ``_maybe_post_thread_followup`` is called with ``revisit_task_id``
+    set, the system_payload carries the successor task id.  TASK-3604
+    removed daemon auto-revisit creation; no current production path
+    populates ``revisit_task_id``.  The assertion protects the
+    parameter's transport contract for compatibility with pre-TASK-3604
+    stored payloads."""
     from runtime.orchestrator.run_step import _maybe_post_thread_followup
     from runtime.models import ThreadInvocationPurpose, ThreadMessageKind
     orch = orch_with_db
