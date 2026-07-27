@@ -16,7 +16,7 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 - **Revisit.** `happyranch revisit <task-id>` spawns a fresh root task inheriting brief and team from a terminal predecessor; old lineage freezes. Specs `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`, `docs/superpowers/specs/2026-04-23-revisit-root-link-design.md`. See [Revisit](#revisit) below for traps.
 - **Session-timeout auto-route (RETIRED — TASK-3604).** Automatic daemon successor creation on opaque agent failures has been removed per founder direction. Opaque failures now end FAILED and hand to the existing parent/founder recovery paths (bounded manager-wake, escalation, explicit founder revisit). Legacy `auto_revisit_of` audit rows remain readable for historical compatibility. Original spec `docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md` (retired).
 - **Cancel (race + actor attribution).** Founder/agent task cancellation with race-safe state handling and audit attribution of who cancelled. Specs `docs/superpowers/specs/2026-05-26-cancel-race-design.md`, `docs/superpowers/specs/2026-06-06-cancel-actor-attribution-design.md`; impl in task routes and run-step helpers.
-- **Bounded failure-recovery (TASK-573).** When a subtask fails, the parent task is re-enqueued for a bounded manager-wake decision step (not cascade-failed). At most 2 re-spawn rounds per delegation slot; round count derived from existing DB state (count of FAILED subtasks). On exhaustion the parent escalates to `escalated` rather than failing silently. Failed chain legs also wake the parent instead of cascading. Happy path (all subtasks COMPLETED) and REVISE-verdict auto-advance are unchanged. Thread: THR-028. Implementation: `runtime/orchestrator/run_step.py:_enqueue_parent_if_waiting`. See [Bounded failure-recovery](#bounded-failure-recovery).
+- **Bounded failure-recovery (TASK-573 / THR-078).** When a subtask fails, the parent task is re-enqueued for a bounded manager-wake decision step (not cascade-failed). Each delegated slot gets exactly one retry: a retried slice's second failure exhausts the slot and triggers root-only escalation via `is_root(parent)+try_escalate`. Other child failures give the parent a bounded manager wake. Retry is determined via the failing child's `revisit_of_task_id` lineage within the parent (no sibling counting, no schema migration). Failed chain legs also wake the parent instead of cascading. Happy path (all subtasks COMPLETED) and REVISE-verdict auto-advance are unchanged. Threads: THR-028, THR-078. Implementation: `runtime/orchestrator/run_step.py:_enqueue_parent_if_waiting`, `_is_slice_retry_exhausted`. See [Bounded failure-recovery](#bounded-failure-recovery).
 
 ### Agent runtime & executors
 
@@ -135,55 +135,68 @@ Traps (historical):
 - Startup sweep already fails dead sessions without spawning an auto-revisit
   (THR-079 ruling); this is unchanged.
 
-## Bounded Failure-Recovery (TASK-573)
+## Bounded Failure-Recovery (TASK-573 / THR-078)
 
 When a subtask fails, the parent task is re-enqueued for a bounded manager-wake
-decision step — NOT cascade-failed. Fundamental change from the pre-TASK-573
-behavior where any child FAILED unconditionally cascade-failed the parent
-without giving the task owner a chance to re-ground.
+decision step — NOT cascade-failed. This replaces the pre-TASK-573 behavior
+where any child FAILED unconditionally cascade-failed the parent.
 
-Contract (founder-approved in THR-028):
+Contract (founder-approved in THR-028; refined in THR-078):
 
 1. **Bounded wake.** On child failure, re-enqueue the parent for a fresh
    decision step. The failed subtask's reason (`note` + completion report /
    error context) is available so the task owner can author an updated brief.
 
-2. **Round bound.** At most 2 re-spawn rounds per delegation slot. The round
-   count is derived from EXISTING database state (count of FAILED subtask
-   siblings) — no schema migration, no new/alter/overload column.
+2. **Per-slice retry ceiling.** Each delegated slot gets exactly one retry
+   (THR-078, `_SLICE_RETRY_CEILING = 1`). A second failure of the **same**
+   retried slice exhausts the slot and escalates. Determination uses existing
+   `revisit_of_task_id` lineage within the same parent — the orchestrator
+   walks the revisit chain backward looking for a FAILED ancestor with
+   `parent_task_id == parent.id` (`_is_slice_retry_exhausted`). No schema
+   migration, no sibling counting.
 
-3. **Escalation on exhaustion.** When the bound is exhausted (> 2 FAILED
-   subtasks in this delegation slot), the parent transitions to
-   `escalated` via `db.try_escalate()`, carrying the last failure
-   reason. The parent does NOT cascade-fail — the founder can resolve the
-   escalation per existing routes. **The exhausting parent always has children,
-   so it is always a root; only a root escalates to the founder. The
-   `is_root(parent)` guard makes this explicit — were the parent itself a
-   non-root it would fail and route upward instead (THR-033 Change A).**
+3. **Root-only escalation on exhaustion.** When the per-slice ceiling is
+   exhausted (the retried slice's second failure), the parent transitions to
+   `escalated` via `try_escalate()` — **only if `is_root(parent)`** (THR-033
+   Change A). A non-root parent would fail and route upward instead.
 
-4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
-   COMPLETED) clears the active chain and hands the parent back to its
-   bounded-wake path (same 2-round bound + escalation).
+4. **Other child failures → bounded manager wake.** A child failure that is
+   **not** a retry of a previously-FAILED slice does not count toward the
+   ceiling; the parent wakes for a fresh decision step. Multiple independent
+   slice failures each produce their own wake, but each distinct slice
+   exhausts independently only after its own retry fails.
 
-5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
+5. **Fan-out join context.** On a fan-out parent, per-slice terminal context
+   (including the exhausted-slice trigger) is injected via
+   `_inject_fanout_join_context`, giving the task owner per-slice detail.
+
+6. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
+   COMPLETED) clears the active chain and hands the parent back to the
+   bounded-wake path (same per-slice ceiling + escalation).
+
+7. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
 
-6. **Reviewer/QA verdict discipline.** A review/QA leg completes with an
+8. **Reviewer/QA verdict discipline.** A review/QA leg completes with an
    APPROVE/REVISE/PASS/FAIL verdict and never self-blocks. A `status=blocked`
    with empty `waiting_on_job_ids` is a malformed report; the leg is treated
    as FAILED and wakes the parent for a decision step.
 
 Traps:
 
-- Round count = `len([s for s in siblings if s.status == FAILED])`;
-  threshold `_FAILURE_ROUND_BOUND = 2` (`>= 2` → escalate).
-- The bound escalation uses `try_escalate` (atomic CAS under Database RLock),
-  same as the existing over-budget escalation path.
-- Chain-advance branch in `_enqueue_parent_if_waiting` now handles FAILED
-  subtasks as well as COMPLETED: FAILED subtasks clear the chain and fall
-  through to the bounded-wake sibling check.
-- `test_cascade_fail_*` tests updated: they now assert parent stays
-  in_progress(delegated) for the bounded-wake, not FAILED.
+- `_SLICE_RETRY_CEILING = 1`: exactly one retry after a slice's first failure;
+  the same slice's second failure escalates. `_FAILURE_ROUND_BOUND = 2` is
+  kept as a doc-only reference (`protocol/05c`).
+- Retry detection: `_is_slice_retry_exhausted` walks the child's
+  `revisit_of_task_id` chain; only FAILED ancestors with the same
+  `parent_task_id` count toward the ceiling. A retry of a previously
+  COMPLETED slice is a fresh dispatch, not an escalation trigger.
+- Root-only escalation: `is_root(parent)` guard before `try_escalate`.
+  Non-root parents on exhaustion fail and route upward (THR-033 Change A).
+- Escalation clears any active chain/fanout before escalating.
+- Chain-advance branch handles FAILED subtasks as well as COMPLETED:
+  FAILED subtasks clear the chain and fall through to sibling-check +
+  bounded-wake.
 ## Thread Broadcast Routing
 
 Every `kind=message` thread row mints a `REPLY` invocation for every participant except the speaker. There is no `addressed_to`, `@all`, or `@founder` token. Founder participates through the web UI; Feishu is not used for ongoing thread conversation. Spec: `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md`.

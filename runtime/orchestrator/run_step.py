@@ -2019,10 +2019,14 @@ def _append_followup_system_and_reinvoke(
 
     When `reinvoke=False`, only the SYSTEM message is appended; the
     dispatcher re-invocation (cap-extend + mint + enqueue) is suppressed.
-    This is used for intermediate auto-revisit failures (THR-046 msg99):
-    the thread surface needs the 'revisiting as <SUCCESSOR>' system message,
-    but the successor fires its own followup at its terminal, so
-    double-invocation is avoided here.
+    Historically this was used for intermediate auto-revisit failures
+    (THR-046 msg99, retired TASK-3604): the thread surface needed the
+    'revisiting as <SUCCESSOR>' system message while the successor fired its
+    own followup at its terminal. The parameter remains as a retained
+    bookkeeping seam — all production callers now pass `auto_revisit_spawned=False`
+    (and thus `reinvoke=True`), but the suppressed path is preserved for
+    compatibility with the `auto_revisit_spawned` contract in
+    `_maybe_post_thread_followup`.
     """
     db = orch._db
     audit = orch._audit
@@ -2278,8 +2282,9 @@ def _maybe_post_thread_followup(
 
     # Find the original dispatched root via the revisit chain.
     # walk_revisit_chain returns [task, predecessor, ..., original].
-    # Use a larger hop bound (200) consistent with _count_prior_auto_revisits_by_kind,
-    # and handle LineageTooDeep defensively rather than crashing and silently
+    # Use a hop bound large enough to cover any realistic revisit chain
+    # (200 hops, matching the bound in _is_slice_retry_exhausted), and
+    # handle LineageTooDeep defensively rather than crashing and silently
     # discarding the followup without any audit trail.
     from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle
     try:
