@@ -557,3 +557,85 @@ class TestContractCompletenessPostCutover:
         finally:
             # ── Restore the flag ─────────────────────────────────────
             wa._WHOLESALE_DUMP_ENABLED = False
+
+
+# ── Materialization-level regression: guard workflow in delivered skill ────
+
+
+class TestMakeWorktreeGuardInDeliveredSkill:
+    """Prove the delivered make-worktree skill body contains the
+    worktree-root guard workflow for both supported skill destinations."""
+
+    def test_source_skill_contains_guard_workflow(self):
+        """The source protocol/skills/make-worktree/SKILL.md contains
+        the guard setup and verify commands."""
+        source = _REPO_ROOT / "protocol" / "skills" / "make-worktree" / "SKILL.md"
+        body = source.read_text()
+
+        # Guard setup command must be present
+        assert "worktree_guard setup" in body, (
+            "Source make-worktree SKILL.md must contain 'worktree_guard setup' command"
+        )
+        assert "worktree_guard verify" in body, (
+            "Source make-worktree SKILL.md must contain 'worktree_guard verify' command"
+        )
+
+        # Canonical root computation
+        assert "WORKTREE_ROOT" in body, (
+            "Source skill must define WORKTREE_ROOT variable"
+        )
+        assert "PRIMARY_ROOT" in body, (
+            "Source skill must define PRIMARY_ROOT variable"
+        )
+
+        # Forbidden-path warning
+        assert "FORBIDDEN" in body or "forbidden" in body, (
+            "Source skill must state that absolute repos/<repo>/ paths are forbidden"
+        )
+
+        # Recovery instructions on failure
+        assert "recover" in body.lower(), (
+            "Source skill must include recovery instructions"
+        )
+
+    def test_delivered_claude_skill_contains_guard(self, test_settings: Settings,
+                                                    test_runtime: OrgPaths,
+                                                    tmp_path: Path):
+        """After injection, .claude/skills/make-worktree/SKILL.md contains
+        the guard workflow."""
+        from runtime.orchestrator.workspace_adapters import inject_system_contracts
+
+        ws = _build_ws(tmp_path, "guard_claude", has_repos=True)
+        inject_system_contracts(ws, test_settings, slug="test", context="task")
+
+        delivered = ws / ".claude" / "skills" / "make-worktree" / "SKILL.md"
+        assert delivered.is_file(), (
+            f"make-worktree skill not delivered to .claude/skills/: {delivered}"
+        )
+
+        body = delivered.read_text()
+        assert "worktree_guard setup" in body
+        assert "worktree_guard verify" in body
+        assert "WORKTREE_ROOT" in body
+        assert "PRIMARY_ROOT" in body
+
+    def test_delivered_agents_skill_contains_guard(self, test_settings: Settings,
+                                                    test_runtime: OrgPaths,
+                                                    tmp_path: Path):
+        """After injection, .agents/skills/make-worktree/SKILL.md contains
+        the guard workflow (for Codex/Opencode/Pi destinations)."""
+        from runtime.orchestrator.workspace_adapters import inject_system_contracts
+
+        ws = _build_ws(tmp_path, "guard_agents", has_repos=True)
+        inject_system_contracts(ws, test_settings, slug="test", context="task")
+
+        delivered = ws / ".agents" / "skills" / "make-worktree" / "SKILL.md"
+        assert delivered.is_file(), (
+            f"make-worktree skill not delivered to .agents/skills/: {delivered}"
+        )
+
+        body = delivered.read_text()
+        assert "worktree_guard setup" in body
+        assert "worktree_guard verify" in body
+        assert "WORKTREE_ROOT" in body
+        assert "PRIMARY_ROOT" in body

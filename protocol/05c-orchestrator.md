@@ -810,6 +810,19 @@ in the guard test, then removed in Phase 4.
 having at least one cloned git repository under ``repos/``. Agents with no
 repo write surface never receive ``make-worktree``.
 
+**Worktree-root guard (THR-117).** The ``make-worktree`` skill incorporates a
+stdlib-only worktree guard (``runtime/tools/worktree_guard.py``) that runs at
+setup and at verify points (before test, commit, and report). At setup it
+records the canonical absolute primary root and task worktree root, snapshots
+the primary checkout baseline, and exports ``WORKTREE_ROOT`` for all
+subsequent repo commands. At verify it detects new changes in the primary
+checkout (not in the task worktree) and fails loudly, naming both canonical
+roots and every changed primary-checkout path. The guard catches the
+recurring agent bug where absolute ``repos/<repo>/...`` paths land edits
+in the primary checkout while tests/build run in the worktree. It is a
+narrow, non-permission tool — no DB, API, schema, audit, auth, notification,
+or sandbox involvement.
+
 **Debug visibility.** ``happyranch skills effective --agent <name>`` displays
 a distinct "System Contracts (runtime-injected)" section separate from managed
 catalog skills. The optional ``--context`` flag filters the display by session

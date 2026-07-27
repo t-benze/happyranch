@@ -37,6 +37,17 @@ Custom/self-registered profiles do not currently support `model_arg` (separate f
 
 Missing values default to `claude`. All executors share `protocol/skills/`.
 
+**Worktree-root guard.** The ``make-worktree`` skill (injected as a system
+contract per §4.7 of the orchestrator protocol) includes a stdlib-only guard
+that runs at worktree setup and verify points. It records canonical absolute
+primary and task-worktree roots, snapshots the primary checkout baseline,
+and at verify detects accidental primary-checkout edits (the agent bug where
+absolute ``repos/<repo>/...`` paths land edits in the primary checkout while
+tests/build run in the isolated worktree). The guard is a narrow, non-permission
+tool with no DB, API, schema, audit, auth, notification, or sandbox footprint.
+It is available to all executors via the skill body and the
+``runtime/tools/worktree_guard.py`` module.
+
 **Custom CLI profiles** (example — OpenClaw):
 
 Any agentic CLI that accepts a prompt via a positional flag and returns
