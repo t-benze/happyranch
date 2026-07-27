@@ -9,21 +9,18 @@ Commands:
   skills catalog validate   — validate registry + eligibility policy
   skills effective          — show effective skills for an agent
   skills policy explain     — explain why a skill is/isn't available
+  skills propose            — submit a custom-skill proposal (agent-only)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
-import httpx
 import yaml
 
-from cli._shared import require_absolute_payload_path
-from runtime.runtime import port_file as _daemon_port_file
 from runtime.skills.registry import SkillRegistry
 from runtime.skills.resolver import EligibilityResolver
 from runtime.skills.exposure import catalog_gate, resolve_exposed_skills
@@ -592,199 +589,102 @@ def _fmt_pc(pc) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Session-Proposal Transport (no bearer token)
+# Command: skills propose --from-file <path> --session-id <session-id>
 # ---------------------------------------------------------------------------
 
-# Fields the ProposalRequest pydantic model accepts as package content.
-# Any key NOT in this set (including identity keys like task_id, session_id,
-# proposer_agent, agent_name) is rejected locally before any HTTP call.
-_PACKAGE_FIELDS = frozenset({
-    "slug", "name", "description", "version", "policy_class",
-    "skill_md", "purpose", "target_agent_suggestion",
-    "references", "assets",
-})
+def cmd_skills_propose(args: argparse.Namespace) -> None:
+    """Submit a custom-skill proposal via the agent-only session-bound route.
 
+    Agent callers must supply only their opaque active session ID — the
+    server derives org, task_id, and agent_name from the SessionTracker
+    context. The proposal file must contain only package metadata/content
+    (slug, name, description, skill_md, version, policy_class, references,
+    assets, purpose, target_agent_suggestion). It must NOT contain org,
+    agent, task, session, proposer_agent, eligibility, or permission
+    identity — any such fields are rejected by the server.
 
-class SessionProposalTransport:
-    """Narrow HTTP transport for agent skill-proposal submission.
-
-    Unlike ``OpcClient.from_env()``, this transport reads ONLY the daemon port
-    and sends NO Authorization header / bearer token. It is deliberately scoped
-    to ONLY the proposal POST path — no other daemon routes are reachable.
+    This command does NOT send the master bearer token; it uses the
+    session-binding authentication path exclusively.
     """
-
-    def __init__(self, port: str | None = None, timeout: float = 30.0) -> None:
-        if port is None:
-            port_path = _daemon_port_file()
-            if not port_path.exists():
-                print("error: daemon not running — start it with scripts/daemon.sh start",
-                      file=sys.stderr)
-                sys.exit(1)
-            port = port_path.read_text().strip()
-        self._base = f"http://127.0.0.1:{port}"
-        # Deliberately NO Authorization header — session identity is carried
-        # only as query parameters, verified server-side via SessionTracker.
-        self._client = httpx.Client(base_url=self._base, timeout=timeout)
-
-    def submit_proposal(
-        self,
-        *,
-        org: str,
-        task_id: str,
-        session_id: str,
-        agent_name: str,
-        body: dict,
-    ) -> httpx.Response:
-        """POST /api/v1/orgs/{org}/skill-lifecycle/proposals.
-
-        Sends task_id, session_id, agent_name as query params (server-verified
-        SessionTracker binding). No Authorization header is sent.
-        """
-        params = {
-            "slug": org,
-            "task_id": task_id,
-            "session_id": session_id,
-            "agent_name": agent_name,
-        }
-        return self._client.post(
-            f"/api/v1/orgs/{org}/skill-lifecycle/proposals",
-            json=body,
-            params=params,
-        )
-
-    def close(self) -> None:
-        self._client.close()
-
-    def __enter__(self) -> "SessionProposalTransport":
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        self.close()
-
-
-# ---------------------------------------------------------------------------
-# Command: skills propose
-# ---------------------------------------------------------------------------
-
-def cmd_skills_propose(args: argparse.Namespace, _transport: SessionProposalTransport | None = None) -> None:
-    """Submit a skill proposal via session-bound transport (no bearer token).
-
-    Agent-only path: POST /api/v1/orgs/{slug}/skill-lifecycle/proposals with
-    task_id + session_id + agent_name as verified query binding. The request
-    body carries the package content only — non-package keys are rejected.
-
-    The optional ``_transport`` parameter allows tests to inject an
-    alternative transport (e.g. one that routes through a TestClient's
-    FastAPI app). When ``None`` (production), the normal localhost bearer-free
-    ``SessionProposalTransport`` is used.
-    """
-    # 1. Require absolute --from-file
     if not args.from_file:
-        print("error: --from-file is required", file=sys.stderr)
-        sys.exit(2)
-    # Absolute-path guard BEFORE resolution — the raw CLI path must be absolute
-    require_absolute_payload_path(args.from_file, kind="skill-proposal")
-    payload_path = os.path.abspath(args.from_file)
-
-    # 2. Require binding flags
-    missing = []
-    if not args.org:
-        missing.append("--org")
-    if not args.task_id:
-        missing.append("--task-id")
+        print("error: --from-file <path> is required", file=sys.stderr)
+        sys.exit(1)
     if not args.session_id:
-        missing.append("--session-id")
-    if not args.agent:
-        missing.append("--agent")
-    if missing:
-        print(
-            f"error: missing required flag(s): {', '.join(missing)}",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    # 3. Read and parse JSON
-    try:
-        raw = Path(payload_path).read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError) as e:
-        print(f"error: cannot read --from-file '{payload_path}': {e}", file=sys.stderr)
+        print("error: --session-id <session-id> is required", file=sys.stderr)
         sys.exit(1)
 
+    # Read proposal file
     try:
-        body = json.loads(raw)
-    except json.JSONDecodeError as e:
-        print(f"error: invalid JSON in --from-file '{payload_path}': {e}", file=sys.stderr)
+        body = json.loads(Path(args.from_file).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"Error reading proposal file {args.from_file}: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    if not isinstance(body, dict):
-        print(f"error: --from-file must contain a JSON object, got {type(body).__name__}",
+    # Reject forbidden identity fields in the proposal body
+    forbidden = {"org", "agent", "agent_name", "task_id", "task",
+                 "session_id", "session", "proposer_agent", "proposer",
+                 "actor", "eligibility", "permission", "identity"}
+    for key in forbidden:
+        if key in body:
+            print(
+                f"error: proposal file must not contain identity field '{key}'. "
+                f"Org, agent, task, and session identity are derived from the "
+                f"server's verified session context.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    # Build a minimal token-free transport — this route uses
+    # opaque session-binding, NOT the master bearer token.
+    import httpx
+    from cli.client.client import port_file
+
+    port_path = port_file()
+    if not port_path.exists():
+        print("error: daemon not running — start it with scripts/daemon.sh start",
               file=sys.stderr)
         sys.exit(1)
+    port = port_path.read_text().strip()
+    base_url = f"http://127.0.0.1:{port}"
+    # Deliberately NO Authorization header — this is the agent
+    # session-binding path. bearer-free by construction.
+    token_free_client = httpx.Client(
+        base_url=base_url,
+        headers={"X-HappyRanch-Surface": "cli"},
+        timeout=30.0,
+    )
 
-    # 4. Reject non-package keys in body — identity comes ONLY from verified query binding.
-    #    Use a tight allow-list derived from ProposalRequest's actual package-content fields.
-    #    Any key outside that set (including task_id, session_id, proposer_agent, agent_name,
-    #    and any other identity/actor binding) is rejected locally before any HTTP call.
-    extra_keys = [k for k in body if k not in _PACKAGE_FIELDS]
-    if extra_keys:
-        sorted_keys = sorted(extra_keys)
-        quoted = ", ".join(f"'{k}'" for k in sorted_keys)
-        print(
-            f"error: proposal body contains unrecognized key(s): {quoted}."
-            f" Package content fields are:"
-            f" {', '.join(sorted(_PACKAGE_FIELDS))}."
-            f" Identity is verified via --task-id / --session-id / --agent"
-            f" query binding only.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # 5. Submit via bearer-free transport (injectable for tests)
-    transport = _transport if _transport is not None else SessionProposalTransport()
+    # Resolve org for routing (the server cross-checks against session context)
+    from cli._shared import resolve_org_slug
     try:
-        resp = transport.submit_proposal(
-            org=args.org,
-            task_id=args.task_id,
-            session_id=args.session_id,
-            agent_name=args.agent,
-            body=body,
-        )
-    except httpx.ConnectError:
-        print("error: cannot connect to daemon — is it running?", file=sys.stderr)
-        sys.exit(1)
-    finally:
-        if _transport is None:
-            transport.close()
+        r = token_free_client.get("/api/v1/orgs")
+        available = [o["slug"] for o in r.json().get("orgs", [])] if r.status_code == 200 else []
+    except Exception:
+        available = []
+    org = resolve_org_slug(args_org=getattr(args, 'org', None), available=available)
 
-    # 6. Handle response
-    if 200 <= resp.status_code < 300:
-        data = resp.json()
+    resp = token_free_client.post(
+        f"/api/v1/orgs/{org}/skill-lifecycle/proposals/agent",
+        json=body,
+        params={"session_id": args.session_id},
+    )
+
+    if resp.status_code == 201:
+        result = resp.json()
         print(f"Proposal submitted successfully.")
-        print(f"  status:       {data.get('status', '?')}")
-        print(f"  skill_id:     {data.get('skill_id', '?')}")
-        print(f"  version_id:   {data.get('version_id', '?')}")
-        print(f"  version:      {data.get('version', '?')}")
-        print(f"  content_hash: {data.get('content_hash', '?')}")
-        if data.get("proposal_task_id"):
-            print(f"  task:         {data['proposal_task_id']}")
-        return
-
-    # Structured lifecycle error (4xx / 422)
-    detail = {}
-    try:
-        body_data = resp.json()
-        if isinstance(body_data.get("detail"), dict):
-            detail = body_data["detail"]
-    except (ValueError, TypeError):
-        pass
-
-    code = detail.get("code", "")
-    msg = detail.get("detail", "")
-    if code:
-        print(f"error: [{code}] {msg}", file=sys.stderr)
+        print(f"  skill_id:  {result['skill_id']}")
+        print(f"  version_id: {result['version_id']}")
+        print(f"  version:   {result['version']}")
+        print(f"  status:    {result['status']}")
+        print(f"  content_hash: {result['content_hash']}")
+        if result.get("content_artifact_key"):
+            print(f"  artifact:  {result['content_artifact_key']}")
+        print()
+        print("This proposal is now visible to the founder for review and publication.")
     else:
-        print(f"error: ({resp.status_code}) {resp.text}", file=sys.stderr)
-    sys.exit(1)
+        detail = resp.json().get("detail", resp.text)
+        print(f"error ({resp.status_code}): {detail}", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -841,15 +741,18 @@ def register(sub) -> None:
     p_exp.add_argument("--json", action="store_true", help="Output as JSON")
     p_exp.set_defaults(func=cmd_skills_policy_explain)
 
-    # --- skills propose ---
+    # --- skills propose --from-file <path> --session-id <session-id> ---
     p_propose = skills_sub.add_parser(
         "propose",
-        help="Submit a skill proposal (agent-only, session-bound, no bearer token)",
+        help="Submit a custom-skill proposal (agent-only, session-bound)",
     )
-    p_propose.add_argument("--from-file", required=True,
-                           help="Absolute path to JSON proposal package file")
-    p_propose.add_argument("--org", required=True, help="Org slug")
-    p_propose.add_argument("--task-id", required=True, help="Task ID for session binding")
-    p_propose.add_argument("--session-id", required=True, help="Session ID for session binding")
-    p_propose.add_argument("--agent", required=True, help="Agent name for session binding")
+    p_propose.add_argument(
+        "--from-file", dest="from_file", required=True,
+        help="Path to proposal JSON file (package metadata/content only)",
+    )
+    p_propose.add_argument(
+        "--session-id", dest="session_id", required=True,
+        help="Opaque active session ID (from task context)",
+    )
+    p_propose.add_argument("--org", help="Org slug (default: auto-detect)")
     p_propose.set_defaults(func=cmd_skills_propose)

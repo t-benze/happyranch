@@ -1968,9 +1968,23 @@
       "POST": {
         "params": [
           [
-            "agent_name",
-            "query"
+            "authorization",
+            "header"
           ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "201",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/skill-lifecycle/proposals/agent": {
+      "POST": {
+        "params": [
           [
             "authorization",
             "header"
@@ -1982,10 +1996,6 @@
           [
             "slug",
             "path"
-          ],
-          [
-            "task_id",
-            "query"
           ]
         ],
         "responses": [

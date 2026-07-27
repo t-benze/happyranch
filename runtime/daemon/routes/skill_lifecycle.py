@@ -5,7 +5,8 @@ Human-only mutations are gated by ``_require_human()`` which returns 403 for
 non-bearer (agent-session) callers. Human/founder uses master bearer token.
 
 Routes:
-- POST /skill-lifecycle/proposals — Agent task/session-bound OR founder proposal
+- POST /skill-lifecycle/proposals — Human/founder-only (bearer required; agent → 403)
+- POST /skill-lifecycle/proposals/agent — Agent-only: opaque session-binding, NO bearer, server-derived four-part provenance
 - POST /skill-lifecycle/{skill_id}/claim — Human-only: claim proposal → draft
 - POST /skill-lifecycle/validate — Human-only: validate a version
 - POST /skill-lifecycle/submit-review — Human-only: submit for review
@@ -33,7 +34,7 @@ closed if the registry is unavailable — no static fallback.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body as RequestBody, Depends, HTTPException, Query, Request, status
 
 from runtime.daemon.auth import _check_optional_token, optional_bearer, require_token
 from runtime.daemon.org_state import OrgState
@@ -177,6 +178,272 @@ def _verify_agent_proposal_identity(
     return "agent", agent_name
 
 
+# ── Agent-id × canonical-slug pilot policy (THR-055 corrective) ───────────
+
+# Fixed map: agent name → allowed skill slug.
+# This is enforced server-side, BEFORE any artifact creation or ledger write.
+# It does NOT inspect team membership, prompts, org config, YAML eligibility,
+# request metadata, or body identity claims.
+_AGENT_PILOT_SLUG_MAP: dict[str, str] = {
+    "frontend_engineer": "frontend-development",
+    "product_lead": "product-manager-prd",
+}
+
+
+def _enforce_agent_pilot_policy(agent_name: str, slug: str) -> None:
+    """Enforce the fixed agent-id × canonical-slug policy.
+
+    Raises 403 if:
+    - agent_name is not in the pilot map
+    - agent_name is in the pilot map but slug doesn't match its canonical slug
+
+    This is called BEFORE any artifact creation or ledger write.
+    """
+    allowed_slug = _AGENT_PILOT_SLUG_MAP.get(agent_name)
+    if allowed_slug is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "agent_not_in_pilot",
+                "detail": f"Agent '{agent_name}' is not in the custom-skill pilot. "
+                          f"Only frontend_engineer and product_lead may submit proposals.",
+            },
+        )
+    if slug != allowed_slug:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "slug_not_allowed_for_agent",
+                "detail": f"Agent '{agent_name}' may only submit proposals with slug "
+                          f"'{allowed_slug}', not '{slug}'.",
+            },
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Agent-only route (opaque session-binding, NO bearer token)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Prohibited body identity/authority keys ───────────────────────────
+# The agent-only route MUST reject the *presence* of every client-supplied
+# trusted identity or authority field (including empty strings) BEFORE any
+# session lookup, pilot-policy evaluation, artifact write, or ledger/event
+# row. Server derives the canonical org/task/agent/session solely from the
+# active context-bearing SessionTracker session.
+_PROHIBITED_BODY_KEYS: frozenset[str] = frozenset({
+    # Fields already in ProposalRequest (reject presence, not truthiness)
+    "task_id", "session_id", "proposer_agent",
+    # Fields Pydantic would silently drop — must inspect raw body
+    "org", "org_slug", "agent", "agent_name",
+    "actor", "eligibility", "permission", "permissions",
+})
+
+
+@dual_router.post("/proposals/agent", status_code=201)
+def submit_proposal_agent_only(
+    slug: str,
+    org: OrgDep,
+    request: Request,
+    body_raw: dict = RequestBody(..., description="Proposal package metadata and content (no identity fields)"),
+    session_id: str = Query(..., min_length=1),
+    has_bearer: bool = Depends(_check_optional_token),
+) -> dict:
+    """Submit a skill proposal via opaque agent-session binding.
+
+    **Agent-only.** This route does NOT accept the master bearer token.
+    The caller provides only an opaque active session ID; the server
+    independently derives org, task_id, agent_name, and session_id from
+    the SessionTracker context (four-part server-authoritative provenance).
+
+    - All four identity dimensions (org, task, agent, session) are derived
+      from the opaque session capability — never from body/query/env/client
+      claims, task lookup by agent, team membership, or config/YAML.
+    - Path-selected org is cross-checked against the session's org; cross-org
+      and mismatched contexts are denied with 403.
+    - The fixed agent-id × canonical-slug pilot policy is enforced
+      BEFORE any artifact creation or ledger write.
+    - Body claims for org, agent, task, session, proposer_agent,
+      eligibility, or permission identity are rejected BEFORE model
+      parsing — exact 403 body_identity_rejected for every prohibited
+      key, including empty values and keys the Pydantic model would
+      otherwise silently drop.
+
+    Returns 403 for:
+    - Inactive, expired, unknown, ambiguous, colliding, or mismatched session
+    - Cross-org session (session belongs to a different org than the URL path)
+    - Bearer token present (agent path only)
+    - Any prohibited body identity/authority key present (including empty values)
+    - Agent not in pilot
+    - Agent submitting a slug not matching their canonical slug
+    """
+    # Reject bearer token — this route is agent-session ONLY
+    if has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "bearer_not_accepted",
+                "detail": "This route is for agent-session proposals only. "
+                          "Use POST /skill-lifecycle/proposals for bearer-authenticated proposals.",
+            },
+        )
+
+    # ── Reject ANY prohibited body identity/authority key BEFORE
+    #    Pydantic parsing, session lookup, or any persistence. ──
+    # This catches non-empty values, empty strings, and keys the
+    # ProposalRequest model would otherwise silently drop (e.g., org,
+    # agent_name, eligibility, permission).
+    for key in _PROHIBITED_BODY_KEYS:
+        if key in body_raw:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "body_identity_rejected",
+                    "detail": f"{key} must not be set in the proposal body. "
+                              "Identity is derived from the server's verified session context.",
+                },
+            )
+
+    # Parse the now-clean body through Pydantic for normal field validation
+    body = ProposalRequest(**body_raw)
+
+    # Step 1: Resolve (org_slug, task_id, agent_name) from opaque session.
+    # This is a read-only lookup under _lock with no binding lease held.
+    # The resolved pair will be re-verified under the binding lease below.
+    context = org.sessions.get_context_by_session(session_id)
+    if context is not None:
+        verified_org, task_id, agent_name = context
+        # Cross-check: the path-selected org MUST match the session's org.
+        # This prevents caller-controlled org routing from determining the
+        # persistence org independently of the opaque session context.
+        if verified_org != slug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "cross_org_session",
+                    "detail": f"Session {session_id} belongs to org '{verified_org}', "
+                              f"not '{slug}'. Org is derived from the server's "
+                              "verified session context, not caller-selected path.",
+                },
+            )
+    else:
+        # No org context for this session. Check whether the session
+        # exists at all (active but without context) or is truly unknown.
+        resolved = org.sessions.get_by_session(session_id)
+        if resolved is None:
+            # Truly unknown / inactive session
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "unknown_session",
+                    "detail": f"No active session found for session_id '{session_id}'. "
+                              "The session may be inactive, expired, or never existed.",
+                },
+            )
+        # Session exists but missing org context — deny before any policy
+        # check or artifact write. The agent-only route requires a current,
+        # context-bearing session whose server-owned context supplies all
+        # four dimensions (org, task, agent, session).
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "missing_org_context",
+                "detail": f"Session {session_id} has no org context. "
+                          "The agent-only proposal route requires a context-bearing "
+                          "active session with all four dimensions (org, task, agent, session). "
+                          "Use set_active with org_slug to establish context.",
+            },
+        )
+
+    # Step 2 (test seam): pre-lease barrier — pause BEFORE the
+    # per-binding lease is acquired so terminal-wins concurrency
+    # tests can drive clear()/set_active() to completion while
+    # the route is still in its initial resolution phase.
+    pre_lease = org.sessions._pre_lease_barrier
+    if pre_lease is not None:
+        reached = org.sessions._pre_lease_barrier_reached
+        if reached is not None:
+            reached.set()
+        pre_lease.wait()
+
+    # Step 3: Acquire the per-binding lease for the resolved
+    # (task_id, agent_name) to linearize authorization + persistence
+    # against concurrent clear()/set_active() on the SAME binding.
+    # Unrelated bindings are NOT blocked — each (task_id, agent) pair
+    # has its own independent Lock.
+    binding_lease = org.sessions._get_binding_lease(task_id, agent_name)
+    with binding_lease:
+        # Step 3a: Under the binding lease, re-verify the session is
+        # still CURRENTLY active for the (task_id, agent_name) binding.
+        # This catches concurrent clear()/set_active() that won the
+        # race before the lease was acquired (Step 3).
+        expected_session = org.sessions.get_active(task_id, agent_name)
+        if expected_session != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "session_not_current",
+                    "detail": f"Session {session_id} is not the current active session "
+                              f"for task {task_id} agent {agent_name}. "
+                              "The session may have been cleared, superseded, or revoked.",
+                },
+            )
+
+        # Step 3b: Enforce agent-id × canonical-slug policy BEFORE any
+        # artifact/ledger write.
+        _enforce_agent_pilot_policy(agent_name, body.slug)
+
+        # Step 3c (test seam): post-authorization barrier — pause
+        # AFTER session revalidation + policy enforcement but BEFORE
+        # persistence.  Tests use this to prove proposal-wins
+        # interleavings: an already-authorized proposal is held
+        # pending, same-binding terminal mutations demonstrably block,
+        # and exactly one immutable proposal commits on release.
+        barrier = org.sessions._proposal_barrier
+        if barrier is not None:
+            # Signal that the route has reached the barrier.
+            reached = org.sessions._barrier_reached
+            if reached is not None:
+                reached.set()
+            barrier.wait()
+
+        try:
+            protected_slugs = _get_protected_slugs(org)
+            pkg = _service.submit_proposal(
+                db=_get_db(org),
+                actor_kind="agent",
+                slug=body.slug,
+                name=body.name,
+                description=body.description,
+                skill_md=body.skill_md,
+                version=body.version,
+                policy_class=body.policy_class,
+                references=body.references,
+                assets=body.assets,
+                task_id=task_id,
+                session_id=session_id,
+                proposer_agent=agent_name,
+                purpose=body.purpose,
+                target_agent_suggestion=body.target_agent_suggestion,
+                protected_slugs=protected_slugs,
+                org_root=org.root,
+            )
+        except LifecycleError as e:
+            raise HTTPException(
+                status_code=e.status_code,
+                detail={"code": e.code, "detail": e.detail},
+            )
+
+    return {
+        "skill_id": pkg.skill_id,
+        "version_id": pkg.id,
+        "version": pkg.version,
+        "status": pkg.status.value,
+        "content_hash": pkg.content_hash,
+        "content_artifact_key": pkg.content_artifact_key,
+        "proposal_task_id": pkg.proposal_task_id,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Dual-auth routes (bearer OR session-binding)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -187,26 +454,33 @@ def submit_proposal(
     org: OrgDep,
     body: ProposalRequest,
     request: Request,
-    task_id: str | None = Query(None),
-    session_id: str | None = Query(None),
-    agent_name: str | None = Query(None),
     has_bearer: bool = Depends(_check_optional_token),
 ) -> dict:
     """Submit a skill proposal.
 
-    **Dual-auth.** Agent callers submit via verified task/session binding
-    (query params ``task_id``, ``session_id``, ``agent_name``). Human/founder
-    callers use the master bearer token.
+    **Human-only.** This route requires the master bearer token.
+    Agent callers MUST use the dedicated agent-only route:
+    POST /skill-lifecycle/proposals/agent (opaque session-binding, no bearer).
 
-    Body claims for task_id, session_id, proposer_agent are IGNORED —
-    only verified session binding (agent path) or bearer token (human path)
-    is trusted.
-
-    Agent path returns 403 for inactive, expired, or mismatched bindings.
+    Agent callers to this route receive 403 — the legacy dual-auth path
+    has been closed to prevent policy bypass.
     """
-    actor_kind, actor_name = _verify_agent_proposal_identity(
-        org, task_id, session_id, agent_name, has_bearer,
-    )
+    # Close the legacy dual-auth bypass: non-bearer callers must use the
+    # dedicated /proposals/agent endpoint which enforces the fixed pilot
+    # policy BEFORE any artifact/ledger write.
+    if not has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "human_only",
+                "detail": "Agent proposals must use the dedicated agent-only route: "
+                          "POST /skill-lifecycle/proposals/agent. This legacy "
+                          "dual-auth route is restricted to human/founder callers.",
+            },
+        )
+
+    actor_kind = "human"
+    actor_name = "founder"
 
     try:
         protected_slugs = _get_protected_slugs(org)
@@ -221,9 +495,9 @@ def submit_proposal(
             policy_class=body.policy_class,
             references=body.references,
             assets=body.assets,
-            task_id=task_id,
-            session_id=session_id,
-            proposer_agent=agent_name,
+            task_id=None,
+            session_id=None,
+            proposer_agent=None,
             purpose=body.purpose,
             target_agent_suggestion=body.target_agent_suggestion,
             protected_slugs=protected_slugs,

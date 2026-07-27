@@ -794,7 +794,7 @@ class Orchestrator:
         )
 
         if self._sessions is not None:
-            self._sessions.set_active(task_id, agent_name, session_id)
+            self._sessions.set_active(task_id, agent_name, session_id, org_slug=self._slug)
         if on_session_started is not None:
             on_session_started(task_id, agent_name, session_id)
 

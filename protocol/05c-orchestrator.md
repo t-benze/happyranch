@@ -735,66 +735,95 @@ replacing the legacy per-org filesystem store (`<org_root>/skills/`).
 → published → assigned`. `rolled_back` and `retired` are terminal re-assignment
 states. `legacy_quarantined` marks pre-lifecycle data that is read-only.
 
-**Agent authority.** Agents may submit only their own task/session-bound
-proposal via `POST /skill-lifecycle/proposals` (dual-auth route: agent with
-verified SessionTracker binding, or founder via master bearer). All other
-lifecycle mutations (claim, validate, review, publish, assign, rollback, retire)
-are founder-only and gated behind bearer-only routes with `require_token()`. An
-agent attempting any non-proposal mutation receives server-side 403.
+**Agent authority.** Agents may submit proposals ONLY through the dedicated
+agent-only route. The legacy dual-auth path is human/founder-only:
 
-**Agent CLI delivery contract (THR-055 follow-up — `happyranch skills propose`).**
-The proposal endpoint is reachable from agent sessions through a narrow,
-bearer-free CLI command:
+1. **Opaque session CLI (THR-055 seq 127 corrective).** The single safe agent
+   authoring workflow: ``happyranch skills propose --from-file <proposal.json>
+   --session-id <session-id> [--org <slug>]``. The proposal file contains only
+   package metadata/content accepted by ``ProposalRequest`` (slug, name,
+   description, skill_md, version, policy_class, references, assets, purpose,
+   target_agent_suggestion). It must NOT contain any client-controlled
+   trusted identity/authority field: ``org``, ``org_slug``, ``agent``,
+   ``agent_name``, ``task_id``, ``session_id``, ``proposer_agent``,
+   ``actor``, ``eligibility``, ``permission``, or ``permissions``.
+   The CLI builds a
+   token-free transport (no bearer token read or sent) using only the daemon
+   port. It resolves org via the established ``resolve_org_slug(args_org=,
+   available=)`` convention. The opaque session ID is sent to
+   ``POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent``, which does NOT
+   accept the master bearer token. The server independently derives all four
+   identity dimensions (org_slug, task_id, agent_name, active session_id) from
+   the SessionTracker's additive context index — never from body, query,
+   environment, task lookup by agent, team membership, or client-asserted
+   identity. The server rejects the **presence** of every client-controlled
+   trusted identity/authority field in the direct HTTP body — ``task_id``,
+   ``session_id``, ``proposer_agent``, ``org``, ``org_slug``, ``agent``,
+   ``agent_name``, ``actor``, ``eligibility``, ``permission``, and
+   ``permissions`` — before request-model parsing, session lookup, policy
+   checks, or any persistence. Presence includes empty values. Rejection
+   returns exact HTTP 403 with error code ``body_identity_rejected``; no
+   lifecycle package, event, materialization, or ArtifactStore residue is
+   produced. Path-selected org is cross-checked against the session's
+   org; cross-org and mismatched contexts are denied.
 
-```bash
-happyranch skills propose \
-  --from-file /tmp/skill-proposal.json \
-  --org happyranch \
-  --task-id TASK-3510 \
-  --session-id sess-abc123 \
-  --agent dev_agent
-```
+2. **Legacy route (human/founder only).** ``POST /skill-lifecycle/proposals``
+   is restricted to bearer-authenticated human/founder callers. Non-bearer
+   (agent) callers receive 403 directing them to the dedicated
+   ``/proposals/agent`` endpoint. The legacy dual-auth bypass has been closed.
 
-**Identity binding.** ``task_id``, ``session_id``, and agent name are carried
-ONLY as CLI flags (transmitted as query parameters to the daemon route). The
-``--from-file`` JSON body MUST NOT contain any identity or actor-binding
-keys — including ``task_id``, ``session_id``, ``proposer_agent``, and
-``agent_name``. The CLI uses a package-field allow-list derived from
-``ProposalRequest`` and rejects any unrecognized key locally before any HTTP
-call. Identity is verified server-side via the in-memory ``SessionTracker``
-binding; there is NO Authorization header or bearer token on the HTTP request.
+**Agent-id × canonical-slug pilot policy.** The agent-only route enforces a fixed
+server-side policy BEFORE any artifact creation or ledger/event write:
 
-**Payload contract.** ``--from-file`` must be an absolute path to a JSON file
-containing exactly the package-content fields understood by ``ProposalRequest``:
-``slug``, ``name``, ``description``, ``version``, ``policy_class``, ``skill_md``,
-``purpose``, ``target_agent_suggestion``, and optional ``references`` / ``assets``.
+| Agent | Allowed slug |
+| --- | --- |
+| ``frontend_engineer`` | ``frontend-development`` |
+| ``product_lead`` | ``product-manager-prd`` (lowercase; canonical spelling from "product-manager-PRD") |
 
-**Error handling.** Malformed JSON, missing flags, relative ``--from-file``,
-and body identity-key attacks fail locally with exit code 1 or 2 and a
-human-readable message. Lifecycle validation errors (4xx/422) from the daemon
-are rendered as ``error: [<code>] <detail>`` — the structured ``code`` +
-``detail`` fields from the lifecycle error response, never raw HTTP JSON or
-tracebacks. On success the CLI prints status, skill_id, version_id, version,
-and content_hash.
+Every other agent is denied (403). Either permitted agent with the wrong slug
+is denied (403). This fixed map does NOT inspect team membership, prompts, org
+config/YAML eligibility, request metadata, or body identity claims.
 
-**No-bearer transport.** The CLI uses a dedicated ``SessionProposalTransport``
-that reads ONLY the daemon port from ``~/.happyranch/daemon.port`` and creates
-a plain ``httpx.Client`` with NO ``Authorization`` header. It is deliberately
-scoped to ONLY the proposal POST path — it does not use ``OpcClient.from_env()``
-and cannot call any other daemon route. Agents that need this command MUST have
-their task brief explicitly authorize it (the pilot gate is "only when a task
-explicitly authorizes a THR-055 pilot proposal").
+All other lifecycle mutations (claim, draft edit/fork/edit, validate,
+submit-review, review, publish, assign, retire, rollback, and any eligibility/
+permission/config mutation surface reachable from this API) return server-side
+403 for agent invocations. No agent route may gain an alternate mutation method.
+Human/founder lifecycle authority remains as merged.
 
-**Founder-only follow-up.** After submission, the proposal enters the lifecycle
-at ``proposed`` status. All subsequent lifecycle actions (claim → draft,
-validate, submit-review, review, publish, assign, rollback, retire) remain
-founder-only and are NOT reachable through this CLI. The founder reviews and
-approves proposals through the existing bearer-gated lifecycle routes.
+**Proposal submission CLI (corrected — opaque session only).** The agent
+submission workflow is described in §4.5 "Agent authority" above. The single
+shipping CLI form is::
 
-**Pilot constraints (founder-approved):** maximum two concurrently published
-custom skills; `standard_operational` policy class only; two internal use cases
-(frontend-development, product-manager PRD); founder-only review/publish/
-assignment/retire/rollback.
+    happyranch skills propose --from-file <proposal.json> \
+      --session-id <session-id> [--org <slug>]
+
+There are no ``--task-id``, ``--agent``, or ``SessionProposalTransport`` flags
+or mechanisms. Identity is derived server-side exclusively from the verified
+SessionTracker context — never from CLI flags, query fields, body claims,
+namespace inspection, or client-asserted identity. The transport is
+bearer-free: the CLI reads only the daemon port and builds a plain
+``httpx.Client`` with NO ``Authorization`` header. Callers cannot supply
+trusted identity; body identity claims (presence of all eleven
+prohibited trusted keys, including empty values) are rejected with exact
+HTTP 403 ``body_identity_rejected`` before any persistence — see §4.5
+Agent authority.
+
+Malformed JSON, missing ``--from-file`` or ``--session-id`` flags, and body
+identity-key attacks fail locally with exit code 1 or 2. Lifecycle validation
+errors (4xx/422) from the daemon are rendered as ``error (<HTTP-status>): <detail>``
+and exit with code 1, where ``<HTTP-status>`` is the HTTP response status code
+and ``<detail>`` is the ``detail`` field from the daemon's JSON error response body.
+The CLI unconditionally reads the response as JSON — non-JSON responses raise
+before the renderer. On success the CLI prints status, skill_id, version_id,
+version, and content_hash.
+
+After submission, the proposal enters the lifecycle at ``proposed`` status. All
+subsequent actions remain founder-only (§4.5). Pilot constraints are unchanged:
+maximum two concurrently published custom skills, ``standard_operational``
+policy class only, two internal use cases (frontend-development,
+product-manager-prd). Proposals are immutable and task/session-provenanced with
+content excluded from catalog/effective resolution/materialization until
+founder publication.
 
 **Immutable artifact retention.** All package members (SKILL.md, each
 reference file, each asset) are stored as independent content-addressed
