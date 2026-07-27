@@ -24,7 +24,12 @@ class SessionTracker:
 
     def set_active(self, task_id: str, agent: str, session_id: str, *, org_slug: str | None = None) -> None:
         with self._lock:
+            old_session_id = self._active.get((task_id, agent))
             self._active[(task_id, agent)] = session_id
+            if old_session_id is not None and old_session_id != session_id:
+                # Invalidate the superseded session's context so stale
+                # opaque capabilities cannot create proposals.
+                self._context_by_session.pop(old_session_id, None)
             if org_slug is not None:
                 self._context_by_session[session_id] = (org_slug, task_id, agent)
 
@@ -91,5 +96,9 @@ class SessionTracker:
 
     def clear(self, task_id: str, agent: str) -> None:
         with self._lock:
-            self._active.pop((task_id, agent), None)
+            old_session_id = self._active.pop((task_id, agent), None)
             self._pids.pop((task_id, agent), None)
+            if old_session_id is not None:
+                # Invalidate the cleared session's context so completed/
+                # cancelled/revoked opaque capabilities cannot create proposals.
+                self._context_by_session.pop(old_session_id, None)

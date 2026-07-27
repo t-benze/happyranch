@@ -2371,3 +2371,284 @@ class TestCLIShippingSeam:
         finally:
             from pathlib import Path
             Path(proposal_path).unlink(missing_ok=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TASK-3531 fix-forward: clear/replacement invalidates stale opaque
+# capabilities — no artifact/ledger residue from revoked sessions
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestSessionClearRevocation:
+    """Regression: completed/cancelled/revoked or superseded opaque
+    capabilities MUST be denied with 403, with no artifact or ledger residue.
+    """
+
+    def test_cleared_session_proposal_403(self, app, org_state):
+        """After clear() (completion/cancellation-equivalent), an agent
+        proposal with that session_id returns 403 — the capability is revoked."""
+        org_state.sessions.set_active(
+            "TASK-CLR-1", "frontend_engineer", "sess-clr-001",
+            org_slug="alpha",
+        )
+        org_state.sessions.clear("TASK-CLR-1", "frontend_engineer")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-clr-001"},
+        )
+        assert r.status_code == 403, (
+            f"Cleared session must be denied, got {r.status_code}: {r.json()}"
+        )
+
+    def test_cleared_session_no_artifact_residue(self, app, org_state):
+        """After clear(), the denied proposal leaves no artifact or ledger residue."""
+        org_state.sessions.set_active(
+            "TASK-CLR-2", "frontend_engineer", "sess-clr-002",
+            org_slug="alpha",
+        )
+        org_state.sessions.clear("TASK-CLR-2", "frontend_engineer")
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-clr-002"},
+        )
+        assert r.status_code == 403
+
+        # Verify no ledger residue
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:frontend-development",
+        )
+        assert pkg is None, (
+            "Cleared session must leave no artifact/ledger residue"
+        )
+
+    def test_replaced_session_old_id_403(self, app, org_state):
+        """When a session is replaced (new set_active for same task/agent),
+        the old session_id returns 403 — the capability is superseded."""
+        org_state.sessions.set_active(
+            "TASK-REP-1", "frontend_engineer", "sess-old",
+            org_slug="alpha",
+        )
+        org_state.sessions.set_active(
+            "TASK-REP-1", "frontend_engineer", "sess-new",
+            org_slug="alpha",
+        )
+        client = TestClient(app)
+
+        # Old session must be denied
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-old"},
+        )
+        assert r.status_code == 403, (
+            f"Superseded session must be denied, got {r.status_code}: {r.json()}"
+        )
+
+    def test_replaced_session_old_id_no_residue(self, app, org_state):
+        """Superseded session leaves no artifact/ledger residue."""
+        org_state.sessions.set_active(
+            "TASK-REP-2", "frontend_engineer", "sess-old2",
+            org_slug="alpha",
+        )
+        org_state.sessions.set_active(
+            "TASK-REP-2", "frontend_engineer", "sess-new2",
+            org_slug="alpha",
+        )
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-old2"},
+        )
+        assert r.status_code == 403
+
+        from runtime.skills.lifecycle import stores as lifecycle_stores
+        pkg = lifecycle_stores.get_latest_package_version(
+            org_state.db, "hr:frontend-development",
+        )
+        assert pkg is None, (
+            "Superseded session must leave no artifact/ledger residue"
+        )
+
+    def test_replaced_session_current_id_still_works(self, app, org_state):
+        """The current (new) replacement session must still accept proposals."""
+        org_state.sessions.set_active(
+            "TASK-REP-3", "frontend_engineer", "sess-old3",
+            org_slug="alpha",
+        )
+        org_state.sessions.set_active(
+            "TASK-REP-3", "frontend_engineer", "sess-new3",
+            org_slug="alpha",
+        )
+        client = TestClient(app)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-new3"},
+        )
+        assert r.status_code == 201, (
+            f"Current replacement session must work, got {r.status_code}: {r.json()}"
+        )
+        data = r.json()
+        assert data["proposal_task_id"] == "TASK-REP-3"
+        assert data["skill_id"] == "hr:frontend-development"
+
+    def test_both_permitted_maps_retained_after_fix(self, app, org_state):
+        """Both frontend_engineer→frontend-development and
+        product_lead→product-manager-prd still work after the fix."""
+        # frontend_engineer
+        org_state.sessions.set_active(
+            "TASK-BPM-1", "frontend_engineer", "sess-bpm-fe",
+            org_slug="alpha",
+        )
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-bpm-fe"},
+        )
+        assert r.status_code == 201, f"frontend_engineer got {r.status_code}"
+
+        # product_lead
+        org_state.sessions.set_active(
+            "TASK-BPM-2", "product_lead", "sess-bpm-pl",
+            org_slug="alpha",
+        )
+        r2 = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json={
+                **AGENT_PROPOSAL_BODY,
+                "slug": "product-manager-prd",
+                "name": "Product Manager PRD",
+            },
+            params={"session_id": "sess-bpm-pl"},
+        )
+        assert r2.status_code == 201, f"product_lead got {r2.status_code}"
+
+    def test_all_wrong_slug_branches_retained(self, app, org_state):
+        """Wrong-slug denials still work: frontend_engineer with
+        product-manager-prd, and product_lead with frontend-development."""
+        # frontend_engineer with product-manager-prd
+        org_state.sessions.set_active(
+            "TASK-WS-1", "frontend_engineer", "sess-ws-fe",
+            org_slug="alpha",
+        )
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json={**AGENT_PROPOSAL_BODY, "slug": "product-manager-prd"},
+            params={"session_id": "sess-ws-fe"},
+        )
+        assert r.status_code == 403
+        assert "slug_not_allowed_for_agent" in r.json()["detail"].get("code", "")
+
+        # product_lead with frontend-development
+        org_state.sessions.set_active(
+            "TASK-WS-2", "product_lead", "sess-ws-pl",
+            org_slug="alpha",
+        )
+        r2 = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,  # slug=frontend-development
+            params={"session_id": "sess-ws-pl"},
+        )
+        assert r2.status_code == 403
+        assert "slug_not_allowed_for_agent" in r2.json()["detail"].get("code", "")
+
+    def test_non_pilot_denials_retained(self, app, org_state):
+        """Non-pilot agents still denied after fix."""
+        org_state.sessions.set_active(
+            "TASK-NP-1", "dev_agent", "sess-np-001",
+            org_slug="alpha",
+        )
+        client = TestClient(app)
+
+        # With a pilot slug
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,  # slug=frontend-development
+            params={"session_id": "sess-np-001"},
+        )
+        assert r.status_code == 403
+        assert "not in the custom-skill pilot" in r.json()["detail"].get("detail", "")
+
+        # With the other slug
+        r2 = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json={**AGENT_PROPOSAL_BODY, "slug": "product-manager-prd"},
+            params={"session_id": "sess-np-001"},
+        )
+        assert r2.status_code == 403
+
+    def test_cross_org_denial_retained(self, app, org_state):
+        """Cross-org session context denial still works."""
+        org_state.sessions.set_active(
+            "TASK-CO-1", "frontend_engineer", "sess-co-001",
+            org_slug="alpha",
+        )
+        client = TestClient(app)
+
+        # Correct org works
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-co-001"},
+        )
+        assert r.status_code == 201, f"Correct org should work: {r.status_code}"
+
+    def test_unknown_session_denial_retained(self, app, org_state):
+        """Unknown/inactive/ambiguous session denial still works."""
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-noexist"},
+        )
+        assert r.status_code == 403
+
+    def test_legacy_route_403_retained(self, app, org_state):
+        """Legacy dual-auth route still returns 403 for agent callers."""
+        org_state.sessions.set_active(
+            "TASK-LR-1", "frontend_engineer", "sess-lr-001",
+            org_slug="alpha",
+        )
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals",
+            params={
+                "task_id": "TASK-LR-1",
+                "session_id": "sess-lr-001",
+                "agent_name": "frontend_engineer",
+            },
+            json=AGENT_PROPOSAL_BODY,
+        )
+        assert r.status_code == 403
+        assert r.json()["detail"]["code"] == "human_only"
+
+    def test_catalog_exclusion_retained(self, app, org_state):
+        """Proposed skills remain invisible in catalog."""
+        org_state.sessions.set_active(
+            "TASK-CAT-1", "frontend_engineer", "sess-cat-001",
+            org_slug="alpha",
+        )
+        client = TestClient(app)
+        r = client.post(
+            "/api/v1/orgs/alpha/skill-lifecycle/proposals/agent",
+            json=AGENT_PROPOSAL_BODY,
+            params={"session_id": "sess-cat-001"},
+        )
+        assert r.status_code == 201
+
+        r2 = client.get("/api/v1/orgs/alpha/skill-lifecycle/catalog/custom")
+        assert r2.status_code == 200
+        skills = r2.json()["skills"]
+        skill_ids = [s["skill_id"] for s in skills]
+        assert "hr:frontend-development" not in skill_ids

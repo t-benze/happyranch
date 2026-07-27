@@ -317,6 +317,22 @@ def submit_proposal_agent_only(
                               "verified session context, not caller-selected path.",
                 },
             )
+        # Defense-in-depth: re-verify the session is still CURRENTLY active
+        # for the (task_id, agent_name) binding.  This proves the opaque
+        # capability still owns the active binding before policy evaluation
+        # or persistence — completed/cancelled/revoked or superseded sessions
+        # are denied even if a residual context entry exists.
+        expected_session = org.sessions.get_active(task_id, agent_name)
+        if expected_session != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "session_not_current",
+                    "detail": f"Session {session_id} is not the current active session "
+                              f"for task {task_id} agent {agent_name}. "
+                              "The session may have been cleared, superseded, or revoked.",
+                },
+            )
     else:
         # Legacy fallback: session was activated without org context.
         # Still derive (task_id, agent_name) but org is caller-selected.
