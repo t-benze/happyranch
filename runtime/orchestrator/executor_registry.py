@@ -333,6 +333,45 @@ class ExecutorRegistry:
         del self._profiles[key]
         return True
 
+    def replace_custom_profile(self, profile: ExecutorProfile) -> bool:
+        """Atomically replace an existing custom profile with a new definition.
+
+        D7A atomic-replacement seam (TASK-3558): the single dict assignment
+        ``self._profiles[key] = profile`` ensures any concurrent reader
+        (``get_profile`` / ``build_executor``) observes either the complete
+        old profile or the complete new profile — never absent. This
+        eliminates the unregister-pause-register gap that the per-profile-name
+        registration lock did not cover (executor launches do not acquire
+        that lock).
+
+        Returns True when an existing custom profile was replaced, False when
+        ``profile.name`` is not registered (the profile is registered fresh
+        instead).
+
+        Raises:
+            ValueError: if ``profile.name`` collides with a built-in or if
+                ``argv_template`` is invalid.
+        """
+        key = profile.name.lower()
+        existing = self._profiles.get(key)
+        if existing is not None and existing.kind == "builtin":
+            raise ValueError(
+                f"Cannot replace built-in executor profile {profile.name!r}"
+            )
+        # Validate argv_template for custom profiles (same as register_custom_profile)
+        if profile.kind != "builtin":
+            if profile.argv_template is None:
+                raise ValueError(
+                    f"Custom profile {profile.name!r} requires argv_template"
+                )
+            errors = validate_argv_template(profile.argv_template)
+            if errors:
+                raise ValueError(
+                    f"Invalid argv_template for {profile.name!r}: {'; '.join(errors)}"
+                )
+        self._profiles[key] = profile
+        return existing is not None
+
     @classmethod
     def validate_custom_profile_config(
         cls, name: str, cfg: dict

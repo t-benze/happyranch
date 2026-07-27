@@ -709,24 +709,18 @@ def register_executor(
             )
 
         # 9. In-memory: register the profile in the process-wide registry.
-        #    For authorized legacy→strict replacement (TASK-3552): unregister
-        #    the old profile first so that register_custom_profile does not
-        #    raise ExecutorProfileCollisionError on the envelope_policy change.
-        #    Both unregister + register happen inside the per-profile-name lock,
-        #    so no concurrent registration can observe the gap.
-        if (
-            registry.is_registered(profile_name)
-            and existing_inside is not None
-            and _allow_legacy_to_strict_replacement(existing_inside, candidate)
-        ):
-            registry.unregister_custom_profile(profile_name)
+        #    D7A atomic-replacement seam (TASK-3558): use replace_custom_profile
+        #    to atomically swap the legacy profile for the strict definition
+        #    in a single dict assignment.  Concurrent readers (build_executor,
+        #    get_profile) observe either the complete legacy profile or the
+        #    complete strict profile — never absent.
+        #    For authorized legacy→strict replacement the replace is always
+        #    applied (the double-check already confirmed the transition is
+        #    authorized); for idempotent same-profile re-registration it is
+        #    a no-op; for first-time registration, replace_custom_profile
+        #    registers fresh.
         try:
-            registry.register_custom_profile(candidate)
-        except ExecutorProfileCollisionError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Profile collision: {exc}",
-            )
+            registry.replace_custom_profile(candidate)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1017,25 +1011,19 @@ def runtime_register_executor(
                 detail=f"Runtime profile write error: {exc}",
             )
 
-        # 8. In-memory: register the profile.
-        #    For authorized legacy→strict replacement (TASK-3552): unregister
-        #    the old profile first so that register_custom_profile does not
-        #    raise ExecutorProfileCollisionError on the envelope_policy change.
-        #    Both unregister + register happen inside the per-profile-name lock,
-        #    so no concurrent registration can observe the gap.
-        if (
-            registry.is_registered(profile_name)
-            and existing_inside is not None
-            and _allow_legacy_to_strict_replacement(existing_inside, candidate)
-        ):
-            registry.unregister_custom_profile(profile_name)
+        # 8. In-memory: register the profile in the process-wide registry.
+        #    D7A atomic-replacement seam (TASK-3558): use replace_custom_profile
+        #    to atomically swap the legacy profile for the strict definition
+        #    in a single dict assignment.  Concurrent readers (build_executor,
+        #    get_profile) observe either the complete legacy profile or the
+        #    complete strict profile — never absent.
+        #    For authorized legacy→strict replacement the replace is always
+        #    applied (the double-check already confirmed the transition is
+        #    authorized); for idempotent same-profile re-registration it is
+        #    a no-op; for first-time registration, replace_custom_profile
+        #    registers fresh.
         try:
-            registry.register_custom_profile(candidate)
-        except ExecutorProfileCollisionError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Profile collision: {exc}",
-            )
+            registry.replace_custom_profile(candidate)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

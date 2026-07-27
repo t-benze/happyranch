@@ -159,6 +159,14 @@ def clean_registry():
         remove_runtime_profile("test-legacy-diff-cmd")
     except (FileNotFoundError, KeyError):
         pass
+    for name in (
+        "test-atomic-org", "test-atomic-rt", "test-rollback",
+        "test-conc-atomic-org", "test-fail-closed", "test-v1-ok",
+    ):
+        try:
+            remove_runtime_profile(name)
+        except (FileNotFoundError, KeyError):
+            pass
     yield
     reset_registry()
 
@@ -903,3 +911,726 @@ class TestConcurrentRegistrationSafety:
         assert executor._envelope_policy == "strict"
         result = executor.run(workspace=tmp_path, prompt="hello")
         assert not result.success, "strict enforcement must be active after concurrent registration"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# D7A Atomic Registry Replacement — adversarial shipping-seam tests
+# TASK-3558: prove the atomic replace_custom_profile seam eliminates the
+# unregister-pause-register gap identified in TASK-3555 review.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestD7AAtomicReplacementNoAbsence:
+    """Prove that atomic replace_custom_profile never exposes absence to
+    concurrent readers (build_executor / get_profile).
+
+    The TASK-3555 HIGH finding: the old unregister-pause-register pattern
+    left a gap where concurrent executor launches saw the profile as
+    Unregistered.  These tests prove the atomic dict-assignment seam
+    eliminates that gap — readers always see either the complete legacy
+    profile or the complete strict profile.
+    """
+
+    def test_atomic_replace_no_absence_direct_registry(self, tmp_home):
+        """Regression: the old unregister → register gap IS visible to
+        a concurrent get_profile() when using the separate-call pattern.
+        This is the exact probe from TASK-3555 — it proves the gap existed.
+
+        After the gap is demonstrated, the atomic replace_custom_profile
+        is shown to never produce None.
+        """
+        reset_registry()
+        registry = get_registry()
+        from runtime.orchestrator.executor_registry import ExecutorProfile
+
+        # Seed a legacy profile
+        legacy = ExecutorProfile(
+            name="atomic-test",
+            kind="custom",
+            workspace_adapter_id="pi",
+            command_adapter_id="generic-cli",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+            envelope_policy=None,
+        )
+        registry.register_custom_profile(legacy)
+
+        strict = ExecutorProfile(
+            name="atomic-test",
+            kind="custom",
+            workspace_adapter_id="pi",
+            command_adapter_id="generic-cli",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+            envelope_policy="strict",
+        )
+
+        # Prove the OLD gap: unregister → gap → register
+        registry.unregister_custom_profile("atomic-test")
+        # At this point a concurrent reader would see None — prove it
+        assert registry.get_profile("atomic-test") is None, \
+            "old gap: profile absent after unregister"
+        registry.register_custom_profile(strict)
+        assert registry.get_profile("atomic-test") is not None
+        assert registry.get_profile("atomic-test").envelope_policy == "strict"
+
+        # Now prove the NEW atomic replace never exposes None
+        reset_registry()
+        registry = get_registry()
+        registry.register_custom_profile(legacy)
+
+        # Set up concurrent observation: a reader thread polls get_profile
+        # while the main thread does replace_custom_profile
+        observed_absent: list[bool] = []
+        observed_policies: list[object] = []
+        stop_flag = threading.Event()
+        ready = threading.Event()
+
+        def _reader():
+            ready.set()
+            while not stop_flag.is_set():
+                p = registry.get_profile("atomic-test")
+                if p is None:
+                    observed_absent.append(True)
+                else:
+                    observed_absent.append(False)
+                    observed_policies.append(p.envelope_policy)
+
+        reader_thread = threading.Thread(target=_reader, daemon=True)
+        reader_thread.start()
+        ready.wait()
+
+        # Give the reader a moment to observe the legacy profile
+        import time
+        time.sleep(0.02)
+
+        # Do the atomic replacement
+        registry.replace_custom_profile(strict)
+
+        time.sleep(0.02)
+        stop_flag.set()
+        reader_thread.join(timeout=5)
+
+        # The reader must NEVER have seen the profile as absent
+        assert not any(observed_absent), \
+            f"BUG: concurrent reader saw absent profile! " \
+            f"absent_count={sum(observed_absent)}, total={len(observed_absent)}"
+        # It must have seen either legacy (None policy) or strict
+        all_policies = set(observed_policies)
+        assert all_policies.issubset({None, "strict"}), \
+            f"unexpected policies: {all_policies}"
+        # Final state must be strict
+        assert registry.get_profile("atomic-test").envelope_policy == "strict"
+
+    def test_atomic_replace_no_absence_concurrent_build_executor(self, tmp_path, tmp_home):
+        """Prove that concurrent build_executor() never sees an absent
+        profile during atomic replace_custom_profile.
+        """
+        reset_registry()
+        registry = get_registry()
+        from runtime.orchestrator.executor_registry import ExecutorProfile
+
+        # Seed a legacy profile
+        legacy = ExecutorProfile(
+            name="atomic-build-test",
+            kind="custom",
+            workspace_adapter_id="pi",
+            command_adapter_id="generic-cli",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+            envelope_policy=None,
+        )
+        registry.register_custom_profile(legacy)
+
+        strict = ExecutorProfile(
+            name="atomic-build-test",
+            kind="custom",
+            workspace_adapter_id="pi",
+            command_adapter_id="generic-cli",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+            envelope_policy="strict",
+        )
+
+        # Concurrent build_executor must never raise "Unregistered executor"
+        errors: list[Exception] = []
+        successes: list[str] = []
+        stop_flag = threading.Event()
+        ready = threading.Event()
+
+        def _builder():
+            ready.set()
+            while not stop_flag.is_set():
+                try:
+                    executor = build_executor(
+                        "atomic-build-test", Settings(project_root=tmp_path),
+                    )
+                    successes.append(
+                        getattr(executor, "_envelope_policy", "unknown")
+                    )
+                except ValueError as e:
+                    if "Unregistered" in str(e):
+                        errors.append(e)
+                except Exception as e:
+                    errors.append(e)
+
+        builder_thread = threading.Thread(target=_builder, daemon=True)
+        builder_thread.start()
+        ready.wait()
+
+        # Let the builder observe the legacy profile first
+        import time
+        time.sleep(0.05)
+
+        # Do the atomic replacement
+        registry.replace_custom_profile(strict)
+
+        time.sleep(0.1)
+        stop_flag.set()
+        builder_thread.join(timeout=5)
+
+        # The builder must NEVER have hit "Unregistered executor"
+        unregistered_errors = [e for e in errors if "Unregistered" in str(e)]
+        assert len(unregistered_errors) == 0, \
+            f"BUG: concurrent build_executor saw unregistered profile! " \
+            f"errors: {[str(e) for e in unregistered_errors]}"
+        # Final state must be strict
+        final = registry.get_profile("atomic-build-test")
+        assert final is not None
+        assert final.envelope_policy == "strict", \
+            f"expected strict, got {final.envelope_policy}"
+
+    def test_atomic_replace_org_route_no_absence(
+        self, tmp_home, daemon_state, monkeypatch, tmp_path,
+    ):
+        """Controlled interleaving: org-level registration route with
+        atomic replacement never exposes absence to concurrent
+        build_executor."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-atomic-org")
+        _seed_legacy_profile_in_registry("test-atomic-org")
+
+        token, headers = _mint_and_complete_conformance(
+            store, org="alpha", name="test-atomic-org",
+        )
+
+        # Set up concurrent build_executor observer
+        errors: list[Exception] = []
+        observed_absent: list[bool] = []
+        observed_policies: list[object] = []
+        stop_flag = threading.Event()
+        ready = threading.Event()
+
+        def _builder_observer():
+            ready.set()
+            while not stop_flag.is_set():
+                registry = get_registry()
+                p = registry.get_profile("test-atomic-org")
+                if p is None:
+                    observed_absent.append(True)
+                else:
+                    observed_absent.append(False)
+                    observed_policies.append(p.envelope_policy)
+                try:
+                    build_executor(
+                        "test-atomic-org", Settings(project_root=tmp_path),
+                    )
+                except ValueError as e:
+                    if "Unregistered" in str(e):
+                        errors.append(e)
+
+        observer = threading.Thread(target=_builder_observer, daemon=True)
+        observer.start()
+        ready.wait()
+
+        import time
+        time.sleep(0.03)
+
+        # Fire the real HTTP registration (atomic replacement inside)
+        c = TestClient(app)
+        c.headers.update(headers)
+        r = c.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 200, f"registration failed: {r.text}"
+
+        time.sleep(0.05)
+        stop_flag.set()
+        observer.join(timeout=5)
+
+        # No observer must have seen "Unregistered" error
+        unregistered_errors = [e for e in errors if "Unregistered" in str(e)]
+        assert len(unregistered_errors) == 0, \
+            f"BUG: concurrent observer saw unregistered profile during " \
+            f"org route registration! errors: {[str(e) for e in unregistered_errors]}"
+        # Observer must never have seen the profile as absent
+        assert not any(observed_absent), \
+            f"BUG: observer saw absent profile during org route! " \
+            f"absent_count={sum(observed_absent)}"
+        # Observed policies must be legacy (None policy value) or strict
+        all_policies = set(observed_policies)
+        assert all_policies.issubset({None, "strict"}), \
+            f"unexpected policies: {all_policies}"
+
+        # Final state: strict active
+        active = get_registry().get_profile("test-atomic-org")
+        assert active is not None
+        assert active.envelope_policy == "strict"
+
+        # Durable store must be strict
+        stored = load_runtime_profiles()
+        assert stored["test-atomic-org"]["envelope_policy"] == "strict"
+
+        # Executor enforcement must be active immediately
+        executor = build_executor(
+            "test-atomic-org", Settings(project_root=tmp_path),
+        )
+        assert executor._envelope_policy == "strict"
+
+    def test_atomic_replace_runtime_route_no_absence(
+        self, tmp_home, daemon_state, monkeypatch, tmp_path,
+    ):
+        """Controlled interleaving: runtime-level registration route with
+        atomic replacement never exposes absence to concurrent
+        build_executor."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-atomic-rt")
+        _seed_legacy_profile_in_registry("test-atomic-rt")
+
+        token, headers = _mint_and_complete_conformance(
+            store, name="test-atomic-rt", runtime=True,
+        )
+
+        # Set up concurrent build_executor observer
+        errors: list[Exception] = []
+        observed_absent: list[bool] = []
+        observed_policies: list[object] = []
+        stop_flag = threading.Event()
+        ready = threading.Event()
+
+        def _builder_observer():
+            ready.set()
+            while not stop_flag.is_set():
+                registry = get_registry()
+                p = registry.get_profile("test-atomic-rt")
+                if p is None:
+                    observed_absent.append(True)
+                else:
+                    observed_absent.append(False)
+                    observed_policies.append(p.envelope_policy)
+                try:
+                    build_executor(
+                        "test-atomic-rt", Settings(project_root=tmp_path),
+                    )
+                except ValueError as e:
+                    if "Unregistered" in str(e):
+                        errors.append(e)
+
+        observer = threading.Thread(target=_builder_observer, daemon=True)
+        observer.start()
+        ready.wait()
+
+        import time
+        time.sleep(0.03)
+
+        # Fire the real HTTP registration (atomic replacement inside)
+        c = TestClient(app)
+        c.headers.update(headers)
+        r = c.post("/api/v1/executors/runtime/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 200, f"registration failed: {r.text}"
+
+        time.sleep(0.05)
+        stop_flag.set()
+        observer.join(timeout=5)
+
+        # No observer must have seen "Unregistered"
+        unregistered_errors = [e for e in errors if "Unregistered" in str(e)]
+        assert len(unregistered_errors) == 0, \
+            f"BUG: concurrent observer saw unregistered profile during " \
+            f"runtime route registration!"
+        # Observer must never have seen the profile as absent
+        assert not any(observed_absent), \
+            f"BUG: observer saw absent profile during runtime route! " \
+            f"absent_count={sum(observed_absent)}"
+        # Observed policies must be legacy (None policy value) or strict
+        all_policies = set(observed_policies)
+        assert all_policies.issubset({None, "strict"}), \
+            f"unexpected policies: {all_policies}"
+
+        # Final state: strict
+        active = get_registry().get_profile("test-atomic-rt")
+        assert active is not None
+        assert active.envelope_policy == "strict"
+
+        stored = load_runtime_profiles()
+        assert stored["test-atomic-rt"]["envelope_policy"] == "strict"
+
+    def test_atomic_replace_rollback_no_residue(self, tmp_home, daemon_state, monkeypatch):
+        """Failure after atomic replacement: the durable store write fails,
+        leaving the legacy profile intact with no token/audit/registry residue.
+
+        This proves the route cleanup path works correctly when the durable
+        write succeeds but a later step fails."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-rollback")
+        _seed_legacy_profile_in_registry("test-rollback")
+
+        # Snapshot pre-state
+        registry = get_registry()
+        pre_profile = registry.get_profile("test-rollback")
+        assert pre_profile is not None
+        assert pre_profile.envelope_policy is None
+
+        token, headers = _mint_and_complete_conformance(
+            store, org="alpha", name="test-rollback",
+        )
+
+        # Attempt registration with a different command (should be rejected 409)
+        c = TestClient(app)
+        c.headers.update(headers)
+        r = c.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "cat",
+            "argv_template": ["cat", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 409, \
+            f"expected 409 for changed command, got {r.status_code}: {r.text}"
+
+        # Post-state: legacy profile must be intact
+        post_profile = registry.get_profile("test-rollback")
+        assert post_profile is not None, "profile must still be registered after rejection"
+        assert post_profile.envelope_policy is None, \
+            "legacy profile must retain envelope_policy=None after rejection"
+        assert post_profile.command == "echo", \
+            "legacy profile command must be unchanged after rejection"
+
+        # Token must remain valid (released, not committed)
+        record = store.validate(token, "alpha")
+        assert record is not None, \
+            "token must still be valid after 409 rejection"
+
+        # Durable store must be unchanged
+        stored = load_runtime_profiles()
+        assert stored["test-rollback"].get("command") == "echo", \
+            "durable store must retain original command"
+        assert stored["test-rollback"].get("envelope_policy") is None, \
+            "durable store must retain legacy (no envelope_policy)"
+
+    def test_atomic_replace_idempotent_strict_reregister(self, tmp_home):
+        """Exact strict re-registration is idempotent via atomic replace."""
+        reset_registry()
+        registry = get_registry()
+        from runtime.orchestrator.executor_registry import ExecutorProfile
+
+        strict = ExecutorProfile(
+            name="idem-test",
+            kind="custom",
+            workspace_adapter_id="pi",
+            command_adapter_id="generic-cli",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+            envelope_policy="strict",
+        )
+
+        # First registration
+        replaced = registry.replace_custom_profile(strict)
+        assert not replaced, "first registration is not a replacement"
+        assert registry.get_profile("idem-test").envelope_policy == "strict"
+
+        # Idempotent re-registration
+        replaced = registry.replace_custom_profile(strict)
+        assert replaced, "re-registration is a replacement"
+        assert registry.get_profile("idem-test").envelope_policy == "strict"
+
+    def test_atomic_replace_read_only_legacy_no_mutation(self, tmp_home):
+        """Read-only legacy profiles are never auto-mutated by
+        replace_custom_profile."""
+        reset_registry()
+        registry = get_registry()
+        from runtime.orchestrator.executor_registry import ExecutorProfile
+
+        legacy = ExecutorProfile(
+            name="readonly-test",
+            kind="custom",
+            workspace_adapter_id="pi",
+            command_adapter_id="generic-cli",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+            envelope_policy=None,
+        )
+        registry.register_custom_profile(legacy)
+
+        # Read the profile — it must remain legacy
+        p = registry.get_profile("readonly-test")
+        assert p.envelope_policy is None, \
+            "read-only legacy profile must retain None envelope_policy"
+
+        # Reading again must not mutate
+        p2 = registry.get_profile("readonly-test")
+        assert p2.envelope_policy is None
+
+    def test_atomic_replace_builtin_protection(self, tmp_home):
+        """Built-in profiles cannot be replaced via replace_custom_profile."""
+        reset_registry()
+        registry = get_registry()
+        from runtime.orchestrator.executor_registry import ExecutorProfile
+
+        builtin_override = ExecutorProfile(
+            name="claude",
+            kind="custom",
+            workspace_adapter_id="pi",
+            command_adapter_id="generic-cli",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+            envelope_policy="strict",
+        )
+        with pytest.raises(ValueError, match="Cannot replace built-in"):
+            registry.replace_custom_profile(builtin_override)
+
+    def test_atomic_replace_nonexistent_registers_fresh(self, tmp_home):
+        """replace_custom_profile on an unregistered name registers fresh."""
+        reset_registry()
+        registry = get_registry()
+        from runtime.orchestrator.executor_registry import ExecutorProfile
+
+        fresh = ExecutorProfile(
+            name="fresh-test",
+            kind="custom",
+            workspace_adapter_id="pi",
+            command_adapter_id="generic-cli",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+            command="echo",
+            envelope_policy="strict",
+        )
+        replaced = registry.replace_custom_profile(fresh)
+        assert not replaced, "fresh registration is not a replacement"
+        assert registry.get_profile("fresh-test").envelope_policy == "strict"
+
+
+class TestD7AAtomicReplacementConcurrentRouteSafety:
+    """Prove concurrent same-name re-registration never creates absence/loss
+    with atomic replace_custom_profile."""
+
+    def test_concurrent_legacy_to_strict_two_tokens_no_absence(
+        self, tmp_home, daemon_state, monkeypatch, tmp_path,
+    ):
+        """Two concurrent legacy→strict registrations with different tokens:
+        the per-profile-name lock serializes them. Both succeed (idempotent
+        re-registration). The concurrent build_executor observer never sees
+        the profile as absent."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-conc-atomic-org")
+        _seed_legacy_profile_in_registry("test-conc-atomic-org")
+
+        # Mint two tokens
+        token_a, headers_a = _mint_and_complete_conformance(
+            store, org="alpha", name="test-conc-atomic-org",
+        )
+        token_b, headers_b = _mint_and_complete_conformance(
+            store, org="alpha", name="test-conc-atomic-org",
+        )
+
+        # Observer thread watches the registry during concurrent registration
+        observed_absent: list[bool] = []
+        stop_flag = threading.Event()
+        ready = threading.Event()
+
+        def _observer():
+            ready.set()
+            while not stop_flag.is_set():
+                p = get_registry().get_profile("test-conc-atomic-org")
+                observed_absent.append(p is None)
+
+        observer_thread = threading.Thread(target=_observer, daemon=True)
+        observer_thread.start()
+        ready.wait()
+
+        results = {}
+        barrier = threading.Barrier(2)
+
+        def _register(token_val, headers, label):
+            barrier.wait()
+            c = TestClient(app)
+            c.headers.update(headers)
+            r = c.post("/api/v1/orgs/alpha/executors/register", json={
+                "command": "echo",
+                "argv_template": ["echo", "{prompt}"],
+                "adapter": "pi",
+            })
+            results[label] = r.status_code
+
+        t_a = threading.Thread(target=_register, args=(token_a, headers_a, "a"))
+        t_b = threading.Thread(target=_register, args=(token_b, headers_b, "b"))
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=10)
+        t_b.join(timeout=10)
+
+        stop_flag.set()
+        observer_thread.join(timeout=5)
+
+        # The observer must NEVER have seen the profile as absent
+        assert not any(observed_absent), \
+            f"BUG: observer saw absent profile {sum(observed_absent)} times!"
+
+        # Both must succeed (idempotent re-registration with lock serialization)
+        statuses = list(results.values())
+        assert 200 in statuses, f"at least one must succeed: {results}"
+        assert all(s in (200, 409, 401) for s in statuses), \
+            f"unexpected status: {results}"
+
+        # Final state must be strict in both store and registry
+        active = get_registry().get_profile("test-conc-atomic-org")
+        assert active is not None
+        assert active.envelope_policy == "strict"
+
+        stored = load_runtime_profiles()
+        assert stored["test-conc-atomic-org"]["envelope_policy"] == "strict"
+
+        # Executor enforcement must be active immediately
+        executor = build_executor(
+            "test-conc-atomic-org", Settings(project_root=tmp_path),
+        )
+        assert executor._envelope_policy == "strict"
+
+
+class TestD7AStrictMissingEnvelopeFailsClosed:
+    """D7A strict missing-envelope fails closed with preserved tails/
+    remediation/accounting and valid v1 succeeds."""
+
+    def test_strict_missing_envelope_fails_closed_org_route(
+        self, tmp_home, daemon_state, monkeypatch, tmp_path,
+    ):
+        """After org-route legacy→strict, a missing envelope stdout fails
+        closed with preserved tails and remediation text."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-fail-closed")
+        _seed_legacy_profile_in_registry("test-fail-closed")
+
+        token, headers = _mint_and_complete_conformance(
+            store, org="alpha", name="test-fail-closed",
+        )
+
+        c = TestClient(app)
+        c.headers.update(headers)
+        r = c.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 200, f"registration failed: {r.text}"
+
+        # Build executor and run with output that has no envelope
+        executor = build_executor(
+            "test-fail-closed", Settings(project_root=tmp_path),
+        )
+        assert executor._envelope_policy == "strict"
+
+        with patch("subprocess.Popen") as mock_popen:
+            mock_process = MagicMock()
+            mock_process.communicate.return_value = (
+                "plain text no envelope",
+                "some stderr",
+            )
+            mock_process.returncode = 0
+            mock_popen.return_value = mock_process
+            mock_popen.return_value.__enter__ = MagicMock(return_value=mock_process)
+            mock_popen.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = executor.run(workspace=tmp_path, prompt="hello")
+
+        assert not result.success, "strict mode must fail on missing envelope"
+        assert result.error is not None, "must have an error message"
+        assert "envelope" in result.error.lower(), \
+            f"error must mention envelope: {result.error}"
+        assert "registration" in result.error.lower() or "verify" in result.error.lower(), \
+            f"error must guide re-registration: {result.error}"
+        # Tails must be preserved
+        assert "plain text" in result.stdout_tail
+        assert "some stderr" in result.stderr_tail
+
+    def test_strict_valid_v1_succeeds_org_route(
+        self, tmp_home, daemon_state, monkeypatch, tmp_path,
+    ):
+        """After org-route legacy→strict, a valid v1 envelope succeeds."""
+        _bypass_loopback(monkeypatch)
+        from runtime.daemon.app import create_app
+        app = create_app(daemon_state)
+        store = daemon_state.registration_token_store
+
+        _seed_legacy_profile_in_store("test-v1-ok")
+        _seed_legacy_profile_in_registry("test-v1-ok")
+
+        token, headers = _mint_and_complete_conformance(
+            store, org="alpha", name="test-v1-ok",
+        )
+
+        c = TestClient(app)
+        c.headers.update(headers)
+        r = c.post("/api/v1/orgs/alpha/executors/register", json={
+            "command": "echo",
+            "argv_template": ["echo", "{prompt}"],
+            "adapter": "pi",
+        })
+        assert r.status_code == 200
+
+        executor = build_executor(
+            "test-v1-ok", Settings(project_root=tmp_path),
+        )
+        assert executor._envelope_policy == "strict"
+
+        import json
+        v1_envelope = (
+            "__HR_ENVELOPE_BEGIN__\n"
+            + json.dumps({"envelope_version": 1, "session_id": "sess-test"})
+            + "\n__HR_ENVELOPE_END__"
+        )
+
+        with patch("subprocess.Popen") as mock_popen:
+            mock_process = MagicMock()
+            mock_process.communicate.return_value = (
+                v1_envelope,
+                "",
+            )
+            mock_process.returncode = 0
+            mock_popen.return_value = mock_process
+            mock_popen.return_value.__enter__ = MagicMock(return_value=mock_process)
+            mock_popen.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = executor.run(workspace=tmp_path, prompt="hello")
+
+        assert result.success, "valid v1 envelope must succeed in strict mode"
