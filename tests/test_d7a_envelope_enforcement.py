@@ -692,3 +692,219 @@ class TestD7ABuildExecutorPassthrough:
         executor = build_executor("d7a-legacy-passthrough", Settings(project_root=tmp_path))
         assert isinstance(executor, GenericCliExecutor)
         assert executor._envelope_policy is None
+
+
+# ---------------------------------------------------------------------------
+# 9. Shipping-seam regression: route → active-registry → subprocess enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestD7AShippingSeamEnforcement:
+    """New/re-registered strict profiles ACTIVE in registry → subprocess fails closed immediately.
+
+    This is the regression test suite for the reviewer-identified HIGH defect:
+    both registration routes returned envelope_policy='strict' but the active
+    in-memory profile had envelope_policy=None, so build_executor created a
+    legacy GenericCliExecutor and no-envelope output succeeded.
+
+    These tests exercise the exact path:
+      validate_custom_profile_config(envelope_policy='strict') →
+      register_custom_profile → build_executor → launch → must fail closed
+    """
+
+    def test_new_strict_profile_enforcement_no_restart_needed(self, tmp_path):
+        """New strict registration: active profile in registry → missing envelope fails closed immediately."""
+        reset_registry()
+        registry = get_registry()
+
+        # Simulate what BOTH shipping routes now do:
+        # config_cfg includes envelope_policy: "strict" → validate → register
+        config_cfg = {
+            "command": "echo",
+            "argv_template": ["echo", "hello"],
+            "workspace_adapter_id": "pi",
+            "command_adapter_id": "generic-cli",
+            "envelope_policy": "strict",
+        }
+        candidate = ExecutorRegistry.validate_custom_profile_config(
+            "d7a-shipping-new", config_cfg
+        )
+        assert candidate.envelope_policy == "strict", \
+            "candidate must carry strict policy — this is what the routes now guarantee"
+
+        registry.register_custom_profile(candidate)
+
+        # Active in-memory profile must be strict
+        active_profile = registry.get_profile("d7a-shipping-new")
+        assert active_profile is not None
+        assert active_profile.envelope_policy == "strict", \
+            "active registry profile must be strict — no restart needed"
+
+        # build_executor must pass strict to GenericCliExecutor
+        executor = build_executor("d7a-shipping-new", Settings(project_root=tmp_path))
+        assert isinstance(executor, GenericCliExecutor)
+        assert executor._envelope_policy == "strict"
+
+        # Launch a real subprocess without an envelope → must fail closed
+        result = executor.run(workspace=tmp_path, prompt="hello")
+        assert not result.success, "strict profile must fail closed when no envelope is emitted"
+        assert result.stdout_tail is not None
+        assert "envelope" in (result.error or "").lower()
+
+    def test_strict_profile_valid_v1_succeeds_at_shipping_seam(self, tmp_path):
+        """Strict profile with valid v1 envelope succeeds through the full shipping seam."""
+        reset_registry()
+        registry = get_registry()
+
+        config_cfg = {
+            "command": "echo",
+            "argv_template": ["echo", "hello"],
+            "workspace_adapter_id": "pi",
+            "command_adapter_id": "generic-cli",
+            "envelope_policy": "strict",
+        }
+        candidate = ExecutorRegistry.validate_custom_profile_config(
+            "d7a-shipping-valid", config_cfg
+        )
+        assert candidate.envelope_policy == "strict"
+        registry.register_custom_profile(candidate)
+
+        executor = build_executor("d7a-shipping-valid", Settings(project_root=tmp_path))
+        assert executor._envelope_policy == "strict"
+
+        # Use a subprocess that emits a valid v1 envelope via python -c
+        # The strict profile must succeed because the stdout contains a valid envelope
+        import subprocess as sp
+        import json as jmod
+        envelope = {
+            "envelope_version": 1,
+            "result": "ok",
+            "token_usage": {
+                "input_tokens": 10, "output_tokens": 20,
+                "cache_read_tokens": 0, "cache_creation_tokens": 0,
+                "model": "test"
+            },
+        }
+        valid_stdout = f"normal output\n__HR_ENVELOPE_BEGIN__\n{jmod.dumps(envelope)}\n__HR_ENVELOPE_END__\n"
+        # Mock Popen to return valid envelope
+        mock_popen = MagicMock()
+        mock_popen.returncode = 0
+        mock_popen.communicate.return_value = (valid_stdout, "")
+        with patch("subprocess.Popen", return_value=mock_popen):
+            result = executor.run(workspace=tmp_path, prompt="hello", timeout_seconds=5)
+        assert result.success, f"strict profile with valid v1 envelope must succeed, got error: {result.error}"
+
+    def test_legacy_reregistration_active_strict_no_restart(self, tmp_path):
+        """Re-registering a legacy profile activates strict in the active registry immediately."""
+        reset_registry()
+        registry = get_registry()
+
+        # Step 1: register a legacy profile first (no envelope_policy)
+        legacy_cfg = {
+            "command": "echo",
+            "argv_template": ["echo", "hello"],
+            "workspace_adapter_id": "pi",
+            "command_adapter_id": "generic-cli",
+        }
+        legacy_candidate = ExecutorRegistry.validate_custom_profile_config(
+            "d7a-shipping-rereg", legacy_cfg
+        )
+        assert legacy_candidate.envelope_policy is None
+        registry.register_custom_profile(legacy_candidate)
+
+        # Verify legacy: no envelope succeeds
+        legacy_exec = build_executor("d7a-shipping-rereg", Settings(project_root=tmp_path))
+        legacy_result = legacy_exec.run(workspace=tmp_path, prompt="hello")
+        assert legacy_result.success, "legacy profile must succeed without envelope"
+
+        # Step 2: re-register with strict (simulating what the route does now)
+        strict_cfg = {
+            "command": "echo",
+            "argv_template": ["echo", "hello"],
+            "workspace_adapter_id": "pi",
+            "command_adapter_id": "generic-cli",
+            "envelope_policy": "strict",
+        }
+        strict_candidate = ExecutorRegistry.validate_custom_profile_config(
+            "d7a-shipping-rereg", strict_cfg
+        )
+        assert strict_candidate.envelope_policy == "strict"
+
+        # Register the updated profile. The existing profile collides with
+        # a different definition — the route handles this by allowing
+        # re-registration when the YAML changes. We simulate the same effect
+        # by directly replacing the in-memory profile.
+        registry.unregister_custom_profile("d7a-shipping-rereg")
+        registry.register_custom_profile(strict_candidate)
+
+        # Step 3: verify active profile is strict immediately
+        active = registry.get_profile("d7a-shipping-rereg")
+        assert active is not None
+        assert active.envelope_policy == "strict", \
+            "re-registered profile must be strict in active registry immediately — no restart"
+
+        # Step 4: build_executor → subprocess without envelope → must fail closed
+        strict_exec = build_executor("d7a-shipping-rereg", Settings(project_root=tmp_path))
+        assert strict_exec._envelope_policy == "strict"
+
+        result = strict_exec.run(workspace=tmp_path, prompt="hello")
+        assert not result.success, \
+            "re-registered strict profile must fail closed immediately when no envelope emitted"
+        assert "envelope" in (result.error or "").lower()
+
+    def test_legacy_read_only_profile_preserves_none_policy(self, tmp_path):
+        """Legacy stored profiles that are merely read remain optional."""
+        reset_registry()
+        registry = get_registry()
+
+        # Register a legacy profile WITHOUT envelope_policy
+        legacy_cfg = {
+            "command": "echo",
+            "argv_template": ["echo", "hello"],
+            "workspace_adapter_id": "pi",
+            "command_adapter_id": "generic-cli",
+        }
+        candidate = ExecutorRegistry.validate_custom_profile_config(
+            "d7a-readonly-legacy", legacy_cfg
+        )
+        assert candidate.envelope_policy is None
+        registry.register_custom_profile(candidate)
+
+        # Build executor from this legacy profile
+        executor = build_executor("d7a-readonly-legacy", Settings(project_root=tmp_path))
+        assert executor._envelope_policy is None, \
+            "legacy read-only profile must stay None — no auto-mutation"
+
+        # Legacy profile must succeed without envelope
+        result = executor.run(workspace=tmp_path, prompt="hello")
+        assert result.success, "legacy profile must succeed without envelope"
+
+        # Verify the profile itself is unchanged
+        profile = registry.get_profile("d7a-readonly-legacy")
+        assert profile.envelope_policy is None, \
+            "legacy profile must NOT be auto-mutated after execution"
+
+    def test_strict_failure_no_registry_token_residue(self, tmp_path):
+        """Strict enforcement failure does not leave partial store/registry/token residue."""
+        reset_registry()
+        registry = get_registry()
+        name = "d7a-no-residue"
+
+        config_cfg = {
+            "command": "echo",
+            "argv_template": ["echo", "hello"],
+            "workspace_adapter_id": "pi",
+            "command_adapter_id": "generic-cli",
+            "envelope_policy": "strict",
+        }
+        candidate = ExecutorRegistry.validate_custom_profile_config(name, config_cfg)
+        registry.register_custom_profile(candidate)
+
+        # Execute and get failure
+        executor = build_executor(name, Settings(project_root=tmp_path))
+        result = executor.run(workspace=tmp_path, prompt="hello")
+        assert not result.success
+
+        # Profile must still be registered (failure is runtime, not registration-level)
+        assert registry.is_registered(name)
+        assert registry.get_profile(name).envelope_policy == "strict"

@@ -1,6 +1,6 @@
 # Standard Daemon↔CLI Interface: Adapter Contract for Custom CLIs — Design Spike
 
-**THR-107** | **2026-07-19** | **Phase 1 shipped; D7A strict-enforcement slice merged**
+**THR-107** | **2026-07-19** | **Phase 1 shipped; D7A strict-enforcement slice in review (PR #512)**
 
 > **Phase 1 shipped.** The v1 sentinel-envelope contract (envelope_version=1,
 > `__HR_ENVELOPE_BEGIN__`/`__HR_ENVELOPE_END__` markers, optional envelope,
@@ -10,9 +10,11 @@
 >
 > **D7A strict enforcement** (THR-107 D7A, TASK-3529, July 2026): new
 > custom-CLI registrations and re-registrations through either shipping
-> route now durably record ``envelope_policy: "strict"`` and enforce
-> mandatory v1 envelope compliance at the ``GenericCliExecutor``
-> launch/result seam. A strict profile whose stdout lacks a valid
+> route now durably record ``envelope_policy: "strict"`` in both the
+> durable YAML store AND the active in-memory registry profile, so
+> enforcement activates immediately (no daemon restart required).
+> ``GenericCliExecutor`` enforces mandatory v1 envelope compliance
+> at the launch/result seam. A strict profile whose stdout lacks a valid
 > v1 envelope returns a deterministic failed ``ExecutorResult``
 > with actionable re-registration/verification guidance. Existing
 > stored profiles without the ``envelope_policy`` field are LEGACY

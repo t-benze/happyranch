@@ -552,6 +552,9 @@ def register_executor(
     # Omitted default None is not an explicit supply.
     if "command_adapter" in body.model_fields_set and body.command_adapter is not None:
         config_cfg["command_adapter"] = body.command_adapter
+    # D7A: new registrations and re-registrations always receive
+    #      envelope_policy: "strict" in the active in-memory profile.
+    config_cfg["envelope_policy"] = "strict"
     try:
         candidate = ExecutorRegistry.validate_custom_profile_config(
             profile_name, config_cfg
@@ -873,6 +876,9 @@ def runtime_register_executor(
     # Omitted default None is not an explicit supply.
     if "command_adapter" in body.model_fields_set and body.command_adapter is not None:
         config_cfg["command_adapter"] = body.command_adapter
+    # D7A: new registrations and re-registrations always receive
+    #      envelope_policy: "strict" in the active in-memory profile.
+    config_cfg["envelope_policy"] = "strict"
     try:
         candidate = ExecutorRegistry.validate_custom_profile_config(
             profile_name, config_cfg
