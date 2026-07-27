@@ -1817,11 +1817,13 @@ def _enqueue_parent_if_waiting(
         routes. The round count is derived from the count of FAILED subtask
         siblings in the DB (no schema migration).
 
-    ``root_auto_revisit_spawned`` is threaded through the cascade so every
-    ancestor knows the founder-dispatched root has already been auto-revisited —
-    the work IS being retried. Callers that did not spawn an auto-revisit pass
-    the default ``False``. See spec
-    2026-05-25-session-timeout-auto-route-design.md §6.
+    ``root_auto_revisit_spawned`` is a retained compatibility/bookkeeping
+    input. All current production callers (opaque-failure branches and
+    startup sweep) pass ``False`` — no daemon auto-successor exists
+    (TASK-3604). The boolean preserves call-site symmetry for the bounded
+    parent wake / per-slice escalation contract; it does not signal that a
+    root has been auto-revisited. See the retired spec
+    2026-05-25-session-timeout-auto-route-design.md §6 for historical context.
 
     Chain handling: a FAILED chain leg clears the active chain and falls
     through to the bounded-wake logic (same round bound + escalation). A

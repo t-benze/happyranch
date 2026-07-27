@@ -554,13 +554,43 @@ class TestCopySkillsTreeAtomicity:
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestRetryEligibility:
-    """The explicit error must be classified as retry-eligible by run_step."""
+    """SystemContractMaterializationError is caught by run_step_impl's
+    except Exception handler, leading to terminal FAILED (TASK-3604).
+    No auto-revisit successor is spawned — recovery is explicit
+    manager/founder action."""
 
-    def test_system_contract_error_is_agent_exception_class(self):
-        """SystemContractMaterializationError must be caught by the
-        `except Exception as exc:` in run_step_impl and classified as
-        "agent_exception" (which triggers auto-revisit)."""
-        from runtime.orchestrator.run_step import _classify_failure_kind
+    def test_system_contract_error_is_exception_subclass(self):
+        """SystemContractMaterializationError must be a subclass of Exception
+        so it is caught by `except Exception as exc:` in run_step_impl.
+        Post-TASK-3604: the handler marks the task FAILED with no auto-revisit
+        successor (terminal failure)."""
+        from runtime.orchestrator.workspace_adapters import (
+            SystemContractMaterializationError,
+        )
+
+        # Verify it IS caught by `except Exception`
+        exc = SystemContractMaterializationError(
+            missing_contracts=["start-task"],
+            workspace=Path("/tmp/ws"),
+            provider="claude",
+        )
+        assert isinstance(exc, Exception), (
+            "SystemContractMaterializationError must inherit Exception "
+            "so run_step_impl's `except Exception` catches it"
+        )
+        # Post-TASK-3604: the except handler marks the task terminal FAILED
+        # with no auto-revisit successor. The error carries enough context
+        # for the terminal-failure audit.
+        assert "start-task" in exc.missing_contracts
+        assert exc.workspace == Path("/tmp/ws")
+        assert exc.provider == "claude"
+
+    def test_error_context_preserved_for_terminal_failure_audit(self):
+        """SystemContractMaterializationError raised during _run_agent
+        flows through except Exception → _fail → terminal FAILED (TASK-3604).
+        The error context (missing_contracts, workspace, provider) must be
+        preserved for the terminal-failure audit row — no auto-revisit
+        successor is spawned."""
         from runtime.orchestrator.workspace_adapters import (
             SystemContractMaterializationError,
         )
@@ -568,29 +598,17 @@ class TestRetryEligibility:
         # Simulate: _run_agent raises SystemContractMaterializationError
         try:
             raise SystemContractMaterializationError(
-                missing_contracts=["start-task"],
+                missing_contracts=["start-task", "report-completion"],
                 workspace=Path("/tmp/ws"),
-                provider="claude",
+                provider="codex",
             )
-        except Exception:
-            kind = _classify_failure_kind(None, None, mode="exception")
-            assert kind == "agent_exception", (
-                f"Expected 'agent_exception' but got {kind!r} — "
-                f"error will not trigger auto-revisit"
-            )
-
-    def test_error_does_not_escape_as_session_failed(self):
-        """SystemContractMaterializationError raised during _run_agent
-        flows through except Exception → _fail → _classify_failure_kind
-        → "agent_exception" (retry-eligible), not "session_failed"."""
-        from runtime.orchestrator.run_step import _classify_failure_kind
-
-        # "session_failed" is the fallback when mode="session_failure"
-        # and result is None — but mode="exception" always returns
-        # "agent_exception". Confirm.
-        kind = _classify_failure_kind(None, None, mode="exception")
-        assert kind == "agent_exception"
-        assert kind != "session_failed"
+        except SystemContractMaterializationError as exc:
+            # Post-TASK-3604: the except Exception handler in run_step_impl
+            # catches this, calls _fail, and marks the task terminal FAILED
+            # with no auto-revisit successor.
+            assert exc.missing_contracts == ["start-task", "report-completion"]
+            assert exc.workspace == Path("/tmp/ws")
+            assert isinstance(exc, Exception)
 
 
 # ═══════════════════════════════════════════════════════════════════════

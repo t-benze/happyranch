@@ -91,18 +91,23 @@ rate-limit signature. The gate is `rate_limited and not success` in
 `ProviderThrottle.run`, with `success` defaulting True so an indeterminate
 result is treated as success (conservative: never spuriously relaunched).
 Because a genuine transient 429 IS a failure, gating on failure does not weaken
-the de-bursting purpose — every real 429 is still absorbed before the
-auto-revisit path.
+the de-bursting purpose. Every real 429 is absorbed by in-process backoff; any
+429 that survives all backoff attempts marks the task terminal FAILED with no
+daemon successor (TASK-3604). Recovery is explicit manager/founder action.
 
 ### Normalized `rate_limited`
 
 `ExecutorResult` gains an additive `rate_limited: bool = False`, set centrally in
-`_run_command` from a shared `is_rate_limit_signature(text)` helper. The same
-helper is the back-compat fallback in `run_step._classify_failure_kind`, which
-now **prefers** the normalized field. Most transient 429s are absorbed by
-in-process backoff before reaching the classifier, so the heavy auto-revisit
-path (a whole new task session) fires only for rate limits that survive all
-backoff attempts.
+`_run_command` from a shared `is_rate_limit_signature(text)` helper.
+
+> **Post-TASK-3604 note:** The original design routed surviving 429s through
+> `run_step._classify_failure_kind` to a heavy auto-revisit path (a whole new
+> task session). `_classify_failure_kind` and the automatic successor mechanism
+> were removed in TASK-3604. Surviving 429s now reach the terminal FAILED path
+> — the task is marked FAILED with no daemon successor. Recovery is explicit
+> manager/founder action. Provider backoff is still the primary defense line;
+> the in-process retry schedule absorbs the vast majority of transient rate
+> limits before reaching the terminal-failure handler.
 
 ### Layer-1 audit surfacing
 
@@ -128,7 +133,7 @@ thread-scoped audit rows do.
 | `executor_ceiling_default: int` | **8** | Founder-set at the THR-017 checkpoint (raising the proposed 6 → 8). Holds total concurrent provider subprocesses ≤ 8 regardless of which pool launches them — below the bursty additive 10, with more parallelism headroom than 6. Per-deployment tunable. |
 | `executor_ceiling_overrides: dict[str,int]` | `{}` | Per-provider override (config.yaml), e.g. a roomier Codex account. |
 | `executor_launch_spacing_seconds: float` | **1.5** | Midpoint of the issue's 1–2s. De-bursts simultaneous chain fan-out with negligible throughput cost given multi-minute sessions. `0` disables. |
-| `executor_rate_limit_backoff_seconds: list[int]` | **[5, 15, 45]** | Exactly the issue's suggestion. Up to 3 retries ≈ 65s absorbed before falling through to the existing auto-revisit classifier. Empty list disables retries. |
+| `executor_rate_limit_backoff_seconds: list[int]` | **[5, 15, 45]** | Exactly the issue's suggestion. Up to 3 retries ≈ 65s of in-process backoff. Surviving failures reach terminal FAILED handling — no daemon successor is spawned (TASK-3604). Empty list disables retries. |
 
 ## Scope deliberately left unchanged
 
@@ -151,7 +156,9 @@ thread-scoped audit rows do.
 
 - Total concurrent subprocesses per provider are capped at the ceiling across
   both pools; bursts that previously hit 429s are de-bursted and the survivors
-  are absorbed by backoff before the heavy auto-revisit path fires.
+  are absorbed by backoff. Surviving failures reach terminal FAILED handling
+  — no daemon successor is spawned (TASK-3604). Recovery is explicit
+  manager/founder action.
 - A new daemon-wide singleton (`get_throttle()`) is built lazily from `Settings`;
   tests install a deterministic instance via `set_throttle`/`reset_throttle`.
 - Spacing adds at most `executor_launch_spacing_seconds` of latency between
@@ -167,8 +174,9 @@ happens to contain "rate limit" / "hit your limit · reset" still has
 success path: the reactive 429 retry is gated on launch **failure**
 (`rate_limited and not success`), so a successful flagged session is **never**
 relaunched — no duplicated commits/pushes/completion rows/thread replies. The
-flag's only other consumer, `run_step._classify_failure_kind`, runs solely on
-failures, so the success-path flag has no downstream effect. The self-referential
+flag had no other consumer at the time of writing (`run_step._classify_failure_kind`
+was its sole failure-path reader; that function was removed in TASK-3604).
+The success-path flag therefore has no downstream effect. The self-referential
 false-positive risk is therefore contained to a harmless flag, not a spurious
 relaunch (regression tests:
 `test_successful_result_flagged_rate_limited_is_not_relaunched` and

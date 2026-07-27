@@ -869,9 +869,10 @@ class CancelBody(BaseModel):
 class RevisitBody(BaseModel):
     founder_note: str | None = None
     # Founder-supplied per-task subprocess timeout (seconds). Persisted on the
-    # new root and inherited by every delegated child + auto-revisit. NULL
-    # falls through to the predecessor's value (so a manual revisit of an
-    # already-bumped task keeps the bump) and then to org/Settings.
+    # new root and inherited by every delegated child. No daemon auto-successor
+    # exists — recovery is explicit manager/founder action. NULL falls through
+    # to the predecessor's value (so a manual revisit of an already-bumped
+    # task keeps the bump) and then to org/Settings.
     session_timeout_seconds: int | None = None
 
     @field_validator("session_timeout_seconds")
