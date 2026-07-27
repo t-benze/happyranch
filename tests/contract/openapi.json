@@ -1906,10 +1906,6 @@
       "POST": {
         "params": [
           [
-            "authorization",
-            "header"
-          ],
-          [
             "slug",
             "path"
           ]
@@ -1986,10 +1982,6 @@
       "POST": {
         "params": [
           [
-            "authorization",
-            "header"
-          ],
-          [
             "slug",
             "path"
           ]
@@ -2003,10 +1995,6 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/retire": {
       "POST": {
         "params": [
-          [
-            "authorization",
-            "header"
-          ],
           [
             "reason",
             "query"
@@ -2030,10 +2018,6 @@
       "POST": {
         "params": [
           [
-            "authorization",
-            "header"
-          ],
-          [
             "slug",
             "path"
           ]
@@ -2047,10 +2031,6 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/rollback": {
       "POST": {
         "params": [
-          [
-            "authorization",
-            "header"
-          ],
           [
             "reason",
             "query"
@@ -2078,10 +2058,6 @@
       "POST": {
         "params": [
           [
-            "authorization",
-            "header"
-          ],
-          [
             "slug",
             "path"
           ]
@@ -2095,10 +2071,6 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/validate": {
       "POST": {
         "params": [
-          [
-            "authorization",
-            "header"
-          ],
           [
             "slug",
             "path"
@@ -2135,10 +2107,6 @@
     "/api/v1/orgs/{slug}/skill-lifecycle/{skill_id}/claim": {
       "POST": {
         "params": [
-          [
-            "authorization",
-            "header"
-          ],
           [
             "skill_id",
             "path"

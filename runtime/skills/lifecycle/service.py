@@ -138,7 +138,9 @@ class SkillLifecycleService:
         if existing is not None:
             return existing  # Idempotent — return existing proposal
 
-        # Persist SKILL.md content to the org ArtifactStore (task-artifact policy)
+        # Persist SKILL.md content to the org ArtifactStore (task-artifact policy).
+        # CRITICAL: artifact write failure MUST abort the entire operation —
+        # no durable inline skill_md fallback, no partial package/version/event state.
         content_artifact_key: str | None = None
         if org_root is not None:
             try:
@@ -150,10 +152,12 @@ class SkillLifecycleService:
                 artifact_key = f"skill-lifecycle/{slug}/{version}/SKILL.md"
                 store.put(artifact_key, skill_md.encode("utf-8"))
                 content_artifact_key = artifact_key
-            except Exception:
-                # If artifact storage is unavailable, proceed with inline-only
-                # (the ledger still captures hash + metadata for provenance)
-                pass
+            except Exception as exc:
+                raise LifecycleError(
+                    code="artifact_store_failed",
+                    detail=f"Failed to persist proposal SKILL.md to artifact store: {exc}",
+                    status_code=500,
+                ) from exc
 
         # Create the proposed package version (ledger stores metadata, not bytes)
         pkg = PackageVersion(

@@ -888,8 +888,11 @@ class TestUserAuthoredSkillMaterialization:
         )
 
     def test_materialization_fail_closed_no_partial_state(self, tmp_dir, test_settings, db):
-        """FAIL-CLOSED: materialization failure must leave no partial workspace residue."""
-        from runtime.orchestrator.workspace_adapters import inject_managed_skills
+        """FAIL-CLOSED: materialization failure must raise and leave no partial workspace residue."""
+        from runtime.orchestrator.workspace_adapters import (
+            inject_managed_skills,
+            LifecycleMaterializationError,
+        )
         from runtime.skills.lifecycle import stores as lifecycle_stores
 
         org_root = tmp_dir / "org"
@@ -930,16 +933,17 @@ class TestUserAuthoredSkillMaterialization:
         managed_root.mkdir()
         workspace = tmp_dir / "ws"
 
-        # Should not raise but should also not leave partial residue
-        inject_managed_skills(
-            workspace, test_settings,
-            slug="test",
-            agent_name="dev_agent",
-            team="engineering",
-            skills_root=managed_root,
-            org_root=org_root,
-            db=db,
-        )
+        # Must raise because the artifact is missing (fail-closed)
+        with pytest.raises(LifecycleMaterializationError, match="not found"):
+            inject_managed_skills(
+                workspace, test_settings,
+                slug="test",
+                agent_name="dev_agent",
+                team="engineering",
+                skills_root=managed_root,
+                org_root=org_root,
+                db=db,
+            )
 
         # No partial state — missing artifact should not have created a skill dir
         claude_skill = workspace / ".claude" / "skills" / "missing-artifact" / "SKILL.md"

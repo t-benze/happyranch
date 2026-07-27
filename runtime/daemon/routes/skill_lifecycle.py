@@ -1,23 +1,27 @@
 """THR-055 Custom-skill lifecycle routes — agent proposals + human lifecycle management.
 
-Routes on ``human_router`` (bearer-only, master-bearer-token-authed — human/founder):
-- POST /skill-lifecycle/{skill_id}/claim — Human: claim proposal → draft
-- POST /skill-lifecycle/validate — Human: validate a version
-- POST /skill-lifecycle/submit-review — Human: submit for review
-- POST /skill-lifecycle/review — Human: approve/reject
-- POST /skill-lifecycle/publish — Human: publish
-- POST /skill-lifecycle/assign — Human: assign to agent
-- POST /skill-lifecycle/rollback — Human: emergency rollback (atomic)
-- POST /skill-lifecycle/retire — Human: retire
+All routes live on ``dual_router`` (dual-auth — bearer OR session-binding).
+Human-only mutations are gated by ``_require_human()`` which returns 403 for
+non-bearer (agent-session) callers. Human/founder uses master bearer token.
 
-Routes on ``dual_router`` (dual-auth — bearer OR session-binding):
-- POST /skill-lifecycle/proposals — Agent task/session-bound proposal OR founder proposal
+Routes:
+- POST /skill-lifecycle/proposals — Agent task/session-bound OR founder proposal
+- POST /skill-lifecycle/{skill_id}/claim — Human-only: claim proposal → draft
+- POST /skill-lifecycle/validate — Human-only: validate a version
+- POST /skill-lifecycle/submit-review — Human-only: submit for review
+- POST /skill-lifecycle/review — Human-only: approve/reject
+- POST /skill-lifecycle/publish — Human-only: publish
+- POST /skill-lifecycle/assign — Human-only: assign to agent
+- POST /skill-lifecycle/rollback — Human-only: emergency rollback (atomic)
+- POST /skill-lifecycle/retire — Human-only: retire
 - GET /skill-lifecycle/{skill_id} — Read lifecycle status (human + agent)
 - GET /skill-lifecycle/catalog/custom — List published custom skills
 - GET /skill-lifecycle/events/{skill_id} — Read event history
 
 Agent 403 matrix: agents may ONLY submit proposals. All other lifecycle/
 config/eligibility/permission mutation attempts return server-side 403.
+Human-only routes use ``_require_human()`` which returns 403 (not 401) for
+non-bearer callers — matching the server-side authorization semantics.
 
 Identity for proposals derives from verified task/session binding via
 SessionTracker (never from request body claims) when the caller is an agent.
@@ -50,12 +54,27 @@ from runtime.skills.lifecycle.service import (
     SkillLifecycleService,
 )
 
-# ── Two routers: human-only (bearer) and dual-auth (bearer OR session) ──
+# ── Single dual-auth router ──────────────────────────────────────────────
 
-human_router = APIRouter(prefix="/skill-lifecycle", dependencies=[require_token()])
 dual_router = APIRouter(prefix="/skill-lifecycle")
 
 _service = SkillLifecycleService()
+
+
+def _require_human(has_bearer: bool = Depends(optional_bearer)):
+    """Return 403 for non-bearer (agent-session) callers.
+
+    Human-only lifecycle mutations must use the master bearer token.
+    Agent sessions are authenticated but not authorized — 403, not 401.
+    """
+    if not has_bearer:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "human_only",
+                "detail": "This action requires human/founder authority. Agent sessions are not authorized.",
+            },
+        )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -354,7 +373,7 @@ def get_events(
 # Human-only routes (bearer-token-gated — founder)
 # ═══════════════════════════════════════════════════════════════════════════
 
-@human_router.post("/{skill_id}/claim")
+@dual_router.post("/{skill_id}/claim", dependencies=[Depends(_require_human)])
 def claim_proposal(
     slug: str,
     skill_id: str,
@@ -386,7 +405,7 @@ def claim_proposal(
     }
 
 
-@human_router.post("/validate")
+@dual_router.post("/validate", dependencies=[Depends(_require_human)])
 def validate_version(
     slug: str,
     org: OrgDep,
@@ -418,7 +437,7 @@ def validate_version(
     }
 
 
-@human_router.post("/submit-review")
+@dual_router.post("/submit-review", dependencies=[Depends(_require_human)])
 def submit_for_review(
     slug: str,
     org: OrgDep,
@@ -451,7 +470,7 @@ def submit_for_review(
     }
 
 
-@human_router.post("/review")
+@dual_router.post("/review", dependencies=[Depends(_require_human)])
 def review_decision(
     slug: str,
     org: OrgDep,
@@ -485,7 +504,7 @@ def review_decision(
     }
 
 
-@human_router.post("/publish")
+@dual_router.post("/publish", dependencies=[Depends(_require_human)])
 def publish(
     slug: str,
     org: OrgDep,
@@ -519,7 +538,7 @@ def publish(
     }
 
 
-@human_router.post("/assign")
+@dual_router.post("/assign", dependencies=[Depends(_require_human)])
 def assign_skill(
     slug: str,
     org: OrgDep,
@@ -554,7 +573,7 @@ def assign_skill(
     }
 
 
-@human_router.post("/rollback")
+@dual_router.post("/rollback", dependencies=[Depends(_require_human)])
 def rollback(
     slug: str,
     org: OrgDep,
@@ -569,8 +588,14 @@ def rollback(
     ``BEGIN IMMEDIATE`` / ``COMMIT`` transaction so package status,
     assignment deactivation, and event insertion roll back together.
 
+    After the ledger transaction commits, prior materialized custom-skill
+    workspace residue is cleaned from agent workspaces.
+
     Bearer-token-gated — only the founder/human with the master bearer can call this.
     """
+    import shutil
+    from pathlib import Path
+
     db = _get_db(org)
     try:
         # Explicit transaction wrapping for atomicity
@@ -603,6 +628,22 @@ def rollback(
             detail={"code": e.code, "detail": e.detail},
         )
 
+    # Clean prior materialized custom-skill workspace residue.
+    # The ledger transaction has committed; now remove the old skill
+    # directories from all agent workspaces so no stale content lingers.
+    slug_match = skill_id
+    if skill_id.startswith("hr:"):
+        slug_match = skill_id[3:]
+    workspaces_dir = Path(org.workspaces_root) if org.workspaces_root else org.root / "workspaces"
+    if workspaces_dir.is_dir():
+        for agent_ws in workspaces_dir.iterdir():
+            if not agent_ws.is_dir():
+                continue
+            for skills_dir_name in (".claude", ".agents"):
+                skill_dir = agent_ws / skills_dir_name / "skills" / slug_match
+                if skill_dir.exists():
+                    shutil.rmtree(skill_dir, ignore_errors=True)
+
     return {
         "skill_id": skill_id,
         "assignments_deactivated": count,
@@ -610,7 +651,7 @@ def rollback(
     }
 
 
-@human_router.post("/retire")
+@dual_router.post("/retire", dependencies=[Depends(_require_human)])
 def retire(
     slug: str,
     org: OrgDep,

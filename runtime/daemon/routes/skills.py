@@ -54,50 +54,41 @@ def _release_registry(org: OrgState) -> SkillRegistry:
 def _user_registry(org: OrgState) -> SkillRegistry:
     """Return the per-org user-skill store registry.
 
-    Store directory: <org_root>/skills/ — a SIBLING of the org/ definition
-    directory, NOT inside it (v3 s6.2). Missing / empty dir → empty
-    SkillRegistry (graceful).
+    THR-055: This legacy store is RETIRED. The org_root/skills/ directory
+    no longer feeds any catalog, effective, or detail API. All custom-skill
+    discovery, assignment, and lifecycle management now routes through the
+    lifecycle ledger (``/skill-lifecycle/*`` routes). This helper returns
+    an empty registry; the quarantine migration copies legacy content to
+    the immutable ArtifactStore for reference, never for materialization.
+
+    Store directory: <org_root>/skills/ — exists only for legacy quarantine
+    migration purposes, NOT for runtime skill resolution.
     """
-    user_dir = org.root / "skills"
-    return SkillRegistry(skills_root=user_dir)
+    return SkillRegistry(skills_root=Path("/nonexistent"))
 
 
 def _union_catalog(org: OrgState) -> list[tuple[SkillEntry, str]]:
-    """Build the union of managed catalog, system contracts, and user store.
+    """Build the union of managed catalog and system contracts ONLY.
+
+    THR-055: User-authored custom skills are excluded — the lifecycle
+    ledger is the sole source for custom-skill discovery, assignment, and
+    materialization. Legacy quarantined content from org_root/skills/
+    must never appear in catalog or effective API results.
 
     Returns list of (SkillEntry, source_type) where source_type is one of:
-    'managed', 'system_contract', 'user_authored'.
+    'managed', 'system_contract'.
 
-    Release-wins on slug collision: a user-authored skill can NEVER shadow a
-    release-shipped skill; the release entry is kept and the user entry
-    discarded.
+    Release-wins on slug collision with system contracts.
     """
     release = _release_registry(org)
-    user = _user_registry(org)
 
     union: dict[str, tuple[SkillEntry, str]] = {}
 
-    # Release entries are authoritative — collect their slugs so user-authored
-    # entries with a colliding slug are discarded (release-wins on SLUG, not id;
-    # v3 s6.3: a user package cannot shadow a shipped skill by reusing its slug
-    # under a different id).
-    release_slugs: set[str] = {entry.slug for entry in release.list_all()}
-    sc_slugs: set[str] = {sc.id for sc in SYSTEM_CONTRACTS}
-    protected_slugs = release_slugs | sc_slugs
-
-    # User-authored entries — discard any whose slug collides with a release
-    # or system-contract slug (release-wins on slug collision, v3 s6.3).
-    for entry in user.list_all():
-        if entry.slug not in protected_slugs:
-            union[entry.id] = (entry, "user_authored")
-
-    # Release entries added after users so any residual id collision resolves
-    # to release (id-based backup — slug-based gate already handles the
-    # canonical case).
+    # Release-shipped managed-catalog skills
     for entry in release.list_all():
         union[entry.id] = (entry, "managed")
 
-    # System contracts — not in either registry
+    # System contracts — not in the registry
     for sc in SYSTEM_CONTRACTS:
         sc_entry = SkillEntry(
             id=f"hr:{sc.id}",
@@ -356,7 +347,6 @@ def agent_skills_effective(
         )
 
     release = _release_registry(org)
-    user = _user_registry(org)
     policy = _read_eligibility_policy(org)
 
     # Determine team from agent def
@@ -370,12 +360,10 @@ def agent_skills_effective(
     except Exception:
         pass
 
-    # Union catalog for resolution — release-wins on SLUG collision (v3 s6.3)
-    release_slugs: set[str] = {entry.slug for entry in release.list_all()}
+    # THR-055: Union is release-managed skills only.
+    # User-authored custom skills are resolved via the lifecycle ledger
+    # (/skill-lifecycle/* routes), not through this legacy effective API.
     union: dict[str, tuple[SkillEntry, str]] = {}
-    for entry in user.list_all():
-        if entry.slug not in release_slugs:
-            union[entry.id] = (entry, "user_authored")
     for entry in release.list_all():
         union[entry.id] = (entry, "managed")
 
@@ -404,7 +392,7 @@ def agent_skills_effective(
         agent_allow_ids = set(agent_rules.get("allow", []) or [])
         agent_deny_ids = set(agent_rules.get("deny", []) or [])
 
-    # Build response: all union entries + system contracts
+    # Build response: all managed entries + system contracts
     skills = []
 
     for entry, source_type in union.values():
@@ -413,24 +401,13 @@ def agent_skills_effective(
         is_disabled = entry.status == SkillStatus.DISABLED
         is_denied = skill_id in agent_deny_ids
 
-        # Determine provenance reason
-        if is_exposed and source_type == "user_authored":
-            # Check materialization store for version match (Phase 3b)
-            mat_event = org.db.get_latest_skill_materialization(skill_id, agent_id)
-            if mat_event is not None and mat_event["version"] == entry.version:
-                provenance = "catalog_and_eligible"  # effective
-            else:
-                provenance = "assigned_not_yet_effective"
-        elif is_exposed:
+        # Determine provenance reason (managed skills only — THR-055)
+        if is_exposed:
             provenance = "catalog_and_eligible"
         elif is_disabled:
             provenance = "hidden_because:disabled"
         elif is_denied:
             provenance = "hidden_because:denied_by_eligibility"
-        elif skill_id in agent_allow_ids and source_type == "user_authored":
-            # Assigned but resolve_exposed_skills didn't expose it
-            provenance = "assigned_not_yet_effective"
-            is_exposed = True  # surface it as assigned, not hidden
         else:
             provenance = "hidden_because:not_in_eligibility"
 

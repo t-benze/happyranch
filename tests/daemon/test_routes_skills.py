@@ -124,7 +124,8 @@ class TestSkillsCatalogList:
         assert "user_authored" not in types, f"Bundled filter should exclude user_authored, got {types}"
 
     def test_catalog_custom_filter(self, tmp_home, app, org_state, auth_headers):
-        """Custom filter returns only user_authored skills."""
+        """Custom filter returns empty — THR-055: legacy user store retired.
+        Custom skills are now lifecycle-managed, not filesystem-based."""
         _seed_skills_and_config(org_state.root, allow=["hr:standard-skill"])
         _seed_user_skill(org_state.root, "my-custom-skill")
 
@@ -132,12 +133,8 @@ class TestSkillsCatalogList:
         r = client.get("/api/v1/orgs/alpha/skills/catalog?filter=Custom", headers=auth_headers)
         assert r.status_code == 200
         items = r.json()["items"]
-        types = {item["type"] for item in items}
-        assert types == {"user_authored"}, f"Custom filter should only return user_authored, got {types}"
-        assert len(items) == 1
-        assert items[0]["skill_id"] == "hr:my-custom-skill"
-        assert items[0]["type"] == "user_authored"
-        assert items[0]["source"] == "user_authored"
+        # No user_authored items since legacy store is retired (THR-055)
+        assert len(items) == 0
 
     def test_catalog_release_wins_collision(self, tmp_home, app, org_state, auth_headers):
         """When user skill collides with release slug, release entry is kept."""
@@ -222,11 +219,9 @@ class TestSkillsCatalogList:
     def test_catalog_user_store_at_org_root_skills_is_recognized(
         self, tmp_home, app, org_state, auth_headers,
     ):
-        """Regression FIX 1: user-authored store at org.root/skills/ IS recognized.
-
-        The store directory is `<org_root>/skills/<slug>/`, a SIBLING of
-        the org/ definition directory (v3 s6.2), NOT inside it.
-        """
+        """THR-055: legacy user-authored store at org.root/skills/ is RETIRED.
+        The custom catalog filter returns only lifecycle-published skills.
+        Filesystem-seeded user skills no longer appear."""
         _seed_skills_and_config(org_state.root)
         _seed_user_skill(org_state.root, "my-skill")
 
@@ -234,9 +229,8 @@ class TestSkillsCatalogList:
         r = client.get("/api/v1/orgs/alpha/skills/catalog?filter=Custom", headers=auth_headers)
         assert r.status_code == 200
         items = r.json()["items"]
-        assert len(items) == 1
-        assert items[0]["skill_id"] == "hr:my-skill"
-        assert items[0]["type"] == "user_authored"
+        # Legacy user skills are no longer visible in catalog (THR-055)
+        assert len(items) == 0
 
     def test_catalog_empty_user_store_graceful(
         self, tmp_home, app, org_state, auth_headers,
@@ -324,7 +318,8 @@ class TestSkillsCatalogDetail:
         assert body["visibility_category"] == "read_only"
 
     def test_detail_for_user_authored_skill(self, tmp_home, app, org_state, auth_headers):
-        """Detail for a user-authored skill includes assignments array."""
+        """THR-055: user-authored skills via legacy filesystem return 404.
+        Custom skill detail is now available through lifecycle routes only."""
         _seed_skills_and_config(org_state.root, allow=["hr:my-custom-skill"])
         _seed_user_skill(org_state.root, "my-custom-skill")
 
@@ -333,13 +328,8 @@ class TestSkillsCatalogDetail:
             "/api/v1/orgs/alpha/skills/catalog/hr:my-custom-skill",
             headers=auth_headers,
         )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["type"] == "user_authored"
-        assert body["source"] == "user_authored"
-        assert body["validation_state"] == "in_catalog"  # P1: no validation store
-        assert "assignments" in body
-        assert "validation" in body
+        # Legacy user store retired — 404
+        assert r.status_code == 404
 
     def test_detail_404_for_unknown_skill(self, tmp_home, app, org_state, auth_headers):
         """Non-existent skill_id returns 404."""
@@ -352,7 +342,8 @@ class TestSkillsCatalogDetail:
         assert r.status_code == 404
 
     def test_detail_user_skill_with_assignments(self, tmp_home, app, org_state, auth_headers):
-        """Detail for user skill shows which agents are assigned."""
+        """THR-055: legacy user skill detail returns 404.
+        Assignment tracking is now handled by lifecycle routes."""
         _seed_skills_and_config(org_state.root, allow=["hr:my-skill"], agent_name="dev_agent")
         # Also assign to qa_engineer
         cfg = _yaml.safe_load((org_state.root / "org" / "config.yaml").read_text())
@@ -366,17 +357,8 @@ class TestSkillsCatalogDetail:
             "/api/v1/orgs/alpha/skills/catalog/hr:my-skill",
             headers=auth_headers,
         )
-        assert r.status_code == 200
-        body = r.json()
-        assert "assignments" in body
-        assigned_agents = {a["agent"] for a in body["assignments"]}
-        assert "dev_agent" in assigned_agents
-        assert "qa_engineer" in assigned_agents
-        # P1: all assignments are assigned_not_yet_effective (no materialization)
-        for a in body["assignments"]:
-            assert a["assigned"] is True
-            assert a["effective"] is False
-            assert a["state"] == "assigned_not_yet_effective"
+        # Legacy user store retired — 404
+        assert r.status_code == 404
 
 
 class TestAgentSkillsEffective:
@@ -481,17 +463,11 @@ class TestAgentSkillsEffective:
         r = client.get("/api/v1/orgs/alpha/agents/dev_agent/skills/effective")
         assert r.status_code == 401
 
-    def test_effective_user_authored_reports_assigned_not_yet_effective(
+    def test_effective_user_authored_not_in_legacy_api(
         self, tmp_home, app, org_state, auth_headers,
     ):
-        """Regression FIX 2: assigned+eligible user_authored skill reports
-        assigned_not_yet_effective, NOT effective/catalog_and_eligible.
-
-        P1 has NO current-version materialization signal to prove
-        effectiveness, so user-authored skills must surface the
-        assigned_not_yet_effective provenance code per the catalog honesty
-        posture (effective_agent_count:0 for all skills).
-        """
+        """THR-055: legacy effective API does NOT include user-authored skills.
+        Custom skill effective resolution is now lifecycle-only."""
         _seed_skills_and_config(org_state.root, allow=["hr:my-custom-skill"])
         _seed_user_skill(org_state.root, "my-custom-skill")
 
@@ -503,26 +479,14 @@ class TestAgentSkillsEffective:
         assert r.status_code == 200
         body = r.json()
 
-        # Find the user-authored skill
+        # User-authored skills are NO LONGER visible in the legacy effective API
         custom = next(
             (s for s in body["skills"] if s["skill_id"] == "hr:my-custom-skill"),
             None,
         )
-        assert custom is not None, (
-            f"Expected hr:my-custom-skill in effective list, got "
-            f"{[s['skill_id'] for s in body['skills']]}"
+        assert custom is None, (
+            f"THR-055: hr:my-custom-skill should NOT appear in legacy effective API"
         )
-        # It MUST NOT be catalog_and_eligible (effective)
-        assert custom["provenance"] != "catalog_and_eligible", (
-            f"user_authored skill must not have provenance 'catalog_and_eligible', "
-            f"got '{custom['provenance']}'"
-        )
-        # It MUST be assigned_not_yet_effective
-        assert custom["provenance"] == "assigned_not_yet_effective", (
-            f"Expected 'assigned_not_yet_effective', got '{custom['provenance']}'"
-        )
-        # It should be visible (not hidden) — surfaced as assigned
-        assert custom["hidden"] is False
 
 
 class TestSkillsCatalogAuth:

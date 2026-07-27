@@ -525,22 +525,24 @@ def _materialize_lifecycle_skills(
     Proposed/draft/validated/approved-but-unpublished/quarantined skills
     are invisible here.
 
-    Content resolution priority:
-    1. ArtifactStore-backed content (``content_artifact_key`` is set):
-       load from the org ArtifactStore, validate hash, write to workspace.
-    2. No valid content source → record failure, skip.
-
+    Content resolution is ArtifactStore-backed only: the ledger's
+    ``content_artifact_key`` points to immutable ArtifactStore bytes.
     Legacy filesystem paths (org_root/skills/) are NEVER resolved — the
     lifecycle ledger is the sole runtime source.
 
-    Fail-closed: any materialization error cleans up the target directory
-    and raises immediately. No partial-package residue.
+    CRITICAL: fail-closed. Missing/corrupt/hash-mismatched artifact, write
+    error, or any provenance inconsistency → clean workspace residue and
+    RAISE so the session launch cannot silently proceed without an
+    assigned skill. Validate and record the exact bytes actually written;
+    do NOT substitute after hash validation.
     """
     import hashlib
-    import tempfile
+    import logging
+    import shutil
 
     from runtime.skills.lifecycle.service import SkillLifecycleService
 
+    logger = logging.getLogger("happyranch.skills.lifecycle.materialization")
     service = SkillLifecycleService()
 
     # Get active assignments for this agent from the lifecycle ledger
@@ -558,147 +560,149 @@ def _materialize_lifecycle_skills(
         dest_claude = workspace / ".claude" / "skills" / skill_slug
         dest_agents = workspace / ".agents" / "skills" / skill_slug
 
-        # Resolve content source
-        content_bytes: bytes | None = None
-        source_description = "unknown"
+        # ArtifactStore-backed content is the ONLY valid source.
+        if not pkg.content_artifact_key:
+            error_msg = "No content_artifact_key — legacy paths not supported"
+            _record_and_cleanup(
+                service, db, pkg, agent_name, dest_claude, dest_agents,
+                error_msg,
+            )
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=error_msg,
+            )
 
-        if pkg.content_artifact_key:
-            # Artifact-backed: load from the org ArtifactStore
-            try:
-                content_bytes = artifact_store.read(pkg.content_artifact_key)
-                source_description = f"artifact:{pkg.content_artifact_key}"
-            except ArtifactNotFound:
-                # Record failure and skip
-                try:
-                    service.record_materialization(
-                        db=db,
-                        skill_id=pkg.skill_id,
-                        agent_name=agent_name,
-                        version_id=pkg.id,
-                        version=pkg.version,
-                        content_hash=pkg.content_hash,
-                        success=False,
-                        error_message=f"Artifact not found: {pkg.content_artifact_key}",
-                        session_context="session_spawn",
-                    )
-                except Exception:
-                    pass
-                continue
-            except Exception as exc:
-                try:
-                    service.record_materialization(
-                        db=db,
-                        skill_id=pkg.skill_id,
-                        agent_name=agent_name,
-                        version_id=pkg.id,
-                        version=pkg.version,
-                        content_hash=pkg.content_hash,
-                        success=False,
-                        error_message=f"Artifact load error: {exc}",
-                        session_context="session_spawn",
-                    )
-                except Exception:
-                    pass
-                continue
-        else:
-            # No content source — record failure and skip
-            try:
-                service.record_materialization(
-                    db=db,
-                    skill_id=pkg.skill_id,
-                    agent_name=agent_name,
-                    version_id=pkg.id,
-                    version=pkg.version,
-                    content_hash=pkg.content_hash,
-                    success=False,
-                    error_message="No content source (no artifact key, legacy paths not supported)",
-                    session_context="session_spawn",
-                )
-            except Exception:
-                pass
-            continue
+        # Load content from the org ArtifactStore
+        content_bytes: bytes
+        try:
+            content_bytes = artifact_store.read(pkg.content_artifact_key)
+        except ArtifactNotFound:
+            error_msg = f"Artifact not found: {pkg.content_artifact_key}"
+            _record_and_cleanup(
+                service, db, pkg, agent_name, dest_claude, dest_agents,
+                error_msg,
+            )
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=error_msg,
+            )
+        except Exception as exc:
+            error_msg = f"Artifact load error: {exc}"
+            _record_and_cleanup(
+                service, db, pkg, agent_name, dest_claude, dest_agents,
+                error_msg,
+            )
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=error_msg,
+            ) from exc
 
-        # Validate exact hash before writing to workspace
-        if content_bytes is not None:
-            actual_hash = hashlib.sha256(content_bytes).hexdigest()
-            if actual_hash != pkg.content_hash:
-                try:
-                    service.record_materialization(
-                        db=db,
-                        skill_id=pkg.skill_id,
-                        agent_name=agent_name,
-                        version_id=pkg.id,
-                        version=pkg.version,
-                        content_hash=pkg.content_hash,
-                        success=False,
-                        error_message=f"Hash mismatch: expected {pkg.content_hash}, got {actual_hash}",
-                        session_context="session_spawn",
-                    )
-                except Exception:
-                    pass
-                continue
+        # Validate exact hash BEFORE writing to workspace
+        actual_hash = hashlib.sha256(content_bytes).hexdigest()
+        if actual_hash != pkg.content_hash:
+            error_msg = (
+                f"Hash mismatch: expected {pkg.content_hash}, got {actual_hash}"
+            )
+            _record_and_cleanup(
+                service, db, pkg, agent_name, dest_claude, dest_agents,
+                error_msg,
+            )
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=error_msg,
+            )
 
-        # Write content to workspace skill directories
+        # Write validated content to workspace skill directories.
+        # Apply org-slug substitution BEFORE the final write so the
+        # bytes on disk are the bytes whose hash we record.
+        try:
+            text = content_bytes.decode("utf-8")
+            text = text.replace("{ORG_SLUG}", slug)
+            content_bytes = text.encode("utf-8")
+        except UnicodeDecodeError:
+            pass  # Non-text content, keep original bytes
+
+        # Compute hash of the ACTUAL bytes written (post-substitution)
+        final_hash = hashlib.sha256(content_bytes).hexdigest()
+
         try:
             dest_claude.mkdir(parents=True, exist_ok=True)
             dest_agents.mkdir(parents=True, exist_ok=True)
             (dest_claude / "SKILL.md").write_bytes(content_bytes)
             (dest_agents / "SKILL.md").write_bytes(content_bytes)
-
-            # Apply org-slug substitution ({ORG_SLUG} → actual slug)
-            try:
-                text = content_bytes.decode("utf-8")
-                text = text.replace("{ORG_SLUG}", slug)
-                content_bytes = text.encode("utf-8")
-            except UnicodeDecodeError:
-                pass  # Non-text content, skip substitution
-
-            (dest_claude / "SKILL.md").write_bytes(content_bytes)
-            (dest_agents / "SKILL.md").write_bytes(content_bytes)
-
-            # Record successful materialization with hash + version provenance
-            try:
-                service.record_materialization(
-                    db=db,
-                    skill_id=pkg.skill_id,
-                    agent_name=agent_name,
-                    version_id=pkg.id,
-                    version=pkg.version,
-                    content_hash=pkg.content_hash,
-                    success=True,
-                    session_context="session_spawn",
-                )
-            except Exception:
-                pass
         except Exception as exc:
-            # Fail-closed: cleanup partial residues
-            import shutil
-            for d in (dest_claude, dest_agents):
-                if d.exists():
-                    shutil.rmtree(d, ignore_errors=True)
-
-            try:
-                service.record_materialization(
-                    db=db,
-                    skill_id=pkg.skill_id,
-                    agent_name=agent_name,
-                    version_id=pkg.id,
-                    version=pkg.version,
-                    content_hash=pkg.content_hash,
-                    success=False,
-                    error_message=str(exc),
-                    session_context="session_spawn",
-                )
-            except Exception:
-                pass
-
-            # Don't let one failed materialization block others, but log
-            import logging
-            logger = logging.getLogger("happyranch.skills.lifecycle.materialization")
-            logger.warning(
-                "Lifecycle skill materialization failed for %s/%s: %s",
-                pkg.skill_id, agent_name, exc,
+            error_msg = f"Write error: {exc}"
+            _record_and_cleanup(
+                service, db, pkg, agent_name, dest_claude, dest_agents,
+                error_msg,
             )
+            raise LifecycleMaterializationError(
+                skill_slug=skill_slug,
+                agent_name=agent_name,
+                reason=error_msg,
+            ) from exc
+
+        # Record successful materialization with proven bytes hash
+        try:
+            service.record_materialization(
+                db=db,
+                skill_id=pkg.skill_id,
+                agent_name=agent_name,
+                version_id=pkg.id,
+                version=pkg.version,
+                content_hash=final_hash,
+                success=True,
+                session_context="session_spawn",
+            )
+        except Exception:
+            # Materialization event recording is best-effort;
+            # the skill bytes are already safely on disk.
+            pass
+
+
+class LifecycleMaterializationError(Exception):
+    """Raised when lifecycle skill materialization fails.
+
+    The session spawner catches this and treats it as a fatal workspace-prep
+    error — no session is launched without an assigned custom skill.
+    """
+    def __init__(self, skill_slug: str, agent_name: str, reason: str):
+        self.skill_slug = skill_slug
+        self.agent_name = agent_name
+        self.reason = reason
+        super().__init__(
+            f"Lifecycle materialization failed for {skill_slug}/{agent_name}: {reason}"
+        )
+
+
+def _record_and_cleanup(
+    service, db, pkg, agent_name, dest_claude, dest_agents, error_message,
+) -> None:
+    """Best-effort materialization failure recording + workspace residue cleanup."""
+    import shutil
+    # Clean workspace residue
+    for d in (dest_claude, dest_agents):
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+    # Record failure
+    try:
+        service.record_materialization(
+            db=db,
+            skill_id=pkg.skill_id,
+            agent_name=agent_name,
+            version_id=pkg.id,
+            version=pkg.version,
+            content_hash=pkg.content_hash,
+            success=False,
+            error_message=error_message,
+            session_context="session_spawn",
+        )
+    except Exception:
+        pass
 
 
 def _memory_bootstrap_section(workspace: Path) -> list[str]:
