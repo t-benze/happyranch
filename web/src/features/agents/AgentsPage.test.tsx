@@ -714,38 +714,78 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     });
   });
 
-  test('Save error shows inline message', async () => {
-    stubBaseHandlers();
-    stubDetailHandlers();
+  test('edit mutation error preserves custom profile selection and error remains visible', async () => {
+    // This test must select an available custom profile (not the built-in codex)
+    // and directly assert that the exact custom selection remains displayed/selected
+    // and the error remains visible after the failed save.
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json(AGENTS_PAYLOAD),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json({}),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
+        HttpResponse.json({ teams: [] }),
+      ),
+      // Only claude is launchable; custom profile openclaw is present=true.
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [
+            { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+            { tool: 'codex', present: false, path: null, hint: '' },
+            { tool: 'opencode', present: false, path: null, hint: '' },
+            { tool: 'pi', present: false, path: null, hint: '' },
+          ],
+        }),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({
+          profiles: [
+            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+          ],
+        }),
+      ),
+      // Executor save fails with 500.
       http.put(`/api/v1/orgs/${SLUG}/agents/engineering_head/executor`, () =>
         HttpResponse.json({ detail: 'Internal error' }, { status: 500 }),
       ),
     );
+    stubDetailHandlers();
     const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/engineering_head`,
+    });
 
     await waitFor(() => {
       expect(screen.getByText('manager')).toBeInTheDocument();
     });
-    // Wait for the executor select to render.
     let executorSelect: HTMLSelectElement | null = null;
     await waitFor(() => {
       executorSelect = document.querySelector('select[aria-label="Executor"]');
       expect(executorSelect).toBeTruthy();
-      expect(executorSelect!.value).toBe('claude');
     });
-    await user.selectOptions(executorSelect!, 'codex');
 
+    // Select the custom profile openclaw (not the built-in codex).
+    await user.selectOptions(executorSelect!, 'openclaw');
     await waitFor(() => {
       expect(screen.getByText('Save agent')).toBeInTheDocument();
     });
 
+    // Click Save — it fails.
     await user.click(screen.getByText('Save agent'));
 
+    // Assert error is visible.
     await waitFor(() => {
       expect(screen.getByText(/Save error/)).toBeInTheDocument();
     });
+    // Assert the custom profile selection (openclaw) is STILL displayed/selected.
+    executorSelect = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+    expect(executorSelect.value).toBe('openclaw');
   });
 
   test('custom profile selectable in edit and sends PUT request', async () => {
@@ -876,6 +916,10 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     const unavailableOpt = screen.getByRole('option', { name: /openclaw.*unavailable/ });
     expect(unavailableOpt).toBeInTheDocument();
     expect((unavailableOpt as HTMLOptionElement).disabled).toBe(true);
+    // Settings → Executors link is visible adjacent to the select.
+    const settingsLink = screen.getByRole('link', { name: /Settings → Executors/i });
+    expect(settingsLink).toBeInTheDocument();
+    expect(settingsLink).toHaveAttribute('href', `/orgs/${SLUG}/settings/executors`);
   });
 
   test('stale agent executor remains visible but cannot be assigned', async () => {
@@ -938,6 +982,113 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     // The select's value is the stale executor (retained).
     const sel = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
     expect(sel.value).toBe('oldrunner');
+  });
+
+  test('edit refetch/removal: agent current executor disappears on refetch, stays disabled, no PUT on Save', async () => {
+    // An agent whose current executor is a custom profile (openclaw).
+    // Initially openclaw is available (present=true). After a refetch it
+    // disappears from profiles entirely — the stale executor must remain
+    // visible-disabled, and no dirty state means no PUT is emitted.
+    let putCalled = false;
+    sessionStorage.setItem('happyranch.token', 'tok');
+
+    // Phase A handlers: openclaw is available.
+    const phaseAProfiles = () =>
+      HttpResponse.json({
+        profiles: [
+          { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+        ],
+      });
+
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json({
+          agents: [
+            {
+              name: 'custom_exec_agent',
+              team: 'engineering',
+              role: 'worker',
+              executor: 'openclaw',
+              model: null,
+              description: 'Uses a custom executor.',
+              repos: {},
+              system_prompt: 'custom exec',
+            },
+          ],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json({}),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
+        HttpResponse.json({ teams: [] }),
+      ),
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [
+            { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+          ],
+        }),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', phaseAProfiles),
+      http.put(`/api/v1/orgs/${SLUG}/agents/custom_exec_agent/executor`, async () => {
+        putCalled = true;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    stubDetailHandlers();
+
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/custom_exec_agent`,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('worker')).toBeInTheDocument();
+    });
+    // Phase A: openclaw is present and selectable.
+    await waitFor(() => {
+      const sel = document.querySelector('select[aria-label="Executor"]');
+      expect(sel).toBeTruthy();
+    });
+    const selectableOpt = screen.getByRole('option', { name: 'openclaw (custom)' }) as HTMLOptionElement;
+    expect(selectableOpt).toBeInTheDocument();
+    expect(selectableOpt.disabled).toBe(false);
+
+    // Phase B: update the runtime/profiles handler so openclaw disappears.
+    server.use(
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({ profiles: [] }),
+      ),
+    );
+
+    // Re-render at the same route to trigger fresh query fetches.
+    const { unmount } = renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/custom_exec_agent`,
+    });
+    await waitFor(() => {
+      expect(screen.getByText('worker')).toBeInTheDocument();
+    });
+
+    // Phase B: openclaw is now stale — visible, disabled, and no Save bar.
+    await waitFor(() => {
+      const sel = document.querySelector('select[aria-label="Executor"]');
+      expect(sel).toBeTruthy();
+    });
+    const staleOpt = screen.getByRole('option', { name: /openclaw.*no longer registered/ });
+    expect(staleOpt).toBeInTheDocument();
+    expect((staleOpt as HTMLOptionElement).disabled).toBe(true);
+    // The select's value remains the stale executor.
+    const sel = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+    expect(sel.value).toBe('openclaw');
+    // No Save bar — nothing is dirty.
+    expect(screen.queryByText('Save agent')).not.toBeInTheDocument();
+    // No PUT was emitted.
+    expect(putCalled).toBe(false);
+
+    unmount();
   });
 });
 

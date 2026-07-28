@@ -287,7 +287,7 @@ describe('AddAgentDialog', () => {
     );
   });
 
-  test('no registered executors disables Create with truthful guidance', async () => {
+  test('no registered executors disables Create with truthful guidance and Settings → Executors link', async () => {
     vi.restoreAllMocks();
     vi.spyOn(teamsApi, 'listTeams').mockResolvedValue({
       teams: [{ name: 'engineering', manager: 'engineering_head', workers: [] }],
@@ -302,7 +302,12 @@ describe('AddAgentDialog', () => {
       expect(screen.getByText(/no executors are available/i)).toBeInTheDocument(),
     );
     expect(screen.getByText(/claude, codex, opencode, pi/i)).toBeInTheDocument();
-    expect(screen.getByText(/register one via settings/i)).toBeInTheDocument();
+    // Settings → Executors link is present and points to the correct destination.
+    const settingsLink = screen.getByRole('link', { name: /Settings → Executors/i });
+    expect(settingsLink).toBeInTheDocument();
+    expect(settingsLink).toHaveAttribute('href', '/orgs/test/settings/executors');
+    // The link text confirms the Settings → Executors destination.
+    expect(settingsLink).toHaveTextContent(/Settings → Executors/i);
 
     // Fill everything EXCEPT the (missing) executor selector.
     await user.selectOptions(screen.getByLabelText(/team/i), 'engineering');

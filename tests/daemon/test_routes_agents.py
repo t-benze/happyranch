@@ -1594,6 +1594,50 @@ def test_validate_executor_accepts_registered_custom_profile() -> None:
     _validate_executor("testcustom")
 
 
+def test_set_executor_accepts_registered_custom_profile_via_route(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A registered custom executor profile must be accepted by the real
+    PUT /agents/{agent}/executor route end-to-end — authentication, body
+    handling, validation, and persistence included."""
+    from runtime.orchestrator.executor_registry import ExecutorProfile, get_registry
+
+    registry = get_registry()
+    registry.register_custom_profile(
+        ExecutorProfile(
+            name="testcustom",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+        )
+    )
+    _seed_active_agent(org_state, "custom_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "custom_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/custom_agent/executor",
+            json={"executor": "testcustom"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["before"]["org_executor"] == "claude"
+    assert body["after"]["org_executor"] == "testcustom"
+
+    # org .md frontmatter persisted with the custom executor
+    from runtime.orchestrator import prompt_loader
+    reloaded = prompt_loader.load_agent(_paths(org_state), "custom_agent")
+    assert reloaded is not None and reloaded.executor == "testcustom"
+    # bootstrap regenerated with the new (custom) provider
+    assert mock_ctx.ensure_workspace_ready.call_args.kwargs.get("provider") == "testcustom"
+
+
 def test_set_executor_switches_org_and_workspace(
     tmp_home, app, org_state, auth_headers,
 ) -> None:

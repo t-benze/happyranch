@@ -433,6 +433,17 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
               </>
             )}
           </p>
+          {/* Settings → Executors navigation link for stale/unavailable executors */}
+          {slug && (currentExecutorIsStale || executorOptions.unavailable.length > 0) && (
+            <p className="text-text-muted mt-1 text-xs">
+              {currentExecutorIsStale
+                ? 'The current executor is no longer registered.'
+                : 'Unavailable executors need to be registered.'}{' '}
+              <Link to={`/orgs/${slug}/settings/executors`} className="text-accent-text underline">
+                Settings → Executors
+              </Link>
+            </p>
+          )}
         </section>
 
         {/* Model — freeform text input (executor-dependent, not a fixed enum) */}

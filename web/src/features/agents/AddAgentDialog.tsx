@@ -21,7 +21,7 @@
  * (no invented fallback).
  */
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
 import {
   Dialog,
@@ -252,17 +252,27 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
                 Could not load the executor list. Create is disabled.
               </p>
             ) : executorOptions.state === 'empty' ? (
-              <p className="text-fg-muted text-sm">
-                No executors are available on this machine.
-                {executorOptions.unavailable.length > 0 && (
-                  <>
-                    {' '}
-                    The following are not launchable:{' '}
-                    {executorOptions.unavailable.map((e) => e.name).join(', ')}.
-                  </>
+              <div>
+                <p className="text-fg-muted text-sm">
+                  No executors are available on this machine.
+                  {executorOptions.unavailable.length > 0 && (
+                    <>
+                      {' '}
+                      The following are not launchable:{' '}
+                      {executorOptions.unavailable.map((e) => e.name).join(', ')}.
+                    </>
+                  )}
+                </p>
+                {slug && (
+                  <p className="text-fg-muted mt-1 text-xs">
+                    Register one via{' '}
+                    <Link to={`/orgs/${slug}/settings/executors`} className="text-accent-text underline">
+                      Settings → Executors
+                    </Link>
+                    , then reopen this dialog.
+                  </p>
                 )}
-                {' '}Register one via Settings → Executors, then reopen this dialog.
-              </p>
+              </div>
             ) : (
               <select
                 id="agent-executor"
@@ -290,6 +300,15 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
                   </>
                 )}
               </select>
+            )}
+            {/* Settings → Executors navigation link for unavailable executors */}
+            {slug && executorOptions.state === 'ready' && executorOptions.unavailable.length > 0 && (
+              <p className="text-fg-muted mt-1 text-xs">
+                Unavailable executors need to be registered.{' '}
+                <Link to={`/orgs/${slug}/settings/executors`} className="text-accent-text underline">
+                  Settings → Executors
+                </Link>
+              </p>
             )}
           </div>
 

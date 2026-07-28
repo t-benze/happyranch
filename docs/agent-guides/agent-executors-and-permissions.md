@@ -325,8 +325,13 @@ flow entirely via loopback HTTP calls to the runtime routes above.
 
 ### Registration ≠ enrollment
 
-A registered profile becomes a **selectable executor option** (machine-global,
-visible to every org); it is **not** an agent enrollment. Assigning an agent
+A registered profile whose binary is currently launchable (`present: true`)
+becomes a **selectable executor option** (machine-global, visible to every
+org). Registered profiles whose binary is absent or unavailable
+(`present: false`) remain **visible but disabled/non-assignable** — they
+appear in the UI to show what has been registered, but the founder cannot
+assign them to an agent until the runtime reports them as launchable. All
+registered profiles are **not** agent enrollments. Assigning an agent
 to a registered executor
 is a separate founder gate — see [Switching an Existing Agent's
 Executor](#switching-an-existing-agents-executor) and
