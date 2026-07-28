@@ -1573,6 +1573,27 @@ def test_validate_executor_helper_accepts_and_rejects() -> None:
     assert "claude" in ei.value.detail["valid"] and "pi" in ei.value.detail["valid"]
 
 
+def test_validate_executor_accepts_registered_custom_profile() -> None:
+    """A custom profile registered in the ExecutorRegistry must be accepted
+    by _validate_executor — the set-executor route is registry-gated, not
+    hard-coded to four built-ins."""
+    from runtime.daemon.routes.agents import _validate_executor
+    from runtime.orchestrator.executor_registry import ExecutorProfile, get_registry
+
+    registry = get_registry()
+    registry.register_custom_profile(
+        ExecutorProfile(
+            name="testcustom",
+            kind="custom",
+            adapter_id="pi",
+            readiness_marker_fragment="AGENTS.md",
+            argv_template=["echo", "{prompt}"],
+        )
+    )
+    # Must not raise — the registered custom profile IS a valid executor.
+    _validate_executor("testcustom")
+
+
 def test_set_executor_switches_org_and_workspace(
     tmp_home, app, org_state, auth_headers,
 ) -> None:

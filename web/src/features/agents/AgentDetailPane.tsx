@@ -3,11 +3,12 @@
  *
  * Direction-A Pasture styling: font-display for agent name / section headings,
  * cards with shadow-pasture-sm + rounded-lg (18px), tag pills (rounded-full,
- * led dot), tabular-nums for counts/IDs, executor as segmented control.
+ * led dot), tabular-nums for counts/IDs.
  *
- * Sections: Header (agent identity), executor segmented control, repo/tool
- * chips, system prompt collapsible, accountability metrics, recent
- * tasks/memory/jobs. Sticky save bar at bottom.
+ * Sections: Header (agent identity), executor dropdown (live-derived from
+ * useExecutorOptions — same source as AddAgentDialog, no hard-coded list),
+ * repo/tool chips, system prompt collapsible, accountability metrics,
+ * recent tasks/memory/jobs. Sticky save bar at bottom.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -28,13 +29,7 @@ import { useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
 import { useDensity } from '@/hooks/density';
 import { AgentAvatar } from './AgentAvatar';
-
-const EXECUTOR_OPTIONS = [
-  { value: 'claude', label: 'claude' },
-  { value: 'codex', label: 'codex' },
-  { value: 'opencode', label: 'opencode' },
-  { value: 'pi', label: 'pi' },
-] as const;
+import { useExecutorOptions } from './useExecutorOptions';
 
 interface AgentDetailPaneProps {
   agentName: string;
@@ -78,6 +73,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const setExecutor = useSetAgentExecutor();
   const setModel = useSetAgentModel();
   const manageRepo = useManageAgentRepo();
+  const executorOptions = useExecutorOptions();
 
   const agent = agentsQuery.data?.agents.find((a) => a.name === agentName);
   const repos = useMemo(() => agent?.repos ?? {}, [agent?.repos]);
@@ -107,8 +103,31 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const displayModel = dirty.model !== undefined ? dirty.model : (agent?.model ?? '');
   const displayRepos = dirty.repos ?? repos;
 
+  // Is the agent's current executor (or the dirty value) available as a
+  // selectable live option? Used to guard save + display.
+  const currentExecutorName = agent?.executor ?? '';
+  const liveSelectableNames = useMemo(
+    () => new Set(executorOptions.selectable.map((o) => o.name)),
+    [executorOptions.selectable],
+  );
+  const allLiveNames = useMemo(
+    () => new Set([
+      ...executorOptions.selectable.map((o) => o.name),
+      ...executorOptions.unavailable.map((o) => o.name),
+    ]),
+    [executorOptions.selectable, executorOptions.unavailable],
+  );
+  // The current executor is "stale" when it is neither selectable nor
+  // listed as unavailable — it has completely disappeared from the live
+  // data (e.g., custom profile was removed). It must still be shown but
+  // cannot be assigned.
+  const currentExecutorIsStale =
+    currentExecutorName !== '' && !allLiveNames.has(currentExecutorName);
+
   const onExecutorChange = useCallback((val: string) => {
-    if (val === agent?.executor) {
+    // Prevent selecting an unavailable option.
+    if (!liveSelectableNames.has(val)) return;
+    if (val === currentExecutorName) {
       setDirty((prev) => {
         const next = { ...prev };
         delete next.executor;
@@ -118,7 +137,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
       setDirty((prev) => ({ ...prev, executor: val }));
     }
     setSaveError(null);
-  }, [agent?.executor]);
+  }, [currentExecutorName, liveSelectableNames]);
 
   const onModelChange = useCallback((val: string) => {
     const trimmed = val.trim();
@@ -167,16 +186,25 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
     setSaveError(null);
     const errors: string[] = [];
 
-    // Save executor if dirty
+    // Save executor if dirty — guard: don't send an executor that is no
+    // longer selectable (e.g., refetched away or unavailable).
     if (dirty.executor && dirty.executor !== agent?.executor) {
-      try {
-        await setExecutor.mutateAsync({
-          agentName,
-          body: { executor: dirty.executor },
-        });
-      } catch (err: unknown) {
-        const e = err as { message?: string };
-        errors.push(`Executor: ${e.message ?? 'save failed'}`);
+      if (!liveSelectableNames.has(dirty.executor)) {
+        errors.push(`Executor "${dirty.executor}" is no longer available.`);
+      } else {
+        try {
+          await setExecutor.mutateAsync({
+            agentName,
+            body: { executor: dirty.executor },
+          });
+        } catch (err: unknown) {
+          const e = err as { message?: string };
+          errors.push(`Executor: ${e.message ?? 'save failed'}`);
+          // Preserve dirty state on error — user can retry.
+          setSaving(false);
+          setSaveError(errors.join('; '));
+          return;
+        }
       }
     }
 
@@ -251,7 +279,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
       setDirty({});
     }
     setSaving(false);
-  }, [slug, dirty, agentName, agent, setExecutor, manageRepo]);
+  }, [slug, dirty, agentName, agent, setExecutor, setModel, manageRepo, liveSelectableNames]);
 
   const onReset = useCallback(() => {
     setDirty({});
@@ -339,32 +367,71 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
 
       {/* --- Editable fields — Pasture card sections --- */}
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
-        {/* Executor — segmented control */}
+        {/* Executor — live-derived dropdown (same source as AddAgentDialog) */}
         <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
             Executor
           </h3>
-          <div className="flex gap-1">
-            {EXECUTOR_OPTIONS.map((opt) => {
-              const selected = displayExecutor === opt.value;
-              return (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => onExecutorChange(opt.value)}
-                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                    selected
-                      ? 'bg-accent-soft text-accent-text border border-transparent'
-                      : 'bg-surface-sunken text-text-muted border-border-default hover:border-border-strong border'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
+          {executorOptions.state === 'loading' ? (
+            <p className="text-text-muted text-sm">Loading executor list…</p>
+          ) : executorOptions.state === 'error' ? (
+            <p className="text-tier-red text-xs">
+              Could not load executor list. Editing is disabled.
+            </p>
+          ) : (
+            <select
+              value={displayExecutor}
+              onChange={(e) => onExecutorChange(e.target.value)}
+              className="border-border-subtle bg-surface w-full max-w-xs rounded border p-2 text-sm"
+              aria-label="Executor"
+            >
+              {/* Stale current executor — visible but not assignable */}
+              {currentExecutorIsStale && (
+                <option key={currentExecutorName} value={currentExecutorName} disabled>
+                  {currentExecutorName} (current, no longer registered)
+                </option>
+              )}
+              {/* Unavailable current executor that IS known but not launchable */}
+              {!currentExecutorIsStale &&
+                executorOptions.unavailable.some((o) => o.name === displayExecutor) && (
+                <option key={displayExecutor} value={displayExecutor} disabled>
+                  {displayExecutor} (current, unavailable — Settings → Executors)
+                </option>
+              )}
+              {executorOptions.selectable.map((opt) => (
+                <option key={opt.name} value={opt.name}>
+                  {opt.name}
+                  {opt.kind === 'custom' ? ' (custom)' : ''}
+                </option>
+              ))}
+              {executorOptions.unavailable
+                .filter((o) => o.name !== displayExecutor)
+                .length > 0 && (
+                <>
+                  <option disabled>── unavailable ──</option>
+                  {executorOptions.unavailable
+                    .filter((o) => o.name !== displayExecutor)
+                    .map((opt) => (
+                      <option key={opt.name} value={opt.name} disabled>
+                        {opt.name}
+                        {opt.kind === 'custom'
+                          ? ' (custom, unavailable — Settings → Executors)'
+                          : ' (not registered — Settings → Executors)'}
+                      </option>
+                    ))}
+                </>
+              )}
+            </select>
+          )}
           <p className="text-text-muted mt-2 text-xs">
             Takes effect on this agent's next task.
+            {currentExecutorIsStale && (
+              <>
+                {' '}
+                The current executor &ldquo;{currentExecutorName}&rdquo; is no longer
+                registered and cannot be assigned to new agents.
+              </>
+            )}
           </p>
         </section>
 
