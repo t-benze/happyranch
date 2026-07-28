@@ -1,7 +1,10 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test } from 'vitest';
+import { AppProvider } from '@/design-system/providers/AppProvider';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
@@ -1089,6 +1092,140 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     expect(putCalled).toBe(false);
 
     unmount();
+  });
+
+  test('edit dirty-selection guard: when selected custom profile becomes unavailable, Save errors and no PUT is emitted', async () => {
+    // Agent whose current executor is 'claude' (NOT the custom profile).
+    // User selects 'openclaw' (custom, present=true), making it dirty.
+    // Then 'openclaw' becomes unavailable (present:false) via refetch.
+    // Save must error with the guard message and never call PUT.
+    let putCalled = false;
+    sessionStorage.setItem('happyranch.token', 'tok');
+
+    // Phase A handlers: openclaw is available (present=true).
+    const phaseAProfiles = () =>
+      HttpResponse.json({
+        profiles: [
+          { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+        ],
+      });
+
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json({
+          agents: [
+            {
+              name: 'claude_agent',
+              team: 'engineering',
+              role: 'worker',
+              executor: 'claude',
+              model: null,
+              description: 'Uses claude.',
+              repos: {},
+              system_prompt: 'claude exec',
+            },
+          ],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json({}),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
+        HttpResponse.json({ teams: [] }),
+      ),
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [
+            { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+          ],
+        }),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', phaseAProfiles),
+      http.put(`/api/v1/orgs/${SLUG}/agents/claude_agent/executor`, async () => {
+        putCalled = true;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    stubDetailHandlers();
+
+    // ONE mount, ONE QueryClient — expose it to invalidate queries without
+    // unmounting (which would reset dirty state).
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={[`/orgs/${SLUG}/agents/claude_agent`]}>
+        <AppProvider client={qc}>
+          <AppRoutes />
+        </AppProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('worker')).toBeInTheDocument();
+    });
+    // Wait for the executor select to render.
+    let execSelect!: HTMLSelectElement;
+    await waitFor(() => {
+      execSelect = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+      expect(execSelect).toBeTruthy();
+    });
+    // Phase A: openclaw is selectable.
+    const selectableOpt = screen.getByRole('option', { name: 'openclaw (custom)' }) as HTMLOptionElement;
+    expect(selectableOpt).toBeInTheDocument();
+    expect(selectableOpt.disabled).toBe(false);
+
+    // Select the custom profile — makes dirty.executor = 'openclaw'.
+    await user.selectOptions(execSelect, 'openclaw');
+    await waitFor(() => {
+      expect(screen.getByText('Save agent')).toBeInTheDocument();
+    });
+    // Confirm the select now shows openclaw.
+    execSelect = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+    expect(execSelect.value).toBe('openclaw');
+
+    // Phase B: openclaw becomes unavailable (present:false) via refetch.
+    server.use(
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({
+          profiles: [
+            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null, envelope_policy: null },
+          ],
+        }),
+      ),
+    );
+    // Invalidate the runtime-profiles query to trigger a refetch while the
+    // component stays mounted (dirty state is preserved).
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: ['runtime-profiles'] });
+    });
+
+    // Phase B: openclaw is now in the disabled/unavailable section.
+    await waitFor(() => {
+      const disabledOpt = screen.getByRole('option', { name: /openclaw.*unavailable/ });
+      expect(disabledOpt).toBeInTheDocument();
+      expect((disabledOpt as HTMLOptionElement).disabled).toBe(true);
+    });
+    // Save bar is still visible — the dirty selection is preserved.
+    expect(screen.getByText('Save agent')).toBeInTheDocument();
+
+    // Click Save — the dirty-selection guard at AgentDetailPane.onSave
+    // must detect that the selected executor is no longer selectable
+    // and error WITHOUT issuing a PUT.
+    await user.click(screen.getByText('Save agent'));
+
+    // Guard error: "Executor "openclaw" is no longer available."
+    await waitFor(() => {
+      expect(screen.getByText(/Save error/)).toBeInTheDocument();
+      expect(screen.getByText(/no longer available/)).toBeInTheDocument();
+    });
+    // The dirty selection (openclaw) is retained — not cleared.
+    execSelect = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+    expect(execSelect.value).toBe('openclaw');
+    // The executor PUT was NEVER called.
+    expect(putCalled).toBe(false);
   });
 });
 
