@@ -209,11 +209,11 @@ describe('AddAgentDialog', () => {
     expect(executorSelect.value).toBe('claude');
 
     // Unregistered built-ins are present but disabled.
-    const codexOpt = screen.getByRole('option', { name: 'codex (not registered)' }) as HTMLOptionElement;
+    const codexOpt = screen.getByRole('option', { name: /codex.*Settings/ }) as HTMLOptionElement;
     expect(codexOpt.disabled).toBe(true);
-    const opencodeOpt = screen.getByRole('option', { name: 'opencode (not registered)' }) as HTMLOptionElement;
+    const opencodeOpt = screen.getByRole('option', { name: /opencode.*Settings/ }) as HTMLOptionElement;
     expect(opencodeOpt.disabled).toBe(true);
-    const piOpt = screen.getByRole('option', { name: 'pi (not registered)' }) as HTMLOptionElement;
+    const piOpt = screen.getByRole('option', { name: /pi.*Settings/ }) as HTMLOptionElement;
     expect(piOpt.disabled).toBe(true);
 
     // Fill the form and submit.
@@ -230,8 +230,36 @@ describe('AddAgentDialog', () => {
     );
   });
 
-  test('custom CLI profile with present=false is displayed, selectable, and submitted', async () => {
+  test('custom CLI profile with present=false is displayed disabled (unavailable)', async () => {
+    renderDialog();
+
+    await waitFor(() => screen.getByRole('option', { name: 'engineering' }));
+
+    // Custom profile with present=false is in the unavailable section.
+    const customOpt = screen.getByRole('option', { name: /openclaw.*unavailable/ }) as HTMLOptionElement;
+    expect(customOpt).toBeInTheDocument();
+    expect(customOpt.disabled).toBe(true);
+
+    // Cannot select an unavailable custom profile — stays at claude.
+    expect((screen.getByLabelText(/executor/i) as HTMLSelectElement).value).toBe('claude');
+  });
+
+  test('custom CLI profile with present=true is selectable and submitted on create', async () => {
     const user = userEvent.setup();
+    // Override: make openclaw present=true.
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+        { tool: 'codex', present: false, path: null, hint: '' },
+        { tool: 'opencode', present: false, path: null, hint: '' },
+        { tool: 'pi', present: false, path: null, hint: '' },
+      ],
+    });
+    vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
+      profiles: [
+        { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+      ],
+    });
     const spy = vi.spyOn(agentsApi, 'createAgent').mockResolvedValue({
       name: 'w1', team: 'engineering', role: 'worker',
     });
@@ -239,7 +267,7 @@ describe('AddAgentDialog', () => {
 
     await waitFor(() => screen.getByRole('option', { name: 'engineering' }));
 
-    // Custom profile appears with (custom) suffix.
+    // Custom profile with present=true is selectable.
     const customOpt = screen.getByRole('option', { name: 'openclaw (custom)' }) as HTMLOptionElement;
     expect(customOpt).toBeInTheDocument();
     expect(customOpt.disabled).toBe(false);
@@ -259,7 +287,7 @@ describe('AddAgentDialog', () => {
     );
   });
 
-  test('no registered executors disables Create with truthful guidance', async () => {
+  test('no registered executors disables Create with truthful guidance and Settings → Executors link', async () => {
     vi.restoreAllMocks();
     vi.spyOn(teamsApi, 'listTeams').mockResolvedValue({
       teams: [{ name: 'engineering', manager: 'engineering_head', workers: [] }],
@@ -269,12 +297,17 @@ describe('AddAgentDialog', () => {
     const user = userEvent.setup();
     renderDialog();
 
-    // Empty-state message references unregistered built-ins.
+    // Empty-state message references unavailable executors.
     await waitFor(() =>
-      expect(screen.getByText(/no executors are registered/i)).toBeInTheDocument(),
+      expect(screen.getByText(/no executors are available/i)).toBeInTheDocument(),
     );
     expect(screen.getByText(/claude, codex, opencode, pi/i)).toBeInTheDocument();
-    expect(screen.getByText(/register one via settings/i)).toBeInTheDocument();
+    // Settings → Executors link is present and points to the correct destination.
+    const settingsLink = screen.getByRole('link', { name: /Settings → Executors/i });
+    expect(settingsLink).toBeInTheDocument();
+    expect(settingsLink).toHaveAttribute('href', '/orgs/test/settings/executors');
+    // The link text confirms the Settings → Executors destination.
+    expect(settingsLink).toHaveTextContent(/Settings → Executors/i);
 
     // Fill everything EXCEPT the (missing) executor selector.
     await user.selectOptions(screen.getByLabelText(/team/i), 'engineering');
@@ -315,8 +348,8 @@ describe('AddAgentDialog', () => {
     expect(geminiOpt).toBeInTheDocument();
     expect(geminiOpt.disabled).toBe(false);
 
-    // "claude" with present=false is in the unregistered section.
-    const claudeOpt = screen.getByRole('option', { name: 'claude (not registered)' }) as HTMLOptionElement;
+    // "claude" with present=false is in the unavailable section.
+    const claudeOpt = screen.getByRole('option', { name: /claude.*Settings/ }) as HTMLOptionElement;
     expect(claudeOpt.disabled).toBe(true);
 
     // Select gemini and submit.
@@ -415,10 +448,10 @@ describe('AddAgentDialog', () => {
         { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
       ],
     });
-    // A custom profile with a non-four-name executor.
+    // A custom profile with a non-four-name executor, launchable.
     vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
       profiles: [
-        { name: 'my-runner', command: 'my-runner', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null, envelope_policy: null },
+        { name: 'my-runner', command: 'my-runner', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/my-runner', envelope_policy: null },
       ],
     });
 

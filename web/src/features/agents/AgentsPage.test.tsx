@@ -1,7 +1,10 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test } from 'vitest';
+import { AppProvider } from '@/design-system/providers/AppProvider';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
@@ -45,6 +48,20 @@ function stubBaseHandlers() {
     ),
     http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
       HttpResponse.json({ teams: [] }),
+    ),
+    // Executor prereqs — required by AgentDetailPane's useExecutorOptions
+    http.get('/api/v1/health/prereqs', () =>
+      HttpResponse.json({
+        prereqs: [
+          { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+          { tool: 'codex', present: true, path: '/usr/local/bin/codex', hint: '' },
+          { tool: 'opencode', present: false, path: null, hint: '' },
+          { tool: 'pi', present: false, path: null, hint: '' },
+        ],
+      }),
+    ),
+    http.get('/api/v1/executors/runtime/profiles', () =>
+      HttpResponse.json({ profiles: [] }),
     ),
   );
 }
@@ -219,12 +236,16 @@ describe('AgentDetailPane — editable fields', () => {
     stubDetailHandlers();
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
+    // Wait for both agent data and executor data to load.
     await waitFor(() => {
-      expect(screen.getByText('Executor')).toBeInTheDocument();
+      expect(screen.getByText('manager')).toBeInTheDocument();
     });
-    // Executor segmented control buttons should be visible
-    const claudeBtn = screen.getByRole('button', { name: 'claude' });
-    expect(claudeBtn).toBeInTheDocument();
+    // Wait for the executor select to render with the agent's current executor.
+    await waitFor(() => {
+      const sel = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+      expect(sel).toBeTruthy();
+      expect(sel.value).toBe('claude');
+    });
   });
 
   test('shows repo chips and Add repository button', async () => {
@@ -594,13 +615,19 @@ describe('AgentDetailPane — save flow (executor switch)', () => {
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
-    // Wait for detail pane to render with executor segmented control.
+    // Wait for detail pane to render.
     await waitFor(() => {
       expect(screen.getByText('manager')).toBeInTheDocument();
     });
-    // The executor segmented control: find "codex" button and click it.
-    const codexBtn = screen.getByRole('button', { name: 'codex' });
-    await user.click(codexBtn);
+    // Wait for the executor select to render with the agent's current executor.
+    let executorSelect: HTMLSelectElement | null = null;
+    await waitFor(() => {
+      executorSelect = document.querySelector('select[aria-label="Executor"]');
+      expect(executorSelect).toBeTruthy();
+      expect(executorSelect!.value).toBe('claude');
+    });
+    // Switch to codex.
+    await user.selectOptions(executorSelect!, 'codex');
 
     // Save bar should appear
     await waitFor(() => {
@@ -626,9 +653,14 @@ describe('AgentDetailPane — save flow (executor switch)', () => {
     await waitFor(() => {
       expect(screen.getByText('manager')).toBeInTheDocument();
     });
-    // Find "codex" button in the segmented executor control
-    const codexBtn = screen.getByRole('button', { name: 'codex' });
-    await user.click(codexBtn);
+    // Wait for the executor select to render.
+    let executorSelect: HTMLSelectElement | null = null;
+    await waitFor(() => {
+      executorSelect = document.querySelector('select[aria-label="Executor"]');
+      expect(executorSelect).toBeTruthy();
+      expect(executorSelect!.value).toBe('claude');
+    });
+    await user.selectOptions(executorSelect!, 'codex');
 
     // Save bar visible
     await waitFor(() => {
@@ -685,33 +717,515 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     });
   });
 
-  test('Save error shows inline message', async () => {
-    stubBaseHandlers();
-    stubDetailHandlers();
+  test('edit mutation error preserves custom profile selection and error remains visible', async () => {
+    // This test must select an available custom profile (not the built-in codex)
+    // and directly assert that the exact custom selection remains displayed/selected
+    // and the error remains visible after the failed save.
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json(AGENTS_PAYLOAD),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json({}),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
+        HttpResponse.json({ teams: [] }),
+      ),
+      // Only claude is launchable; custom profile openclaw is present=true.
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [
+            { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+            { tool: 'codex', present: false, path: null, hint: '' },
+            { tool: 'opencode', present: false, path: null, hint: '' },
+            { tool: 'pi', present: false, path: null, hint: '' },
+          ],
+        }),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({
+          profiles: [
+            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+          ],
+        }),
+      ),
+      // Executor save fails with 500.
       http.put(`/api/v1/orgs/${SLUG}/agents/engineering_head/executor`, () =>
         HttpResponse.json({ detail: 'Internal error' }, { status: 500 }),
       ),
     );
+    stubDetailHandlers();
     const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/engineering_head`,
+    });
 
     await waitFor(() => {
       expect(screen.getByText('manager')).toBeInTheDocument();
     });
-    // Click "codex" button in the segmented executor control
-    const codexBtn = screen.getByRole('button', { name: 'codex' });
-    await user.click(codexBtn);
+    let executorSelect: HTMLSelectElement | null = null;
+    await waitFor(() => {
+      executorSelect = document.querySelector('select[aria-label="Executor"]');
+      expect(executorSelect).toBeTruthy();
+    });
 
+    // Select the custom profile openclaw (not the built-in codex).
+    await user.selectOptions(executorSelect!, 'openclaw');
     await waitFor(() => {
       expect(screen.getByText('Save agent')).toBeInTheDocument();
     });
 
+    // Click Save — it fails.
     await user.click(screen.getByText('Save agent'));
 
+    // Assert error is visible.
     await waitFor(() => {
       expect(screen.getByText(/Save error/)).toBeInTheDocument();
     });
+    // Assert the custom profile selection (openclaw) is STILL displayed/selected.
+    executorSelect = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+    expect(executorSelect.value).toBe('openclaw');
+  });
+
+  test('custom profile selectable in edit and sends PUT request', async () => {
+    let executorPutBody: unknown = null;
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json(AGENTS_PAYLOAD),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json({}),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
+        HttpResponse.json({ teams: [] }),
+      ),
+      // Executor prereqs — include a custom profile with present=true.
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [
+            { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+            { tool: 'codex', present: false, path: null, hint: '' },
+            { tool: 'opencode', present: false, path: null, hint: '' },
+            { tool: 'pi', present: false, path: null, hint: '' },
+          ],
+        }),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({
+          profiles: [
+            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+          ],
+        }),
+      ),
+      http.put(`/api/v1/orgs/${SLUG}/agents/engineering_head/executor`, async ({ request }) => {
+        executorPutBody = await request.json();
+        return HttpResponse.json({
+          agent: 'engineering_head',
+          before: { org_executor: 'claude', workspace_executor: 'claude' },
+          after: { org_executor: 'openclaw', workspace_executor: 'openclaw' },
+          stale_files: [],
+        });
+      }),
+    );
+    stubDetailHandlers();
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/engineering_head`,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('manager')).toBeInTheDocument();
+    });
+    // Wait for the executor select to render.
+    let executorSelect: HTMLSelectElement | null = null;
+    await waitFor(() => {
+      executorSelect = document.querySelector('select[aria-label="Executor"]');
+      expect(executorSelect).toBeTruthy();
+    });
+    // The custom profile should be selectable.
+    const customOpt = screen.getByRole('option', { name: 'openclaw (custom)' }) as HTMLOptionElement;
+    expect(customOpt).toBeInTheDocument();
+    expect(customOpt.disabled).toBe(false);
+
+    // Select the custom profile.
+    await user.selectOptions(executorSelect!, 'openclaw');
+    await waitFor(() => {
+      expect(screen.getByText('Save agent')).toBeInTheDocument();
+    });
+
+    // Click Save.
+    await user.click(screen.getByText('Save agent'));
+    await waitFor(() => {
+      expect(executorPutBody).toEqual({ executor: 'openclaw' });
+    });
+  });
+
+  test('unavailable custom profile is shown disabled in edit pane', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json(AGENTS_PAYLOAD),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json({}),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
+        HttpResponse.json({ teams: [] }),
+      ),
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [
+            { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+            { tool: 'codex', present: false, path: null, hint: '' },
+            { tool: 'opencode', present: false, path: null, hint: '' },
+            { tool: 'pi', present: false, path: null, hint: '' },
+          ],
+        }),
+      ),
+      // Custom profile with present=false → should be disabled.
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({
+          profiles: [
+            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null, envelope_policy: null },
+          ],
+        }),
+      ),
+    );
+    stubDetailHandlers();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/engineering_head`,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('manager')).toBeInTheDocument();
+    });
+    // Wait for the executor select to render.
+    await waitFor(() => {
+      const sel = document.querySelector('select[aria-label="Executor"]');
+      expect(sel).toBeTruthy();
+    });
+    // The unavailable custom profile is in the disabled section.
+    const unavailableOpt = screen.getByRole('option', { name: /openclaw.*unavailable/ });
+    expect(unavailableOpt).toBeInTheDocument();
+    expect((unavailableOpt as HTMLOptionElement).disabled).toBe(true);
+    // Settings → Executors link is visible adjacent to the select.
+    const settingsLink = screen.getByRole('link', { name: /Settings → Executors/i });
+    expect(settingsLink).toBeInTheDocument();
+    expect(settingsLink).toHaveAttribute('href', `/orgs/${SLUG}/settings/executors`);
+  });
+
+  test('stale agent executor remains visible but cannot be assigned', async () => {
+    // Agent has executor "oldrunner" but the live data has only claude.
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json({
+          agents: [
+            {
+              name: 'stale_agent',
+              team: 'engineering',
+              role: 'worker',
+              executor: 'oldrunner',
+              model: null,
+              description: 'Has a stale executor.',
+              repos: {},
+              system_prompt: 'stale',
+            },
+          ],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json({}),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
+        HttpResponse.json({ teams: [] }),
+      ),
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [
+            { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+          ],
+        }),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({ profiles: [] }),
+      ),
+    );
+    stubDetailHandlers();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/stale_agent`,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('worker')).toBeInTheDocument();
+    });
+    // Wait for the executor select to render.
+    await waitFor(() => {
+      const sel = document.querySelector('select[aria-label="Executor"]');
+      expect(sel).toBeTruthy();
+    });
+    // The stale executor is visible as a disabled option.
+    const staleOpt = screen.getByRole('option', { name: /oldrunner.*no longer registered/ });
+    expect(staleOpt).toBeInTheDocument();
+    expect((staleOpt as HTMLOptionElement).disabled).toBe(true);
+    // The select's value is the stale executor (retained).
+    const sel = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+    expect(sel.value).toBe('oldrunner');
+  });
+
+  test('edit refetch/removal: agent current executor disappears on refetch, stays disabled, no PUT on Save', async () => {
+    // An agent whose current executor is a custom profile (openclaw).
+    // Initially openclaw is available (present=true). After a refetch it
+    // disappears from profiles entirely — the stale executor must remain
+    // visible-disabled, and no dirty state means no PUT is emitted.
+    let putCalled = false;
+    sessionStorage.setItem('happyranch.token', 'tok');
+
+    // Phase A handlers: openclaw is available.
+    const phaseAProfiles = () =>
+      HttpResponse.json({
+        profiles: [
+          { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+        ],
+      });
+
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json({
+          agents: [
+            {
+              name: 'custom_exec_agent',
+              team: 'engineering',
+              role: 'worker',
+              executor: 'openclaw',
+              model: null,
+              description: 'Uses a custom executor.',
+              repos: {},
+              system_prompt: 'custom exec',
+            },
+          ],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json({}),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
+        HttpResponse.json({ teams: [] }),
+      ),
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [
+            { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+          ],
+        }),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', phaseAProfiles),
+      http.put(`/api/v1/orgs/${SLUG}/agents/custom_exec_agent/executor`, async () => {
+        putCalled = true;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    stubDetailHandlers();
+
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/custom_exec_agent`,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('worker')).toBeInTheDocument();
+    });
+    // Phase A: openclaw is present and selectable.
+    await waitFor(() => {
+      const sel = document.querySelector('select[aria-label="Executor"]');
+      expect(sel).toBeTruthy();
+    });
+    const selectableOpt = screen.getByRole('option', { name: 'openclaw (custom)' }) as HTMLOptionElement;
+    expect(selectableOpt).toBeInTheDocument();
+    expect(selectableOpt.disabled).toBe(false);
+
+    // Phase B: update the runtime/profiles handler so openclaw disappears.
+    server.use(
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({ profiles: [] }),
+      ),
+    );
+
+    // Re-render at the same route to trigger fresh query fetches.
+    const { unmount } = renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/custom_exec_agent`,
+    });
+    await waitFor(() => {
+      expect(screen.getByText('worker')).toBeInTheDocument();
+    });
+
+    // Phase B: openclaw is now stale — visible, disabled, and no Save bar.
+    await waitFor(() => {
+      const sel = document.querySelector('select[aria-label="Executor"]');
+      expect(sel).toBeTruthy();
+    });
+    const staleOpt = screen.getByRole('option', { name: /openclaw.*no longer registered/ });
+    expect(staleOpt).toBeInTheDocument();
+    expect((staleOpt as HTMLOptionElement).disabled).toBe(true);
+    // The select's value remains the stale executor.
+    const sel = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+    expect(sel.value).toBe('openclaw');
+    // No Save bar — nothing is dirty.
+    expect(screen.queryByText('Save agent')).not.toBeInTheDocument();
+    // No PUT was emitted.
+    expect(putCalled).toBe(false);
+
+    unmount();
+  });
+
+  test('edit dirty-selection guard: when selected custom profile becomes unavailable, Save errors and no PUT is emitted', async () => {
+    // Agent whose current executor is 'claude' (NOT the custom profile).
+    // User selects 'openclaw' (custom, present=true), making it dirty.
+    // Then 'openclaw' becomes unavailable (present:false) via refetch.
+    // Save must error with the guard message and never call PUT.
+    let putCalled = false;
+    sessionStorage.setItem('happyranch.token', 'tok');
+
+    // Phase A handlers: openclaw is available (present=true).
+    const phaseAProfiles = () =>
+      HttpResponse.json({
+        profiles: [
+          { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+        ],
+      });
+
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json({
+          agents: [
+            {
+              name: 'claude_agent',
+              team: 'engineering',
+              role: 'worker',
+              executor: 'claude',
+              model: null,
+              description: 'Uses claude.',
+              repos: {},
+              system_prompt: 'claude exec',
+            },
+          ],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+        HttpResponse.json({}),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
+        HttpResponse.json({ teams: [] }),
+      ),
+      http.get('/api/v1/health/prereqs', () =>
+        HttpResponse.json({
+          prereqs: [
+            { tool: 'claude', present: true, path: '/usr/local/bin/claude', hint: '' },
+          ],
+        }),
+      ),
+      http.get('/api/v1/executors/runtime/profiles', phaseAProfiles),
+      http.put(`/api/v1/orgs/${SLUG}/agents/claude_agent/executor`, async () => {
+        putCalled = true;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    stubDetailHandlers();
+
+    // ONE mount, ONE QueryClient — expose it to invalidate queries without
+    // unmounting (which would reset dirty state).
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={[`/orgs/${SLUG}/agents/claude_agent`]}>
+        <AppProvider client={qc}>
+          <AppRoutes />
+        </AppProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('worker')).toBeInTheDocument();
+    });
+    // Wait for the executor select to render.
+    let execSelect!: HTMLSelectElement;
+    await waitFor(() => {
+      execSelect = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+      expect(execSelect).toBeTruthy();
+    });
+    // Phase A: openclaw is selectable.
+    const selectableOpt = screen.getByRole('option', { name: 'openclaw (custom)' }) as HTMLOptionElement;
+    expect(selectableOpt).toBeInTheDocument();
+    expect(selectableOpt.disabled).toBe(false);
+
+    // Select the custom profile — makes dirty.executor = 'openclaw'.
+    await user.selectOptions(execSelect, 'openclaw');
+    await waitFor(() => {
+      expect(screen.getByText('Save agent')).toBeInTheDocument();
+    });
+    // Confirm the select now shows openclaw.
+    execSelect = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+    expect(execSelect.value).toBe('openclaw');
+
+    // Phase B: openclaw becomes unavailable (present:false) via refetch.
+    server.use(
+      http.get('/api/v1/executors/runtime/profiles', () =>
+        HttpResponse.json({
+          profiles: [
+            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null, envelope_policy: null },
+          ],
+        }),
+      ),
+    );
+    // Invalidate the runtime-profiles query to trigger a refetch while the
+    // component stays mounted (dirty state is preserved).
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: ['runtime-profiles'] });
+    });
+
+    // Phase B: openclaw is now in the disabled/unavailable section.
+    await waitFor(() => {
+      const disabledOpt = screen.getByRole('option', { name: /openclaw.*unavailable/ });
+      expect(disabledOpt).toBeInTheDocument();
+      expect((disabledOpt as HTMLOptionElement).disabled).toBe(true);
+    });
+    // Save bar is still visible — the dirty selection is preserved.
+    expect(screen.getByText('Save agent')).toBeInTheDocument();
+
+    // Click Save — the dirty-selection guard at AgentDetailPane.onSave
+    // must detect that the selected executor is no longer selectable
+    // and error WITHOUT issuing a PUT.
+    await user.click(screen.getByText('Save agent'));
+
+    // Guard error: "Executor "openclaw" is no longer available."
+    await waitFor(() => {
+      expect(screen.getByText(/Save error/)).toBeInTheDocument();
+      expect(screen.getByText(/no longer available/)).toBeInTheDocument();
+    });
+    // The dirty selection (openclaw) is retained — not cleared.
+    execSelect = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
+    expect(execSelect.value).toBe('openclaw');
+    // The executor PUT was NEVER called.
+    expect(putCalled).toBe(false);
   });
 });
 
