@@ -136,7 +136,12 @@ def remove_binary(kind: str) -> None:
 def validate_binary(path_str: str) -> str:
     """Validate that ``path_str`` is an absolute path pointing to an executable file.
 
-    Returns the absolute, resolved path on success.
+    Returns the validated absolute path on success. For symlinks, the
+    supplied spelling is preserved (the operator-registered symlink path,
+    such as /opt/homebrew/bin/claude → ../Cellar/.../bin/claude) so stored
+    and displayed paths remain stable across target version bumps.
+    Validation follows the symlink target for safety (existence, regular
+    file, executable checks) but the returned path is the supplied spelling.
 
     Raises ``ValueError`` with a user-actionable message on failure.
     """
@@ -146,15 +151,19 @@ def validate_binary(path_str: str) -> str:
             f"Use an absolute path like '/opt/homebrew/bin/claude'."
         )
     p = Path(path_str)
-    if not p.is_file():
+    # THR-107: validate through symlink for safety, but return
+    # the operator-supplied spelling so stable Homebrew symlinks
+    # survive version bumps in the Cellar target.
+    _resolved = p.resolve()  # used only for safety checks below
+    if not _resolved.is_file():
         raise ValueError(
             f"Path {path_str!r} does not exist or is not a regular file."
         )
-    if not os.access(path_str, os.X_OK):
+    if not os.access(str(_resolved), os.X_OK):
         raise ValueError(
             f"Path {path_str!r} exists but is not executable."
         )
-    return str(p.resolve())
+    return path_str
 
 
 def is_binary_valid(path_str: str) -> bool:

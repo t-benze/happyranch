@@ -1222,7 +1222,7 @@ def runtime_register_binary(
 
     # 4. Validate the binary path BEFORE any side effects
     try:
-        resolved = validate_binary(body.path)
+        validated = validate_binary(body.path)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1239,7 +1239,7 @@ def runtime_register_binary(
 
     try:
         # 6. Write the binary path to the machine-local registry
-        set_binary(kind, resolved)
+        set_binary(kind, validated)
     except BaseException:
         store.release_runtime(token_value)
         raise
@@ -1249,7 +1249,7 @@ def runtime_register_binary(
 
     return RegisterBinaryResponse(
         kind=kind,
-        path=resolved,
+        path=validated,
         valid=True,
     )
 

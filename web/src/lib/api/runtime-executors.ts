@@ -32,7 +32,7 @@ export interface RegisterBinaryScopedRequest {
 export interface RegisterBinaryScopedResponse {
   /** Executor kind (from the token scope). */
   kind: string;
-  /** Resolved absolute path. */
+  /** Preserves the validated caller-supplied spelling — not canonicalized. */
   path: string;
   /** Always true on success (validated before storage). */
   valid: boolean;

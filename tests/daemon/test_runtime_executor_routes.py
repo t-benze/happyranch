@@ -666,7 +666,11 @@ class TestRuntimeRegisterBinaryRoute:
     # ── Happy path ──────────────────────────────────────────────────
 
     def test_register_binary_happy_path(self, client, store, monkeypatch, tmp_path):
-        """Binary-purpose token + complete conformance -> set_binary succeeds."""
+        """Binary-purpose token + complete conformance -> set_binary succeeds.
+
+        THR-107: stored and returned path preserves the operator-supplied
+        spelling (not Path.resolve()'s versioned target).
+        """
         token, headers = self._mint_binary_token_and_complete_conformance(
             client, store, monkeypatch, kind="claude"
         )
@@ -681,14 +685,14 @@ class TestRuntimeRegisterBinaryRoute:
         body = r.json()
         assert body["kind"] == "claude"
         assert body["valid"] is True
-        # Path should be resolved
-        assert body["path"]
+        # THR-107: returned path equals the supplied path (not resolved)
+        assert body["path"] == exe_path
 
-        # Verify it was written to the registry
+        # Verify it was written to the registry with the supplied path
         from runtime.orchestrator.executor_binary_registry import load_registry
         registry = load_registry()
         assert "claude" in registry
-        assert registry["claude"]
+        assert registry["claude"] == exe_path
 
     def test_register_binary_token_single_use(self, client, store, monkeypatch, tmp_path):
         """Second attempt with same token -> 401 (token consumed)."""
@@ -1011,6 +1015,79 @@ class TestRuntimeRegisterBinaryRoute:
         )
         # require_registration_token rejects master bearer
         assert r.status_code == 401
+
+    # ── THR-107: symlink path preservation tests ────────────────────────
+
+    def test_register_binary_symlink_preserves_path(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Runtime register-binary preserves a symlink path (THR-107).
+
+        Like the bearer route, the scoped-token register-binary must store
+        the symlink spelling, not the resolved target.
+        """
+        import os
+        # Create target and symlink
+        target_dir = tmp_path / "target"
+        target_dir.mkdir()
+        target = target_dir / "real-pi"
+        target.touch(mode=0o755)
+        symlink = tmp_path / "pi"
+        os.symlink(str(target), str(symlink))
+
+        token, headers = self._mint_binary_token_and_complete_conformance(
+            client, store, monkeypatch, kind="pi"
+        )
+
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(symlink)},
+            headers=headers,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        # Must preserve the symlink path
+        assert body["path"] == str(symlink)
+        assert body["path"] != str(target.resolve())
+        assert body["valid"] is True
+
+        # Registry stores the symlink path
+        from runtime.orchestrator.executor_binary_registry import load_registry
+        registry = load_registry()
+        assert registry["pi"] == str(symlink)
+
+    def test_register_binary_symlink_stale_after_target_gone(
+        self, client, store, monkeypatch, tmp_path
+    ):
+        """Runtime register-binary symlink becomes stale when target removed.
+
+        THR-107 staleness invariant: stale detection still works through
+        symlinks — _resolve_binary will raise ExecutorBinaryBlocked.
+        """
+        import os
+        target = tmp_path / "target" / "claude"
+        target.parent.mkdir()
+        target.touch(mode=0o755)
+        symlink = tmp_path / "claude"
+        os.symlink(str(target), str(symlink))
+
+        token, headers = self._mint_binary_token_and_complete_conformance(
+            client, store, monkeypatch, kind="claude"
+        )
+
+        r = client.post(
+            "/api/v1/executors/runtime/register-binary",
+            json={"path": str(symlink)},
+            headers=headers,
+        )
+        assert r.status_code == 200
+
+        # Delete target → symlink becomes stale
+        target.unlink()
+
+        # is_binary_valid must now return False
+        from runtime.orchestrator.executor_binary_registry import is_binary_valid
+        assert is_binary_valid(str(symlink)) is False
 
     # ── Mint route: purpose parameter ─────────────────────────────────
 

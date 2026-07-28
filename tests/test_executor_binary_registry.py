@@ -141,13 +141,20 @@ def test_remove_binary_noop_when_missing(tmp_home_path: Path):
 
 
 def test_validate_binary_absolute_path(tmp_path: Path):
-    """validate_binary returns the resolved path for a valid executable."""
+    """validate_binary returns the supplied path (not resolved target) for THR-107.
+
+    The operator-supplied spelling is preserved — especially important for
+    stable Homebrew symlinks like /opt/homebrew/bin/claude.
+    """
     from runtime.orchestrator.executor_binary_registry import validate_binary
     exe = tmp_path / "bin" / "myexecutor"
     exe.parent.mkdir()
     exe.touch(mode=0o755)
     result = validate_binary(str(exe))
-    assert result == str(exe.resolve())
+    # THR-107: preserve the supplied path, not resolve()'s target
+    assert result == str(exe)
+    # Safety: validate_binary still confirms the path is resolvable
+    assert os.access(str(exe), os.X_OK)
 
 
 def test_validate_binary_rejects_relative_path():
@@ -182,6 +189,66 @@ def test_is_binary_valid(tmp_path: Path):
     assert is_binary_valid("/nonexistent") is False
 
 
+def test_validate_binary_preserves_symlink_path(tmp_path: Path):
+    """validate_binary returns the supplied symlink path, not the resolved target.
+
+    THR-107: Homebrew stable symlinks (/opt/homebrew/bin/claude →
+    ../Cellar/.../bin/claude) must be stored as the operator-supplied
+    symlink spelling so they survive version bumps in the Cellar target.
+    """
+    from runtime.orchestrator.executor_binary_registry import validate_binary
+    # Create a real executable target
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    target = target_dir / "real-claude"
+    target.touch(mode=0o755)
+
+    # Create a symlink pointing to the target (like Homebrew does)
+    symlink = tmp_path / "bin" / "claude"
+    symlink.parent.mkdir()
+    os.symlink(str(target), str(symlink))
+
+    result = validate_binary(str(symlink))
+    # THR-107: must preserve the symlink path, not resolve to target
+    assert result == str(symlink)
+    assert result != str(target.resolve())
+    # Safety: validation still succeeds (path exists, is executable through symlink)
+    assert os.access(str(symlink), os.X_OK)
+
+
+def test_validate_binary_stale_symlink_rejected(tmp_path: Path):
+    """When a symlink's target disappears, validate_binary still rejects.
+
+    THR-107 staleness invariant: is_binary_valid must detect stale symlinks
+    so _resolve_binary continues to raise ExecutorBinaryBlocked rather than
+    silently falling back to PATH.
+    """
+    from runtime.orchestrator.executor_binary_registry import (
+        is_binary_valid,
+        validate_binary,
+    )
+    # Create target, make symlink, then delete target to simulate staleness
+    target_dir = tmp_path / "cellar" / "claude" / "1.0" / "bin"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "claude"
+    target.touch(mode=0o755)
+
+    symlink = tmp_path / "bin" / "claude"
+    symlink.parent.mkdir()
+    os.symlink(str(target), str(symlink))
+
+    # Symlink is valid while target exists
+    assert is_binary_valid(str(symlink)) is True
+
+    # Delete the target to make symlink stale
+    target.unlink()
+
+    # Stale symlink must be rejected
+    assert is_binary_valid(str(symlink)) is False
+    with pytest.raises(ValueError, match="does not exist"):
+        validate_binary(str(symlink))
+
+
 # ─────────────────────────────────────────────────────────────────
 # _resolve_binary stored-path-first resolution tests
 # ─────────────────────────────────────────────────────────────────
@@ -198,6 +265,56 @@ def test_resolve_registered_valid_uses_stored_path(tmp_path, monkeypatch):
 
     result = _resolve_binary("claude")
     assert result == str(fake_bin)
+
+
+def test_resolve_registered_symlink_stored_uses_symlink_path(tmp_path, monkeypatch):
+    """When a kind is registered with a symlink path, _resolve_binary returns
+    the symlink path as stored (THR-107 preserves operator-supplied spelling).
+    """
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    # Create target + symlink
+    target_dir = tmp_path / "cellar" / "claude" / "1.0"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "claude"
+    target.touch(mode=0o755)
+    symlink = tmp_path / "bin" / "claude"
+    symlink.parent.mkdir()
+    os.symlink(str(target), str(symlink))
+
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+    set_binary("claude", str(symlink))
+
+    result = _resolve_binary("claude")
+    # Must return the stored symlink path, not the resolved target
+    assert result == str(symlink)
+    assert result != str(target.resolve())
+
+
+def test_resolve_registered_symlink_stale_triggers_block(tmp_path, monkeypatch):
+    """When a stored symlink's target disappears, _resolve_binary raises
+    ExecutorBinaryBlocked — NO silent PATH fallback (THR-107 staleness invariant).
+    """
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    # Create target + symlink + register, then delete target
+    target_dir = tmp_path / "cellar" / "claude" / "1.0"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "claude"
+    target.touch(mode=0o755)
+    symlink = tmp_path / "bin" / "claude"
+    symlink.parent.mkdir()
+    os.symlink(str(target), str(symlink))
+
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+    set_binary("claude", str(symlink))
+
+    # Make symlink stale
+    target.unlink()
+
+    with pytest.raises(ExecutorBinaryBlocked) as exc_info:
+        _resolve_binary("claude")
+    msg = str(exc_info.value)
+    assert "claude" in msg
+    assert "not exist" in msg.lower() or "not executable" in msg.lower()
 
 
 def test_resolve_registered_invalid_raises_actionable_block(tmp_path, monkeypatch):
