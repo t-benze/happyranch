@@ -125,17 +125,17 @@ def register_binary(body: RegisterBinaryRequest) -> RegisterBinaryResponse:
     effect immediately for the next spawn.
     """
     try:
-        resolved = validate_binary(body.path)
+        validated_path = validate_binary(body.path)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         )
 
-    set_binary(body.kind, resolved)
+    set_binary(body.kind, validated_path)
     return RegisterBinaryResponse(
         kind=body.kind,
-        path=resolved,
+        path=validated_path,
         valid=True,
     )
 
@@ -153,10 +153,13 @@ def validate_path(body: ValidateBinaryRequest) -> ValidateBinaryResponse:
     """Validate that a path is absolute, exists, and is executable.
 
     Does NOT store anything — pure validation for pre-commit UI checks.
+
+    THR-107: returns the supplied path (not a resolved canonical target)
+    so the UI can display the exact path the operator typed before registering.
     """
     try:
-        resolved = validate_binary(body.path)
-        return ValidateBinaryResponse(path=resolved, valid=True, error=None)
+        validated_path = validate_binary(body.path)
+        return ValidateBinaryResponse(path=validated_path, valid=True, error=None)
     except ValueError as exc:
         return ValidateBinaryResponse(
             path=body.path, valid=False, error=str(exc)
