@@ -718,28 +718,32 @@ def build_executor(
     # Rollback: revert this commit to restore the D2 if/elif chain.
     # ───────────────────────────────────────────────────────────────────────
     _BUILTIN_EXECUTOR_FACTORIES: dict[str, object] = {
-        "claude": lambda s, p, pr, a: ClaudeExecutor(
+        "claude": lambda s, p, pr, a, n=name: ClaudeExecutor(
             claude_cli_path=s.claude_cli_path,
             permission_mode=s.permission_mode,
             settings=s,
             paths=p,
             model_arg=pr.model_arg,
+            profile_name=n,
             adapter=a,
         ),
-        "codex": lambda s, p, pr, a: CodexExecutor(
+        "codex": lambda s, p, pr, a, n=name: CodexExecutor(
             codex_cli_path=s.codex_cli_path,
             sandbox_mode=s.codex_sandbox_mode,
             model_arg=pr.model_arg,
+            profile_name=n,
             adapter=a,
         ),
-        "opencode": lambda s, p, pr, a: OpencodeExecutor(
+        "opencode": lambda s, p, pr, a, n=name: OpencodeExecutor(
             opencode_cli_path=s.opencode_cli_path,
             model_arg=pr.model_arg,
+            profile_name=n,
             adapter=a,
         ),
-        "pi": lambda s, p, pr, a: PiExecutor(
+        "pi": lambda s, p, pr, a, n=name: PiExecutor(
             pi_cli_path=s.pi_cli_path,
             model_arg=pr.model_arg,
+            profile_name=n,
             adapter=a,
         ),
     }

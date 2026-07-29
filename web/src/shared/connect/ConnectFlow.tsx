@@ -219,7 +219,7 @@ export function CustomConnect({
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   const flow = useRuntimeConnect({
-    requirePresent: false,
+    requirePresent: true,
     via: 'custom',
     onConnected,
   });
@@ -498,7 +498,7 @@ export function ConnectedCard({
           Registered at
         </p>
         <p className="text-text-secondary mt-1 truncate font-mono text-xs">
-          {connected.path ?? 'on PATH'}
+          {connected.path ?? 'registration required'}
         </p>
       </div>
 

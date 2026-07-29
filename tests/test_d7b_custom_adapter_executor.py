@@ -44,7 +44,26 @@ from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput
 from runtime.config import Settings
 
 
+# ── Fixtures ───────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _register_test_profile_binary():
+    """Register real executables for profile names used in D7B tests
+    (THR-107 seq155)."""
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    for name in ["test", "test-cli", "mycli", "myadapter"]:
+        set_binary(name, "/bin/echo")
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+def _register_binary_for_profile(name: str) -> None:
+    """Register a real executable for a profile name in the machine-local
+    binary registry (THR-107 seq155).  Uses /bin/echo as a real, available
+    executable that won't Errno-8."""
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    set_binary(name, "/bin/echo")
+
 
 def _make_test_adapter_executable(tmp_path: Path, output: dict) -> str:
     """Create a small test adapter script that echoes the given output as JSON.
@@ -660,6 +679,7 @@ class TestBuildExecutorRouting:
             envelope_policy="strict",
         )
         registry.register_custom_profile(profile)
+        _register_binary_for_profile("mycli")
 
         from runtime.orchestrator.executors import GenericCliExecutor
         settings = Settings()
@@ -685,6 +705,7 @@ class TestBuildExecutorRouting:
             readiness_marker_fragment="AGENTS.md",
         )
         registry.register_custom_profile(profile)
+        _register_binary_for_profile("myadapter")
 
         settings = Settings()
         executor = build_executor("myadapter", settings)

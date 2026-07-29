@@ -120,12 +120,10 @@ export function buildConnectPrompt(
 /** Shared mint → copy-paste → live-poll state machine for BOTH flows. Mints a
  *  scoped runtime registration token (built-in adds purpose='binary'), then
  *  polls GET /health/prereqs until the name is registered. `requirePresent`
- *  gates the match on `p.present`: built-in registration flips `present` true
- *  (executors.json entry), so it must be required; a custom profile's
- *  `present`/`path` derives from its declared command's PATH resolvability
- *  (same contract as /health/prereqs), so a custom profile WITH a resolvable
- *  command can also match on present. Leave `requirePresent` false for custom
- *  to match on appearance alone. */
+ *  gates the match on `p.present`: both built-in and custom profiles derive
+ *  `present`/`path` from the machine-local binary registry (executors.json)
+ *  keyed by the profile name (THR-107 seq155). `requirePresent: true` is
+ *  correct for both flows — an unregistered profile is never connected. */
 export function useRuntimeConnect({
   purpose,
   requirePresent,

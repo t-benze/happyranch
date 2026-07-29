@@ -351,12 +351,13 @@ management reads/writes, not registration):
   (workspace adapter selector) and `command_adapter_id` (command adapter
   selector), plus deprecated aliases `adapter`, `adapter_id` (workspace
   aliases only), and `command_adapter` (command alias only), with a
-  `present`/`path` signal mirroring `/health/prereqs`. **Custom profiles**
-  derive `present`/`path` from the profile's declared `command`
-  resolvability on the daemon's PATH (via `shutil.which`) — no
-  `executors.json` entry is required. **Built-in** presence remains
-  registry-gated via `executors.json` and is not reflected in this
-  route (this route lists only custom profiles from the runtime store).
+  `present`/`path` signal mirroring `/health/prereqs`. Both **custom
+  profiles** and **built-ins** derive `present`/`path` from the
+  machine-local binary registry (``executors.json``) keyed by the
+  profile name — the same gating for both (THR-107 seq155).  No
+  ``shutil.which`` or PATH-based fallback is used.  Built-in presence
+  is not reflected in this route (this route lists only custom profiles
+  from the runtime store).
 - `DELETE /api/v1/executors/runtime/profiles/{name}` — removes one
   profile from BOTH surfaces, durable store first (source of truth),
   then the transient in-memory registry

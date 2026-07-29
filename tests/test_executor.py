@@ -765,13 +765,15 @@ class TestBundledCliPathDev:
         assert "happyranch-daemon" not in pathenv
 
 
-def test_resolve_binary_absolute_path_passthrough():
-    """An absolute cli_path is returned unchanged — the founder configured it
-    explicitly."""
-    from runtime.orchestrator.executors import _resolve_binary
+def test_resolve_binary_absolute_path_blocked():
+    """An absolute filesystem path is NOT resolved — registration-only
+    resolution (THR-107 seq155 hard no-PATH cutover). Only executor/profile
+    names that map to explicit executors.json entries are accepted."""
+    from runtime.orchestrator.executors import _resolve_binary, ExecutorBinaryBlocked
 
-    result = _resolve_binary("/usr/local/bin/claude")
-    assert result == "/usr/local/bin/claude"
+    with pytest.raises(ExecutorBinaryBlocked) as exc_info:
+        _resolve_binary("/usr/local/bin/claude")
+    assert "not registered" in str(exc_info.value).lower()
 
 
 def test_resolve_binary_bare_name_via_which(tmp_path, monkeypatch):
@@ -872,9 +874,17 @@ def test_executor_passes_explicit_env_to_popen(mock_subprocess, tmp_path):
 
 
 @patch("runtime.orchestrator.executors.subprocess")
-def test_absolute_cli_path_preserved_in_cmd_zero(mock_subprocess, tmp_path, runtime):
-    """When claude_cli_path is an absolute path (founder-configured), it
-    appears as-is in cmd[0]."""
+def test_absolute_cli_path_resolved_from_registry(mock_subprocess, tmp_path, runtime):
+    """When claude_cli_path is an absolute path (founder-configured), cmd[0]
+    still comes from the machine-local binary registry keyed by the built-in
+    name 'claude' — NOT from the Settings path (THR-107 seq155)."""
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    # Register the built-in name with a real executable at a known path
+    # different from the Settings value.
+    fake_bin = tmp_path / "registered" / "claude"
+    fake_bin.parent.mkdir(parents=True, exist_ok=True)
+    fake_bin.touch(mode=0o755)
+    set_binary("claude", str(fake_bin))
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
     mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
@@ -888,7 +898,8 @@ def test_absolute_cli_path_preserved_in_cmd_zero(mock_subprocess, tmp_path, runt
     executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
 
     cmd = mock_subprocess.Popen.call_args[0][0]
-    assert cmd[0] == "/opt/homebrew/bin/claude"
+    # cmd[0] comes from the registry, NOT the Settings cli_path
+    assert cmd[0] == str(fake_bin)
 
 
 # ---------------------------------------------------------------------------

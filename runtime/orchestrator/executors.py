@@ -131,45 +131,43 @@ class ExecutorBinaryBlocked(RuntimeError):
     """
 
 
-def _resolve_binary(cli_path: str) -> str:
-    """Resolve an executor binary name to an absolute path.
+def _resolve_binary(executor_name: str) -> str:
+    """Resolve an executor name to an absolute path via the machine-local
+    binary-path registry.
 
-    Registration-only resolution (THR-107 seq155):
+    Registration-only resolution (THR-107 seq155 — hard no-PATH cutover):
 
-    1. If ``cli_path`` is already absolute, trust it as-is (founder override).
-    2. Consult the machine-local binary-path registry. If the kind is registered:
+    1. Consult the machine-local binary-path registry. If the name is registered:
        a. Validate the stored path still exists and is executable.
-       b. Valid → use it.
-       c. Invalid → raise ``ExecutorBinaryBlocked`` naming the fix.
-    3. If the kind is NOT registered → raise ``ExecutorBinaryBlocked``.
-       Never discover, resolve, or auto-pin a PATH executable.
-    """
-    if os.path.isabs(cli_path):
-        # Founder-configured absolute path — trust it as-is.
-        return cli_path
+       b. Valid → use the stored absolute path.
+       c. Invalid (stale) → raise ``ExecutorBinaryBlocked`` naming the fix.
+    2. If the name is NOT registered → raise ``ExecutorBinaryBlocked``.
 
-    # Check the machine-local registry — the sole resolution source.
+    Never discover, resolve, or auto-pin a PATH executable. An absolute
+    filesystem path is never accepted — only executor/profile names
+    that map to explicit ``executors.json`` entries.
+    """
     from runtime.orchestrator.executor_binary_registry import (
         get_binary,
         is_binary_valid,
     )
 
-    stored = get_binary(cli_path)
+    stored = get_binary(executor_name)
     if stored is not None:
         if is_binary_valid(stored):
             return stored
         # Stored path is stale — actionable block, NO silent PATH fallback.
         raise ExecutorBinaryBlocked(
-            f"Executor binary '{cli_path}' is registered at {stored!r} "
+            f"Executor binary '{executor_name}' is registered at {stored!r} "
             f"but the path does not exist or is not executable. "
-            f"Re-register it: happyranch executor-binaries register {cli_path} --path <absolute-path>"
+            f"Re-register it: happyranch executor-binaries register {executor_name} --path <absolute-path>"
         )
 
     # Not registered — fail closed before subprocess creation.
     # Never discover, resolve, or auto-pin a PATH executable.
     raise ExecutorBinaryBlocked(
-        f"Executor '{cli_path}' is not registered. "
-        f"Register it: happyranch executor-binaries register {cli_path} --path <absolute-path>"
+        f"Executor '{executor_name}' is not registered. "
+        f"Register it: happyranch executor-binaries register {executor_name} --path <absolute-path>"
     )
 
 
@@ -776,9 +774,10 @@ class ClaudeExecutor:
         paths: OrgPaths | None = None,
         model_arg: list[str] | None = None,
         *,
+        profile_name: str = "claude",
         adapter: object | None = None,
     ) -> None:
-        self._cli_path = claude_cli_path
+        self._profile_name = profile_name
         self._permission_mode = permission_mode
         self._settings = settings
         self._paths = paths
@@ -800,7 +799,7 @@ class ClaudeExecutor:
         """
         if self._adapter is not None:
             return self._adapter.build_argv(
-                cli_path=_resolve_binary(self._cli_path),
+                cli_path=_resolve_binary(self._profile_name),
                 prompt=prompt,
                 permission_mode=self._permission_mode,
                 allowed_tools=allowed_tools,
@@ -810,7 +809,7 @@ class ClaudeExecutor:
             )
         # Compatibility fallback — bit-identical to the adapter path.
         cmd = [
-            _resolve_binary(self._cli_path),
+            _resolve_binary(self._profile_name),
         ]
         if model and self._model_arg:
             for elem in self._model_arg:
@@ -880,9 +879,10 @@ class CodexExecutor:
         sandbox_mode: str,
         model_arg: list[str] | None = None,
         *,
+        profile_name: str = "codex",
         adapter: object | None = None,
     ) -> None:
-        self._cli_path = codex_cli_path
+        self._profile_name = profile_name
         self._sandbox_mode = sandbox_mode
         self._model_arg = model_arg
         self._adapter = adapter  # THR-107 D2: first-party adapter delegate
@@ -899,14 +899,14 @@ class CodexExecutor:
         """
         if self._adapter is not None:
             return self._adapter.build_argv(
-                cli_path=_resolve_binary(self._cli_path),
+                cli_path=_resolve_binary(self._profile_name),
                 sandbox_mode=self._sandbox_mode,
                 model=model,
                 model_arg=self._model_arg,
             )
         # Compatibility fallback — bit-identical to the adapter path.
         cmd = [
-            _resolve_binary(self._cli_path),
+            _resolve_binary(self._profile_name),
             "exec",
         ]
         if model and self._model_arg:
@@ -976,9 +976,10 @@ class OpencodeExecutor:
         opencode_cli_path: str,
         model_arg: list[str] | None = None,
         *,
+        profile_name: str = "opencode",
         adapter: object | None = None,
     ) -> None:
-        self._cli_path = opencode_cli_path
+        self._profile_name = profile_name
         self._model_arg = model_arg
         self._adapter = adapter  # THR-107 D2: first-party adapter delegate
 
@@ -996,7 +997,7 @@ class OpencodeExecutor:
         """
         if self._adapter is not None:
             return self._adapter.build_argv(
-                cli_path=_resolve_binary(self._cli_path),
+                cli_path=_resolve_binary(self._profile_name),
                 workspace=workspace,
                 prompt=prompt,
                 model=model,
@@ -1004,7 +1005,7 @@ class OpencodeExecutor:
             )
         # Compatibility fallback — bit-identical to the adapter path.
         cmd = [
-            _resolve_binary(self._cli_path),
+            _resolve_binary(self._profile_name),
             "run",
         ]
         if model and self._model_arg:
@@ -1062,9 +1063,10 @@ class PiExecutor:
         pi_cli_path: str,
         model_arg: list[str] | None = None,
         *,
+        profile_name: str = "pi",
         adapter: object | None = None,
     ) -> None:
-        self._cli_path = pi_cli_path
+        self._profile_name = profile_name
         self._model_arg = model_arg
         self._adapter = adapter  # THR-107 D2: first-party adapter delegate
 
@@ -1081,14 +1083,14 @@ class PiExecutor:
         """
         if self._adapter is not None:
             return self._adapter.build_argv(
-                cli_path=_resolve_binary(self._cli_path),
+                cli_path=_resolve_binary(self._profile_name),
                 prompt=prompt,
                 model=model,
                 model_arg=self._model_arg,
             )
         # Compatibility fallback — bit-identical to the adapter path.
         cmd = [
-            _resolve_binary(self._cli_path),
+            _resolve_binary(self._profile_name),
         ]
         if model and self._model_arg:
             for elem in self._model_arg:
@@ -1311,6 +1313,21 @@ class CustomAdapterExecutor:
         from runtime.orchestrator.adapter_store import compute_sha256
 
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+
+        # ── THR-107 seq155: profile-pin preflight ──────────────────────
+        # Every custom-adapter profile must have a valid machine-local
+        # binary registry entry keyed by the profile name before any
+        # adapter subprocess attempt.  Missing or stale pin fails closed
+        # here with an actionable remediation command.
+        try:
+            _resolve_binary(self._profile_name)
+        except ExecutorBinaryBlocked as exc:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=session_id or "",
+                error=str(exc),
+            )
 
         # ── D7B: Fail closed if invocation context is missing/incomplete ──
         ctx = self._invocation_context

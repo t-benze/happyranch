@@ -365,11 +365,12 @@ def test_resolve_unregistered_not_on_path_raises_actionable_block(
     assert "happyranch" in msg.lower()
 
 
-def test_resolve_absolute_path_still_trusted(monkeypatch):
-    """Absolute cli_path is still returned unchanged (existing behavior preserved)."""
-    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", "/nonexistent/home")
-    result = _resolve_binary("/custom/path/to/my-executor")
-    assert result == "/custom/path/to/my-executor"
+def test_resolve_absolute_path_requires_registration():
+    """Absolute filesystem paths are NOT resolved — only registered names
+    work (THR-107 seq155 hard no-PATH cutover)."""
+    with pytest.raises(ExecutorBinaryBlocked) as exc_info:
+        _resolve_binary("/custom/path/to/my-executor")
+    assert "not registered" in str(exc_info.value).lower()
 
 
 def test_executor_binary_blocked_is_runtime_error():

@@ -87,8 +87,20 @@ def _make_custom_profile_entry(name="test-strict-cli", *, envelope_policy=None, 
     return entry
 
 
+def _register_binary_for_profile(name: str) -> None:
+    """Register a real executable for a custom profile name in the
+    machine-local binary registry (THR-107 seq155).  Uses /bin/echo as a
+    real, available executable that won't Errno-8."""
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    set_binary(name, "/bin/echo")
+
+
 def _setup_test_profile(name="test-strict-cli", *, envelope_policy=None) -> ExecutorProfile:
-    """Register a custom profile in the registry for testing."""
+    """Register a custom profile in the registry for testing.
+
+    Also registers a real executable in the machine-local binary registry
+    keyed by the profile name (THR-107 seq155: registration-only resolution).
+    """
     reset_registry()
     registry = get_registry()
     profile = ExecutorProfile(
@@ -102,6 +114,7 @@ def _setup_test_profile(name="test-strict-cli", *, envelope_policy=None) -> Exec
         envelope_policy=envelope_policy,
     )
     registry.register_custom_profile(profile)
+    _register_binary_for_profile(name)
     return profile
 
 
@@ -569,6 +582,7 @@ class TestD7ANoCustomAdapterLaunch:
             envelope_policy="strict",
         )
         registry.register_custom_profile(profile)
+        _register_binary_for_profile("d7a-no-adapter")
         # build_executor should return a GenericCliExecutor, not a custom adapter
         with patch("runtime.orchestrator.custom_adapter_registry.resolve_adapter") as mock_resolve:
             executor = build_executor(
@@ -671,6 +685,7 @@ class TestD7ABuildExecutorPassthrough:
             envelope_policy="strict",
         )
         registry.register_custom_profile(profile)
+        _register_binary_for_profile("d7a-passthrough")
         executor = build_executor("d7a-passthrough", Settings(project_root=tmp_path))
         assert isinstance(executor, GenericCliExecutor)
         assert executor._envelope_policy == "strict"
@@ -689,6 +704,7 @@ class TestD7ABuildExecutorPassthrough:
             envelope_policy=None,
         )
         registry.register_custom_profile(profile)
+        _register_binary_for_profile("d7a-legacy-passthrough")
         executor = build_executor("d7a-legacy-passthrough", Settings(project_root=tmp_path))
         assert isinstance(executor, GenericCliExecutor)
         assert executor._envelope_policy is None
@@ -733,6 +749,7 @@ class TestD7AShippingSeamEnforcement:
             "candidate must carry strict policy — this is what the routes now guarantee"
 
         registry.register_custom_profile(candidate)
+        _register_binary_for_profile("d7a-shipping-new")
 
         # Active in-memory profile must be strict
         active_profile = registry.get_profile("d7a-shipping-new")
@@ -768,6 +785,7 @@ class TestD7AShippingSeamEnforcement:
         )
         assert candidate.envelope_policy == "strict"
         registry.register_custom_profile(candidate)
+        _register_binary_for_profile("d7a-shipping-valid")
 
         executor = build_executor("d7a-shipping-valid", Settings(project_root=tmp_path))
         assert executor._envelope_policy == "strict"
@@ -811,6 +829,7 @@ class TestD7AShippingSeamEnforcement:
         )
         assert legacy_candidate.envelope_policy is None
         registry.register_custom_profile(legacy_candidate)
+        _register_binary_for_profile("d7a-shipping-rereg")
 
         # Verify legacy: no envelope succeeds
         legacy_exec = build_executor("d7a-shipping-rereg", Settings(project_root=tmp_path))
@@ -838,6 +857,7 @@ class TestD7AShippingSeamEnforcement:
         # are in tests/daemon/test_d7a_real_route_legacy_to_strict.py.
         registry.unregister_custom_profile("d7a-shipping-rereg")
         registry.register_custom_profile(strict_candidate)
+        # Binary is still registered from step 1; re-registration doesn't require re-registering it.
 
         # Step 3: verify active profile is strict immediately
         active = registry.get_profile("d7a-shipping-rereg")
@@ -871,6 +891,7 @@ class TestD7AShippingSeamEnforcement:
         )
         assert candidate.envelope_policy is None
         registry.register_custom_profile(candidate)
+        _register_binary_for_profile("d7a-readonly-legacy")
 
         # Build executor from this legacy profile
         executor = build_executor("d7a-readonly-legacy", Settings(project_root=tmp_path))
@@ -901,6 +922,7 @@ class TestD7AShippingSeamEnforcement:
         }
         candidate = ExecutorRegistry.validate_custom_profile_config(name, config_cfg)
         registry.register_custom_profile(candidate)
+        _register_binary_for_profile(name)
 
         # Execute and get failure
         executor = build_executor(name, Settings(project_root=tmp_path))

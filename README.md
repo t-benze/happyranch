@@ -142,7 +142,11 @@ happyranch assistant register --executor claude --command claude --argv '["claud
 happyranch assistant status     # show configuration state and selected executor
 ```
 
-On register, the daemon validates the payload structurally only — non-empty fields and `shutil.which(argv[0])` resolves (no allowlist, no absolute-path requirement, no `$PATH` guard) — then auto-configures with no separate approval. See [`docs/agent-guides/runtime-and-configuration.md`](docs/agent-guides/runtime-and-configuration.md) for the full configuration contract.
+On register, the daemon validates the payload structurally — non-empty fields
+and a matching `argv_template[0]` / `command` pair — then auto-configures with
+no separate approval.  Custom profiles now require an explicit machine-local
+binary registry entry (``executors.json``) before launch (THR-107 seq155).
+See [`docs/agent-guides/runtime-and-configuration.md`](docs/agent-guides/runtime-and-configuration.md) for the full configuration contract.
 
 ## Commands
 

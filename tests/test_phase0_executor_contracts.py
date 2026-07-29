@@ -4074,8 +4074,8 @@ class TestD10D11DataDrivenFactory:
             ex = build_executor(name, settings)
             # Verify the adapter was injected (D2 path — unchanged)
             assert ex._adapter is not None, f"{name}: adapter must be injected"
-            # Verify CLI path is set (from Settings, through factory)
-            assert ex._cli_path is not None, f"{name}: _cli_path must be non-None"
+            # Verify profile name is set (THR-107 seq155: registration-only)
+            assert ex._profile_name == name, f"{name}: _profile_name must match"
             # Profile must have model_arg — the factory passes it through
             profile = registry.get_profile(name)
             assert profile is not None and profile.model_arg is not None, (

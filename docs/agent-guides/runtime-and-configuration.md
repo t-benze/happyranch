@@ -133,10 +133,18 @@ repairs the assistant workspace and writes registration instructions; the
 founder opens their own agentic CLI there and it completes configuration by
 calling back `happyranch assistant register --from-file <payload>` declaring an
 agent-chosen `{executor, command, argv}`. The daemon validates the payload
-structurally only — non-empty fields and `shutil.which(argv[0])` resolves (no
-allowlist, no absolute-path requirement, no `$PATH` guard) — then auto-configures
-with no separate approval. `happyranch assistant` tells the user to run
-`happyranch assistant init` when no assistant config exists.
+structurally only (non-empty fields and `shutil.which(argv[0])` resolves; this
+is self-registration, not executor-binary resolution — the THR-107 seq155
+registration-only cutover applies to *executor launch*, not assistant
+self-registration) — then auto-configures with no separate approval.
+`happyranch assistant` tells the user to run `happyranch assistant init` when
+no assistant config exists.
+
+**Executor binary resolution** (all built-in and custom executor profiles)
+is registration-only: every executor must have a valid ``executors.json``
+entry keyed by the profile name before launch (THR-107 seq155). No
+``shutil.which`` or PATH discovery is used. See
+[agent-executors-and-permissions.md](./agent-executors-and-permissions.md).
 
 ## Org Config: Timezone and `current_time` Prompt Injection
 

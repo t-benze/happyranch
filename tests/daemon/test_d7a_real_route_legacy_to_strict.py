@@ -43,6 +43,13 @@ from runtime.runtime import RuntimeDir
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
+def _register_binary_for_profile(name: str) -> None:
+    """Register a real executable for a profile name in the machine-local
+    binary registry (THR-107 seq155).  Uses /bin/echo."""
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    set_binary(name, "/bin/echo")
+
+
 def _seed_legacy_profile_in_store(name: str) -> None:
     """Seed a legacy (no envelope_policy) profile in the durable runtime store."""
     save_runtime_profile(name, {
@@ -71,6 +78,17 @@ def _seed_legacy_profile_in_registry(name: str) -> None:
         envelope_policy=None,
     )
     registry.register_custom_profile(profile)
+    _register_binary_for_profile(name)
+
+
+@pytest.fixture(autouse=True)
+def _register_daemon_test_binaries():
+    """Register real executables for all profile names used in daemon
+    D7A route tests (THR-107 seq155)."""
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    for name in ["strict-cli", "legacy-cli", "atomic-test",
+                 "test-legacy-exec-org", "test-legacy-exec-rt"]:
+        set_binary(name, "/bin/echo")
 
 
 def _bypass_loopback(monkeypatch):

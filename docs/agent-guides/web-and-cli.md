@@ -144,17 +144,15 @@ registration ensures headless daemons and fresh machines find the correct binary
 # Register with explicit path (override):
 happyranch executor-binaries register claude --path /opt/homebrew/bin/claude
 
-# Auto-resolve from your shell's PATH:
-happyranch executor-binaries register claude
+# Register a binary with an explicit absolute path (REQUIRED):
+happyranch executor-binaries register claude --path /opt/homebrew/bin/claude
 
 # List all registered binaries:
 happyranch executor-binaries list
 ```
 
-When `--path` is omitted, the CLI resolves the binary from the invoking shell's PATH
-via `shutil.which(<kind>)` — the kind name (`claude`, `codex`, `pi`, `opencode`) is the
-binary name. If the binary is not found on PATH the command exits 1 with an actionable
-error message telling the user to confirm installation or pass `--path` explicitly.
+`--path` is **required** — omission does NOT fall back to PATH resolution
+(THR-107 seq155). The operator must supply an explicit absolute path.
 
 ### Token usage
 
