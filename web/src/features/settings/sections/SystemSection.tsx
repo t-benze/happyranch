@@ -7,8 +7,10 @@
  * config-loading code.
  *
  * Live-vs-restart derivation (verified against daemon config code):
- * - CLI paths (claude, codex, opencode, pi): module-global Settings singleton
- *   loaded once at import → RESTART REQUIRED. ✓
+ * - CLI path fields (claude, codex, opencode, pi): default command metadata
+ *   (config/docs only — launching an executor always requires an explicit
+ *   ``executors.json`` pin; these values are NOT a launch path). Module-global
+ *   Settings singleton loaded once at import → RESTART REQUIRED. ✓
  * - session_timeout_seconds (system default): module-global Settings singleton
  *   → RESTART REQUIRED. ✓
  * - max_orchestration_steps: module-global → RESTART REQUIRED. ✓
@@ -22,10 +24,10 @@ interface Props {
 }
 
 const ROWS: { key: keyof SystemSettings; label: string }[] = [
-  { key: 'claude_cli_path', label: 'Claude CLI path' },
-  { key: 'codex_cli_path', label: 'Codex CLI path' },
-  { key: 'opencode_cli_path', label: 'OpenCode CLI path' },
-  { key: 'pi_cli_path', label: 'Pi CLI path' },
+  { key: 'claude_cli_path', label: 'Claude CLI name / default command' },
+  { key: 'codex_cli_path', label: 'Codex CLI name / default command' },
+  { key: 'opencode_cli_path', label: 'OpenCode CLI name / default command' },
+  { key: 'pi_cli_path', label: 'Pi CLI name / default command' },
   { key: 'session_timeout_seconds', label: 'Session timeout (s)' },
   { key: 'max_orchestration_steps', label: 'Max orchestration steps' },
   { key: 'queue_workers', label: 'Queue workers' },

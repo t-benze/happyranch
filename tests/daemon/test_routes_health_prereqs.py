@@ -212,13 +212,12 @@ def test_prereqs_registered_one_kind_only_that_present(tmp_path: Path) -> None:
 
 
 def test_prereqs_uses_daemon_settings_not_global_settings(tmp_path: Path) -> None:
-    """health_prereqs must resolve CLI paths from the daemon's Settings,
-    NOT the module-global settings singleton.
+    """health_prereqs enumerates built-ins independently of Settings CLI
+    metadata (THR-107 seq155 fix-forward).
 
-    The route passes ``state.settings`` to ``_get_cli_binary`` which maps
-    profile names to CLI binary names. A daemon configured with an empty
-    CLI path (e.g. ``codex_cli_path=''``) must skip that profile entirely.
-    If the route used the global singleton the profile would not be skipped.
+    A daemon configured with an empty CLI path (e.g. ``codex_cli_path=''``)
+    must STILL emit the codex built-in prereq — with ``present`` determined
+    by the machine-local binary registry, not the optional Settings metadata.
     """
     import os as _os
 
@@ -228,7 +227,7 @@ def test_prereqs_uses_daemon_settings_not_global_settings(tmp_path: Path) -> Non
     from runtime.daemon.state import DaemonState
     from runtime.config import Settings
 
-    # Build a daemon whose settings omit codex entirely.
+    # Build a daemon whose settings omit codex default command metadata.
     custom_settings = Settings(codex_cli_path="")
     daemon = DaemonState.idle(custom_settings)
     app = create_app(daemon)
@@ -240,16 +239,76 @@ def test_prereqs_uses_daemon_settings_not_global_settings(tmp_path: Path) -> Non
         body = r.json()
         tools = {e["tool"] for e in body["prereqs"]}
 
-        # codex must be absent because the daemon settings have an empty
-        # codex_cli_path, so _get_cli_binary returns "" and the route skips it.
-        # If the module-global ``_settings`` singleton were used instead,
-        # codex would still appear.
-        assert "codex" not in tools, (
-            f"codex should be skipped when daemon settings have empty "
+        # codex MUST appear — the Settings gate that suppressed it is removed.
+        # Presence is still false (no registry pin), but the built-in is visible.
+        assert "codex" in tools, (
+            f"codex should appear even when daemon settings have empty "
             f"codex_cli_path. Got tools: {tools}"
         )
-        # The other three built-ins must still be present.
-        assert {"claude", "opencode", "pi"}.issubset(tools)
+        codex = next(e for e in body["prereqs"] if e["tool"] == "codex")
+        assert codex["present"] is False, (
+            "codex should be present=false when no registry pin exists"
+        )
+        assert codex["path"] is None
+        # All four built-ins must be visible.
+        assert {"claude", "codex", "opencode", "pi"}.issubset(tools)
+    finally:
+        del _os.environ["HAPPYRANCH_DAEMON_HOME"]
+
+
+def test_builtin_visible_with_valid_pin_despite_blank_settings_metadata(
+    tmp_path: Path,
+) -> None:
+    """A built-in with a valid executors.json pin must remain present/visible
+    even when the optional Settings CLI metadata is blank.
+
+    THR-107 seq155 fix-forward: optional Settings CLI path fields are default
+    command metadata only — they must not suppress a valid registry pin.
+    """
+    import os as _os
+    import json
+    import stat
+
+    _os.environ["HAPPYRANCH_DAEMON_HOME"] = str(tmp_path)
+
+    # Create a fake executable and register codex in the binary registry.
+    fake_codex = tmp_path / "fake-codex"
+    fake_codex.write_text("#!/bin/sh\necho fake")
+    fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IEXEC)
+    (tmp_path / "executors.json").write_text(
+        json.dumps({"codex": str(fake_codex)})
+    )
+
+    try:
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.config import Settings
+
+        # Settings has blank codex_cli_path — the old code would skip codex.
+        custom_settings = Settings(codex_cli_path="")
+        daemon = DaemonState.idle(custom_settings)
+        app = create_app(daemon)
+        client = TestClient(app)
+        r = client.get("/api/v1/health/prereqs")
+        assert r.status_code == 200
+        body = r.json()
+
+        codex = next(
+            (e for e in body["prereqs"] if e["tool"] == "codex"), None
+        )
+        assert codex is not None, (
+            "codex must appear despite blank codex_cli_path — "
+            "valid registry pin controls presence"
+        )
+        assert codex["present"] is True, (
+            f"codex should be present=true with valid registry pin, "
+            f"got present={codex['present']}"
+        )
+        assert codex["path"] == str(fake_codex), (
+            f"codex path must be the registered path, got {codex['path']}"
+        )
+        assert isinstance(codex["hint"], str)
+        assert len(codex["hint"]) > 0
     finally:
         del _os.environ["HAPPYRANCH_DAEMON_HOME"]
 

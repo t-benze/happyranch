@@ -588,6 +588,11 @@ describe('OnboardingPage — Custom two-stage flow regression (profile → binar
     expect(promptEl.closest('pre')).toHaveTextContent('/executors/runtime/register-binary');
     expect(promptEl.closest('pre')).toHaveTextContent('"path":"<your absolute binary path>"');
 
+    // (c+) Explicit red-side: the connected card must NOT appear while
+    // present:false — ProfileStage appearance-only advances to BinaryStage,
+    // but only present:true + registered path permits the connected state.
+    expect(screen.queryByRole('heading', { name: /connected/i })).not.toBeInTheDocument();
+
     // (d) Switch prereqs to present:true with a registered path.
     vi.mocked(healthApi.getPrereqs).mockResolvedValue({
       prereqs: [

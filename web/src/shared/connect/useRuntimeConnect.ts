@@ -9,7 +9,9 @@
  * register-binary (poll requires `present`); custom mints a profile-purpose
  * token first, then the consumer handles a separate binary-purpose stage
  * (see ConnectFlow's two-stage custom flow: ProfileStage → BinaryStage).
- * Both stages require `present`-gated completion — no appearance-only match.
+ * ProfileStage passes `requirePresent: false` — appearance-only is deliberate
+ * to permit advancing to the binary stage; only BinaryStage
+ * (`requirePresent: true`) may report the externally connected state.
  *
  * This module is CHROME-FREE: no step eyebrow, no wizard headings, no
  * Continue/Skip navigation. Consumers inject that chrome via ConnectFlow slots.
@@ -169,9 +171,11 @@ export function useRuntimeConnect({
   }, [state, expiresAt]);
 
   // Poll the EXISTING prereqs route while waiting; flip to connected the moment
-  // the freshly-registered name is registered. Both built-in and custom flows
-  // require `present:true` — the binary registry (executors.json) is the sole
-  // availability source (THR-107 seq155). No appearance-only match.
+  // the freshly-registered name is registered. When `requirePresent` is true
+  // (built-in + BinaryStage), a `present:true` match is required.  When
+  // `requirePresent` is false (ProfileStage), name-only appearance permits
+  // advancing to the next stage.  The binary registry (executors.json) is the
+  // sole availability source (THR-107 seq155).
   const poll = useQuery({
     queryKey: ['health', 'prereqs'],
     queryFn: healthApi.getPrereqs,

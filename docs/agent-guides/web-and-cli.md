@@ -137,8 +137,10 @@ for every existing agent).
 ### Executor binary registration
 
 Register the absolute path to each executor CLI binary so the daemon can locate it at
-spawn time (THR-085). The daemon resolves binaries stored-path-first at launch;
-registration ensures headless daemons and fresh machines find the correct binary.
+spawn time (THR-085). The daemon resolves binaries exclusively from the machine-local
+``executors.json`` registry at launch — there is no PATH fallback (THR-107 seq155).
+Registration is the sole availability gate; headless daemons and fresh machines must
+have every executor explicitly registered.
 
 ```bash
 # Register with explicit path (override):

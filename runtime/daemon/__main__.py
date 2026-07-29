@@ -324,10 +324,12 @@ def main() -> None:
     paths.ensure_token()
 
     settings = Settings()
-    # Normalise PATH so executor binaries (claude, codex, opencode, pi) are
-    # findable even when the daemon is launched by Finder/launchd with a
-    # stripped PATH (/usr/bin:/bin).  Must happen before any executor is
-    # constructed (issue #254).
+    # Normalise PATH so the bundled happyranch CLI and standard tool
+    # directories are available even when the daemon is launched by
+    # Finder/launchd with a stripped PATH (/usr/bin:/bin).  Executor
+    # binary resolution is handled separately via the machine-local
+    # executors.json registry (THR-107 seq155).  Must happen before any
+    # executor is constructed (issue #254).
     from runtime.orchestrator.executors import _normalize_path
     _normalize_path()
     state = _build_state(settings)

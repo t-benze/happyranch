@@ -37,9 +37,12 @@ def _set_presence_checker(fn: CheckPresence) -> None:
 def _get_cli_binary(profile_name: str, settings: Settings) -> str:
     """Return the CLI binary name for a registered profile name.
 
-    Built-in profiles resolve from Settings; custom profiles carry their
-    own ``command`` field. Returns the empty string if the profile is
-    unregistered (shouldn't happen — the route enumerates from the registry).
+    Returns the profile's declared command (custom profiles) or the
+    corresponding Settings CLI-field value (built-ins) for display/hint
+    purposes.  Presence is always determined from the machine-local
+    binary registry (``executors.json``), never from this value
+    (THR-107 seq155).  Returns the empty string if the profile is
+    unregistered.
     """
     registry = get_registry()
     profile = registry.get_profile(profile_name)
@@ -156,10 +159,9 @@ def health_prereqs(request: Request) -> PrereqsResponse:
                 hint=_hint_for(name),
             ))
         else:
-            # Built-in — requires an explicit executors.json entry.
-            cli = _get_cli_binary(name, state.settings)
-            if not cli:
-                continue
+            # Built-in — presence is determined solely by the machine-local
+            # binary registry (executors.json).  Optional Settings CLI
+            # metadata does NOT suppress a valid registry pin (THR-107 seq155).
             stored = get_binary(name)
             registered = stored is not None and is_binary_valid(stored)
             results.append(ExecutorPrereq(

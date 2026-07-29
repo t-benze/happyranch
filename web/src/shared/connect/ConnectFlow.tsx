@@ -245,7 +245,10 @@ export function CustomConnect({
 }
 
 /** Stage 1: prompt the user to register their custom profile, poll for the
- *  name to appear in prereqs (no present gate), then transition to stage 2. */
+ *  name to appear in prereqs (appearance-only — requirePresent: false — so
+ *  the flow can advance to registration), then transition to stage 2.
+ *  Only the binary-purpose stage (stage 2) may report externally connected
+ *  after present:true and a pinned path. */
 function ProfileStage({
   onUseBuiltin,
   skipSlot,
