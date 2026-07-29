@@ -38,6 +38,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from runtime.daemon.auth import require_registration_token, require_token
+from runtime.orchestrator.adapter_store import acquire_store_lock, release_store_lock
 from runtime.orchestrator.custom_adapter_registry import (
     approve_adapter,
     generate_adapter_id,
@@ -461,6 +462,50 @@ def submit_adapter(
     return _entry_to_response(entry)
 
 
+# ---------------------------------------------------------------------------
+# Audit helper for adapter binding (mirrors _audit_runtime_registration in
+# executors.py — same runtime-audit.db, same scope-prefix convention).
+# ---------------------------------------------------------------------------
+
+
+def _audit_adapter_bind(
+    *,
+    profile_name: str,
+    adapter_id: str,
+    workspace_adapter: str,
+    actor: str = "founder",
+) -> None:
+    """Write a runtime-level adapter-profile binding audit row.
+
+    Opens (creating if needed) a dedicated runtime-audit.db under
+    daemon_home(), then writes a single audit_log row.  Each call opens a
+    fresh ``Database`` handle and closes it.
+
+    Row shape:
+      task_id = "executor:<profile_name>"
+      action  = "executor_registered"
+      payload = {adapter_id, command_adapter_id, workspace_adapter_id}
+    """
+    from runtime.infrastructure.database import Database
+    from runtime.runtime import daemon_home
+
+    audit_db_path = daemon_home() / "runtime-audit.db"
+    db = Database(audit_db_path)
+    try:
+        db.insert_audit_log(
+            task_id=f"executor:{profile_name}",
+            agent=actor,
+            action="executor_registered",
+            payload={
+                "adapter_id": adapter_id,
+                "command_adapter_id": f"custom-adapter:{adapter_id}",
+                "workspace_adapter_id": workspace_adapter,
+            },
+        )
+    finally:
+        db.close()
+
+
 @router.post(
     "/runtime/adapters/{adapter_id}/bind-profile",
     dependencies=[require_token()],
@@ -555,63 +600,113 @@ def bind_adapter_profile(
             detail=str(exc),
         )
 
-    # 7. Persist profile atomically:
-    #    (a) Validate the config → build ExecutorProfile
-    #    (b) Write the durable runtime store (source of truth)
-    #    (c) Register in the in-memory registry
-    #    On any failure AFTER the durable write, roll back the store
-    #    and in-memory registry to pre-request state.
+    # 7. Persist profile atomically under the adapter-store lock.
     #
-    # Lock order (documented): no new locks — the adapter store lock
-    # is not held here (the adapter was already read; approval/re-registration
-    # races are detected below via the re-read check).  The per-profile-name
-    # registration lock in executors.py is per-route, not shared here.
-    # This endpoint relies on the durable store atomic write + in-memory
-    # registry registration being serialized by the GIL (single process).
-    profile_cfg = {
-        "command": None,
-        "argv_template": None,
-        "workspace_adapter_id": entry.workspace_adapter,
-        "command_adapter_id": f"custom-adapter:{adapter_id}",
-    }
-
-    # (a) Validate config → build ExecutorProfile
+    # Lock order (documented, compatible with approval/re-registration):
+    #   adapter_store_lock → durable runtime profile write → in-memory registry
+    #
+    # acquire_store_lock serializes against register_custom_adapter (submit)
+    # and approve_adapter — both of which hold the same lock across their
+    # critical sections.  Under the lock we re-read and re-validate the exact
+    # adapter snapshot immediately before the durable profile write so no
+    # concurrent re-registration can replace the adapter with PENDING in the
+    # interval.
+    acquire_store_lock()
     try:
-        profile = ExecutorRegistry.validate_custom_profile_config(
-            profile_name, profile_cfg
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        )
+        # Re-read the exact adapter snapshot under the lock.
+        re_read_entry = get_adapter(adapter_id)
+        if re_read_entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Adapter {adapter_id!r} disappeared before bind.",
+            )
+        if re_read_entry.status != "approved":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Adapter {adapter_id!r} changed to status={re_read_entry.status!r} "
+                    f"before bind. The adapter must be founder-approved."
+                ),
+            )
+        if re_read_entry.intended_profile_name != profile_name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Adapter {adapter_id!r} intended profile changed to "
+                    f"{re_read_entry.intended_profile_name!r} before bind."
+                ),
+            )
+        # Re-verify on-disk hash integrity under lock.
+        re_resolved = resolve_adapter(adapter_id)
+        if re_resolved is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Adapter {adapter_id!r} on-disk artifact changed before bind. "
+                    f"Re-register the adapter."
+                ),
+            )
+        # Re-verify D7B validation
+        try:
+            ExecutorRegistry._validate_custom_adapter_binding(adapter_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
 
-    # Snapshot pre-request durable and in-memory state for rollback
-    pre_request_profiles = load_runtime_profiles()
-    pre_request_in_memory = registry.get_profile(profile_name)
-    durable_written = False
-    registered_in_memory = False
+        profile_cfg = {
+            "command": None,
+            "argv_template": None,
+            "workspace_adapter_id": re_read_entry.workspace_adapter,
+            "command_adapter_id": f"custom-adapter:{adapter_id}",
+        }
 
-    try:
-        # (b) Write the durable runtime store first
+        # (a) Validate config → build ExecutorProfile
+        try:
+            profile = ExecutorRegistry.validate_custom_profile_config(
+                profile_name, profile_cfg
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
+
+        # Snapshot pre-request state for compensating rollback.
+        pre_request_profiles = dict(load_runtime_profiles())
+        pre_request_in_memory = registry.get_profile(profile_name)
+        durable_committed = False
+
+        # (b) Write the durable runtime store first.
         save_runtime_profile(profile_name, profile_cfg)
-        durable_written = True
 
-        # (c) Register in the in-memory registry
+        # (c) Register in the in-memory registry.
         registry.register_custom_profile(profile)
-        registered_in_memory = True
-    except Exception:
-        # Compensating rollback: restore both surfaces to pre-request state
-        if durable_written:
+        durable_committed = True
+
+        # (d) Audit the successful registration.
+        #     Uses the same scope-prefix convention as executors.py:
+        #     task_id = "executor:<profile_name>".
+        _audit_adapter_bind(
+            profile_name=profile_name,
+            adapter_id=adapter_id,
+            workspace_adapter=re_read_entry.workspace_adapter,
+        )
+    except HTTPException:
+        raise
+    except BaseException:
+        if durable_committed:
+            # Compensating rollback: restore both durable and in-memory
+            # surfaces to pre-request state (mirrors TASK-3567).
             if profile_name in pre_request_profiles:
                 save_runtime_profile(profile_name, pre_request_profiles[profile_name])
             else:
                 remove_runtime_profile(profile_name)
-        if registered_in_memory:
-            registry.unregister_custom_profile(profile_name)
-        elif pre_request_in_memory is not None:
-            # Restore the pre-request in-memory profile if it was replaced
-            registry.register_custom_profile(pre_request_in_memory)
+            if pre_request_in_memory is not None:
+                registry.replace_custom_profile(pre_request_in_memory)
+            else:
+                registry.unregister_custom_profile(profile_name)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
@@ -619,6 +714,8 @@ def bind_adapter_profile(
                 "pre-request state has been restored."
             ),
         )
+    finally:
+        release_store_lock()
 
     return {
         "profile_name": profile.name,

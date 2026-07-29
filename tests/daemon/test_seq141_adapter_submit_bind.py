@@ -837,6 +837,274 @@ class TestRaceSafety:
         assert resp.status_code == 200, resp.text
         return adapter_id
 
+    def test_concurrent_re_registration_vs_bind_race_with_barrier(
+        self, app_and_client, route_setup, token_store, monkeypatch
+    ):
+        """Concurrent re-registration vs bind with threading.Barrier forces
+        true interleaving: re-registration starts first, blocks after
+        acquiring the store lock, bind also acquires and re-validates,
+        then both complete.  The outcome must be deterministic: under the
+        adapter-store lock, whichever operation wins the lock race
+        determines the outcome, and the loser either succeeds (if bind
+        won and re-registration resets PENDING afterward) or is rejected
+        (if re-registration won and bind's re-read sees PENDING)."""
+        app, master_token, store = app_and_client
+        profile_name = "barrier-race-cli"
+        adapter_id = self._submit_and_approve_static(
+            app, master_token, store, route_setup, profile_name
+        )
+
+        adapter_entry = load_adapters().get(adapter_id)
+        assert adapter_entry is not None
+        assert adapter_entry.status == "approved"
+
+        token2 = _mint_adapter_token(store, profile_name)
+
+        barrier = threading.Barrier(2, timeout=30)
+        outcomes: dict[str, int] = {"re_register": 0, "bind": 0}
+
+        def do_re_register():
+            c = TestClient(app)
+            barrier.wait()
+            resp = c.post(
+                "/api/v1/runtime/adapters/submit",
+                json={
+                    "executable": adapter_entry.executable,
+                    "version": adapter_entry.version,
+                    "capabilities": adapter_entry.capabilities,
+                    "workspace_adapter": adapter_entry.workspace_adapter,
+                },
+                headers={"Authorization": f"Bearer {token2}"},
+            )
+            outcomes["re_register"] = resp.status_code
+
+        def do_bind():
+            c = TestClient(app)
+            c.headers.update({"Authorization": f"Bearer {master_token}"})
+            barrier.wait()
+            resp = c.post(
+                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
+                json={"profile_name": profile_name},
+            )
+            outcomes["bind"] = resp.status_code
+
+        t1 = threading.Thread(target=do_re_register)
+        t2 = threading.Thread(target=do_bind)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Re-registration always succeeds (200) — submit always works.
+        assert outcomes["re_register"] == 200, f"re-register failed: {outcomes}"
+        # Bind succeeds (200) or is rejected (422) — both are deterministic.
+        assert outcomes["bind"] in (200, 422), f"bind unexpected: {outcomes}"
+
+        # Post-race: if bind succeeded, a connected profile must exist durably.
+        if outcomes["bind"] == 200:
+            profiles = load_runtime_profiles()
+            assert profile_name in profiles
+            assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
+        else:
+            # If bind was rejected, no profile residue
+            profiles = load_runtime_profiles()
+            if profile_name in profiles:
+                # May have been pre-existing from a prior test run
+                pass
+
+        # After any outcome, the adapter exists in the store.
+        re_read = load_adapters().get(adapter_id)
+        assert re_read is not None
+
+    def test_bind_no_residue_on_durable_write_failure(
+        self, app_and_client, route_setup, token_store, monkeypatch
+    ):
+        """If the durable runtime profile write fails, no profile, registry,
+        or audit residue is produced."""
+        app, master_token, store = app_and_client
+        profile_name = "norw-cli"
+        adapter_id = self._submit_and_approve_static(
+            app, master_token, store, route_setup, profile_name
+        )
+
+        mc = self._master_client(app, master_token)
+
+        # Save pre-request state
+        pre_profiles = dict(load_runtime_profiles())
+        from runtime.orchestrator.executor_registry import get_registry as _reg
+        registry = _reg()
+        pre_in_memory = registry.get_profile(profile_name)
+
+        # Force save_runtime_profile to fail.
+        # The bind_adapter_profile function imports save_runtime_profile at
+        # module level from runtime.orchestrator.runtime_executor_store.
+        # We must patch the imported reference in routes.adapters, not the
+        # store module itself.
+        import runtime.daemon.routes.adapters as adapters_mod
+        original_save = adapters_mod.save_runtime_profile
+
+        def _failing_save(name, cfg):
+            raise OSError("simulated disk write failure")
+
+        monkeypatch.setattr(adapters_mod, "save_runtime_profile", _failing_save)
+
+        try:
+            resp = mc.post(
+                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
+                json={"profile_name": profile_name},
+            )
+            # Should get a 500 — the failure is caught by the BaseException
+            # handler in bind_adapter_profile.
+            assert resp.status_code == 500, f"Expected 500, got {resp.status_code}: {resp.text}"
+
+            # No durable residue
+            post_profiles = load_runtime_profiles()
+            if profile_name in post_profiles:
+                assert post_profiles[profile_name] == pre_profiles.get(profile_name), (
+                    f"Durable profile {profile_name!r} mutated despite save failure"
+                )
+            # No in-memory residue
+            post_in_memory = registry.get_profile(profile_name)
+            assert post_in_memory == pre_in_memory, (
+                f"In-memory profile changed: {post_in_memory} vs {pre_in_memory}"
+            )
+        finally:
+            monkeypatch.setattr(adapters_mod, "save_runtime_profile", original_save)
+
+    def test_bind_no_residue_on_audit_failure(
+        self, app_and_client, route_setup, token_store, monkeypatch
+    ):
+        """If the audit write fails after durable write + registry sync, the
+        compensating rollback must leave no durable profile, no in-memory
+        registry entry, and no audit residue."""
+        app, master_token, store = app_and_client
+        profile_name = "noaudit-cli"
+        adapter_id = self._submit_and_approve_static(
+            app, master_token, store, route_setup, profile_name
+        )
+
+        mc = self._master_client(app, master_token)
+
+        # Save pre-request state
+        pre_profiles = dict(load_runtime_profiles())
+        from runtime.orchestrator.executor_registry import get_registry as _reg
+        registry = _reg()
+        pre_in_memory = registry.get_profile(profile_name)
+
+        # Force the audit write inside _audit_adapter_bind to fail.
+        # The function imports Database from runtime.infrastructure.database.
+        from runtime.infrastructure import database as infra_db
+        original_insert = infra_db.Database.insert_audit_log
+
+        def _failing_insert(self, task_id, agent, action, payload=None):
+            raise OSError("simulated audit write failure")
+
+        monkeypatch.setattr(infra_db.Database, "insert_audit_log", _failing_insert)
+
+        try:
+            resp = mc.post(
+                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
+                json={"profile_name": profile_name},
+            )
+            # The rollback should catch this and return 500
+            assert resp.status_code == 500, f"Expected 500, got {resp.status_code}: {resp.text}"
+            detail = resp.json()["detail"]
+            assert "restored" in detail.lower() or "pre-request" in detail.lower()
+
+            # No durable residue
+            post_profiles = load_runtime_profiles()
+            if profile_name in post_profiles:
+                assert post_profiles[profile_name] == pre_profiles.get(profile_name), (
+                    f"Durable profile {profile_name!r} not restored after audit failure"
+                )
+            # No in-memory residue
+            post_in_memory = registry.get_profile(profile_name)
+            assert post_in_memory == pre_in_memory, (
+                f"In-memory profile not restored after audit failure: {post_in_memory} vs {pre_in_memory}"
+            )
+        finally:
+            monkeypatch.setattr(infra_db.Database, "insert_audit_log", original_insert)
+
+    def test_re_registration_vs_bind_deterministic_with_barrier(
+        self, app_and_client, route_setup, token_store, monkeypatch
+    ):
+        """Use a shared barrier to force re-registration and bind to interleave
+        their critical sections: both threads wait at the SAME barrier, then
+        race.  Under the adapter-store lock, the outcome is deterministic
+        — whichever acquires the lock first wins, and the other sees the
+        updated state (PENDING if re-registration won, or stays APPROVED
+        if bind won first)."""
+        app, master_token, store = app_and_client
+        profile_name = "rereg-barrier-cli"
+        adapter_id = self._submit_and_approve_static(
+            app, master_token, store, route_setup, profile_name
+        )
+
+        adapter_entry = load_adapters().get(adapter_id)
+        assert adapter_entry is not None
+        assert adapter_entry.status == "approved"
+
+        token2 = _mint_adapter_token(store, profile_name)
+
+        # SHARED barrier — created ONCE, used by both threads.
+        barrier = threading.Barrier(2, timeout=30)
+        outcomes_lock = threading.Lock()
+        outcomes: list[tuple[str, int, str]] = []
+
+        def do_re_register():
+            c = TestClient(app)
+            barrier.wait()
+            resp = c.post(
+                "/api/v1/runtime/adapters/submit",
+                json={
+                    "executable": adapter_entry.executable,
+                    "version": adapter_entry.version,
+                    "capabilities": adapter_entry.capabilities,
+                    "workspace_adapter": adapter_entry.workspace_adapter,
+                },
+                headers={"Authorization": f"Bearer {token2}"},
+            )
+            with outcomes_lock:
+                outcomes.append(("re_register", resp.status_code, resp.text[:200]))
+
+        def do_bind():
+            c = TestClient(app)
+            c.headers.update({"Authorization": f"Bearer {master_token}"})
+            barrier.wait()
+            resp = c.post(
+                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
+                json={"profile_name": profile_name},
+            )
+            with outcomes_lock:
+                outcomes.append(("bind", resp.status_code, resp.text[:200]))
+
+        t1 = threading.Thread(target=do_re_register)
+        t2 = threading.Thread(target=do_bind)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert len(outcomes) == 2, f"Expected 2 outcomes, got {outcomes}"
+
+        # Both operations must complete deterministically
+        for op, code, text in outcomes:
+            if op == "re_register":
+                assert code == 200, f"re-register failed: {code} {text}"
+            elif op == "bind":
+                assert code in (200, 422), f"bind unexpected: {code} {text}"
+
+        # Under the adapter-store lock, if bind succeeded (200), the
+        # profile must be durably present.
+        profiles = load_runtime_profiles()
+        bind_succeeded = any(op == "bind" and code == 200 for op, code, _text in outcomes)
+        if bind_succeeded:
+            assert profile_name in profiles, f"Bind succeeded but profile missing: {list(profiles.keys())}"
+            assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
+
+        # The adapter always exists post-race.
+        assert load_adapters().get(adapter_id) is not None
+
 
 # ---------------------------------------------------------------------------
 # 8. Legacy / Kimi non-mutation

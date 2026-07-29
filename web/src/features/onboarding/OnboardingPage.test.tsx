@@ -549,3 +549,104 @@ describe('OnboardingPage — Step 2 (create org)', () => {
     );
   });
 });
+
+describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    // Default: healthy, empty container
+    vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: '' },
+        { tool: 'codex', present: true, path: '/usr/bin/codex', hint: '' },
+        { tool: 'opencode', present: true, path: '/usr/bin/opencode', hint: '' },
+        { tool: 'pi', present: true, path: '/usr/bin/pi', hint: '' },
+      ],
+    });
+  });
+
+  /** Navigate to the adapter-backed custom-CLI form (NOT clicking through to legacy). */
+  async function goAdapter(user: UserEvent): Promise<void> {
+    await user.click(
+      await screen.findByRole('button', { name: /connect a custom cli instead/i }),
+    );
+    // The default custom path is adapter-backed — the adapter form is displayed.
+    expect(
+      await screen.findByText(/create a custom adapter wrapper/i),
+    ).toBeInTheDocument();
+  }
+
+  test('Submitted → Awaiting approval state (default path, not legacy)', async () => {
+    const user = userEvent.setup();
+    const mintSpy = vi
+      .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_ADP', expires_at: Date.now() / 1000 + 600 });
+
+    renderPage();
+    await goAdapter(user);
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'my-adapter-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // Token minted with adapter purpose and intended_profile_name
+    await waitFor(() =>
+      expect(mintSpy).toHaveBeenCalledWith({
+        name: 'my-adapter-cli',
+        purpose: 'adapter',
+        intended_profile_name: 'my-adapter-cli',
+      }),
+    );
+
+    // Waiting state — adapter waiting body visible (NOT legacy prompt)
+    expect(
+      await screen.findByLabelText(/waiting for adapter submission/i),
+    ).toBeInTheDocument();
+    // No legacy connect prompt
+    expect(
+      screen.queryByText(/You're being connected to HappyRanch/i),
+    ).not.toBeInTheDocument();
+  });
+
+  test('Does NOT click through to legacy (default path is adapter)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // Click "Connect a custom CLI instead"
+    await user.click(
+      await screen.findByRole('button', { name: /connect a custom cli instead/i }),
+    );
+
+    // Adapter-backed form is the default — NOT the legacy form
+    expect(
+      await screen.findByText(/create a custom adapter wrapper/i),
+    ).toBeInTheDocument();
+
+    // The legacy link is available as a secondary affordance
+    expect(
+      screen.getByRole('button', { name: /use legacy simple integration instead/i }),
+    ).toBeInTheDocument();
+
+    // The name field uses the adapter-specific label
+    const nameInput = await screen.findByLabelText(/name this cli/i);
+    expect(nameInput).toBeInTheDocument();
+  });
+
+  test('Adapter form shows valid name check and rejects built-ins', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await goAdapter(user);
+
+    const input = await screen.findByLabelText(/name this cli/i);
+    const gen = screen.getByRole('button', { name: /generate connect prompt/i });
+    expect(gen).toBeDisabled();
+
+    // A built-in name is refused
+    await user.type(input, 'claude');
+    expect(gen).toBeDisabled();
+    expect(screen.getByText(/isn.*t a built-in/i)).toBeInTheDocument();
+
+    await user.clear(input);
+    await user.type(input, 'my-valid-cli');
+    expect(gen).not.toBeDisabled();
+  });
+});

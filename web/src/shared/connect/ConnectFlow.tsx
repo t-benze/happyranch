@@ -17,7 +17,7 @@
  */
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import { ArrowLeft, Check, ChevronRight, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Check, ChevronRight, RefreshCw } from 'lucide-react';
 import { ApiError } from '@/lib/api';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
@@ -268,6 +268,19 @@ export function AdapterConnect({
         name={flow.state.name}
         adapterId={flow.state.adapterId}
         onReset={flow.back}
+      />
+    );
+  }
+
+  // Bind failed state — approved but bind errored; show error + retry
+  if (flow.state.stage === 'bind_failed') {
+    return (
+      <AdapterBindFailedBody
+        name={flow.state.name}
+        adapterId={flow.state.adapterId}
+        error={flow.state.error}
+        onRetry={() => flow.retryBind()}
+        onBack={flow.back}
       />
     );
   }
@@ -825,6 +838,56 @@ export function AdapterSubmittedBody({
           <ArrowLeft aria-hidden="true" size={14} />
           Back
         </Button>
+      </div>
+    </div>
+  );
+}
+
+export function AdapterBindFailedBody({
+  name,
+  adapterId,
+  error,
+  onRetry,
+  onBack,
+}: {
+  name: string;
+  adapterId: string;
+  error: string;
+  onRetry: () => void;
+  onBack: () => void;
+}): JSX.Element {
+  return (
+    <div className="mt-6 max-w-lg">
+      <div className="border-feedback-danger/30 bg-feedback-danger/5 rounded-lg border p-4">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="text-feedback-danger h-4 w-4" />
+          <p className="text-text-primary text-sm font-medium">
+            Bind failed
+          </p>
+        </div>
+        <p className="text-text-secondary mt-2 text-xs">
+          The adapter <code className="font-mono">{adapterId}</code> was
+          approved for <code className="font-mono">{name}</code>, but the
+          profile binding step failed. This may be transient — retry below.
+        </p>
+        <div className="bg-surface-sunken mt-3 rounded p-3">
+          <p className="text-text-muted text-xs font-mono">
+            Adapter ID: {adapterId}
+          </p>
+          <p className="text-feedback-danger mt-1 text-xs font-mono">
+            Error: {error}
+          </p>
+        </div>
+        <div className="mt-4 flex items-center gap-3">
+          <Button onClick={onRetry}>
+            <RefreshCw aria-hidden="true" size={15} />
+            Retry bind
+          </Button>
+          <Button variant="outline" onClick={onBack}>
+            <ArrowLeft aria-hidden="true" size={14} />
+            Back
+          </Button>
+        </div>
       </div>
     </div>
   );

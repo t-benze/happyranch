@@ -254,6 +254,7 @@ export type AdapterState =
   | { stage: 'form' }
   | { stage: 'waiting'; name: string; token: string; expired: boolean; adapterId: string }
   | { stage: 'submitted'; name: string; adapterId: string; status: string }
+  | { stage: 'bind_failed'; name: string; adapterId: string; error: string }
   | { stage: 'connected'; name: string; adapterId: string };
 
 /** Shared hook for the adapter-backed custom-CLI connection (THR-107 seq141).
@@ -339,7 +340,16 @@ export function useAdapterConnect({
       setState({ stage: 'connected', name, adapterId: adapterIdForPoll });
       onConnected({ name, path: null, via: 'custom' });
     },
+    onError: (error: unknown) => {
+      const message =
+        error instanceof Error ? error.message : 'Bind failed — retry or contact the founder.';
+      setState({ stage: 'bind_failed', name, adapterId: adapterIdForPoll, error: message });
+    },
   });
+
+  const retryBind = (): void => {
+    if (!bindMutation.isPending) bindMutation.mutate(adapterIdForPoll);
+  };
 
   useEffect(() => {
     if (state.stage !== 'submitted') return;
@@ -364,5 +374,5 @@ export function useAdapterConnect({
     mint.reset();
   };
 
-  return { state, name, token, adapterId: adapterIdForPoll, mint, start, regenerate, back, bindMutation };
+  return { state, name, token, adapterId: adapterIdForPoll, mint, start, regenerate, back, bindMutation, retryBind };
 }
