@@ -47,9 +47,16 @@ from runtime.config import Settings
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
-def _register_test_profile_binary():
-    """Register real executables for profile names used in D7B tests
-    (THR-107 seq155)."""
+def _isolated_daemon_home(monkeypatch, tmp_path):
+    """Isolate HAPPYRANCH_DAEMON_HOME to a per-test temporary directory
+    so binary registry writes never touch the developer's ~/.happyranch.
+    Register real executables for profile names used in existing D7B tests
+    (THR-107 seq155).  Tests that verify the RED branch (unregistered/stale
+    pin) must NOT rely on this pre-registration. """
+    daemon_home = tmp_path / ".happyranch"
+    daemon_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+
     from runtime.orchestrator.executor_binary_registry import set_binary
     for name in ["test", "test-cli", "mycli", "myadapter"]:
         set_binary(name, "/bin/echo")
@@ -1552,3 +1559,158 @@ class TestThrottleIntegration:
 
         assert len(calls) == 1
         assert calls[0]["provider"] == "test-cli-provider"
+
+
+class TestCustomAdapterBinaryPreflight:
+    """THR-107 seq155: custom-adapter profiles must have a valid machine-local
+    binary registry entry BEFORE any adapter subprocess attempt.  Missing or
+    stale pins fail closed with an actionable remediation command."""
+
+    def test_missing_pin_fails_before_popen(self, tmp_path):
+        """An unregistered custom-adapter profile returns ExecutorBinaryBlocked
+        before subprocess.Popen is ever called."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        from runtime.orchestrator.executor_binary_registry import remove_binary
+
+        output = _valid_adapter_output()
+        exe_path = _make_test_adapter_executable(tmp_path, output)
+        exe_hash = compute_sha256(exe_path)
+
+        # Ensure the test profile is NOT in the binary registry.
+        remove_binary("unregistered-ca")
+
+        executor = CustomAdapterExecutor(
+            profile_name="unregistered-ca",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        with patch("subprocess.Popen") as mock_popen:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+
+        assert not result.success
+        assert "happyranch executor-binaries register" in (result.error or "")
+        assert "unregistered-ca" in (result.error or "")
+        mock_popen.assert_not_called()
+
+    def test_stale_regular_file_pin_fails_before_popen(self, tmp_path):
+        """A stale pin (executable removed after registration) fails before
+        subprocess.Popen with an actionable remediation."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        from runtime.orchestrator.executor_binary_registry import set_binary
+
+        output = _valid_adapter_output()
+        exe_path = _make_test_adapter_executable(tmp_path, output)
+        exe_hash = compute_sha256(exe_path)
+
+        stale_path = str(tmp_path / "stale-ca-exe")
+        # Write a real executable, register it, then delete it so the pin goes stale.
+        import shutil
+        shutil.copy(exe_path, stale_path)
+        set_binary("stale-ca", stale_path)
+        import os as _os
+        _os.unlink(stale_path)
+
+        executor = CustomAdapterExecutor(
+            profile_name="stale-ca",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        with patch("subprocess.Popen") as mock_popen:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+
+        assert not result.success
+        assert "happyranch executor-binaries register" in (result.error or "")
+        assert "stale-ca" in (result.error or "")
+        mock_popen.assert_not_called()
+
+    def test_stale_symlink_pin_fails_before_popen(self, tmp_path):
+        """A stale symlink pin (symlink target removed after registration)
+        fails before subprocess.Popen with an actionable remediation.
+        Valid stable-symlink spelling remains intact."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        from runtime.orchestrator.executor_binary_registry import set_binary
+
+        output = _valid_adapter_output()
+        exe_path = _make_test_adapter_executable(tmp_path, output)
+        exe_hash = compute_sha256(exe_path)
+
+        # Create a symlink to a real executable, register the link, then
+        # remove the target so the symlink goes stale.
+        symlink_path = tmp_path / "symlink-to-ca"
+        import os as _os
+        _os.symlink(exe_path, str(symlink_path))
+        set_binary("symlink-ca", str(symlink_path))
+        _os.unlink(exe_path)
+
+        executor = CustomAdapterExecutor(
+            profile_name="symlink-ca",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        with patch("subprocess.Popen") as mock_popen:
+            result = executor.run(workspace=tmp_path, prompt="test prompt")
+
+        assert not result.success
+        assert "happyranch executor-binaries register" in (result.error or "")
+        assert "symlink-ca" in (result.error or "")
+        mock_popen.assert_not_called()
+
+    def test_valid_registered_symlink_launches(self, tmp_path):
+        """A valid stable symlink spelling in the registry with an existing
+        target allows the custom adapter to launch."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+        from runtime.orchestrator.executor_binary_registry import set_binary
+
+        output = _valid_adapter_output(session_id="sess-sym")
+        exe_path = _make_test_adapter_executable(tmp_path, output)
+        exe_hash = compute_sha256(exe_path)
+
+        # Create a symlink to the executable and register the symlink path.
+        symlink_path = tmp_path / "valid-symlink"
+        import os as _os
+        _os.symlink(exe_path, str(symlink_path))
+        set_binary("valid-symlink-ca", str(symlink_path))
+
+        executor = CustomAdapterExecutor(
+            profile_name="valid-symlink-ca",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash=exe_hash,
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        result = executor.run(
+            workspace=tmp_path, prompt="test prompt", session_id="sess-sym"
+        )
+
+        assert result.success, f"Valid symlink should launch: {result.error}"
+        assert result.token_usage is not None

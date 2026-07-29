@@ -50,6 +50,20 @@ from runtime.orchestrator.runtime_executor_store import (
 from runtime.adapters.generic_cli import GenericCliAdapter
 
 # ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _isolated_daemon_home(monkeypatch, tmp_path):
+    """Isolate HAPPYRANCH_DAEMON_HOME to a per-test temporary directory
+    so binary registry writes never touch the developer's ~/.happyranch
+    (THR-107 seq155)."""
+    daemon_home = tmp_path / ".happyranch"
+    daemon_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

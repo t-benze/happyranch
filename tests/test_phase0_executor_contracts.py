@@ -136,7 +136,6 @@ def _mock_shutil_which(monkeypatch, tmp_path):
     """Pre-register built-in executor binaries in the machine-local registry
     so _resolve_binary calls resolve deterministically regardless of host PATH
     (THR-107 seq155: registration-only resolution).
-    
     This fixture runs BEFORE _register_test_binaries to ensure the daemon
     home is set before binary registration."""
     daemon_home = tmp_path / ".happyranch"

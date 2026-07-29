@@ -553,8 +553,11 @@ def register_executor(
     2. Token record org matches {slug}.
     3. Token record name is used as the profile name (not from body).
     4. Conformance challenge is fully complete.
-    5. Static validation passes (valid adapter, command on PATH, valid
-       argv_template, no builtin collision).
+    5. Static validation passes (valid adapter, declared-command
+       parity with argv_template[0], no builtin collision).
+       Command does NOT need to be on PATH — launch resolution is
+       through the machine-local binary registry (executors.json,
+       THR-107 seq155).
     6. Token is atomically reserved BEFORE any durable side effects;
        committed only on clean success, released on any failure so the
        token stays valid for retry within its unexpired TTL.
@@ -910,8 +913,11 @@ def runtime_register_executor(
     1. Token is valid, unexpired, unconsumed, loopback (checked by
        ``require_registration_token``).
     2. Conformance challenge is fully complete.
-    3. Static validation passes (valid adapter, command on PATH, valid
-       argv_template, no builtin collision).
+    3. Static validation passes (valid adapter, declared-command
+       parity with argv_template[0], no builtin collision).
+       Command does NOT need to be on PATH — launch resolution is
+       through the machine-local binary registry (executors.json,
+       THR-107 seq155).
     4. Token is atomically reserved before any side effects. Commit on
        success, release on failure.
     5. On successful reserve: write durable runtime store first, then

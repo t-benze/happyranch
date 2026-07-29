@@ -122,8 +122,7 @@ export function buildConnectPrompt(
  *  polls GET /health/prereqs until the name is registered. `requirePresent`
  *  gates the match on `p.present`: both built-in and custom profiles derive
  *  `present`/`path` from the machine-local binary registry (executors.json)
- *  keyed by the profile name (THR-107 seq155). `requirePresent: true` is
- *  correct for both flows — an unregistered profile is never connected. */
+ *  keyed by the profile name (THR-107 seq155). */
 export function useRuntimeConnect({
   purpose,
   requirePresent,
