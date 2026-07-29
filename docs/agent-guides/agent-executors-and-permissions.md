@@ -259,10 +259,12 @@ Registration succeeds **only** when ALL of the following are true:
 1. Token is valid, unexpired, unconsumed, and loopback (checked by the dependency gate).
 2. Token org matches the route slug.
 3. The conformance challenge is fully complete — all four steps arrived.
-4. Static validation passes: adapter is a known value, command is on `PATH`,
-   `argv_template` is a non-empty list of strings with supported placeholders
-   (`{prompt}`, `{timeout_seconds}`, `{workspace}`), and the profile name does
-   not collide with a built-in executor.
+4. Static validation passes: adapter is a known value, the declared
+   `command` name matches `argv_template[0]` (string-equality validation;
+   PATH resolution is not used — THR-107 seq155), `argv_template` is a
+   non-empty list of strings with supported placeholders (`{prompt}`,
+   `{timeout_seconds}`, `{workspace}`), and the profile name does not
+   collide with a built-in executor.
 5. No conflicting custom profile with a different definition is already registered
    (identical re-registration is idempotent).
 
