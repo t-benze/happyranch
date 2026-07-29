@@ -31,8 +31,11 @@ export const mintRegistrationToken = (
 export interface RuntimeRegistrationTokenMintRequest {
   name: string;
   /** 'profile' for executor profile registration (default),
-   *  'binary' for binary-path registration. */
+   *  'binary' for binary-path registration,
+   *  'adapter' for custom-adapter submission. */
   purpose?: string;
+  /** For 'adapter' purpose: the profile name this adapter is bound to. */
+  intended_profile_name?: string;
 }
 
 export const mintRuntimeRegistrationToken = (

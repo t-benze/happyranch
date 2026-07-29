@@ -518,6 +518,7 @@ def register_custom_adapter(
     capabilities: list[str],
     workspace_adapter: str = "pi",
     registered_by: str = "",
+    intended_profile_name: str | None = None,
 ) -> AdapterEntry:
     """Register a custom adapter executable.
 
@@ -539,6 +540,13 @@ def register_custom_adapter(
     old one — ALWAYS as ``status="pending"``.  Approval is never silently
     retained.
 
+    Args:
+        intended_profile_name: When set (THR-107 seq141 adapter-submission
+            path), the adapter id is server-derived as ``<name>-adapter``
+            and the entry records this binding. The submission endpoint
+            MUST set this; the generic master-bearer registration path
+            leaves it None.
+
     Returns the persisted ``AdapterEntry``.
 
     Raises ``ValueError`` at the first validation failure — ZERO durable
@@ -552,12 +560,23 @@ def register_custom_adapter(
     capabilities = validate_capabilities(capabilities)
     workspace_adapter = validate_workspace_adapter(workspace_adapter)
 
+    # Validate intended_profile_name if provided
+    if intended_profile_name is not None:
+        if not isinstance(intended_profile_name, str) or not intended_profile_name.strip():
+            raise ValueError("intended_profile_name must be a non-empty string")
+        intended_profile_name = intended_profile_name.strip()
+
     # Step 5: Compute SHA-256
     file_hash = compute_sha256(str(executable_path))
 
-    # Generate adapter id
-    adapter_name = Path(executable).name  # Use filename as default name
-    adapter_id = generate_adapter_id(adapter_name)
+    # Generate adapter id — server-derived from intended_profile_name when
+    # provided, otherwise from the executable filename (master-bearer path).
+    if intended_profile_name is not None:
+        adapter_id = generate_adapter_id(f"{intended_profile_name}-adapter")
+        adapter_name = intended_profile_name
+    else:
+        adapter_name = Path(executable).name  # Use filename as default name
+        adapter_id = generate_adapter_id(adapter_name)
 
     # Step 6: Conformance probe (spawns subprocess — no durable residue on failure)
     run_conformance_probe(str(executable_path), adapter_id)
@@ -587,6 +606,7 @@ def register_custom_adapter(
             registered_by=registered_by,
             approved_at=None,
             approved_by=None,
+            intended_profile_name=intended_profile_name,
         )
 
         # Re-registration guard: if existing entry differs, status MUST be
@@ -613,10 +633,11 @@ def register_custom_adapter(
                     registered_by=existing.registered_by,
                     approved_at=None,
                     approved_by=None,
+                    intended_profile_name=intended_profile_name,
                 )
             else:
                 # Changed — new registration, pending
-                pass  # entry already has status="pending"
+                pass  # entry already has status="pending" and intended_profile_name
 
         # Persist atomically (save_adapter reloads + replaces under the
         # same lock, which serializes against competing writers).

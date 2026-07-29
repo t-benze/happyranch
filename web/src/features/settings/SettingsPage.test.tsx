@@ -724,6 +724,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     // The mode toggle (built-in convergence) switches to the custom name form.
     await user.click(screen.getByText(/connect a custom cli instead/i));
+    // Default custom path is now adapter-backed; click through to legacy
+    await user.click(screen.getByText(/use legacy simple integration instead/i));
     expect(await screen.findByLabelText(/name this cli/i)).toBeInTheDocument();
   });
 
@@ -782,6 +784,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     await openConnect(user);
     await user.click(screen.getByText(/connect a custom cli instead/i));
+    // Default custom path is now adapter-backed; click through to legacy
+    await user.click(screen.getByText(/use legacy simple integration instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
     await user.click(
       screen.getByRole('button', { name: /generate connect prompt/i }),
@@ -828,6 +832,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     await openConnect(user);
     await user.click(screen.getByText(/connect a custom cli instead/i));
+    // Default custom path is now adapter-backed; click through to legacy
+    await user.click(screen.getByText(/use legacy simple integration instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
     await user.click(
       screen.getByRole('button', { name: /generate connect prompt/i }),
@@ -888,6 +894,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     // Drive a custom connect to the connected card.
     await openConnect(user);
     await user.click(screen.getByText(/connect a custom cli instead/i));
+    // Default custom path is now adapter-backed; click through to legacy
+    await user.click(screen.getByText(/use legacy simple integration instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
     await user.click(
       screen.getByRole('button', { name: /generate connect prompt/i }),
@@ -918,6 +926,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     await openConnect(user);
     await user.click(screen.getByText(/connect a custom cli instead/i));
+    // Default custom path is now adapter-backed; click through to legacy
+    await user.click(screen.getByText(/use legacy simple integration instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'claude');
 
     expect(screen.getByText(/isn.t a built-in/i)).toBeInTheDocument();

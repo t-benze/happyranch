@@ -34,6 +34,10 @@ async function goCustom(user: UserEvent): Promise<void> {
   await user.click(
     await screen.findByRole('button', { name: /connect a custom cli instead/i }),
   );
+  // Default custom path is now adapter-backed; click through to legacy
+  await user.click(
+    await screen.findByRole('button', { name: /use legacy simple integration instead/i }),
+  );
 }
 
 beforeEach(() => {
