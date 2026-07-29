@@ -23,29 +23,23 @@ _EXECUTOR_NAMES = frozenset({"claude", "codex", "opencode", "pi"})
 
 
 @pytest.fixture(autouse=True)
-def _mock_shutil_which(monkeypatch):
-    """Patch shutil.which inside executors so the executor constructors'
-    _resolve_binary calls resolve deterministically regardless of host PATH.
+def _mock_shutil_which(monkeypatch, tmp_path):
+    """Pre-register built-in executor binaries in the machine-local registry
+    so executor constructors' _resolve_binary calls resolve deterministically
+    regardless of host PATH (THR-107 seq155: registration-only resolution).
 
-    The real shutil.which is consulted first: when it returns a path (host
-    has the binary, or a test sets up a tmpdir on PATH), that real path is
-    honoured.  Only when the real lookup returns None and the name is a
-    recognised executor binary does this fixture inject a stable synthetic
-    path so the existing Popen-mocked tests don't crash on CI.
+    Creates fake binaries in a tmp dir and registers them in the binary
+    registry keyed by each built-in executor name.
     """
-    import runtime.orchestrator.executors as _ex_mod
+    daemon_home = tmp_path / ".happyranch"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
 
-    _real_which = shutil.which
-
-    def _patched_which(name, path=None):
-        real = _real_which(name, path=path)
-        if real is not None:
-            return real
-        if name in _EXECUTOR_NAMES:
-            return f"/usr/local/bin/{os.path.basename(name)}"
-        return None
-
-    monkeypatch.setattr(_ex_mod.shutil, "which", _patched_which)
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    for name in _EXECUTOR_NAMES:
+        fake_bin = tmp_path / "bin" / name
+        fake_bin.parent.mkdir(parents=True, exist_ok=True)
+        fake_bin.touch(mode=0o755)
+        set_binary(name, str(fake_bin))
 
 
 @pytest.fixture
@@ -771,37 +765,51 @@ class TestBundledCliPathDev:
         assert "happyranch-daemon" not in pathenv
 
 
-def test_resolve_binary_absolute_path_passthrough():
-    """An absolute cli_path is returned unchanged — the founder configured it
-    explicitly."""
-    from runtime.orchestrator.executors import _resolve_binary
+def test_resolve_binary_absolute_path_blocked():
+    """An absolute filesystem path is NOT resolved — registration-only
+    resolution (THR-107 seq155 hard no-PATH cutover). Only executor/profile
+    names that map to explicit executors.json entries are accepted."""
+    from runtime.orchestrator.executors import _resolve_binary, ExecutorBinaryBlocked
 
-    result = _resolve_binary("/usr/local/bin/claude")
-    assert result == "/usr/local/bin/claude"
+    with pytest.raises(ExecutorBinaryBlocked) as exc_info:
+        _resolve_binary("/usr/local/bin/claude")
+    assert "not registered" in str(exc_info.value).lower()
 
 
 def test_resolve_binary_bare_name_via_which(tmp_path, monkeypatch):
-    """A bare name resolves to an absolute path via shutil.which when the
-    binary exists on PATH."""
-    from runtime.orchestrator.executors import _resolve_binary
+    """A bare name that is NOT registered raises ExecutorBinaryBlocked
+    even when the binary exists on PATH (THR-107 seq155: no PATH discovery)."""
+    from runtime.orchestrator.executors import _resolve_binary, ExecutorBinaryBlocked
+
+    # Use an isolated daemon home so the auto-use fixture's registrations
+    # don't pre-seed this test's registry.
+    daemon_home = tmp_path / "isolated_home"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
 
     # Place a fake 'claude' binary in a tmp dir and add it to PATH.
-    fake_bin = tmp_path / "bin"
+    fake_bin = tmp_path / "path_bin"
     fake_bin.mkdir()
     (fake_bin / "claude").touch(mode=0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:/usr/bin:/bin")
 
-    result = _resolve_binary("claude")
-    assert result == str(fake_bin / "claude")
-    assert os.path.isabs(result)
+    with pytest.raises(ExecutorBinaryBlocked) as exc_info:
+        _resolve_binary("claude")
+    msg = str(exc_info.value)
+    assert "claude" in msg
+    assert "not registered" in msg.lower()
+    assert "register" in msg.lower()
 
 
 def test_resolve_binary_bare_name_stripped_path_still_finds_binary(monkeypatch, tmp_path):
-    """When the inherited PATH is stripped to /usr/bin:/bin, the normalisation
-    prepends standard dirs and a bare name still resolves to an absolute path
-    (e.g., /opt/homebrew/bin/claude).  This is the precise failure mode from
-    a Finder-launched daemon."""
-    from runtime.orchestrator.executors import _resolve_binary, _normalize_path
+    """When the inherited PATH is stripped, an unregistered bare name still
+    raises ExecutorBinaryBlocked (THR-107 seq155: only registered binaries
+    launch, regardless of PATH)."""
+    from runtime.orchestrator.executors import _resolve_binary, _normalize_path, ExecutorBinaryBlocked
+
+    # Use an isolated daemon home so the auto-use fixture's registrations
+    # don't pre-seed this test's registry.
+    daemon_home = tmp_path / "isolated_home"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
 
     # Simulate a standard tool dir containing the binary.
     fake_homebrew = tmp_path / "opt" / "homebrew" / "bin"
@@ -819,35 +827,32 @@ def test_resolve_binary_bare_name_stripped_path_still_finds_binary(monkeypatch, 
     try:
         _normalize_path()
 
-        result = _resolve_binary("claude")
-        assert result == str(fake_homebrew / "claude")
-        assert os.path.isabs(result)
+        with pytest.raises(ExecutorBinaryBlocked) as exc_info:
+            _resolve_binary("claude")
+        msg = str(exc_info.value)
+        assert "claude" in msg
+        assert "not registered" in msg.lower()
 
-        result2 = _resolve_binary("codex")
-        assert result2 == str(fake_homebrew / "codex")
-        assert os.path.isabs(result2)
+        with pytest.raises(ExecutorBinaryBlocked) as exc_info2:
+            _resolve_binary("codex")
+        assert "codex" in str(exc_info2.value)
     finally:
         ex_mod._STANDARD_TOOL_DIRS = original
 
 
 def test_resolve_binary_unresolvable_raises_actionable_diagnostic():
     """An unresolvable binary raises an error that names WHICH executor and
-    WHICH dirs were searched — not a bare ENOENT."""
-    from runtime.orchestrator.executors import _resolve_binary, _normalize_path
+    provides the actionable registration command (THR-107 seq155)."""
+    from runtime.orchestrator.executors import _resolve_binary, ExecutorBinaryBlocked
 
-    error_msg = None
-    try:
+    with pytest.raises(ExecutorBinaryBlocked) as exc_info:
         _resolve_binary("nonexistent-cli-tool-xyz")
-    except RuntimeError as exc:
-        error_msg = str(exc)
+    error_msg = str(exc_info.value)
 
-    assert error_msg is not None, "Expected RuntimeError for unresolvable binary"
     assert "nonexistent-cli-tool-xyz" in error_msg
     # Must mention actionable guidance — the error tells the operator what to do.
-    assert (
-        "not registered" in error_msg.lower()
-        or "not found" in error_msg.lower()
-    )
+    assert "not registered" in error_msg.lower()
+    assert "register" in error_msg.lower()
 
 
 @patch("runtime.orchestrator.executors.subprocess")
@@ -869,9 +874,17 @@ def test_executor_passes_explicit_env_to_popen(mock_subprocess, tmp_path):
 
 
 @patch("runtime.orchestrator.executors.subprocess")
-def test_absolute_cli_path_preserved_in_cmd_zero(mock_subprocess, tmp_path, runtime):
-    """When claude_cli_path is an absolute path (founder-configured), it
-    appears as-is in cmd[0]."""
+def test_absolute_cli_path_resolved_from_registry(mock_subprocess, tmp_path, runtime):
+    """When claude_cli_path is an absolute path (founder-configured), cmd[0]
+    still comes from the machine-local binary registry keyed by the built-in
+    name 'claude' — NOT from the Settings path (THR-107 seq155)."""
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    # Register the built-in name with a real executable at a known path
+    # different from the Settings value.
+    fake_bin = tmp_path / "registered" / "claude"
+    fake_bin.parent.mkdir(parents=True, exist_ok=True)
+    fake_bin.touch(mode=0o755)
+    set_binary("claude", str(fake_bin))
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
     mock_subprocess.Popen.return_value = _popen_mock(stdout="ok")
@@ -885,7 +898,8 @@ def test_absolute_cli_path_preserved_in_cmd_zero(mock_subprocess, tmp_path, runt
     executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
 
     cmd = mock_subprocess.Popen.call_args[0][0]
-    assert cmd[0] == "/opt/homebrew/bin/claude"
+    # cmd[0] comes from the registry, NOT the Settings cli_path
+    assert cmd[0] == str(fake_bin)
 
 
 # ---------------------------------------------------------------------------

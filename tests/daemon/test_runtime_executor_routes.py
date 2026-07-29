@@ -1213,21 +1213,20 @@ class TestRuntimeProfilesListRoute:
         assert alpha["present"] is False
         assert alpha["path"] is None
 
-    def test_list_present_path_from_command_resolvability(self, client, tmp_home):
-        """Custom profiles derive present/path from declared command
-        resolvability — the same observable readiness contract as
-        /health/prereqs. No executors.json entry is required."""
-        # 'true' is universally on PATH and resolves via shutil.which
+    def test_list_present_path_from_registered_binary(self, client, tmp_home):
+        """Custom profiles derive present/path from the machine-local
+        binary registry keyed by profile name (THR-107 seq155)."""
+        # Register the binary for the profile name
+        from runtime.orchestrator.executor_binary_registry import set_binary
+        set_binary("true-exec", "/usr/bin/true")
         save_runtime_profile("true-exec", _entry(command="true"))
 
         r = client.get("/api/v1/executors/runtime/profiles")
         assert r.status_code == 200
         (profile,) = r.json()["profiles"]
         assert profile["name"] == "true-exec"
-        # Command 'true' resolves on PATH — present true with a path
         assert profile["present"] is True
         assert profile["path"] is not None
-        # The resolved path should be absolute
         assert profile["path"].startswith("/")
 
     def test_list_unresolvable_command_present_false(self, client, tmp_home):

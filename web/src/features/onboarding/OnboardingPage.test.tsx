@@ -650,3 +650,73 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     expect(gen).not.toBeDisabled();
   });
 });
+
+describe('OnboardingPage — Custom two-stage flow regression (profile → binary)', () => {
+  test('profile token → binary mint → register-binary prompt → present:true connected', async () => {
+    const user = userEvent.setup();
+    const mintLog: Array<Record<string, unknown>> = [];
+
+    // Track every mint call to assert payloads.
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockImplementation(async (payload) => {
+        mintLog.push({ ...payload });
+        return { token: `hr_tok_${mintLog.length}`, expires_at: Date.now() / 1000 + 600 };
+      });
+
+    // Prereqs include name with present:false — ProfileStage (requirePresent:false)
+    // will detect the name, transition to BinaryStage, and auto-mint the binary
+    // token in the same render cycle. We assert both mints happened with correct
+    // purpose fences.
+    vi.mocked(healthApi.getPrereqs).mockResolvedValue({
+      prereqs: [
+        { tool: 'my-cli', present: false, path: null, hint: '' },
+      ],
+    });
+
+    renderPage();
+    await goCustom(user);
+
+    // Fill in the custom CLI name and generate.
+    await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // (a)+(c) ProfileStage detects the name (requirePresent:false, matches on
+    // name alone), transitions to BinaryStage which auto-mints the binary-purpose
+    // token. Assert both mints with correct purpose fences.
+    await waitFor(() => expect(mintLog.length).toBe(2), { timeout: 8000 });
+    expect(mintLog[0]).toEqual({ name: 'my-cli' });
+    expect(mintLog[1]).toEqual({ name: 'my-cli', purpose: 'binary' });
+
+    // (b)+(c) The waiting UI shows the binary-stage prompt with register-binary
+    // route (NOT the profile register route).
+    const promptEl = await screen.findByText(/register your binary path/i, {}, { timeout: 5000 });
+    expect(promptEl.closest('pre')).toHaveTextContent('/executors/runtime/register-binary');
+    expect(promptEl.closest('pre')).toHaveTextContent('"path":"<your absolute binary path>"');
+
+    // (c+) Explicit red-side: the connected card must NOT appear while
+    // present:false — ProfileStage appearance-only advances to BinaryStage,
+    // but only present:true + registered path permits the connected state.
+    expect(screen.queryByRole('heading', { name: /connected/i })).not.toBeInTheDocument();
+
+    // (d) Switch prereqs to present:true with a registered path.
+    vi.mocked(healthApi.getPrereqs).mockResolvedValue({
+      prereqs: [
+        { tool: 'my-cli', present: true, path: '/opt/bin/my-cli', hint: '' },
+      ],
+    });
+
+    // Connected card appears only after present:true refetch.
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole('heading', { name: /my-cli connected/i }),
+        ).toBeInTheDocument();
+      },
+      { timeout: 8000 },
+    );
+    expect(screen.getByText('/opt/bin/my-cli')).toBeInTheDocument();
+
+    // No removed "on PATH" wording in the connected card.
+    expect(screen.queryByText(/on PATH/i)).not.toBeInTheDocument();
+  });
+});

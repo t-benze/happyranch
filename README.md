@@ -142,7 +142,11 @@ happyranch assistant register --executor claude --command claude --argv '["claud
 happyranch assistant status     # show configuration state and selected executor
 ```
 
-On register, the daemon validates the payload structurally only — non-empty fields and `shutil.which(argv[0])` resolves (no allowlist, no absolute-path requirement, no `$PATH` guard) — then auto-configures with no separate approval. See [`docs/agent-guides/runtime-and-configuration.md`](docs/agent-guides/runtime-and-configuration.md) for the full configuration contract.
+On register, the daemon validates the payload structurally — non-empty fields
+and a matching ``argv[0]`` / ``command`` pair — then auto-configures with
+no separate approval.  Custom profiles now require an explicit machine-local
+binary registry entry (``executors.json``) before launch (THR-107 seq155).
+See [`docs/agent-guides/runtime-and-configuration.md`](docs/agent-guides/runtime-and-configuration.md) for the full configuration contract.
 
 ## Commands
 
@@ -392,10 +396,10 @@ If a value isn't set in either, the code default applies. The file is optional �
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
-| `HAPPYRANCH_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
-| `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Path to opencode CLI |
-| `HAPPYRANCH_PI_CLI_PATH` | `pi` | Path to Pi CLI |
+| `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Default command name for claude (metadata only — executor launch requires `executors.json` pin) |
+| `HAPPYRANCH_CODEX_CLI_PATH` | `codex` | Default command name for codex (metadata only — executor launch requires `executors.json` pin) |
+| `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Default command name for opencode (metadata only — executor launch requires `executors.json` pin) |
+| `HAPPYRANCH_PI_CLI_PATH` | `pi` | Default command name for pi (metadata only — executor launch requires `executors.json` pin) |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
 | `HAPPYRANCH_QUEUE_WORKERS` | `3` | Max agent sessions running at once (daemon-wide, across all orgs). Raise it if tasks queue up waiting for a free slot; the limit is shared, so a busy org can still use every slot. Must be a positive integer. Takes effect on daemon restart. |

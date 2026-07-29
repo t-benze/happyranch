@@ -333,88 +333,60 @@ class TestExecutorRegistry:
         with pytest.raises(ValueError, match="must be the same executable"):
             ExecutorRegistry.validate_custom_profile_config("kimi", config)
 
-    def test_validate_custom_rejects_unresolvable_argv0(self) -> None:
-        """argv_template[0] not found on PATH → ValueError with actionable message."""
+    def test_validate_custom_rejects_command_argv0_mismatch(self) -> None:
+        """command and argv_template[0] must be the same declared name
+        (THR-107 seq155: no PATH resolution)."""
         config = {
             "command": "echo",
-            "argv_template": ["definitely-not-on-path-xyzzy", "{prompt}"],
+            "argv_template": ["different-name", "{prompt}"],
             "adapter": "pi",
         }
-        with pytest.raises(ValueError, match="not found on PATH"):
+        with pytest.raises(ValueError, match="must be the same executable"):
             ExecutorRegistry.validate_custom_profile_config("bad", config)
 
-    def test_validate_custom_rejects_unresolvable_command(self) -> None:
-        """command not found on PATH → ValueError (existing behavior, preserved)."""
-        config = {
-            "command": "definitely-not-command-xyzzy",
-            "argv_template": ["echo", "{prompt}"],
-            "adapter": "pi",
-        }
-        with pytest.raises(ValueError, match="not found on PATH"):
-            ExecutorRegistry.validate_custom_profile_config("bad", config)
-
-    def test_validate_custom_accepts_matching_path_commands(self) -> None:
-        """Valid profile where command and argv_template[0] are both 'echo' → OK."""
+    def test_validate_custom_rejects_empty_argv0(self) -> None:
+        """argv_template[0] is empty → ValueError with actionable message."""
         config = {
             "command": "echo",
-            "argv_template": ["echo", "{prompt}"],
+            "argv_template": ["", "{prompt}"],
+            "adapter": "pi",
+        }
+        with pytest.raises(ValueError, match="non-empty string"):
+            ExecutorRegistry.validate_custom_profile_config("bad", config)
+
+    def test_validate_custom_accepts_matching_names(self) -> None:
+        """Valid profile where command and argv_template[0] are the same
+        declared name (THR-107 seq155: no PATH resolution)."""
+        config = {
+            "command": "my-custom-cli",
+            "argv_template": ["my-custom-cli", "{prompt}"],
             "adapter": "pi",
         }
         profile = ExecutorRegistry.validate_custom_profile_config("ok", config)
-        assert profile.command == "echo"
-        assert profile.argv_template == ["echo", "{prompt}"]
+        assert profile.command == "my-custom-cli"
+        assert profile.argv_template == ["my-custom-cli", "{prompt}"]
 
-    def test_validate_custom_accepts_absolute_command(self) -> None:
-        """command with an absolute path and matching argv_template[0] → OK.
-        shutil.which returns None for absolute paths (they're already
-        resolved), so the absolute-path check in validate_custom_profile_config
-        skips the which() comparison. The profile stores the absolute path as-is."""
-        echo_path = "/bin/echo"
-        config = {
-            "command": echo_path,
-            "argv_template": [echo_path, "{prompt}"],
-            "adapter": "pi",
-        }
-        # shutil.which returns None for absolute paths that exist on disk
-        # — the which() wrapper treats existing absolute paths as resolveable.
-        # Actually, shutil.which('/bin/echo') returns '/bin/echo' on POSIX.
-        import shutil
-        from pathlib import Path
-        resolved = shutil.which(echo_path)
-        if resolved == echo_path:
-            profile = ExecutorRegistry.validate_custom_profile_config("abs", config)
-            assert profile.command == echo_path
-            assert profile.argv_template == [echo_path, "{prompt}"]
-
-    def test_validate_custom_symlink_canonicalization(self) -> None:
-        """Symlink / aliased command must canonicalize to same path.
-        For example, on macOS /bin/echo -> something, shutil.which resolves it.
-        This test verifies that if two commands resolve to the same canonical
-        path, they pass the parity check."""
-        # Both 'echo' and '/bin/echo' resolve to the same binary via
-        # shutil.which + Path.resolve() canonicalization.
+    def test_validate_custom_symlink_as_declared_names(self) -> None:
+        """command and argv_template[0] must match as declared names —
+        no PATH canonicalization (THR-107 seq155)."""
+        # 'echo' != '/bin/echo' as strings, so this is rejected.
         config = {
             "command": "echo",
             "argv_template": ["/bin/echo", "{prompt}"],
             "adapter": "pi",
         }
-        import shutil
-        from pathlib import Path
-        res_cmd = shutil.which("echo")
-        res_argv0 = shutil.which("/bin/echo")
-        if res_cmd and res_argv0 and str(Path(res_cmd).resolve()) == str(Path(res_argv0).resolve()):
-            profile = ExecutorRegistry.validate_custom_profile_config("sym", config)
-            assert profile is not None
+        with pytest.raises(ValueError, match="must be the same executable"):
+            ExecutorRegistry.validate_custom_profile_config("sym", config)
 
     def test_validate_custom_rejects_kimi_args_only_template(self) -> None:
-        """The reported Kimi case: --flag args as argv_template[0] with
-        no executable → rejected with actionable message (issue #490)."""
+        """argv_template[0] is '--flag' which doesn't match command —
+        rejected (THR-107 seq155: no PATH resolution)."""
         config = {
             "command": "kimi-cli",
             "argv_template": ["--flag", "{prompt}"],
             "adapter": "pi",
         }
-        with pytest.raises(ValueError, match="not found on PATH"):
+        with pytest.raises(ValueError, match="must be the same executable"):
             ExecutorRegistry.validate_custom_profile_config("kimi", config)
 
     def test_list_profile_names_includes_builtins(self) -> None:
@@ -515,16 +487,25 @@ from unittest.mock import MagicMock, patch
 
 
 class TestGenericCliExecutor:
+    """Tests for GenericCliExecutor (THR-107 seq155: binary registry required).
+
+    Each test registers a fake binary in its tmp_path so _resolve_binary
+    finds a valid registered path without depending on host executables.
+    """
+
     def setup_method(self) -> None:
         reset_registry()
 
     def teardown_method(self) -> None:
         reset_registry()
+        import os
+        os.environ.pop("HAPPYRANCH_DAEMON_HOME", None)
 
     @patch("runtime.orchestrator.executors.subprocess")
     def test_launches_with_template_substitution(self, mock_subprocess, tmp_path):
         workspace = tmp_path / "agent_ws"
         workspace.mkdir()
+        self._register_test_binary(tmp_path, "openclaw")
 
         proc = MagicMock()
         proc.pid = 9999
@@ -548,7 +529,8 @@ class TestGenericCliExecutor:
 
         assert result.success is True
         cmd = mock_subprocess.Popen.call_args[0][0]
-        assert cmd[0].endswith("echo")
+        # cmd[0] is the resolved registered binary path (THR-107 seq155)
+        assert "fake-openclaw" in cmd[0]
         assert cmd[1] == "agent"
         assert cmd[2] == "--json"
         assert cmd[3] == "--message"
@@ -562,6 +544,7 @@ class TestGenericCliExecutor:
     def test_launches_with_workspace_placeholder(self, mock_subprocess, tmp_path):
         workspace = tmp_path / "agent_ws"
         workspace.mkdir()
+        self._register_test_binary(tmp_path, "custom")
 
         proc = MagicMock()
         proc.pid = 8888
@@ -588,6 +571,7 @@ class TestGenericCliExecutor:
     def test_returns_failure_on_nonzero_exit(self, mock_subprocess, tmp_path):
         workspace = tmp_path / "agent_ws"
         workspace.mkdir()
+        self._register_test_binary(tmp_path, "failing")
 
         proc = MagicMock()
         proc.pid = 7777
@@ -617,6 +601,7 @@ class TestGenericCliExecutor:
         """A fake CLI emitting a valid envelope → token_usage is populated."""
         workspace = tmp_path / "agent_ws"
         workspace.mkdir()
+        self._register_test_binary(tmp_path, "enveloped")
 
         _BEGIN = "__HR_ENVELOPE_BEGIN__"
         _END = "__HR_ENVELOPE_END__"
@@ -653,6 +638,7 @@ class TestGenericCliExecutor:
         """A fake CLI with NO envelope → succeeds with token_usage=None."""
         workspace = tmp_path / "agent_ws"
         workspace.mkdir()
+        self._register_test_binary(tmp_path, "noenvelope")
 
         stdout = "Agent completed the task."
 
@@ -681,6 +667,7 @@ class TestGenericCliExecutor:
         """A fake CLI with a malformed envelope → still succeeds, token_usage has forensic data."""
         workspace = tmp_path / "agent_ws"
         workspace.mkdir()
+        self._register_test_binary(tmp_path, "broken")
 
         _BEGIN = "__HR_ENVELOPE_BEGIN__"
         _END = "__HR_ENVELOPE_END__"
@@ -707,6 +694,19 @@ class TestGenericCliExecutor:
         assert result.token_usage is not None
         assert result.token_usage.input_tokens is None
         assert result.token_usage.usage_raw_json is not None
+
+    # ── Helper ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _register_test_binary(tmp_path, profile_name: str) -> None:
+        """Register a fake executable binary for the given profile name
+        so _resolve_binary finds a valid path (THR-107 seq155)."""
+        import os as _os
+        fake_bin = tmp_path / f"fake-{profile_name}"
+        fake_bin.touch(mode=0o755)
+        _os.environ["HAPPYRANCH_DAEMON_HOME"] = str(tmp_path)
+        from runtime.orchestrator.executor_binary_registry import set_binary
+        set_binary(profile_name, str(fake_bin))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

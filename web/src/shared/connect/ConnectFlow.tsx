@@ -15,7 +15,7 @@
  * for the honesty-fence rationale (scoped tokens only, no invented status, the
  * connected card shows only register-real data).
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { AlertTriangle, ArrowLeft, Check, ChevronRight, RefreshCw } from 'lucide-react';
 import { ApiError } from '@/lib/api';
@@ -398,7 +398,7 @@ export function AdapterConnect({
 }
 
 /* ------------------------------------------------------------------ */
-/*  LEGACY CUSTOM — name → mint profile token → copy prompt → poll      */
+/*  CUSTOM — two-stage: profile token → register → binary token → pin   */
 /* ------------------------------------------------------------------ */
 
 export function CustomConnect({
@@ -418,13 +418,58 @@ export function CustomConnect({
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
 }): JSX.Element {
+  const [phase, setPhase] = useState<'profile' | 'binary'>('profile');
+  const [profileName, setProfileName] = useState('');
+
+  if (phase === 'profile') {
+    return (
+      <ProfileStage
+        key="profile"
+        onUseBuiltin={onUseBuiltin}
+        skipSlot={skipSlot}
+        waitingSkipSlot={waitingSkipSlot}
+        onProfileRegistered={(name: string) => {
+          setProfileName(name);
+          setPhase('binary');
+        }}
+      />
+    );
+  }
+
+  return (
+    <BinaryStage
+      key="binary"
+      profileName={profileName}
+      onConnected={onConnected}
+      onBack={() => setPhase('profile')}
+      waitingSkipSlot={waitingSkipSlot}
+    />
+  );
+}
+
+/** Stage 1: prompt the user to register their custom profile, poll for the
+ *  name to appear in prereqs (appearance-only — requirePresent: false — so
+ *  the flow can advance to registration), then transition to stage 2.
+ *  Only the binary-purpose stage (stage 2) may report externally connected
+ *  after present:true and a pinned path. */
+function ProfileStage({
+  onUseBuiltin,
+  skipSlot,
+  waitingSkipSlot,
+  onProfileRegistered,
+}: {
+  onUseBuiltin?: () => void;
+  skipSlot?: ReactNode;
+  waitingSkipSlot?: ReactNode;
+  onProfileRegistered: (name: string) => void;
+}): JSX.Element {
   const [nameInput, setNameInput] = useState('');
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   const flow = useRuntimeConnect({
     requirePresent: false,
     via: 'custom',
-    onConnected,
+    onConnected: (c) => onProfileRegistered(c.name),
   });
 
   const nameIsBuiltin = BUILTINS.has(nameInput.trim());
@@ -541,6 +586,67 @@ export function CustomConnect({
         <HowThisWorks />
       </form>
     </div>
+  );
+}
+
+/** Stage 2: auto-mint a binary-purpose token for the registered profile,
+ *  prompt to register its absolute binary path, poll for present:true. */
+function BinaryStage({
+  profileName,
+  onConnected,
+  onBack,
+  waitingSkipSlot,
+}: {
+  profileName: string;
+  onConnected: (c: Connected) => void;
+  onBack: () => void;
+  waitingSkipSlot?: ReactNode;
+}): JSX.Element {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+
+  const flow = useRuntimeConnect({
+    purpose: 'binary',
+    requirePresent: true,
+    via: 'custom',
+    onConnected,
+  });
+
+  // Auto-start the binary mint as soon as this stage mounts.
+  useEffect(() => {
+    if (flow.state === 'form' && !flow.mint.isPending) {
+      flow.start(profileName);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (flow.state === 'waiting') {
+    return (
+      <WaitingBody
+        name={flow.name}
+        prompt={buildConnectPrompt(flow.name, flow.token, origin, 'binary')}
+        expired={flow.expired}
+        regenerating={flow.mint.isPending}
+        onRegenerate={flow.regenerate}
+        onBack={() => {
+          flow.back();
+          onBack();
+        }}
+        skipSlot={waitingSkipSlot}
+      />
+    );
+  }
+
+  // Still in 'form' state means the auto-start hasn't fired yet or the
+  // mint just reset. Show a spinner with the profile name.
+  return (
+    <WaitingBody
+      name={profileName}
+      prompt={''}
+      expired={false}
+      regenerating={flow.mint.isPending}
+      onRegenerate={() => flow.start(profileName)}
+      onBack={onBack}
+      skipSlot={waitingSkipSlot}
+    />
   );
 }
 
@@ -936,7 +1042,7 @@ export function ConnectedCard({
           Registered at
         </p>
         <p className="text-text-secondary mt-1 truncate font-mono text-xs">
-          {connected.path ?? 'on PATH'}
+          {connected.path ?? 'registration required'}
         </p>
       </div>
 
@@ -1006,32 +1112,46 @@ function CopyButton({
   );
 }
 
-/** Copy glyph (kept local, mirrors the one in OnboardingPage). */
-function CopyGlyph(): JSX.Element {
+function Spinner({ className }: { className?: string }): JSX.Element {
   return (
     <svg
-      viewBox="0 0 24 24"
-      aria-hidden="true"
+      className={`animate-spin ${className ?? ''}`}
+      xmlns="http://www.w3.org/2000/svg"
       fill="none"
-      stroke="currentColor"
-      strokeWidth={1.9}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-3.5 w-3.5"
+      viewBox="0 0 24 24"
     >
-      <rect x="9" y="9" width="12" height="12" rx="2" />
-      <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+      />
     </svg>
   );
 }
 
-/** Ring spinner (mirrors OnboardingPage's). */
-function Spinner({ className }: { className?: string }): JSX.Element {
+function CopyGlyph(): JSX.Element {
   return (
-    <span
-      role="status"
-      aria-label="Loading"
-      className={`inline-block animate-spin rounded-full border-2 border-current border-t-transparent ${className ?? ''}`}
-    />
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 15 15"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <rect x="1" y="5" width="7" height="9" rx="1" stroke="currentColor" />
+      <path
+        d="M5 4V3a1 1 0 011-1h6a1 1 0 011 1v7a1 1 0 01-1 1h-1"
+        stroke="currentColor"
+      />
+    </svg>
   );
 }

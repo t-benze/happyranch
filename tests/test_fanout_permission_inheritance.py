@@ -365,9 +365,14 @@ def test_claude_executor_allowedtools_uses_child_workspace_name_only(
     workspace = tmp_path / "wrk"
     workspace.mkdir()
 
-    with patch("runtime.orchestrator.executors.subprocess") as mock_subprocess, \
-         patch("runtime.orchestrator.executors.shutil.which",
-               side_effect=lambda name: f"/fake/bin/{name}"):
+    with patch("runtime.orchestrator.executors.subprocess") as mock_subprocess:
+        # Pre-register the binary for the executor name (THR-107 seq155)
+        import os
+        os.environ["HAPPYRANCH_DAEMON_HOME"] = str(tmp_path)
+        fake_claude = tmp_path / "fake-claude"
+        fake_claude.touch(mode=0o755)
+        from runtime.orchestrator.executor_binary_registry import set_binary
+        set_binary("claude", str(fake_claude))
         mock_subprocess.Popen.return_value = MagicMock()
         mock_subprocess.Popen.return_value.returncode = 0
         mock_subprocess.Popen.return_value.pid = 9999
@@ -408,9 +413,14 @@ def test_claude_executor_allowedtools_uses_child_workspace_name_only(
     mgr_workspace = tmp_path / "mgr"
     mgr_workspace.mkdir()
 
-    with patch("runtime.orchestrator.executors.subprocess") as mgr_mock, \
-         patch("runtime.orchestrator.executors.shutil.which",
-               side_effect=lambda name: f"/fake/bin/{name}"):
+    with patch("runtime.orchestrator.executors.subprocess") as mgr_mock:
+        # Pre-register the binary for the executor name (THR-107 seq155)
+        import os
+        os.environ["HAPPYRANCH_DAEMON_HOME"] = str(tmp_path)
+        fake_claude = tmp_path / "fake-claude"
+        fake_claude.touch(mode=0o755)
+        from runtime.orchestrator.executor_binary_registry import set_binary
+        set_binary("claude", str(fake_claude))
         mgr_mock.Popen.return_value = MagicMock()
         mgr_mock.Popen.return_value.returncode = 0
         mgr_mock.Popen.return_value.pid = 9999

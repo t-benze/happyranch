@@ -13,7 +13,7 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 
 The Settings dialog opens from the TopBar gear button. It shows:
 
-- **System** (read-only) — daemon-wide settings (CLI paths, session timeout default, orchestration limits) with restart-required badges.
+- **System** (read-only) — daemon-wide settings (CLI name / default command metadata — not a launch path; executor launch uses registered binary pins — plus session timeout default, orchestration limits) with restart-required badges.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), threads config (enabled, default turn cap, invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 
 **Backend routes:**
@@ -137,24 +137,24 @@ for every existing agent).
 ### Executor binary registration
 
 Register the absolute path to each executor CLI binary so the daemon can locate it at
-spawn time (THR-085). The daemon resolves binaries stored-path-first at launch;
-registration ensures headless daemons and fresh machines find the correct binary.
+spawn time (THR-085). The daemon resolves binaries exclusively from the machine-local
+``executors.json`` registry at launch — there is no PATH fallback (THR-107 seq155).
+Registration is the sole availability gate; headless daemons and fresh machines must
+have every executor explicitly registered.
 
 ```bash
 # Register with explicit path (override):
 happyranch executor-binaries register claude --path /opt/homebrew/bin/claude
 
-# Auto-resolve from your shell's PATH:
-happyranch executor-binaries register claude
+# Register a binary with an explicit absolute path (REQUIRED):
+happyranch executor-binaries register claude --path /opt/homebrew/bin/claude
 
 # List all registered binaries:
 happyranch executor-binaries list
 ```
 
-When `--path` is omitted, the CLI resolves the binary from the invoking shell's PATH
-via `shutil.which(<kind>)` — the kind name (`claude`, `codex`, `pi`, `opencode`) is the
-binary name. If the binary is not found on PATH the command exits 1 with an actionable
-error message telling the user to confirm installation or pass `--path` explicitly.
+`--path` is **required** — omission does NOT fall back to PATH resolution
+(THR-107 seq155). The operator must supply an explicit absolute path.
 
 ### Token usage
 
