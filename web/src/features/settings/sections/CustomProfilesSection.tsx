@@ -12,9 +12,9 @@
  *
  * HONESTY FENCE (THR-061 §D): only the fields the API actually returns are
  * rendered — name, command (executable), adapter, present, path. No invented
- * status columns. `present` is the server-computed command-resolvability
- * signal (the same contract as /health/prereqs for custom profiles), mirrored
- * here as the row's health pill.
+ * status columns. `present`/`path` derive from the machine-local binary
+ * registry (executors.json) keyed by the profile name — the same gating as
+ * built-ins (THR-107 seq155). No PATH-based fallback is used.
  */
 import { useState } from 'react';
 import { CheckCircle2, Terminal, Trash2, XCircle } from 'lucide-react';

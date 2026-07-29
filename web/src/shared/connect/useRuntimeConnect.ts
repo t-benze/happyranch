@@ -6,9 +6,10 @@
  *
  * The binary-vs-profile split is a runtime PARAMETER of this engine, not two
  * code paths: built-in mints a purpose='binary' token and targets
- * register-binary (poll requires `present`); custom mints a profile token and
- * targets register (poll matches on appearance). See ConnectRuntimeStep's
- * header comment for the full honesty-fence rationale (THR-061 §D; THR-088).
+ * register-binary (poll requires `present`); custom mints a profile-purpose
+ * token first, then the consumer handles a separate binary-purpose stage
+ * (see ConnectFlow's two-stage custom flow: ProfileStage → BinaryStage).
+ * Both stages require `present`-gated completion — no appearance-only match.
  *
  * This module is CHROME-FREE: no step eyebrow, no wizard headings, no
  * Continue/Skip navigation. Consumers inject that chrome via ConnectFlow slots.
@@ -168,8 +169,9 @@ export function useRuntimeConnect({
   }, [state, expiresAt]);
 
   // Poll the EXISTING prereqs route while waiting; flip to connected the moment
-  // the freshly-registered name is registered (present-gated for built-ins,
-  // appearance for custom profiles).
+  // the freshly-registered name is registered. Both built-in and custom flows
+  // require `present:true` — the binary registry (executors.json) is the sole
+  // availability source (THR-107 seq155). No appearance-only match.
   const poll = useQuery({
     queryKey: ['health', 'prereqs'],
     queryFn: healthApi.getPrereqs,

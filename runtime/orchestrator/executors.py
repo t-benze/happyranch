@@ -1138,7 +1138,7 @@ class GenericCliExecutor:
     preserving the existing public factory contract in ``build_executor``.
 
     Custom profiles with ``command_adapter_id`` set to ``"generic-cli"``
-    (template/PATH-based) use this executor through the (unchanged)
+    (template-based) use this executor through the (unchanged)
     custom branch of ``build_executor``. Custom profiles bound to
     ``"custom-adapter:<id>"`` (separately registered, founder-approved,
     hash-verified executable — D7B) route through ``CustomAdapterExecutor``

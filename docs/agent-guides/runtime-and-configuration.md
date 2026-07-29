@@ -14,10 +14,10 @@ There is no `.env` support. `settings_customise_sources` drops dotenv and adds `
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
-| `HAPPYRANCH_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
-| `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Path to opencode CLI |
-| `HAPPYRANCH_PI_CLI_PATH` | `pi` | Path to Pi CLI |
+| `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Default command metadata for claude (config/docs only — executor launch requires ``executors.json`` pin) |
+| `HAPPYRANCH_CODEX_CLI_PATH` | `codex` | Default command metadata for codex (config/docs only — executor launch requires ``executors.json`` pin) |
+| `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Default command metadata for opencode (config/docs only — executor launch requires ``executors.json`` pin) |
+| `HAPPYRANCH_PI_CLI_PATH` | `pi` | Default command metadata for pi (config/docs only — executor launch requires ``executors.json`` pin) |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `HAPPYRANCH_PROTOCOL_DIR` | `protocol` | Protocol docs dirname relative to project root |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |

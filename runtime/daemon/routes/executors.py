@@ -285,15 +285,14 @@ class ExecutorRegisterRequest(BaseModel):
     (THR-107 seq155).
 
     ``argv_template`` is the COMPLETE invocation; element 0 MUST be the
-    SAME executable as ``command`` (the canonical validation proves they
-    resolve to the identical binary via PATH resolution + canonicalization).
-    ``GenericCliExecutor`` launches ``argv_template[0]`` directly — it does
-    NOT consult the ``command`` field at launch time.
+    SAME declared name as ``command`` (the validation proves string-equality).
+    ``GenericCliExecutor`` resolves argv[0] through the machine-local binary
+    registry (``executors.json``) keyed by the profile name (THR-107 seq155).
 
     ``adapter`` (DEPRECATED by D6) must be one of claude/codex/opencode/pi.
     For new code, use ``workspace_adapter_id`` (the canonical field).
     ``command_adapter`` (DEPRECATED by D6) is optional, defaults to
-    ``"generic-cli"``. Accepts ``"generic-cli"`` (template/PATH-based
+    ``"generic-cli"``. Accepts ``"generic-cli"`` (template-based
     generic CLI) or ``"custom-adapter:<id>"`` (bound to a separately
     registered, founder-approved, hash-verified custom adapter — D7B,
     subprocess-only, mandatory v1 AdapterInput/AdapterOutput, D5

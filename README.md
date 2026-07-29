@@ -143,7 +143,7 @@ happyranch assistant status     # show configuration state and selected executor
 ```
 
 On register, the daemon validates the payload structurally — non-empty fields
-and a matching `argv_template[0]` / `command` pair — then auto-configures with
+and a matching ``argv[0]`` / ``command`` pair — then auto-configures with
 no separate approval.  Custom profiles now require an explicit machine-local
 binary registry entry (``executors.json``) before launch (THR-107 seq155).
 See [`docs/agent-guides/runtime-and-configuration.md`](docs/agent-guides/runtime-and-configuration.md) for the full configuration contract.

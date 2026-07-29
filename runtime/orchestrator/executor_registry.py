@@ -90,7 +90,7 @@ class ExecutorProfile:
     adapter — which executor builds argv and parses output. For built-in
     profiles this is the same as ``workspace_adapter_id`` (each built-in
     carries its own first-party command adapter). For custom profiles
-    this may be ``"generic-cli"`` (template/PATH-based generic CLI) or
+    this may be ``"generic-cli"`` (template-based generic CLI) or
     ``"custom-adapter:<id>"`` (bound to a separately registered,
     founder-approved, hash-verified custom-adapter executable — D7B,
     subprocess-only, mandatory v1 AdapterInput/AdapterOutput, D5
@@ -107,9 +107,10 @@ class ExecutorProfile:
 
     ``command`` (custom profiles only) is the declared executable name
     recorded in the profile definition. The machine-local binary registry
-    (``executors.json``) is the sole source of truth for binary resolution
-    at launch time (THR-107 seq155). Built-in profiles resolve their
-    CLI paths from Settings.
+    (``executors.json``) keyed by the profile name is the sole source of
+    truth for binary resolution at launch time (THR-107 seq155). Built-in
+    profiles resolve through the same profile-name registry key (no
+    Settings-path bypass).
 
     ``model_arg`` (optional) is an argv-TEMPLATE list containing a single
     ``{model}`` placeholder that each executor splices into its CLI argv
@@ -437,7 +438,7 @@ class ExecutorRegistry:
         diverge.
 
         Raises ``ValueError`` for: invalid adapter, missing/bad argv_template,
-        unsupported placeholder, command-not-on-PATH, non-string command.
+        unsupported placeholder, declared-name mismatch, non-string command.
         """
         if not isinstance(name, str) or not name:
             raise ValueError(f"executor_profiles key must be a non-empty string")
