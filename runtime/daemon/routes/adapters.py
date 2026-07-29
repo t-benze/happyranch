@@ -46,8 +46,17 @@ from runtime.orchestrator.custom_adapter_registry import (
     register_custom_adapter,
     resolve_adapter,
 )
+from runtime.orchestrator.runtime_executor_store import (
+    load_runtime_profiles,
+    remove_runtime_profile,
+    save_runtime_profile,
+)
 
 router = APIRouter(dependencies=[require_token()])
+
+# Separate router for the seq141 submission endpoint — must NOT inherit
+# master-bearer _check_token. It accepts ONLY registration-token auth.
+submit_router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +358,7 @@ def approve_registered_adapter(
 # ---------------------------------------------------------------------------
 
 
-@router.post(
+@submit_router.post(
     "/runtime/adapters/submit",
     dependencies=[require_registration_token()],
 )
@@ -546,7 +555,19 @@ def bind_adapter_profile(
             detail=str(exc),
         )
 
-    # 7. Persist profile atomically — build profile config, validate, register
+    # 7. Persist profile atomically:
+    #    (a) Validate the config → build ExecutorProfile
+    #    (b) Write the durable runtime store (source of truth)
+    #    (c) Register in the in-memory registry
+    #    On any failure AFTER the durable write, roll back the store
+    #    and in-memory registry to pre-request state.
+    #
+    # Lock order (documented): no new locks — the adapter store lock
+    # is not held here (the adapter was already read; approval/re-registration
+    # races are detected below via the re-read check).  The per-profile-name
+    # registration lock in executors.py is per-route, not shared here.
+    # This endpoint relies on the durable store atomic write + in-memory
+    # registry registration being serialized by the GIL (single process).
     profile_cfg = {
         "command": None,
         "argv_template": None,
@@ -554,15 +575,49 @@ def bind_adapter_profile(
         "command_adapter_id": f"custom-adapter:{adapter_id}",
     }
 
+    # (a) Validate config → build ExecutorProfile
     try:
         profile = ExecutorRegistry.validate_custom_profile_config(
             profile_name, profile_cfg
         )
-        registry.register_custom_profile(profile)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
+        )
+
+    # Snapshot pre-request durable and in-memory state for rollback
+    pre_request_profiles = load_runtime_profiles()
+    pre_request_in_memory = registry.get_profile(profile_name)
+    durable_written = False
+    registered_in_memory = False
+
+    try:
+        # (b) Write the durable runtime store first
+        save_runtime_profile(profile_name, profile_cfg)
+        durable_written = True
+
+        # (c) Register in the in-memory registry
+        registry.register_custom_profile(profile)
+        registered_in_memory = True
+    except Exception:
+        # Compensating rollback: restore both surfaces to pre-request state
+        if durable_written:
+            if profile_name in pre_request_profiles:
+                save_runtime_profile(profile_name, pre_request_profiles[profile_name])
+            else:
+                remove_runtime_profile(profile_name)
+        if registered_in_memory:
+            registry.unregister_custom_profile(profile_name)
+        elif pre_request_in_memory is not None:
+            # Restore the pre-request in-memory profile if it was replaced
+            registry.register_custom_profile(pre_request_in_memory)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Profile binding failed after durable write; "
+                "pre-request state has been restored."
+            ),
         )
 
     return {

@@ -332,6 +332,9 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(executors.runtime_router, prefix="/api/v1", tags=["executors-runtime"])
     app.include_router(executor_binaries.router, prefix="/api/v1", tags=["executor-binaries"])
     app.include_router(adapters.router, prefix="/api/v1", tags=["adapters"])
+    # seq141 submission endpoint — isolated from master-bearer auth;
+    # accepts ONLY registration-token auth (loopback + hrreg_ token).
+    app.include_router(adapters.submit_router, prefix="/api/v1", tags=["adapters"])
     from runtime.daemon.routes import web_static
     web_static.register(app, settings=state.settings)
     return app

@@ -813,6 +813,7 @@ def approve_adapter(
             registered_by=entry.registered_by,
             approved_at=now,
             approved_by=approved_by,
+            intended_profile_name=entry.intended_profile_name,
         )
         _save_adapter_locked(approved_entry)
         logger.info(
