@@ -257,14 +257,18 @@ def test_prereqs_uses_daemon_settings_not_global_settings(tmp_path: Path) -> Non
 # ── Issue #490: custom profile present/path from declared command ────
 
 
-def test_custom_profile_present_from_resolvable_command(tmp_path: Path) -> None:
-    """A custom profile with a resolvable command shows present=true
-    and path=resolved, WITHOUT any executors.json entry.
-    Issue #490: custom profiles derive present/path from their declared
-    command, not from the machine-local binary registry."""
+def test_custom_profile_present_from_registered_binary(tmp_path: Path) -> None:
+    """A custom profile with a registered binary shows present=true
+    and path=registered (THR-107 seq155: binary registry is the sole gate)."""
     import os as _os
 
     _os.environ["HAPPYRANCH_DAEMON_HOME"] = str(tmp_path)
+
+    # Pre-register the binary for the custom profile name
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    fake_bin = tmp_path / "my-custom-bin"
+    fake_bin.touch(mode=0o755)
+    set_binary("my-custom", str(fake_bin))
 
     try:
         from runtime.daemon.app import create_app
@@ -283,8 +287,8 @@ def test_custom_profile_present_from_resolvable_command(tmp_path: Path) -> None:
             kind="custom",
             adapter_id="pi",
             readiness_marker_fragment="AGENTS.md",
-            argv_template=["echo", "{prompt}"],
-            command="echo",
+            argv_template=["my-custom", "{prompt}"],
+            command="my-custom",
         ))
 
         app = create_app(DaemonState.idle(Settings()))
@@ -298,11 +302,11 @@ def test_custom_profile_present_from_resolvable_command(tmp_path: Path) -> None:
         )
         assert custom_entry is not None, "custom profile must appear in prereqs"
         assert custom_entry["present"] is True, (
-            f"custom profile with resolvable 'echo' command must be present, "
+            f"custom profile with registered binary must be present, "
             f"got present={custom_entry['present']}"
         )
         assert custom_entry["path"] is not None
-        assert "echo" in custom_entry["path"]
+        assert "my-custom-bin" in custom_entry["path"]
         assert isinstance(custom_entry["hint"], str)
         assert len(custom_entry["hint"]) > 0
     finally:
@@ -310,9 +314,9 @@ def test_custom_profile_present_from_resolvable_command(tmp_path: Path) -> None:
         del _os.environ["HAPPYRANCH_DAEMON_HOME"]
 
 
-def test_custom_profile_absent_when_command_unresolvable(tmp_path: Path) -> None:
-    """A custom profile with an unresolvable command shows present=false,
-    path=None."""
+def test_custom_profile_absent_when_binary_unregistered(tmp_path: Path) -> None:
+    """A custom profile without a registered binary shows present=false
+    (THR-107 seq155: binary registry is the sole gate)."""
     import os as _os
 
     _os.environ["HAPPYRANCH_DAEMON_HOME"] = str(tmp_path)
@@ -334,8 +338,8 @@ def test_custom_profile_absent_when_command_unresolvable(tmp_path: Path) -> None
             kind="custom",
             adapter_id="pi",
             readiness_marker_fragment="AGENTS.md",
-            argv_template=["definitely-not-found-xyzzy", "{prompt}"],
-            command="definitely-not-found-xyzzy",
+            argv_template=["unregistered-cli", "{prompt}"],
+            command="unregistered-cli",
         ))
 
         app = create_app(DaemonState.idle(Settings()))
@@ -349,7 +353,7 @@ def test_custom_profile_absent_when_command_unresolvable(tmp_path: Path) -> None
         )
         assert custom_entry is not None, "custom profile must appear in prereqs"
         assert custom_entry["present"] is False, (
-            f"custom profile with unresolvable command must show present=false"
+            f"custom profile without registered binary must show present=false"
         )
         assert custom_entry["path"] is None
         assert isinstance(custom_entry["hint"], str)

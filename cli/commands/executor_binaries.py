@@ -1,4 +1,4 @@
-"""Machine-local executor binary-path registration CLI — THR-085.
+"""Machine-local executor binary-path registration CLI — THR-085 / THR-107 seq155.
 
 The daemon stores per-executor-kind binary paths in a machine-local registry
 at ``<daemon-home>/executors.json`` so that headless daemon launches (no web UI)
@@ -10,15 +10,14 @@ kinds/capabilities exist, org-portable). This group writes into the
 machine-local binary registry, NOT org/config.yaml.
 
 Commands:
-  register <kind> [--path <ABS_PATH>]  — validate-then-register a binary path.
-      When --path is omitted the CLI resolves the binary from the invoking
-      shell's PATH via ``shutil.which(<kind>)``.
-  list                                  — list registered binary paths
+  register <kind> --path <ABS_PATH>  — validate-then-register a binary path.
+      ``--path`` is REQUIRED and must be an absolute path.
+      Omission does NOT fall back to PATH resolution (THR-107 seq155).
+  list                               — list registered binary paths
 """
 from __future__ import annotations
 
 import argparse
-import shutil
 import sys
 
 from cli.client.client import OpcClient
@@ -29,34 +28,27 @@ def cmd_executor_binaries_register(args: argparse.Namespace) -> None:
 
     Calls POST /api/v1/executor-binaries/register (validate-then-store).
 
-    When ``--path`` is supplied it is used as an explicit absolute-path
-    override (today's behavior).  When ``--path`` is omitted the binary is
-    resolved from the invoking shell's PATH via ``shutil.which(args.kind)``
-    so the user no longer needs to hand-type the full path.
+    ``--path`` is REQUIRED and must be an absolute path (THR-107 seq155).
+    Omission does NOT fall back to PATH resolution.
     """
     kind: str = args.kind
 
-    if args.path is not None:
-        # ── explicit --path override ──────────────────────────────────
-        if not args.path.startswith("/"):
-            print(
-                f"error: --path must be an absolute path (got {args.path!r})",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        resolved = args.path
-    else:
-        # ── resolve from shell PATH ───────────────────────────────────
-        resolved = shutil.which(kind)
-        if resolved is None:
-            print(
-                f"error: '{kind}' was not found on your PATH — "
-                f"run `which {kind}` to confirm it's installed, "
-                f"or pass --path <absolute-path>",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        print(f"  resolved {kind} from PATH -> {resolved}")
+    if args.path is None:
+        print(
+            f"error: --path is required. "
+            f"Provide an absolute path to the '{kind}' binary, e.g.:\n"
+            f"  happyranch executor-binaries register {kind} --path /opt/homebrew/bin/{kind}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    resolved = args.path
+    if not resolved.startswith("/"):
+        print(
+            f"error: --path must be an absolute path (got {resolved!r})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     client = OpcClient.from_env()
 
@@ -135,7 +127,8 @@ def register(sub) -> None:
     p_reg.add_argument("kind", help="Executor kind, e.g. 'claude', 'codex', 'pi'")
     p_reg.add_argument(
         "--path",
-        help="Absolute path to the executor binary (omit to resolve from PATH)",
+        required=True,
+        help="Absolute path to the executor binary (required)",
     )
     p_reg.set_defaults(func=cmd_executor_binaries_register)
 

@@ -333,27 +333,21 @@ def test_resolve_registered_invalid_raises_actionable_block(tmp_path, monkeypatc
     assert "happyranch" in msg.lower()
 
 
-def test_resolve_unregistered_on_path_resolves_non_silent(tmp_path, monkeypatch):
-    """When a kind is unregistered but on PATH, resolve it WITH a log warning
-    (non-silent fallback, invariant 3)."""
+def test_resolve_unregistered_on_path_raises_blocked(tmp_path, monkeypatch):
+    """When a kind is unregistered but on PATH, raise ExecutorBinaryBlocked
+    — NO PATH fallback (THR-107 seq155)."""
     fake_bin = tmp_path / "onthepath" / "claude"
     fake_bin.parent.mkdir(parents=True)
     fake_bin.touch(mode=0o755)
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+    monkeypatch.setenv("PATH", f"{fake_bin.parent}:/usr/bin:/bin")
 
-    # Mock shutil.which to return a deterministic on-path result
-    monkeypatch.setattr(
-        "runtime.orchestrator.executors.shutil.which",
-        lambda name, path=None: str(fake_bin) if name == "claude" else None,
-    )
-
-    # Capture the warning log
-    from runtime.orchestrator import executors as ex_mod
-    with _capture_log(ex_mod.logger, logging.WARNING) as log_entries:
-        result = _resolve_binary("claude")
-    assert result == str(fake_bin)
-    assert len(log_entries) >= 1
-    assert "no stored binary path" in log_entries[0]
+    with pytest.raises(ExecutorBinaryBlocked) as exc_info:
+        _resolve_binary("claude")
+    msg = str(exc_info.value)
+    assert "claude" in msg
+    assert "not registered" in msg.lower()
+    assert "register" in msg.lower()
 
 
 def test_resolve_unregistered_not_on_path_raises_actionable_block(
@@ -362,12 +356,6 @@ def test_resolve_unregistered_not_on_path_raises_actionable_block(
     """When a kind is unregistered AND not on PATH, raise ExecutorBinaryBlocked
     with an actionable message."""
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
-
-    # Mock shutil.which to return None (not found on PATH)
-    monkeypatch.setattr(
-        "runtime.orchestrator.executors.shutil.which",
-        lambda name, path=None: None,
-    )
 
     with pytest.raises(ExecutorBinaryBlocked) as exc_info:
         _resolve_binary("pi")
@@ -395,7 +383,8 @@ def test_executor_binary_blocked_is_runtime_error():
 
 
 def test_registered_valid_vs_path_uses_registry(tmp_path, monkeypatch):
-    """Scenario 1: registered path wins over PATH binary."""
+    """Scenario: registered binary path is the sole resolution source.
+    An unregistered binary on PATH is never discovered (THR-107 seq155)."""
     from runtime.orchestrator.executor_binary_registry import set_binary
 
     # Place a PATH binary
@@ -409,11 +398,7 @@ def test_registered_valid_vs_path_uses_registry(tmp_path, monkeypatch):
     reg_bin.touch(mode=0o755)
 
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
-    # Mock shutil.which to return the PATH binary (must NOT be used)
-    monkeypatch.setattr(
-        "runtime.orchestrator.executors.shutil.which",
-        lambda name, path=None: str(path_bin) if name == "claude" else None,
-    )
+    monkeypatch.setenv("PATH", f"{path_bin.parent}:/usr/bin:/bin")
     set_binary("claude", str(reg_bin))
 
     result = _resolve_binary("claude")

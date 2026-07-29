@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -125,7 +124,7 @@ def _normalize_path() -> None:
 
 class ExecutorBinaryBlocked(RuntimeError):
     """Raised when an executor binary cannot be resolved from the machine-local
-    registry AND is not on PATH — or when a stored path is stale.
+    registry — missing entry or stale stored path.
 
     The message is always actionable: it names the executor kind and tells the
     operator exactly how to fix it via ``happyranch executor-binaries register``.
@@ -135,23 +134,21 @@ class ExecutorBinaryBlocked(RuntimeError):
 def _resolve_binary(cli_path: str) -> str:
     """Resolve an executor binary name to an absolute path.
 
-    Stored-path-first resolution (THR-085):
+    Registration-only resolution (THR-107 seq155):
 
     1. If ``cli_path`` is already absolute, trust it as-is (founder override).
     2. Consult the machine-local binary-path registry. If the kind is registered:
        a. Validate the stored path still exists and is executable.
        b. Valid → use it.
        c. Invalid → raise ``ExecutorBinaryBlocked`` naming the fix.
-    3. If the kind is NOT registered, fall back to ``shutil.which`` over PATH.
-       a. Found → NON-SILENT: log a warning that this binary was resolved from
-          PATH and should be registered.
-       b. Not found → raise ``ExecutorBinaryBlocked`` naming the fix.
+    3. If the kind is NOT registered → raise ``ExecutorBinaryBlocked``.
+       Never discover, resolve, or auto-pin a PATH executable.
     """
     if os.path.isabs(cli_path):
         # Founder-configured absolute path — trust it as-is.
         return cli_path
 
-    # Check the machine-local registry first.
+    # Check the machine-local registry — the sole resolution source.
     from runtime.orchestrator.executor_binary_registry import (
         get_binary,
         is_binary_valid,
@@ -168,20 +165,12 @@ def _resolve_binary(cli_path: str) -> str:
             f"Re-register it: happyranch executor-binaries register {cli_path} --path <absolute-path>"
         )
 
-    # Not registered — fall back to PATH (non-silent).
-    resolved = shutil.which(cli_path)
-    if resolved is None:
-        raise ExecutorBinaryBlocked(
-            f"Executor '{cli_path}' is not registered and not found on PATH. "
-            f"Register it: happyranch executor-binaries register {cli_path} --path <absolute-path>"
-        )
-    logger.warning(
-        "Executor '%s' has no stored binary path; resolved from PATH as %s. "
-        "Register it for reliable resolution: "
-        "happyranch executor-binaries register %s --path %s",
-        cli_path, resolved, cli_path, resolved,
+    # Not registered — fail closed before subprocess creation.
+    # Never discover, resolve, or auto-pin a PATH executable.
+    raise ExecutorBinaryBlocked(
+        f"Executor '{cli_path}' is not registered. "
+        f"Register it: happyranch executor-binaries register {cli_path} --path <absolute-path>"
     )
-    return resolved
 
 
 def _callee_env() -> dict[str, str]:
@@ -1200,7 +1189,7 @@ class GenericCliExecutor:
             prompt=prompt,
             workspace=str(workspace),
             timeout_seconds=timeout_seconds,
-            resolve_binary=_resolve_binary(self._argv_template[0]),
+            resolve_binary=_resolve_binary(self._profile_name),
         )
 
         # ── D7A strict envelope enforcement ─────────────────────────

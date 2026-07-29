@@ -15,7 +15,6 @@ A profile resolves to:
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -106,8 +105,10 @@ class ExecutorProfile:
     GenericCliExecutor expands from placeholders at launch time. Built-in
     profiles leave this ``None`` — their factories supply their own argv.
 
-    ``command`` (custom profiles only) is the executable name checked via
-    ``shutil.which`` at profile load time. Built-in profiles resolve their
+    ``command`` (custom profiles only) is the declared executable name
+    recorded in the profile definition. The machine-local binary registry
+    (``executors.json``) is the sole source of truth for binary resolution
+    at launch time (THR-107 seq155). Built-in profiles resolve their
     CLI paths from Settings.
 
     ``model_arg`` (optional) is an argv-TEMPLATE list containing a single
@@ -566,39 +567,26 @@ class ExecutorRegistry:
                 raise ValueError(
                     f"Invalid argv_template for {name!r}: {'; '.join(argv_errors)}"
                 )
-            # Resolve command — None means skip which (e.g., in tests)
+            # Resolve command — the declared executable name (informational only;
+            # the machine-local binary registry is the sole resolution source).
+            # None means skip validation (e.g., in tests).
             if command is not None and not isinstance(command, str):
                 raise ValueError(
                     f"executor_profiles.{name}.command must be a string"
                 )
-            resolved_command: str | None = None
-            if command is not None:
-                resolved_command = shutil.which(command)
-                if resolved_command is None:
-                    raise ValueError(
-                        f"executor_profiles.{name}: command {command!r} "
-                        f"not found on PATH"
-                    )
-                resolved_command = str(Path(resolved_command).resolve())
 
             argv0 = [str(e) for e in argv_template][0]
             if command is not None and argv0:
-                resolved_argv0 = shutil.which(argv0)
-                if resolved_argv0 is None:
+                # Command and argv_template[0] must be the same declared name.
+                # The machine-local binary registry (executors.json) keyed by
+                # the profile name is the sole resolution source at launch
+                # (THR-107 seq155) — neither shutil.which nor PATH discovery
+                # is used here.
+                if command != argv0:
                     raise ValueError(
-                        f"executor_profiles.{name}: argv_template[0] {argv0!r} "
-                        f"not found on PATH. The first element of argv_template "
-                        f"must be a launchable executable matching 'command'."
-                    )
-                resolved_argv0 = str(Path(resolved_argv0).resolve())
-                if resolved_command != resolved_argv0:
-                    raise ValueError(
-                        f"executor_profiles.{name}: command {command!r} resolves "
-                        f"to {resolved_command!r} but argv_template[0] {argv0!r} "
-                        f"resolves to {resolved_argv0!r}. They must be the same "
-                        f"executable — 'command' is the declared name, "
-                        f"argv_template[0] is the binary actually launched by "
-                        f"GenericCliExecutor. See issue #490."
+                        f"executor_profiles.{name}: command {command!r} and "
+                        f"argv_template[0] {argv0!r} must be the same executable "
+                        f"name. The profile name is the binary registry key."
                     )
             elif command is not None and not argv0:
                 raise ValueError(

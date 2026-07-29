@@ -23,6 +23,8 @@ router = APIRouter()
 
 CheckPresence = Callable[[str], str | None]
 
+# Preserved for test-compatibility with existing imports; no longer
+# used in route logic — binary registry is the sole resolution source.
 _presence_checker: CheckPresence = shutil.which
 
 
@@ -64,9 +66,10 @@ def _hint_for(profile_name: str) -> str:
       is the source of truth for whether an executor is 'registered' on
       this machine. Registration happens via the onboarding prompt flow
       (copy-paste), not by being on PATH.
-    - **Custom profiles**: the profile's declared ``command`` must be on
-      the daemon's PATH. Registration happens via the Settings → Executors
-      custom-connect flow.
+    - **Custom profiles**: same as built-ins — the machine-local binary
+      registry (executors.json) is the sole availability gate (THR-107
+      seq155). The profile's declared ``command`` no longer gates
+      availability.
     """
     hints: dict[str, str] = {
         "claude": "Register Claude Code via the onboarding prompt flow",
@@ -76,7 +79,8 @@ def _hint_for(profile_name: str) -> str:
     }
     return hints.get(
         profile_name,
-        f"Verify the '{profile_name}' command is on the daemon's PATH.",
+        f"Register the '{profile_name}' binary via: "
+        f"happyranch executor-binaries register {profile_name} --path <absolute-path>",
     )
 
 
@@ -122,12 +126,11 @@ def health_prereqs(request: Request) -> PrereqsResponse:
       after the user explicitly registers its binary via the onboarding
       prompt flow — being on PATH is NOT sufficient.
 
-    - **Custom profiles**: ``present`` = the profile's declared ``command``
-      resolves to an executable on the daemon's PATH (via ``shutil.which``).
-      No ``executors.json`` entry is required for a custom profile to be
-      considered present — the profile's own ``command`` field IS the
-      executable declaration (issue #490).  ``path`` is the resolved
-      absolute path to the executable, or ``None`` when unresolved.
+    - **Custom profiles**: ``present`` = the profile has an entry in the
+      machine-local binary registry (``executors.json``) keyed by the
+      profile name with a valid stored path.  The profile's declared
+      ``command`` is no longer resolved via ``shutil.which`` — binary
+      registration is the sole availability gate (THR-107 seq155).
 
     Honesty fence: invents no badges, metrics, or fake status — just
     registered/not-registered + hint.
@@ -141,16 +144,15 @@ def health_prereqs(request: Request) -> PrereqsResponse:
         if profile is None:
             continue
         if profile.kind == "custom":
-            # Custom profile — derive present/path from the profile's
-            # declared ``command``, resolved via the same shutil.which
-            # semantics used at registration/validation time.
-            cmd = profile.command
-            resolved = _presence_checker(cmd) if cmd else None
-            present = resolved is not None
+            # Custom profile — requires an explicit executors.json entry
+            # keyed by the profile name (THR-107 seq155).  Same gate as
+            # built-ins; no shutil.which fallback.
+            stored = get_binary(name)
+            registered = stored is not None and is_binary_valid(stored)
             results.append(ExecutorPrereq(
                 tool=name,
-                present=present,
-                path=resolved if present else None,
+                present=registered,
+                path=stored if registered else None,
                 hint=_hint_for(name),
             ))
         else:

@@ -15,7 +15,6 @@ POST /api/v1/orgs/{slug}/executors/register
 """
 from __future__ import annotations
 
-import shutil
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -24,6 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from runtime.daemon.auth import require_registration_token, require_token
 from runtime.daemon.registration_token import REGISTRATION_TOKEN_PREFIX
 from runtime.orchestrator.executor_binary_registry import (
+    get_binary,
+    is_binary_valid,
     set_binary,
     validate_binary,
 )
@@ -278,9 +279,10 @@ class ConformanceCheckinResponse(BaseModel):
 class ExecutorRegisterRequest(BaseModel):
     """Profile definition for a custom executor.
 
-    ``command`` is the DECLARED executable name — validated via
-    ``shutil.which()`` at registration and used by ``/health/prereqs``
-    to derive ``present``/``path`` for custom profiles.
+    ``command`` is the DECLARED executable name — recorded in the profile
+    definition. The machine-local binary registry (executors.json) keyed
+    by the profile name is the sole resolution source at launch time
+    (THR-107 seq155).
 
     ``argv_template`` is the COMPLETE invocation; element 0 MUST be the
     SAME executable as ``command`` (the canonical validation proves they
@@ -1297,16 +1299,15 @@ class RuntimeProfileEntry(BaseModel):
     present: bool = Field(
         False,
         description=(
-            "True when the profile's declared command resolves to an "
-            "executable on the daemon's PATH (via shutil.which). "
-            "Custom profiles derive presence from command resolvability — "
-            "the same observable readiness contract as /health/prereqs. "
-            "No executors.json entry is required for a custom profile to "
-            "be considered present."
+            "True when the profile has an entry in the machine-local "
+            "binary registry (executors.json) keyed by the profile name "
+            "with a valid stored path (THR-107 seq155). "
+            "Custom profiles no longer derive presence from PATH "
+            "resolvability — binary registration is the sole gate."
         ),
     )
     path: str | None = Field(
-        None, description="The resolved absolute path when present, else None"
+        None, description="The registered absolute path when present, else None"
     )
     # D7A envelope enforcement
     envelope_policy: str | None = Field(
@@ -1341,11 +1342,11 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
     Reads ``load_runtime_profiles()`` — the durable source of truth — and
     reports each profile's name, command, and adapter.
 
-    **Custom profiles** derive ``present``/``path`` from the profile's
-    declared ``command`` resolvability on the daemon's PATH (via
-    ``shutil.which``) — the same observable readiness contract as
-    ``/health/prereqs``. No ``executors.json`` entry is required for a
-    custom profile to be considered present.
+    **Custom profiles** derive ``present``/``path`` from the
+    machine-local binary registry (``executors.json``) keyed by the
+    profile name — the same gating as built-ins (THR-107 seq155).
+    No PATH-based fallback is used.  The profile's declared ``command``
+    is informational only.
 
     **Built-in profiles** (claude/codex/opencode/pi) are not returned by
     this route — it lists only custom profiles from the runtime store.
@@ -1360,16 +1361,12 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
     for name in sorted(stored.keys()):
         entry = stored[name]
         command = entry.get("command")
-        # Custom profile — derive present/path from declared command
-        # resolvability, the same observable readiness contract as
-        # /health/prereqs. No executors.json entry is required.
-        if command and isinstance(command, str):
-            resolved = shutil.which(command)
-            present = resolved is not None
-            path = resolved if present else None
-        else:
-            present = False
-            path = None
+        # Custom profile — derive present/path from the machine-local
+        # binary registry keyed by the profile name (THR-107 seq155).
+        # Same gate as /health/prereqs built-ins; no shutil.which fallback.
+        stored_binary = get_binary(name)
+        present = stored_binary is not None and is_binary_valid(stored_binary)
+        path = stored_binary if present else None
         # D6: dual-read command adapter — canonical command_adapter_id wins
         resolved_command_adapter: str | None = "generic-cli"  # default
         cmd_canon = entry.get("command_adapter_id")

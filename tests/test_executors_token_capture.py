@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -15,22 +14,19 @@ _EXECUTOR_NAMES = frozenset({"claude", "codex", "opencode", "pi"})
 
 
 @pytest.fixture(autouse=True)
-def _mock_shutil_which(monkeypatch):
-    """Patch shutil.which inside executors so the executor constructors'
-    _resolve_binary calls resolve deterministically regardless of host PATH."""
-    import runtime.orchestrator.executors as _ex_mod
+def _mock_shutil_which(monkeypatch, tmp_path):
+    """Pre-register built-in executor binaries in the machine-local registry
+    so executor constructors' _resolve_binary calls resolve deterministically
+    (THR-107 seq155: registration-only resolution)."""
+    daemon_home = tmp_path / ".happyranch"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
 
-    _real_which = shutil.which
-
-    def _patched_which(name, path=None):
-        real = _real_which(name, path=path)
-        if real is not None:
-            return real
-        if name in _EXECUTOR_NAMES:
-            return f"/usr/local/bin/{os.path.basename(name)}"
-        return None
-
-    monkeypatch.setattr(_ex_mod.shutil, "which", _patched_which)
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    for name in _EXECUTOR_NAMES:
+        fake_bin = tmp_path / "bin" / name
+        fake_bin.parent.mkdir(parents=True, exist_ok=True)
+        fake_bin.touch(mode=0o755)
+        set_binary(name, str(fake_bin))
 
 
 def _make_completed_proc(stdout: str, returncode: int = 0):

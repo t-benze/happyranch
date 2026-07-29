@@ -140,8 +140,21 @@ def daemon_state(runtime):
 
 
 @pytest.fixture(autouse=True)
-def clean_registry():
+def clean_registry(tmp_path):
     reset_registry()
+    # Pre-register test binaries for profiles that call executor.run()
+    # (THR-107 seq155: binary registry is the sole resolution source).
+    daemon_home = tmp_path / ".happyranch"
+    daemon_home.mkdir(parents=True, exist_ok=True)
+    import os as _os
+    _os.environ["HAPPYRANCH_DAEMON_HOME"] = str(daemon_home)
+    # Create the executors.json registry file path
+    daemon_home.mkdir(parents=True, exist_ok=True)
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    for name in ("test-legacy-exec-org", "test-legacy-exec-rt"):
+        fake_bin = tmp_path / f"fake-{name}"
+        fake_bin.touch(mode=0o755, exist_ok=True)
+        set_binary(name, str(fake_bin))
     # Also clean the store
     try:
         remove_runtime_profile("test-legacy-exec")
