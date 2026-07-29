@@ -593,4 +593,4 @@ Each agent runs in its own persistent workspace inside the org directory. After 
 
 ## License
 
-Private — all rights reserved.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
