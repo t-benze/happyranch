@@ -78,10 +78,9 @@ export interface RuntimeProfileEntry {
   adapter_id: string | null;
   /** @deprecated Use command_adapter_id instead. Preserved for backward compat. */
   command_adapter: string | null;
-  /** True when the profile's declared command resolves to an executable
-   *  on the daemon's PATH — the same observable readiness contract as
-   *  /health/prereqs. Custom profiles derive presence from command
-   *  resolvability; no executors.json entry is required. */
+  /** True when the profile has a valid entry in the machine-local
+   *  binary registry (executors.json) keyed by the profile name — the
+   *  same gating as built-ins (THR-107 seq155). No PATH-based fallback. */
   present: boolean;
   /** The resolved absolute path when present, else null. */
   path: string | null;

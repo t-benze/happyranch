@@ -259,10 +259,12 @@ Registration succeeds **only** when ALL of the following are true:
 1. Token is valid, unexpired, unconsumed, and loopback (checked by the dependency gate).
 2. Token org matches the route slug.
 3. The conformance challenge is fully complete — all four steps arrived.
-4. Static validation passes: adapter is a known value, command is on `PATH`,
-   `argv_template` is a non-empty list of strings with supported placeholders
-   (`{prompt}`, `{timeout_seconds}`, `{workspace}`), and the profile name does
-   not collide with a built-in executor.
+4. Static validation passes: adapter is a known value, the declared
+   `command` name matches `argv_template[0]` (string-equality validation;
+   PATH resolution is not used — THR-107 seq155), `argv_template` is a
+   non-empty list of strings with supported placeholders (`{prompt}`,
+   `{timeout_seconds}`, `{workspace}`), and the profile name does not
+   collide with a built-in executor.
 5. No conflicting custom profile with a different definition is already registered
    (identical re-registration is idempotent).
 
@@ -312,11 +314,13 @@ The generated prompt drives the candidate through:
    `/api/v1/executors/runtime/register` with a JSON body carrying
    `command`, `argv_template`, `adapter`, and an optional
    `command_adapter` (THR-107 D9 / Phase 3). The daemon validates that
-   `command` and `argv_template[0]` resolve to the same executable on
-   PATH; a mismatch or unresolvable executable returns **422** at
-   registration time with an actionable error message. The token is
-   reserved before any durable write and released on failure, so the
-   candidate can retry within the unexpired TTL.
+   `command` and `argv_template[0]` are identical strings; a mismatch
+   returns **422** at registration time with an actionable error
+   message. PATH resolution is no longer performed — the registered
+   binary path is validated at launch time via the machine-local
+   ``executors.json`` pin (THR-107 seq155). The token is reserved
+   before any durable write and released on failure, so the candidate
+   can retry within the unexpired TTL.
 
 The UI does **not** collect `command`, `argv_template`, or `adapter`
 directly, and the generated prompt does **not** instruct the candidate
@@ -351,12 +355,14 @@ management reads/writes, not registration):
   (workspace adapter selector) and `command_adapter_id` (command adapter
   selector), plus deprecated aliases `adapter`, `adapter_id` (workspace
   aliases only), and `command_adapter` (command alias only), with a
-  `present`/`path` signal mirroring `/health/prereqs`. **Custom profiles**
-  derive `present`/`path` from the profile's declared `command`
-  resolvability on the daemon's PATH (via `shutil.which`) — no
-  `executors.json` entry is required. **Built-in** presence remains
-  registry-gated via `executors.json` and is not reflected in this
-  route (this route lists only custom profiles from the runtime store).
+  `present`/`path` signal mirroring `/health/prereqs`. Both **custom
+  profiles** and **built-ins** derive `present`/`path` from the
+  machine-local binary registry (``executors.json``) keyed by the
+  profile name — the same gating for both (THR-107 seq155).  No
+  ``shutil.which`` or PATH-based fallback is used.  Built-in presence
+  is not reflected in this route (this route lists only custom profiles
+  from the runtime store — use ``/health/prereqs`` for built-in
+  availability).
 - `DELETE /api/v1/executors/runtime/profiles/{name}` — removes one
   profile from BOTH surfaces, durable store first (source of truth),
   then the transient in-memory registry

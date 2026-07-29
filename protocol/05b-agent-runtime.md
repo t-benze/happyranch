@@ -315,26 +315,28 @@ fields are the preferred surface for all consumers. See the
 unified adapter-runtime architecture spec (§6.3) for dual-read,
 conflict-detection, and no-auto-mutation guarantees.
 
-### Executor binary-path resolution (THR-085)
+### Executor binary-path resolution (THR-085 / THR-107 seq155)
 
-At spawn time, each executor's CLI binary is resolved as follows:
+Every built-in and custom executor profile requires a valid explicit
+machine-local binary registry entry before launch. At spawn time, each
+executor's CLI binary is resolved as follows:
 
-1. **Absolute path** — if the `cli_path` in Settings is already absolute
-   (founder-configured override), trust it as-is.
-2. **Machine-local registry** — consult the per-host binary-path registry at
-   `<daemon-home>/executors.json`. If the executor kind (e.g. `claude`) is
+1. **Machine-local registry** — consult the per-host binary-path registry at
+   `<daemon-home>/executors.json`. The executor name (e.g. `claude`) is the sole
+   resolution key (THR-107 seq155 hard no-PATH cutover).  If the name is
    registered, validate the stored path: it must exist and be executable.
    - **Valid** → use the stored path.
    - **Invalid (stale path)** → raise an **actionable block** that names the
      kind, the stale path, and the fix (`happyranch executor-binaries register <kind> --path <absolute-path>`). No silent
      fallback to PATH.
-3. **PATH fallback** — if the kind is NOT registered, fall back to
-   `shutil.which` over the current `PATH`.
-   - **Found** → use the resolved path, **with a logged warning** that this
-     binary was resolved from PATH and should be registered (non-silent
-     fallback per invariant 3).
-   - **Not found** → raise an **actionable block** naming the kind and the
-     fix (`happyranch executor-binaries register <kind> --path <absolute-path>`).
+2. **Not registered** → raise an **actionable block** naming the kind and
+   the fix (`happyranch executor-binaries register <kind> --path <absolute-path>`).
+   **Never discover, resolve, or auto-pin a PATH executable** (THR-107 seq155).
+
+Absolute `cli_path` values in Settings are never used as a bypass — only
+an explicit `executors.json` entry keyed by the executor name permits launch.
+This applies to all four built-ins (claude, codex, opencode, pi), generic-CLI
+custom profiles, and custom-adapter-backed profiles.
 
 The actionble block is an `ExecutorBinaryBlocked` exception (subclass of
 `RuntimeError`). It always names the specific executor kind and gives the

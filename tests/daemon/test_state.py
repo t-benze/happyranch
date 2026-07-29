@@ -138,15 +138,16 @@ def test_from_runtime_loads_good_profile_after_bad_profile(
 
     store_path = daemon_home / "executor_profiles.yaml"
     # Bad profile first (command never on PATH), good profile second
+    # Bad profile first (command != argv0 mismatch), good profile second
     store_path.write_text(yaml.safe_dump({
         "bad-profile": {
-            "command": "no-such-command-on-any-machine-xyzzy",
-            "argv_template": ["no-such-command-on-any-machine-xyzzy", "{prompt}"],
+            "command": "cmd-a",
+            "argv_template": ["cmd-b", "{prompt}"],
             "adapter": "pi",
         },
         "good-profile": {
-            "command": "python3",
-            "argv_template": ["python3", "{prompt}"],
+            "command": "my-cli",
+            "argv_template": ["my-cli", "{prompt}"],
             "adapter": "pi",
         },
     }))

@@ -55,14 +55,16 @@ The current stable onboarding shell is:
 
 1. **Welcome:** start org creation.
 2. **Create org:** enter the org slug. The page also shows executor readiness:
-   which supported CLIs are found on `PATH`.
+   which executor profiles have been registered with a valid machine-local
+   binary path (via `executor-binaries register`).
 3. **Success:** enter the new org dashboard.
 
 ![placeholder: Onboarding Create step with slug input and executor readiness panel](TODO)
 
-The executor readiness panel is informational. It helps you see whether a CLI
-such as `claude` or `codex` is available, but it does not replace the evolving
-executor-connect flow described on the next page.
+The executor readiness panel is informational. It reports whether each profile
+has been registered with a valid explicit binary path — a CLI merely installed
+on `PATH` is not launchable without that registration. The panel does not
+replace explicit per-profile binary setup, which is described on the next page.
 
 ## What Exists After Setup
 

@@ -43,6 +43,13 @@ from runtime.runtime import RuntimeDir
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
+def _register_binary_for_profile(name: str) -> None:
+    """Register a real executable for a profile name in the machine-local
+    binary registry (THR-107 seq155).  Uses /bin/echo."""
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    set_binary(name, "/bin/echo")
+
+
 def _seed_legacy_profile_in_store(name: str) -> None:
     """Seed a legacy (no envelope_policy) profile in the durable runtime store."""
     save_runtime_profile(name, {
@@ -71,6 +78,17 @@ def _seed_legacy_profile_in_registry(name: str) -> None:
         envelope_policy=None,
     )
     registry.register_custom_profile(profile)
+    _register_binary_for_profile(name)
+
+
+@pytest.fixture(autouse=True)
+def _register_daemon_test_binaries():
+    """Register real executables for all profile names used in daemon
+    D7A route tests (THR-107 seq155)."""
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    for name in ["strict-cli", "legacy-cli", "atomic-test",
+                 "test-legacy-exec-org", "test-legacy-exec-rt"]:
+        set_binary(name, "/bin/echo")
 
 
 def _bypass_loopback(monkeypatch):
@@ -140,8 +158,21 @@ def daemon_state(runtime):
 
 
 @pytest.fixture(autouse=True)
-def clean_registry():
+def clean_registry(tmp_path):
     reset_registry()
+    # Pre-register test binaries for profiles that call executor.run()
+    # (THR-107 seq155: binary registry is the sole resolution source).
+    daemon_home = tmp_path / ".happyranch"
+    daemon_home.mkdir(parents=True, exist_ok=True)
+    import os as _os
+    _os.environ["HAPPYRANCH_DAEMON_HOME"] = str(daemon_home)
+    # Create the executors.json registry file path
+    daemon_home.mkdir(parents=True, exist_ok=True)
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    for name in ("test-legacy-exec-org", "test-legacy-exec-rt"):
+        fake_bin = tmp_path / f"fake-{name}"
+        fake_bin.touch(mode=0o755, exist_ok=True)
+        set_binary(name, str(fake_bin))
     # Also clean the store
     try:
         remove_runtime_profile("test-legacy-exec")

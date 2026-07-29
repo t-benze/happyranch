@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -133,22 +132,21 @@ _FROZEN_EXECUTOR_NOT_DICT_USAGE = TokenUsage(
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _mock_shutil_which(monkeypatch):
-    """Patch shutil.which inside executors so _resolve_binary calls resolve
-    deterministically regardless of host PATH."""
-    import runtime.orchestrator.executors as _ex_mod
+def _mock_shutil_which(monkeypatch, tmp_path):
+    """Pre-register built-in executor binaries in the machine-local registry
+    so _resolve_binary calls resolve deterministically regardless of host PATH
+    (THR-107 seq155: registration-only resolution).
+    This fixture runs BEFORE _register_test_binaries to ensure the daemon
+    home is set before binary registration."""
+    daemon_home = tmp_path / ".happyranch"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
 
-    _real_which = shutil.which
-
-    def _patched_which(name, path=None):
-        real = _real_which(name, path=path)
-        if real is not None:
-            return real
-        if name in _EXECUTOR_NAMES:
-            return f"/usr/local/bin/{os.path.basename(name)}"
-        return None
-
-    monkeypatch.setattr(_ex_mod.shutil, "which", _patched_which)
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    for name in _EXECUTOR_NAMES:
+        fake_bin = tmp_path / "bin" / name
+        fake_bin.parent.mkdir(parents=True, exist_ok=True)
+        fake_bin.touch(mode=0o755, exist_ok=True)
+        set_binary(name, str(fake_bin))
 
 
 @pytest.fixture(autouse=True)
@@ -552,8 +550,8 @@ class TestCmdBaselines:
         workspace = tmp_path / "ws"
         workspace.mkdir()
 
-        fake_bin_path = tmp_path / "bin" / "my-cli"
-        fake_bin_path.parent.mkdir()
+        fake_bin_path = tmp_path / "test-bin" / "my-cli"
+        fake_bin_path.parent.mkdir(exist_ok=True)
         fake_bin_path.write_text("")
         fake_bin_path.chmod(0o755)
 
@@ -1532,16 +1530,14 @@ class TestBuildExecutorCanonical:
         workspace = tmp_path / "ws"
         workspace.mkdir()
 
-        # -- Patch executor_registry.shutil.which for determinism ---------
-        _registry_which_map = {
-            "kimi-cli": "/opt/kimi/kimi-cli",
-        }
-        import runtime.orchestrator.executor_registry as _reg_mod
-
-        def _patched_registry_which(name, path=None):
-            return _registry_which_map.get(name)
-
-        monkeypatch.setattr(_reg_mod.shutil, "which", _patched_registry_which)
+        # -- Register binary for the profile name (THR-107 seq155) -----
+        # validate_custom_profile_config no longer calls shutil.which;
+        # binary registration happens separately. The test registers
+        # the binary for the profile name so _resolve_binary succeeds.
+        from runtime.orchestrator.executor_binary_registry import set_binary
+        kimi_bin = tmp_path / "kimi-cli-bin"
+        kimi_bin.touch(mode=0o755)
+        set_binary("kimi-custom", str(kimi_bin))
 
         # 1. Build a fixed raw config with a non-null command and validate
         #    through the canonical seam.
@@ -1636,16 +1632,6 @@ class TestBuildExecutorCanonical:
         the check this test will fail.
         """
         import runtime.orchestrator.executor_registry as _reg_mod
-
-        _which_map = {
-            "kimi-cli": "/opt/kimi/kimi-cli",
-            "other-cli": "/opt/other/other-cli",
-        }
-
-        def _patched_which(name, path=None):
-            return _which_map.get(name)
-
-        monkeypatch.setattr(_reg_mod.shutil, "which", _patched_which)
 
         config = {
             "command": "kimi-cli",
@@ -2125,16 +2111,15 @@ class TestD2BuildExecutorAdapterInjection:
 
         reset_registry()
         registry = get_registry()
-        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/kimi-cli"):
-            profile = ExecutorRegistry.validate_custom_profile_config(
-                "kimi-cli",
-                {
-                    "command": "kimi-cli",
-                    "argv_template": ["kimi-cli", "-m", "{prompt}"],
-                    "adapter": "pi",
-                },
-            )
-            registry.register_custom_profile(profile)
+        profile = ExecutorRegistry.validate_custom_profile_config(
+            "kimi-cli",
+            {
+                "command": "kimi-cli",
+                "argv_template": ["kimi-cli", "-m", "{prompt}"],
+                "adapter": "pi",
+            },
+        )
+        registry.register_custom_profile(profile)
 
         settings = Settings()
         executor = build_executor("kimi-cli", settings)
@@ -2641,16 +2626,15 @@ class TestD8RegistryBehaviorPreserved:
         import runtime.orchestrator.executor_registry as _reg_mod
 
         registry = ExecutorRegistry()
-        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/kimi-cli"):
-            profile = ExecutorRegistry.validate_custom_profile_config(
-                "kimi-cli",
-                {
-                    "command": "kimi-cli",
-                    "argv_template": ["kimi-cli", "-m", "{prompt}"],
-                    "adapter": "pi",
-                },
-            )
-            registry.register_custom_profile(profile)
+        profile = ExecutorRegistry.validate_custom_profile_config(
+            "kimi-cli",
+            {
+                "command": "kimi-cli",
+                "argv_template": ["kimi-cli", "-m", "{prompt}"],
+                "adapter": "pi",
+            },
+        )
+        registry.register_custom_profile(profile)
 
         # Profile stored correctly
         stored = registry.get_profile("kimi-cli")
@@ -2661,33 +2645,29 @@ class TestD8RegistryBehaviorPreserved:
         assert stored.argv_template == ["kimi-cli", "-m", "{prompt}"]
 
         # Collision with different definition still protected
-        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/kimi-cli"):
-            profile2 = ExecutorRegistry.validate_custom_profile_config(
-                "kimi-cli",
-                {
-                    "command": "kimi-cli",
-                    "argv_template": ["kimi-cli", "--json", "{prompt}"],
-                    "adapter": "pi",
-                },
-            )
-            with pytest.raises(ExecutorProfileCollisionError):
-                registry.register_custom_profile(profile2)
+        profile2 = ExecutorRegistry.validate_custom_profile_config(
+            "kimi-cli",
+            {
+                "command": "kimi-cli",
+                "argv_template": ["kimi-cli", "--json", "{prompt}"],
+                "adapter": "pi",
+            },
+        )
+        with pytest.raises(ExecutorProfileCollisionError):
+            registry.register_custom_profile(profile2)
 
     def test_custom_unregister_unchanged(self):
         """Custom profile unregistration works as before."""
-        import runtime.orchestrator.executor_registry as _reg_mod
-
         registry = ExecutorRegistry()
-        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/mycli"):
-            profile = ExecutorRegistry.validate_custom_profile_config(
-                "mycli",
-                {
-                    "command": "mycli",
-                    "argv_template": ["mycli", "{prompt}"],
-                    "adapter": "pi",
-                },
-            )
-            registry.register_custom_profile(profile)
+        profile = ExecutorRegistry.validate_custom_profile_config(
+            "mycli",
+            {
+                "command": "mycli",
+                "argv_template": ["mycli", "{prompt}"],
+                "adapter": "pi",
+            },
+        )
+        registry.register_custom_profile(profile)
 
         assert registry.is_registered("mycli")
         result = registry.unregister_custom_profile("mycli")
@@ -2695,23 +2675,21 @@ class TestD8RegistryBehaviorPreserved:
         assert not registry.is_registered("mycli")
 
     def test_validate_custom_profile_config_unchanged(self):
-        """Custom profile validation layer unchanged."""
-        import runtime.orchestrator.executor_registry as _reg_mod
-
-        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/mycli"):
-            profile = ExecutorRegistry.validate_custom_profile_config(
-                "mycli",
-                {
-                    "command": "mycli",
-                    "argv_template": ["mycli", "{prompt}"],
-                    "adapter": "pi",
-                },
-            )
-            assert profile.name == "mycli"
-            assert profile.kind == "custom"
-            assert profile.adapter_id == "pi"
-            assert profile.argv_template == ["mycli", "{prompt}"]
-            assert profile.readiness_marker_fragment == "AGENTS.md"
+        """Custom profile validation layer — command/argv parity check
+        (THR-107 seq155: no PATH resolution)."""
+        profile = ExecutorRegistry.validate_custom_profile_config(
+            "mycli",
+            {
+                "command": "mycli",
+                "argv_template": ["mycli", "{prompt}"],
+                "adapter": "pi",
+            },
+        )
+        assert profile.name == "mycli"
+        assert profile.kind == "custom"
+        assert profile.adapter_id == "pi"
+        assert profile.argv_template == ["mycli", "{prompt}"]
+        assert profile.readiness_marker_fragment == "AGENTS.md"
 
 
 class TestD8BuildExecutorPreserved:
@@ -2762,7 +2740,6 @@ class TestD8BuildExecutorPreserved:
 
     def test_custom_routes_to_generic_cli_no_adapter(self):
         """Custom profiles route to GenericCliExecutor without adapter injection."""
-        import runtime.orchestrator.executor_registry as _reg_mod
         from runtime.orchestrator.executor_registry import (
             ExecutorRegistry,
             build_executor,
@@ -2771,16 +2748,15 @@ class TestD8BuildExecutorPreserved:
         from runtime.orchestrator.executors import GenericCliExecutor
 
         registry = get_registry()
-        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/kimi-cli"):
-            profile = ExecutorRegistry.validate_custom_profile_config(
-                "kimi-cli",
-                {
-                    "command": "kimi-cli",
-                    "argv_template": ["kimi-cli", "-m", "{prompt}"],
-                    "adapter": "pi",
-                },
-            )
-            registry.register_custom_profile(profile)
+        profile = ExecutorRegistry.validate_custom_profile_config(
+            "kimi-cli",
+            {
+                "command": "kimi-cli",
+                "argv_template": ["kimi-cli", "-m", "{prompt}"],
+                "adapter": "pi",
+            },
+        )
+        registry.register_custom_profile(profile)
 
         settings = Settings()
         executor = build_executor("kimi-cli", settings)
@@ -2824,20 +2800,18 @@ class TestD8BuildExecutorPreserved:
             assert not isinstance(ex, GenericCliExecutor), f"{bn} returned GenericCliExecutor"
 
         # Custom profile must NOT return a specialized executor class
-        import runtime.orchestrator.executor_registry as _reg_mod
         from runtime.orchestrator.executor_registry import ExecutorRegistry, get_registry
 
         registry = get_registry()
-        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/mycli"):
-            profile = ExecutorRegistry.validate_custom_profile_config(
-                "mycli",
-                {
-                    "command": "mycli",
-                    "argv_template": ["mycli", "{prompt}"],
-                    "adapter": "pi",
-                },
-            )
-            registry.register_custom_profile(profile)
+        profile = ExecutorRegistry.validate_custom_profile_config(
+            "mycli",
+            {
+                "command": "mycli",
+                "argv_template": ["mycli", "{prompt}"],
+                "adapter": "pi",
+            },
+        )
+        registry.register_custom_profile(profile)
 
         executor = build_executor("mycli", settings)
         assert isinstance(executor, GenericCliExecutor)
@@ -3064,8 +3038,8 @@ class TestGenericCliAdapter:
         workspace = tmp_path / "ws"
         workspace.mkdir()
 
-        fake_bin_path = tmp_path / "bin" / "my-cli"
-        fake_bin_path.parent.mkdir()
+        fake_bin_path = tmp_path / "test-bin" / "my-cli"
+        fake_bin_path.parent.mkdir(exist_ok=True)
         fake_bin_path.write_text("")
         fake_bin_path.chmod(0o755)
 
@@ -3383,6 +3357,25 @@ class TestGenericCliExecutorShell:
     """Phase 2: GenericCliExecutor remains the public factory result for
     custom profiles, now a thin shell around GenericCliAdapter. These
     tests lock the backward-compat contract."""
+
+    # Profile names used in .run() calls — must be registered in the
+    # binary registry before _resolve_binary is called (THR-107 seq155).
+    _RUN_PROFILE_NAMES = frozenset({
+        "openclaw", "test", "custom", "enveloped", "noenv",
+        "custom-cjk-missing-end", "custom-cjk-invalid-json", "custom-cjk-not-dict",
+    })
+
+    @pytest.fixture(autouse=True)
+    def _register_run_binaries(self, tmp_path):
+        """Register fake binaries so GenericCliExecutor.run() calls
+        _resolve_binary(profile_name) succeed."""
+        import os as _os
+        _os.environ.setdefault("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        from runtime.orchestrator.executor_binary_registry import set_binary
+        for name in self._RUN_PROFILE_NAMES:
+            fake_bin = tmp_path / f"bin-{name}"
+            fake_bin.touch(mode=0o755, exist_ok=True)
+            set_binary(name, str(fake_bin))
 
     def test_build_executor_returns_generic_cli_executor_for_custom_profile(self):
         """build_executor for a custom profile must return a
@@ -3963,17 +3956,14 @@ class TestD10D11DataDrivenFactory:
         from runtime.config import Settings
 
         settings = Settings()
-        import runtime.orchestrator.executor_registry as _reg_mod
         from runtime.orchestrator.executor_registry import ExecutorRegistry
-        from unittest.mock import patch
 
         registry = get_registry()
-        with patch.object(_reg_mod.shutil, "which", return_value="/usr/local/bin/mycli"):
-            profile = ExecutorRegistry.validate_custom_profile_config(
-                "my-custom",
-                {"command": "mycli", "argv_template": ["mycli", "{prompt}"], "adapter": "pi"},
-            )
-            registry.register_custom_profile(profile)
+        profile = ExecutorRegistry.validate_custom_profile_config(
+            "my-custom",
+            {"command": "mycli", "argv_template": ["mycli", "{prompt}"], "adapter": "pi"},
+        )
+        registry.register_custom_profile(profile)
 
         ex = build_executor("my-custom", settings)
         assert isinstance(ex, GenericCliExecutor)
@@ -4083,8 +4073,8 @@ class TestD10D11DataDrivenFactory:
             ex = build_executor(name, settings)
             # Verify the adapter was injected (D2 path — unchanged)
             assert ex._adapter is not None, f"{name}: adapter must be injected"
-            # Verify CLI path is set (from Settings, through factory)
-            assert ex._cli_path is not None, f"{name}: _cli_path must be non-None"
+            # Verify profile name is set (THR-107 seq155: registration-only)
+            assert ex._profile_name == name, f"{name}: _profile_name must match"
             # Profile must have model_arg — the factory passes it through
             profile = registry.get_profile(name)
             assert profile is not None and profile.model_arg is not None, (

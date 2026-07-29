@@ -268,8 +268,10 @@ Data sources: orchestrator audit log (session/step/completion events), LLM usage
 The Settings dialog (Phase 2) opens from the TopBar gear button
 (`web/src/features/settings/SettingsDialog.tsx`). Renders:
 
-- **System** — daemon-wide settings (CLI paths, session timeout,
-  orchestration limits, protocol dir) with restart-required badges.
+- **System** — daemon-wide settings (CLI name / default command metadata
+  — not a launch path; executor launch uses registered binary pins — plus
+  session timeout, orchestration limits, protocol dir) with restart-required
+  badges.
   Read-only.
 - **Org** — org-level settings (session timeout override, dreaming
   config, threads config). Editable via inline forms (Phase 2) — a

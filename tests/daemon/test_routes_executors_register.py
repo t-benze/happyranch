@@ -703,7 +703,10 @@ class TestBadStaticValidation:
         })
         assert r.status_code in (409, 422)
 
-    def test_register_command_not_on_path_rejected(self, app, daemon_state, monkeypatch):
+    def test_register_succeeds_matching_command_argv_even_without_path_binary(self, app, daemon_state, monkeypatch):
+        """Registration succeeds when command == argv_template[0] as strings
+        (THR-107 seq155: PATH resolution is no longer a registration gate).
+        Binary registration happens separately via executor-binaries register."""
         _bypass_loopback(monkeypatch)
         client = TestClient(app)
         store = daemon_state.registration_token_store
@@ -717,7 +720,9 @@ class TestBadStaticValidation:
             "argv_template": ["definitely_not_a_command_xyzzy", "{prompt}"],
             "adapter": "pi",
         })
-        assert r.status_code == 422
+        # Registration succeeds — command/argv match as declared names.
+        # Binary availability is gated by executors.json, not PATH.
+        assert r.status_code == 200
 
 
 # ── Invariant: executor_profiles not writable via settings PATCH ────────

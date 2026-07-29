@@ -6,7 +6,8 @@ and from `config.yaml` (Settings values). A dedicated file at
 ``<daemon-home>/executors.json`` keeps the register route's runtime writes cleanly
 isolated from the shared config.yaml surface.
 
-The registry SUPPLEMENTS PATH resolution; it does not replace it (invariant 5).
+The registry is the SOLE resolution source for executor binaries (THR-107 seq155).
+PATH discovery, shutil.which, and auto-pinning are never used.
 """
 
 from __future__ import annotations

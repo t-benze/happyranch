@@ -6,8 +6,9 @@ agent sessions.
 ## Current Caveat
 
 The THR-088 executor-connect flow is still changing. This page documents the
-current stable model: check readiness, choose an executor profile, and initialize
-agent workspaces. Do not treat this as the final Step-1 connect walkthrough.
+current stable model: install a CLI, register its absolute binary path under an
+executor profile, and initialize agent workspaces. Do not treat this as the
+final Step-1 connect walkthrough.
 
 ## What an Executor Is
 
@@ -23,28 +24,43 @@ Built-in profiles:
 | `opencode` | `opencode` |
 | `pi` | `pi` |
 
-You need at least one of those CLIs installed and available on `PATH` before an
-agent can do useful work.
+You need at least one of those CLIs installed and explicitly registered with a
+valid absolute binary path before an agent can do useful work. Simply having
+the CLI on `PATH` is not enough — HappyRanch never discovers or auto-resolves
+PATH executables for executor launch; only a valid profile-name registration in
+`executors.json` makes a profile launchable.
 
 ## Check Readiness
 
-The web onboarding page shows an executor readiness panel. It reports which
-supported binaries are found and which are missing.
+The web onboarding page and Settings → Executor Binaries show which executor
+profiles have a valid machine-local registration. A profile with no registration
+(or a stale path) is visible but unavailable for launch.
 
-![placeholder: Executor readiness panel showing one ready CLI and one missing CLI](TODO)
+![placeholder: Executor readiness panel showing one registered CLI and one unregistered](TODO)
 
-This panel is a check, not the final connect flow. If a CLI is missing, install
-it through that provider's own instructions, then return to HappyRanch.
+This panel is a check. If a profile is unregistered, install the CLI through
+that provider's own instructions, then register its absolute binary path.
 
 ## Current Manual Setup
 
 The stable path is:
 
-1. Install at least one supported agentic CLI.
-2. Create the runtime and org.
-3. Run `happyranch init-agent` so each org agent gets a workspace and executor
-   configuration.
-4. If using the assistant dock, run `happyranch assistant init` and follow the
+1. Install at least one supported agentic CLI through that provider's own
+   instructions.
+2. Create the runtime and org (see the previous page).
+3. Explicitly register the CLI's absolute binary path under the intended
+   executor profile:
+
+   ```bash
+   happyranch executor-binaries register <profile-name> --path <absolute-path>
+   ```
+
+   For example: `happyranch executor-binaries register claude --path /usr/local/bin/claude`.
+   Without this registration the profile is visible but cannot launch agent
+   sessions.
+4. Run `happyranch init-agent` so each org agent receives a workspace and
+   executor configuration.
+5. If using the assistant dock, run `happyranch assistant init` and follow the
    printed registration instructions.
 
 Each agent workspace includes an `agent.yaml` that declares the executor:

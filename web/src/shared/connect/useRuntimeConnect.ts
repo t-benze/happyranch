@@ -6,9 +6,12 @@
  *
  * The binary-vs-profile split is a runtime PARAMETER of this engine, not two
  * code paths: built-in mints a purpose='binary' token and targets
- * register-binary (poll requires `present`); custom mints a profile token and
- * targets register (poll matches on appearance). See ConnectRuntimeStep's
- * header comment for the full honesty-fence rationale (THR-061 §D; THR-088).
+ * register-binary (poll requires `present`); custom mints a profile-purpose
+ * token first, then the consumer handles a separate binary-purpose stage
+ * (see ConnectFlow's two-stage custom flow: ProfileStage → BinaryStage).
+ * ProfileStage passes `requirePresent: false` — appearance-only is deliberate
+ * to permit advancing to the binary stage; only BinaryStage
+ * (`requirePresent: true`) may report the externally connected state.
  *
  * This module is CHROME-FREE: no step eyebrow, no wizard headings, no
  * Continue/Skip navigation. Consumers inject that chrome via ConnectFlow slots.
@@ -120,12 +123,9 @@ export function buildConnectPrompt(
 /** Shared mint → copy-paste → live-poll state machine for BOTH flows. Mints a
  *  scoped runtime registration token (built-in adds purpose='binary'), then
  *  polls GET /health/prereqs until the name is registered. `requirePresent`
- *  gates the match on `p.present`: built-in registration flips `present` true
- *  (executors.json entry), so it must be required; a custom profile's
- *  `present`/`path` derives from its declared command's PATH resolvability
- *  (same contract as /health/prereqs), so a custom profile WITH a resolvable
- *  command can also match on present. Leave `requirePresent` false for custom
- *  to match on appearance alone. */
+ *  gates the match on `p.present`: both built-in and custom profiles derive
+ *  `present`/`path` from the machine-local binary registry (executors.json)
+ *  keyed by the profile name (THR-107 seq155). */
 export function useRuntimeConnect({
   purpose,
   requirePresent,
@@ -171,8 +171,11 @@ export function useRuntimeConnect({
   }, [state, expiresAt]);
 
   // Poll the EXISTING prereqs route while waiting; flip to connected the moment
-  // the freshly-registered name is registered (present-gated for built-ins,
-  // appearance for custom profiles).
+  // the freshly-registered name is registered. When `requirePresent` is true
+  // (built-in + BinaryStage), a `present:true` match is required.  When
+  // `requirePresent` is false (ProfileStage), name-only appearance permits
+  // advancing to the next stage.  The binary registry (executors.json) is the
+  // sole availability source (THR-107 seq155).
   const poll = useQuery({
     queryKey: ['health', 'prereqs'],
     queryFn: healthApi.getPrereqs,

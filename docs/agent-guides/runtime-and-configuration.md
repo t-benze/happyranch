@@ -14,10 +14,10 @@ There is no `.env` support. `settings_customise_sources` drops dotenv and adds `
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
-| `HAPPYRANCH_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
-| `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Path to opencode CLI |
-| `HAPPYRANCH_PI_CLI_PATH` | `pi` | Path to Pi CLI |
+| `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Default command metadata for claude (config/docs only — executor launch requires ``executors.json`` pin) |
+| `HAPPYRANCH_CODEX_CLI_PATH` | `codex` | Default command metadata for codex (config/docs only — executor launch requires ``executors.json`` pin) |
+| `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Default command metadata for opencode (config/docs only — executor launch requires ``executors.json`` pin) |
+| `HAPPYRANCH_PI_CLI_PATH` | `pi` | Default command metadata for pi (config/docs only — executor launch requires ``executors.json`` pin) |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `HAPPYRANCH_PROTOCOL_DIR` | `protocol` | Protocol docs dirname relative to project root |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
@@ -133,10 +133,18 @@ repairs the assistant workspace and writes registration instructions; the
 founder opens their own agentic CLI there and it completes configuration by
 calling back `happyranch assistant register --from-file <payload>` declaring an
 agent-chosen `{executor, command, argv}`. The daemon validates the payload
-structurally only — non-empty fields and `shutil.which(argv[0])` resolves (no
-allowlist, no absolute-path requirement, no `$PATH` guard) — then auto-configures
-with no separate approval. `happyranch assistant` tells the user to run
-`happyranch assistant init` when no assistant config exists.
+structurally only (non-empty fields and `shutil.which(argv[0])` resolves; this
+is self-registration, not executor-binary resolution — the THR-107 seq155
+registration-only cutover applies to *executor launch*, not assistant
+self-registration) — then auto-configures with no separate approval.
+`happyranch assistant` tells the user to run `happyranch assistant init` when
+no assistant config exists.
+
+**Executor binary resolution** (all built-in and custom executor profiles)
+is registration-only: every executor must have a valid ``executors.json``
+entry keyed by the profile name before launch (THR-107 seq155). No
+``shutil.which`` or PATH discovery is used. See
+[agent-executors-and-permissions.md](./agent-executors-and-permissions.md).
 
 ## Org Config: Timezone and `current_time` Prompt Injection
 

@@ -52,6 +52,11 @@ class SystemSettingsView(BaseModel):
     Each entry is a ``SystemSettingEntry`` so the ``restart_required``
     flag travels as part of the GET /settings contract (no client-side
     hard-coded duplicate).
+
+    The ``*_cli_path`` fields are default command metadata (config/docs
+    only).  They are NOT launch paths and cannot make an executor
+    launchable — every executor requires an explicit machine-local
+    ``executors.json`` pin (THR-107 seq155).
     """
 
     claude_cli_path: SystemSettingEntry
