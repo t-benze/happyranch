@@ -44,6 +44,7 @@ struct SurfaceAllowListDriftGuardTests {
         ("{conv_id}", "conv-1"),
         ("{candidate_id}", "cand-1"),
         ("{attachment_id}", "att-1"),
+        ("{adapter_id}", "adapter-1"),
     ]
 
     /// Replace template placeholders in a path with concrete values.
@@ -174,6 +175,41 @@ struct SurfaceAllowListDriftGuardTests {
             Issue.record("Unclassified OpenAPI routes (add to route-classification.json):\n  \(sorted)")
         }
         #expect(unclassified.isEmpty, "All OpenAPI routes must be classified in route-classification.json")
+    }
+
+    @Test("browser adapter status and bind-profile are ALLOWED (positive browser lifecycle check)")
+    func browserAdapterRoutesAllowed() throws {
+        let policy = SurfaceAllowList.default
+
+        // Browser Settings/onboarding polls adapter status:
+        //   web/src/shared/connect/useRuntimeConnect.ts → adapters.getAdapter(id)
+        let statusAllowed = policy.isAllowed(
+            method: "GET",
+            path: "/runtime/adapters/adapter-1",
+            rawPath: "/api/v1/runtime/adapters/adapter-1"
+        )
+        #expect(statusAllowed, "GET /runtime/adapters/{adapter_id} must be ALLOWED for browser status poll")
+
+        // Browser Settings/onboarding binds approved adapter to profile:
+        //   web/src/shared/connect/useRuntimeConnect.ts → adapters.bindAdapterProfile(id, body)
+        let bindAllowed = policy.isAllowed(
+            method: "POST",
+            path: "/runtime/adapters/adapter-1/bind-profile",
+            rawPath: "/api/v1/runtime/adapters/adapter-1/bind-profile"
+        )
+        #expect(bindAllowed, "POST /runtime/adapters/{adapter_id}/bind-profile must be ALLOWED for browser profile binding")
+    }
+
+    @Test("CLI-only adapter submit is DENIED remotely")
+    func adapterSubmitDenied() throws {
+        let policy = SurfaceAllowList.default
+        // POST /runtime/adapters/submit uses scoped hrreg_ token; browser never calls it
+        let submitAllowed = policy.isAllowed(
+            method: "POST",
+            path: "/runtime/adapters/submit",
+            rawPath: "/api/v1/runtime/adapters/submit"
+        )
+        #expect(!submitAllowed, "POST /runtime/adapters/submit must be DENIED for remote (CLI-only scoped token)")
     }
 
     @Test("no stale classification entries (no route in JSON that doesn't exist in OpenAPI)")

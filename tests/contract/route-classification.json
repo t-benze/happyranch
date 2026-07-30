@@ -122,7 +122,9 @@
     "POST /api/v1/orgs/{slug}/skill-lifecycle/publish",
     "POST /api/v1/orgs/{slug}/skill-lifecycle/assign",
     "POST /api/v1/orgs/{slug}/skill-lifecycle/rollback",
-    "POST /api/v1/orgs/{slug}/skill-lifecycle/retire"
+    "POST /api/v1/orgs/{slug}/skill-lifecycle/retire",
+    "GET /api/v1/runtime/adapters/{adapter_id}",
+    "POST /api/v1/runtime/adapters/{adapter_id}/bind-profile"
   ],
   "excluded": {
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion": "agent callback",
@@ -164,10 +166,10 @@
     "POST /api/v1/executors/runtime/register-binary": "cli-only runtime-level binary registration via scoped token (THR-088)",
     "GET /api/v1/runtime/adapters": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
     "POST /api/v1/runtime/adapters/register": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
-    "GET /api/v1/runtime/adapters/{adapter_id}": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
+
     "POST /api/v1/runtime/adapters/{adapter_id}/approve": "agent-only adapter administration route — founder-gated explicit approval gate (THR-107 D4)",
     "POST /api/v1/runtime/adapters/submit": "cli-only runtime-level adapter submission via scoped token (THR-107 seq141)",
-    "POST /api/v1/runtime/adapters/{adapter_id}/bind-profile": "agent-only adapter administration route — profile binding to approved adapter (THR-107 seq141)",
+
     "POST /api/v1/orgs/{slug}/skill-lifecycle/proposals/agent": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055)"
   }
 }
