@@ -85,6 +85,10 @@ class AdapterEntry:
     D4 fields (NOT populated in D3, present for forward-compat):
       - approved_at: null until D4 founder approval
       - approved_by: null until D4 founder approval
+
+    THR-107 seq141 adapter-submission fields:
+      - intended_profile_name: the profile name the adapter is bound to
+        (set during adapter-submission, verified at profile-binding time)
     """
 
     id: str
@@ -101,6 +105,8 @@ class AdapterEntry:
     # D4 forward-compat fields — always null in D3
     approved_at: str | None = None
     approved_by: str | None = None
+    # THR-107 seq141: intended profile binding
+    intended_profile_name: str | None = None
 
     def to_dict(self) -> dict:
         """Serialize to a plain dict for YAML persistence."""
@@ -121,6 +127,8 @@ class AdapterEntry:
             d["approved_at"] = self.approved_at
         if self.approved_by is not None:
             d["approved_by"] = self.approved_by
+        if self.intended_profile_name is not None:
+            d["intended_profile_name"] = self.intended_profile_name
         return d
 
     @classmethod
@@ -140,6 +148,7 @@ class AdapterEntry:
             registered_by=d.get("registered_by", ""),
             approved_at=d.get("approved_at"),
             approved_by=d.get("approved_by"),
+            intended_profile_name=d.get("intended_profile_name"),
         )
 
 

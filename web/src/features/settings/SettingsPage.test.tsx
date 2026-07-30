@@ -724,6 +724,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     // The mode toggle (built-in convergence) switches to the custom name form.
     await user.click(screen.getByText(/connect a custom cli instead/i));
+    // Default custom path is now adapter-backed; click through to legacy
+    await user.click(screen.getByText(/use legacy simple integration instead/i));
     expect(await screen.findByLabelText(/name this cli/i)).toBeInTheDocument();
   });
 
@@ -782,6 +784,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     await openConnect(user);
     await user.click(screen.getByText(/connect a custom cli instead/i));
+    // Default custom path is now adapter-backed; click through to legacy
+    await user.click(screen.getByText(/use legacy simple integration instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
     await user.click(
       screen.getByRole('button', { name: /generate connect prompt/i }),
@@ -828,6 +832,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     await openConnect(user);
     await user.click(screen.getByText(/connect a custom cli instead/i));
+    // Default custom path is now adapter-backed; click through to legacy
+    await user.click(screen.getByText(/use legacy simple integration instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
     await user.click(
       screen.getByRole('button', { name: /generate connect prompt/i }),
@@ -888,6 +894,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     // Drive a custom connect to the connected card.
     await openConnect(user);
     await user.click(screen.getByText(/connect a custom cli instead/i));
+    // Default custom path is now adapter-backed; click through to legacy
+    await user.click(screen.getByText(/use legacy simple integration instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
     await user.click(
       screen.getByRole('button', { name: /generate connect prompt/i }),
@@ -918,6 +926,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     await openConnect(user);
     await user.click(screen.getByText(/connect a custom cli instead/i));
+    // Default custom path is now adapter-backed; click through to legacy
+    await user.click(screen.getByText(/use legacy simple integration instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'claude');
 
     expect(screen.getByText(/isn.t a built-in/i)).toBeInTheDocument();
@@ -950,6 +960,137 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     // the shared flow (S3 built-in convergence) and SHOULD be present.
     expect(screen.getByText(/connect a custom cli instead/i)).toBeInTheDocument();
   });
+
+  test(
+    'adapter-backed: submitted → awaiting approval → poll APPROVED → bind → Connected',
+    async () => {
+    const user = userEvent.setup();
+    const adapterId = 'test-adapter-cli-adapter';
+    const profileName = 'test-adapter-cli';
+
+    // Stage the adapter as PENDING BEFORE the mint interaction so the
+    // first poll request has a handler (the hook fires useQuery immediately
+    // when state transitions to 'waiting' — no handler = unhandled MSW error).
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({ token: 'hr_tok_ADAPTER_TEST', expires_at: Math.floor(Date.now() / 1000) + 600 }),
+      ),
+      http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
+        HttpResponse.json({
+          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
+          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
+          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
+          registered_at: new Date().toISOString(), registered_by: 'test',
+          approved_at: null, approved_by: null, intended_profile_name: profileName,
+        }),
+      ),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // Submitted → awaiting approval (first poll sees PENDING)
+    await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+    expect(screen.getByText(adapterId)).toBeInTheDocument();
+
+    // Transition to APPROVED → auto-bind → Connected.
+    server.use(
+      http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
+        HttpResponse.json({
+          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
+          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
+          contract_version: 1, workspace_adapter: 'pi', status: 'approved',
+          registered_at: new Date().toISOString(), registered_by: 'test',
+          approved_at: new Date().toISOString(), approved_by: 'founder',
+          intended_profile_name: profileName,
+        }),
+      ),
+      http.post(`/api/v1/runtime/adapters/${adapterId}/bind-profile`, () =>
+        HttpResponse.json({
+          profile_name: profileName, command_adapter_id: `custom-adapter:${adapterId}`,
+          workspace_adapter_id: 'pi', kind: 'custom', status: 'connected', adapter_id: adapterId,
+        }),
+      ),
+    );
+
+    await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+    // The top-level ConnectedCard uses Settings' own connectedSubtitle,
+    // not the AdapterConnect internal subtitle copy.
+    expect(screen.getByText(/your custom cli is registered/i)).toBeInTheDocument();
+  }, 15000);
+
+  test(
+    'adapter-backed: bind failure → error state → retry → Connected',
+    async () => {
+    const user = userEvent.setup();
+    const adapterId = 'test-bindfail-cli-adapter';
+    const profileName = 'test-bindfail-cli';
+
+    // Stage the adapter as PENDING BEFORE the mint interaction so the
+    // first poll request has a handler.
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({ token: 'hr_tok_BINDFAIL_TEST', expires_at: Math.floor(Date.now() / 1000) + 600 }),
+      ),
+      http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
+        HttpResponse.json({
+          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
+          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
+          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
+          registered_at: new Date().toISOString(), registered_by: 'test',
+          approved_at: null, approved_by: null, intended_profile_name: profileName,
+        }),
+      ),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // Show APPROVED adapter, but bind FAILS → AdapterBindFailedBody.
+    server.use(
+      http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
+        HttpResponse.json({
+          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
+          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
+          contract_version: 1, workspace_adapter: 'pi', status: 'approved',
+          registered_at: new Date().toISOString(), registered_by: 'test',
+          approved_at: new Date().toISOString(), approved_by: 'founder',
+          intended_profile_name: profileName,
+        }),
+      ),
+      http.post(`/api/v1/runtime/adapters/${adapterId}/bind-profile`, () =>
+        HttpResponse.json({ detail: 'Adapter artifact changed before bind.' }, { status: 422 }),
+      ),
+    );
+
+    await screen.findByText(/bind failed/i, {}, { timeout: 10000 });
+    const retryButton = screen.getByRole('button', { name: /retry bind/i });
+    expect(retryButton).toBeInTheDocument();
+
+    // Retry with success.
+    server.use(
+      http.post(`/api/v1/runtime/adapters/${adapterId}/bind-profile`, () =>
+        HttpResponse.json({
+          profile_name: profileName, command_adapter_id: `custom-adapter:${adapterId}`,
+          workspace_adapter_id: 'pi', kind: 'custom', status: 'connected', adapter_id: adapterId,
+        }),
+      ),
+    );
+
+    await user.click(retryButton);
+    await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+    expect(screen.getByText(/your custom cli is registered/i)).toBeInTheDocument();
+  }, 15000);
 });
 
 describe('SettingsPage — keyboard shortcuts', () => {

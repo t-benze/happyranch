@@ -17,7 +17,7 @@
  */
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ArrowLeft, Check, ChevronRight, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Check, ChevronRight, RefreshCw } from 'lucide-react';
 import { ApiError } from '@/lib/api';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
@@ -25,11 +25,13 @@ import { Label } from '@/design-system/primitives/Label';
 import {
   BUILTINS,
   buildConnectPrompt,
+  buildAdapterConnectPrompt,
   CONFORMANCE_STEPS,
   FIELD_CLASS,
   KINDS,
   NAME_RE,
   useRuntimeConnect,
+  useAdapterConnect,
 } from './useRuntimeConnect';
 import type { Connected, ConnectMode, Kind } from './useRuntimeConnect';
 
@@ -63,7 +65,13 @@ export function ConnectFlow({
   connectedPrimaryAction,
 }: ConnectFlowProps): JSX.Element {
   const [mode, setMode] = useState<ConnectMode>('builtin');
+  const [customSubMode, setCustomSubMode] = useState<'adapter' | 'legacy'>('adapter');
   const [connected, setConnected] = useState<Connected | null>(null);
+
+  const switchToCustom = (): void => {
+    setMode('custom');
+    setCustomSubMode('adapter');
+  };
 
   return (
     <div className={className}>
@@ -81,7 +89,15 @@ export function ConnectFlow({
           {mode === 'builtin' ? (
             <BuiltinConnect
               onConnected={setConnected}
-              onUseCustom={() => setMode('custom')}
+              onUseCustom={switchToCustom}
+              skipSlot={formSkipSlot}
+              waitingSkipSlot={waitingSkipSlot}
+            />
+          ) : customSubMode === 'adapter' ? (
+            <AdapterConnect
+              onConnected={setConnected}
+              onUseBuiltin={() => setMode('builtin')}
+              onUseLegacy={() => setCustomSubMode('legacy')}
               skipSlot={formSkipSlot}
               waitingSkipSlot={waitingSkipSlot}
             />
@@ -89,6 +105,7 @@ export function ConnectFlow({
             <CustomConnect
               onConnected={setConnected}
               onUseBuiltin={() => setMode('builtin')}
+              onUseAdapter={() => setCustomSubMode('adapter')}
               skipSlot={formSkipSlot}
               waitingSkipSlot={waitingSkipSlot}
             />
@@ -198,12 +215,196 @@ export function BuiltinConnect({
 }
 
 /* ------------------------------------------------------------------ */
+/*  ADAPTER-BACKED — name → mint adapter token → create/submit wrapper   */
+/*  → poll adapter status → auto-bind when APPROVED                       */
+/* ------------------------------------------------------------------ */
+
+export function AdapterConnect({
+  onConnected,
+  onUseBuiltin,
+  onUseLegacy,
+  skipSlot,
+  waitingSkipSlot,
+}: {
+  onConnected: (c: Connected) => void;
+  onUseBuiltin?: () => void;
+  onUseLegacy?: () => void;
+  skipSlot?: ReactNode;
+  waitingSkipSlot?: ReactNode;
+}): JSX.Element {
+  const [nameInput, setNameInput] = useState('');
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+
+  const flow = useAdapterConnect({ onConnected });
+
+  const nameIsBuiltin = BUILTINS.has(nameInput.trim());
+  const nameValid = NAME_RE.test(nameInput.trim()) && !nameIsBuiltin;
+
+  const generate = (): void => {
+    const name = nameInput.trim();
+    if (nameValid) flow.start(name);
+  };
+
+  // Waiting state — prompt the CLI to create/submit wrapper
+  if (flow.state.stage === 'waiting') {
+    const s = flow.state;
+    return (
+      <AdapterWaitingBody
+        name={s.name}
+        prompt={buildAdapterConnectPrompt(s.name, s.token, origin)}
+        expired={s.expired}
+        regenerating={flow.mint.isPending}
+        onRegenerate={flow.regenerate}
+        onBack={flow.back}
+        skipSlot={waitingSkipSlot}
+      />
+    );
+  }
+
+  // Submitted state — adapter is PENDING, awaiting founder approval
+  if (flow.state.stage === 'submitted') {
+    return (
+      <AdapterSubmittedBody
+        name={flow.state.name}
+        adapterId={flow.state.adapterId}
+        onReset={flow.back}
+      />
+    );
+  }
+
+  // Bind failed state — approved but bind errored; show error + retry
+  if (flow.state.stage === 'bind_failed') {
+    return (
+      <AdapterBindFailedBody
+        name={flow.state.name}
+        adapterId={flow.state.adapterId}
+        error={flow.state.error}
+        onRetry={() => flow.retryBind()}
+        onBack={flow.back}
+      />
+    );
+  }
+
+  // Connected state — adapter was approved and bound
+  if (flow.state.stage === 'connected') {
+    return (
+      <ConnectedCard
+        connected={{ name: flow.state.name, path: null, via: 'custom' }}
+        subtitle={(via) =>
+          via === 'custom'
+            ? 'Your custom CLI is connected via an approved adapter. It is available to every org.'
+            : ''
+        }
+        onReset={flow.back}
+      />
+    );
+  }
+
+  // Form state
+  return (
+    <div className="mt-6 max-w-lg">
+      <div className="border-accent/30 bg-accent/5 border-l-2 rounded-r-md px-3 py-2 mb-4">
+        <p className="text-text-primary text-sm font-medium">
+          Create a custom adapter wrapper
+        </p>
+        <p className="text-text-secondary mt-0.5 text-xs">
+          Your CLI creates a small v1 adapter wrapper that speaks
+          HappyRanch&rsquo;s standard AdapterInput/AdapterOutput contract.
+          It reads the prompt from stdin, invokes your CLI, and returns a
+          normalized result. The adapter is submitted as PENDING for
+          founder approval.
+        </p>
+      </div>
+      <form
+        className="mt-6 space-y-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          generate();
+        }}
+      >
+        <Label htmlFor="adapter-name">Name this CLI</Label>
+        <p className="text-text-muted -mt-1 text-xs">
+          A short identifier — becomes its executor name. The adapter id will
+          be <code className="font-mono">&lt;name&gt;-adapter</code>.
+        </p>
+        <Input
+          id="adapter-name"
+          value={nameInput}
+          onChange={(e) => {
+            setNameInput(e.target.value);
+            flow.mint.reset();
+          }}
+          placeholder="e.g. my-cli"
+          autoFocus
+          autoComplete="off"
+          spellCheck={false}
+          aria-invalid={nameInput && !nameValid && !flow.mint.isPending ? true : undefined}
+        />
+        <p className="text-xs">
+          {nameInput && nameIsBuiltin ? (
+            <span className="text-feedback-danger">
+              Pick a name that isn&rsquo;t a built-in (claude, codex, opencode,
+              pi) — connect those from the dropdown instead.
+            </span>
+          ) : nameValid ? (
+            <span className="text-feedback-success inline-flex items-center gap-1 font-medium">
+              <Check aria-hidden="true" size={13} />
+              Lowercase letters, numbers and hyphens
+            </span>
+          ) : (
+            <span className="text-text-muted">
+              Lowercase letters, numbers and hyphens · starts with a letter
+            </span>
+          )}
+        </p>
+        {flow.mint.isError && (
+          <p className="text-feedback-danger text-sm" role="alert">
+            {flow.mint.error instanceof ApiError
+              ? `Could not generate a prompt (${flow.mint.error.status}).`
+              : 'Could not generate a prompt. Is the daemon reachable?'}
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-3 pt-3">
+          <Button type="submit" disabled={!nameValid || flow.mint.isPending}>
+            {flow.mint.isPending ? 'Generating…' : 'Generate connect prompt'}
+          </Button>
+          {onUseBuiltin && (
+            <button
+              type="button"
+              onClick={onUseBuiltin}
+              className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs underline-offset-2 hover:underline"
+            >
+              <ArrowLeft aria-hidden="true" size={14} />
+              Connect a built-in CLI instead
+            </button>
+          )}
+          {skipSlot}
+        </div>
+        <div className="mt-3">
+          {onUseLegacy && (
+            <button
+              type="button"
+              onClick={onUseLegacy}
+              className="text-text-muted hover:text-text-secondary text-xs underline-offset-2 hover:underline"
+            >
+              Use legacy simple integration instead
+            </button>
+          )}
+        </div>
+        <HowThisWorks />
+      </form>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  CUSTOM — two-stage: profile token → register → binary token → pin   */
 /* ------------------------------------------------------------------ */
 
 export function CustomConnect({
   onConnected,
   onUseBuiltin,
+  onUseAdapter,
   skipSlot,
   waitingSkipSlot,
 }: {
@@ -212,6 +413,8 @@ export function CustomConnect({
    *  Settings ▸ Executors, where built-ins live in a separate section) — the
    *  "Connect a built-in CLI instead" toggle then renders nothing. */
   onUseBuiltin?: () => void;
+  /** Switch to the adapter-backed flow (default path). */
+  onUseAdapter?: () => void;
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
 }): JSX.Element {
@@ -223,6 +426,7 @@ export function CustomConnect({
       <ProfileStage
         key="profile"
         onUseBuiltin={onUseBuiltin}
+        onUseAdapter={onUseAdapter}
         skipSlot={skipSlot}
         waitingSkipSlot={waitingSkipSlot}
         onProfileRegistered={(name: string) => {
@@ -251,11 +455,13 @@ export function CustomConnect({
  *  after present:true and a pinned path. */
 function ProfileStage({
   onUseBuiltin,
+  onUseAdapter,
   skipSlot,
   waitingSkipSlot,
   onProfileRegistered,
 }: {
   onUseBuiltin?: () => void;
+  onUseAdapter?: () => void;
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
   onProfileRegistered: (name: string) => void;
@@ -293,10 +499,27 @@ function ProfileStage({
 
   return (
     <div className="mt-6 max-w-lg">
+      <div className="border-border-warning/40 bg-surface-sunken border rounded-md px-3 py-2 mb-4">
+        <p className="text-text-primary text-sm font-medium">
+          Legacy / simple integration
+        </p>
+        <p className="text-text-secondary mt-0.5 text-xs">
+          This is the older direct-template path. For a more robust connection
+          with pinned-hash verification and founder-approval gating, use the{' '}
+          <button
+            type="button"
+            onClick={onUseAdapter}
+            className="text-accent hover:underline"
+          >
+            adapter-backed registration
+          </button>{' '}
+          instead.
+        </p>
+      </div>
       <p className="text-text-secondary text-base leading-relaxed">
-        Running a different agentic CLI? HappyRanch connects any conformant CLI.
-        Name it, then paste the generated prompt into your CLI — it proves it
-        works and tells us how to launch it.
+        Connect a conformant CLI using the legacy generic-template integration.
+        Paste the generated prompt into your CLI — it proves it works and
+        registers as a generic-cli profile.
       </p>
       <form
         className="mt-6 space-y-2"
@@ -563,6 +786,224 @@ export function WaitingBody({
 
 /* ------------------------------------------------------------------ */
 /*  Connected — name (FE-known) + registered path (register-real)      */
+/* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/*  Adapter-specific waiting — adapter-wrapper prompt + live status    */
+/* ------------------------------------------------------------------ */
+
+export function AdapterWaitingBody({
+  name: _name,
+  prompt,
+  expired,
+  regenerating,
+  onRegenerate,
+  onBack,
+  skipSlot,
+}: {
+  name: string;
+  prompt: string;
+  expired: boolean;
+  regenerating: boolean;
+  onRegenerate: () => void;
+  onBack: () => void;
+  skipSlot?: ReactNode;
+}): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const copy = (): void => {
+    void navigator.clipboard?.writeText(prompt);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  return (
+    <div className="mt-6 max-w-2xl">
+      <div className="border-border-default bg-surface shadow-pasture-sm overflow-hidden rounded-lg border">
+        <div className="border-border-default bg-surface-sunken flex items-center justify-between border-b px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <span aria-hidden="true" className="flex gap-1.5">
+              <span className="bg-border-strong h-2 w-2 rounded-full" />
+              <span className="bg-border-strong h-2 w-2 rounded-full" />
+              <span className="bg-border-strong h-2 w-2 rounded-full" />
+            </span>
+            <span className="text-text-muted font-mono text-xs">
+              adapter connect prompt · paste into your CLI
+            </span>
+          </div>
+          <CopyButton copied={copied} onClick={copy} />
+        </div>
+        <pre className="text-text-secondary overflow-x-auto px-4 py-4 font-mono text-xs leading-relaxed whitespace-pre">
+          {prompt}
+        </pre>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button onClick={copy}>
+          {copied ? (
+            <>
+              <Check aria-hidden="true" />
+              Copied
+            </>
+          ) : (
+            <>
+              <CopyGlyph />
+              Copy prompt
+            </>
+          )}
+        </Button>
+        <span className="text-text-muted text-xs">
+          Create the wrapper, run the prompt — this screen updates live.
+        </span>
+      </div>
+
+      {expired ? (
+        <div className="border-feedback-warning/30 bg-feedback-warning/5 mt-6 rounded-lg border p-4">
+          <p className="text-text-primary text-sm font-semibold">
+            This link expired
+          </p>
+          <p className="text-text-muted mt-1 text-xs">
+            The prompt is valid for about 10 minutes. Regenerate a fresh prompt.
+          </p>
+          <div className="mt-3">
+            <Button variant="outline" onClick={onRegenerate} disabled={regenerating}>
+              <RefreshCw aria-hidden="true" size={15} />
+              {regenerating ? 'Regenerating…' : 'Regenerate prompt'}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div
+          aria-label="Waiting for adapter submission"
+          className="border-border-default bg-surface mt-6 rounded-lg border p-4"
+        >
+          <div className="flex items-center gap-2">
+            <Spinner className="text-accent h-4 w-4" />
+            <p className="text-text-primary text-sm font-medium">
+              Waiting for adapter submission…
+            </p>
+          </div>
+          <p className="text-text-muted mt-1 text-xs">
+            Your CLI should create a v1 adapter wrapper, complete the
+            conformance checks, and submit it. This screen updates when the
+            adapter appears.
+          </p>
+        </div>
+      )}
+
+      <div className="mt-5 flex items-center gap-4">
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs"
+        >
+          <ArrowLeft aria-hidden="true" size={14} />
+          Back to the prompt
+        </button>
+        {skipSlot}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Adapter submitted — pending approval state                         */
+/* ------------------------------------------------------------------ */
+
+export function AdapterSubmittedBody({
+  name,
+  adapterId,
+  onReset,
+}: {
+  name: string;
+  adapterId: string;
+  onReset: () => void;
+}): JSX.Element {
+  return (
+    <div className="mt-6 max-w-lg">
+      <div className="border-accent/30 bg-accent/5 rounded-lg border p-4">
+        <div className="flex items-center gap-2">
+          <Spinner className="text-accent h-4 w-4" />
+          <p className="text-text-primary text-sm font-medium">
+            Adapter submitted — awaiting approval
+          </p>
+        </div>
+        <p className="text-text-secondary mt-2 text-xs">
+          Your adapter <code className="font-mono">{adapterId}</code> has
+          been submitted as PENDING for <code className="font-mono">{name}</code>.
+          The founder must approve it before the profile can be bound. This
+          screen will update automatically when approved.
+        </p>
+        <div className="bg-surface-sunken mt-3 rounded p-3">
+          <p className="text-text-muted text-xs font-mono">
+            Status: <span className="text-feedback-warning font-semibold">PENDING</span>
+          </p>
+          <p className="text-text-muted mt-1 text-xs font-mono">
+            Adapter ID: {adapterId}
+          </p>
+        </div>
+      </div>
+      <div className="mt-4">
+        <Button variant="outline" onClick={onReset}>
+          <ArrowLeft aria-hidden="true" size={14} />
+          Back
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function AdapterBindFailedBody({
+  name,
+  adapterId,
+  error,
+  onRetry,
+  onBack,
+}: {
+  name: string;
+  adapterId: string;
+  error: string;
+  onRetry: () => void;
+  onBack: () => void;
+}): JSX.Element {
+  return (
+    <div className="mt-6 max-w-lg">
+      <div className="border-feedback-danger/30 bg-feedback-danger/5 rounded-lg border p-4">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="text-feedback-danger h-4 w-4" />
+          <p className="text-text-primary text-sm font-medium">
+            Bind failed
+          </p>
+        </div>
+        <p className="text-text-secondary mt-2 text-xs">
+          The adapter <code className="font-mono">{adapterId}</code> was
+          approved for <code className="font-mono">{name}</code>, but the
+          profile binding step failed. This may be transient — retry below.
+        </p>
+        <div className="bg-surface-sunken mt-3 rounded p-3">
+          <p className="text-text-muted text-xs font-mono">
+            Adapter ID: {adapterId}
+          </p>
+          <p className="text-feedback-danger mt-1 text-xs font-mono">
+            Error: {error}
+          </p>
+        </div>
+        <div className="mt-4 flex items-center gap-3">
+          <Button onClick={onRetry}>
+            <RefreshCw aria-hidden="true" size={15} />
+            Retry bind
+          </Button>
+          <Button variant="outline" onClick={onBack}>
+            <ArrowLeft aria-hidden="true" size={14} />
+            Back
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Connected card                                                      */
 /* ------------------------------------------------------------------ */
 
 export function ConnectedCard({

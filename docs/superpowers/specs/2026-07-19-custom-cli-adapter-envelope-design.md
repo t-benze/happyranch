@@ -35,7 +35,20 @@
 > with actionable re-registration/verification guidance. Existing
 > stored profiles without the ``envelope_policy`` field are LEGACY
 > COMPATIBILITY entries with unchanged optional-envelope behavior.
-> D7B custom-adapter executable launch/binding is still outstanding.
+> **D7B two-stage adapter submission+binding shipped** (THR-107 seq141, PR #518,
+> July 2026): adapter-backed custom-CLI profiles now support a two-stage
+> lifecycle — (1) the candidate CLI submits its adapter wrapper via a
+> scoped loopback registration token, creating a PENDING adapter entry;
+> (2) after founder approval, a management bearer binds the exact
+> APPROVED adapter to its intended profile name via durable
+> ``command_adapter_id: custom-adapter:<id>`` persistence. The
+> submission is loopback-only + registration-token-scoped with no master
+> bearer fallback; binding is bearer-only, gated on exact adapter id +
+> hash identity + D7B validation. This document's generic-CLI v1
+> envelope schema, sentinel transport, parser algorithm,
+> backward-compatibility guarantees, and conformance step remain
+> authoritative for D7A generic-cli profiles and are carried forward
+> unchanged.
 >
 > **Unified adapter-runtime architecture** (THR-107 seq84): a DESIGN-ONLY
 > follow-up spec at

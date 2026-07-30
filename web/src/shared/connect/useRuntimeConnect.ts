@@ -59,8 +59,9 @@ export const FIELD_CLASS =
 /** Build the copy-paste prompt (no `/connect` link). `target` picks the
  *  register route + body while the conformance challenge stays identical:
  *  'binary' → register-binary (built-in path, kind carried by the token),
- *  'profile' → register (custom profile). */
-export type ConnectTarget = 'binary' | 'profile';
+ *  'profile' → register (legacy custom profile via generic-cli),
+ *  'adapter' → adapter-submission (v1 wrapper → PENDING → approval → bind). */
+export type ConnectTarget = 'binary' | 'profile' | 'adapter';
 
 export function buildConnectPrompt(
   name: string,
@@ -206,4 +207,175 @@ export function useRuntimeConnect({
   };
 
   return { state, name, token, expired, mint, start, regenerate, back };
+}
+
+/** Build the adapter-backed connect prompt (THR-107 seq141). The prompt
+ *  directs the candidate CLI to create a v1 AdapterInput/AdapterOutput wrapper
+ *  executable, run conformance check-ins, and submit it via
+ *  POST /runtime/adapters/submit with the scoped adapter-purpose token.
+ *  The adapter becomes PENDING; this screen updates live. */
+export function buildAdapterConnectPrompt(
+  name: string,
+  token: string,
+  origin: string,
+): string {
+  const base = `${origin}/api/v1`;
+  return [
+    `# Connect "${name}" to HappyRanch as a custom-adapter-backed CLI.`,
+    `# Do all of this in one run, then stop. Send this header on every request:`,
+    `#   Authorization: Bearer ${token}`,
+    ``,
+    `# 1. Create a v1 adapter wrapper executable that reads AdapterInput JSON`,
+    `#    from stdin and writes AdapterOutput JSON to stdout. It must:`,
+    `#    - Accept a v1 AdapterInput JSON object on stdin`,
+    `#    - Invoke your CLI with the prompt, workspace, and timeout from the input`,
+    `#    - Collect your CLI's output and wrap it in a v1 AdapterOutput JSON object`,
+    `#    - Write exactly one AdapterOutput JSON object to stdout, then exit`,
+    `#    The AdapterInput/AdapterOutput contract is defined in the runtime:`,
+    `#    runtime/orchestrator/adapter_contract.py`,
+    ``,
+    `# 2. Complete the conformance challenge — POST each step id to`,
+    `#    ${base}/executors/runtime/conformance-checkin`,
+    `#    body {"step_id":"<id>"} for each of:`,
+    `#      workspace_access   loopback_reachable   cli_callback`,
+    `#    then post emit_envelope with your adapter's sample output.`,
+    ``,
+    `# 3. Submit your adapter — POST to`,
+    `#    ${base}/runtime/adapters/submit`,
+    `#    body {"executable":"<absolute-path-to-wrapper>","version":"1.0.0",`,
+    `#         "capabilities":["token_metering"],"workspace_adapter":"pi"}`,
+    ``,
+    `# After submission, the adapter is PENDING founder approval.`,
+    `# Once approved, it will be bound to the "${name}" profile automatically.`,
+    ``,
+    `# This token is valid for about 10 minutes. This screen updates live.`,
+  ].join('\n');
+}
+
+/** Adapter-backed connection status matching the adapter lifecycle. */
+export type AdapterState =
+  | { stage: 'form' }
+  | { stage: 'waiting'; name: string; token: string; expired: boolean; adapterId: string }
+  | { stage: 'submitted'; name: string; adapterId: string; status: string }
+  | { stage: 'bind_failed'; name: string; adapterId: string; error: string }
+  | { stage: 'connected'; name: string; adapterId: string };
+
+/** Shared hook for the adapter-backed custom-CLI connection (THR-107 seq141).
+ *  Mints an adapter-purpose token → CLI creates/submits v1 adapter wrapper
+ *  → UI polls adapter status → binds profile when APPROVED. */
+export function useAdapterConnect({
+  onConnected,
+}: {
+  onConnected: (c: Connected) => void;
+}) {
+  const [state, setState] = useState<AdapterState>({ stage: 'form' });
+  const [name, setName] = useState('');
+  const [token, setToken] = useState('');
+  const [expiresAt, setExpiresAt] = useState(0);
+
+  const mint = useMutation({
+    mutationFn: (n: string) =>
+      settingsApi.mintRuntimeRegistrationToken({
+        name: n,
+        purpose: 'adapter',
+        intended_profile_name: n,
+      }),
+    onSuccess: (resp, n) => {
+      const aid = `${n}-adapter`;
+      setName(n);
+      setToken(resp.token);
+      setExpiresAt(resp.expires_at);
+      setState({ stage: 'waiting', name: n, token: resp.token, expired: false, adapterId: aid });
+    },
+  });
+
+  // Time-based expiry
+  useEffect(() => {
+    if (state.stage !== 'waiting' || state.expired || !expiresAt) return;
+    const ms = expiresAt * 1000 - Date.now();
+    if (ms <= 0) {
+      setState((s) =>
+        s.stage === 'waiting' ? { ...s, expired: true } : s,
+      );
+      return;
+    }
+    const t = window.setTimeout(() => {
+      setState((s) =>
+        s.stage === 'waiting' ? { ...s, expired: true } : s,
+      );
+    }, ms);
+    return () => window.clearTimeout(t);
+  }, [state.stage, expiresAt]);
+
+  // Poll the adapter endpoint for status changes
+  const adapterIdForPoll = 'adapterId' in state ? (state as { adapterId: string }).adapterId : '';
+  const pollEnabled =
+    (state.stage === 'waiting' && !('expired' in state ? state.expired : false)) ||
+    state.stage === 'submitted';
+
+  const { data: adapterEntry } = useQuery({
+    queryKey: ['adapter', adapterIdForPoll],
+    queryFn: () => import('@/lib/api').then(({ adapters }) => adapters.getAdapter(adapterIdForPoll)),
+    enabled: pollEnabled && adapterIdForPoll !== '',
+    refetchInterval: pollEnabled && adapterIdForPoll !== '' ? 2500 : false,
+  });
+
+  // Transition: waiting → submitted when adapter appears as PENDING
+  useEffect(() => {
+    if (state.stage !== 'waiting' || 'expired' in state && state.expired) return;
+    if (adapterEntry && adapterEntry.status === 'pending') {
+      setState({
+        stage: 'submitted',
+        name,
+        adapterId: adapterIdForPoll,
+        status: adapterEntry.status,
+      });
+    }
+  }, [adapterEntry, state.stage, name, adapterIdForPoll]);
+
+  // Transition: submitted → connected when adapter is APPROVED → bind profile
+  const bindMutation = useMutation({
+    mutationFn: (aid: string) =>
+      import('@/lib/api').then(({ adapters }) =>
+        adapters.bindAdapterProfile(aid, { profile_name: name }),
+      ),
+    onSuccess: () => {
+      setState({ stage: 'connected', name, adapterId: adapterIdForPoll });
+      onConnected({ name, path: null, via: 'custom' });
+    },
+    onError: (error: unknown) => {
+      const message =
+        error instanceof Error ? error.message : 'Bind failed — retry or contact the founder.';
+      setState({ stage: 'bind_failed', name, adapterId: adapterIdForPoll, error: message });
+    },
+  });
+
+  const retryBind = (): void => {
+    if (!bindMutation.isPending) bindMutation.mutate(adapterIdForPoll);
+  };
+
+  useEffect(() => {
+    if (state.stage !== 'submitted') return;
+    if (adapterEntry && adapterEntry.status === 'approved') {
+      // Auto-bind the approved adapter to the profile
+      if (!bindMutation.isPending && !bindMutation.isSuccess) {
+        bindMutation.mutate(adapterIdForPoll);
+      }
+    }
+  }, [adapterEntry, state.stage, adapterIdForPoll, bindMutation]);
+
+  const start = (n: string): void => {
+    if (n && !mint.isPending) mint.mutate(n);
+  };
+  const regenerate = (): void => {
+    if (name && !mint.isPending) mint.mutate(name);
+  };
+  const back = (): void => {
+    setState({ stage: 'form' });
+    setToken('');
+    setExpiresAt(0);
+    mint.reset();
+  };
+
+  return { state, name, token, adapterId: adapterIdForPoll, mint, start, regenerate, back, bindMutation, retryBind };
 }

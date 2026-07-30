@@ -2631,6 +2631,44 @@ class Database:
         return cur.lastrowid
 
     @_synchronized
+    def insert_audit_log_uncommitted(
+        self,
+        task_id: str,
+        agent: str,
+        action: str,
+        payload: dict | None = None,
+    ) -> int:
+        """Insert an audit row WITHOUT committing the transaction.
+
+        The caller must call ``commit()`` to make the row durable.
+        If the connection is closed without a commit (or an exception
+        propagates through a context manager that closes the handle),
+        the row is rolled back — no audit residue.
+
+        This exists so that compound operations (e.g. adapter-profile
+        binding) can batch the durable profile write, in-memory registry
+        update, and audit write in a single logical transaction with a
+        clean rollback path.  The standard ``insert_audit_log`` (which
+        commits inline) is retained for all existing callers.
+        """
+        cur = self._conn.execute(
+            "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) VALUES (?, ?, ?, ?, ?)",
+            (
+                task_id,
+                agent,
+                action,
+                json.dumps(payload) if payload else None,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        return cur.lastrowid
+
+    @_synchronized
+    def commit(self) -> None:
+        """Commit the current transaction — public companion to insert_audit_log_uncommitted."""
+        self._conn.commit()
+
+    @_synchronized
     def get_audit_logs(self, task_id: str) -> list[dict]:
         cursor = self._conn.execute(
             "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (task_id,)

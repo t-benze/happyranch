@@ -59,8 +59,13 @@ class RuntimeRegistrationTokenMintRequest(BaseModel):
     name: str = Field(..., min_length=1, description="Executor profile name")
     purpose: str = Field(
         'profile',
-        pattern=r'^(profile|binary)$',
-        description="'profile' for executor profile registration, 'binary' for binary-path registration"
+        pattern=r'^(profile|binary|adapter)$',
+        description="'profile' for executor profile registration, 'binary' for binary-path registration, 'adapter' for custom-adapter submission"
+    )
+    intended_profile_name: str | None = Field(
+        None,
+        min_length=1,
+        description="For 'adapter' purpose: the profile name this adapter is bound to"
     )
 
 
@@ -110,5 +115,9 @@ def mint_runtime_registration_token(
         )
 
     store = request.app.state.daemon.registration_token_store
-    token, expires_at = store.mint_runtime(body.name, purpose=body.purpose)
+    token, expires_at = store.mint_runtime(
+        body.name,
+        purpose=body.purpose,
+        intended_profile_name=body.intended_profile_name,
+    )
     return RegistrationTokenMintResponse(token=token, expires_at=expires_at)

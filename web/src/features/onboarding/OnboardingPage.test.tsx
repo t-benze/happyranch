@@ -34,6 +34,10 @@ async function goCustom(user: UserEvent): Promise<void> {
   await user.click(
     await screen.findByRole('button', { name: /connect a custom cli instead/i }),
   );
+  // Default custom path is now adapter-backed; click through to legacy
+  await user.click(
+    await screen.findByRole('button', { name: /use legacy simple integration instead/i }),
+  );
 }
 
 beforeEach(() => {
@@ -544,6 +548,309 @@ describe('OnboardingPage — Step 2 (create org)', () => {
       { timeout: 3000 },
     );
   });
+});
+
+describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    // Default: healthy, empty container
+    vi.spyOn(orgsApi, 'listOrgs').mockResolvedValue({ orgs: [], broken: [] });
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
+      prereqs: [
+        { tool: 'claude', present: true, path: '/usr/bin/claude', hint: '' },
+        { tool: 'codex', present: true, path: '/usr/bin/codex', hint: '' },
+        { tool: 'opencode', present: true, path: '/usr/bin/opencode', hint: '' },
+        { tool: 'pi', present: true, path: '/usr/bin/pi', hint: '' },
+      ],
+    });
+  });
+
+  /** Navigate to the adapter-backed custom-CLI form (NOT clicking through to legacy). */
+  async function goAdapter(user: UserEvent): Promise<void> {
+    await user.click(
+      await screen.findByRole('button', { name: /connect a custom cli instead/i }),
+    );
+    // The default custom path is adapter-backed — the adapter form is displayed.
+    expect(
+      await screen.findByText(/create a custom adapter wrapper/i),
+    ).toBeInTheDocument();
+  }
+
+  test('Submitted → Awaiting approval state (default path, not legacy)', async () => {
+    const user = userEvent.setup();
+    const mintSpy = vi
+      .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_ADP', expires_at: Date.now() / 1000 + 600 });
+
+    renderPage();
+    await goAdapter(user);
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'my-adapter-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // Token minted with adapter purpose and intended_profile_name
+    await waitFor(() =>
+      expect(mintSpy).toHaveBeenCalledWith({
+        name: 'my-adapter-cli',
+        purpose: 'adapter',
+        intended_profile_name: 'my-adapter-cli',
+      }),
+    );
+
+    // Waiting state — adapter waiting body visible (NOT legacy prompt)
+    expect(
+      await screen.findByLabelText(/waiting for adapter submission/i),
+    ).toBeInTheDocument();
+    // No legacy connect prompt
+    expect(
+      screen.queryByText(/You're being connected to HappyRanch/i),
+    ).not.toBeInTheDocument();
+  });
+
+  test('Does NOT click through to legacy (default path is adapter)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // Click "Connect a custom CLI instead"
+    await user.click(
+      await screen.findByRole('button', { name: /connect a custom cli instead/i }),
+    );
+
+    // Adapter-backed form is the default — NOT the legacy form
+    expect(
+      await screen.findByText(/create a custom adapter wrapper/i),
+    ).toBeInTheDocument();
+
+    // The legacy link is available as a secondary affordance
+    expect(
+      screen.getByRole('button', { name: /use legacy simple integration instead/i }),
+    ).toBeInTheDocument();
+
+    // The name field uses the adapter-specific label
+    const nameInput = await screen.findByLabelText(/name this cli/i);
+    expect(nameInput).toBeInTheDocument();
+  });
+
+  test('Adapter form shows valid name check and rejects built-ins', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await goAdapter(user);
+
+    const input = await screen.findByLabelText(/name this cli/i);
+    const gen = screen.getByRole('button', { name: /generate connect prompt/i });
+    expect(gen).toBeDisabled();
+
+    // A built-in name is refused
+    await user.type(input, 'claude');
+    expect(gen).toBeDisabled();
+    expect(screen.getByText(/isn.*t a built-in/i)).toBeInTheDocument();
+
+    await user.clear(input);
+    await user.type(input, 'my-valid-cli');
+    expect(gen).not.toBeDisabled();
+  });
+
+  test('adapter-backed: generated prompt includes adapter-specific conformance and submit route', async () => {
+    const user = userEvent.setup();
+    const profileName = 'onb-adapter-cli';
+
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_ONB_TEST', expires_at: Date.now() / 1000 + 600 });
+
+    renderPage();
+    await goAdapter(user);
+    await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // Waiting state — adapter waiting body visible (NOT legacy prompt)
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    expect(screen.queryByText(/You're being connected to HappyRanch/i)).not.toBeInTheDocument();
+
+    // The adapter prompt must include the adapter-submit route and conformance steps
+    const promptEl = document.querySelector('pre');
+    expect(promptEl).not.toBeNull();
+    const promptText = promptEl!.textContent || '';
+    expect(promptText).toContain('/runtime/adapters/submit');
+    expect(promptText).toContain('hr_tok_ONB_TEST');
+    // Adapter-backed prompt uses the AdapterInput/AdapterOutput contract
+    // (not the D7A sentinel envelope markers used by legacy generic-CLI).
+    expect(promptText).toContain('AdapterInput');
+  });
+
+  test('adapter-backed: token is minted with adapter purpose and intended profile name', async () => {
+    const user = userEvent.setup();
+    const mintSpy = vi
+      .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_ADP2', expires_at: Date.now() / 1000 + 600 });
+
+    renderPage();
+    await goAdapter(user);
+    await user.type(await screen.findByLabelText(/name this cli/i), 'my-adapter-v2');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    expect(mintSpy).toHaveBeenCalledWith({
+      name: 'my-adapter-v2',
+      purpose: 'adapter',
+      intended_profile_name: 'my-adapter-v2',
+    });
+  });
+
+  test(
+    'adapter lifecycle: submitted PENDING → poll APPROVED → bind → Connected',
+    async () => {
+      const user = userEvent.setup();
+      const profileName = 'onb-lifecycle-cli';
+      const adapterId = `${profileName}-adapter`;
+
+      // Spy mint + adapter poll API (matching the existing test pattern).
+      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+        .mockResolvedValue({ token: 'hr_tok_ONB_LC', expires_at: Date.now() / 1000 + 600 });
+
+      // Mock the adapter poll: return PENDING first, then the hook transitions.
+      const { adapters: adaptersApi } = await import('@/lib/api');
+      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
+        return {
+          id: adapterId,
+          name: profileName,
+          executable: '/tmp/test-adapter',
+          executable_hash: 'abc123',
+          version: '1.0.0',
+          capabilities: [],
+          contract_version: 1,
+          workspace_adapter: 'pi',
+          status: 'pending',
+          registered_at: new Date().toISOString(),
+          registered_by: 'test',
+          approved_at: null,
+          approved_by: null,
+          intended_profile_name: profileName,
+        };
+      });
+
+      renderPage();
+      await goAdapter(user);
+
+      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+      // Submitted → awaiting approval (poll sees PENDING)
+      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+      expect(screen.getByText(adapterId)).toBeInTheDocument();
+
+      // Transition to APPROVED → auto-bind → Connected.
+      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
+        id: adapterId,
+        name: profileName,
+        executable: '/tmp/test-adapter',
+        executable_hash: 'abc123',
+        version: '1.0.0',
+        capabilities: [],
+        contract_version: 1,
+        workspace_adapter: 'pi',
+        status: 'approved',
+        registered_at: new Date().toISOString(),
+        registered_by: 'test',
+        approved_at: new Date().toISOString(),
+        approved_by: 'founder',
+        intended_profile_name: profileName,
+      });
+      vi.spyOn(adaptersApi, 'bindAdapterProfile').mockResolvedValue({
+        profile_name: profileName,
+        command_adapter_id: `custom-adapter:${adapterId}`,
+        workspace_adapter_id: 'pi',
+        kind: 'custom',
+        status: 'connected',
+        adapter_id: adapterId,
+      });
+
+      // Connected card — the onboarding mount uses a heading for the connected state.
+      await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+      // The onboarding connected subtitle mentions managing from Settings.
+      expect(
+        screen.getByText(/you can manage your clis anytime from settings/i),
+      ).toBeInTheDocument();
+    },
+    15000,
+  );
+
+  test(
+    'adapter lifecycle: bind failure → error state → Retry → Connected',
+    async () => {
+      const user = userEvent.setup();
+      const profileName = 'onb-bindfail-cli';
+      const adapterId = `${profileName}-adapter`;
+
+      // Spy mint + adapter poll API.
+      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+        .mockResolvedValue({ token: 'hr_tok_ONB_BF', expires_at: Date.now() / 1000 + 600 });
+
+      const { adapters: adaptersApi } = await import('@/lib/api');
+      vi.spyOn(adaptersApi, 'getAdapter').mockResolvedValue({
+        id: adapterId,
+        name: profileName,
+        executable: '/tmp/test-adapter',
+        executable_hash: 'abc123',
+        version: '1.0.0',
+        capabilities: [],
+        contract_version: 1,
+        workspace_adapter: 'pi',
+        status: 'pending',
+        registered_at: new Date().toISOString(),
+        registered_by: 'test',
+        approved_at: null,
+        approved_by: null,
+        intended_profile_name: profileName,
+      });
+
+      renderPage();
+      await goAdapter(user);
+
+      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+      // Show APPROVED adapter, but bind FAILS → AdapterBindFailedBody.
+      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
+        id: adapterId,
+        name: profileName,
+        executable: '/tmp/test-adapter',
+        executable_hash: 'abc123',
+        version: '1.0.0',
+        capabilities: [],
+        contract_version: 1,
+        workspace_adapter: 'pi',
+        status: 'approved',
+        registered_at: new Date().toISOString(),
+        registered_by: 'test',
+        approved_at: new Date().toISOString(),
+        approved_by: 'founder',
+        intended_profile_name: profileName,
+      });
+      vi.spyOn(adaptersApi, 'bindAdapterProfile').mockRejectedValue(
+        new Error('Adapter artifact changed before bind.'),
+      );
+
+      await screen.findByText(/bind failed/i, {}, { timeout: 10000 });
+      const retryButton = screen.getByRole('button', { name: /retry bind/i });
+      expect(retryButton).toBeInTheDocument();
+
+      // Retry with success.
+      vi.mocked(adaptersApi.bindAdapterProfile).mockResolvedValue({
+        profile_name: profileName,
+        command_adapter_id: `custom-adapter:${adapterId}`,
+        workspace_adapter_id: 'pi',
+        kind: 'custom',
+        status: 'connected',
+        adapter_id: adapterId,
+      });
+
+      await user.click(retryButton);
+      await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+      expect(
+        screen.getByText(/you can manage your clis anytime from settings/i),
+      ).toBeInTheDocument();
+    },
+    15000,
+  );
 });
 
 describe('OnboardingPage — Custom two-stage flow regression (profile → binary)', () => {

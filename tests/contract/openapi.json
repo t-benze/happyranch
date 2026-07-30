@@ -3478,6 +3478,20 @@
         ]
       }
     },
+    "/api/v1/runtime/adapters/submit": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/runtime/adapters/{adapter_id}": {
       "GET": {
         "params": [
@@ -3497,6 +3511,24 @@
       }
     },
     "/api/v1/runtime/adapters/{adapter_id}/approve": {
+      "POST": {
+        "params": [
+          [
+            "adapter_id",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/runtime/adapters/{adapter_id}/bind-profile": {
       "POST": {
         "params": [
           [

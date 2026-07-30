@@ -49,7 +49,8 @@ class RegistrationTokenRecord:
     token_hash: str
     org: str
     name: str  # executor profile name this token is scoped to register
-    purpose: str = 'profile'  # 'profile' for executor profile, 'binary' for binary-path
+    purpose: str = 'profile'  # 'profile' for executor profile, 'binary' for binary-path, 'adapter' for custom-adapter submission
+    intended_profile_name: str | None = None  # for 'adapter' purpose: the profile name this adapter is bound to; None for other purposes
     issued_at: float = 0.0
     expires_at: float = 0.0
     consumed: bool = False
@@ -383,7 +384,11 @@ class RegistrationTokenStore:
     # can gate both org and runtime routes without modification.
 
     def mint_runtime(
-        self, name: str, now: float | None = None, purpose: str = 'profile'
+        self,
+        name: str,
+        now: float | None = None,
+        purpose: str = 'profile',
+        intended_profile_name: str | None = None,
     ) -> tuple[str, float]:
         """Mint a runtime-level (org-agnostic) registration token.
 
@@ -393,11 +398,29 @@ class RegistrationTokenStore:
             name: Executor profile name the token is scoped to register.
             now: Injectable clock (seconds since epoch) for testing.
             purpose: 'profile' for executor profile registration,
-                     'binary' for binary-path registration.
+                     'binary' for binary-path registration,
+                     'adapter' for custom-adapter submission.
+            intended_profile_name: For 'adapter' purpose only — the profile
+                name this adapter is bound to. The server derives the exact
+                adapter id from this name (``<name>-adapter``). None for
+                other purposes.
 
         Returns:
             ``(token_plaintext, expires_at)``
+
+        Raises:
+            ValueError: if purpose='adapter' and intended_profile_name is
+                None or empty.
         """
+        if purpose == 'adapter':
+            if not intended_profile_name or not isinstance(intended_profile_name, str):
+                raise ValueError(
+                    "intended_profile_name is required for adapter-purpose tokens"
+                )
+        elif purpose not in {'profile', 'binary'}:
+            raise ValueError(
+                f"Unknown purpose {purpose!r}; must be 'profile', 'binary', or 'adapter'"
+            )
         if now is None:
             now = time.time()
         with self._lock:
@@ -410,6 +433,7 @@ class RegistrationTokenStore:
                 org=_RUNTIME_ORG,
                 name=name,
                 purpose=purpose,
+                intended_profile_name=intended_profile_name,
                 issued_at=now,
                 expires_at=expires_at,
             )

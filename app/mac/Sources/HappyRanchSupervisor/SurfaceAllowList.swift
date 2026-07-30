@@ -93,6 +93,11 @@ public struct SurfaceAllowList: Sendable {
             // Metrics — agent/CLI facing (operational metrics)
             ("GET", "/metrics"),
             ("GET", "/metrics/history"),
+            // Adapter administration (agent-only; browser status/bind are INCLUDED)
+            ("GET", "/runtime/adapters"),
+            ("POST", "/runtime/adapters/register"),
+            // Adapter submission (CLI-only scoped-token; not in browser)
+            ("POST", "/runtime/adapters/submit"),
         ]
         for (method, path) in exactDenies {
             denied.append("\(method) \(path)")
@@ -126,6 +131,8 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/work-hours/", "/spawn"),
             // Artifacts — agent-facing download (GET /artifacts/{name})
             ("GET", "/artifacts/", ""),
+            // Adapter founder approval (agent-only; browser status/bind are INCLUDED)
+            ("POST", "/adapters/", "/approve"),
         ]
         let memoryEndsWithDenies: [(String, String, String)] = [
             // Memory writes where suffix must be path-end to avoid
