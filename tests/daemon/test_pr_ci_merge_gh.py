@@ -264,12 +264,13 @@ def test_recall_fetch_verdict_no_verdict() -> None:
 
 
 def test_recall_fetch_verdict_real_output_fixture() -> None:
-    """_recall_fetch_verdict extracts structured verdict from real recall output.
+    """_recall_fetch_verdict rejects structured APPROVE + Verdict: APPROVE (malformed).
 
-    Real recall output now includes a top-level ``verdict`` field (added in
+    Real recall output includes a top-level ``verdict`` field (added in
     TASK-3739).  The legacy ``Verdict: APPROVE`` line in ``output_summary`` is
-    not in the strict legacy vocabulary (PASS|FAIL|REVISE only), so the
-    structured field is the primary extraction path.
+    not in the strict legacy vocabulary (PASS|FAIL|REVISE only) and MUST be
+    rejected as a malformed candidate — there is no structured-verdict equality
+    escape (removed TASK-3762).
     """
     import json
 
@@ -290,11 +291,8 @@ def test_recall_fetch_verdict_real_output_fixture() -> None:
         mock_run.return_value = MagicMock(
             returncode=0, stdout=real_recall_json, stderr=""
         )
-        verdict = _recall_fetch_verdict("happyranch", "TASK-1496", "review")
-
-    assert verdict == "APPROVE", (
-        f"Expected 'APPROVE' from structured verdict field, got {verdict!r}."
-    )
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
+            _recall_fetch_verdict("happyranch", "TASK-1496", "review")
 
 
 def test_recall_fetch_verdict_top_level_verdict_field() -> None:
@@ -533,6 +531,32 @@ def test_recall_fetch_verdict_structured_pass_plus_malformed_rejected() -> None:
         )
         with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
             _recall_fetch_verdict("happyranch", "TASK-SMIX", "qa")
+
+
+def test_recall_fetch_verdict_structured_approve_plus_verdict_approve_rejected() -> None:
+    """Structured APPROVE + physical Verdict: APPROVE → fail closed (malformed).
+
+    Per KB contract: ANY physical line starting with "Verdict:" that does
+    NOT match the strict PASS|FAIL|REVISE grammar is malformed and fails
+    closed unconditionally.  There is no structured-verdict equality escape.
+    "Verdict: APPROVE" is NOT in the legacy vocabulary and must be rejected
+    even when it textually equals the structured verdict.
+    """
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-RAPPROVE",
+        "status": "completed",
+        "verdict": "APPROVE",
+        "output_summary": "Verdict: APPROVE\n\nCode review passed.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
+            _recall_fetch_verdict("happyranch", "TASK-RAPPROVE", "review")
 
 
 def test_recall_fetch_verdict_legacy_horizontal_whitespace_ok() -> None:
