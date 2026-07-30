@@ -1937,8 +1937,9 @@ class TestContractReferenceAuth:
         """Expired token is rejected."""
         app, master_token, store = app_and_client
         now = time.time()
+        # Minted 1900 seconds ago — unambiguously beyond the 1800-second TTL.
         token, _exp = store.mint_runtime(
-            name="test-cli", purpose="adapter", intended_profile_name="test-cli", now=now - 700
+            name="test-cli", purpose="adapter", intended_profile_name="test-cli", now=now - 1900
         )
         for step_id in store.DEFAULT_CONFORMANCE_STEPS:
             store.record_step_arrival_runtime(token, step_id)
@@ -1949,6 +1950,51 @@ class TestContractReferenceAuth:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 401, resp.text
+
+    def test_token_boundary_exact_1800_seconds(self, token_store):
+        """Deterministic fixed-clock boundary test at the validate_runtime seam.
+
+        Mints a fresh adapter-purpose token at a fixed now, then proves it
+        validates immediately before 1800 seconds and rejects immediately after.
+
+        Exact-expiry convention (registration_token._validate_raw):
+          if now > record.expires_at: return None
+        Token is valid at expires_at exactly; expired at expires_at + epsilon.
+        """
+        store = token_store
+        T0 = 1_000_000.0
+        # Mint a fresh adapter-purpose token at the fixed clock.
+        token, expires_at = store.mint_runtime(
+            name="boundary-test",
+            purpose="adapter",
+            intended_profile_name="boundary-test",
+            now=T0,
+        )
+        assert expires_at == T0 + 1800.0, (
+            f"Expected expires_at=T0+1800, got {expires_at}"
+        )
+        # Complete conformance so validate_runtime returns the record.
+        for step_id in store.DEFAULT_CONFORMANCE_STEPS:
+            store.record_step_arrival_runtime(token, step_id, now=T0 + 1.0)
+
+        # Prove the token is valid at T0 + 1799.999 (just before expiry).
+        record_before = store.validate_runtime(token, now=T0 + 1799.999)
+        assert record_before is not None, (
+            "Token should be valid at T0+1799.999 (before expires_at)"
+        )
+        assert not record_before.consumed
+
+        # Prove the token is still valid at expires_at exactly (exact-expiry).
+        record_at_expiry = store.validate_runtime(token, now=T0 + 1800.0)
+        assert record_at_expiry is not None, (
+            "Token should be valid at expires_at exactly (exact-expiry convention)"
+        )
+
+        # Prove the token is rejected at T0 + 1800.001 (just after expiry).
+        record_after = store.validate_runtime(token, now=T0 + 1800.001)
+        assert record_after is None, (
+            "Token should be expired at T0+1800.001 (after expires_at)"
+        )
 
     def test_consumed_token_rejected(self, app_and_client, token_store):
         """Already-consumed token is rejected."""

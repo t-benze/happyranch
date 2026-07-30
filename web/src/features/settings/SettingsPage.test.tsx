@@ -654,7 +654,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       http.post('/api/v1/auth/registration-token/runtime', () =>
         HttpResponse.json({
           token: 'hrreg_runtime_default',
-          expires_at: Math.floor(Date.now() / 1000) + 600,
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
         }),
       ),
       // Nothing registered by default → fresh-env list + the poll stays waiting.
@@ -740,7 +740,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
         mintPaths.push('runtime');
         return HttpResponse.json({
           token: 'hrreg_runtime_bin',
-          expires_at: Math.floor(Date.now() / 1000) + 600,
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
         });
       }),
     );
@@ -774,7 +774,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
         mintPaths.push('runtime');
         return HttpResponse.json({
           token: 'hrreg_runtime_abc',
-          expires_at: Math.floor(Date.now() / 1000) + 600,
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
         });
       }),
     );
@@ -973,7 +973,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     // when state transitions to 'waiting' — no handler = unhandled MSW error).
     server.use(
       http.post('/api/v1/auth/registration-token/runtime', () =>
-        HttpResponse.json({ token: 'hr_tok_ADAPTER_TEST', expires_at: Math.floor(Date.now() / 1000) + 600 }),
+        HttpResponse.json({ token: 'hr_tok_ADAPTER_TEST', expires_at: Math.floor(Date.now() / 1000) + 1800 }),
       ),
       http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
         HttpResponse.json({
@@ -1035,7 +1035,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     // first poll request has a handler.
     server.use(
       http.post('/api/v1/auth/registration-token/runtime', () =>
-        HttpResponse.json({ token: 'hr_tok_BINDFAIL_TEST', expires_at: Math.floor(Date.now() / 1000) + 600 }),
+        HttpResponse.json({ token: 'hr_tok_BINDFAIL_TEST', expires_at: Math.floor(Date.now() / 1000) + 1800 }),
       ),
       http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
         HttpResponse.json({
@@ -1099,7 +1099,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       http.post('/api/v1/auth/registration-token/runtime', () =>
         HttpResponse.json({
           token: 'hr_tok_SETTINGS_SEQ184',
-          expires_at: Math.floor(Date.now() / 1000) + 600,
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
         }),
       ),
     );
@@ -1130,7 +1130,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       http.post('/api/v1/auth/registration-token/runtime', () =>
         HttpResponse.json({
           token: 'hr_tok_SETTINGS_SEQ184',
-          expires_at: Math.floor(Date.now() / 1000) + 600,
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
         }),
       ),
     );
@@ -1156,7 +1156,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       http.post('/api/v1/auth/registration-token/runtime', () =>
         HttpResponse.json({
           token: 'hr_tok_SETTINGS_SEQ184',
-          expires_at: Math.floor(Date.now() / 1000) + 600,
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
         }),
       ),
     );
@@ -1183,7 +1183,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       http.post('/api/v1/auth/registration-token/runtime', () =>
         HttpResponse.json({
           token: 'hr_tok_SETTINGS_SEQ184',
-          expires_at: Math.floor(Date.now() / 1000) + 600,
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
         }),
       ),
     );

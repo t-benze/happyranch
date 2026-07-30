@@ -7,7 +7,7 @@
 
 ``POST /auth/registration-token`` (THR-052 PR-1)
     Loopback-only AND master-bearer-authed. Mints a scoped, single-use,
-    ~10-minute-TTL ``hrreg_`` token that authorizes ONLY
+    ~30-minute-TTL ``hrreg_`` token that authorizes ONLY
     ``POST /executors/register`` (PR-2). Used by the Settings → Executors
     panel to generate a copy-paste prompt for a candidate CLI.
 """

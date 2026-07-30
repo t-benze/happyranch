@@ -117,7 +117,7 @@ export function buildConnectPrompt(
     ``,
     ...registerStep,
     ``,
-    `# This token is valid for about 10 minutes. This screen updates live.`,
+    `# This token is valid for about 30 minutes. This screen updates live.`,
   ].join('\n');
 }
 
@@ -264,7 +264,7 @@ export function buildAdapterConnectPrompt(
     `# management bind links the adapter to the "${name}" profile.`,
     `# No auto-approval, no token disclosure beyond this prompt.`,
     ``,
-    `# This token is valid for about 10 minutes. This screen updates live.`,
+    `# This token is valid for about 30 minutes. This screen updates live.`,
   ].join('\n');
 }
 
