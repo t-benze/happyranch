@@ -1119,11 +1119,11 @@ class TestRaceSafety:
             infra_db.Database, "insert_audit_log_uncommitted", _insert_then_raise
         )
 
-        # Snapshot pre-request audit rows.
+        # Snapshot pre-request audit rows — globally, unfiltered.
         from runtime.runtime import daemon_home
         pre_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
         try:
-            pre_audit_rows = pre_audit_db.get_audit_logs(f"executor:{profile_name}")
+            pre_audit_rows, _ = pre_audit_db.query_audit_logs()
         finally:
             pre_audit_db.close()
 
@@ -1150,12 +1150,13 @@ class TestRaceSafety:
             )
 
             # NO audit residue — the uncommitted INSERT was rolled back.
+            # Prove global exact equality, not merely a filtered count.
             post_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
             try:
-                post_audit_rows = post_audit_db.get_audit_logs(f"executor:{profile_name}")
-                assert len(post_audit_rows) == len(pre_audit_rows), (
-                    f"Audit residue after rollback: pre={len(pre_audit_rows)}, "
-                    f"post={len(post_audit_rows)}"
+                post_audit_rows, _ = post_audit_db.query_audit_logs()
+                assert post_audit_rows == pre_audit_rows, (
+                    f"Audit residue after rollback: "
+                    f"pre={len(pre_audit_rows)} rows, post={len(post_audit_rows)} rows"
                 )
             finally:
                 post_audit_db.close()
@@ -1357,6 +1358,17 @@ class TestRaceSafety:
             f"got {pre_in_memory.command_adapter_id!r}"
         )
 
+        # Audit pre-snapshot: globally unfiltered, taken BEFORE bind.
+        from runtime.runtime import daemon_home as dh_audit
+        from runtime.infrastructure.database import Database
+        audit_db_path = dh_audit() / "runtime-audit.db"
+        pre_db = Database(audit_db_path)
+        try:
+            pre_all_rows, _ = pre_db.query_audit_logs()
+            pre_count = len(pre_all_rows)
+        finally:
+            pre_db.close()
+
         mc = self._master_client(app, master_token)
         resp = mc.post(
             f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
@@ -1382,23 +1394,35 @@ class TestRaceSafety:
         assert post_in_memory.command_adapter_id == f"custom-adapter:{adapter_id}"
         assert post_in_memory.kind == "custom"
 
-        # Audit log: executor_registered with executor:<profile_name> scope.
-        from runtime.runtime import daemon_home
-        from runtime.infrastructure.database import Database
-        audit_db_path = daemon_home() / "runtime-audit.db"
-        audit_db = Database(audit_db_path)
+        # Audit post-snapshot: globally unfiltered, proves exactly one
+        # canonical executor:<profile_name> / executor_registered row was
+        # added while all pre-existing rows remained unchanged.
+        post_db = Database(audit_db_path)
         try:
-            rows = audit_db.get_audit_logs(f"executor:{profile_name}")
-            assert len(rows) >= 1, (
-                f"No executor_registered audit row for {profile_name}"
-            )
-            latest = rows[-1]
-            assert latest["action"] == "executor_registered"
-            payload = latest.get("payload", {}) or {}
-            assert payload.get("adapter_id") == adapter_id
-            assert payload.get("command_adapter_id") == f"custom-adapter:{adapter_id}"
+            post_all_rows, _ = post_db.query_audit_logs()
         finally:
-            audit_db.close()
+            post_db.close()
+
+        # Exactly one new row was added.
+        assert len(post_all_rows) == pre_count + 1, (
+            f"Expected {pre_count} + 1 audit rows, got {len(post_all_rows)}"
+        )
+        new_rows = post_all_rows[pre_count:]
+        assert len(new_rows) == 1
+        new_row = new_rows[0]
+        assert new_row["task_id"] == f"executor:{profile_name}", (
+            f"Unexpected task_id: {new_row['task_id']!r}"
+        )
+        assert new_row["action"] == "executor_registered"
+        payload = new_row.get("payload", {}) or {}
+        assert payload.get("adapter_id") == adapter_id
+        assert payload.get("command_adapter_id") == f"custom-adapter:{adapter_id}"
+        assert payload.get("workspace_adapter_id") is not None
+
+        # All pre-existing rows are identical.
+        assert post_all_rows[:pre_count] == pre_all_rows, (
+            "Pre-existing audit rows were mutated during bind"
+        )
 
         # Cleanup: remove the profile so other tests aren't affected.
         remove_runtime_profile(profile_name)
@@ -1475,10 +1499,10 @@ class TestRaceSafety:
             infra_db.Database, "insert_audit_log_uncommitted", _insert_then_raise
         )
 
-        # Snapshot pre-request audit rows.
+        # Snapshot pre-request audit rows — globally, unfiltered.
         pre_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
         try:
-            pre_audit_rows = pre_audit_db.get_audit_logs(f"executor:{profile_name}")
+            pre_audit_rows, _ = pre_audit_db.query_audit_logs()
         finally:
             pre_audit_db.close()
 
@@ -1498,12 +1522,13 @@ class TestRaceSafety:
             assert registry.get_profile(profile_name) == pre_in_memory_b
 
             # NO audit residue — the uncommitted INSERT was rolled back.
+            # Prove global exact equality, not merely a filtered count.
             post_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
             try:
-                post_audit_rows = post_audit_db.get_audit_logs(f"executor:{profile_name}")
-                assert len(post_audit_rows) == len(pre_audit_rows), (
-                    f"Audit residue after combo-rollback: pre={len(pre_audit_rows)}, "
-                    f"post={len(post_audit_rows)}"
+                post_audit_rows, _ = post_audit_db.query_audit_logs()
+                assert post_audit_rows == pre_audit_rows, (
+                    f"Audit residue after combo-rollback: "
+                    f"pre={len(pre_audit_rows)} rows, post={len(post_audit_rows)} rows"
                 )
             finally:
                 post_audit_db.close()
@@ -1587,6 +1612,16 @@ class TestRaceSafety:
             outcomes["bind"] = resp.status_code
             bind_done.set()
 
+        # Pre-audit snapshot: take globally unfiltered snapshot BEFORE bind.
+        from runtime.runtime import daemon_home as dh_audit_pre
+        from runtime.infrastructure.database import Database as AuditDatabase
+        pre_audit_db = AuditDatabase(dh_audit_pre() / "runtime-audit.db")
+        try:
+            pre_audit_rows, _ = pre_audit_db.query_audit_logs()
+            pre_audit_count = len(pre_audit_rows)
+        finally:
+            pre_audit_db.close()
+
         t_rereg = threading.Thread(target=do_re_register)
         t_bind = threading.Thread(target=do_bind)
         t_bind.start()
@@ -1637,21 +1672,38 @@ class TestRaceSafety:
         )
         assert post_in_memory.command_adapter_id == f"custom-adapter:{adapter_id}"
 
-        # Audit row for the bind exists.
-        from runtime.runtime import daemon_home
+        # Audit log: globally unfiltered snapshot proves exactly one canonical
+        # executor:<profile_name> / executor_registered row was added while all
+        # pre-existing rows remained unchanged.
+        # The pre-snapshot was taken BEFORE the threads started.
+        from runtime.runtime import daemon_home as dh_post
         from runtime.infrastructure.database import Database
-        audit_db = Database(daemon_home() / "runtime-audit.db")
+        post_db = Database(dh_post() / "runtime-audit.db")
         try:
-            rows = audit_db.get_audit_logs(f"executor:{profile_name}")
-            assert len(rows) >= 1, (
-                f"No executor_registered audit row for {profile_name}"
-            )
-            latest = rows[-1]
-            assert latest["action"] == "executor_registered"
-            payload = latest.get("payload", {}) or {}
-            assert payload.get("adapter_id") == adapter_id
+            post_all_rows, _ = post_db.query_audit_logs()
         finally:
-            audit_db.close()
+            post_db.close()
+
+        # Exactly one new row was added.
+        assert len(post_all_rows) == pre_audit_count + 1, (
+            f"Expected {pre_audit_count} + 1 audit rows, got {len(post_all_rows)}"
+        )
+        new_rows = post_all_rows[pre_audit_count:]
+        assert len(new_rows) == 1
+        new_row = new_rows[0]
+        assert new_row["task_id"] == f"executor:{profile_name}", (
+            f"Unexpected task_id: {new_row['task_id']!r}"
+        )
+        assert new_row["action"] == "executor_registered"
+        payload = new_row.get("payload", {}) or {}
+        assert payload.get("adapter_id") == adapter_id
+        assert payload.get("command_adapter_id") == f"custom-adapter:{adapter_id}"
+        assert payload.get("workspace_adapter_id") is not None
+
+        # All pre-existing rows are identical.
+        assert post_all_rows[:pre_audit_count] == pre_audit_rows, (
+            "Pre-existing audit rows were mutated during monkeypatch-bound bind"
+        )
 
 
 # ---------------------------------------------------------------------------
