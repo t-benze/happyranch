@@ -966,3 +966,70 @@ class TestGuardedMergeLegacyEvidenceRejection:
         )
         assert verdict.verdict == "github_error"
         assert "perform_merge_called" not in call_log
+
+    def test_null_verdict_with_legacy_pass_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Null verdict key present + Verdict: PASS → github_error, perform_merge NOT called.
+
+        A present ``verdict`` key whose value is ``null`` is malformed
+        structured evidence.  The engine MUST fail closed and never fall
+        back to the legacy ``Verdict: PASS`` line.
+        """
+        import json
+        recall_out = json.dumps({
+            "task_id": "TASK-NULLPASS",
+            "status": "completed",
+            "verdict": None,
+            "output_summary": "Verdict: PASS\n\nQA green.",
+        })
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-NULLPASS", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_null_verdict_no_legacy_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Null verdict key present, no Verdict: line → github_error, perform_merge NOT called."""
+        import json
+        recall_out = json.dumps({
+            "task_id": "TASK-NULLNL2",
+            "status": "completed",
+            "verdict": None,
+            "output_summary": "All checks completed.\n",
+        })
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-NULLNL2", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log

@@ -192,7 +192,7 @@ def test_recall_fetch_verdict_structured_non_string_fails() -> None:
     }, indent=2)
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
-        with pytest.raises(RuntimeError, match="not a string"):
+        with pytest.raises(RuntimeError, match="not a non-empty string"):
             _recall_fetch_verdict("happyranch", "TASK-INT", "review")
 
 
@@ -207,7 +207,7 @@ def test_recall_fetch_verdict_structured_empty_string_fails() -> None:
     }, indent=2)
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout=recall_json, stderr="")
-        with pytest.raises(RuntimeError, match="not a string"):
+        with pytest.raises(RuntimeError, match="not a non-empty string"):
             _recall_fetch_verdict("happyranch", "TASK-EMPTY", "review")
 
 
@@ -374,8 +374,8 @@ def test_recall_fetch_verdict_structured_and_legacy_agree() -> None:
     assert verdict == "PASS"
 
 
-def test_recall_fetch_verdict_null_verdict_field_uses_legacy() -> None:
-    """When verdict field is explicitly null, fall back to anchored legacy (strict vocabulary)."""
+def test_recall_fetch_verdict_null_verdict_field_rejected() -> None:
+    """When verdict key is present but value is null, fail closed — do NOT fall back to legacy."""
     import json
 
     recall_json = json.dumps({
@@ -389,8 +389,27 @@ def test_recall_fetch_verdict_null_verdict_field_uses_legacy() -> None:
         mock_run.return_value = MagicMock(
             returncode=0, stdout=recall_json, stderr=""
         )
-        verdict = _recall_fetch_verdict("happyranch", "TASK-NULLV", "review")
-    assert verdict == "PASS"
+        with pytest.raises(RuntimeError, match="not a non-empty string"):
+            _recall_fetch_verdict("happyranch", "TASK-NULLV", "review")
+
+
+def test_recall_fetch_verdict_null_verdict_no_legacy_rejected() -> None:
+    """Null verdict key present with no Verdict: line → fail closed (no prose fallback)."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-NULLNL",
+        "status": "completed",
+        "verdict": None,
+        "output_summary": "All checks completed.\n",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        with pytest.raises(RuntimeError, match="not a non-empty string"):
+            _recall_fetch_verdict("happyranch", "TASK-NULLNL", "review")
 
 
 def test_recall_fetch_verdict_legacy_newline_split_rejected() -> None:

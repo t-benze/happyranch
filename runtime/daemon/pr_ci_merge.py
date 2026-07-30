@@ -438,10 +438,11 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
        ``Verdict:`` match — the two paths above (structured field, anchored
        line) are the only extraction modes.  Anything else fails closed.
 
-    4. **No structured evidence fallback.**  When a structured verdict is
-       present but malformed (non-string, empty, or disagreeing with
-       anchored prose), extraction fails closed — the engine does not fall
-       back to prose for a row that claims structured data.
+    4. **No structured evidence fallback.**  When a ``verdict`` key is
+       present but its value is malformed (non-string, null, empty, or
+       disagreeing with anchored prose), extraction fails closed — the
+       engine does not fall back to prose for a row that claims structured
+       data.
 
     5. **Malformed Verdict: candidate lines fail closed unconditionally.**
        Any physical line starting with ``Verdict:`` that does NOT match the
@@ -525,11 +526,18 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
         )
 
     # ── 1. Structured verdict evidence (primary) ──
-    if structured_verdict is not None:
+    # Key presence, not value truthiness.  A JSON payload with a present
+    # ``verdict`` key MUST enter structured validation even when its value
+    # is ``null``, empty, or wrong-typed; all malformed present structured
+    # values fail closed and never fall back to output_summary.  Legacy
+    # strict prose fallback is reserved for records where the key is absent.
+    _has_structured_verdict = "verdict" in data
+    if _has_structured_verdict:
         # Fail closed: structured verdict must be a non-empty string.
         if not isinstance(structured_verdict, str) or not structured_verdict.strip():
             raise RuntimeError(
-                f"Structured verdict for {task_id} is not a string: {type(structured_verdict).__name__}"
+                f"Structured verdict for {task_id} is not a non-empty string: "
+                f"{type(structured_verdict).__name__}"
             )
         structured_verdict = structured_verdict.strip()
         # Fail closed: disagreement between structured verdict and anchored
