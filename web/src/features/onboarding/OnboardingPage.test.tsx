@@ -985,20 +985,27 @@ describe('OnboardingPage — Custom two-stage flow regression (profile → binar
 });
 
 describe('OnboardingPage — TTL expiry (THR-107 seq189)', () => {
-  test('expires-at-driven expiry: expired state shows 30-minute copy', async () => {
-    const user = userEvent.setup();
+  test('expires-at-driven expiry: fake-timer proves server expires_at drives expiry (no hardcoded +600)', async () => {
+    // Use fake timers with shouldAdvanceTime so waitFor/findBy* polls
+    // still work, while keeping explicit advanceTimersByTimeAsync for
+    // the controlled TTL-boundary assertions.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // Use a fixed epoch to make the test fully deterministic.
+    const T0_SECONDS = 1_700_000_000;
+    vi.setSystemTime(T0_SECONDS * 1000);
 
-    // Expiry is driven by the server-returned expires_at, not a hardcoded
-    // constant. Supply a short-lived token so the "link expired" state
-    // appears quickly, then assert the honesty copy says "30 minutes".
+    // Supply expires_at that is NOT +600 — a hardcoded +600 path would
+    // expire the token prematurely at T0+600, before the server-returned
+    // expires_at of T0+800.  This test proves the frontend honors the
+    // server timestamp, not a hardcoded constant.
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken').mockImplementation(
       async () => {
-        const now = Date.now() / 1000;
-        return { token: 'hr_tok_TTL_TEST', expires_at: now + 3 };
+        return { token: 'hr_tok_TTL_TEST', expires_at: T0_SECONDS + 800 };
       },
     );
     vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({ prereqs: [] });
 
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderPage();
 
     await user.selectOptions(
@@ -1007,18 +1014,33 @@ describe('OnboardingPage — TTL expiry (THR-107 seq189)', () => {
     );
     await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-    // The hook renders the waiting body, then the 3s timeout fires.
-    // Wait for "link expired" to appear.
-    await screen.findByText(/link expired/i, {}, { timeout: 12000 });
+    // Token just generated — UI shows the waiting body, not expired.
+    expect(await screen.findByLabelText('Waiting for your CLI')).toBeInTheDocument();
+    expect(screen.queryByText(/link expired/i)).not.toBeInTheDocument();
 
-    // Honesty copy says "30 minutes", not the old "10 minutes"
-    // getByText(/valid for about 30 minutes/i) matches both the prompt
-    // block and the expiry message — use getAllByText to confirm both.
+    // Advance to 1 second BEFORE the server-returned expires_at (T0+800).
+    // The token is still valid.  A hardcoded +600 path would have
+    // expired the token at T0+600 — this assertion would FAIL on a
+    // stray hardcoded +600 left from the old 600-second TTL.
+    await vi.advanceTimersByTimeAsync(799 * 1000);
+    expect(screen.getByLabelText('Waiting for your CLI')).toBeInTheDocument();
+    expect(screen.queryByText(/link expired/i)).not.toBeInTheDocument();
+
+    // Advance PAST expires_at. The token must now be expired.
+    // The setTimeout(..., 800000) fires, setExpired(true) runs,
+    // and React re-renders synchronously.
+    await vi.advanceTimersByTimeAsync(2000);
+    // The DOM is now updated — getByText is synchronous.
+    await screen.findByText(/link expired/i);
+
+    // Honesty copy says "30 minutes", not the old "10 minutes".
     const thirtyMinElements = screen.getAllByText(/valid for about 30 minutes/i);
     expect(thirtyMinElements.length).toBeGreaterThanOrEqual(2);
     // The expiry message specifically:
     expect(
       screen.getByText(/prompt is valid for about 30 minutes and this one lapsed/i),
     ).toBeInTheDocument();
-  }, 15000);
+
+    vi.useRealTimers();
+  });
 });
