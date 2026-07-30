@@ -708,9 +708,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
 
       // Mock the adapter poll: return PENDING first, then the hook transitions.
       const { adapters: adaptersApi } = await import('@/lib/api');
-      let callCount = 0;
       vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
-        callCount++;
         return {
           id: adapterId,
           name: profileName,
