@@ -492,7 +492,7 @@ def _audit_adapter_bind(
     audit_db_path = daemon_home() / "runtime-audit.db"
     db = Database(audit_db_path)
     try:
-        db.insert_audit_log(
+        db.insert_audit_log_uncommitted(
             task_id=f"executor:{profile_name}",
             agent=actor,
             action="executor_registered",
@@ -502,6 +502,7 @@ def _audit_adapter_bind(
                 "workspace_adapter_id": workspace_adapter,
             },
         )
+        db.commit()
     finally:
         db.close()
 

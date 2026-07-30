@@ -1100,15 +1100,32 @@ class TestRaceSafety:
         registry = _reg()
         pre_in_memory = registry.get_profile(profile_name)
 
-        # Force the audit write inside _audit_adapter_bind to fail.
-        # The function imports Database from runtime.infrastructure.database.
+        # Inject a failure AFTER the audit INSERT statement but BEFORE
+        # the explicit commit() in _audit_adapter_bind.  The production
+        # code calls insert_audit_log_uncommitted() + commit() in sequence;
+        # the patch executes the original INSERT (row is in the uncommitted
+        # transaction) then raises — the DB close in the finally block
+        # rolls back the uncommitted row automatically.
         from runtime.infrastructure import database as infra_db
-        original_insert = infra_db.Database.insert_audit_log
+        original_insert_uncommitted = infra_db.Database.insert_audit_log_uncommitted
 
-        def _failing_insert(self, task_id, agent, action, payload=None):
-            raise OSError("simulated audit write failure")
+        def _insert_then_raise(self, task_id, agent, action, payload=None):
+            # Execute the real INSERT — row is in the transaction, not committed.
+            rowid = original_insert_uncommitted(self, task_id, agent, action, payload)
+            # Simulate a post-insert failure (e.g. disk full, connection lost).
+            raise RuntimeError("simulated post-insert audit failure")
 
-        monkeypatch.setattr(infra_db.Database, "insert_audit_log", _failing_insert)
+        monkeypatch.setattr(
+            infra_db.Database, "insert_audit_log_uncommitted", _insert_then_raise
+        )
+
+        # Snapshot pre-request audit rows.
+        from runtime.runtime import daemon_home
+        pre_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
+        try:
+            pre_audit_rows = pre_audit_db.get_audit_logs(f"executor:{profile_name}")
+        finally:
+            pre_audit_db.close()
 
         try:
             resp = mc.post(
@@ -1131,8 +1148,22 @@ class TestRaceSafety:
             assert post_in_memory == pre_in_memory, (
                 f"In-memory profile not restored after audit failure: {post_in_memory} vs {pre_in_memory}"
             )
+
+            # NO audit residue — the uncommitted INSERT was rolled back.
+            post_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
+            try:
+                post_audit_rows = post_audit_db.get_audit_logs(f"executor:{profile_name}")
+                assert len(post_audit_rows) == len(pre_audit_rows), (
+                    f"Audit residue after rollback: pre={len(pre_audit_rows)}, "
+                    f"post={len(post_audit_rows)}"
+                )
+            finally:
+                post_audit_db.close()
         finally:
-            monkeypatch.setattr(infra_db.Database, "insert_audit_log", original_insert)
+            monkeypatch.setattr(
+                infra_db.Database, "insert_audit_log_uncommitted",
+                original_insert_uncommitted
+            )
 
     def test_re_registration_rejected_when_profile_is_bound(
         self, app_and_client, route_setup, token_store
@@ -1424,17 +1455,32 @@ class TestRaceSafety:
                 ExecutorRegistry, "replace_custom_profile", original_replace
             )
 
-        # --- Path B: audit commit failure ---
+        # --- Path B: post-insert audit failure ---
+        # Inject AFTER the audit INSERT statement but BEFORE the explicit
+        # commit().  The production code calls insert_audit_log_uncommitted()
+        # + commit(); the patch executes the real INSERT then raises — the
+        # DB close in the finally block rolls back the uncommitted row.
         pre_profiles_b = dict(load_runtime_profiles())
         pre_in_memory_b = registry.get_profile(profile_name)
 
         from runtime.infrastructure import database as infra_db
-        original_insert = infra_db.Database.insert_audit_log
-        def _failing_audit(self, task_id, agent, action, payload):
-            if action == "executor_registered":
-                raise RuntimeError("simulated audit failure")
-            return original_insert(self, task_id, agent, action, payload)
-        monkeypatch.setattr(infra_db.Database, "insert_audit_log", _failing_audit)
+        from runtime.runtime import daemon_home
+        original_insert_uncommitted = infra_db.Database.insert_audit_log_uncommitted
+
+        def _insert_then_raise(self, task_id, agent, action, payload=None):
+            rowid = original_insert_uncommitted(self, task_id, agent, action, payload)
+            raise RuntimeError("simulated post-insert audit failure in combo test")
+
+        monkeypatch.setattr(
+            infra_db.Database, "insert_audit_log_uncommitted", _insert_then_raise
+        )
+
+        # Snapshot pre-request audit rows.
+        pre_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
+        try:
+            pre_audit_rows = pre_audit_db.get_audit_logs(f"executor:{profile_name}")
+        finally:
+            pre_audit_db.close()
 
         try:
             resp = mc.post(
@@ -1450,8 +1496,22 @@ class TestRaceSafety:
                 assert post_profiles_b[profile_name] == pre_profiles_b.get(profile_name)
             # In-memory residue check.
             assert registry.get_profile(profile_name) == pre_in_memory_b
+
+            # NO audit residue — the uncommitted INSERT was rolled back.
+            post_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
+            try:
+                post_audit_rows = post_audit_db.get_audit_logs(f"executor:{profile_name}")
+                assert len(post_audit_rows) == len(pre_audit_rows), (
+                    f"Audit residue after combo-rollback: pre={len(pre_audit_rows)}, "
+                    f"post={len(post_audit_rows)}"
+                )
+            finally:
+                post_audit_db.close()
         finally:
-            monkeypatch.setattr(infra_db.Database, "insert_audit_log", original_insert)
+            monkeypatch.setattr(
+                infra_db.Database, "insert_audit_log_uncommitted",
+                original_insert_uncommitted
+            )
 
     def test_register_rejected_with_bound_profile_via_monkeypatch(
         self, app_and_client, route_setup, token_store, monkeypatch
@@ -1478,19 +1538,28 @@ class TestRaceSafety:
 
         # Hook into acquire_store_lock in custom_adapter_registry.
         # This is the exact production lock boundary that serializes
-        # registration vs bind.
+        # registration vs bind — custom_adapter_registry imports
+        # acquire_store_lock directly, so we must patch the imported
+        # symbol (car.acquire_store_lock), NOT the adapter_store module.
         import runtime.orchestrator.custom_adapter_registry as car
-        import runtime.orchestrator.adapter_store as astr
-        original_acquire = astr.acquire_store_lock
+        original_acquire = car.acquire_store_lock
         bind_done = threading.Event()
         rereg_allowed = threading.Event()
+        hook_entered = threading.Event()  # prove the hook was entered
 
         def _hooked_acquire():
+            hook_entered.set()
             bind_done.wait(timeout=30)
             rereg_allowed.wait(timeout=30)
             original_acquire()
 
-        monkeypatch.setattr(astr, "acquire_store_lock", _hooked_acquire)
+        monkeypatch.setattr(car, "acquire_store_lock", _hooked_acquire)
+
+        # Record pre-request state for audit / registry assertions.
+        pre_profiles = dict(load_runtime_profiles())
+        from runtime.orchestrator.executor_registry import get_registry as _reg
+        registry = _reg()
+        pre_in_memory = registry.get_profile(profile_name)
 
         outcomes: dict[str, int] = {}
 
@@ -1532,7 +1601,14 @@ class TestRaceSafety:
         t_bind.join(timeout=30)
         t_rereg.join(timeout=30)
 
-        monkeypatch.setattr(astr, "acquire_store_lock", original_acquire)
+        monkeypatch.setattr(car, "acquire_store_lock", original_acquire)
+
+        # Prove the hook was actually entered (the ordering was forced).
+        assert hook_entered.is_set(), (
+            "Hook was never entered — the patch on acquire_store_lock "
+            "did not reach the production registration path.  Check "
+            "that the patch targets custom_adapter_registry.acquire_store_lock."
+        )
 
         # Bind must succeed (ran first)
         assert outcomes.get("bind") == 200, (
@@ -1543,13 +1619,39 @@ class TestRaceSafety:
             f"Re-registration should be rejected, got {outcomes}"
         )
 
-        # Final state: approved adapter + bound profile
+        # Final state: approved adapter remains approved.
         final_entry = load_adapters().get(adapter_id)
         assert final_entry is not None
         assert final_entry.status == "approved"
+
+        # Durable runtime profile is bound — command_adapter_id
+        # references the approved adapter.
         profiles = load_runtime_profiles()
         assert profile_name in profiles
         assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
+
+        # In-memory registry reflects the bound profile.
+        post_in_memory = registry.get_profile(profile_name)
+        assert post_in_memory is not None, (
+            f"In-memory registry missing profile {profile_name!r}"
+        )
+        assert post_in_memory.command_adapter_id == f"custom-adapter:{adapter_id}"
+
+        # Audit row for the bind exists.
+        from runtime.runtime import daemon_home
+        from runtime.infrastructure.database import Database
+        audit_db = Database(daemon_home() / "runtime-audit.db")
+        try:
+            rows = audit_db.get_audit_logs(f"executor:{profile_name}")
+            assert len(rows) >= 1, (
+                f"No executor_registered audit row for {profile_name}"
+            )
+            latest = rows[-1]
+            assert latest["action"] == "executor_registered"
+            payload = latest.get("payload", {}) or {}
+            assert payload.get("adapter_id") == adapter_id
+        finally:
+            audit_db.close()
 
 
 # ---------------------------------------------------------------------------
