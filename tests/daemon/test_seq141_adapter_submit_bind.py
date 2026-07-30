@@ -1333,6 +1333,11 @@ class TestRaceSafety:
             app, master_token, store, route_setup, profile_name
         )
 
+        # Load the approved adapter entry for exact workspace_adapter assertions.
+        adapter_entry = load_adapters().get(adapter_id)
+        assert adapter_entry is not None, "Approved adapter entry must exist"
+        assert adapter_entry.status == "approved"
+
         # Stage: pre-existing legacy/simple custom profile (command +
         # argv_template, not command_adapter_id).
         # The command and argv_template[0] must be the same executable name.
@@ -1387,11 +1392,13 @@ class TestRaceSafety:
         post_profiles = load_runtime_profiles()
         assert profile_name in post_profiles
         assert post_profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
+        assert post_profiles[profile_name]["workspace_adapter_id"] == adapter_entry.workspace_adapter
 
         # In-memory registry: profile is adapter-backed.
         post_in_memory = registry.get_profile(profile_name)
         assert post_in_memory is not None
         assert post_in_memory.command_adapter_id == f"custom-adapter:{adapter_id}"
+        assert post_in_memory.workspace_adapter_id == adapter_entry.workspace_adapter
         assert post_in_memory.kind == "custom"
 
         # Audit post-snapshot: globally unfiltered, proves exactly one
@@ -1415,9 +1422,14 @@ class TestRaceSafety:
         )
         assert new_row["action"] == "executor_registered"
         payload = new_row.get("payload", {}) or {}
-        assert payload.get("adapter_id") == adapter_id
-        assert payload.get("command_adapter_id") == f"custom-adapter:{adapter_id}"
-        assert payload.get("workspace_adapter_id") is not None
+        expected_payload = {
+            "adapter_id": adapter_id,
+            "command_adapter_id": f"custom-adapter:{adapter_id}",
+            "workspace_adapter_id": adapter_entry.workspace_adapter,
+        }
+        assert payload == expected_payload, (
+            f"Unexpected audit payload: {payload!r}"
+        )
 
         # All pre-existing rows are identical.
         assert post_all_rows[:pre_count] == pre_all_rows, (
@@ -1664,6 +1676,7 @@ class TestRaceSafety:
         profiles = load_runtime_profiles()
         assert profile_name in profiles
         assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
+        assert profiles[profile_name]["workspace_adapter_id"] == adapter_entry.workspace_adapter
 
         # In-memory registry reflects the bound profile.
         post_in_memory = registry.get_profile(profile_name)
@@ -1671,6 +1684,7 @@ class TestRaceSafety:
             f"In-memory registry missing profile {profile_name!r}"
         )
         assert post_in_memory.command_adapter_id == f"custom-adapter:{adapter_id}"
+        assert post_in_memory.workspace_adapter_id == adapter_entry.workspace_adapter
 
         # Audit log: globally unfiltered snapshot proves exactly one canonical
         # executor:<profile_name> / executor_registered row was added while all
@@ -1696,9 +1710,14 @@ class TestRaceSafety:
         )
         assert new_row["action"] == "executor_registered"
         payload = new_row.get("payload", {}) or {}
-        assert payload.get("adapter_id") == adapter_id
-        assert payload.get("command_adapter_id") == f"custom-adapter:{adapter_id}"
-        assert payload.get("workspace_adapter_id") is not None
+        expected_payload = {
+            "adapter_id": adapter_id,
+            "command_adapter_id": f"custom-adapter:{adapter_id}",
+            "workspace_adapter_id": adapter_entry.workspace_adapter,
+        }
+        assert payload == expected_payload, (
+            f"Unexpected audit payload: {payload!r}"
+        )
 
         # All pre-existing rows are identical.
         assert post_all_rows[:pre_audit_count] == pre_audit_rows, (
