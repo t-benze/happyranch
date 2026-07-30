@@ -506,6 +506,68 @@ def test_get_recall_payload_missing_task_returns_none(db):
     assert db.get_recall_payload("TASK-404") is None
 
 
+def test_get_recall_payload_includes_verdict_from_task_results(db):
+    """get_recall_payload exposes the structured verdict from the latest task_results row."""
+    db.insert_task(TaskRecord(id="TASK-V1", brief="review task"))
+    db.insert_task_result(
+        task_id="TASK-V1", agent="code_reviewer", session_id="sess-1",
+        status="completed", output_summary="Verdict: APPROVE\n",
+        confidence_score=90, verdict="APPROVE",
+    )
+    payload = db.get_recall_payload("TASK-V1")
+    assert payload is not None
+    assert payload["verdict"] == "APPROVE"
+
+
+def test_get_recall_payload_null_verdict_when_no_task_results(db):
+    """When no task_results rows exist, verdict is None in the payload."""
+    db.insert_task(TaskRecord(id="TASK-V2", brief="no completion"))
+    payload = db.get_recall_payload("TASK-V2")
+    assert payload is not None
+    assert "verdict" in payload
+    assert payload["verdict"] is None
+
+
+def test_get_recall_payload_null_verdict_when_result_has_no_verdict(db):
+    """When the latest task_results row has no verdict column populated, verdict is None."""
+    db.insert_task(TaskRecord(id="TASK-V3", brief="legacy task"))
+    db.insert_task_result(
+        task_id="TASK-V3", agent="old_agent", session_id="sess-2",
+        status="completed", output_summary="Some work done.",
+        confidence_score=85,
+        # No verdict passed — simulates a legacy row before the column existed
+    )
+    payload = db.get_recall_payload("TASK-V3")
+    assert payload is not None
+    assert "verdict" in payload
+    assert payload["verdict"] is None
+
+
+def test_get_recall_payload_deterministic_latest_verdict(db):
+    """The verdict comes from the latest task_results row (deterministic: ORDER BY id DESC).
+
+    When multiple task_results rows exist, the one with the highest id is 'latest'.
+    """
+    db.insert_task(TaskRecord(id="TASK-V4", brief="retried task"))
+    # First result: FAIL
+    db.insert_task_result(
+        task_id="TASK-V4", agent="qa_engineer", session_id="sess-3",
+        status="completed", output_summary="Verdict: FAIL\n",
+        confidence_score=50, verdict="FAIL",
+    )
+    # Second result (higher id): PASS
+    db.insert_task_result(
+        task_id="TASK-V4", agent="qa_engineer", session_id="sess-4",
+        status="completed", output_summary="Verdict: PASS\n",
+        confidence_score=90, verdict="PASS",
+    )
+    payload = db.get_recall_payload("TASK-V4")
+    assert payload is not None
+    assert payload["verdict"] == "PASS", (
+        f"Expected latest verdict PASS, got {payload['verdict']!r}"
+    )
+
+
 def test_update_task_writes_block_kind_and_note(tmp_path):
     from runtime.infrastructure.database import Database
     from runtime.models import TaskRecord, TaskStatus, BlockKind

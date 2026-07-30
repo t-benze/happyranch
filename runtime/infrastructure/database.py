@@ -1941,6 +1941,11 @@ class Database:
 
         ``children`` is the list of direct child task ids — the route layer
         promotes them to full payloads when ``tree=true``.
+
+        ``verdict`` is the structured verdict from the latest persisted
+        ``task_results`` row (deterministic: ``ORDER BY id DESC LIMIT 1``,
+        same ordering as ``get_latest_completion_report``).  Absent / ``None``
+        when no result row exists or the latest row has no verdict.
         """
         task = self.get_task(task_id)
         if task is None:
@@ -1955,6 +1960,15 @@ class Database:
             if hasattr(task.completed_at, "isoformat")
             else task.completed_at
         )
+        # Latest structured verdict from persisted task_results, if any.
+        verdict: str | None = None
+        latest = self._conn.execute(
+            "SELECT verdict FROM task_results WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if latest is not None:
+            verdict = latest["verdict"] if "verdict" in latest.keys() else None
         return {
             "task_id": task.id,
             "parent_task_id": task.parent_task_id,
@@ -1966,6 +1980,7 @@ class Database:
             "completed_at": completed_at,
             "output_summary": task.note,
             "output_dir": task.final_output_dir,
+            "verdict": verdict,
             "children": self.get_children(task.id),
         }
 

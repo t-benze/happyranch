@@ -405,18 +405,36 @@ def _gh_perform_merge(repo: str, pr_number: int, merge_method: str) -> MergeResu
 
 
 def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
-    """Fetch a task's verdict via `happyranch recall`.
+    """Fetch a task's verdict via ``happyranch recall``.
 
-    Calls happyranch recall --org <org> <task_id> and parses the verdict
-    from the completion report output.  Returns the verdict string, or
-    raises RuntimeError on failure.
+    Calls ``happyranch recall --org <org> <task_id>`` and parses the
+    completion-report output.  Returns the verdict string, or raises
+    RuntimeError on failure.
 
-    Parsing strategy (in priority order):
-    1. Parse entire stdout as a single JSON blob.
-       a. If it has a top-level ``verdict`` field, return it.
-       b. If it has an ``output_summary`` field, extract the ``Verdict:`` line.
-    2. Fall back to line-by-line JSON parsing (legacy).
-    3. Fall back to line-by-line ``verdict:`` prefix search (legacy).
+    Extraction contract (hardened; KB ``guarded-merge-verdict-extraction``):
+
+    1. **Structured-verdict evidence first.**  Parse the entire stdout as a
+       single JSON blob.  If the top-level ``verdict`` field is present:
+       * It MUST be a non-empty string — any other type fails closed.
+       * If ``output_summary`` also carries an anchored ``Verdict:`` line
+         and the two disagree, fail closed (no silent fallback around
+         conflicting evidence).
+       * Otherwise return the structured verdict string.
+
+    2. **Anchored legacy prose fallback.**  If there is no top-level
+       ``verdict`` field, extract the ``Verdict:`` line from
+       ``output_summary`` using the anchored ``^Verdict:`` pattern (the
+       KB-contracted ``Verdict: PASS|FAIL|REVISE`` form on its own line).
+
+    3. **No permissive unanchored scraping.**  There is no line-by-line JSON
+       fallback, no bare ``verdict:`` prefix search, and no unanchored
+       ``Verdict:`` match — the two paths above (structured field, anchored
+       line) are the only extraction modes.  Anything else fails closed.
+
+    4. **No structured evidence fallback.**  When a structured verdict is
+       present but malformed (non-string, empty, or disagreeing with
+       anchored prose), extraction fails closed — the engine does not fall
+       back to prose for a row that claims structured data.
     """
     import json
     import re
@@ -435,36 +453,48 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
 
     stdout = result.stdout.strip()
 
-    # ── 1. Parse entire stdout as a single JSON blob ──
+    # ── Parse entire stdout as a single JSON blob ──
     try:
         data = json.loads(stdout)
-        if isinstance(data, dict):
-            # 1a. Top-level verdict field (when present)
-            if "verdict" in data:
-                return data["verdict"]
-            # 1b. Verdict embedded in output_summary (real-world shape)
-            output_summary = data.get("output_summary", "")
-            if output_summary:
-                m = re.search(r"^Verdict:\s*(.+)$", output_summary, re.MULTILINE)
-                if m:
-                    return m.group(1).strip()
     except (json.JSONDecodeError, TypeError, ValueError):
-        pass
+        raise RuntimeError(
+            f"Could not parse recall output as JSON for {task_id}"
+        )
 
-    # ── 2-3. Legacy fallbacks for non-JSON output ──
-    for line in stdout.splitlines():
-        stripped = line.strip()
-        # Try to parse as JSON (legacy)
-        try:
-            data = json.loads(stripped)
-            if isinstance(data, dict) and "verdict" in data:
-                return data["verdict"]
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # Fallback: look for "verdict: <value>" pattern (legacy)
-        if stripped.lower().startswith("verdict:"):
-            return stripped.split(":", 1)[1].strip()
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"Recall output for {task_id} is not a JSON object"
+        )
 
+    structured_verdict = data.get("verdict")
+    output_summary = data.get("output_summary", "") or ""
+
+    # Extract anchored legacy verdict line from output_summary, if present.
+    legacy_match = re.search(r"^Verdict:\s*(.+)$", output_summary, re.MULTILINE)
+    legacy_verdict = legacy_match.group(1).strip() if legacy_match else None
+
+    # ── 1. Structured verdict evidence (primary) ──
+    if structured_verdict is not None:
+        # Fail closed: structured verdict must be a non-empty string.
+        if not isinstance(structured_verdict, str) or not structured_verdict.strip():
+            raise RuntimeError(
+                f"Structured verdict for {task_id} is not a string: {type(structured_verdict).__name__}"
+            )
+        structured_verdict = structured_verdict.strip()
+        # Fail closed: disagreement between structured verdict and anchored
+        # legacy prose → conflict, do NOT proceed.
+        if legacy_verdict is not None and legacy_verdict != structured_verdict:
+            raise RuntimeError(
+                f"Structured verdict {structured_verdict!r} disagrees with "
+                f"anchored legacy verdict {legacy_verdict!r} in output_summary for {task_id}"
+            )
+        return structured_verdict
+
+    # ── 2. Anchored legacy prose fallback ──
+    if legacy_verdict is not None:
+        return legacy_verdict
+
+    # ── 3. No extractable evidence → fail closed ──
     raise RuntimeError(
         f"Could not extract {verdict_key} verdict from recall output for {task_id}"
     )
