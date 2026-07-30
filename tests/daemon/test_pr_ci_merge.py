@@ -889,3 +889,49 @@ class TestGuardedMergeLegacyEvidenceRejection:
         )
         assert verdict.verdict == "merged"
         assert call_log == ["squash"]
+
+    def test_legacy_pass_plus_malformed_no_merge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Valid legacy PASS + malformed Verdict: APPROVED → github_error, perform_merge NOT called."""
+        recall_out = _mock_recall_output("Verdict: PASS\nVerdict: APPROVED\n\nMixed evidence.")
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-MIX", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_structured_pass_plus_malformed_no_merge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Structured PASS + malformed Verdict: APPROVED → github_error, perform_merge NOT called."""
+        recall_out = _mock_recall_output("Verdict: APPROVED\n\nNon-standard label.", verdict="PASS")
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-SMIX", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log

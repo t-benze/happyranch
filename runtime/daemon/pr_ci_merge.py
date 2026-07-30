@@ -442,6 +442,14 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
        present but malformed (non-string, empty, or disagreeing with
        anchored prose), extraction fails closed — the engine does not fall
        back to prose for a row that claims structured data.
+
+    5. **Malformed Verdict: candidate lines fail closed unconditionally.**
+       Any physical line starting with ``Verdict:`` that does NOT match the
+       strict ``PASS|FAIL|REVISE`` pattern is a malformed candidate.  A
+       single malformed line fails closed regardless of whether valid legacy
+       or structured evidence also exists.  This covers mixed-evidence
+       payloads (e.g. ``Verdict: PASS\nVerdict: APPROVED``) and structured
+       PASS paired with a malformed legacy candidate.
     """
     import json
     import re
@@ -486,6 +494,32 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
         m = _LEGACY_RE.match(line)
         if m:
             legacy_candidates.append(m.group(1))
+
+    # ── Reject malformed Verdict: candidate lines ──
+    # Any physical line starting with "Verdict:" (case-sensitive) that does
+    # NOT match the strict PASS|FAIL|REVISE pattern AND does NOT equal an
+    # existing structured verdict is a malformed candidate.
+    # Per KB contract: ANY malformed candidate fails closed unconditionally —
+    # regardless of whether valid legacy or structured evidence is also present.
+    # This catches e.g. "Verdict: APPROVED", "Verdict: PASS\nVerdict: APPROVED",
+    # and structured PASS + "Verdict: APPROVED".
+    # Lines like "Verdict: APPROVE" where structured verdict also equals
+    # "APPROVE" are NOT malformed — they agree with the structured evidence.
+    _MALFORMED_LINE_RE = re.compile(r"^Verdict:")
+    malformed_lines: list[str] = []
+    for line in output_summary.splitlines():
+        if _MALFORMED_LINE_RE.match(line) and not _LEGACY_RE.match(line):
+            stripped = line.strip()
+            # Not malformed if it equals the structured verdict (real-world
+            # reviewer output like "Verdict: APPROVE" with structured="APPROVE").
+            if isinstance(structured_verdict, str) and stripped == f"Verdict: {structured_verdict}":
+                continue
+            malformed_lines.append(stripped)
+    if malformed_lines:
+        raise RuntimeError(
+            f"Malformed Verdict candidate(s) in output_summary for {task_id}: "
+            f"{malformed_lines}"
+        )
 
     legacy_verdict: str | None = None
     if len(legacy_candidates) == 1:

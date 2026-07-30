@@ -414,7 +414,7 @@ def test_recall_fetch_verdict_legacy_newline_split_rejected() -> None:
         mock_run.return_value = MagicMock(
             returncode=0, stdout=recall_json, stderr=""
         )
-        with pytest.raises(RuntimeError, match="Could not extract.*verdict"):
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
             _recall_fetch_verdict("happyranch", "TASK-NLSPLIT", "qa")
 
 
@@ -468,7 +468,7 @@ def test_recall_fetch_verdict_legacy_case_variant_rejected() -> None:
         mock_run.return_value = MagicMock(
             returncode=0, stdout=recall_json, stderr=""
         )
-        with pytest.raises(RuntimeError, match="Could not extract.*verdict"):
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
             _recall_fetch_verdict("happyranch", "TASK-CASE", "qa")
 
 
@@ -486,8 +486,53 @@ def test_recall_fetch_verdict_legacy_malformed_label_rejected() -> None:
         mock_run.return_value = MagicMock(
             returncode=0, stdout=recall_json, stderr=""
         )
-        with pytest.raises(RuntimeError, match="Could not extract.*verdict"):
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
             _recall_fetch_verdict("happyranch", "TASK-MALF", "qa")
+
+
+def test_recall_fetch_verdict_legacy_pass_plus_malformed_rejected() -> None:
+    """Valid legacy PASS + malformed Verdict: APPROVED → reject (fail closed).
+
+    Per KB contract: ANY malformed Verdict: candidate line fails closed
+    unconditionally, even when a valid legacy verdict is also present.
+    """
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-MIX",
+        "status": "completed",
+        "output_summary": "Verdict: PASS\nVerdict: APPROVED\n\nMixed evidence.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
+            _recall_fetch_verdict("happyranch", "TASK-MIX", "qa")
+
+
+def test_recall_fetch_verdict_structured_pass_plus_malformed_rejected() -> None:
+    """Structured verdict PASS + malformed Verdict: APPROVED → fail closed.
+
+    Per KB contract: malformed legacy candidates fail closed even when
+    a valid structured verdict exists.
+    """
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-SMIX",
+        "status": "completed",
+        "verdict": "PASS",
+        "output_summary": "Verdict: APPROVED\n\nNon-standard label.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        with pytest.raises(RuntimeError, match="Malformed Verdict candidate"):
+            _recall_fetch_verdict("happyranch", "TASK-SMIX", "qa")
 
 
 def test_recall_fetch_verdict_legacy_horizontal_whitespace_ok() -> None:
