@@ -209,10 +209,11 @@ export function useRuntimeConnect({
   return { state, name, token, expired, mint, start, regenerate, back };
 }
 
-/** Build the adapter-backed connect prompt (THR-107 seq141). The prompt
- *  directs the candidate CLI to create a v1 AdapterInput/AdapterOutput wrapper
- *  executable, run conformance check-ins, and submit it via
- *  POST /runtime/adapters/submit with the scoped adapter-purpose token.
+/** Build the adapter-backed connect prompt (THR-107 seq184). The prompt
+ *  directs the candidate CLI to FETCH the canonical contract reference
+ *  FIRST (a self-contained v1 daemon endpoint with the authoritative
+ *  AdapterInput/AdapterOutput JSON Schemas), build a v1 wrapper, complete
+ *  the conformance challenge, and submit via POST /runtime/adapters/submit.
  *  The adapter becomes PENDING; this screen updates live. */
 export function buildAdapterConnectPrompt(
   name: string,
@@ -225,28 +226,43 @@ export function buildAdapterConnectPrompt(
     `# Do all of this in one run, then stop. Send this header on every request:`,
     `#   Authorization: Bearer ${token}`,
     ``,
-    `# 1. Create a v1 adapter wrapper executable that reads AdapterInput JSON`,
-    `#    from stdin and writes AdapterOutput JSON to stdout. It must:`,
-    `#    - Accept a v1 AdapterInput JSON object on stdin`,
-    `#    - Invoke your CLI with the prompt, workspace, and timeout from the input`,
-    `#    - Collect your CLI's output and wrap it in a v1 AdapterOutput JSON object`,
-    `#    - Write exactly one AdapterOutput JSON object to stdout, then exit`,
-    `#    The AdapterInput/AdapterOutput contract is defined in the runtime:`,
-    `#    runtime/orchestrator/adapter_contract.py`,
+    `# 0. FETCH the canonical contract reference FIRST:`,
+    `#    GET ${base}/runtime/adapters/contract-reference`,
+    `#    This returns the authoritative v1 AdapterInput and AdapterOutput`,
+    `#    JSON Schemas (generated from the shipping Pydantic models), plus`,
+    `#    version, output rules, and submission metadata. Follow these`,
+    `#    schemas — the server-derived schema is canonical.`,
+    ``,
+    `# 1. Create a v1 adapter wrapper executable. Exact I/O contract:`,
+    `#    - Read exactly one v1 AdapterInput JSON object from stdin`,
+    `#    - Invoke your CLI with truthful prompt, workspace, and timeout`,
+    `#      context from the input`,
+    `#    - Write exactly one v1 AdapterOutput JSON object to stdout`,
+    `#    - No non-JSON diagnostics on stdout`,
+    `#    - Use stderr for all diagnostics, logging, and errors`,
+    `#    - Exit after writing the output (single-invocation wrapper)`,
+    `#    Max output: 1 MB. Follow the schemas from step 0 exactly.`,
     ``,
     `# 2. Complete the conformance challenge — POST each step id to`,
     `#    ${base}/executors/runtime/conformance-checkin`,
     `#    body {"step_id":"<id>"} for each of:`,
     `#      workspace_access   loopback_reachable   cli_callback`,
-    `#    then post emit_envelope with your adapter's sample output.`,
+    `#    Then for emit_envelope, POST a sample legacy v1 result-envelope`,
+    `#    (required by the registration token challenge — this is NOT an`,
+    `#    AdapterOutput sample):`,
+    `#      body {"step_id":"emit_envelope",`,
+    `#           "envelope":{"envelope_version":1,`,
+    `#                       "token_usage":{"input_tokens":1,"output_tokens":1}}}`,
     ``,
     `# 3. Submit your adapter — POST to`,
     `#    ${base}/runtime/adapters/submit`,
     `#    body {"executable":"<absolute-path-to-wrapper>","version":"1.0.0",`,
     `#         "capabilities":["token_metering"],"workspace_adapter":"pi"}`,
     ``,
-    `# After submission, the adapter is PENDING founder approval.`,
-    `# Once approved, it will be bound to the "${name}" profile automatically.`,
+    `# Submission creates ONLY the exact PENDING adapter. Founder approval`,
+    `# is a separate step. After approval, the existing authenticated`,
+    `# management bind links the adapter to the "${name}" profile.`,
+    `# No auto-approval, no token disclosure beyond this prompt.`,
     ``,
     `# This token is valid for about 10 minutes. This screen updates live.`,
   ].join('\n');

@@ -55,8 +55,12 @@ executor profiles with ``command_adapter_id: custom-adapter:<id>`` bind to exact
 one registered, conformance-passed, founder-APPROVED custom adapter executable.
 The CustomAdapterExecutor launches the adapter as a subprocess, passing a v1
 ``AdapterInput`` JSON on stdin and parsing a v1 ``AdapterOutput`` JSON from stdout.
-The stable v1 contract (``runtime/orchestrator/adapter_contract.py``) is the
-authoritative definition. Key invariants:
+The stable v1 contract is defined by the Pydantic models at
+``runtime/orchestrator/adapter_contract.py``; the **canonical contract surface
+for external consumers** (candidates implementing adapter wrappers) is the
+versioned ``GET /api/v1/runtime/adapters/contract-reference`` endpoint
+(THR-107 seq184), which returns JSON Schemas generated from those models at
+runtime. The server-derived schema is canonical. Key invariants:
 
 - **Registration → conformance → founder approval:** a custom adapter executable
   is registered with its absolute path, SHA-256 hash, version, and capabilities;

@@ -1091,6 +1091,117 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
     expect(screen.getByText(/your custom cli is registered/i)).toBeInTheDocument();
   }, 15000);
+
+  // ── seq184 contract-reference prompt tests ──────────────────────
+
+  test('seq184: prompt includes contract-reference URL, not source-only path', async () => {
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({
+          token: 'hr_tok_SETTINGS_SEQ184',
+          expires_at: Math.floor(Date.now() / 1000) + 600,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'seq184-test');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+
+    const promptEl = document.querySelector('pre');
+    expect(promptEl).not.toBeNull();
+    const promptText = promptEl!.textContent || '';
+
+    // Contract reference
+    expect(promptText).toContain('/runtime/adapters/contract-reference');
+    expect(promptText).toContain('FETCH the canonical contract reference FIRST');
+    // Does NOT mention source-only path
+    expect(promptText).not.toContain('runtime/orchestrator/adapter_contract.py');
+  });
+
+  test('seq184: prompt includes truthful PENDING-only lifecycle', async () => {
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({
+          token: 'hr_tok_SETTINGS_SEQ184',
+          expires_at: Math.floor(Date.now() / 1000) + 600,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'lifecycle-test');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+
+    expect(promptText).toContain('exact PENDING adapter');
+    expect(promptText).toContain('Founder approval');
+    expect(promptText).toContain('No auto-approval');
+  });
+
+  test('seq184: prompt includes exact I/O constraints', async () => {
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({
+          token: 'hr_tok_SETTINGS_SEQ184',
+          expires_at: Math.floor(Date.now() / 1000) + 600,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'io-test');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+
+    expect(promptText).toContain('exactly one v1 AdapterInput JSON object from stdin');
+    expect(promptText).toContain('exactly one v1 AdapterOutput JSON object to stdout');
+    expect(promptText).toContain('stderr for all diagnostics');
+    expect(promptText).toContain('Max output: 1 MB');
+  });
+
+  test('seq184: prompt distinguishes emit_envelope from AdapterOutput', async () => {
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({
+          token: 'hr_tok_SETTINGS_SEQ184',
+          expires_at: Math.floor(Date.now() / 1000) + 600,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'envelope-test');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+
+    expect(promptText).toContain('required by the registration token challenge');
+    expect(promptText).toContain('NOT an');
+  });
 });
 
 describe('SettingsPage — keyboard shortcuts', () => {

@@ -331,6 +331,13 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(executors.router, prefix="/api/v1/orgs/{slug}", tags=["executors"])
     app.include_router(executors.runtime_router, prefix="/api/v1", tags=["executors-runtime"])
     app.include_router(executor_binaries.router, prefix="/api/v1", tags=["executor-binaries"])
+    # seq184 contract-reference endpoint — isolated from master-bearer auth;
+    # accepts ONLY registration-token auth (loopback + hrreg_ token, adapter-purpose).
+    # Read-only; does not consume the token.
+    # IMPORTANT: registered BEFORE adapters.router to ensure the specific
+    # /runtime/adapters/contract-reference path takes priority over the
+    # master-bearer GET /runtime/adapters/{adapter_id} catch-all on adapters.router.
+    app.include_router(adapters.contract_reference_router, prefix="/api/v1", tags=["adapters"])
     app.include_router(adapters.router, prefix="/api/v1", tags=["adapters"])
     # seq141 submission endpoint — isolated from master-bearer auth;
     # accepts ONLY registration-token auth (loopback + hrreg_ token).

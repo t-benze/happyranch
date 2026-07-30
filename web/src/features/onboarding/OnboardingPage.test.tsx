@@ -650,7 +650,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     expect(gen).not.toBeDisabled();
   });
 
-  test('adapter-backed: generated prompt includes adapter-specific conformance and submit route', async () => {
+  test('adapter-backed: generated prompt includes contract-reference URL and submit route', async () => {
     const user = userEvent.setup();
     const profileName = 'onb-adapter-cli';
 
@@ -666,15 +666,76 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     await screen.findByLabelText(/waiting for adapter submission/i);
     expect(screen.queryByText(/You're being connected to HappyRanch/i)).not.toBeInTheDocument();
 
-    // The adapter prompt must include the adapter-submit route and conformance steps
+    // The adapter prompt must include the contract-reference URL and adapter-submit route
     const promptEl = document.querySelector('pre');
     expect(promptEl).not.toBeNull();
     const promptText = promptEl!.textContent || '';
+    // Contract reference — canonical v1 endpoint (seq184)
+    expect(promptText).toContain('/runtime/adapters/contract-reference');
+    expect(promptText).toContain('FETCH the canonical contract reference FIRST');
+    // Submission route
     expect(promptText).toContain('/runtime/adapters/submit');
     expect(promptText).toContain('hr_tok_ONB_TEST');
     // Adapter-backed prompt uses the AdapterInput/AdapterOutput contract
-    // (not the D7A sentinel envelope markers used by legacy generic-CLI).
     expect(promptText).toContain('AdapterInput');
+    // Does NOT mention source-only Python path
+    expect(promptText).not.toContain('runtime/orchestrator/adapter_contract.py');
+  });
+
+  test('adapter-backed: prompt includes truthful lifecycle — PENDING only, no auto-approval', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_LIFECYCLE', expires_at: Date.now() / 1000 + 600 });
+
+    renderPage();
+    await goAdapter(user);
+    await user.type(await screen.findByLabelText(/name this cli/i), 'lc-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+    // PENDING, not auto-approved
+    expect(promptText).toContain('exact PENDING adapter');
+    expect(promptText).toContain('Founder approval');
+    expect(promptText).toContain('No auto-approval');
+  });
+
+  test('adapter-backed: prompt includes exact I/O constraints', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_IO', expires_at: Date.now() / 1000 + 600 });
+
+    renderPage();
+    await goAdapter(user);
+    await user.type(await screen.findByLabelText(/name this cli/i), 'io-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+    // I/O contract details
+    expect(promptText).toContain('exactly one v1 AdapterInput JSON object from stdin');
+    expect(promptText).toContain('exactly one v1 AdapterOutput JSON object to stdout');
+    expect(promptText).toContain('stderr for all diagnostics');
+    expect(promptText).toContain('Max output: 1 MB');
+  });
+
+  test('adapter-backed: prompt distinguishes emit_envelope from adapter submit', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_ENV', expires_at: Date.now() / 1000 + 600 });
+
+    renderPage();
+    await goAdapter(user);
+    await user.type(await screen.findByLabelText(/name this cli/i), 'env-cli');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+    // Legacy emit_envelope is required by registration token challenge, NOT an AdapterOutput
+    expect(promptText).toContain(
+      'required by the registration token challenge',
+    );
+    expect(promptText).toContain('NOT an');
   });
 
   test('adapter-backed: token is minted with adapter purpose and intended profile name', async () => {
