@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Callable
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -23,6 +24,7 @@ from runtime.daemon.pr_ci_merge import (
     MergeableState,
     MergeResult,
     VERDICT_EXIT_CODES,
+    _recall_fetch_verdict,
     guarded_merge,
 )
 from runtime.daemon.pr_ci_waiter import PRState
@@ -720,3 +722,170 @@ def test_guarded_merge_verdict_error_detail() -> None:
     verdict = _merge(perform_merge=bad_merge)
     assert verdict.error_detail is not None
     assert "branch protection" in verdict.error_detail
+
+
+# ── guarded_merge × _recall_fetch_verdict integration: legacy rejection paths ─
+
+import subprocess as _sp
+
+
+def _mock_recall_output(output_summary: str, verdict: str | None = None) -> str:
+    """Build a JSON recall output as returned by `happyranch recall`."""
+    import json
+    payload: dict[str, object] = {
+        "task_id": "TASK-TEST",
+        "status": "completed",
+        "output_summary": output_summary,
+    }
+    if verdict is not None:
+        payload["verdict"] = verdict
+    return json.dumps(payload, indent=2)
+
+
+class TestGuardedMergeLegacyEvidenceRejection:
+    """Prove perform_merge is NOT called for every legacy rejection path."""
+
+    def test_newline_split_legacy_no_merge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Newline-split Verdict:\nPASS → github_error, perform_merge NOT called."""
+        recall_out = _mock_recall_output("Verdict:\nPASS\n\nWork done.")
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-NL", "qa"),
+            perform_merge=track_merge,
+        )
+        # _recall_fetch_verdict raises → guarded_merge catches → github_error
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_duplicate_same_legacy_no_merge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Duplicate identical legacy lines → github_error, perform_merge NOT called."""
+        recall_out = _mock_recall_output("Verdict: PASS\nVerdict: PASS\n\nDone.")
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-DUP", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_conflicting_legacy_no_merge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Conflicting legacy PASS+FAIL → github_error, perform_merge NOT called."""
+        recall_out = _mock_recall_output("Verdict: PASS\nVerdict: FAIL\n\nConflict.")
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-CONF", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_non_pass_legacy_qa_no_merge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Legacy FAIL as QA verdict → merge_guard_qa, perform_merge NOT called."""
+        recall_out = _mock_recall_output("Verdict: FAIL\n\nQA failed.")
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-FAIL", "qa"),
+            perform_merge=track_merge,
+        )
+        # FAIL != PASS → merge_guard_qa
+        assert verdict.verdict == "merge_guard_qa"
+        assert "perform_merge_called" not in call_log
+
+    def test_legacy_single_line_pass_allows_merge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Correct single-line legacy PASS with all other guards green → merged."""
+        recall_out = _mock_recall_output("Verdict: PASS\n\nQA green.")
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append(method)
+            return _result()
+
+        verdict = _merge(
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-PASS", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "merged"
+        assert call_log == ["squash"]
+
+    def test_structured_success_merge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Structured-only verdict (no legacy line) → merged, perform_merge called once."""
+        review_out = _mock_recall_output("Review passed.", verdict="APPROVE")
+        qa_out = _mock_recall_output("QA done.", verdict="PASS")
+        outputs = iter([review_out, qa_out])
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=next(outputs), stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append(method)
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: _recall_fetch_verdict(
+                "happyranch", "TASK-REV", "review"
+            ),
+            fetch_qa_verdict=lambda: _recall_fetch_verdict(
+                "happyranch", "TASK-QA", "qa"
+            ),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "merged"
+        assert call_log == ["squash"]

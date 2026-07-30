@@ -264,26 +264,23 @@ def test_recall_fetch_verdict_no_verdict() -> None:
 
 
 def test_recall_fetch_verdict_real_output_fixture() -> None:
-    """HIGH: _recall_fetch_verdict must parse real happyranch recall output.
+    """_recall_fetch_verdict extracts structured verdict from real recall output.
 
-    The current parser treats each line as standalone JSON and falls back to
-    a 'verdict:' line prefix.  Real recall output is a SINGLE multi-line
-    pretty-printed JSON blob — so line-by-line JSON parsing ALWAYS fails.
-
-    This test uses a fixture COPIED FROM a real `happyranch recall` call
-    (TASK-1496, a code_reviewer task with verdict APPROVE).  The verdict
-    lives in output_summary as 'Verdict: APPROVE'.
+    Real recall output now includes a top-level ``verdict`` field (added in
+    TASK-3739).  The legacy ``Verdict: APPROVE`` line in ``output_summary`` is
+    not in the strict legacy vocabulary (PASS|FAIL|REVISE only), so the
+    structured field is the primary extraction path.
     """
     import json
 
-    # REAL recall output shape — multi-line pretty-printed JSON.
-    # The verdict is "APPROVE", embedded in output_summary.
+    # REAL recall output shape — multi-line pretty-printed JSON with verdict field.
     real_recall_json = json.dumps({
         "task_id": "TASK-1496",
         "parent_task_id": "TASK-1479",
         "assigned_agent": "code_reviewer",
         "brief": "Code-review the REVISE pushed to PR #257 ...",
         "status": "completed",
+        "verdict": "APPROVE",
         "output_summary": "Verdict: APPROVE\n\nSubsystems touched: system assistant A-mode ...",
         "output_dir": None,
         "children": []
@@ -295,14 +292,8 @@ def test_recall_fetch_verdict_real_output_fixture() -> None:
         )
         verdict = _recall_fetch_verdict("happyranch", "TASK-1496", "review")
 
-    # The current parser FAILS here because:
-    # - Line 1 is "{"  → not JSON, not "verdict:"
-    # - Line 2 is `  "task_id": "TASK-1496",` → not a complete JSON object, not "verdict:"
-    # - ... eventually hits RuntimeError("Could not extract ... verdict")
     assert verdict == "APPROVE", (
-        f"Expected 'APPROVE' from output_summary, got {verdict!r}. "
-        "The parser must parse the ENTIRE stdout as JSON first, "
-        "then extract the verdict from output_summary."
+        f"Expected 'APPROVE' from structured verdict field, got {verdict!r}."
     )
 
 
@@ -386,14 +377,14 @@ def test_recall_fetch_verdict_structured_and_legacy_agree() -> None:
 
 
 def test_recall_fetch_verdict_null_verdict_field_uses_legacy() -> None:
-    """When verdict field is explicitly null, fall back to anchored legacy."""
+    """When verdict field is explicitly null, fall back to anchored legacy (strict vocabulary)."""
     import json
 
     recall_json = json.dumps({
         "task_id": "TASK-NULLV",
         "status": "completed",
         "verdict": None,
-        "output_summary": "Verdict: APPROVE\n\nReview passed.",
+        "output_summary": "Verdict: PASS\n\nReview passed.",
     }, indent=2)
 
     with patch("subprocess.run") as mock_run:
@@ -401,7 +392,138 @@ def test_recall_fetch_verdict_null_verdict_field_uses_legacy() -> None:
             returncode=0, stdout=recall_json, stderr=""
         )
         verdict = _recall_fetch_verdict("happyranch", "TASK-NULLV", "review")
-    assert verdict == "APPROVE"
+    assert verdict == "PASS"
+
+
+def test_recall_fetch_verdict_legacy_newline_split_rejected() -> None:
+    """Newline-split Verdict:\nPASS is rejected (no merge).
+
+    ``\\s*`` in the previous regex consumed the newline; the hardened parser
+    processes individual physical lines and rejects ``Verdict:`` on one line
+    and ``PASS`` on the next.
+    """
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-NLSPLIT",
+        "status": "completed",
+        "output_summary": "Verdict:\nPASS\n\nWork done.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        with pytest.raises(RuntimeError, match="Could not extract.*verdict"):
+            _recall_fetch_verdict("happyranch", "TASK-NLSPLIT", "qa")
+
+
+def test_recall_fetch_verdict_legacy_duplicate_same_verdict_rejected() -> None:
+    """Duplicate identical legacy Verdict: lines are rejected (exactly-one rule)."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-DUP",
+        "status": "completed",
+        "output_summary": "Verdict: PASS\nVerdict: PASS\n\nWork done.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        with pytest.raises(RuntimeError, match="Multiple legacy verdict lines"):
+            _recall_fetch_verdict("happyranch", "TASK-DUP", "qa")
+
+
+def test_recall_fetch_verdict_legacy_conflicting_verdict_rejected() -> None:
+    """Conflicting legacy Verdict: lines (PASS + FAIL) are rejected."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-CONFLICT",
+        "status": "completed",
+        "output_summary": "Verdict: PASS\nVerdict: FAIL\n\nAmbiguous.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        with pytest.raises(RuntimeError, match="Multiple legacy verdict lines"):
+            _recall_fetch_verdict("happyranch", "TASK-CONFLICT", "qa")
+
+
+def test_recall_fetch_verdict_legacy_case_variant_rejected() -> None:
+    """Case-variant legacy label (e.g. 'pass') is rejected — strict case-sensitive matching."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-CASE",
+        "status": "completed",
+        "output_summary": "Verdict: pass\n\nLowercase verdict.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        with pytest.raises(RuntimeError, match="Could not extract.*verdict"):
+            _recall_fetch_verdict("happyranch", "TASK-CASE", "qa")
+
+
+def test_recall_fetch_verdict_legacy_malformed_label_rejected() -> None:
+    """Malformed legacy label (e.g. 'APPROVED') is rejected — strict PASS|FAIL|REVISE only."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-MALF",
+        "status": "completed",
+        "output_summary": "Verdict: APPROVED\n\nNon-standard label.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        with pytest.raises(RuntimeError, match="Could not extract.*verdict"):
+            _recall_fetch_verdict("happyranch", "TASK-MALF", "qa")
+
+
+def test_recall_fetch_verdict_legacy_horizontal_whitespace_ok() -> None:
+    """Horizontal whitespace around the legacy verdict token is accepted."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-HWSP",
+        "status": "completed",
+        "output_summary": "Verdict:  \tPASS  \t\n\nExtra whitespace.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        verdict = _recall_fetch_verdict("happyranch", "TASK-HWSP", "qa")
+    assert verdict == "PASS"
+
+
+def test_recall_fetch_verdict_legacy_revise_accepted() -> None:
+    """REVISE is a valid legacy verdict token."""
+    import json
+
+    recall_json = json.dumps({
+        "task_id": "TASK-REV",
+        "status": "completed",
+        "output_summary": "Verdict: REVISE\n\nNeeds changes.",
+    }, indent=2)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=recall_json, stderr=""
+        )
+        verdict = _recall_fetch_verdict("happyranch", "TASK-REV", "qa")
+    assert verdict == "REVISE"
 
 
 def test_recall_fetch_verdict_correct_command() -> None:

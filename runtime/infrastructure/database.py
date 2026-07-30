@@ -1943,9 +1943,9 @@ class Database:
         promotes them to full payloads when ``tree=true``.
 
         ``verdict`` is the structured verdict from the latest persisted
-        ``task_results`` row (deterministic: ``ORDER BY id DESC LIMIT 1``,
-        same ordering as ``get_latest_completion_report``).  Absent / ``None``
-        when no result row exists or the latest row has no verdict.
+        ``task_results`` row (deterministic: ``ORDER BY created_at DESC, id DESC LIMIT 1``
+        — result-recency first with a stable id tie-breaker).
+        Absent / ``None`` when no result row exists or the latest row has no verdict.
         """
         task = self.get_task(task_id)
         if task is None:
@@ -1964,7 +1964,7 @@ class Database:
         verdict: str | None = None
         latest = self._conn.execute(
             "SELECT verdict FROM task_results WHERE task_id = ? "
-            "ORDER BY id DESC LIMIT 1",
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
             (task_id,),
         ).fetchone()
         if latest is not None:

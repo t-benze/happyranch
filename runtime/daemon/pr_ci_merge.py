@@ -411,20 +411,27 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
     completion-report output.  Returns the verdict string, or raises
     RuntimeError on failure.
 
-    Extraction contract (hardened; KB ``guarded-merge-verdict-extraction``):
+    Extraction contract (KB ``guarded-merge-verdict-extraction``):
 
     1. **Structured-verdict evidence first.**  Parse the entire stdout as a
        single JSON blob.  If the top-level ``verdict`` field is present:
        * It MUST be a non-empty string — any other type fails closed.
-       * If ``output_summary`` also carries an anchored ``Verdict:`` line
+       * If ``output_summary`` also carries a legacy ``Verdict:`` line
          and the two disagree, fail closed (no silent fallback around
          conflicting evidence).
        * Otherwise return the structured verdict string.
 
-    2. **Anchored legacy prose fallback.**  If there is no top-level
-       ``verdict`` field, extract the ``Verdict:`` line from
-       ``output_summary`` using the anchored ``^Verdict:`` pattern (the
-       KB-contracted ``Verdict: PASS|FAIL|REVISE`` form on its own line).
+    2. **Strict single-line legacy prose fallback (case-sensitive).**
+       If there is no top-level ``verdict`` field, extract exactly ONE
+       physical line matching ``^Verdict:[ \t]*(PASS|FAIL|REVISE)[ \t]*$``
+       from ``output_summary``.  Horizontal whitespace (spaces, tabs) only
+       — ``\\s`` is NOT used because it can consume a newline.
+       * Zero matching lines → no extractable evidence (fail closed).
+       * Two or more matching lines → conflict rejection (fail closed).
+       * Duplicate same verdict and conflicting verdict are both rejected.
+       * Newline-split ``Verdict:\nPASS`` is rejected (different lines).
+       * Case-variant labels (e.g. ``pass``) are rejected.
+       * Malformed labels (anything other than PASS/FAIL/REVISE) are rejected.
 
     3. **No permissive unanchored scraping.**  There is no line-by-line JSON
        fallback, no bare ``verdict:`` prefix search, and no unanchored
@@ -469,9 +476,25 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
     structured_verdict = data.get("verdict")
     output_summary = data.get("output_summary", "") or ""
 
-    # Extract anchored legacy verdict line from output_summary, if present.
-    legacy_match = re.search(r"^Verdict:\s*(.+)$", output_summary, re.MULTILINE)
-    legacy_verdict = legacy_match.group(1).strip() if legacy_match else None
+    # Extract anchored legacy verdict line(s) from output_summary.
+    # Strict: one physical line per iteration; horizontal whitespace only;
+    # case-sensitive exact tokens PASS|FAIL|REVISE; no \s or MULTILINE
+    # that can consume a newline.
+    _LEGACY_RE = re.compile(r"^Verdict:[ \t]*(PASS|FAIL|REVISE)[ \t]*$")
+    legacy_candidates: list[str] = []
+    for line in output_summary.splitlines():
+        m = _LEGACY_RE.match(line)
+        if m:
+            legacy_candidates.append(m.group(1))
+
+    legacy_verdict: str | None = None
+    if len(legacy_candidates) == 1:
+        legacy_verdict = legacy_candidates[0]
+    elif len(legacy_candidates) > 1:
+        raise RuntimeError(
+            f"Multiple legacy verdict lines in output_summary for {task_id}: "
+            f"{legacy_candidates}"
+        )
 
     # ── 1. Structured verdict evidence (primary) ──
     if structured_verdict is not None:
