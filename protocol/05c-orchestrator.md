@@ -67,8 +67,11 @@ A candidate CLI must POST a valid sample envelope to complete registration.
 bind to exactly one registered, conformance-passed, founder-APPROVED custom
 adapter executable. The ``CustomAdapterExecutor`` spawns the adapter as a
 subprocess with v1 ``AdapterInput`` JSON on stdin and parses v1
-``AdapterOutput`` JSON from stdout. The stable v1 contract is in
-``runtime/orchestrator/adapter_contract.py``; the normative prose is the signed
+``AdapterOutput`` JSON from stdout. The stable v1 contract is defined by the
+Pydantic models at ``runtime/orchestrator/adapter_contract.py``; the **canonical
+contract surface for external consumers** is the versioned
+``GET /api/v1/runtime/adapters/contract-reference`` endpoint (THR-107 seq184),
+which returns server-generated JSON Schemas. The normative prose is the signed
 architecture §2. Key invariants: exact approved artifact SHA-256 verified at
 EVERY launch (including throttle retries — the check is inside the per-attempt
 launch closure); mandatory valid AdapterOutput; adapter version, contract

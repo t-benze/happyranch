@@ -3464,6 +3464,20 @@
         ]
       }
     },
+    "/api/v1/runtime/adapters/contract-reference": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/runtime/adapters/register": {
       "POST": {
         "params": [

@@ -1,4 +1,4 @@
-"""Custom adapter registration routes (THR-107 D3 + D4 + seq141).
+"""Custom adapter registration routes (THR-107 D3 + D4 + seq141 + seq184).
 
 POST /api/v1/runtime/adapters/register
     Register a custom adapter executable. Validates absolute path, computes
@@ -21,6 +21,15 @@ POST /api/v1/runtime/adapters/{adapter_id}/bind-profile (THR-107 seq141)
     command_adapter_id: custom-adapter:<id>. Rejects PENDING, unknown,
     mismatched-profile, hash-changed/missing/stale adapters, built-in-name
     collisions, and generic-token callers.
+
+GET /api/v1/runtime/adapters/contract-reference (THR-107 seq184)
+    Loopback-only, registration-token-scoped contract-reference endpoint.
+    Returns the canonical v1 AdapterInput/AdapterOutput JSON Schemas
+    generated from the authoritative Pydantic models, plus version, output
+    rules, and submission metadata. Reachable during registration through
+    the existing scoped registration-token posture on loopback.
+    Does NOT consume the token. Enforces adapter-purpose token at the
+    route consumer; non-adapter-purpose tokens are rejected.
 
 GET /api/v1/runtime/adapters
     List all registered custom adapters (D4: includes approved_at/by).
@@ -58,6 +67,11 @@ router = APIRouter(dependencies=[require_token()])
 # Separate router for the seq141 submission endpoint — must NOT inherit
 # master-bearer _check_token. It accepts ONLY registration-token auth.
 submit_router = APIRouter()
+
+# THR-107 seq184 contract-reference router — must NOT inherit master-bearer
+# _check_token. Accepts ONLY registration-token auth (loopback + hrreg_ token).
+# Does NOT consume the token; enforces adapter-purpose at the route consumer.
+contract_reference_router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +474,118 @@ def submit_adapter(
     store.commit_runtime(raw_token)
 
     return _entry_to_response(entry)
+
+
+# ---------------------------------------------------------------------------
+# THR-107 seq184: adapter contract-reference endpoint
+# ---------------------------------------------------------------------------
+
+
+@contract_reference_router.get(
+    "/runtime/adapters/contract-reference",
+    dependencies=[require_registration_token()],
+)
+def get_contract_reference(request: Request) -> dict:
+    """Return the canonical v1 AdapterInput/AdapterOutput contract reference.
+
+    Loopback-only, registration-token-scoped (THR-107 seq184). The candidate
+    CLI fetches this reference FIRST to learn the exact AdapterInput and
+    AdapterOutput JSON Schemas before implementing a wrapper.
+
+    Auth scope:
+    - Must be loopback (127.0.0.1, ::1, localhost) — enforced by
+      require_registration_token dependency.
+    - Must carry a valid, unexpired, unconsumed ``hrreg_`` token.
+    - Token purpose MUST be ``'adapter'`` — non-adapter-purpose tokens are
+      rejected with 422. Master bearer is rejected at the dependency level.
+    - Reading the contract-reference does NOT consume, reserve, or modify
+      the token — the candidate may fetch this multiple times and still
+      proceed to conformance check-ins and submission.
+
+    Response shape (stable v1):
+    - ``contract_version``: int (1)
+    - ``adapter_input_schema``: JSON Schema for AdapterInput (generated from
+      the authoritative Pydantic model at
+      runtime/orchestrator/adapter_contract.py)
+    - ``adapter_output_schema``: JSON Schema for AdapterOutput (same source)
+    - ``rules``: output constraints (max size, stdout/stderr contract,
+      exactly-one-object rule)
+    - ``submission``: the submit endpoint URL, method, and content-type for
+      the adapter submission step
+    """
+    raw_token = _extract_registration_token(request)
+    store = request.app.state.daemon.registration_token_store
+    token_record = store.validate_runtime(raw_token)
+    if token_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired registration token",
+        )
+
+    # Enforce adapter-purpose token at the route consumer.
+    if token_record.purpose != "adapter":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Token purpose is {token_record.purpose!r}, not 'adapter'. "
+                f"The contract-reference endpoint requires an adapter-purpose token."
+            ),
+        )
+
+    # Token is intentionally NOT consumed — this is a read-only reference
+    # endpoint. The candidate may fetch the contract multiple times before
+    # proceeding to conformance check-ins and submission.
+
+    from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput
+
+    return {
+        "contract_version": 1,
+        "adapter_input_schema": AdapterInput.model_json_schema(),
+        "adapter_output_schema": AdapterOutput.model_json_schema(),
+        "rules": {
+            "input": {
+                "source": "stdin",
+                "description": (
+                    "Read exactly one v1 AdapterInput JSON object from stdin. "
+                    "The daemon pipes the AdapterInput payload to the adapter's "
+                    "stdin at launch time; the adapter must read it fully before "
+                    "invoking the candidate CLI."
+                ),
+            },
+            "output": {
+                "target": "stdout",
+                "description": (
+                    "Write exactly one v1 AdapterOutput JSON object to stdout, "
+                    "then exit. No non-JSON diagnostics, logging, or commentary "
+                    "may appear on stdout."
+                ),
+                "max_size_bytes": 1_048_576,
+                "max_size_human": "1 MB",
+            },
+            "diagnostics": {
+                "target": "stderr",
+                "description": "All diagnostics, logging, and error messages must go to stderr only.",
+            },
+            "exit": {
+                "description": (
+                    "Exit after writing the AdapterOutput JSON. The adapter is a "
+                    "single-invocation wrapper; it must not loop, daemonize, or "
+                    "persist across invocations."
+                ),
+            },
+        },
+        "submission": {
+            "method": "POST",
+            "path": "/api/v1/runtime/adapters/submit",
+            "content_type": "application/json",
+            "description": (
+                "Submit the adapter wrapper executable for the intended profile. "
+                "Requires the same adapter-purpose hrreg_ token and a completed "
+                "conformance challenge. Submission creates ONLY the exact PENDING "
+                "adapter; founder approval and management binding are separate steps."
+            ),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -168,8 +168,22 @@ conformance-passed, founder-APPROVED custom adapter executable. The
 stdout. No ``argv_template``, ``command``, or PATH resolution is used — the
 adapter executable's absolute path is resolved from the approved adapter entry.
 
+**Adapter contract reference (THR-107 seq184).** The authoritative v1
+``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
+``GET /api/v1/runtime/adapters/contract-reference`` — accessible during
+registration through the existing scoped registration-token posture on loopback
+(adapter-purpose ``hrreg_`` token, read-only, token is not consumed). The
+endpoint returns JSON Schemas generated from the shipping Pydantic models
+(``runtime/orchestrator/adapter_contract.py``) — the **server-derived schema is
+canonical**. Candidates implementing adapter wrappers must fetch this reference
+first and follow the returned schemas exactly.
+
 **Adapter lifecycle:**
 
+0. **Fetch contract-reference** — candidate CLI fetches
+   ``GET /api/v1/runtime/adapters/contract-reference`` with the scoped
+   adapter-purpose ``hrreg_`` token to learn the exact
+   ``AdapterInput``/``AdapterOutput`` JSON Schemas (loopback-only, read-only).
 1. **Register** — operator submits executable path, version, capabilities via
    ``POST /api/v1/runtime/adapters/register`` → PENDING adapter entry with
    SHA-256 hash computed at registration.
@@ -204,8 +218,14 @@ or revert the deployment. Legacy stored profiles are never auto-mutated.
 **D5 baseline-only:** the custom adapter contract introduces no allow-rule,
 sandbox, network-access, filesystem-access, or permission changes.
 
-The authoritative contract is ``runtime/orchestrator/adapter_contract.py``;
-normative prose is the signed architecture §2
+The code-level definition is ``runtime/orchestrator/adapter_contract.py``
+(Pydantic models). The canonical contract surface for external consumers is the
+``GET /api/v1/runtime/adapters/contract-reference`` endpoint (THR-107 seq184),
+which returns schemas generated from those models at runtime. The
+**server-derived schema is canonical** — candidates implementing adapter
+wrappers must fetch the contract-reference endpoint and follow the returned
+schemas, never a hand-constructed copy. Normative prose is the signed
+architecture §2
 (``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``).
 
 ## Self-Registration (custom executors)

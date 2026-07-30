@@ -416,6 +416,15 @@ stdout is parsed by the daemon's generic output parser (same pattern as
 launching the actual agentic CLI and translating its output into the
 standard result contract.
 
+**Contract-reference endpoint (THR-107 seq184).** The canonical v1
+``AdapterInput``/``AdapterOutput`` schemas are served at runtime by
+``GET /api/v1/runtime/adapters/contract-reference``, accessible during
+registration through the existing scoped registration-token posture on
+loopback (adapter-purpose ``hrreg_`` token, read-only). Candidates
+implementing adapter wrappers must fetch this endpoint and follow the
+**server-derived schema** — the schemas are generated from the shipping
+Pydantic models and are the authoritative external representation.
+
 ### 4.4 Registration, Conformance, Provenance
 
 | Step | Description | Gate |

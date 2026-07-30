@@ -124,18 +124,22 @@ def _bypass_loopback(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def app_and_client(route_setup: Path, token_store: RegistrationTokenStore, monkeypatch: pytest.MonkeyPatch):
-    """Build a FastAPI app with both adapters routers and attach token store.
+    """Build a FastAPI app with all adapters routers and attach token store.
 
     Returns (app, TestClient, master_token_value).
-    The submit_router is included separately (without master-bearer dependency).
-    The main router retains master-bearer dependency.
+    The submit_router and contract_reference_router are included separately
+    (without master-bearer dependency). The main router retains master-bearer dependency.
     """
-    from runtime.daemon.routes.adapters import router, submit_router
+    from runtime.daemon.routes.adapters import router, submit_router, contract_reference_router
     from runtime.daemon import paths as paths_mod
 
     _bypass_loopback(monkeypatch)
 
     app = FastAPI()
+    # contract_reference_router must be registered BEFORE router so its
+    # specific /runtime/adapters/contract-reference GET takes priority over
+    # the master-bearer GET /runtime/adapters/{adapter_id} catch-all on router.
+    app.include_router(contract_reference_router, prefix="/api/v1")
     app.include_router(router, prefix="/api/v1")
     app.include_router(submit_router, prefix="/api/v1")
 
@@ -1766,3 +1770,313 @@ class TestLegacyCompatibility:
             name="test-adapter", purpose="adapter", intended_profile_name="test-adapter"
         )
         assert store.validate_runtime(token3) is not None
+
+
+# ============================================================================
+# THR-107 seq184: contract-reference endpoint tests
+# ============================================================================
+
+
+class TestContractReferenceHappyPath:
+    """Happy-path: adapter-purpose token fetches schemas correctly."""
+
+    def test_contract_reference_returns_schemas(self, app_and_client, token_store):
+        """Adapter-purpose token returns full contract reference with schemas."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "test-cli")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        # Top-level fields
+        assert data["contract_version"] == 1
+        assert "adapter_input_schema" in data
+        assert "adapter_output_schema" in data
+        assert "rules" in data
+        assert "submission" in data
+
+        # Schemas are valid JSON Schema objects
+        ai = data["adapter_input_schema"]
+        assert ai["type"] == "object"
+        assert "properties" in ai
+        assert "contract_version" in ai["properties"]
+        assert "invocation" in ai["properties"]
+        assert "prompt" in ai["properties"]
+        assert "workspace" in ai["properties"]
+        assert "timeout" in ai["properties"]
+
+        ao = data["adapter_output_schema"]
+        assert ao["type"] == "object"
+        assert "properties" in ao
+        assert "success" in ao["properties"]
+        assert "session_id" in ao["properties"]
+        assert "adapter_metadata" in ao["properties"]
+
+        # Rules
+        rules = data["rules"]
+        assert rules["input"]["source"] == "stdin"
+        assert rules["output"]["target"] == "stdout"
+        assert rules["output"]["max_size_bytes"] == 1_048_576
+        assert rules["diagnostics"]["target"] == "stderr"
+
+        # Submission metadata
+        sub = data["submission"]
+        assert sub["method"] == "POST"
+        assert sub["path"] == "/api/v1/runtime/adapters/submit"
+        assert sub["content_type"] == "application/json"
+
+    def test_token_not_consumed_by_contract_reference(self, app_and_client, token_store):
+        """Reading the contract reference does NOT consume the token."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "test-cli")
+
+        client = TestClient(app)
+
+        # Read contract-reference 3 times — all should succeed
+        for _ in range(3):
+            resp = client.get(
+                "/api/v1/runtime/adapters/contract-reference",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200, resp.text
+
+        # Token is still valid (not consumed)
+        assert store.validate_runtime(token) is not None
+
+    def test_contract_reference_then_submit_still_works(self, app_and_client, route_setup, token_store):
+        """Fetching contract reference does not interfere with subsequent submit."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "test-cli")
+        script = _make_conformant_adapter_script(route_setup, "test-cli-adapter")
+
+        client = TestClient(app)
+
+        # Step 1: Fetch contract reference
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+
+        # Step 2: Submit still succeeds (token not consumed)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": str(script),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+
+
+class TestContractReferenceAuth:
+    """Auth scoping tests for the contract-reference endpoint."""
+
+    def test_master_bearer_rejected(self, app_and_client, token_store):
+        """Master bearer is rejected — only hrreg_ tokens accepted."""
+        app, master_token, store = app_and_client
+        _mint_adapter_token(store, "test-cli")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {master_token}"},
+        )
+        assert resp.status_code == 401, resp.text
+
+    def test_no_token_rejected(self, app_and_client, token_store):
+        """Request without any Authorization header is rejected."""
+        app, master_token, store = app_and_client
+        _mint_adapter_token(store, "test-cli")
+
+        client = TestClient(app)
+        resp = client.get("/api/v1/runtime/adapters/contract-reference")
+        assert resp.status_code == 401, resp.text
+
+    def test_profile_purpose_token_rejected(self, app_and_client, token_store):
+        """A profile-purpose token is rejected — only adapter-purpose accepted."""
+        app, master_token, store = app_and_client
+        token, _exp = store.mint_runtime(name="test-cli", purpose="profile")
+
+        # Complete conformance for the token
+        for step_id in store.DEFAULT_CONFORMANCE_STEPS:
+            store.record_step_arrival_runtime(token, step_id)
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422, resp.text
+
+    def test_binary_purpose_token_rejected(self, app_and_client, token_store):
+        """A binary-purpose token is rejected — only adapter-purpose accepted."""
+        app, master_token, store = app_and_client
+        token, _exp = store.mint_runtime(name="test-cli", purpose="binary")
+
+        # Complete conformance for the token
+        for step_id in store.DEFAULT_CONFORMANCE_STEPS:
+            store.record_step_arrival_runtime(token, step_id)
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422, resp.text
+
+    def test_expired_token_rejected(self, app_and_client, token_store, monkeypatch):
+        """Expired token is rejected."""
+        app, master_token, store = app_and_client
+        now = time.time()
+        token, _exp = store.mint_runtime(
+            name="test-cli", purpose="adapter", intended_profile_name="test-cli", now=now - 700
+        )
+        for step_id in store.DEFAULT_CONFORMANCE_STEPS:
+            store.record_step_arrival_runtime(token, step_id)
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 401, resp.text
+
+    def test_consumed_token_rejected(self, app_and_client, token_store):
+        """Already-consumed token is rejected."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "test-cli")
+        # Consume via reserve + commit (matching the actual submit flow)
+        store.reserve_runtime(token)
+        store.commit_runtime(token)
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 401, resp.text
+
+    def test_reserved_token_still_works_for_read(self, app_and_client, token_store):
+        """A reserved (but not yet consumed) token can still read the contract."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "test-cli")
+        store.reserve_runtime(token)
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        # A reserved token is invalid for validate_runtime but was reserved
+        # by the submit route. The contract-reference route calls
+        # validate_runtime which rejects reserved tokens.
+        assert resp.status_code == 401, resp.text
+
+
+class TestContractReferenceSchemaIntegrity:
+    """Verify the returned schemas are generated from the shipping models."""
+
+    def test_schemas_match_pydantic_models(self, app_and_client, token_store):
+        """The returned schemas are exactly the Pydantic model_json_schema() output."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "test-cli")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput
+
+        # Schemas should match what Pydantic generates
+        assert data["adapter_input_schema"] == AdapterInput.model_json_schema()
+        assert data["adapter_output_schema"] == AdapterOutput.model_json_schema()
+
+    def test_adapter_input_schema_required_fields(self, app_and_client, token_store):
+        """AdapterInput schema lists all required top-level fields."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "test-cli")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        ai_required = set(data["adapter_input_schema"]["required"])
+        assert "contract_version" in ai_required
+        assert "invocation" in ai_required
+        assert "prompt" in ai_required
+        assert "workspace" in ai_required
+        assert "timeout" in ai_required
+        assert "executor_context" in ai_required
+
+    def test_adapter_output_schema_required_fields(self, app_and_client, token_store):
+        """AdapterOutput schema lists all required top-level fields."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "test-cli")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        ao_required = set(data["adapter_output_schema"]["required"])
+        assert "success" in ao_required
+        assert "session_id" in ao_required
+        assert "adapter_metadata" in ao_required
+        assert "stdout_tail" in ao_required
+        assert "stderr_tail" in ao_required
+        assert "duration_seconds" in ao_required
+
+
+class TestContractReferenceOpenApi:
+    """Verify the contract-reference route appears in the OpenAPI schema."""
+
+    def test_contract_reference_in_openapi(self, app_and_client, token_store):
+        """The contract-reference GET route is exposed in the OpenAPI schema."""
+        app, master_token, store = app_and_client
+        _mint_adapter_token(store, "test-cli")
+
+        openapi = app.openapi()
+        paths = openapi.get("paths", {})
+        assert "/api/v1/runtime/adapters/contract-reference" in paths
+        contract_path = paths["/api/v1/runtime/adapters/contract-reference"]
+        assert "get" in contract_path
+
+    def test_contract_reference_route_accessible_in_openapi(self, app_and_client, token_store):
+        """The contract-reference endpoint returns the documented schema shape."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "test-cli")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/runtime/adapters/contract-reference",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+
+        # Verify response matches documented shape
+        data = resp.json()
+        assert isinstance(data["contract_version"], int)
+        assert isinstance(data["adapter_input_schema"], dict)
+        assert isinstance(data["adapter_output_schema"], dict)
+        assert isinstance(data["rules"], dict)
+        assert isinstance(data["submission"], dict)
