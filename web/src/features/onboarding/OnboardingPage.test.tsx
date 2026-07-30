@@ -694,6 +694,165 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
       intended_profile_name: 'my-adapter-v2',
     });
   });
+
+  test(
+    'adapter lifecycle: submitted PENDING → poll APPROVED → bind → Connected',
+    async () => {
+      const user = userEvent.setup();
+      const profileName = 'onb-lifecycle-cli';
+      const adapterId = `${profileName}-adapter`;
+
+      // Spy mint + adapter poll API (matching the existing test pattern).
+      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+        .mockResolvedValue({ token: 'hr_tok_ONB_LC', expires_at: Date.now() / 1000 + 600 });
+
+      // Mock the adapter poll: return PENDING first, then the hook transitions.
+      const { adapters: adaptersApi } = await import('@/lib/api');
+      let callCount = 0;
+      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
+        callCount++;
+        return {
+          id: adapterId,
+          name: profileName,
+          executable: '/tmp/test-adapter',
+          executable_hash: 'abc123',
+          version: '1.0.0',
+          capabilities: [],
+          contract_version: 1,
+          workspace_adapter: 'pi',
+          status: 'pending',
+          registered_at: new Date().toISOString(),
+          registered_by: 'test',
+          approved_at: null,
+          approved_by: null,
+          intended_profile_name: profileName,
+        };
+      });
+
+      renderPage();
+      await goAdapter(user);
+
+      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+      // Submitted → awaiting approval (poll sees PENDING)
+      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+      expect(screen.getByText(adapterId)).toBeInTheDocument();
+
+      // Transition to APPROVED → auto-bind → Connected.
+      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
+        id: adapterId,
+        name: profileName,
+        executable: '/tmp/test-adapter',
+        executable_hash: 'abc123',
+        version: '1.0.0',
+        capabilities: [],
+        contract_version: 1,
+        workspace_adapter: 'pi',
+        status: 'approved',
+        registered_at: new Date().toISOString(),
+        registered_by: 'test',
+        approved_at: new Date().toISOString(),
+        approved_by: 'founder',
+        intended_profile_name: profileName,
+      });
+      vi.spyOn(adaptersApi, 'bindAdapterProfile').mockResolvedValue({
+        profile_name: profileName,
+        command_adapter_id: `custom-adapter:${adapterId}`,
+        workspace_adapter_id: 'pi',
+        kind: 'custom',
+        status: 'connected',
+        adapter_id: adapterId,
+      });
+
+      // Connected card — the onboarding mount uses a heading for the connected state.
+      await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+      // The onboarding connected subtitle mentions managing from Settings.
+      expect(
+        screen.getByText(/you can manage your clis anytime from settings/i),
+      ).toBeInTheDocument();
+    },
+    15000,
+  );
+
+  test(
+    'adapter lifecycle: bind failure → error state → Retry → Connected',
+    async () => {
+      const user = userEvent.setup();
+      const profileName = 'onb-bindfail-cli';
+      const adapterId = `${profileName}-adapter`;
+
+      // Spy mint + adapter poll API.
+      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+        .mockResolvedValue({ token: 'hr_tok_ONB_BF', expires_at: Date.now() / 1000 + 600 });
+
+      const { adapters: adaptersApi } = await import('@/lib/api');
+      vi.spyOn(adaptersApi, 'getAdapter').mockResolvedValue({
+        id: adapterId,
+        name: profileName,
+        executable: '/tmp/test-adapter',
+        executable_hash: 'abc123',
+        version: '1.0.0',
+        capabilities: [],
+        contract_version: 1,
+        workspace_adapter: 'pi',
+        status: 'pending',
+        registered_at: new Date().toISOString(),
+        registered_by: 'test',
+        approved_at: null,
+        approved_by: null,
+        intended_profile_name: profileName,
+      });
+
+      renderPage();
+      await goAdapter(user);
+
+      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+      // Show APPROVED adapter, but bind FAILS → AdapterBindFailedBody.
+      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
+        id: adapterId,
+        name: profileName,
+        executable: '/tmp/test-adapter',
+        executable_hash: 'abc123',
+        version: '1.0.0',
+        capabilities: [],
+        contract_version: 1,
+        workspace_adapter: 'pi',
+        status: 'approved',
+        registered_at: new Date().toISOString(),
+        registered_by: 'test',
+        approved_at: new Date().toISOString(),
+        approved_by: 'founder',
+        intended_profile_name: profileName,
+      });
+      vi.spyOn(adaptersApi, 'bindAdapterProfile').mockRejectedValue(
+        new Error('Adapter artifact changed before bind.'),
+      );
+
+      await screen.findByText(/bind failed/i, {}, { timeout: 10000 });
+      const retryButton = screen.getByRole('button', { name: /retry bind/i });
+      expect(retryButton).toBeInTheDocument();
+
+      // Retry with success.
+      vi.mocked(adaptersApi.bindAdapterProfile).mockResolvedValue({
+        profile_name: profileName,
+        command_adapter_id: `custom-adapter:${adapterId}`,
+        workspace_adapter_id: 'pi',
+        kind: 'custom',
+        status: 'connected',
+        adapter_id: adapterId,
+      });
+
+      await user.click(retryButton);
+      await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+      expect(
+        screen.getByText(/you can manage your clis anytime from settings/i),
+      ).toBeInTheDocument();
+    },
+    15000,
+  );
 });
 
 describe('OnboardingPage — Custom two-stage flow regression (profile → binary)', () => {

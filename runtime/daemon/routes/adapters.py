@@ -686,8 +686,13 @@ def bind_adapter_profile(
         save_runtime_profile(profile_name, profile_cfg)
         durable_committed = True
 
-        # (c) Register in the in-memory registry.
-        registry.register_custom_profile(profile)
+        # (c) Replace in the in-memory registry (D7A atomic-replacement seam).
+        #     Uses replace_custom_profile to support the authorized
+        #     legacy/simple → approved-adapter upgrade: a pre-existing
+        #     non-builtin custom profile with the same name but different
+        #     definition is safely replaced rather than raising
+        #     ExecutorProfileCollisionError.
+        registry.replace_custom_profile(profile)
 
         # (d) Audit the successful registration.
         #     Uses the same scope-prefix convention as executors.py:
