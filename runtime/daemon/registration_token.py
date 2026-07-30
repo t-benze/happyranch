@@ -25,8 +25,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-# Default TTL for registration tokens (10 minutes)
-DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS = 600
+# Default TTL for registration tokens (30 minutes)
+DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS = 1800
 
 # Prefix to distinguish scoped registration tokens from the master bearer
 REGISTRATION_TOKEN_PREFIX = "hrreg_"

@@ -91,7 +91,7 @@ describe('OnboardingPage — Step 1 (connect a built-in agentic CLI)', () => {
     });
     const mintSpy = vi
       .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_BIN123', expires_at: Date.now() / 1000 + 600 });
+      .mockResolvedValue({ token: 'hr_tok_BIN123', expires_at: Date.now() / 1000 + 1800 });
     renderPage();
 
     await user.selectOptions(
@@ -122,7 +122,7 @@ describe('OnboardingPage — Step 1 (connect a built-in agentic CLI)', () => {
     const user = userEvent.setup();
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken').mockResolvedValue({
       token: 'hr_tok_BIN',
-      expires_at: Date.now() / 1000 + 600,
+      expires_at: Date.now() / 1000 + 1800,
     });
     // The machine-local registry now reports claude registered with a path.
     vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
@@ -159,7 +159,7 @@ describe('OnboardingPage — Step 1 (connect a built-in agentic CLI)', () => {
     const user = userEvent.setup();
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken').mockResolvedValue({
       token: 'hr_tok_BIN',
-      expires_at: Date.now() / 1000 + 600,
+      expires_at: Date.now() / 1000 + 1800,
     });
     // claude is enumerated but NOT registered (present:false) — being on PATH is
     // not sufficient in #420, so this must NOT be read as connected.
@@ -235,7 +235,7 @@ describe('OnboardingPage — Step 1 (custom CLI flow, preserved)', () => {
     });
     const mintSpy = vi
       .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_ABC123', expires_at: Date.now() / 1000 + 600 });
+      .mockResolvedValue({ token: 'hr_tok_ABC123', expires_at: Date.now() / 1000 + 1800 });
     renderPage();
     await goCustom(user);
 
@@ -261,7 +261,7 @@ describe('OnboardingPage — Step 1 (custom CLI flow, preserved)', () => {
     const user = userEvent.setup();
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken').mockResolvedValue({
       token: 'hr_tok_XYZ',
-      expires_at: Date.now() / 1000 + 600,
+      expires_at: Date.now() / 1000 + 1800,
     });
     // prereqs now includes the freshly-registered runtime name.
     vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
@@ -580,7 +580,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     const user = userEvent.setup();
     const mintSpy = vi
       .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_ADP', expires_at: Date.now() / 1000 + 600 });
+      .mockResolvedValue({ token: 'hr_tok_ADP', expires_at: Date.now() / 1000 + 1800 });
 
     renderPage();
     await goAdapter(user);
@@ -655,7 +655,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     const profileName = 'onb-adapter-cli';
 
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_ONB_TEST', expires_at: Date.now() / 1000 + 600 });
+      .mockResolvedValue({ token: 'hr_tok_ONB_TEST', expires_at: Date.now() / 1000 + 1800 });
 
     renderPage();
     await goAdapter(user);
@@ -685,7 +685,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
   test('adapter-backed: prompt includes truthful lifecycle — PENDING only, no auto-approval', async () => {
     const user = userEvent.setup();
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_LIFECYCLE', expires_at: Date.now() / 1000 + 600 });
+      .mockResolvedValue({ token: 'hr_tok_LIFECYCLE', expires_at: Date.now() / 1000 + 1800 });
 
     renderPage();
     await goAdapter(user);
@@ -703,7 +703,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
   test('adapter-backed: prompt includes exact I/O constraints', async () => {
     const user = userEvent.setup();
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_IO', expires_at: Date.now() / 1000 + 600 });
+      .mockResolvedValue({ token: 'hr_tok_IO', expires_at: Date.now() / 1000 + 1800 });
 
     renderPage();
     await goAdapter(user);
@@ -722,7 +722,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
   test('adapter-backed: prompt distinguishes emit_envelope from adapter submit', async () => {
     const user = userEvent.setup();
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_ENV', expires_at: Date.now() / 1000 + 600 });
+      .mockResolvedValue({ token: 'hr_tok_ENV', expires_at: Date.now() / 1000 + 1800 });
 
     renderPage();
     await goAdapter(user);
@@ -742,7 +742,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     const user = userEvent.setup();
     const mintSpy = vi
       .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_ADP2', expires_at: Date.now() / 1000 + 600 });
+      .mockResolvedValue({ token: 'hr_tok_ADP2', expires_at: Date.now() / 1000 + 1800 });
 
     renderPage();
     await goAdapter(user);
@@ -765,7 +765,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
 
       // Spy mint + adapter poll API (matching the existing test pattern).
       vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-        .mockResolvedValue({ token: 'hr_tok_ONB_LC', expires_at: Date.now() / 1000 + 600 });
+        .mockResolvedValue({ token: 'hr_tok_ONB_LC', expires_at: Date.now() / 1000 + 1800 });
 
       // Mock the adapter poll: return PENDING first, then the hook transitions.
       const { adapters: adaptersApi } = await import('@/lib/api');
@@ -843,7 +843,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
 
       // Spy mint + adapter poll API.
       vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-        .mockResolvedValue({ token: 'hr_tok_ONB_BF', expires_at: Date.now() / 1000 + 600 });
+        .mockResolvedValue({ token: 'hr_tok_ONB_BF', expires_at: Date.now() / 1000 + 1800 });
 
       const { adapters: adaptersApi } = await import('@/lib/api');
       vi.spyOn(adaptersApi, 'getAdapter').mockResolvedValue({
@@ -923,7 +923,7 @@ describe('OnboardingPage — Custom two-stage flow regression (profile → binar
     vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
       .mockImplementation(async (payload) => {
         mintLog.push({ ...payload });
-        return { token: `hr_tok_${mintLog.length}`, expires_at: Date.now() / 1000 + 600 };
+        return { token: `hr_tok_${mintLog.length}`, expires_at: Date.now() / 1000 + 1800 };
       });
 
     // Prereqs include name with present:false — ProfileStage (requirePresent:false)
@@ -982,4 +982,43 @@ describe('OnboardingPage — Custom two-stage flow regression (profile → binar
     // No removed "on PATH" wording in the connected card.
     expect(screen.queryByText(/on PATH/i)).not.toBeInTheDocument();
   });
+});
+
+describe('OnboardingPage — TTL expiry (THR-107 seq189)', () => {
+  test('expires-at-driven expiry: expired state shows 30-minute copy', async () => {
+    const user = userEvent.setup();
+
+    // Expiry is driven by the server-returned expires_at, not a hardcoded
+    // constant. Supply a short-lived token so the "link expired" state
+    // appears quickly, then assert the honesty copy says "30 minutes".
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken').mockImplementation(
+      async () => {
+        const now = Date.now() / 1000;
+        return { token: 'hr_tok_TTL_TEST', expires_at: now + 3 };
+      },
+    );
+    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({ prereqs: [] });
+
+    renderPage();
+
+    await user.selectOptions(
+      await screen.findByLabelText(/pick your agentic cli/i),
+      'claude',
+    );
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // The hook renders the waiting body, then the 3s timeout fires.
+    // Wait for "link expired" to appear.
+    await screen.findByText(/link expired/i, {}, { timeout: 12000 });
+
+    // Honesty copy says "30 minutes", not the old "10 minutes"
+    // getByText(/valid for about 30 minutes/i) matches both the prompt
+    // block and the expiry message — use getAllByText to confirm both.
+    const thirtyMinElements = screen.getAllByText(/valid for about 30 minutes/i);
+    expect(thirtyMinElements.length).toBeGreaterThanOrEqual(2);
+    // The expiry message specifically:
+    expect(
+      screen.getByText(/prompt is valid for about 30 minutes and this one lapsed/i),
+    ).toBeInTheDocument();
+  }, 15000);
 });

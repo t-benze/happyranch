@@ -245,7 +245,7 @@ are short-lived — the founder re-mints in one click). Key properties:
   confused. `require_token()` (master bearer check) rejects any token that does
   not match the daemon's token file exactly; the `hrreg_` prefix is a separate
   namespace that never goes through the master-bearer gate.
-- **TTL**: 600 seconds (10 minutes). Minting a new token for the same `(org, name)`
+- **TTL**: 1800 seconds (30 minutes). Minting a new token for the same `(org, name)`
   expires any prior unconsumed token — a stale copy-paste prompt cannot be replayed.
 - **Single-use**: `consume()` is an atomic validate-and-mark gate. Replay returns 401.
 - **Reserve/commit/release**: The register route reserves the token before any

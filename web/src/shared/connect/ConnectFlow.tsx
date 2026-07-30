@@ -729,7 +729,7 @@ export function WaitingBody({
             This link expired
           </p>
           <p className="text-text-muted mt-1 text-xs">
-            The prompt is valid for about 10 minutes and this one lapsed before a
+            The prompt is valid for about 30 minutes and this one lapsed before a
             CLI connected. Nothing was lost — regenerate a fresh prompt.
           </p>
           <div className="mt-3">
@@ -862,7 +862,7 @@ export function AdapterWaitingBody({
             This link expired
           </p>
           <p className="text-text-muted mt-1 text-xs">
-            The prompt is valid for about 10 minutes. Regenerate a fresh prompt.
+            The prompt is valid for about 30 minutes. Regenerate a fresh prompt.
           </p>
           <div className="mt-3">
             <Button variant="outline" onClick={onRegenerate} disabled={regenerating}>
@@ -1077,7 +1077,7 @@ function HowThisWorks(): JSX.Element {
       </summary>
       <p className="text-text-muted mt-2 max-w-lg pl-5 text-xs leading-relaxed">
         The prompt carries a short-lived, scoped token valid for about{' '}
-        <span className="text-text-secondary font-medium">10 minutes</span>.
+        <span className="text-text-secondary font-medium">30 minutes</span>.
         Copying doesn&rsquo;t run anything — nothing executes on your machine
         until you paste and run it yourself. Connecting only makes the CLI
         available to choose; assigning an agent to run on it is a separate,
