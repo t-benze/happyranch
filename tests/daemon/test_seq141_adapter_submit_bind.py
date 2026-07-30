@@ -837,19 +837,17 @@ class TestRaceSafety:
         assert resp.status_code == 200, resp.text
         return adapter_id
 
-    def test_concurrent_re_registration_vs_bind_race_with_barrier(
+    def test_bind_first_then_re_register_rejected(
         self, app_and_client, route_setup, token_store, monkeypatch
     ):
-        """Concurrent re-registration vs bind with threading.Barrier forces
-        true interleaving: re-registration starts first, blocks after
-        acquiring the store lock, bind also acquires and re-validates,
-        then both complete.  The outcome must be deterministic: under the
-        adapter-store lock, whichever operation wins the lock race
-        determines the outcome, and the loser either succeeds (if bind
-        won and re-registration resets PENDING afterward) or is rejected
-        (if re-registration won and bind's re-read sees PENDING)."""
+        """Forced ordering: bind completes first (bound profile created),
+        then re-registration is rejected because the adapter-targeting
+        profile is active.  Uses a monkeypatch hook at the durable
+        adapter-save boundary to control commit interleaving.
+
+        Final state: approved adapter + bound profile, no PENDING residue."""
         app, master_token, store = app_and_client
-        profile_name = "barrier-race-cli"
+        profile_name = "bind-first-cli"
         adapter_id = self._submit_and_approve_static(
             app, master_token, store, route_setup, profile_name
         )
@@ -860,12 +858,24 @@ class TestRaceSafety:
 
         token2 = _mint_adapter_token(store, profile_name)
 
-        barrier = threading.Barrier(2, timeout=30)
-        outcomes: dict[str, int] = {"re_register": 0, "bind": 0}
+        # Hook into _save_adapter_locked — the single durable write boundary
+        # for re-registration.  We block it until bind has completed.
+        import runtime.orchestrator.custom_adapter_registry as car
+        original_save_locked = car._save_adapter_locked
+        bind_completed = threading.Event()
+        re_reg_allowed = threading.Event()
+
+        def _hooked_save_locked(entry):
+            bind_completed.wait(timeout=30)
+            re_reg_allowed.wait(timeout=30)
+            original_save_locked(entry)
+
+        monkeypatch.setattr(car, "_save_adapter_locked", _hooked_save_locked)
+
+        outcomes: dict[str, int] = {}
 
         def do_re_register():
             c = TestClient(app)
-            barrier.wait()
             resp = c.post(
                 "/api/v1/runtime/adapters/submit",
                 json={
@@ -881,40 +891,139 @@ class TestRaceSafety:
         def do_bind():
             c = TestClient(app)
             c.headers.update({"Authorization": f"Bearer {master_token}"})
-            barrier.wait()
+            resp = c.post(
+                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
+                json={"profile_name": profile_name},
+            )
+            outcomes["bind"] = resp.status_code
+            bind_completed.set()
+
+        t_rereg = threading.Thread(target=do_re_register)
+        t_bind = threading.Thread(target=do_bind)
+        t_bind.start()
+        t_rereg.start()
+
+        bind_completed.wait(timeout=30)
+        re_reg_allowed.set()
+
+        t_bind.join(timeout=30)
+        t_rereg.join(timeout=30)
+
+        assert outcomes.get("bind") == 200, (
+            f"Bind should have succeeded (ran first), got {outcomes}"
+        )
+        assert outcomes.get("re_register") == 422, (
+            f"Re-registration should have been rejected (profile bound), "
+            f"got {outcomes}"
+        )
+
+        # Final state: approved adapter + bound profile
+        final_entry = load_adapters().get(adapter_id)
+        assert final_entry is not None
+        assert final_entry.status == "approved", (
+            f"Adapter should remain approved after rejected re-registration, "
+            f"got {final_entry.status!r}"
+        )
+        profiles = load_runtime_profiles()
+        assert profile_name in profiles
+        assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
+
+        monkeypatch.setattr(car, "_save_adapter_locked", original_save_locked)
+
+    def test_re_register_first_then_bind_rejected(
+        self, app_and_client, route_setup, token_store, monkeypatch
+    ):
+        """Forced ordering: re-registration resets adapter to PENDING first,
+        then bind's re-read sees PENDING and rejects.  Uses a monkeypatch
+        hook at the durable-runtime-profile write boundary in the bind path
+        to control commit interleaving.
+
+        Final state: PENDING adapter, no bound profile residue."""
+        app, master_token, store = app_and_client
+        profile_name = "rereg-first-cli"
+        adapter_id = self._submit_and_approve_static(
+            app, master_token, store, route_setup, profile_name
+        )
+
+        adapter_entry = load_adapters().get(adapter_id)
+        assert adapter_entry is not None
+        assert adapter_entry.status == "approved"
+
+        token2 = _mint_adapter_token(store, profile_name)
+
+        # Hook resolve_adapter (bind step 5, called BEFORE the adapter-store
+        # lock is acquired) to delay bind until re-registration completes.
+        # This avoids deadlocking: re-registration needs the lock, and if
+        # we block after bind acquires it, re-registration starves.
+        import runtime.orchestrator.custom_adapter_registry as car
+        original_resolve = car.resolve_adapter
+        rereg_completed = threading.Event()
+        bind_allowed = threading.Event()
+
+        def _hooked_resolve(adapter_id_arg):
+            rereg_completed.wait(timeout=30)
+            bind_allowed.wait(timeout=30)
+            return original_resolve(adapter_id_arg)
+
+        monkeypatch.setattr(car, "resolve_adapter", _hooked_resolve)
+
+        outcomes: dict[str, int] = {}
+
+        def do_re_register():
+            c = TestClient(app)
+            resp = c.post(
+                "/api/v1/runtime/adapters/submit",
+                json={
+                    "executable": adapter_entry.executable,
+                    "version": adapter_entry.version,
+                    "capabilities": adapter_entry.capabilities,
+                    "workspace_adapter": adapter_entry.workspace_adapter,
+                },
+                headers={"Authorization": f"Bearer {token2}"},
+            )
+            outcomes["re_register"] = resp.status_code
+            rereg_completed.set()
+
+        def do_bind():
+            c = TestClient(app)
+            c.headers.update({"Authorization": f"Bearer {master_token}"})
             resp = c.post(
                 f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
                 json={"profile_name": profile_name},
             )
             outcomes["bind"] = resp.status_code
 
-        t1 = threading.Thread(target=do_re_register)
-        t2 = threading.Thread(target=do_bind)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+        t_rereg = threading.Thread(target=do_re_register)
+        t_bind = threading.Thread(target=do_bind)
+        t_rereg.start()
+        t_bind.start()
 
-        # Re-registration always succeeds (200) — submit always works.
-        assert outcomes["re_register"] == 200, f"re-register failed: {outcomes}"
-        # Bind succeeds (200) or is rejected (422) — both are deterministic.
-        assert outcomes["bind"] in (200, 422), f"bind unexpected: {outcomes}"
+        rereg_completed.wait(timeout=30)
+        bind_allowed.set()
 
-        # Post-race: if bind succeeded, a connected profile must exist durably.
-        if outcomes["bind"] == 200:
-            profiles = load_runtime_profiles()
-            assert profile_name in profiles
-            assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
-        else:
-            # If bind was rejected, no profile residue
-            profiles = load_runtime_profiles()
-            if profile_name in profiles:
-                # May have been pre-existing from a prior test run
-                pass
+        t_rereg.join(timeout=30)
+        t_bind.join(timeout=30)
 
-        # After any outcome, the adapter exists in the store.
-        re_read = load_adapters().get(adapter_id)
-        assert re_read is not None
+        assert outcomes.get("re_register") == 200, (
+            f"Re-registration should have succeeded (ran first), got {outcomes}"
+        )
+        assert outcomes.get("bind") == 422, (
+            f"Bind should have been rejected (adapter is PENDING), "
+            f"got {outcomes}"
+        )
+
+        # Final state: adapter is PENDING, no bound profile
+        final_entry = load_adapters().get(adapter_id)
+        assert final_entry is not None
+        assert final_entry.status == "pending", (
+            f"Adapter should be PENDING after re-registration, "
+            f"got {final_entry.status!r}"
+        )
+        profiles = load_runtime_profiles()
+        if profile_name in profiles:
+            assert profiles[profile_name].get("command_adapter_id") != f"custom-adapter:{adapter_id}"
+
+        monkeypatch.setattr(car, "resolve_adapter", original_resolve)
 
     def test_bind_no_residue_on_durable_write_failure(
         self, app_and_client, route_setup, token_store, monkeypatch
@@ -1025,17 +1134,154 @@ class TestRaceSafety:
         finally:
             monkeypatch.setattr(infra_db.Database, "insert_audit_log", original_insert)
 
-    def test_re_registration_vs_bind_deterministic_with_barrier(
+    def test_re_registration_rejected_when_profile_is_bound(
+        self, app_and_client, route_setup, token_store
+    ):
+        """Re-registration (submit) must be rejected when a runtime profile
+        is already bound to the adapter — the operator must unbind first.
+
+        This covers the bind-first → re-register ordering.  The re-register
+        → bind ordering is already covered by bind's PENDING rejection.
+        """
+        app, master_token, store = app_and_client
+        profile_name = "bound-rereg-cli"
+        adapter_id = self._submit_and_approve_static(
+            app, master_token, store, route_setup, profile_name
+        )
+
+        # Bind the approved adapter to the profile.
+        mc = self._master_client(app, master_token)
+        resp = mc.post(
+            f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
+            json={"profile_name": profile_name},
+        )
+        assert resp.status_code == 200, f"Bind failed: {resp.status_code} {resp.text}"
+
+        # Verify the profile is bound.
+        profiles = load_runtime_profiles()
+        assert profile_name in profiles
+        assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
+
+        # Now try to re-register the SAME adapter via submit — must be
+        # rejected because the profile is still bound.
+        adapter_entry = load_adapters().get(adapter_id)
+        assert adapter_entry is not None
+        token2 = _mint_adapter_token(store, profile_name)
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": adapter_entry.executable,
+                "version": adapter_entry.version,
+                "capabilities": adapter_entry.capabilities,
+                "workspace_adapter": adapter_entry.workspace_adapter,
+            },
+            headers={"Authorization": f"Bearer {token2}"},
+        )
+        assert resp.status_code == 422, (
+            f"Expected 422 for re-registration with bound profile, "
+            f"got {resp.status_code}: {resp.text}"
+        )
+        detail = resp.json()["detail"]
+        assert "bound" in detail.lower() or "profile" in detail.lower(), (
+            f"Expected rejection message about bound profile, got: {detail}"
+        )
+        assert adapter_id in detail, (
+            f"Expected rejection message to mention adapter id, got: {detail}"
+        )
+
+        # The adapter status must remain unchanged (APPROVED, not reset to
+        # PENDING by a rejected re-registration).
+        re_read = load_adapters().get(adapter_id)
+        assert re_read is not None
+        assert re_read.status == "approved", (
+            f"Adapter status changed to {re_read.status!r} after rejected "
+            f"re-registration — must remain 'approved'"
+        )
+
+    def test_bind_no_residue_on_registry_failure(
         self, app_and_client, route_setup, token_store, monkeypatch
     ):
-        """Use a shared barrier to force re-registration and bind to interleave
-        their critical sections: both threads wait at the SAME barrier, then
-        race.  Under the adapter-store lock, the outcome is deterministic
-        — whichever acquires the lock first wins, and the other sees the
-        updated state (PENDING if re-registration won, or stays APPROVED
-        if bind won first)."""
+        """If the in-memory registry registration raises
+        ExecutorProfileCollisionError after the durable write, the
+        compensating rollback must restore pre-request durable and
+        in-memory state — no overwritten durable profile, no registry
+        residue, no audit residue."""
         app, master_token, store = app_and_client
-        profile_name = "rereg-barrier-cli"
+        profile_name = "regfail-cli"
+        adapter_id = self._submit_and_approve_static(
+            app, master_token, store, route_setup, profile_name
+        )
+
+        mc = self._master_client(app, master_token)
+
+        # Save pre-request state.
+        pre_profiles = dict(load_runtime_profiles())
+        from runtime.orchestrator.executor_registry import get_registry as _reg
+        registry = _reg()
+        pre_in_memory = registry.get_profile(profile_name)
+
+        # Force register_custom_profile to raise ExecutorProfileCollisionError.
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfileCollisionError,
+            ExecutorRegistry,
+        )
+        original_register = ExecutorRegistry.register_custom_profile
+
+        def _failing_register(self, profile):
+            raise ExecutorProfileCollisionError(
+                f"Profile {profile.name!r} already registered as "
+                f"a different custom profile."
+            )
+
+        monkeypatch.setattr(
+            ExecutorRegistry, "register_custom_profile", _failing_register
+        )
+
+        try:
+            resp = mc.post(
+                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
+                json={"profile_name": profile_name},
+            )
+            # The BaseException handler catches this and returns 500 with
+            # rollback.
+            assert resp.status_code == 500, (
+                f"Expected 500 after registry failure, got {resp.status_code}: {resp.text}"
+            )
+            detail = resp.json()["detail"]
+            assert "restored" in detail.lower() or "pre-request" in detail.lower()
+
+            # No durable residue — profile must be restored to pre-request state.
+            post_profiles = load_runtime_profiles()
+            if profile_name in post_profiles:
+                assert post_profiles[profile_name] == pre_profiles.get(profile_name), (
+                    f"Durable profile {profile_name!r} not restored after "
+                    f"registry failure"
+                )
+            # No in-memory residue.
+            post_in_memory = registry.get_profile(profile_name)
+            assert post_in_memory == pre_in_memory, (
+                f"In-memory profile not restored after registry failure: "
+                f"{post_in_memory} vs {pre_in_memory}"
+            )
+        finally:
+            monkeypatch.setattr(
+                ExecutorRegistry, "register_custom_profile", original_register
+            )
+
+    def test_register_rejected_with_bound_profile_via_monkeypatch(
+        self, app_and_client, route_setup, token_store, monkeypatch
+    ):
+        """Replace the barrier-based interleaving test with a deterministic
+        monkeypatch-at-production-boundary test.  Hook into the adapter-store
+        lock in register_custom_adapter to force re-registration to wait until
+        bind has established a bound profile, then verify re-registration is
+        rejected with a clear bound-profile message.
+
+        This covers the TASK-3684 requirement: "Prove final adapter/profile/
+        audit safety in each forced ordering." """
+        app, master_token, store = app_and_client
+        profile_name = "monkeypatch-bound-cli"
         adapter_id = self._submit_and_approve_static(
             app, master_token, store, route_setup, profile_name
         )
@@ -1046,14 +1292,26 @@ class TestRaceSafety:
 
         token2 = _mint_adapter_token(store, profile_name)
 
-        # SHARED barrier — created ONCE, used by both threads.
-        barrier = threading.Barrier(2, timeout=30)
-        outcomes_lock = threading.Lock()
-        outcomes: list[tuple[str, int, str]] = []
+        # Hook into acquire_store_lock in custom_adapter_registry.
+        # This is the exact production lock boundary that serializes
+        # registration vs bind.
+        import runtime.orchestrator.custom_adapter_registry as car
+        import runtime.orchestrator.adapter_store as astr
+        original_acquire = astr.acquire_store_lock
+        bind_done = threading.Event()
+        rereg_allowed = threading.Event()
+
+        def _hooked_acquire():
+            bind_done.wait(timeout=30)
+            rereg_allowed.wait(timeout=30)
+            original_acquire()
+
+        monkeypatch.setattr(astr, "acquire_store_lock", _hooked_acquire)
+
+        outcomes: dict[str, int] = {}
 
         def do_re_register():
             c = TestClient(app)
-            barrier.wait()
             resp = c.post(
                 "/api/v1/runtime/adapters/submit",
                 json={
@@ -1064,46 +1322,50 @@ class TestRaceSafety:
                 },
                 headers={"Authorization": f"Bearer {token2}"},
             )
-            with outcomes_lock:
-                outcomes.append(("re_register", resp.status_code, resp.text[:200]))
+            outcomes["re_register"] = resp.status_code
 
         def do_bind():
             c = TestClient(app)
             c.headers.update({"Authorization": f"Bearer {master_token}"})
-            barrier.wait()
             resp = c.post(
                 f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
                 json={"profile_name": profile_name},
             )
-            with outcomes_lock:
-                outcomes.append(("bind", resp.status_code, resp.text[:200]))
+            outcomes["bind"] = resp.status_code
+            bind_done.set()
 
-        t1 = threading.Thread(target=do_re_register)
-        t2 = threading.Thread(target=do_bind)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+        t_rereg = threading.Thread(target=do_re_register)
+        t_bind = threading.Thread(target=do_bind)
+        t_bind.start()
+        t_rereg.start()
 
-        assert len(outcomes) == 2, f"Expected 2 outcomes, got {outcomes}"
+        bind_done.wait(timeout=30)
+        # At this point bind has completed (profile is bound).
+        # Now allow re-registration to proceed — it must see the bound
+        # profile and reject.
+        rereg_allowed.set()
 
-        # Both operations must complete deterministically
-        for op, code, text in outcomes:
-            if op == "re_register":
-                assert code == 200, f"re-register failed: {code} {text}"
-            elif op == "bind":
-                assert code in (200, 422), f"bind unexpected: {code} {text}"
+        t_bind.join(timeout=30)
+        t_rereg.join(timeout=30)
 
-        # Under the adapter-store lock, if bind succeeded (200), the
-        # profile must be durably present.
+        monkeypatch.setattr(astr, "acquire_store_lock", original_acquire)
+
+        # Bind must succeed (ran first)
+        assert outcomes.get("bind") == 200, (
+            f"Bind should have succeeded, got {outcomes}"
+        )
+        # Re-registration must be rejected (profile is bound)
+        assert outcomes.get("re_register") == 422, (
+            f"Re-registration should be rejected, got {outcomes}"
+        )
+
+        # Final state: approved adapter + bound profile
+        final_entry = load_adapters().get(adapter_id)
+        assert final_entry is not None
+        assert final_entry.status == "approved"
         profiles = load_runtime_profiles()
-        bind_succeeded = any(op == "bind" and code == 200 for op, code, _text in outcomes)
-        if bind_succeeded:
-            assert profile_name in profiles, f"Bind succeeded but profile missing: {list(profiles.keys())}"
-            assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
-
-        # The adapter always exists post-race.
-        assert load_adapters().get(adapter_id) is not None
+        assert profile_name in profiles
+        assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
 
 
 # ---------------------------------------------------------------------------

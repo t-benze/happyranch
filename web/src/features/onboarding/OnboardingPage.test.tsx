@@ -649,6 +649,51 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
     await user.type(input, 'my-valid-cli');
     expect(gen).not.toBeDisabled();
   });
+
+  test('adapter-backed: generated prompt includes adapter-specific conformance and submit route', async () => {
+    const user = userEvent.setup();
+    const profileName = 'onb-adapter-cli';
+
+    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_ONB_TEST', expires_at: Date.now() / 1000 + 600 });
+
+    renderPage();
+    await goAdapter(user);
+    await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    // Waiting state — adapter waiting body visible (NOT legacy prompt)
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    expect(screen.queryByText(/You're being connected to HappyRanch/i)).not.toBeInTheDocument();
+
+    // The adapter prompt must include the adapter-submit route and conformance steps
+    const promptEl = document.querySelector('pre');
+    expect(promptEl).not.toBeNull();
+    const promptText = promptEl!.textContent || '';
+    expect(promptText).toContain('/runtime/adapters/submit');
+    expect(promptText).toContain('hr_tok_ONB_TEST');
+    // Adapter-backed prompt uses the AdapterInput/AdapterOutput contract
+    // (not the D7A sentinel envelope markers used by legacy generic-CLI).
+    expect(promptText).toContain('AdapterInput');
+  });
+
+  test('adapter-backed: token is minted with adapter purpose and intended profile name', async () => {
+    const user = userEvent.setup();
+    const mintSpy = vi
+      .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+      .mockResolvedValue({ token: 'hr_tok_ADP2', expires_at: Date.now() / 1000 + 600 });
+
+    renderPage();
+    await goAdapter(user);
+    await user.type(await screen.findByLabelText(/name this cli/i), 'my-adapter-v2');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    expect(mintSpy).toHaveBeenCalledWith({
+      name: 'my-adapter-v2',
+      purpose: 'adapter',
+      intended_profile_name: 'my-adapter-v2',
+    });
+  });
 });
 
 describe('OnboardingPage — Custom two-stage flow regression (profile → binary)', () => {

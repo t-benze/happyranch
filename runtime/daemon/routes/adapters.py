@@ -679,11 +679,15 @@ def bind_adapter_profile(
         durable_committed = False
 
         # (b) Write the durable runtime store first.
+        #     durable_committed becomes True immediately so that any
+        #     post-save failure (registry, audit) triggers compensating
+        #     rollback — including ExecutorProfileCollisionError from
+        #     a legitimate active-registry replacement failure.
         save_runtime_profile(profile_name, profile_cfg)
+        durable_committed = True
 
         # (c) Register in the in-memory registry.
         registry.register_custom_profile(profile)
-        durable_committed = True
 
         # (d) Audit the successful registration.
         #     Uses the same scope-prefix convention as executors.py:
@@ -699,6 +703,8 @@ def bind_adapter_profile(
         if durable_committed:
             # Compensating rollback: restore both durable and in-memory
             # surfaces to pre-request state (mirrors TASK-3567).
+            # Also covers ExecutorProfileCollisionError from the in-memory
+            # registry write that occurs after the durable commit.
             if profile_name in pre_request_profiles:
                 save_runtime_profile(profile_name, pre_request_profiles[profile_name])
             else:

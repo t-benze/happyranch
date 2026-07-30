@@ -426,6 +426,7 @@ export function CustomConnect({
       <ProfileStage
         key="profile"
         onUseBuiltin={onUseBuiltin}
+        onUseAdapter={onUseAdapter}
         skipSlot={skipSlot}
         waitingSkipSlot={waitingSkipSlot}
         onProfileRegistered={(name: string) => {
@@ -454,11 +455,13 @@ export function CustomConnect({
  *  after present:true and a pinned path. */
 function ProfileStage({
   onUseBuiltin,
+  onUseAdapter,
   skipSlot,
   waitingSkipSlot,
   onProfileRegistered,
 }: {
   onUseBuiltin?: () => void;
+  onUseAdapter?: () => void;
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
   onProfileRegistered: (name: string) => void;

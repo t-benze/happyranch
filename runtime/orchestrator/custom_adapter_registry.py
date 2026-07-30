@@ -512,6 +512,23 @@ def generate_adapter_id(name: str) -> str:
     return base.strip("-") or "adapter"
 
 
+def _find_active_profile_bound(
+    adapter_id: str,
+    runtime_profiles: dict[str, dict],
+) -> str | None:
+    """Return the name of an active runtime profile bound to ``adapter_id``.
+
+    A profile is bound when its ``command_adapter_id`` equals
+    ``custom-adapter:<adapter_id>``.  Returns ``None`` when no active
+    profile is bound.
+    """
+    target = f"custom-adapter:{adapter_id}"
+    for name, cfg in runtime_profiles.items():
+        if cfg.get("command_adapter_id") == target:
+            return name
+    return None
+
+
 def register_custom_adapter(
     executable: str,
     version: str,
@@ -589,6 +606,22 @@ def register_custom_adapter(
 
     acquire_store_lock()
     try:
+        # Re-registration safety: if an active runtime profile is already
+        # bound to this adapter id (via command_adapter_id:
+        # custom-adapter:<id>), reject the re-registration rather than
+        # silently leaving an active profile targeting a PENDING artifact.
+        # The operator must unbind the profile before re-registering.
+        from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+        bound_profile = _find_active_profile_bound(adapter_id, load_runtime_profiles())
+        if bound_profile is not None:
+            raise ValueError(
+                f"Cannot re-register adapter {adapter_id!r}: the runtime "
+                f"profile {bound_profile!r} is currently bound to it "
+                f"(command_adapter_id: custom-adapter:{adapter_id}). "
+                f"Remove the profile first via Settings → Executors → "
+                f"Custom CLIs, then re-register the adapter."
+            )
+
         # Reload existing entry from disk AT the commit boundary
         existing = get_adapter(adapter_id)
 
