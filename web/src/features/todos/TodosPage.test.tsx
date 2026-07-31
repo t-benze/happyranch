@@ -482,6 +482,35 @@ describe('TodoDetailPage — timezone rendering', () => {
 })
 
 /* ---------------------------------------------------------------- */
+/*  Detail page — indefinite-flag rendering (numeric 0/1, not bool)  */
+/* ---------------------------------------------------------------- */
+
+describe('TodoDetailPage — indefinite flag', () => {
+  beforeEach(() => {
+    sessionStorage.setItem('happyranch.token', 'mock-token')
+  })
+
+  it('does not render a stray "0" for a non-indefinite weekly schedule', async () => {
+    // ARMED_WEEKLY_TZ is weekly with indefinite: 0 (a numeric flag, not a
+    // boolean) and an expires_at set, so the schedule card renders both
+    // the review-due callout and reaches the indefinite-only block.
+    mockDetail(ARMED_WEEKLY_TZ)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
+    await waitForDetailHeading('Send the weekly market update')
+    expect(screen.queryByText('Indefinite · no expiry')).not.toBeInTheDocument()
+    expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument()
+  })
+
+  it('renders the indefinite callout for a schedule marked indefinite', async () => {
+    mockDetail(FIRING) // weekly, indefinite: 1
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-064` })
+    await waitForDetailHeading('Run the nightly regression sweep')
+    expect(screen.getByText('Indefinite · no expiry')).toBeInTheDocument()
+    expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument()
+  })
+})
+
+/* ---------------------------------------------------------------- */
 /*  Detail page — provenance and links                              */
 /* ---------------------------------------------------------------- */
 

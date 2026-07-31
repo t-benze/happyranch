@@ -283,7 +283,7 @@ export function TodoDetailPage({
                 })}. This Todo will stop firing after that date unless it was created as indefinite.
               </div>
             )}
-            {schedule.indefinite && (
+            {Boolean(schedule.indefinite) && (
               <div className="rounded border border-border-subtle bg-bg-subtle px-3 py-2">
                 <span className="text-xs text-fg-muted">Indefinite · no expiry</span>
               </div>
