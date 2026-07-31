@@ -170,5 +170,5 @@ class DependencyManifest(BaseModel):
     Legacy entries (those without this extension) retain their exact
     current launch behavior and are never auto-mutated.
     """
-    dependency_manifest_version: int = Field(..., ge=1, description="Version of the dependency manifest contract")
+    dependency_manifest_version: int = Field(..., ge=1, le=1, description="Version of the dependency manifest contract (must be exactly 1)")
     dependencies: list[DependencyRecord] = Field(..., min_length=1, description="Non-empty list of declared child executable dependencies")

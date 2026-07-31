@@ -145,7 +145,7 @@ def validate_dependency_manifest(
     """Validate the dependency manifest extension at registration time.
 
     For new submissions (non-None manifest version):
-      - ``dependency_manifest_version`` must be >= 1
+      - ``dependency_manifest_version`` must be exactly 1
       - ``dependencies`` must be a non-empty list
       - Each record is validated via ``validate_dependency_record``
       - No duplicate executables are allowed
@@ -168,9 +168,9 @@ def validate_dependency_manifest(
         raise ValueError(
             f"dependency_manifest_version must be an integer, got {type(dependency_manifest_version).__name__}"
         )
-    if dependency_manifest_version < 1:
+    if dependency_manifest_version != 1:
         raise ValueError(
-            f"dependency_manifest_version must be >= 1, got {dependency_manifest_version}"
+            f"dependency_manifest_version must be exactly 1, got {dependency_manifest_version}"
         )
 
     # Dependencies must be a non-empty list
@@ -706,7 +706,7 @@ def register_custom_adapter(
             MUST set this; the generic master-bearer registration path
             leaves it None.
         dependency_manifest_version: When set (THR-107 seq244), the version
-            of the dependency manifest contract (must be >= 1). New
+            of the dependency manifest contract (must be exactly 1). New
             submissions (both register and submit paths) must declare
             this with a non-empty dependencies list.
         dependencies: List of dependency records, each with ``executable``

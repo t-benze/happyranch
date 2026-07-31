@@ -117,9 +117,10 @@ class AdapterRegisterRequest(BaseModel):
     dependency_manifest_version: int = Field(
         ...,
         ge=1,
+        le=1,
         description=(
             "Version of the dependency manifest contract. Required for new "
-            "submissions (must be 1)."
+            "submissions (must be exactly 1)."
         ),
     )
     dependencies: list[dict] = Field(
@@ -209,7 +210,8 @@ class AdapterSubmitRequest(BaseModel):
     dependency_manifest_version: int = Field(
         ...,
         ge=1,
-        description="Version of the dependency manifest contract (must be 1 for new submissions).",
+        le=1,
+        description="Version of the dependency manifest contract (must be exactly 1 for new submissions).",
     )
     dependencies: list[dict] = Field(
         ...,
