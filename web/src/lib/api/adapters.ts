@@ -97,7 +97,7 @@ export interface ApproveAdapterRequest {
   workspace_adapter: string;
 }
 
-export interface ApproveAdapterResponse extends AdapterEntry {}
+export type ApproveAdapterResponse = AdapterEntry;
 
 /** Request body for adapter rejection — same 6 material identity facts
  *  as approval. Every field MUST match the server's durable snapshot.
