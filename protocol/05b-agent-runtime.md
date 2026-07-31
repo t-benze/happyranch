@@ -62,11 +62,33 @@ versioned ``GET /api/v1/runtime/adapters/contract-reference`` endpoint
 (THR-107 seq184), which returns JSON Schemas generated from those models at
 runtime. The server-derived schema is canonical. Key invariants:
 
-- **Registration → conformance → founder approval:** a custom adapter executable
-  is registered with its absolute path, SHA-256 hash, version, and capabilities;
-  submitted to a bounded stdin/stdout conformance probe; and explicitly approved by
-  the founder binding the exact artifact snapshot. The adapter enters PENDING on
-  registration and cannot bind to any profile or launch until APPROVED.
+- **Registration → conformance → founder approval or rejection:** a custom
+  adapter executable is registered with its absolute path, SHA-256 hash, version,
+  and capabilities; submitted to a bounded stdin/stdout conformance probe; then
+  enters **PENDING** and cannot bind to any profile or launch. From PENDING, the
+  founder has two exact-snapshot management actions:
+  - **PENDING exact-snapshot founder approve:** ``POST /runtime/adapters/{id}/approve``
+    atomically validates the six material identity facts (executable, executable_hash,
+    version, capabilities, contract_version, workspace_adapter) of the exact durable
+    snapshot. Any mismatch, missing adapter, non-PENDING state, or already-approved
+    incompatible repeat fails before persistence. On success, the adapter enters
+    **APPROVED** with ``approved_at`` and ``approved_by`` provenance. Approval alone
+    does NOT create a profile — the adapter must still be bound.
+  - **PENDING exact-snapshot founder reject/removal:**
+    ``POST /runtime/adapters/{id}/reject`` atomically validates the same six
+    material identity facts and removes the PENDING durable entry. Rejects stale,
+    hash-changed (re-registered), and non-PENDING snapshots without mutation. No
+    persisted rejected status — the PENDING entry is removed. No SQLite/schema change.
+  - **APPROVED bind:** ``POST /runtime/adapters/{id}/bind-profile`` binds a profile
+    name to the APPROVED adapter. After binding, the server reports
+    ``eligibility: already_bound`` for that adapter. The durable UI must retain
+    and render the adapter as Connected after a fresh render from a server
+    ``already_bound`` response — not filter or unmount it.
+  - **Approved-only removal:** ``DELETE /runtime/adapters/{id}`` removes an
+    APPROVED custom adapter with an exact snapshot of all material identity/binding
+    facts. Rejects stale, re-registered, wrong-target, and profile-referenced
+    snapshots. Preserves approved-only semantics — the reject path above is the
+    separate PENDING removal.
 - **Exact hash verified at EVERY launch:** before each ``Popen``, the
   ``CustomAdapterExecutor`` re-verifies path type (exists, regular file, executable)
   and SHA-256 against the approved binding. Hash mismatch, removal, non-regular, or
@@ -84,8 +106,11 @@ runtime. The server-derived schema is canonical. Key invariants:
   modules from adapter executables.
 - **Legacy generic-cli profiles remain readable** and are never auto-mutated.
   The operator path to adopt custom adapters is: register executable → conformance
-  → founder approval → bind profile (``command_adapter_id: custom-adapter:<id>``)
-  → re-register → launch/verify. Rollback: re-register the profile as
+  → PENDING → founder exact-snapshot approve (or reject) → APPROVED →
+  bind profile (``command_adapter_id: custom-adapter:<id>``) →
+  re-register → launch/verify. PENDING rejection atomically removes the entry
+  with no persisted rejected status. Approved-only removal is a separate
+  DELETE path for APPROVED adapters. Rollback: re-register the profile as
   ``generic-cli`` or revert the deployment.
 - **D5 baseline-only posture:** the custom adapter contract introduces no allow-rule,
   sandbox, network-access, filesystem-access, or permission changes.

@@ -1,30 +1,36 @@
 /**
  * PendingAdaptersSection — the Settings ▸ Executors founder-only pending
- * adapter approvals area (THR-107 seq220).
+ * adapter approvals area (THR-107 seq220, fix-forward TASK-3805).
  *
  * Rendered ABOVE Custom CLIs (CustomProfilesSection). Lists only PENDING
  * adapters with Approve/Reject controls that require explicit confirm/cancel
  * naming the exact SHA-256 snapshot. Approve transitions PENDING → APPROVED
- * and then shows the existing Bind <profile> recovery action. Reject
- * atomically removes the PENDING entry.
+ * and then shows the shared RecoveryBindCard (canonical bind → server poll →
+ * durable connected lifecycle). Reject atomically removes the PENDING entry.
  *
  * HONESTY FENCE: only fields the API returns are rendered. The server is the
  * single source of truth for eligibility and snapshot validity.
  * Onboarding NEVER renders this section — it is Settings-only.
+ *
+ * BIND RECOVERY (fix-forward TASK-3805): the shared RecoveryBindCard from
+ * ConnectFlow is the SINGLE canonical bind implementation — both this
+ * section and onboarding RecoverySection invoke the same bind → server
+ * poll → durable connected logic. No duplicate state enum, no duplicate
+ * effect, no duplicate API polling path.
  */
-import { useState, useEffect, useCallback } from 'react';
-import { Check, XCircle, Puzzle, Link, Trash2, Loader2 } from 'lucide-react';
+import { useState, useCallback } from 'react';
+import { Check, XCircle, Puzzle, Trash2 } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { ApiError } from '@/lib/api';
 import {
   ADAPTERS_KEY,
   useAdapters,
   useApproveAdapter,
-  useBindAdapterProfile,
   useRejectAdapter,
   type AdapterEntry,
 } from '@/hooks/adapters';
 import { useQueryClient } from '@tanstack/react-query';
+import { RecoveryBindCard } from '@/shared/connect/RecoveryBindCard';
 
 /** Extract a human-readable message from an ApiError or any thrown value. */
 function errMessage(err: unknown, fallback: string): string {
@@ -61,14 +67,27 @@ function shortHash(hash: string): string {
   return hash.slice(0, 12) + '\u2026';
 }
 
-/* ── Bind completion states (mirrors ConnectFlow RecoveryBindCard pattern) ── */
+/* ── Connected card for already_bound adapters (mirrors RecoveryBindCard's connected state) ── */
 
-type BindCardState =
-  | 'ready'
-  | 'binding'
-  | 'verifying'
-  | 'connected'
-  | 'error';
+function ConnectedAdapterCard({ adapter }: { adapter: AdapterEntry }): JSX.Element {
+  return (
+    <div
+      className="border-feedback-success/30 bg-feedback-success/5 rounded-lg border p-4"
+      data-testid={`pending-adapter-row-${adapter.id}`}
+    >
+      <div className="flex items-center gap-2">
+        <Check className="text-feedback-success h-4 w-4" />
+        <p className="text-text-primary text-sm font-medium">
+          <span className="font-mono">{adapter.intended_profile_name ?? adapter.name}</span> connected
+        </p>
+      </div>
+      <p className="text-text-muted mt-1 text-xs">
+        Profile bound to adapter{' '}
+        <span className="font-mono">{adapter.id}</span>
+      </p>
+    </div>
+  );
+}
 
 /* ── Single pending adapter row ── */
 
@@ -76,13 +95,9 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
   const [approveConfirming, setApproveConfirming] = useState(false);
   const [rejectConfirming, setRejectConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [bindState, setBindState] = useState<BindCardState>('ready');
-  const [bindError, setBindError] = useState('');
-  const [verifyTries, setVerifyTries] = useState(0);
 
   const approve = useApproveAdapter();
   const reject = useRejectAdapter();
-  const bindProfile = useBindAdapterProfile();
   const qc = useQueryClient();
 
   // After approval succeeds, force a refetch so we pick up the new status.
@@ -99,7 +114,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
       });
       refetchAdapters();
       // Reset approve state — the adapter will re-render as APPROVED with
-      // bind-ready action.
+      // the shared RecoveryBindCard.
       setApproveConfirming(false);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
@@ -130,158 +145,29 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
     }
   };
 
-  // Bind the approved adapter to its intended profile.
-  const onBind = async (): Promise<void> => {
-    if (!adapter.intended_profile_name) return;
-    setBindState('binding');
-    setBindError('');
-    try {
-      await bindProfile.mutateAsync({
-        id: adapter.id,
-        body: { profile_name: adapter.intended_profile_name },
-      });
-      setBindState('verifying');
-      setVerifyTries(0);
-    } catch (e: unknown) {
-      setBindError(errMessage(e, 'Bind failed. Retry or contact the founder.'));
-      setBindState('error');
-    }
-  };
-
-  // After bind success, poll the adapter list endpoint to verify the
-  // server now reports eligibility === 'already_bound'.
-  useEffect(() => {
-    if (bindState !== 'verifying') return;
-    const MAX_TRIES = 6;
-    const INTERVAL_MS = 1500;
-
-    if (verifyTries >= MAX_TRIES) {
-      setBindError(
-        'Bind succeeded but server verification timed out. Refresh the page — the profile may already be connected.',
-      );
-      setBindState('error');
-      return;
-    }
-
-    let cancelled = false;
-    const timer = window.setTimeout(async () => {
-      if (cancelled) return;
-      try {
-        refetchAdapters();
-        const { adapters } = await import('@/lib/api');
-        const entry = await adapters.getAdapter(adapter.id);
-        if (!cancelled) {
-          if (entry && entry.eligibility === 'already_bound') {
-            setBindState('connected');
-          } else {
-            setVerifyTries((t) => t + 1);
-          }
-        }
-      } catch {
-        if (!cancelled) setVerifyTries((t) => t + 1);
-      }
-    }, INTERVAL_MS);
-
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [bindState, verifyTries, adapter.id, refetchAdapters]);
-
-  // If bind is connected, show connected state
-  if (bindState === 'connected') {
-    return (
-      <div
-        className="border-feedback-success/30 bg-feedback-success/5 rounded-lg border p-4"
-        data-testid={`pending-adapter-row-${adapter.id}`}
-      >
-        <div className="flex items-center gap-2">
-          <Check className="text-feedback-success h-4 w-4" />
-          <p className="text-text-primary text-sm font-medium">
-            <span className="font-mono">{adapter.intended_profile_name ?? adapter.name}</span> connected
-          </p>
-        </div>
-        <p className="text-text-muted mt-1 text-xs">
-          Profile bound to adapter{' '}
-          <span className="font-mono">{adapter.id}</span>
-        </p>
-      </div>
-    );
+  // If adapter is already bound (server confirmed), show connected card.
+  if (adapter.eligibility === 'already_bound') {
+    return <ConnectedAdapterCard adapter={adapter} />;
   }
 
-  // If adapter is APPROVED (after successful approve), show bind action.
-  if (adapter.status === 'approved' && adapter.intended_profile_name) {
+  // If adapter is APPROVED and ready to bind, use the shared RecoveryBindCard.
+  if (adapter.status === 'approved' && adapter.eligibility === 'ready_to_bind' && adapter.intended_profile_name) {
     return (
-      <div
-        className="border-feedback-success/20 bg-surface rounded-lg border p-4"
-        data-testid={`pending-adapter-row-${adapter.id}`}
-      >
-        <div className="flex items-center gap-2 mb-2">
-          <Check className="text-feedback-success h-4 w-4" />
-          <span className="text-text-primary font-mono text-sm font-medium">{adapter.id}</span>
-          <span className="text-mono-sm bg-tier-green-tint text-status-open inline-flex items-center rounded-full px-2 py-0.5 font-semibold">
-            approved
-          </span>
-        </div>
-        <p className="text-text-secondary text-sm">
-          Approved — bind profile <span className="font-mono">{adapter.intended_profile_name}</span> to connect.
-        </p>
-
-        <div className="mt-3 flex items-center gap-2">
-          {bindState === 'error' ? (
-            <>
-              <Button
-                type="button"
-                variant="default"
-                onClick={() => { void onBind(); }}
-                data-testid={`adapter-bind-${adapter.id}`}
-              >
-                <Link aria-hidden="true" size={14} />
-                Retry Bind
-              </Button>
-              <p className="text-feedback-danger text-xs" role="alert" data-testid={`adapter-bind-error-${adapter.id}`}>
-                {bindError}
-              </p>
-            </>
-          ) : (
-            <Button
-              type="button"
-              variant="default"
-              onClick={() => { void onBind(); }}
-              disabled={bindState !== 'ready'}
-              data-testid={`adapter-bind-${adapter.id}`}
-            >
-              {bindState === 'binding' ? (
-                <>
-                  <Loader2 aria-hidden="true" className="mr-1 h-3 w-3 animate-spin" />
-                  Binding…
-                </>
-              ) : bindState === 'verifying' ? (
-                <>
-                  <Loader2 aria-hidden="true" className="mr-1 h-3 w-3 animate-spin" />
-                  Verifying…
-                </>
-              ) : (
-                <>
-                  <Link aria-hidden="true" size={14} />
-                  Bind{' '}
-                  <span className="font-mono">{adapter.intended_profile_name}</span>
-                </>
-              )}
-            </Button>
-          )}
-        </div>
-        {bindState === 'verifying' && (
-          <p className="text-text-muted mt-2 text-xs">
-            Confirming profile binding with the server…
-          </p>
-        )}
-        {bindError && bindState === 'error' && (
-          <p
-            className="text-feedback-danger mt-2 text-xs"
-            role="alert"
-            data-testid={`adapter-bind-error-${adapter.id}`}
-          >
-            {bindError}
-          </p>
-        )}
+      <div data-testid={`pending-adapter-row-${adapter.id}`}>
+        <RecoveryBindCard
+          adapter={{
+            adapterId: adapter.id,
+            profileName: adapter.intended_profile_name,
+            executable: adapter.executable,
+            workspaceAdapter: adapter.workspace_adapter,
+          }}
+          onBindSuccess={() => {
+            // RecoveryBindCard handles its own connected state rendering.
+            // After the next refetch, the adapter will appear with
+            // eligibility='already_bound' and render as ConnectedAdapterCard.
+            refetchAdapters();
+          }}
+        />
       </div>
     );
   }
@@ -456,11 +342,15 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
 export function PendingAdaptersSection(): JSX.Element {
   const query = useAdapters();
   const adapters = query.data ?? [];
-  // Show PENDING adapters (awaiting approval) AND approved adapters eligible
-  // for binding. The bind action is shown by PendingAdapterRow for approved
-  // adapters with an intended_profile_name.
+  // Show PENDING adapters (awaiting approval), APPROVED adapters ready to
+  // bind, AND already_bound adapters (durable Connected). The filter
+  // intentionally includes already_bound so the card survives refetch
+  // after a successful bind → server confirmation cycle.
   const pending = adapters.filter(
-    (a) => a.status === 'pending' || (a.status === 'approved' && a.eligibility === 'ready_to_bind'),
+    (a) =>
+      a.status === 'pending' ||
+      (a.status === 'approved' &&
+        (a.eligibility === 'ready_to_bind' || a.eligibility === 'already_bound')),
   );
 
   return (
