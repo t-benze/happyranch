@@ -2024,3 +2024,83 @@ class TestContractReferenceOpenApi:
         assert isinstance(data["adapter_output_schema"], dict)
         assert isinstance(data["rules"], dict)
         assert isinstance(data["submission"], dict)
+
+
+class TestSubmitStrictManifestVersion:
+    """THR-107 seq244 fix-forward: strict integer enforcement on submit route.
+
+    dependency_manifest_version must be literally JSON integer 1.
+    JSON 1.0, "1", and true are rejected with 422 before any
+    conformance probe or durable persistence.
+    """
+
+    _ADAPTER = "strict-int-submit"
+
+    @pytest.mark.parametrize("bad_value,label", [
+        (1.0, "float-1.0"),
+        ("1", "string-1"),
+        (True, "bool-true"),
+    ])
+    def test_submit_route_rejects_non_strict_int_422(
+        self,
+        app_and_client,
+        route_setup,
+        token_store,
+        bad_value,
+        label,
+    ):
+        """Submit route returns 422 for float/string/bool manifest version."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, f"cli-{label}")
+        script = _make_conformant_adapter_script(
+            route_setup, f"{label}-adapter"
+        )
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": str(script),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": bad_value,
+                "dependencies": [
+                    {"executable": str(script), "sha256": compute_sha256(str(script))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422, (
+            f"submit route: expected 422 for {label}, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_submit_route_accepts_int_1(
+        self,
+        app_and_client,
+        route_setup,
+        token_store,
+    ):
+        """Submit route accepts literal JSON integer 1."""
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "cli-int-1")
+        script = _make_conformant_adapter_script(route_setup, "int1-adapter")
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": str(script),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(script), "sha256": compute_sha256(str(script))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["dependency_manifest_version"] == 1
