@@ -114,20 +114,21 @@ class AdapterRegisterRequest(BaseModel):
         default="pi",
         description="Workspace preparation adapter: claude, codex, opencode, or pi.",
     )
-    dependency_manifest_version: int | None = Field(
-        None,
+    dependency_manifest_version: int = Field(
+        ...,
         ge=1,
         description=(
             "Version of the dependency manifest contract. Required for new "
-            "submissions (must be 1). Omit for legacy entries."
+            "submissions (must be 1)."
         ),
     )
-    dependencies: list[dict] | None = Field(
-        None,
+    dependencies: list[dict] = Field(
+        ...,
+        min_length=1,
         description=(
             "List of declared child executable dependencies. Each entry must "
             "have 'executable' (absolute path) and 'sha256' (SHA-256 hex). "
-            "Required and non-empty when dependency_manifest_version is set."
+            "Required and non-empty."
         ),
     )
 
@@ -205,13 +206,14 @@ class AdapterSubmitRequest(BaseModel):
         default="pi",
         description="Workspace preparation adapter.",
     )
-    dependency_manifest_version: int | None = Field(
-        None,
+    dependency_manifest_version: int = Field(
+        ...,
         ge=1,
         description="Version of the dependency manifest contract (must be 1 for new submissions).",
     )
-    dependencies: list[dict] | None = Field(
-        None,
+    dependencies: list[dict] = Field(
+        ...,
+        min_length=1,
         description="List of declared child executable dependencies.",
     )
 
@@ -291,6 +293,20 @@ class AdapterRemoveRequest(BaseModel):
         None,
         description="Intended profile name (must match store exactly, null allowed).",
     )
+    dependency_manifest_version: int | None = Field(
+        None,
+        description=(
+            "Dependency manifest version (must match store exactly). "
+            "None for legacy entries without a manifest."
+        ),
+    )
+    dependencies: list[dict] | None = Field(
+        None,
+        description=(
+            "List of declared child executable dependencies (must match store "
+            "exactly in order and content). None/empty for legacy entries."
+        ),
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -300,6 +316,10 @@ class AdapterApproveRequest(BaseModel):
 
     Every field MUST match the durable store entry exactly.
     This binds the exact artifact snapshot the founder inspected.
+
+    THR-107 seq244 fix-forward: includes dependency_manifest_version
+    and dependencies so the founder attests to the immutable dependency
+    manifest facts.
     """
 
     executable: str = Field(
@@ -329,6 +349,20 @@ class AdapterApproveRequest(BaseModel):
         ...,
         description="Workspace preparation adapter (must match store exactly).",
         min_length=1,
+    )
+    dependency_manifest_version: int | None = Field(
+        None,
+        description=(
+            "Dependency manifest version (must match store exactly). "
+            "None for legacy entries without a manifest."
+        ),
+    )
+    dependencies: list[dict] | None = Field(
+        None,
+        description=(
+            "List of declared child executable dependencies (must match store "
+            "exactly in order and content). None/empty for legacy entries."
+        ),
     )
 
     model_config = {"extra": "forbid"}
@@ -341,6 +375,10 @@ class AdapterRejectRequest(BaseModel):
     Rejects stale, re-registered, and hash-changed snapshots.
     Same material identity facts as approval — the caller attests to the
     exact PENDING artifact being rejected.
+
+    THR-107 seq244 fix-forward: includes dependency_manifest_version
+    and dependencies so the caller attests to the immutable dependency
+    manifest facts.
     """
 
     executable: str = Field(
@@ -370,6 +408,20 @@ class AdapterRejectRequest(BaseModel):
         ...,
         description="Workspace preparation adapter (must match store exactly).",
         min_length=1,
+    )
+    dependency_manifest_version: int | None = Field(
+        None,
+        description=(
+            "Dependency manifest version (must match store exactly). "
+            "None for legacy entries without a manifest."
+        ),
+    )
+    dependencies: list[dict] | None = Field(
+        None,
+        description=(
+            "List of declared child executable dependencies (must match store "
+            "exactly in order and content). None/empty for legacy entries."
+        ),
     )
 
     model_config = {"extra": "forbid"}
@@ -391,6 +443,8 @@ def _adapter_snapshot_mismatch(entry, body: AdapterRemoveRequest) -> str | None:
         ("workspace_adapter", entry.workspace_adapter, body.workspace_adapter),
         ("name", entry.name, body.name),
         ("intended_profile_name", entry.intended_profile_name, body.intended_profile_name),
+        ("dependency_manifest_version", entry.dependency_manifest_version, body.dependency_manifest_version),
+        ("dependencies", entry.dependencies, body.dependencies or []),
     ]
     for field, store_val, req_val in facts:
         if store_val != req_val:
@@ -681,6 +735,8 @@ def approve_registered_adapter(
             workspace_adapter=body.workspace_adapter,
             approved_by="founder/master-bearer",
             auto_bind_profile=auto_bind,
+            dependency_manifest_version=body.dependency_manifest_version,
+            dependencies=body.dependencies,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -1378,7 +1434,8 @@ def _audit_adapter_remove(
       action  = "adapter_removed"
       payload = {adapter_id, name, executable, executable_hash, version,
                  capabilities, contract_version, workspace_adapter,
-                 intended_profile_name, status}
+                 intended_profile_name, status,
+                 dependency_manifest_version, dependencies}
     """
     from runtime.infrastructure.database import Database
     from runtime.runtime import daemon_home
@@ -1401,6 +1458,8 @@ def _audit_adapter_remove(
                 "workspace_adapter": removed_snapshot.get("workspace_adapter", ""),
                 "intended_profile_name": removed_snapshot.get("intended_profile_name"),
                 "status": removed_snapshot.get("status", ""),
+                "dependency_manifest_version": removed_snapshot.get("dependency_manifest_version"),
+                "dependencies": removed_snapshot.get("dependencies", []),
             },
         )
         db.commit()
@@ -1572,7 +1631,8 @@ def _audit_adapter_reject(
       action  = "adapter_rejected"
       payload = {adapter_id, name, executable, executable_hash, version,
                  capabilities, contract_version, workspace_adapter,
-                 intended_profile_name, status}
+                 intended_profile_name, status,
+                 dependency_manifest_version, dependencies}
     """
     from runtime.infrastructure.database import Database
     from runtime.runtime import daemon_home
@@ -1595,6 +1655,8 @@ def _audit_adapter_reject(
                 "workspace_adapter": rejected_snapshot.get("workspace_adapter", ""),
                 "intended_profile_name": rejected_snapshot.get("intended_profile_name"),
                 "status": rejected_snapshot.get("status", ""),
+                "dependency_manifest_version": rejected_snapshot.get("dependency_manifest_version"),
+                "dependencies": rejected_snapshot.get("dependencies", []),
             },
         )
         db.commit()
@@ -1652,7 +1714,9 @@ def reject_pending_adapter(
         )
 
     # 3. Exact-snapshot match against all material identity facts.
-    #    Use the same predicate shape as approval — 6 material fields.
+    #    Includes dependency manifest facts (THR-107 seq244 fix-forward).
+    _req_deps = body.dependencies or []
+    _entry_deps = entry.dependencies or []
     facts = [
         ("executable", entry.executable, body.executable),
         ("executable_hash", entry.executable_hash, body.executable_hash),
@@ -1660,6 +1724,8 @@ def reject_pending_adapter(
         ("capabilities", entry.capabilities, body.capabilities),
         ("contract_version", entry.contract_version, body.contract_version),
         ("workspace_adapter", entry.workspace_adapter, body.workspace_adapter),
+        ("dependency_manifest_version", entry.dependency_manifest_version, body.dependency_manifest_version),
+        ("dependencies", _entry_deps, _req_deps),
     ]
     for field, store_val, req_val in facts:
         if store_val != req_val:
@@ -1701,6 +1767,8 @@ def reject_pending_adapter(
             ("capabilities", re_read_entry.capabilities, body.capabilities),
             ("contract_version", re_read_entry.contract_version, body.contract_version),
             ("workspace_adapter", re_read_entry.workspace_adapter, body.workspace_adapter),
+            ("dependency_manifest_version", re_read_entry.dependency_manifest_version, body.dependency_manifest_version),
+            ("dependencies", re_read_entry.dependencies or [], body.dependencies or []),
         ]:
             if store_val != req_val:
                 raise HTTPException(

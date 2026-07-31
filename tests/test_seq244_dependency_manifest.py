@@ -224,20 +224,71 @@ class TestRegistrationWithDependencyManifest:
         assert entry.dependencies[0]["executable"] == str(dep_exe)
         assert entry.dependencies[0]["sha256"] == dep_hash
 
-    def test_registration_without_manifest_is_legacy(self, tmp_path: Path, monkeypatch):
-        """Registration without dependency manifest is accepted (legacy path)."""
-        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
-        adapter = _make_fake_adapter_with_deps(tmp_path, "legacy-adapter")
+    def test_route_level_rejects_absent_or_null_manifest(self):
+        """Pydantic schema rejects absent, null, or empty manifest at the route boundary."""
+        from runtime.daemon.routes.adapters import AdapterRegisterRequest, AdapterSubmitRequest
+        from pydantic import ValidationError
 
-        entry = register_custom_adapter(
-            executable=str(adapter),
+        # Absent (omitted) fields → Pydantic rejects
+        with pytest.raises(ValidationError):
+            AdapterRegisterRequest(
+                executable="/usr/bin/echo",
+                version="1.0.0",
+                capabilities=[],
+                # dependency_manifest_version omitted
+                # dependencies omitted
+            )
+
+        with pytest.raises(ValidationError):
+            AdapterSubmitRequest(
+                executable="/usr/bin/echo",
+                version="1.0.0",
+                capabilities=[],
+                # dependency_manifest_version omitted
+                # dependencies omitted
+            )
+
+        # Null dependency_manifest_version → Pydantic rejects (int expected, got None)
+        with pytest.raises(ValidationError):
+            AdapterRegisterRequest(
+                executable="/usr/bin/echo",
+                version="1.0.0",
+                capabilities=[],
+                dependency_manifest_version=None,
+                dependencies=[{"executable": "/usr/bin/python3", "sha256": "a" * 64}],
+            )
+
+        # Empty dependencies list → Pydantic rejects (min_length=1)
+        with pytest.raises(ValidationError):
+            AdapterRegisterRequest(
+                executable="/usr/bin/echo",
+                version="1.0.0",
+                capabilities=[],
+                dependency_manifest_version=1,
+                dependencies=[],
+            )
+
+        # Invalid dependency_manifest_version (0, below ge=1)
+        with pytest.raises(ValidationError):
+            AdapterRegisterRequest(
+                executable="/usr/bin/echo",
+                version="1.0.0",
+                capabilities=[],
+                dependency_manifest_version=0,
+                dependencies=[{"executable": "/usr/bin/python3", "sha256": "a" * 64}],
+            )
+
+        # Valid request passes Pydantic validation (validation of dep contents
+        # happens downstream in validate_dependency_manifest)
+        req = AdapterRegisterRequest(
+            executable="/usr/bin/echo",
             version="1.0.0",
             capabilities=[],
+            dependency_manifest_version=1,
+            dependencies=[{"executable": "/usr/bin/python3", "sha256": "a" * 64}],
         )
-
-        assert entry.status == "pending"
-        assert entry.dependency_manifest_version is None
-        assert entry.dependencies == []
+        assert req.dependency_manifest_version == 1
+        assert len(req.dependencies) == 1
 
     def test_empty_deps_with_version_rejected(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
@@ -305,11 +356,15 @@ class TestTokenMeteringTruthfulness:
     def test_token_metering_adapter_with_valid_usage_succeeds(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
         adapter = _make_fake_adapter_with_deps(tmp_path, "metered-adapter", has_token_metering=True)
+        dep_exe = _make_fake_exe(tmp_path, "meter-child")
+        dep_hash = compute_sha256(str(dep_exe))
 
         entry = register_custom_adapter(
             executable=str(adapter),
             version="1.0.0",
             capabilities=["token_metering"],
+            dependency_manifest_version=1,
+            dependencies=[{"executable": str(dep_exe), "sha256": dep_hash}],
         )
         assert entry.status == "pending"
         assert "token_metering" in entry.capabilities
@@ -319,23 +374,31 @@ class TestTokenMeteringTruthfulness:
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
         # Use regular adapter (no token_usage)
         adapter = _make_fake_adapter_with_deps(tmp_path, "null-usage-adapter", has_token_metering=False)
+        dep_exe = _make_fake_exe(tmp_path, "null-usage-child")
+        dep_hash = compute_sha256(str(dep_exe))
 
         with pytest.raises(ValueError, match="token_usage"):
             register_custom_adapter(
                 executable=str(adapter),
                 version="1.0.0",
                 capabilities=["token_metering"],
+                dependency_manifest_version=1,
+                dependencies=[{"executable": str(dep_exe), "sha256": dep_hash}],
             )
 
     def test_adapter_without_token_metering_remains_valid(self, tmp_path: Path, monkeypatch):
         """Adapter without token_metering capability is valid with null token_usage."""
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
         adapter = _make_fake_adapter_with_deps(tmp_path, "no-meter-adapter", has_token_metering=False)
+        dep_exe = _make_fake_exe(tmp_path, "no-meter-child")
+        dep_hash = compute_sha256(str(dep_exe))
 
         entry = register_custom_adapter(
             executable=str(adapter),
             version="1.0.0",
             capabilities=[],
+            dependency_manifest_version=1,
+            dependencies=[{"executable": str(dep_exe), "sha256": dep_hash}],
         )
         assert entry.status == "pending"
 
@@ -401,20 +464,46 @@ class TestDependencySnapshotComparison:
         assert entry2.status == "pending"
         assert entry2.registered_at == entry1.registered_at  # Preserved metadata
 
-    def test_legacy_adapter_with_no_manifest_retains_behavior(self, tmp_path: Path, monkeypatch):
-        """Legacy adapter (no dependency manifest) retains exact current launch behavior."""
+    def test_legacy_persisted_adapter_with_no_manifest_retains_behavior(self, tmp_path: Path, monkeypatch):
+        """Legacy adapter loaded from persisted store (no manifest fields) retains behavior.
+
+        This is the deserialization path — a pre-existing AdapterEntry record
+        that lacks the dependency_manifest_version/dependencies fields is loaded
+        with None/[] and retains its exact launch behavior without mutation.
+        """
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
         adapter = _make_fake_adapter_with_deps(tmp_path, "legacy-no-manifest")
+        adapter_hash = compute_sha256(str(adapter))
+        adapter_id = f"legacy-no-manifest-adapter-{adapter_hash[:12]}"
 
-        entry = register_custom_adapter(
+        # Construct a legacy entry directly (simulating a persisted record
+        # that was created before seq244 was deployed).
+        from runtime.orchestrator.adapter_store import save_adapter as _save
+        from datetime import datetime, timezone
+        legacy_entry = AdapterEntry(
+            id=adapter_id,
+            name="legacy-no-manifest",
             executable=str(adapter),
+            executable_hash=adapter_hash,
             version="1.0.0",
             capabilities=[],
+            contract_version=1,
+            workspace_adapter="pi",
+            status="pending",
+            registered_at=datetime.now(timezone.utc).isoformat(),
+            registered_by="legacy-importer",
+            # No dependency_manifest_version or dependencies — legacy
         )
+        _save(legacy_entry)
+
+        # Load it back — from_dict should produce None / []
+        loaded = load_adapters()
+        assert adapter_id in loaded
+        entry = loaded[adapter_id]
         assert entry.dependency_manifest_version is None
         assert entry.dependencies == []
 
-        # Approve the legacy adapter
+        # Approve the legacy adapter (with matching None/empty facts)
         approved = approve_adapter(
             adapter_id=entry.id,
             executable=entry.executable,
@@ -428,6 +517,50 @@ class TestDependencySnapshotComparison:
         # Legacy fields remain None
         assert approved.dependency_manifest_version is None
         assert approved.dependencies == []
+
+    def test_legacy_persisted_adapter_round_trips_through_store(self, tmp_path: Path, monkeypatch):
+        """A legacy adapter serialized without manifest fields deserializes correctly."""
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+        adapter = _make_fake_adapter_with_deps(tmp_path, "roundtrip-legacy")
+        adapter_hash = compute_sha256(str(adapter))
+        adapter_id = f"roundtrip-legacy-adapter-{adapter_hash[:12]}"
+
+        from runtime.orchestrator.adapter_store import save_adapter as _save
+        from datetime import datetime, timezone
+
+        # Construct entry with explicit None/[] manifest fields
+        legacy_entry = AdapterEntry(
+            id=adapter_id,
+            name="roundtrip-legacy",
+            executable=str(adapter),
+            executable_hash=adapter_hash,
+            version="1.0.0",
+            capabilities=[],
+            contract_version=1,
+            workspace_adapter="pi",
+            status="pending",
+            registered_at=datetime.now(timezone.utc).isoformat(),
+            registered_by="test",
+            dependency_manifest_version=None,
+            dependencies=[],
+        )
+
+        # to_dict should omit None/empty manifest fields
+        d = legacy_entry.to_dict()
+        assert "dependency_manifest_version" not in d
+        assert "dependencies" not in d
+
+        # from_dict of the serialized dict should restore None/[]
+        restored = AdapterEntry.from_dict(d)
+        assert restored.dependency_manifest_version is None
+        assert restored.dependencies == []
+
+        # Persist and reload from disk
+        _save(legacy_entry)
+        loaded = load_adapters()
+        reloaded = loaded[adapter_id]
+        assert reloaded.dependency_manifest_version is None
+        assert reloaded.dependencies == []
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +586,7 @@ class TestPreLaunchDependencyRevalidation:
             dependencies=[{"executable": str(dep_exe), "sha256": dep_hash}],
         )
 
-        # Approve the adapter
+        # Approve the adapter (with manifest facts)
         approved = approve_adapter(
             adapter_id=entry.id,
             executable=entry.executable,
@@ -462,6 +595,8 @@ class TestPreLaunchDependencyRevalidation:
             capabilities=entry.capabilities,
             contract_version=entry.contract_version,
             workspace_adapter=entry.workspace_adapter,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
         )
         assert approved.status == "approved"
 
@@ -525,6 +660,8 @@ class TestPreLaunchDependencyRevalidation:
             capabilities=entry.capabilities,
             contract_version=entry.contract_version,
             workspace_adapter=entry.workspace_adapter,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
         )
         assert approved.status == "approved"
 
@@ -583,6 +720,8 @@ class TestPreLaunchDependencyRevalidation:
             capabilities=entry.capabilities,
             contract_version=entry.contract_version,
             workspace_adapter=entry.workspace_adapter,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
         )
         assert approved.status == "approved"
 
@@ -614,15 +753,34 @@ class TestPreLaunchDependencyRevalidation:
         assert result.success
 
     def test_legacy_adapter_launches_with_normal_env(self, tmp_path: Path, monkeypatch):
-        """Legacy adapter (no manifest) uses normal env, not PATH-scrubbed."""
+        """Legacy adapter (no manifest, loaded from persisted store) uses normal env."""
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
         adapter = _make_fake_adapter_with_deps(tmp_path, "legacy-env-adapter", adapter_id="legacy-env-adapter")
+        adapter_hash = compute_sha256(str(adapter))
+        # adapter_id must match adapter_metadata.adapter in the fake script
+        adapter_id = "legacy-env-adapter"
 
-        entry = register_custom_adapter(
+        from runtime.orchestrator.adapter_store import save_adapter as _save
+        from datetime import datetime, timezone
+
+        # Construct legacy entry via fixture (pre-existing store record)
+        legacy_entry = AdapterEntry(
+            id=adapter_id,
+            name="legacy-env-adapter",
             executable=str(adapter),
+            executable_hash=adapter_hash,
             version="1.0.0",
             capabilities=[],
+            contract_version=1,
+            workspace_adapter="pi",
+            status="pending",
+            registered_at=datetime.now(timezone.utc).isoformat(),
+            registered_by="legacy-importer",
         )
+        _save(legacy_entry)
+
+        loaded = load_adapters()
+        entry = loaded[adapter_id]
         assert entry.dependency_manifest_version is None
 
         approved = approve_adapter(
