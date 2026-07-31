@@ -90,6 +90,10 @@ class AdapterRegisterRequest(BaseModel):
     """Request body for custom adapter registration.
 
     D3 fields only — no approval, no profile binding, no sandbox flags.
+
+    THR-107 seq244: adds ``dependency_manifest_version`` and ``dependencies``
+    fields. New submissions MUST declare a non-empty dependencies list with
+    ``dependency_manifest_version: 1``.
     """
 
     executable: str = Field(
@@ -109,6 +113,22 @@ class AdapterRegisterRequest(BaseModel):
     workspace_adapter: str = Field(
         default="pi",
         description="Workspace preparation adapter: claude, codex, opencode, or pi.",
+    )
+    dependency_manifest_version: int | None = Field(
+        None,
+        ge=1,
+        description=(
+            "Version of the dependency manifest contract. Required for new "
+            "submissions (must be 1). Omit for legacy entries."
+        ),
+    )
+    dependencies: list[dict] | None = Field(
+        None,
+        description=(
+            "List of declared child executable dependencies. Each entry must "
+            "have 'executable' (absolute path) and 'sha256' (SHA-256 hex). "
+            "Required and non-empty when dependency_manifest_version is set."
+        ),
     )
 
     model_config = {"extra": "forbid"}
@@ -139,6 +159,8 @@ class AdapterEntryResponse(BaseModel):
     approved_at: str | None = None
     approved_by: str | None = None
     intended_profile_name: str | None = None
+    dependency_manifest_version: int | None = None
+    dependencies: list[dict] = []
     eligibility: str | None = Field(
         None,
         description=(
@@ -161,6 +183,8 @@ class AdapterSubmitRequest(BaseModel):
     The candidate CLI submits its v1 adapter wrapper executable. The token
     carries the intended profile name — the candidate request does NOT
     choose a different adapter target.
+
+    THR-107 seq244: adds ``dependency_manifest_version`` and ``dependencies``.
     """
 
     executable: str = Field(
@@ -180,6 +204,15 @@ class AdapterSubmitRequest(BaseModel):
     workspace_adapter: str = Field(
         default="pi",
         description="Workspace preparation adapter.",
+    )
+    dependency_manifest_version: int | None = Field(
+        None,
+        ge=1,
+        description="Version of the dependency manifest contract (must be 1 for new submissions).",
+    )
+    dependencies: list[dict] | None = Field(
+        None,
+        description="List of declared child executable dependencies.",
     )
 
     model_config = {"extra": "forbid"}
@@ -488,6 +521,8 @@ def _entry_to_response(entry) -> AdapterEntryResponse:
         approved_at=entry.approved_at,
         approved_by=entry.approved_by,
         intended_profile_name=entry.intended_profile_name,
+        dependency_manifest_version=entry.dependency_manifest_version,
+        dependencies=entry.dependencies,
         eligibility=_compute_eligibility(entry),
     )
 
@@ -540,6 +575,8 @@ def register_adapter(body: AdapterRegisterRequest) -> AdapterEntryResponse:
             capabilities=body.capabilities,
             workspace_adapter=body.workspace_adapter,
             registered_by="",
+            dependency_manifest_version=body.dependency_manifest_version,
+            dependencies=body.dependencies,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -715,6 +752,8 @@ def submit_adapter(
             workspace_adapter=body.workspace_adapter,
             registered_by=f"adapter-submission:{intended_profile}",
             intended_profile_name=intended_profile,
+            dependency_manifest_version=body.dependency_manifest_version,
+            dependencies=body.dependencies,
         )
     except ValueError as exc:
         # Release the token on failure so it remains retryable
@@ -790,7 +829,7 @@ def get_contract_reference(request: Request) -> dict:
     # endpoint. The candidate may fetch the contract multiple times before
     # proceeding to conformance check-ins and submission.
 
-    from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput
+    from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput, DependencyManifest, DependencyRecord
     from runtime.orchestrator.custom_adapter_registry import build_probe_input
 
     # Build a minimal self-test fixture from the real probe builder.
@@ -873,9 +912,97 @@ def get_contract_reference(request: Request) -> dict:
                 "Submit the adapter wrapper executable for the intended profile. "
                 "Requires the same adapter-purpose hrreg_ token and a completed "
                 "conformance challenge. Submission creates ONLY the exact PENDING "
-                "adapter; founder approval and management binding are separate steps."
+                "adapter; founder approval and management binding are separate steps. "
+                "New submissions MUST include dependency_manifest_version: 1 and a "
+                "non-empty dependencies list declaring every child executable the "
+                "adapter wrapper invokes."
+            ),
+            "body_schema": {
+                "description": "Adapter submission request body",
+                "required_fields": [
+                    "executable", "version", "capabilities",
+                    "dependency_manifest_version", "dependencies",
+                ],
+                "fields": {
+                    "executable": "Absolute path to the adapter wrapper executable",
+                    "version": "Adapter version string",
+                    "capabilities": "Declared capabilities list",
+                    "workspace_adapter": "Workspace preparation adapter (default: pi)",
+                    "dependency_manifest_version": (
+                        "Integer. Must be 1 for new submissions. "
+                        "Separate versioning space from contract_version."
+                    ),
+                    "dependencies": (
+                        "Non-empty list of dependency records. Each record has: "
+                        "executable (absolute path, must be regular + executable "
+                        "on disk, never a bare command name or PATH-resolved) and "
+                        "sha256 (64-char hex matching the on-disk file). "
+                        "Duplicates are rejected. "
+                        "An adapter declaring this manifest must invoke "
+                        "child executables by their exact declared absolute "
+                        "paths — the runtime scrubs PATH for manifest-adapters. "
+                        "A dependency change requires re-submission and founder "
+                        "re-approval."
+                    ),
+                },
+            },
+        },
+        "dependency_manifest": {
+            "description": (
+                "The dependency manifest is an independently versioned extension "
+                "that declares every child executable the adapter wrapper invokes. "
+                "This is required for new submissions and provides durable trust "
+                "boundaries: every declared dependency is hash-verified at "
+                "registration and re-verified before EVERY launch attempt."
+            ),
+            "dependency_manifest_version": 1,
+            "dependency_manifest_schema": DependencyManifest.model_json_schema(),
+            "dependency_record_schema": DependencyRecord.model_json_schema(),
+            "rules": {
+                "new_submission_required": True,
+                "non_empty_required": True,
+                "duplicates_rejected": True,
+                "absolute_path_only": True,
+                "no_path_fallback": True,
+                "hash_at_registration": True,
+                "hash_before_every_launch": True,
+                "change_requires_resubmit": True,
+                "legacy_entries_preserved": True,
+            },
+            "example": {
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {
+                        "executable": "/usr/local/bin/some-child-cli",
+                        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    }
+                ],
+            },
+        },
+        "token_metering": {
+            "description": (
+                "Adapters that declare the token_metering capability MUST produce "
+                "a valid, non-null token_usage in their AdapterOutput at conformance "
+                "time. The token_usage object must not be null, and at least one of "
+                "input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, "
+                "or reasoning_tokens must be a non-null integer. Zero is a legitimate "
+                "count. An absent, null, or all-accounting-fields-null token_usage "
+                "fails the conformance probe. Adapters without token_metering capability "
+                "may omit token_usage and retain current behavior."
+            ),
+            "probe_expectation": (
+                "The conformance probe runs the adapter with a sample AdapterInput. "
+                "A token_metering adapter must return a structurally valid token_usage. "
+                "The runtime does not fabricate, default, or infer accounting — the "
+                "adapter must truthfully report what its child CLI consumed."
             ),
         },
+        "reapproval_rule": (
+            "Any change to the adapter executable, its hash, declared dependencies, "
+            "or capabilities requires re-submission and founder re-approval. The "
+            "approved snapshot is immutable — a tampered or stale dependency blocks "
+            "launch with an actionable error."
+        ),
         "probe": {
             "description": (
                 "Before registration, the server runs a conformance probe against "

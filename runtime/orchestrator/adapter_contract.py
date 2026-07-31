@@ -22,6 +22,12 @@ D12: finalized stable external contract — this module is the authoritative
 code-level reference; the unified-adapter architecture spec §2 is the
 normative prose. Protocol/05b, 05c, executor guide, and envelope design spec
 parity shipped in the same PR.
+
+THR-107 seq244: dependency-manifest extension — adds ``DependencyManifest``
+and ``DependencyRecord`` models for declared child executable dependencies.
+This is an independently versioned registration extension that does NOT
+change the AdapterInput/AdapterOutput contract version.  The
+``dependency_manifest_version`` field is separate from ``contract_version``.
 """
 from __future__ import annotations
 
@@ -135,3 +141,34 @@ class AdapterOutput(BaseModel):
     adapter_metadata: AdapterMetadata = Field(..., description="Provenance metadata from the adapter")
     child_session_id: str | None = Field(None, description="Future: spawned child session id")
     raw_forensics_ref: str | None = Field(None, description="Path/ref to raw forensic capture")
+
+
+# ---------------------------------------------------------------------------
+# THR-107 seq244: Dependency Manifest Extension
+# ---------------------------------------------------------------------------
+
+
+class DependencyRecord(BaseModel):
+    """A single declared child executable dependency.
+
+    Each record binds an absolute path to a SHA-256 hex digest.
+    The executable must be an absolute path, must exist, must be a
+    regular file, must be executable, and must match the declared hash.
+    """
+    executable: str = Field(..., description="Absolute path to the child executable")
+    sha256: str = Field(..., description="SHA-256 hex digest of the executable", min_length=64, max_length=64)
+
+
+class DependencyManifest(BaseModel):
+    """Independently versioned dependency manifest extension.
+
+    This is a SEPARATE versioning space from AdapterInput/AdapterOutput
+    ``contract_version``.  The ``dependency_manifest_version`` field can
+    evolve independently.
+
+    A non-empty ``dependencies`` list is REQUIRED for new submissions.
+    Legacy entries (those without this extension) retain their exact
+    current launch behavior and are never auto-mutated.
+    """
+    dependency_manifest_version: int = Field(..., ge=1, description="Version of the dependency manifest contract")
+    dependencies: list[DependencyRecord] = Field(..., min_length=1, description="Non-empty list of declared child executable dependencies")

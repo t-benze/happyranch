@@ -79,6 +79,20 @@ version, and session-id echo enforced before mapping any result; subprocess-only
 (no Python import/discovery); PENDING adapters cannot bind or launch; D5
 baseline-only permission posture.
 
+**THR-107 seq244 dependency manifest:** new adapter registrations and
+submissions MUST declare a versioned dependency manifest
+(``dependency_manifest_version: 1``, non-empty ``dependencies`` list of
+``{executable: absolute-path, sha256: hex}`` records).  Each declared child
+executable is validated at registration (absolute path, regular file,
+executable, SHA-256 match) and re-validated before EVERY launch attempt.
+An adapter with a declared manifest cannot silently rely on ambient PATH
+(the runtime scrubs PATH to ``/usr/bin:/bin`` for manifest-adapters).
+An adapter declaring ``token_metering`` capability MUST produce a valid
+non-null ``token_usage`` at conformance time.  Legacy entries without the
+manifest retain their exact current launch behavior and are never
+auto-mutated.  A dependency change requires re-submission and founder
+re-approval.
+
 The full generic-CLI envelope contract is in
 ``docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md``.
 
