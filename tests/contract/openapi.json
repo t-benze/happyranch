@@ -3527,6 +3527,22 @@
       }
     },
     "/api/v1/runtime/adapters/{adapter_id}": {
+      "DELETE": {
+        "params": [
+          [
+            "adapter_id",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
       "GET": {
         "params": [
           [

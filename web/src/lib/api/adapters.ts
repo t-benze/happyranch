@@ -1,8 +1,9 @@
-/** Custom adapter API client (THR-107 seq141).
+/** Custom adapter API client (THR-107 seq141 + removal).
 
-GET  /api/v1/runtime/adapters         - list all adapters
-GET  /api/v1/runtime/adapters/{id}   - poll adapter status
-POST /api/v1/runtime/adapters/{id}/bind-profile  - bind approved adapter to profile
+GET    /api/v1/runtime/adapters              - list all adapters
+GET    /api/v1/runtime/adapters/{id}         - poll adapter status
+POST   /api/v1/runtime/adapters/{id}/bind-profile  - bind approved adapter to profile
+DELETE /api/v1/runtime/adapters/{id}         - remove an approved adapter (THR-107)
  */
 import { request } from './client';
 
@@ -64,6 +65,25 @@ export interface BindProfileResponse {
   adapter_id: string;
 }
 
+/** Request body for adapter removal — every material identity/binding fact
+ *  MUST match the server's durable snapshot exactly. */
+export interface RemoveAdapterRequest {
+  executable: string;
+  executable_hash: string;
+  version: string;
+  capabilities: string[];
+  contract_version: number;
+  workspace_adapter: string;
+  name: string;
+  intended_profile_name: string | null;
+}
+
+export interface RemoveAdapterResponse {
+  id: string;
+  removed: boolean;
+  name: string;
+}
+
 /** List all registered custom adapters (bearer-authenticated management endpoint). */
 export const listAdapters = (): Promise<AdapterEntry[]> =>
   request('/runtime/adapters');
@@ -77,5 +97,23 @@ export const bindAdapterProfile = (
 ): Promise<BindProfileResponse> =>
   request(`/runtime/adapters/${adapterId}/bind-profile`, {
     method: 'POST',
+    body,
+  });
+
+/** Remove an APPROVED custom adapter (THR-107 founder-gated destructive action).
+ *  The caller MUST supply an exact snapshot of all material identity/binding
+ *  facts — the server rejects stale, re-registered, and wrong-target snapshots.
+ *
+ *  Throws ApiError on:
+ *  - 401: missing/invalid bearer token
+ *  - 404: adapter not found
+ *  - 422: snapshot mismatch, not APPROVED, or profile-referenced
+ */
+export const removeAdapter = (
+  adapterId: string,
+  body: RemoveAdapterRequest,
+): Promise<RemoveAdapterResponse> =>
+  request(`/runtime/adapters/${adapterId}`, {
+    method: 'DELETE',
     body,
   });

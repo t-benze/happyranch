@@ -36,6 +36,7 @@ import type { ConnectMode } from '@/shared/connect/useRuntimeConnect';
 import { RUNTIME_PROFILES_KEY } from '@/hooks/runtime-executors';
 import { ExecutorBinariesSection } from './ExecutorBinariesSection';
 import { CustomProfilesSection } from './CustomProfilesSection';
+import { AdapterManagementSection } from './AdapterManagementSection';
 
 /** Connected-card subtitle for the Settings mount, keyed on the originating
  *  mode. The onboarding "manage your CLIs anytime from Settings" clause is
@@ -99,6 +100,9 @@ export function ExecutorsSection(): JSX.Element {
           {/* Custom CLIs connected via the shared custom flow — list + remove
               (THR-107 S4b), consuming the S4a list/remove backend. */}
           <CustomProfilesSection />
+
+          {/* Custom adapters — list + guarded remove (THR-107 TASK-3792). */}
+          <AdapterManagementSection />
 
           {/* The single "Connect a CLI" entry into the shared connect flow. */}
           <Button
