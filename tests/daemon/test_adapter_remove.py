@@ -555,14 +555,17 @@ class TestAuditAndRollback:
             assert "audit logging failed" in resp.json()["detail"].lower()
 
             # The adapter must still exist in the durable store (restored).
+            # Compare the FULL serialized entry — every material and persisted
+            # field — to prove exact restoration while the operation rolls back.
             adapter = load_adapters().get(approved_kimi_adapter.id)
             assert adapter is not None, (
                 "Adapter should have been restored after audit rollback"
             )
-            assert adapter.id == approved_kimi_adapter.id
-            assert adapter.executable_hash == approved_kimi_adapter.executable_hash
-            assert adapter.name == approved_kimi_adapter.name
-            assert adapter.status == "approved"
+            assert adapter.to_dict() == approved_kimi_adapter.to_dict(), (
+                f"Restored adapter differs from original:\n"
+                f"  Original: {approved_kimi_adapter.to_dict()}\n"
+                f"  Restored: {adapter.to_dict()}"
+            )
         finally:
             adapters_routes._audit_adapter_remove = original_audit
 
@@ -623,46 +626,65 @@ class TestLockSafety:
 class TestRaceConditions:
     """Deterministic race/fault-style tests."""
 
-    def test_adapter_fact_changed_between_validation_and_lock(
+    def test_adapter_fact_changed_at_genuine_race_seam(
         self,
         client: TestClient,
         approved_kimi_adapter: AdapterEntry,
+        monkeypatch,
     ):
-        """Changing a representative non-path fact (name) after initial
-        validation but before lock acquisition causes removal to reject
-        and preserves the changed entry.
+        """Change a material non-path field (name) at the genuine seam:
+        AFTER pre-lock validation passes but BEFORE the store lock is
+        acquired. Uses deterministic synchronization — monkeypatches
+        acquire_store_lock to mutate the durable entry before actually
+        acquiring the lock.
 
-        The server re-reads under the lock and exact-compares ALL 8 facts
-        using the same predicate — any drift is detected.
-        """
+        The under-lock re-read and exact-compare of ALL 8 facts using
+        the shared _adapter_snapshot_mismatch() predicate detects the
+        drift and rejects removal, preserving the altered entry."""
         body = _make_snapshot_body(approved_kimi_adapter)
 
-        # BEFORE calling the route, change a fact in the durable store
-        # that is NOT executable or hash (those were already checked
-        # separately in the old code). Changing 'name' is a representative
-        # omitted non-path fact — the old code did NOT check it under the
-        # lock.  The new code must detect this.
-        changed = AdapterEntry(
-            id=approved_kimi_adapter.id,
-            name="changed-name",  # <-- drifted
-            executable=approved_kimi_adapter.executable,
-            executable_hash=approved_kimi_adapter.executable_hash,
-            version=approved_kimi_adapter.version,
-            capabilities=approved_kimi_adapter.capabilities,
-            contract_version=approved_kimi_adapter.contract_version,
-            workspace_adapter=approved_kimi_adapter.workspace_adapter,
-            status=approved_kimi_adapter.status,
-            registered_at=approved_kimi_adapter.registered_at,
-            registered_by=approved_kimi_adapter.registered_by,
-            approved_at=approved_kimi_adapter.approved_at,
-            approved_by=approved_kimi_adapter.approved_by,
-            intended_profile_name=approved_kimi_adapter.intended_profile_name,
-        )
-        save_adapter(changed)
+        # Intercept the acquire_store_lock call made by the route handler.
+        # The route handler imports acquire_store_lock via a module-level
+        # ``from runtime.orchestrator.adapter_store import acquire_store_lock``,
+        # so patching adapter_store alone does NOT affect the local binding.
+        # We must patch the route module's reference.
+        import runtime.daemon.routes.adapters as routes_module
+        import runtime.orchestrator.adapter_store as store_module
+        original_acquire = store_module.acquire_store_lock
 
-        # Now attempt removal with the OLD snapshot (name still "kimi").
-        # The lock re-reads and exact-compares ALL 8 facts including name —
-        # it must detect the drift.
+        mutated = [False]
+        def _acquire_and_mutate():
+            if not mutated[0]:
+                mutated[0] = True
+                # At the genuine seam: alter name in the durable store.
+                changed = AdapterEntry(
+                    id=approved_kimi_adapter.id,
+                    name="changed-name",  # <-- drifted at genuine seam
+                    executable=approved_kimi_adapter.executable,
+                    executable_hash=approved_kimi_adapter.executable_hash,
+                    version=approved_kimi_adapter.version,
+                    capabilities=approved_kimi_adapter.capabilities,
+                    contract_version=approved_kimi_adapter.contract_version,
+                    workspace_adapter=approved_kimi_adapter.workspace_adapter,
+                    status=approved_kimi_adapter.status,
+                    registered_at=approved_kimi_adapter.registered_at,
+                    registered_by=approved_kimi_adapter.registered_by,
+                    approved_at=approved_kimi_adapter.approved_at,
+                    approved_by=approved_kimi_adapter.approved_by,
+                    intended_profile_name=approved_kimi_adapter.intended_profile_name,
+                )
+                # Write directly via the locked-level helper to avoid
+                # recursive lock acquisition through save_adapter().
+                store_module._save_adapter_locked(changed)
+            original_acquire()
+
+        # Patch the route handler's imported reference.
+        monkeypatch.setattr(routes_module, "acquire_store_lock", _acquire_and_mutate)
+
+        # Now attempt removal with the ORIGINAL snapshot.
+        # Pre-lock validation passes (entry still matches original).
+        # acquire_store_lock() fires the mutation (name → "changed-name").
+        # Under-lock re-read detects drift → 422.
         resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
             json=body,
@@ -670,7 +692,8 @@ class TestRaceConditions:
 
         assert resp.status_code == 422, resp.json()
         detail = resp.json()["detail"]
-        assert "name mismatch" in detail.lower() or "facts changed" in detail.lower(), (
+        assert ("name mismatch" in detail.lower()
+                or "facts changed" in detail.lower()), (
             f"Expected name mismatch or facts-changed message, got: {detail}"
         )
 
@@ -807,5 +830,97 @@ class TestRaceConditions:
         finally:
             try:
                 registry.unregister_custom_profile("live-cli")
+            except Exception:
+                pass
+
+    def test_differently_named_live_profile_eligibility_and_rejection(
+        self,
+        client: TestClient,
+        clean_adapter_store: Path,
+        tmp_path: Path,
+    ):
+        """A live-only custom profile with a DIFFERENT name than the
+        adapter's intended_profile_name, that still references
+        custom-adapter:<id>, causes eligibility=already_bound and
+        the removal request is rejected preserving the entry.
+
+        This proves _compute_eligibility() scans ALL live profiles,
+        not just the one at entry.intended_profile_name."""
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfile,
+            get_registry,
+        )
+        from runtime.orchestrator.adapter_store import compute_sha256
+
+        # Create a real executable so resolve_adapter's hash check passes.
+        script = _make_conformant_adapter_script(tmp_path, "cross-adapter")
+        real_hash = compute_sha256(str(script))
+
+        # The adapter has intended_profile_name="kimi", but the live
+        # profile that references it is named "other-cli".
+        adapter = AdapterEntry(
+            id="cross-adapter",
+            name="cross-adapter",
+            executable=str(script),
+            executable_hash=real_hash,
+            version="1.0.0",
+            capabilities=[],
+            contract_version=1,
+            workspace_adapter="pi",
+            status="approved",
+            registered_at="2026-07-31T00:00:00Z",
+            registered_by="test",
+            approved_at="2026-07-31T01:00:00Z",
+            approved_by="founder",
+            intended_profile_name="kimi",
+        )
+        save_adapter(adapter)
+
+        # Register a live-only profile with a DIFFERENT name.
+        registry = get_registry()
+        live_profile = ExecutorProfile(
+            name="other-cli",  # <-- different from intended_profile_name="kimi"
+            kind="custom",
+            workspace_adapter_id=adapter.workspace_adapter,
+            command_adapter_id=f"custom-adapter:{adapter.id}",
+        )
+        try:
+            registry.register_custom_profile(live_profile)
+        except Exception:
+            try:
+                registry.unregister_custom_profile("other-cli")
+            except Exception:
+                pass
+            registry.register_custom_profile(live_profile)
+
+        try:
+            # 1. Verify eligibility is already_bound (server-authoritative).
+            resp = client.get("/api/v1/runtime/adapters")
+            assert resp.status_code == 200
+            adapters = resp.json()
+            our = [a for a in adapters if a["id"] == adapter.id]
+            assert len(our) == 1
+            assert our[0]["eligibility"] == "already_bound", (
+                f"Expected already_bound for differently-named live profile, "
+                f"got {our[0]['eligibility']}"
+            )
+
+            # 2. Verify the removal request is rejected.
+            body = _make_snapshot_body(adapter)
+            resp = client.request("DELETE",
+                f"/api/v1/runtime/adapters/{adapter.id}",
+                json=body,
+            )
+            assert resp.status_code == 422, resp.json()
+            assert "custom runtime profile" in resp.json()["detail"]
+            assert "other-cli" in resp.json()["detail"]
+
+            # 3. Adapter is preserved.
+            saved = load_adapters().get(adapter.id)
+            assert saved is not None
+            assert saved.status == "approved"
+        finally:
+            try:
+                registry.unregister_custom_profile("other-cli")
             except Exception:
                 pass

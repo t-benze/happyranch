@@ -401,18 +401,24 @@ def _compute_eligibility(entry) -> str | None:
         for name, cfg in runtime_profiles.items()
     )
 
-    # Live profiles.
+    # Live profiles — scan EVERY custom profile in the ExecutorRegistry,
+    # not just the one at entry.intended_profile_name. A differently-named
+    # custom profile that references custom-adapter:<id> must be detected.
     registry = get_registry()
-    existing_profile = registry.get_profile(profile_name)
-    live_is_this = (
-        existing_profile is not None
-        and existing_profile.command_adapter_id == command_adapter_ref
+    live_bound_to_this = any(
+        getattr(registry.get_profile(name), "command_adapter_id", None) == command_adapter_ref
+        for name in registry.list_profile_names()
+    )
+    live_has_other = any(
+        name == profile_name
+        and getattr(registry.get_profile(name), "command_adapter_id", None) != command_adapter_ref
+        for name in registry.list_profile_names()
     )
 
-    if durable_has_this or live_is_this:
+    if durable_has_this or live_bound_to_this:
         return "already_bound"
 
-    if existing_profile is not None or durable_has_other:
+    if live_has_other or durable_has_other:
         return "cross_profile"
 
     # No profile exists with this name — adapter is bindable.
