@@ -23,6 +23,7 @@ import {
   ADAPTERS_KEY,
   useAdapters,
   useRemoveAdapter,
+  type AdapterEligibility,
   type AdapterEntry,
   type RemoveAdapterRequest,
 } from '@/hooks/adapters';
@@ -55,12 +56,17 @@ function buildRemoveBody(adapter: AdapterEntry): RemoveAdapterRequest {
   };
 }
 
-/** Whether the adapter is eligible for removal (APPROVED + not bound to a profile). */
+/** Whether the adapter is eligible for removal.
+ *
+ *  Derived ENTIRELY from the server-authoritative `eligibility` field —
+ *  never from status/intended_profile.  `ready_to_bind` means the adapter
+ *  is approved, hash-valid, and no profile references it; `not_intended`,
+ *  `tampered`, `builtin_collision`, and `cross_profile` also denote an
+ *  unbound adapter that may be safely removed.  `already_bound` and `null`
+ *  (PENDING / not approved) suppress the remove affordance. */
 function canRemove(adapter: AdapterEntry): boolean {
-  if (adapter.status !== 'approved') return false;
-  // already_bound means a profile references it — server will reject removal
-  if (adapter.eligibility === 'already_bound') return false;
-  return true;
+  const nonRemovable: AdapterEligibility[] = ['already_bound', null];
+  return !nonRemovable.includes(adapter.eligibility);
 }
 
 function AdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element {

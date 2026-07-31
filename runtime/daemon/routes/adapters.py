@@ -287,6 +287,76 @@ class AdapterApproveRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+def _adapter_snapshot_mismatch(entry, body: AdapterRemoveRequest) -> str | None:
+    """Exact-snapshot predicate: returns None when all 8 material
+    identity/binding facts match, or a human-readable error detail.
+
+    This is the SINGLE function used both pre-lock and under-lock so the
+    two checks cannot drift.
+    """
+    facts = [
+        ("executable", entry.executable, body.executable),
+        ("executable_hash", entry.executable_hash, body.executable_hash),
+        ("version", entry.version, body.version),
+        ("capabilities", entry.capabilities, body.capabilities),
+        ("contract_version", entry.contract_version, body.contract_version),
+        ("workspace_adapter", entry.workspace_adapter, body.workspace_adapter),
+        ("name", entry.name, body.name),
+        ("intended_profile_name", entry.intended_profile_name, body.intended_profile_name),
+    ]
+    for field, store_val, req_val in facts:
+        if store_val != req_val:
+            return (
+                f"{field} mismatch for {entry.id!r}: "
+                f"store has {store_val!r}, removal request has {req_val!r}"
+            )
+    return None
+
+
+def _check_no_profile_bound(adapter_id: str) -> None:
+    """Reject with 422 if ANY durable OR live custom profile references
+    command_adapter_id: custom-adapter:<adapter_id>.
+
+    Consults BOTH the durable runtime profile store AND the active
+    in-memory ExecutorRegistry so that a profile loaded-only-into-memory
+    (e.g. registered by a prior request that hasn't yet been written to
+    disk, or a live-only test registration) blocks removal.
+    """
+    command_adapter_ref = f"custom-adapter:{adapter_id}"
+
+    # Durable profiles (load_runtime_profiles).
+    runtime_profiles = load_runtime_profiles()
+    durable_bound = sorted(
+        name
+        for name, cfg in runtime_profiles.items()
+        if cfg.get("command_adapter_id") == command_adapter_ref
+    )
+
+    # Live in-memory profiles (ExecutorRegistry).
+    from runtime.orchestrator.executor_registry import get_registry
+    registry = get_registry()
+    live_bound = sorted(
+        name
+        for name in registry.list_profile_names()
+        if getattr(registry.get_profile(name), "command_adapter_id", None) == command_adapter_ref
+    )
+
+    # Deduplicate across the two sources.
+    all_bound = sorted(set(durable_bound + live_bound))
+
+    if all_bound:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Cannot remove adapter {adapter_id!r}: the following "
+                f"custom runtime profile(s) are bound to it: "
+                f"{', '.join(all_bound)}. "
+                f"Remove the profile(s) first via Settings \u2192 Executors \u2192 "
+                f"Custom CLIs, then retry adapter removal."
+            ),
+        )
+
+
 def _compute_eligibility(entry) -> str | None:
     """Compute server-authoritative recovery eligibility for an adapter.
 
@@ -316,19 +386,34 @@ def _compute_eligibility(entry) -> str | None:
     if profile_name.lower() in BUILTIN_KINDS_NAMES:
         return "builtin_collision"
 
-    # Check profile existence and binding.
+    # Check profile existence and binding — BOTH durable and live.
     from runtime.orchestrator.executor_registry import get_registry
+    command_adapter_ref = f"custom-adapter:{entry.id}"
+
+    # Durable profiles.
+    runtime_profiles = load_runtime_profiles()
+    durable_has_this = any(
+        cfg.get("command_adapter_id") == command_adapter_ref
+        for cfg in runtime_profiles.values()
+    )
+    durable_has_other = entry.intended_profile_name and any(
+        name == entry.intended_profile_name and cfg.get("command_adapter_id") != command_adapter_ref
+        for name, cfg in runtime_profiles.items()
+    )
+
+    # Live profiles.
     registry = get_registry()
     existing_profile = registry.get_profile(profile_name)
+    live_is_this = (
+        existing_profile is not None
+        and existing_profile.command_adapter_id == command_adapter_ref
+    )
 
-    if existing_profile is not None:
-        # Profile exists — check what adapter it belongs to.
-        profile_adapter_id = existing_profile.command_adapter_id
-        if profile_adapter_id and profile_adapter_id == f"custom-adapter:{entry.id}":
-            return "already_bound"
-        else:
-            # Profile exists but is bound to a different adapter (or no adapter).
-            return "cross_profile"
+    if durable_has_this or live_is_this:
+        return "already_bound"
+
+    if existing_profile is not None or durable_has_other:
+        return "cross_profile"
 
     # No profile exists with this name — adapter is bindable.
     return "ready_to_bind"
@@ -1142,97 +1227,17 @@ def remove_adapter_entry(
             ),
         )
 
-    # 3. Verify every snapshot fact matches the store
-    if entry.executable != body.executable:
+    # 3. Exact-snapshot match against ALL material identity/binding facts.
+    mis = _adapter_snapshot_mismatch(entry, body)
+    if mis is not None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"executable mismatch for {adapter_id!r}: "
-                f"store has {entry.executable!r}, removal request has {body.executable!r}"
-            ),
-        )
-    if entry.executable_hash != body.executable_hash:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"executable_hash mismatch for {adapter_id!r}: "
-                f"store has {entry.executable_hash[:12]}..., "
-                f"removal request has {body.executable_hash[:12]}..."
-            ),
-        )
-    if entry.version != body.version:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"version mismatch for {adapter_id!r}: "
-                f"store has {entry.version!r}, removal request has {body.version!r}"
-            ),
-        )
-    if entry.capabilities != body.capabilities:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"capabilities mismatch for {adapter_id!r}: "
-                f"store has {entry.capabilities!r}, "
-                f"removal request has {body.capabilities!r}"
-            ),
-        )
-    if entry.contract_version != body.contract_version:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"contract_version mismatch for {adapter_id!r}: "
-                f"store has {entry.contract_version}, "
-                f"removal request has {body.contract_version}"
-            ),
-        )
-    if entry.workspace_adapter != body.workspace_adapter:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"workspace_adapter mismatch for {adapter_id!r}: "
-                f"store has {entry.workspace_adapter!r}, "
-                f"removal request has {body.workspace_adapter!r}"
-            ),
-        )
-    if entry.name != body.name:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"name mismatch for {adapter_id!r}: "
-                f"store has {entry.name!r}, removal request has {body.name!r}"
-            ),
-        )
-    if entry.intended_profile_name != body.intended_profile_name:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"intended_profile_name mismatch for {adapter_id!r}: "
-                f"store has {entry.intended_profile_name!r}, "
-                f"removal request has {body.intended_profile_name!r}"
-            ),
+            detail=mis,
         )
 
-    # 4. Reject if ANY durable custom runtime profile references
+    # 4. Reject if ANY durable or live custom runtime profile references
     #    command_adapter_id: custom-adapter:<adapter_id>
-    command_adapter_ref = f"custom-adapter:{adapter_id}"
-    runtime_profiles = load_runtime_profiles()
-    bound_profiles = [
-        name
-        for name, cfg in runtime_profiles.items()
-        if cfg.get("command_adapter_id") == command_adapter_ref
-    ]
-    if bound_profiles:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Cannot remove adapter {adapter_id!r}: the following "
-                f"custom runtime profile(s) are bound to it: "
-                f"{', '.join(sorted(bound_profiles))}. "
-                f"Remove the profile(s) first via Settings → Executors → "
-                f"Custom CLIs, then retry adapter removal."
-            ),
-        )
+    _check_no_profile_bound(adapter_id)
 
     # Snapshot the entry for audit and potential rollback.
     removed_snapshot = entry.to_dict()
@@ -1241,7 +1246,8 @@ def remove_adapter_entry(
     # Serializes against concurrent register/approve/remove operations.
     acquire_store_lock()
     try:
-        # Re-read and re-validate at the lock boundary.
+        # Re-read and re-validate at the lock boundary using the exact same
+        # predicate so pre-lock and locked checks CANNOT drift.
         re_read_entry = get_adapter(adapter_id)
         if re_read_entry is None:
             raise HTTPException(
@@ -1256,39 +1262,18 @@ def remove_adapter_entry(
                     f"before removal."
                 ),
             )
-        if re_read_entry.executable != body.executable:
+        mis = _adapter_snapshot_mismatch(re_read_entry, body)
+        if mis is not None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
-                    f"Adapter {adapter_id!r} executable changed before removal. "
-                    f"Refresh the snapshot and retry."
-                ),
-            )
-        if re_read_entry.executable_hash != body.executable_hash:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"Adapter {adapter_id!r} hash changed before removal. "
-                    f"Refresh the snapshot and retry."
+                    f"Adapter {adapter_id!r} facts changed before removal. "
+                    f"{mis} Refresh the snapshot and retry."
                 ),
             )
 
-        # Re-check profile binding under the lock.
-        re_read_profiles = load_runtime_profiles()
-        re_bound = [
-            name
-            for name, cfg in re_read_profiles.items()
-            if cfg.get("command_adapter_id") == command_adapter_ref
-        ]
-        if re_bound:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"Cannot remove adapter {adapter_id!r}: the following "
-                    f"custom runtime profile(s) are bound to it: "
-                    f"{', '.join(sorted(re_bound))}."
-                ),
-            )
+        # Re-check profile binding under the lock (both durable + live).
+        _check_no_profile_bound(adapter_id)
 
         # Durable removal via the atomic store helper.
         from runtime.orchestrator.adapter_store import remove_adapter as _store_remove

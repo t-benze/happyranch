@@ -35,6 +35,7 @@ from runtime.orchestrator.runtime_executor_store import (
     save_runtime_profile,
     remove_runtime_profile,
 )
+from runtime.daemon.routes.adapters import _audit_adapter_remove
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +197,7 @@ class TestExactTargetRemoval:
         """Removing the exact approved Kimi adapter succeeds."""
         body = _make_snapshot_body(approved_kimi_adapter)
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
             json=body,
         )
@@ -219,7 +220,7 @@ class TestExactTargetRemoval:
         """Removing an approved adapter with no bound profile succeeds."""
         body = _make_snapshot_body(approved_generic_adapter)
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_generic_adapter.id}",
             json=body,
         )
@@ -245,7 +246,7 @@ class TestSnapshotMismatch:
         body = _make_snapshot_body(approved_kimi_adapter)
         body["executable_hash"] = "0000000000000000000000000000000000000000000000000000000000000000"
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
             json=body,
         )
@@ -267,7 +268,7 @@ class TestSnapshotMismatch:
         body = _make_snapshot_body(approved_kimi_adapter)
         body["executable"] = "/wrong/path"
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
             json=body,
         )
@@ -288,7 +289,7 @@ class TestSnapshotMismatch:
         body = _make_snapshot_body(approved_kimi_adapter)
         body["version"] = "2.0.0"
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
             json=body,
         )
@@ -305,7 +306,7 @@ class TestSnapshotMismatch:
         body = _make_snapshot_body(approved_kimi_adapter)
         body["name"] = "wrong-name"
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
             json=body,
         )
@@ -322,7 +323,7 @@ class TestSnapshotMismatch:
         body = _make_snapshot_body(approved_kimi_adapter)
         body["intended_profile_name"] = "other-profile"
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
             json=body,
         )
@@ -367,7 +368,7 @@ class TestSnapshotMismatch:
         # Now try to remove with the OLD snapshot
         old_body = _make_snapshot_body(approved_kimi_adapter)
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             "/api/v1/runtime/adapters/kimi-adapter",
             json=old_body,
         )
@@ -392,7 +393,7 @@ class TestProfileBoundRejection:
         """Removing an adapter that has a bound profile is rejected."""
         body = _make_snapshot_body(adapter_bound_to_profile)
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{adapter_bound_to_profile.id}",
             json=body,
         )
@@ -423,7 +424,7 @@ class TestNotFoundAndNonApproved:
         """Removing an adapter that doesn't exist returns 404."""
         body = _make_snapshot_body(approved_kimi_adapter)
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             "/api/v1/runtime/adapters/nonexistent",
             json=body,
         )
@@ -439,7 +440,7 @@ class TestNotFoundAndNonApproved:
         """Removing a PENDING adapter is rejected."""
         body = _make_snapshot_body(pending_adapter)
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{pending_adapter.id}",
             json=body,
         )
@@ -463,7 +464,7 @@ class TestAuthEnforcement:
         app = create_app(daemon_state)
         tc = TestClient(app)  # No auth headers attached
 
-        resp = tc.request("DELETE", 
+        resp = tc.request("DELETE",
             "/api/v1/runtime/adapters/some-id",
             json={"executable": "/x", "executable_hash": "0" * 64,
                   "version": "1.0", "capabilities": [],
@@ -481,22 +482,89 @@ class TestAuditAndRollback:
         self,
         client: TestClient,
         approved_kimi_adapter: AdapterEntry,
-        tmp_path: Path,
+        tmp_home: Path,
     ):
-        """After a successful removal, audit should have been written."""
+        """After a successful removal, an audit row is durably persisted
+        with scope adapter:<id>, actor founder, and action adapter_removed."""
+        from runtime.infrastructure.database import Database
+
         body = _make_snapshot_body(approved_kimi_adapter)
 
-        resp = client.request("DELETE", 
+        resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
             json=body,
         )
 
         assert resp.status_code == 200, resp.json()
 
-        # Verify audit was written (runtime-audit.db)
-        audit_path = tmp_path / "runtime-audit.db"
-        # The audit might be in a different location - skip direct DB read
-        # The route returns 200, which confirms audit succeeded.
+        # Verify audit was actually written to runtime-audit.db.
+        # The route writes via daemon_home(), which tmp_home overrides.
+        audit_db_path = tmp_home / "runtime-audit.db"
+        assert audit_db_path.exists(), (
+            f"Expected runtime-audit.db at {audit_db_path} after successful removal"
+        )
+
+        db = Database(audit_db_path)
+        try:
+            rows = db.get_audit_logs(
+                task_id=f"adapter:{approved_kimi_adapter.id}",
+            )
+            assert len(rows) >= 1, (
+                f"Expected at least one audit row for adapter:{approved_kimi_adapter.id}"
+            )
+            row = rows[0]
+            assert row["task_id"] == f"adapter:{approved_kimi_adapter.id}"
+            assert row["agent"] == "founder"
+            assert row["action"] == "adapter_removed"
+            payload = row["payload"]  # already JSON-decoded by get_audit_logs
+            assert payload["adapter_id"] == approved_kimi_adapter.id
+            assert payload["name"] == approved_kimi_adapter.name
+            assert payload["executable_hash"] == approved_kimi_adapter.executable_hash
+            assert payload["status"] == approved_kimi_adapter.status
+        finally:
+            db.close()
+
+    def test_audit_write_failure_restores_adapter(
+        self,
+        client: TestClient,
+        approved_kimi_adapter: AdapterEntry,
+        monkeypatch,
+    ):
+        """When auditing fails after durable removal, the exact adapter
+        entry is restored while the lock is held and a 500 is returned."""
+        body = _make_snapshot_body(approved_kimi_adapter)
+
+        # Inject a failure into the audit write path AFTER durable removal.
+        original_audit = _audit_adapter_remove
+
+        def _failing_audit(*args, **kwargs):
+            raise RuntimeError("injected audit write failure")
+
+        # Patch the audit function in the routes module.
+        import runtime.daemon.routes.adapters as adapters_routes
+        adapters_routes._audit_adapter_remove = _failing_audit
+        try:
+            resp = client.request("DELETE",
+                f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
+                json=body,
+            )
+
+            # Must return 500 — audit failure after durable removal triggers
+            # compensating restore.
+            assert resp.status_code == 500, resp.json()
+            assert "audit logging failed" in resp.json()["detail"].lower()
+
+            # The adapter must still exist in the durable store (restored).
+            adapter = load_adapters().get(approved_kimi_adapter.id)
+            assert adapter is not None, (
+                "Adapter should have been restored after audit rollback"
+            )
+            assert adapter.id == approved_kimi_adapter.id
+            assert adapter.executable_hash == approved_kimi_adapter.executable_hash
+            assert adapter.name == approved_kimi_adapter.name
+            assert adapter.status == "approved"
+        finally:
+            adapters_routes._audit_adapter_remove = original_audit
 
     def test_idempotent_remove_returns_404(
         self,
@@ -507,14 +575,14 @@ class TestAuditAndRollback:
         body = _make_snapshot_body(approved_kimi_adapter)
 
         # First removal
-        resp1 = client.request("DELETE", 
+        resp1 = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
             json=body,
         )
         assert resp1.status_code == 200
 
         # Second removal with same body → 404 (adapter gone)
-        resp2 = client.request("DELETE", 
+        resp2 = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
             json=body,
         )
@@ -537,7 +605,7 @@ class TestLockSafety:
         body = _make_snapshot_body(approved_generic_adapter)
 
         # Remove the adapter
-        remove_resp = client.request("DELETE", 
+        remove_resp = client.request("DELETE",
             f"/api/v1/runtime/adapters/{approved_generic_adapter.id}",
             json=body,
         )
@@ -550,3 +618,194 @@ class TestLockSafety:
         )
         assert bind_resp.status_code == 404, bind_resp.json()
         assert "not found" in bind_resp.json()["detail"].lower()
+
+
+class TestRaceConditions:
+    """Deterministic race/fault-style tests."""
+
+    def test_adapter_fact_changed_between_validation_and_lock(
+        self,
+        client: TestClient,
+        approved_kimi_adapter: AdapterEntry,
+    ):
+        """Changing a representative non-path fact (name) after initial
+        validation but before lock acquisition causes removal to reject
+        and preserves the changed entry.
+
+        The server re-reads under the lock and exact-compares ALL 8 facts
+        using the same predicate — any drift is detected.
+        """
+        body = _make_snapshot_body(approved_kimi_adapter)
+
+        # BEFORE calling the route, change a fact in the durable store
+        # that is NOT executable or hash (those were already checked
+        # separately in the old code). Changing 'name' is a representative
+        # omitted non-path fact — the old code did NOT check it under the
+        # lock.  The new code must detect this.
+        changed = AdapterEntry(
+            id=approved_kimi_adapter.id,
+            name="changed-name",  # <-- drifted
+            executable=approved_kimi_adapter.executable,
+            executable_hash=approved_kimi_adapter.executable_hash,
+            version=approved_kimi_adapter.version,
+            capabilities=approved_kimi_adapter.capabilities,
+            contract_version=approved_kimi_adapter.contract_version,
+            workspace_adapter=approved_kimi_adapter.workspace_adapter,
+            status=approved_kimi_adapter.status,
+            registered_at=approved_kimi_adapter.registered_at,
+            registered_by=approved_kimi_adapter.registered_by,
+            approved_at=approved_kimi_adapter.approved_at,
+            approved_by=approved_kimi_adapter.approved_by,
+            intended_profile_name=approved_kimi_adapter.intended_profile_name,
+        )
+        save_adapter(changed)
+
+        # Now attempt removal with the OLD snapshot (name still "kimi").
+        # The lock re-reads and exact-compares ALL 8 facts including name —
+        # it must detect the drift.
+        resp = client.request("DELETE",
+            f"/api/v1/runtime/adapters/{approved_kimi_adapter.id}",
+            json=body,
+        )
+
+        assert resp.status_code == 422, resp.json()
+        detail = resp.json()["detail"]
+        assert "name mismatch" in detail.lower() or "facts changed" in detail.lower(), (
+            f"Expected name mismatch or facts-changed message, got: {detail}"
+        )
+
+        # Adapter still exists with the CHANGED name (not removed).
+        adapter = load_adapters().get(approved_kimi_adapter.id)
+        assert adapter is not None
+        assert adapter.name == "changed-name"
+        assert adapter.status == "approved"
+
+    def test_live_only_profile_blocks_removal(
+        self,
+        client: TestClient,
+        approved_generic_adapter: AdapterEntry,
+    ):
+        """A profile registered ONLY in the live ExecutorRegistry (not durable)
+        still blocks removal.  This proves the code checks BOTH surfaces."""
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfile,
+            get_registry,
+        )
+
+        body = _make_snapshot_body(approved_generic_adapter)
+
+        # Register a live-only profile that references this adapter.
+        registry = get_registry()
+        live_profile = ExecutorProfile(
+            name="live-only-profile",
+            kind="custom",
+            workspace_adapter_id=approved_generic_adapter.workspace_adapter,
+            command_adapter_id=f"custom-adapter:{approved_generic_adapter.id}",
+        )
+        try:
+            registry.register_custom_profile(live_profile)
+        except Exception:
+            # Profile may already exist with same name; replace it.
+            try:
+                registry.unregister_custom_profile("live-only-profile")
+            except Exception:
+                pass
+            registry.register_custom_profile(live_profile)
+
+        try:
+            # There should be NO durable profile — only live.
+            durable = load_runtime_profiles()
+            assert "live-only-profile" not in durable, (
+                "Test precondition: profile must NOT be durable"
+            )
+
+            resp = client.request("DELETE",
+                f"/api/v1/runtime/adapters/{approved_generic_adapter.id}",
+                json=body,
+            )
+
+            assert resp.status_code == 422, resp.json()
+            detail = resp.json()["detail"]
+            assert "custom runtime profile" in detail
+            assert "live-only-profile" in detail
+
+            # Adapter still exists.
+            adapter = load_adapters().get(approved_generic_adapter.id)
+            assert adapter is not None
+            assert adapter.status == "approved"
+        finally:
+            # Clean up the live-only profile.
+            try:
+                registry.unregister_custom_profile("live-only-profile")
+            except Exception:
+                pass
+
+    def test_live_only_profile_eligibility_already_bound(
+        self,
+        client: TestClient,
+        clean_adapter_store: Path,
+        tmp_path: Path,
+    ):
+        """When a live-only profile references the adapter, the list endpoint
+        returns eligibility=already_bound, which the UI uses to suppress the
+        remove affordance."""
+        from runtime.orchestrator.executor_registry import (
+            ExecutorProfile,
+            get_registry,
+        )
+        from runtime.orchestrator.adapter_store import compute_sha256
+
+        # Create a real executable so resolve_adapter's hash check passes.
+        script = _make_conformant_adapter_script(tmp_path, "eligible-adapter")
+        real_hash = compute_sha256(str(script))
+
+        adapter = AdapterEntry(
+            id="eligible-adapter",
+            name="eligible-adapter",
+            executable=str(script),
+            executable_hash=real_hash,
+            version="1.0.0",
+            capabilities=[],
+            contract_version=1,
+            workspace_adapter="pi",
+            status="approved",
+            registered_at="2026-07-31T00:00:00Z",
+            registered_by="test",
+            approved_at="2026-07-31T01:00:00Z",
+            approved_by="founder",
+            intended_profile_name="live-cli",
+        )
+        save_adapter(adapter)
+
+        # Register a live-only profile.
+        registry = get_registry()
+        live_profile = ExecutorProfile(
+            name="live-cli",
+            kind="custom",
+            workspace_adapter_id=adapter.workspace_adapter,
+            command_adapter_id=f"custom-adapter:{adapter.id}",
+        )
+        try:
+            registry.register_custom_profile(live_profile)
+        except Exception:
+            try:
+                registry.unregister_custom_profile("live-cli")
+            except Exception:
+                pass
+            registry.register_custom_profile(live_profile)
+
+        try:
+            # List adapters — the eligibility field must reflect the binding.
+            resp = client.get("/api/v1/runtime/adapters")
+            assert resp.status_code == 200
+            adapters = resp.json()
+            our = [a for a in adapters if a["id"] == adapter.id]
+            assert len(our) == 1
+            assert our[0]["eligibility"] == "already_bound", (
+                f"Expected already_bound, got {our[0]['eligibility']}"
+            )
+        finally:
+            try:
+                registry.unregister_custom_profile("live-cli")
+            except Exception:
+                pass
