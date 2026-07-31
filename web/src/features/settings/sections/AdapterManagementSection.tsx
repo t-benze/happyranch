@@ -60,7 +60,7 @@ function buildRemoveBody(adapter: AdapterEntry): RemoveAdapterRequest {
  *
  *  Derived ENTIRELY from the server-authoritative `eligibility` field —
  *  never from status/intended_profile.  `ready_to_bind` means the adapter
- *  is approved, hash-valid, and no profile references it; `not_intended`,
+ *  is approved, hash-valid, and no profile references it; `recovery_ready`,
  *  `tampered`, `builtin_collision`, and `cross_profile` also denote an
  *  unbound adapter that may be safely removed.  `already_bound` and `null`
  *  (PENDING / not approved) suppress the remove affordance. */

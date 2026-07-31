@@ -60,7 +60,7 @@ export const FIELD_CLASS =
  *  register route + body while the conformance challenge stays identical:
  *  'binary' → register-binary (built-in path, kind carried by the token),
  *  'profile' → register (legacy custom profile via generic-cli),
- *  'adapter' → adapter-submission (v1 wrapper → PENDING → approval → bind). */
+ *  'adapter' → adapter-submission (v1 wrapper → PENDING → founder approves & connects atomically, seq237). */
 export type ConnectTarget = 'binary' | 'profile' | 'adapter';
 
 export function buildConnectPrompt(
@@ -268,8 +268,9 @@ export function buildAdapterConnectPrompt(
     `#         "capabilities":["token_metering"],"workspace_adapter":"pi"}`,
     ``,
     `# Submission creates ONLY the exact PENDING adapter. Founder approval`,
-    `# is a separate step. After approval, the existing authenticated`,
-    `# management bind links the adapter to the "${name}" profile.`,
+    `# is a separate, Settings-only step. When the founder approves, the`,
+    `# server atomically approves AND connects the "${name}" profile — one`,
+    `# action, no follow-up bind needed.`,
     `# No auto-approval, no token disclosure beyond this prompt.`,
     ``,
     `# This token is valid for about 30 minutes. This screen updates live.`,
@@ -281,12 +282,13 @@ export type AdapterState =
   | { stage: 'form' }
   | { stage: 'waiting'; name: string; token: string; expired: boolean; adapterId: string }
   | { stage: 'submitted'; name: string; adapterId: string; status: string }
-  | { stage: 'bind_failed'; name: string; adapterId: string; error: string }
   | { stage: 'connected'; name: string; adapterId: string };
 
 /** Shared hook for the adapter-backed custom-CLI connection (THR-107 seq141).
  *  Mints an adapter-purpose token → CLI creates/submits v1 adapter wrapper
- *  → UI polls adapter status → binds profile when APPROVED. */
+ *  → UI polls adapter status → Connected when server reports already_bound.
+ *  Normal intended-profile approval is atomic (seq237): the server
+ *  approves and connects in one transaction — no client-side bind. */
 export function useAdapterConnect({
   onConnected,
 }: {
@@ -357,36 +359,16 @@ export function useAdapterConnect({
     }
   }, [adapterEntry, state.stage, name, adapterIdForPoll]);
 
-  // Transition: submitted → connected when adapter is APPROVED → bind profile
-  const bindMutation = useMutation({
-    mutationFn: (aid: string) =>
-      import('@/lib/api').then(({ adapters }) =>
-        adapters.bindAdapterProfile(aid, { profile_name: name }),
-      ),
-    onSuccess: () => {
-      setState({ stage: 'connected', name, adapterId: adapterIdForPoll });
-      onConnected({ name, path: null, via: 'custom' });
-    },
-    onError: (error: unknown) => {
-      const message =
-        error instanceof Error ? error.message : 'Bind failed — retry or contact the founder.';
-      setState({ stage: 'bind_failed', name, adapterId: adapterIdForPoll, error: message });
-    },
-  });
-
-  const retryBind = (): void => {
-    if (!bindMutation.isPending) bindMutation.mutate(adapterIdForPoll);
-  };
-
+  // Transition: submitted → connected when server confirms atomically bound.
+  // No client-side bind — approval is an atomic server transaction (seq237).
+  // The server-authoritative ``eligibility`` value is the single source of truth.
   useEffect(() => {
     if (state.stage !== 'submitted') return;
-    if (adapterEntry && adapterEntry.status === 'approved') {
-      // Auto-bind the approved adapter to the profile
-      if (!bindMutation.isPending && !bindMutation.isSuccess) {
-        bindMutation.mutate(adapterIdForPoll);
-      }
+    if (adapterEntry && adapterEntry.eligibility === 'already_bound') {
+      setState({ stage: 'connected', name, adapterId: adapterIdForPoll });
+      onConnected({ name, path: null, via: 'custom' });
     }
-  }, [adapterEntry, state.stage, adapterIdForPoll, bindMutation]);
+  }, [adapterEntry, state.stage, adapterIdForPoll, onConnected, name]);
 
   const start = (n: string): void => {
     if (n && !mint.isPending) mint.mutate(n);
@@ -401,7 +383,7 @@ export function useAdapterConnect({
     mint.reset();
   };
 
-  return { state, name, token, adapterId: adapterIdForPoll, mint, start, regenerate, back, bindMutation, retryBind };
+  return { state, name, token, adapterId: adapterIdForPoll, mint, start, regenerate, back };
 }
 
 /* ------------------------------------------------------------------ */
@@ -428,7 +410,7 @@ export type RecoveryState =
  * NOT recompute hash/tamper eligibility — this hook uses the server's
  * ``eligibility`` value directly.
  *
- * Used identically by onboarding and Settings → Executors to show
+ * Used by Settings → Executors to show
  * a truthful "Bind <profile>" recovery action after refresh or a
  * new session.  Only adapters with ``eligibility === 'ready_to_bind'``
  * are shown as recoverable.

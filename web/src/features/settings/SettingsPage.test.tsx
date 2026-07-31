@@ -962,15 +962,12 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
   });
 
   test(
-    'adapter-backed: submitted → awaiting approval → poll APPROVED → bind → Connected',
+    'adapter-backed: submitted PENDING → server-confirmed already_bound → Connected (no client bind)',
     async () => {
     const user = userEvent.setup();
     const adapterId = 'test-adapter-cli-adapter';
     const profileName = 'test-adapter-cli';
 
-    // Stage the adapter as PENDING BEFORE the mint interaction so the
-    // first poll request has a handler (the hook fires useQuery immediately
-    // when state transitions to 'waiting' — no handler = unhandled MSW error).
     server.use(
       http.post('/api/v1/auth/registration-token/runtime', () =>
         HttpResponse.json({ token: 'hr_tok_ADAPTER_TEST', expires_at: Math.floor(Date.now() / 1000) + 1800 }),
@@ -998,7 +995,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
     expect(screen.getByText(adapterId)).toBeInTheDocument();
 
-    // Transition to APPROVED → auto-bind → Connected.
+    // Transition: server confirms atomically bound (seq237).
+    // The flow uses the server-authoritative eligibility field — no client bind.
     server.use(
       http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
         HttpResponse.json({
@@ -1008,86 +1006,11 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
           registered_at: new Date().toISOString(), registered_by: 'test',
           approved_at: new Date().toISOString(), approved_by: 'founder',
           intended_profile_name: profileName,
-        }),
-      ),
-      http.post(`/api/v1/runtime/adapters/${adapterId}/bind-profile`, () =>
-        HttpResponse.json({
-          profile_name: profileName, command_adapter_id: `custom-adapter:${adapterId}`,
-          workspace_adapter_id: 'pi', kind: 'custom', status: 'connected', adapter_id: adapterId,
+          eligibility: 'already_bound',
         }),
       ),
     );
 
-    await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
-    // The top-level ConnectedCard uses Settings' own connectedSubtitle,
-    // not the AdapterConnect internal subtitle copy.
-    expect(screen.getByText(/your custom cli is registered/i)).toBeInTheDocument();
-  }, 15000);
-
-  test(
-    'adapter-backed: bind failure → error state → retry → Connected',
-    async () => {
-    const user = userEvent.setup();
-    const adapterId = 'test-bindfail-cli-adapter';
-    const profileName = 'test-bindfail-cli';
-
-    // Stage the adapter as PENDING BEFORE the mint interaction so the
-    // first poll request has a handler.
-    server.use(
-      http.post('/api/v1/auth/registration-token/runtime', () =>
-        HttpResponse.json({ token: 'hr_tok_BINDFAIL_TEST', expires_at: Math.floor(Date.now() / 1000) + 1800 }),
-      ),
-      http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
-        HttpResponse.json({
-          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
-          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
-          registered_at: new Date().toISOString(), registered_by: 'test',
-          approved_at: null, approved_by: null, intended_profile_name: profileName,
-        }),
-      ),
-    );
-
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-    await openConnect(user);
-    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
-    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
-
-    await user.type(await screen.findByLabelText(/name this cli/i), profileName);
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    // Show APPROVED adapter, but bind FAILS → AdapterBindFailedBody.
-    server.use(
-      http.get(`/api/v1/runtime/adapters/${adapterId}`, () =>
-        HttpResponse.json({
-          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
-          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
-          contract_version: 1, workspace_adapter: 'pi', status: 'approved',
-          registered_at: new Date().toISOString(), registered_by: 'test',
-          approved_at: new Date().toISOString(), approved_by: 'founder',
-          intended_profile_name: profileName,
-        }),
-      ),
-      http.post(`/api/v1/runtime/adapters/${adapterId}/bind-profile`, () =>
-        HttpResponse.json({ detail: 'Adapter artifact changed before bind.' }, { status: 422 }),
-      ),
-    );
-
-    await screen.findByText(/bind failed/i, {}, { timeout: 10000 });
-    const retryButton = screen.getByRole('button', { name: /retry bind/i });
-    expect(retryButton).toBeInTheDocument();
-
-    // Retry with success.
-    server.use(
-      http.post(`/api/v1/runtime/adapters/${adapterId}/bind-profile`, () =>
-        HttpResponse.json({
-          profile_name: profileName, command_adapter_id: `custom-adapter:${adapterId}`,
-          workspace_adapter_id: 'pi', kind: 'custom', status: 'connected', adapter_id: adapterId,
-        }),
-      ),
-    );
-
-    await user.click(retryButton);
     await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
     expect(screen.getByText(/your custom cli is registered/i)).toBeInTheDocument();
   }, 15000);
@@ -1201,6 +1124,39 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     expect(promptText).toContain('required by the registration token challenge');
     expect(promptText).toContain('NOT an');
+  });
+
+  // ── seq237 atomic approve-and-connect prompt test (TASK-3841 fix-forward) ──
+
+  test('seq237: normal prompt says atomic approve-and-connect, not approve-then-Bind', async () => {
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({
+          token: 'hr_tok_SETTINGS_SEQ237',
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'seq237-normal');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+
+    // Normal flow: atomic approve-and-connect
+    expect(promptText).toContain('atomically approves');
+    expect(promptText).toContain('connects the');
+    expect(promptText).toContain('no follow-up bind needed');
+
+    // Must NOT contain obsolete approve-then-Bind lifecycle
+    expect(promptText).not.toContain('management bind');
+    expect(promptText).not.toContain('After approval, the existing authenticated');
   });
 });
 

@@ -1,27 +1,35 @@
 /**
  * PendingAdaptersSection — the Settings ▸ Executors founder-only pending
- * adapter approvals area (THR-107 seq220, fix-forward TASK-3805).
+ * adapter approvals area (THR-107 seq237).
  *
  * Rendered ABOVE Custom CLIs (CustomProfilesSection). Lists only PENDING
  * adapters with Approve/Reject controls that require explicit confirm/cancel
- * naming the exact SHA-256 snapshot. Approve transitions PENDING → APPROVED
- * and then shows the shared RecoveryBindCard (canonical bind → server poll →
- * durable connected lifecycle). Reject atomically removes the PENDING entry.
+ * naming the exact SHA-256 snapshot.
+ *
+ * **THR-107 seq237**: For adapters with an ``intended_profile_name``,
+ * Approve now atomically approves AND creates/binds the named custom profile
+ * in one server transaction. The UI shows Connected immediately after refetch
+ * — no client-side Bind follow-up needed. The action truthfully "approves
+ * and connects" the named profile.
+ *
+ * **Advanced Bind (recovery/legacy)**: Adapters without an
+ * intended_profile_name (master-bearer registration path) are approved
+ * without auto-binding and retain explicit advanced Bind via the shared
+ * RecoveryBindCard. This is labeled as recovery/legacy.
  *
  * HONESTY FENCE: only fields the API returns are rendered. The server is the
  * single source of truth for eligibility and snapshot validity.
  * Onboarding NEVER renders this section — it is Settings-only.
  *
  * BIND RECOVERY (fix-forward TASK-3805): the shared RecoveryBindCard from
- * ConnectFlow is the SINGLE canonical bind implementation — both this
- * section and onboarding RecoverySection invoke the same bind → server
- * poll → durable connected logic. No duplicate state enum, no duplicate
- * effect, no duplicate API polling path.
+ * ConnectFlow is the SINGLE canonical bind implementation — this
  */
 import { useState, useCallback } from 'react';
 import { Check, XCircle, Puzzle, Trash2 } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
-import { ApiError } from '@/lib/api';
+import { Input } from '@/design-system/primitives/Input';
+import { Label } from '@/design-system/primitives/Label';
+import { ApiError, adapters as adaptersApi } from '@/lib/api';
 import {
   ADAPTERS_KEY,
   useAdapters,
@@ -60,6 +68,79 @@ function buildApproveBody(adapter: AdapterEntry) {
 /** Build the 6-field exact snapshot body for rejection. */
 function buildRejectBody(adapter: AdapterEntry) {
   return buildApproveBody(adapter);
+}
+
+/* ── Recovery bind row for no-intended adapters (advanced recovery / legacy) ── */
+
+function RecoveryBindRow({
+  adapter,
+  onBound,
+}: {
+  adapter: AdapterEntry;
+  onBound: () => void;
+}): JSX.Element {
+  const [profileName, setProfileName] = useState('');
+  const [binding, setBinding] = useState(false);
+  const [error, setError] = useState('');
+
+  const bind = async (): Promise<void> => {
+    const name = profileName.trim();
+    if (!name) return;
+    setBinding(true);
+    setError('');
+    try {
+      await adaptersApi.bindAdapterProfile(adapter.id, { profile_name: name });
+      // Server confirmed — refetch will show already_bound.
+      onBound();
+    } catch (e: unknown) {
+      setError(errMessage(e, 'Bind failed. Retry or contact the founder.'));
+      setBinding(false);
+    }
+  };
+
+  return (
+    <div
+      className="border-border-default bg-surface rounded-lg border p-4"
+      data-testid={`pending-adapter-row-${adapter.id}`}
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <Puzzle size={16} aria-hidden className="text-text-secondary shrink-0" />
+        <span className="text-text-primary font-mono text-sm font-medium">{adapter.id}</span>
+        <span className="text-mono-sm bg-surface-sunken text-text-muted inline-flex items-center rounded-full px-2 py-0.5 font-semibold">
+          legacy / recovery
+        </span>
+      </div>
+      <p className="text-text-secondary text-sm mb-3">
+        This adapter was approved without a profile. Enter a name to bind it
+        to a custom executor profile.
+      </p>
+      <div className="space-y-2">
+        <Label htmlFor={`recovery-name-${adapter.id}`}>Profile name</Label>
+        <Input
+          id={`recovery-name-${adapter.id}`}
+          value={profileName}
+          onChange={(e) => setProfileName(e.target.value)}
+          placeholder="e.g. my-custom-cli"
+          disabled={binding}
+          data-testid={`recovery-name-input-${adapter.id}`}
+        />
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <Button
+          onClick={() => { void bind(); }}
+          disabled={!profileName.trim() || binding}
+          data-testid={`adapter-bind-${adapter.id}`}
+        >
+          {binding ? 'Binding…' : `Bind ${profileName.trim() || '…'}`}
+        </Button>
+      </div>
+      {error && (
+        <p className="text-feedback-danger mt-2 text-xs" role="alert" data-testid={`adapter-bind-error-${adapter.id}`}>
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /* ── Connected card for already_bound adapters (mirrors RecoveryBindCard's connected state) ── */
@@ -145,10 +226,21 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
     return <ConnectedAdapterCard adapter={adapter} />;
   }
 
-  // If adapter is APPROVED and ready to bind, use the shared RecoveryBindCard.
+  // If adapter is APPROVED and ready to bind (legacy/recovery: approved but
+  // not auto-bound — e.g. master-bearer registration without intended_profile),
+  // use the shared RecoveryBindCard for explicit advanced Bind.
+  // THR-107 seq237: normal approval with intended_profile_name auto-binds,
+  // so this path is only for legacy/recovery scenarios.
   if (adapter.status === 'approved' && adapter.eligibility === 'ready_to_bind' && adapter.intended_profile_name) {
     return (
       <div data-testid={`pending-adapter-row-${adapter.id}`}>
+        <div className="mb-2">
+          <span
+            className="text-mono-sm bg-surface-sunken text-text-muted inline-flex items-center rounded-full px-2 py-0.5 font-semibold"
+          >
+            recovery
+          </span>
+        </div>
         <RecoveryBindCard
           adapter={{
             adapterId: adapter.id,
@@ -165,6 +257,13 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
         />
       </div>
     );
+  }
+
+  // If adapter is APPROVED with no intended_profile_name (recovery_ready),
+  // show advanced recovery Bind with explicit name entry — founder provides
+  // the profile name. No auto-binding; no Approve/Reject controls.
+  if (adapter.status === 'approved' && adapter.eligibility === 'recovery_ready') {
+    return <RecoveryBindRow adapter={adapter} onBound={refetchAdapters} />;
   }
 
   // Default: PENDING adapter with approve/reject controls.
@@ -238,11 +337,13 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
 
       {/* Approve / Reject actions */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {/* Approve */}
+        {/* Approve (seq237: approve and connect for intended-profile adapters) */}
         {approveConfirming ? (
           <>
             <p className="w-full text-text-secondary text-xs mb-1">
-              Confirm approval of adapter{' '}
+              {adapter.intended_profile_name
+                ? `Confirm approval and connection of adapter — this will bind profile ${adapter.intended_profile_name}`
+                : 'Confirm approval of adapter'}{' '}
               <code className="font-mono bg-surface-sunken rounded px-1">
                 {adapter.executable_hash}
               </code>
@@ -254,7 +355,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
               disabled={approve.isPending}
               data-testid={`adapter-confirm-approve-${adapter.id}`}
             >
-              {approve.isPending ? 'Approving…' : 'Confirm approve'}
+              {approve.isPending ? 'Approving…' : adapter.intended_profile_name ? 'Confirm approve & connect' : 'Confirm approve'}
             </Button>
             <Button
               type="button"
@@ -273,7 +374,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
             data-testid={`adapter-approve-${adapter.id}`}
           >
             <Check aria-hidden="true" size={14} />
-            Approve
+            {adapter.intended_profile_name ? 'Approve & connect' : 'Approve'}
           </Button>
         )}
 
@@ -338,14 +439,17 @@ export function PendingAdaptersSection(): JSX.Element {
   const query = useAdapters();
   const adapters = query.data ?? [];
   // Show PENDING adapters (awaiting approval), APPROVED adapters ready to
-  // bind, AND already_bound adapters (durable Connected). The filter
+  // bind, recovery_ready adapters (no-intended, founder names explicitly),
+  // AND already_bound adapters (durable Connected). The filter
   // intentionally includes already_bound so the card survives refetch
   // after a successful bind → server confirmation cycle.
   const pending = adapters.filter(
     (a) =>
       a.status === 'pending' ||
       (a.status === 'approved' &&
-        (a.eligibility === 'ready_to_bind' || a.eligibility === 'already_bound')),
+        (a.eligibility === 'ready_to_bind' ||
+         a.eligibility === 'recovery_ready' ||
+         a.eligibility === 'already_bound')),
   );
 
   return (
@@ -353,8 +457,9 @@ export function PendingAdaptersSection(): JSX.Element {
       <div>
         <h3 className="text-text-primary text-sm font-semibold">Pending Adapter Approvals</h3>
         <p className="text-text-secondary mt-1 text-sm">
-          Adapters awaiting founder approval. Approve to make them available for
-          profile binding or reject to remove them.
+          Adapters awaiting founder approval. Approving a named adapter atomically
+          approves and connects its profile in one action. Legacy adapters without
+          a named profile use advanced Bind recovery after approval.
         </p>
       </div>
 

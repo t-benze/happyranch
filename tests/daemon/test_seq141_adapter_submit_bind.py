@@ -584,7 +584,12 @@ class TestBindGating:
         assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
 
     def test_builtin_collision_bind_rejected(self, app_and_client, route_setup, token_store):
-        """Bind to a profile name that collides with a built-in is rejected."""
+        """Approve (seq237 auto-bind) rejects built-in profile name collision.
+
+        THR-107 seq237: the approve endpoint now atomically approves AND binds
+        the intended profile. A builtin-colliding intended_profile_name
+        causes the binding to fail, and the approval is rolled back to PENDING.
+        """
         app, master_token, store = app_and_client
         token = _mint_adapter_token(store, "codex")
         script = _make_conformant_adapter_script(route_setup, "codex-adapter")
@@ -599,7 +604,7 @@ class TestBindGating:
         data = resp.json()
         adapter_id = data["id"]
 
-        # Approve
+        # Approve (seq237: auto-bind with builtin collision → rollback)
         mc = self._master_client(app, master_token)
         resp = mc.post(
             f"/api/v1/runtime/adapters/{adapter_id}/approve",
@@ -612,16 +617,15 @@ class TestBindGating:
                 "workspace_adapter": data["workspace_adapter"],
             },
         )
-        assert resp.status_code == 200
-
-        # Bind to "codex" -- a built-in name
-        resp = mc.post(
-            f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
-            json={"profile_name": "codex"},
-        )
+        # Approval auto-binds but builtin collision causes rollback → 422
         assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
         detail = resp.json()["detail"]
         assert "built-in" in detail.lower() or "collides" in detail.lower()
+
+        # Adapter remains PENDING after rollback
+        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "pending"
 
 
 # ---------------------------------------------------------------------------
@@ -777,13 +781,24 @@ class TestRaceSafety:
         assert bind_results[0] in (200, 422), f"bind unexpected: {bind_results}"
 
     def test_re_registration_vs_bind_deterministic(self, app_and_client, route_setup, token_store):
-        """If re-registration (via submit) resets to PENDING before bind, bind is rejected."""
+        """After seq237 auto-bind, re-registration is blocked while profile is bound.
+
+        THR-107 seq237: approval auto-binds the profile. Re-registration
+        (via submit) is rejected because a runtime profile is bound to the
+        adapter. The operator must remove the profile first.
+        """
         app, master_token, store = app_and_client
         profile_name = "rereg-race-cli"
         adapter_id = self._submit_and_approve_static(app, master_token, store, route_setup, profile_name)
 
-        # Re-register via a NEW submit token with the same intended profile name.
-        # This hits the same adapter id and resets status to PENDING.
+        # Verify the adapter is APPROVED and profile is bound
+        mc = self._master_client(app, master_token)
+        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "approved"
+        assert resp.json()["eligibility"] == "already_bound"
+
+        # Re-registration via submit is blocked because profile is bound
         token2 = _mint_adapter_token(store, profile_name)
         adapter_entry = load_adapters().get(adapter_id)
         assert adapter_entry is not None
@@ -799,18 +814,17 @@ class TestRaceSafety:
             },
             headers={"Authorization": f"Bearer {token2}"},
         )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["status"] == "pending"
-        assert resp.json()["id"] == adapter_id
+        # Re-registration is blocked because profile is bound to the adapter
+        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+        assert "currently bound" in resp.json()["detail"].lower() or "profile" in resp.json()["detail"].lower()
 
-        # Bind should now be rejected (status is PENDING again)
-        mc = self._master_client(app, master_token)
+        # Bind is idempotent (profile already bound, replace_custom_profile succeeds)
         resp = mc.post(
             f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
             json={"profile_name": profile_name},
         )
-        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
-        assert "not approved" in resp.json()["detail"].lower()
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        assert resp.json()["status"] == "connected"
 
     @staticmethod
     def _submit_and_approve_static(app, master_token, store, route_setup, profile_name):
@@ -844,12 +858,14 @@ class TestRaceSafety:
     def test_bind_first_then_re_register_rejected(
         self, app_and_client, route_setup, token_store, monkeypatch
     ):
-        """Forced ordering: bind completes first (bound profile created),
-        then re-registration is rejected because the adapter-targeting
-        profile is active.  Uses a monkeypatch hook at the durable
-        adapter-save boundary to control commit interleaving.
+        """After seq237 auto-bind during approval, both re-registration and
+        re-bind are rejected because the profile is already bound.
 
-        Final state: approved adapter + bound profile, no PENDING residue."""
+        THR-107 seq237: approval atomically binds the profile. No race
+        condition exists between bind and re-registration because both
+        happen under the same lock. After approval, the adapter is APPROVED
+        and the profile is already_bound — re-registration and re-bind are
+        both rejected with clear errors."""
         app, master_token, store = app_and_client
         profile_name = "bind-first-cli"
         adapter_id = self._submit_and_approve_static(
@@ -860,66 +876,35 @@ class TestRaceSafety:
         assert adapter_entry is not None
         assert adapter_entry.status == "approved"
 
+        # Verify profile is already bound (seq237 auto-bind)
+        mc = self._master_client(app, master_token)
+        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert resp.status_code == 200
+        assert resp.json()["eligibility"] == "already_bound"
+
         token2 = _mint_adapter_token(store, profile_name)
 
-        # Hook into _save_adapter_locked — the single durable write boundary
-        # for re-registration.  We block it until bind has completed.
-        import runtime.orchestrator.custom_adapter_registry as car
-        original_save_locked = car._save_adapter_locked
-        bind_completed = threading.Event()
-        re_reg_allowed = threading.Event()
-
-        def _hooked_save_locked(entry):
-            bind_completed.wait(timeout=30)
-            re_reg_allowed.wait(timeout=30)
-            original_save_locked(entry)
-
-        monkeypatch.setattr(car, "_save_adapter_locked", _hooked_save_locked)
-
-        outcomes: dict[str, int] = {}
-
-        def do_re_register():
-            c = TestClient(app)
-            resp = c.post(
-                "/api/v1/runtime/adapters/submit",
-                json={
-                    "executable": adapter_entry.executable,
-                    "version": adapter_entry.version,
-                    "capabilities": adapter_entry.capabilities,
-                    "workspace_adapter": adapter_entry.workspace_adapter,
-                },
-                headers={"Authorization": f"Bearer {token2}"},
-            )
-            outcomes["re_register"] = resp.status_code
-
-        def do_bind():
-            c = TestClient(app)
-            c.headers.update({"Authorization": f"Bearer {master_token}"})
-            resp = c.post(
-                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
-                json={"profile_name": profile_name},
-            )
-            outcomes["bind"] = resp.status_code
-            bind_completed.set()
-
-        t_rereg = threading.Thread(target=do_re_register)
-        t_bind = threading.Thread(target=do_bind)
-        t_bind.start()
-        t_rereg.start()
-
-        bind_completed.wait(timeout=30)
-        re_reg_allowed.set()
-
-        t_bind.join(timeout=30)
-        t_rereg.join(timeout=30)
-
-        assert outcomes.get("bind") == 200, (
-            f"Bind should have succeeded (ran first), got {outcomes}"
+        # Re-registration: blocked because profile is bound
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": adapter_entry.executable,
+                "version": adapter_entry.version,
+                "capabilities": adapter_entry.capabilities,
+                "workspace_adapter": adapter_entry.workspace_adapter,
+            },
+            headers={"Authorization": f"Bearer {token2}"},
         )
-        assert outcomes.get("re_register") == 422, (
-            f"Re-registration should have been rejected (profile bound), "
-            f"got {outcomes}"
+        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+        assert "currently bound" in resp.json()["detail"].lower()
+
+        # Bind is idempotent (profile already bound)
+        resp = mc.post(
+            f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
+            json={"profile_name": profile_name},
         )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         # Final state: approved adapter + bound profile
         final_entry = load_adapters().get(adapter_id)
@@ -932,17 +917,17 @@ class TestRaceSafety:
         assert profile_name in profiles
         assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
 
-        monkeypatch.setattr(car, "_save_adapter_locked", original_save_locked)
-
     def test_re_register_first_then_bind_rejected(
         self, app_and_client, route_setup, token_store, monkeypatch
     ):
-        """Forced ordering: re-registration resets adapter to PENDING first,
-        then bind's re-read sees PENDING and rejects.  Uses a monkeypatch
-        hook at the durable-runtime-profile write boundary in the bind path
-        to control commit interleaving.
+        """After seq237 auto-bind, both re-registration and re-bind are rejected.
 
-        Final state: PENDING adapter, no bound profile residue."""
+        THR-107 seq237: approval atomically binds the profile. No racing
+        is possible because both operations complete under the same lock.
+        Re-registration is blocked (profile currently bound) and bind is
+        rejected (profile already exists/already_bound).
+
+        Final state: approved adapter + bound profile."""
         app, master_token, store = app_and_client
         profile_name = "rereg-first-cli"
         adapter_id = self._submit_and_approve_static(
@@ -953,177 +938,136 @@ class TestRaceSafety:
         assert adapter_entry is not None
         assert adapter_entry.status == "approved"
 
+        # Verify profile is already bound (seq237 auto-bind)
+        mc = self._master_client(app, master_token)
+        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert resp.status_code == 200
+        assert resp.json()["eligibility"] == "already_bound"
+
         token2 = _mint_adapter_token(store, profile_name)
 
-        # Hook resolve_adapter (bind step 5, called BEFORE the adapter-store
-        # lock is acquired) to delay bind until re-registration completes.
-        # This avoids deadlocking: re-registration needs the lock, and if
-        # we block after bind acquires it, re-registration starves.
-        import runtime.orchestrator.custom_adapter_registry as car
-        original_resolve = car.resolve_adapter
-        rereg_completed = threading.Event()
-        bind_allowed = threading.Event()
-
-        def _hooked_resolve(adapter_id_arg):
-            rereg_completed.wait(timeout=30)
-            bind_allowed.wait(timeout=30)
-            return original_resolve(adapter_id_arg)
-
-        monkeypatch.setattr(car, "resolve_adapter", _hooked_resolve)
-
-        outcomes: dict[str, int] = {}
-
-        def do_re_register():
-            c = TestClient(app)
-            resp = c.post(
-                "/api/v1/runtime/adapters/submit",
-                json={
-                    "executable": adapter_entry.executable,
-                    "version": adapter_entry.version,
-                    "capabilities": adapter_entry.capabilities,
-                    "workspace_adapter": adapter_entry.workspace_adapter,
-                },
-                headers={"Authorization": f"Bearer {token2}"},
-            )
-            outcomes["re_register"] = resp.status_code
-            rereg_completed.set()
-
-        def do_bind():
-            c = TestClient(app)
-            c.headers.update({"Authorization": f"Bearer {master_token}"})
-            resp = c.post(
-                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
-                json={"profile_name": profile_name},
-            )
-            outcomes["bind"] = resp.status_code
-
-        t_rereg = threading.Thread(target=do_re_register)
-        t_bind = threading.Thread(target=do_bind)
-        t_rereg.start()
-        t_bind.start()
-
-        rereg_completed.wait(timeout=30)
-        bind_allowed.set()
-
-        t_rereg.join(timeout=30)
-        t_bind.join(timeout=30)
-
-        assert outcomes.get("re_register") == 200, (
-            f"Re-registration should have succeeded (ran first), got {outcomes}"
+        # Re-registration: blocked because profile is bound
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": adapter_entry.executable,
+                "version": adapter_entry.version,
+                "capabilities": adapter_entry.capabilities,
+                "workspace_adapter": adapter_entry.workspace_adapter,
+            },
+            headers={"Authorization": f"Bearer {token2}"},
         )
-        assert outcomes.get("bind") == 422, (
-            f"Bind should have been rejected (adapter is PENDING), "
-            f"got {outcomes}"
-        )
+        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+        assert "currently bound" in resp.json()["detail"].lower()
 
-        # Final state: adapter is PENDING, no bound profile
+        # Bind is idempotent (profile already bound)
+        resp = mc.post(
+            f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
+            json={"profile_name": profile_name},
+        )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        # Final state: adapter remains APPROVED, profile remains bound
         final_entry = load_adapters().get(adapter_id)
         assert final_entry is not None
-        assert final_entry.status == "pending", (
-            f"Adapter should be PENDING after re-registration, "
-            f"got {final_entry.status!r}"
-        )
+        assert final_entry.status == "approved"
         profiles = load_runtime_profiles()
-        if profile_name in profiles:
-            assert profiles[profile_name].get("command_adapter_id") != f"custom-adapter:{adapter_id}"
+        assert profile_name in profiles
+        assert profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
 
-        monkeypatch.setattr(car, "resolve_adapter", original_resolve)
-
-    def test_bind_no_residue_on_durable_write_failure(
+    def test_approve_rollback_on_bind_write_failure(
         self, app_and_client, route_setup, token_store, monkeypatch
     ):
-        """If the durable runtime profile write fails, no profile, registry,
-        or audit residue is produced."""
+        """seq237: if auto-bind's save_runtime_profile fails during approve,
+        approval rolls back to PENDING with no profile residue."""
         app, master_token, store = app_and_client
         profile_name = "norw-cli"
-        adapter_id = self._submit_and_approve_static(
-            app, master_token, store, route_setup, profile_name
+        token = _mint_adapter_token(store, profile_name)
+        script = _make_conformant_adapter_script(route_setup, f"{profile_name}-adapter")
+
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={"executable": str(script), "version": "1.0.0"},
+            headers={"Authorization": f"Bearer {token}"},
         )
+        assert resp.status_code == 200
+        data = resp.json()
+        adapter_id = data["id"]
 
-        mc = self._master_client(app, master_token)
-
-        # Save pre-request state
         pre_profiles = dict(load_runtime_profiles())
         from runtime.orchestrator.executor_registry import get_registry as _reg
         registry = _reg()
         pre_in_memory = registry.get_profile(profile_name)
 
-        # Force save_runtime_profile to fail.
-        # The bind_adapter_profile function imports save_runtime_profile at
-        # module level from runtime.orchestrator.runtime_executor_store.
-        # We must patch the imported reference in routes.adapters, not the
-        # store module itself.
-        import runtime.daemon.routes.adapters as adapters_mod
-        original_save = adapters_mod.save_runtime_profile
+        import runtime.orchestrator.runtime_executor_store as res
+        original_save = res.save_runtime_profile
 
         def _failing_save(name, cfg):
             raise OSError("simulated disk write failure")
 
-        monkeypatch.setattr(adapters_mod, "save_runtime_profile", _failing_save)
+        monkeypatch.setattr(res, "save_runtime_profile", _failing_save)
 
         try:
+            mc = self._master_client(app, master_token)
             resp = mc.post(
-                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
-                json={"profile_name": profile_name},
+                f"/api/v1/runtime/adapters/{adapter_id}/approve",
+                json={
+                    "executable": data["executable"],
+                    "executable_hash": data["executable_hash"],
+                    "version": data["version"],
+                    "capabilities": data["capabilities"],
+                    "contract_version": data["contract_version"],
+                    "workspace_adapter": data["workspace_adapter"],
+                },
             )
-            # Should get a 500 — the failure is caught by the BaseException
-            # handler in bind_adapter_profile.
-            assert resp.status_code == 500, f"Expected 500, got {resp.status_code}: {resp.text}"
-
-            # No durable residue
+            assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+            # Adapter back to PENDING
+            re_read = load_adapters().get(adapter_id)
+            assert re_read is not None and re_read.status == "pending"
+            # No profile residue
             post_profiles = load_runtime_profiles()
             if profile_name in post_profiles:
-                assert post_profiles[profile_name] == pre_profiles.get(profile_name), (
-                    f"Durable profile {profile_name!r} mutated despite save failure"
-                )
-            # No in-memory residue
-            post_in_memory = registry.get_profile(profile_name)
-            assert post_in_memory == pre_in_memory, (
-                f"In-memory profile changed: {post_in_memory} vs {pre_in_memory}"
-            )
+                assert post_profiles[profile_name] == pre_profiles.get(profile_name)
+            assert registry.get_profile(profile_name) == pre_in_memory
         finally:
-            monkeypatch.setattr(adapters_mod, "save_runtime_profile", original_save)
+            monkeypatch.setattr(res, "save_runtime_profile", original_save)
 
-    def test_bind_no_residue_on_audit_failure(
+    def test_approve_rollback_on_audit_failure(
         self, app_and_client, route_setup, token_store, monkeypatch
     ):
-        """If the audit write fails after durable write + registry sync, the
-        compensating rollback must leave no durable profile, no in-memory
-        registry entry, and no audit residue."""
+        """seq237: if auto-bind's audit write fails during approve, approval
+        rolls back to PENDING with no profile or audit residue."""
         app, master_token, store = app_and_client
         profile_name = "noaudit-cli"
-        adapter_id = self._submit_and_approve_static(
-            app, master_token, store, route_setup, profile_name
+        token = _mint_adapter_token(store, profile_name)
+        script = _make_conformant_adapter_script(route_setup, f"{profile_name}-adapter")
+
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={"executable": str(script), "version": "1.0.0"},
+            headers={"Authorization": f"Bearer {token}"},
         )
+        assert resp.status_code == 200
+        data = resp.json()
+        adapter_id = data["id"]
 
-        mc = self._master_client(app, master_token)
-
-        # Save pre-request state
         pre_profiles = dict(load_runtime_profiles())
         from runtime.orchestrator.executor_registry import get_registry as _reg
         registry = _reg()
         pre_in_memory = registry.get_profile(profile_name)
 
-        # Inject a failure AFTER the audit INSERT statement but BEFORE
-        # the explicit commit() in _audit_adapter_bind.  The production
-        # code calls insert_audit_log_uncommitted() + commit() in sequence;
-        # the patch executes the original INSERT (row is in the uncommitted
-        # transaction) then raises — the DB close in the finally block
-        # rolls back the uncommitted row automatically.
         from runtime.infrastructure import database as infra_db
         original_insert_uncommitted = infra_db.Database.insert_audit_log_uncommitted
 
         def _insert_then_raise(self, task_id, agent, action, payload=None):
-            # Execute the real INSERT — row is in the transaction, not committed.
             rowid = original_insert_uncommitted(self, task_id, agent, action, payload)
-            # Simulate a post-insert failure (e.g. disk full, connection lost).
             raise RuntimeError("simulated post-insert audit failure")
 
-        monkeypatch.setattr(
-            infra_db.Database, "insert_audit_log_uncommitted", _insert_then_raise
-        )
+        monkeypatch.setattr(infra_db.Database, "insert_audit_log_uncommitted", _insert_then_raise)
 
-        # Snapshot pre-request audit rows — globally, unfiltered.
         from runtime.runtime import daemon_home
         pre_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
         try:
@@ -1132,66 +1076,50 @@ class TestRaceSafety:
             pre_audit_db.close()
 
         try:
+            mc = self._master_client(app, master_token)
             resp = mc.post(
-                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
-                json={"profile_name": profile_name},
+                f"/api/v1/runtime/adapters/{adapter_id}/approve",
+                json={
+                    "executable": data["executable"],
+                    "executable_hash": data["executable_hash"],
+                    "version": data["version"],
+                    "capabilities": data["capabilities"],
+                    "contract_version": data["contract_version"],
+                    "workspace_adapter": data["workspace_adapter"],
+                },
             )
-            # The rollback should catch this and return 500
-            assert resp.status_code == 500, f"Expected 500, got {resp.status_code}: {resp.text}"
-            detail = resp.json()["detail"]
-            assert "restored" in detail.lower() or "pre-request" in detail.lower()
-
-            # No durable residue
+            assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+            re_read = load_adapters().get(adapter_id)
+            assert re_read is not None and re_read.status == "pending"
             post_profiles = load_runtime_profiles()
             if profile_name in post_profiles:
-                assert post_profiles[profile_name] == pre_profiles.get(profile_name), (
-                    f"Durable profile {profile_name!r} not restored after audit failure"
-                )
-            # No in-memory residue
-            post_in_memory = registry.get_profile(profile_name)
-            assert post_in_memory == pre_in_memory, (
-                f"In-memory profile not restored after audit failure: {post_in_memory} vs {pre_in_memory}"
-            )
-
-            # NO audit residue — the uncommitted INSERT was rolled back.
-            # Prove global exact equality, not merely a filtered count.
+                assert post_profiles[profile_name] == pre_profiles.get(profile_name)
+            assert registry.get_profile(profile_name) == pre_in_memory
             post_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
             try:
                 post_audit_rows, _ = post_audit_db.query_audit_logs()
-                assert post_audit_rows == pre_audit_rows, (
-                    f"Audit residue after rollback: "
-                    f"pre={len(pre_audit_rows)} rows, post={len(post_audit_rows)} rows"
-                )
+                assert post_audit_rows == pre_audit_rows
             finally:
                 post_audit_db.close()
         finally:
-            monkeypatch.setattr(
-                infra_db.Database, "insert_audit_log_uncommitted",
-                original_insert_uncommitted
-            )
+            monkeypatch.setattr(infra_db.Database, "insert_audit_log_uncommitted", original_insert_uncommitted)
 
     def test_re_registration_rejected_when_profile_is_bound(
         self, app_and_client, route_setup, token_store
     ):
-        """Re-registration (submit) must be rejected when a runtime profile
-        is already bound to the adapter — the operator must unbind first.
-
-        This covers the bind-first → re-register ordering.  The re-register
-        → bind ordering is already covered by bind's PENDING rejection.
-        """
+        """seq237: after approval auto-binds the profile, re-registration
+        (submit) is rejected because a runtime profile is already bound."""
         app, master_token, store = app_and_client
         profile_name = "bound-rereg-cli"
         adapter_id = self._submit_and_approve_static(
             app, master_token, store, route_setup, profile_name
         )
 
-        # Bind the approved adapter to the profile.
+        # Profile is already bound (seq237 auto-bind during approval)
         mc = self._master_client(app, master_token)
-        resp = mc.post(
-            f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
-            json={"profile_name": profile_name},
-        )
-        assert resp.status_code == 200, f"Bind failed: {resp.status_code} {resp.text}"
+        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert resp.status_code == 200
+        assert resp.json()["eligibility"] == "already_bound"
 
         # Verify the profile is bound.
         profiles = load_runtime_profiles()
@@ -1219,96 +1147,68 @@ class TestRaceSafety:
             f"got {resp.status_code}: {resp.text}"
         )
         detail = resp.json()["detail"]
-        assert "bound" in detail.lower() or "profile" in detail.lower(), (
-            f"Expected rejection message about bound profile, got: {detail}"
-        )
-        assert adapter_id in detail, (
-            f"Expected rejection message to mention adapter id, got: {detail}"
-        )
+        assert "bound" in detail.lower() or "profile" in detail.lower()
+        assert adapter_id in detail
 
-        # The adapter status must remain unchanged (APPROVED, not reset to
-        # PENDING by a rejected re-registration).
+        # Adapter must remain APPROVED after rejected re-registration.
         re_read = load_adapters().get(adapter_id)
         assert re_read is not None
-        assert re_read.status == "approved", (
-            f"Adapter status changed to {re_read.status!r} after rejected "
-            f"re-registration — must remain 'approved'"
-        )
+        assert re_read.status == "approved"
 
-    def test_bind_no_residue_on_replace_failure(
+    def test_approve_rollback_on_replace_failure(
         self, app_and_client, route_setup, token_store, monkeypatch
     ):
-        """If the in-memory registry replacement (replace_custom_profile) raises
-        ValueError after the durable write, the compensating rollback must
-        restore pre-request durable and in-memory state — no overwritten
-        durable profile, no registry residue, no audit residue.
-
-        This targets the actual D7A replacement seam now used by
-        bind_adapter_profile for the authorized legacy-to-adapter upgrade."""
+        """seq237: if auto-bind's replace_custom_profile raises ValueError
+        during approve, approval rolls back to PENDING with no profile residue."""
         app, master_token, store = app_and_client
         profile_name = "repfail-cli"
-        adapter_id = self._submit_and_approve_static(
-            app, master_token, store, route_setup, profile_name
+        token = _mint_adapter_token(store, profile_name)
+        script = _make_conformant_adapter_script(route_setup, f"{profile_name}-adapter")
+
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={"executable": str(script), "version": "1.0.0"},
+            headers={"Authorization": f"Bearer {token}"},
         )
+        assert resp.status_code == 200
+        data = resp.json()
+        adapter_id = data["id"]
 
-        mc = self._master_client(app, master_token)
-
-        # Save pre-request state.
         pre_profiles = dict(load_runtime_profiles())
-        from runtime.orchestrator.executor_registry import get_registry as _reg
+        from runtime.orchestrator.executor_registry import get_registry as _reg, ExecutorRegistry
         registry = _reg()
         pre_in_memory = registry.get_profile(profile_name)
-        pre_adapters = dict(load_adapters())
 
-        # Force replace_custom_profile to raise ValueError.
-        from runtime.orchestrator.executor_registry import ExecutorRegistry
         original_replace = ExecutorRegistry.replace_custom_profile
 
         def _failing_replace(self, profile):
-            raise ValueError(
-                f"Profile {profile.name!r} replacement rejected "
-                f"(simulated registry collision)."
-            )
+            raise ValueError("simulated registry collision")
 
-        monkeypatch.setattr(
-            ExecutorRegistry, "replace_custom_profile", _failing_replace
-        )
+        monkeypatch.setattr(ExecutorRegistry, "replace_custom_profile", _failing_replace)
 
         try:
+            mc = self._master_client(app, master_token)
             resp = mc.post(
-                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
-                json={"profile_name": profile_name},
+                f"/api/v1/runtime/adapters/{adapter_id}/approve",
+                json={
+                    "executable": data["executable"],
+                    "executable_hash": data["executable_hash"],
+                    "version": data["version"],
+                    "capabilities": data["capabilities"],
+                    "contract_version": data["contract_version"],
+                    "workspace_adapter": data["workspace_adapter"],
+                },
             )
-            # The BaseException handler catches this and returns 500 with
-            # rollback.
-            assert resp.status_code == 500, (
-                f"Expected 500 after replace failure, got {resp.status_code}: {resp.text}"
-            )
-            detail = resp.json()["detail"]
-            assert "restored" in detail.lower() or "pre-request" in detail.lower()
-
-            # No durable residue — profile must be restored to pre-request state.
+            assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+            re_read = load_adapters().get(adapter_id)
+            assert re_read is not None and re_read.status == "pending"
             post_profiles = load_runtime_profiles()
             if profile_name in post_profiles:
-                assert post_profiles[profile_name] == pre_profiles.get(profile_name), (
-                    f"Durable profile {profile_name!r} not restored after "
-                    f"replace failure"
-                )
-            # No in-memory residue.
-            post_in_memory = registry.get_profile(profile_name)
-            assert post_in_memory == pre_in_memory, (
-                f"In-memory profile not restored after replace failure: "
-                f"{post_in_memory} vs {pre_in_memory}"
-            )
-            # Adapter state unchanged.
-            post_adapters = load_adapters()
-            assert post_adapters.get(adapter_id).status == pre_adapters.get(adapter_id).status, (
-                f"Adapter status changed after replace failure"
-            )
+                assert post_profiles[profile_name] == pre_profiles.get(profile_name)
+            assert registry.get_profile(profile_name) == pre_in_memory
         finally:
-            monkeypatch.setattr(
-                ExecutorRegistry, "replace_custom_profile", original_replace
-            )
+            monkeypatch.setattr(ExecutorRegistry, "replace_custom_profile", original_replace)
 
     def test_legacy_simple_to_adapter_upgrade(
         self, app_and_client, route_setup, token_store, monkeypatch
@@ -1444,13 +1344,12 @@ class TestRaceSafety:
         remove_runtime_profile(profile_name)
         registry.unregister_custom_profile(profile_name)
 
-    def test_bind_no_residue_on_replace_and_audit_failure(
+    def test_approve_rollback_on_replace_and_audit_failure(
         self, app_and_client, route_setup, token_store, monkeypatch
     ):
-        """Combined rollback proof: both replace_custom_profile and audit
-        commit can fail after the durable write.  In each case, the
-        compensating rollback must restore pre-request durable, in-memory,
-        and audit facts exactly, with no residue."""
+        """seq237: combined rollback proof — both replace_custom_profile and
+        audit commit failures during approve-with-auto-bind must roll back
+        to PENDING with no profile or audit residue."""
         from runtime.orchestrator.executor_registry import (
             ExecutorRegistry,
             get_registry as _reg,
@@ -1458,9 +1357,18 @@ class TestRaceSafety:
 
         app, master_token, store = app_and_client
         profile_name = "combo-rollback-cli"
-        adapter_id = self._submit_and_approve_static(
-            app, master_token, store, route_setup, profile_name
+        token = _mint_adapter_token(store, profile_name)
+        script = _make_conformant_adapter_script(route_setup, f"{profile_name}-adapter")
+
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={"executable": str(script), "version": "1.0.0"},
+            headers={"Authorization": f"Bearer {token}"},
         )
+        assert resp.status_code == 200
+        data = resp.json()
+        adapter_id = data["id"]
 
         mc = self._master_client(app, master_token)
         registry = _reg()
@@ -1472,34 +1380,31 @@ class TestRaceSafety:
         original_replace = ExecutorRegistry.replace_custom_profile
         def _failing_replace(self, profile):
             raise ValueError("simulated replace failure")
-        monkeypatch.setattr(
-            ExecutorRegistry, "replace_custom_profile", _failing_replace
-        )
+        monkeypatch.setattr(ExecutorRegistry, "replace_custom_profile", _failing_replace)
 
         try:
             resp = mc.post(
-                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
-                json={"profile_name": profile_name},
+                f"/api/v1/runtime/adapters/{adapter_id}/approve",
+                json={
+                    "executable": data["executable"],
+                    "executable_hash": data["executable_hash"],
+                    "version": data["version"],
+                    "capabilities": data["capabilities"],
+                    "contract_version": data["contract_version"],
+                    "workspace_adapter": data["workspace_adapter"],
+                },
             )
-            assert resp.status_code == 500
-            assert "restored" in resp.json()["detail"].lower()
-
-            # Durable residue check.
+            assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+            re_read = load_adapters().get(adapter_id)
+            assert re_read is not None and re_read.status == "pending"
             post_profiles_a = load_runtime_profiles()
             if profile_name in post_profiles_a:
                 assert post_profiles_a[profile_name] == pre_profiles_a.get(profile_name)
-            # In-memory residue check.
             assert registry.get_profile(profile_name) == pre_in_memory_a
         finally:
-            monkeypatch.setattr(
-                ExecutorRegistry, "replace_custom_profile", original_replace
-            )
+            monkeypatch.setattr(ExecutorRegistry, "replace_custom_profile", original_replace)
 
         # --- Path B: post-insert audit failure ---
-        # Inject AFTER the audit INSERT statement but BEFORE the explicit
-        # commit().  The production code calls insert_audit_log_uncommitted()
-        # + commit(); the patch executes the real INSERT then raises — the
-        # DB close in the finally block rolls back the uncommitted row.
         pre_profiles_b = dict(load_runtime_profiles())
         pre_in_memory_b = registry.get_profile(profile_name)
 
@@ -1511,11 +1416,8 @@ class TestRaceSafety:
             rowid = original_insert_uncommitted(self, task_id, agent, action, payload)
             raise RuntimeError("simulated post-insert audit failure in combo test")
 
-        monkeypatch.setattr(
-            infra_db.Database, "insert_audit_log_uncommitted", _insert_then_raise
-        )
+        monkeypatch.setattr(infra_db.Database, "insert_audit_log_uncommitted", _insert_then_raise)
 
-        # Snapshot pre-request audit rows — globally, unfiltered.
         pre_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
         try:
             pre_audit_rows, _ = pre_audit_db.query_audit_logs()
@@ -1524,35 +1426,31 @@ class TestRaceSafety:
 
         try:
             resp = mc.post(
-                f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
-                json={"profile_name": profile_name},
+                f"/api/v1/runtime/adapters/{adapter_id}/approve",
+                json={
+                    "executable": data["executable"],
+                    "executable_hash": data["executable_hash"],
+                    "version": data["version"],
+                    "capabilities": data["capabilities"],
+                    "contract_version": data["contract_version"],
+                    "workspace_adapter": data["workspace_adapter"],
+                },
             )
-            assert resp.status_code == 500
-            assert "restored" in resp.json()["detail"].lower()
-
-            # Durable residue check.
+            assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+            re_read = load_adapters().get(adapter_id)
+            assert re_read is not None and re_read.status == "pending"
             post_profiles_b = load_runtime_profiles()
             if profile_name in post_profiles_b:
                 assert post_profiles_b[profile_name] == pre_profiles_b.get(profile_name)
-            # In-memory residue check.
             assert registry.get_profile(profile_name) == pre_in_memory_b
-
-            # NO audit residue — the uncommitted INSERT was rolled back.
-            # Prove global exact equality, not merely a filtered count.
             post_audit_db = infra_db.Database(daemon_home() / "runtime-audit.db")
             try:
                 post_audit_rows, _ = post_audit_db.query_audit_logs()
-                assert post_audit_rows == pre_audit_rows, (
-                    f"Audit residue after combo-rollback: "
-                    f"pre={len(pre_audit_rows)} rows, post={len(post_audit_rows)} rows"
-                )
+                assert post_audit_rows == pre_audit_rows
             finally:
                 post_audit_db.close()
         finally:
-            monkeypatch.setattr(
-                infra_db.Database, "insert_audit_log_uncommitted",
-                original_insert_uncommitted
-            )
+            monkeypatch.setattr(infra_db.Database, "insert_audit_log_uncommitted", original_insert_uncommitted)
 
     def test_register_rejected_with_bound_profile_via_monkeypatch(
         self, app_and_client, route_setup, token_store, monkeypatch

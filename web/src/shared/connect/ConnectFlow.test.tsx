@@ -106,7 +106,7 @@ describe('ConnectFlow — server-authoritative recovery eligibility', () => {
     await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
     renderConnect();
 
-    await screen.findByText('Approved adapters ready to bind', {}, { timeout: 5000 });
+    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
     expect(screen.getByRole('button', { name: /bind kimi/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
   }, 10000);
@@ -125,7 +125,7 @@ describe('ConnectFlow — server-authoritative recovery eligibility', () => {
       expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
     }, { timeout: 5000 });
 
-    expect(screen.queryByText('Approved adapters ready to bind')).not.toBeInTheDocument();
+    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
   }, 10000);
 
   /* ---- negative: cross_profile ---- */
@@ -142,7 +142,7 @@ describe('ConnectFlow — server-authoritative recovery eligibility', () => {
       expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
     }, { timeout: 5000 });
 
-    expect(screen.queryByText('Approved adapters ready to bind')).not.toBeInTheDocument();
+    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
   }, 10000);
 
   /* ---- negative: builtin_collision ---- */
@@ -158,7 +158,7 @@ describe('ConnectFlow — server-authoritative recovery eligibility', () => {
       expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
     }, { timeout: 5000 });
 
-    expect(screen.queryByText('Approved adapters ready to bind')).not.toBeInTheDocument();
+    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
   }, 10000);
 
   /* ---- negative: tampered ---- */
@@ -171,7 +171,7 @@ describe('ConnectFlow — server-authoritative recovery eligibility', () => {
       expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
     }, { timeout: 5000 });
 
-    expect(screen.queryByText('Approved adapters ready to bind')).not.toBeInTheDocument();
+    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
   }, 10000);
 
   /* ---- negative: pending ---- */
@@ -187,15 +187,15 @@ describe('ConnectFlow — server-authoritative recovery eligibility', () => {
       expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
     }, { timeout: 5000 });
 
-    expect(screen.queryByText('Approved adapters ready to bind')).not.toBeInTheDocument();
+    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
   }, 10000);
 
-  /* ---- negative: not_intended ---- */
+  /* ---- negative: recovery_ready (Settings consumer, showRecovery=true) ---- */
 
-  test('not_intended adapter (no intended profile) does NOT show Bind', async () => {
+  test('recovery_ready adapter (no intended profile) does NOT show Bind through ConnectFlow recovery section', async () => {
     await mockListAdapters(makeAdapter({
       intended_profile_name: null,
-      eligibility: 'not_intended',
+      eligibility: 'recovery_ready',
     }));
     renderConnect();
 
@@ -203,7 +203,7 @@ describe('ConnectFlow — server-authoritative recovery eligibility', () => {
       expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
     }, { timeout: 5000 });
 
-    expect(screen.queryByText('Approved adapters ready to bind')).not.toBeInTheDocument();
+    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
   }, 10000);
 
   /* ---- explicit: approval without profile shows Bind, not Connected ---- */
@@ -212,10 +212,10 @@ describe('ConnectFlow — server-authoritative recovery eligibility', () => {
     await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
     renderConnect();
 
-    await screen.findByText('Approved adapters ready to bind', {}, { timeout: 5000 });
+    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
 
     // Section explicitly says approval is NOT profile creation
-    expect(screen.getByText(/approval alone does not create the profile/i)).toBeInTheDocument();
+    expect(screen.getByText(/approved without an automated profile binding/i)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /kimi connected/i })).not.toBeInTheDocument();
   }, 10000);
 });
@@ -236,7 +236,7 @@ describe('ConnectFlow — durable bind completion', () => {
     await mockBindSuccess('kimi', 'kimi-adapter');
 
     renderConnect();
-    await screen.findByText('Approved adapters ready to bind', {}, { timeout: 5000 });
+    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
 
     const bindButton = screen.getByRole('button', { name: /bind kimi/i });
     await user.click(bindButton);
@@ -262,7 +262,7 @@ describe('ConnectFlow — durable bind completion', () => {
     await mockBindError('Hash mismatch — adapter artifact changed.');
 
     renderConnect();
-    await screen.findByText('Approved adapters ready to bind', {}, { timeout: 5000 });
+    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
 
     const bindButton = screen.getByRole('button', { name: /bind kimi/i });
     await user.click(bindButton);
@@ -280,7 +280,7 @@ describe('ConnectFlow — durable bind completion', () => {
     await mockBindSuccess('kimi', 'kimi-adapter');
 
     renderConnect();
-    await screen.findByText('Approved adapters ready to bind', {}, { timeout: 5000 });
+    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
 
     const bindButton = screen.getByRole('button', { name: /bind kimi/i });
     await user.click(bindButton);
@@ -303,7 +303,7 @@ describe('ConnectFlow — durable bind completion', () => {
     // Server continues returning ready_to_bind — never confirms
 
     renderConnect();
-    await screen.findByText('Approved adapters ready to bind', {}, { timeout: 5000 });
+    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
 
     const bindButton = screen.getByRole('button', { name: /bind kimi/i });
     await user.click(bindButton);
@@ -320,7 +320,7 @@ describe('ConnectFlow — durable bind completion', () => {
     await mockBindSuccess('kimi', 'kimi-adapter');
 
     renderConnect();
-    await screen.findByText('Approved adapters ready to bind', {}, { timeout: 5000 });
+    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
 
     const bindButton = screen.getByRole('button', { name: /bind kimi/i });
 
@@ -347,7 +347,7 @@ describe('ConnectFlow — durable bind completion', () => {
     await mockBindSuccess('kimi', 'kimi-adapter');
 
     renderConnect();
-    await screen.findByText('Approved adapters ready to bind', {}, { timeout: 5000 });
+    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
 
     const bindButton = screen.getByRole('button', { name: /bind kimi/i });
     await user.click(bindButton);
@@ -379,7 +379,7 @@ describe('ConnectFlow — recovery surface visibility', () => {
     await mockListAdapters(makeAdapter({ eligibility: 'ready_to_bind' }));
     renderConnect();
 
-    await screen.findByText('Approved adapters ready to bind', {}, { timeout: 5000 });
+    await screen.findByText('Advanced recovery \/ legacy adapters', {}, { timeout: 5000 });
 
     // The built-in dropdown confirms we are in default builtin mode
     const select = screen.getByLabelText(/pick your agentic cli/i);
@@ -399,7 +399,7 @@ describe('ConnectFlow — recovery surface visibility', () => {
       expect(screen.getByLabelText(/pick your agentic cli/i)).toBeInTheDocument();
     }, { timeout: 5000 });
 
-    expect(screen.queryByText('Approved adapters ready to bind')).not.toBeInTheDocument();
+    expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
   }, 10000);
 });

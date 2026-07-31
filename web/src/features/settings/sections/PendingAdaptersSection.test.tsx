@@ -168,8 +168,8 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     // Click Approve → confirm step
     await user.click(screen.getByTestId('adapter-approve-test-adapter'));
     expect(screen.getByTestId('adapter-confirm-approve-test-adapter')).toBeInTheDocument();
-    // Confirm text names the exact full 64-char hash
-    expect(screen.getByText(/Confirm approval of adapter/)).toBeInTheDocument();
+    // Confirm text names the exact full 64-char hash (seq237: approve & connect)
+    expect(screen.getByText(/Confirm approval and connection of adapter/)).toBeInTheDocument();
     // Guard: the full hash (not a prefix) must appear BOTH in the card's SHA-256
     // field AND in the confirm prompt — at least 2 occurrences of the exact 64-char value
     const hashElements = screen.getAllByText(fullHash);
@@ -220,7 +220,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     });
   });
 
-  test('approve: after success, card shows shared RecoveryBindCard', async () => {
+  test('approve: after success, card shows Connected (seq237 auto-bind)', async () => {
     const adapter = makePendingAdapter();
     mockListAdapters(adapter);
 
@@ -231,11 +231,19 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
           status: 'approved',
           approved_at: '2024-01-01T00:00:00Z',
           approved_by: 'founder',
+          profile_bound: {
+            profile_name: 'my-custom-cli',
+            command_adapter_id: 'custom-adapter:test-adapter',
+            workspace_adapter_id: 'pi',
+            kind: 'custom',
+            status: 'connected',
+            adapter_id: 'test-adapter',
+          },
         });
       }),
     );
 
-    // After approve, list returns approved adapter with ready_to_bind
+    // After approve, list returns approved adapter with already_bound
     let listCalled = false;
     server.use(
       http.get(API_BASE, () => {
@@ -245,7 +253,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
             status: 'approved',
             approved_at: '2024-01-01T00:00:00Z',
             approved_by: 'founder',
-            eligibility: 'ready_to_bind',
+            eligibility: 'already_bound',
           }]);
         }
         listCalled = true;
@@ -259,13 +267,14 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     await user.click(screen.getByTestId('adapter-approve-test-adapter'));
     await user.click(screen.getByTestId('adapter-confirm-approve-test-adapter'));
 
-    // After approval, the shared RecoveryBindCard should render with a Bind button
+    // After seq237 approval, adapter shows Connected state (already_bound)
     await waitFor(() => {
-      // RecoveryBindCard shows the profile name in its card
       expect(screen.getByTestId('pending-adapter-row-test-adapter')).toBeInTheDocument();
     });
-    // The Bind button with the profile name (RecoveryBindCard renders "Bind <profileName>")
-    expect(screen.getByRole('button', { name: /bind my-custom-cli/i })).toBeInTheDocument();
+    // The connected card shows the profile name (not a Bind button)
+    expect(screen.getByText(/my-custom-cli/)).toBeInTheDocument();
+    // No Bind button (seq237: already connected, no recovery needed)
+    expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
   });
 
   test('approve: error surfaces inline', async () => {
@@ -490,9 +499,9 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
 
   /* ---- Onboarding separation — renders ConnectFlow, proves no Approve/Reject ---- */
 
-  test('ConnectFlow (onboarding) never renders Approve/Reject controls for pending adapters', async () => {
+  test('ConnectFlow (shared component, showRecovery=true) never renders Approve/Reject controls for pending adapters', async () => {
     // Mock adapter list with a pending adapter — the settings section shows
-    // Approve/Reject, but onboarding ConnectFlow (which uses RecoverySection
+    // Approve/Reject, but ConnectFlow with showRecovery=true (Settings consumer)
     // for approved adapters only) should NOT show them.
     mockListAdapters(makePendingAdapter());
 
@@ -517,10 +526,10 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
 
     // The pending adapter should NOT appear in RecoverySection either,
     // since RecoverySection only shows approved ready_to_bind adapters.
-    expect(screen.queryByText(/Approved adapters ready to bind/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Advanced recovery \/ legacy adapters/)).not.toBeInTheDocument();
   });
 
-  test('ConnectFlow (onboarding) shows RecoverySection for approved ready-to-bind adapters but without Approve/Reject', async () => {
+  test('ConnectFlow (shared component, showRecovery=true) shows RecoverySection for approved ready-to-bind adapters but without Approve/Reject', async () => {
     // Approved adapter with ready_to_bind eligibility
     const approvedReady = makePendingAdapter({
       id: 'approved-adapter',
@@ -534,7 +543,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
 
     // RecoverySection should appear with the approved adapter
     await waitFor(() => {
-      expect(screen.getByText(/Approved adapters ready to bind/)).toBeInTheDocument();
+      expect(screen.getByText(/Advanced recovery \/ legacy adapters/)).toBeInTheDocument();
     });
 
     // The Bind button should be visible

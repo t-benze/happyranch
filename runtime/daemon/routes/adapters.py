@@ -149,7 +149,7 @@ class AdapterEntryResponse(BaseModel):
             " 'builtin_collision' — intended profile name is a built-in;"
             " 'tampered' — approved but on-disk hash mismatch or missing;"
             " 'pending' — adapter is PENDING (not yet approved);"
-            " 'not_intended' — no intended_profile_name set;"
+            " 'recovery_ready' — no intended_profile_name set; explicit Bind recovery available;"
             " None — not applicable (not approved, or unknown state)."
         ),
     )
@@ -188,17 +188,26 @@ class AdapterSubmitRequest(BaseModel):
 class BindProfileRequest(BaseModel):
     """Request body for the seq141 profile-binding management endpoint.
 
-    The caller provides the profile name to bind. The server verifies:
-    - adapter exists and is APPROVED
-    - adapter's intended_profile_name matches the request's profile_name
-    - D7B custom-adapter validation passes
-    - profile_name does not collide with a built-in
+    Two binding paths, server-enforced by durable adapter state:
+    - When the adapter has an ``intended_profile_name``, the caller MUST
+      supply that exact name — the server rejects any mismatch (422).
+    - For an approved no-intended adapter whose server eligibility is
+      ``recovery_ready``, Settings may supply a caller-selected valid
+      profile name for advanced recovery. The server verifies D7B
+      custom-adapter validation, on-disk integrity, and that the name
+      does not collide with a built-in.
+    The adapter must exist and be APPROVED; any other status is rejected.
     """
 
     profile_name: str = Field(
         ...,
         min_length=1,
-        description="The executor profile name to bind to the approved adapter.",
+        description=(
+            "The executor profile name to bind. For adapters with an "
+            "intended profile this must exactly match it. For approved "
+            "no-intended (recovery_ready) adapters, provide a valid "
+            "caller-selected profile name for explicit Bind recovery."
+        ),
     )
 
     model_config = {"extra": "forbid"}
@@ -415,9 +424,12 @@ def _compute_eligibility(entry) -> str | None:
     if entry.status != "approved":
         return None
 
-    # No intended profile → nothing to recover.
+    # No intended profile → advanced recovery if adapter is hash/integrity-valid.
     if not entry.intended_profile_name:
-        return "not_intended"
+        resolved = resolve_adapter(entry.id)
+        if resolved is None:
+            return "tampered"
+        return "recovery_ready"
 
     profile_name = entry.intended_profile_name
 
@@ -582,8 +594,8 @@ def get_adapter_entry(adapter_id: str) -> AdapterEntryResponse:
 def approve_registered_adapter(
     adapter_id: str,
     body: AdapterApproveRequest,
-) -> AdapterEntryResponse:
-    """Approve a pending custom adapter (D4 founder-gated approval gate).
+) -> dict:
+    """Approve a pending custom adapter (THR-107 seq237: approve + optionally bind profile).
 
     This is a deliberate, explicit transition from durable PENDING to durable
     APPROVED. The request body carries the exact durable artifact snapshot the
@@ -591,18 +603,36 @@ def approve_registered_adapter(
     capabilities, contract_version, workspace_adapter) is compared against the
     durable store entry.
 
-    Exact-idempotence: if the adapter is already APPROVED with identical stored
-    immutable facts, the existing entry is returned unchanged.
+    **THR-107 seq237**: When the adapter has a nonempty ``intended_profile_name``,
+    this endpoint atomically approves the snapshot AND creates/binds that same
+    named custom profile (``command_adapter_id: custom-adapter:<id>``) in one
+    server transaction. Settings' single confirmation must refetch durable state
+    and show Connected; it must make no client-side bind follow-up.
 
-    Fails with 422 when:
+    Exact-idempotence: if the adapter is already APPROVED with identical stored
+    immutable facts, the existing entry is returned unchanged. If the profile is
+    already bound, the response includes ``profile_bound: already_bound``.
+
+    Fails closed with 422 when:
       - Unknown adapter id
       - Entry is not PENDING (already-approved incompatible repeat, non-pending)
       - Any snapshot fact mismatches the store
       - Malformed/empty values
+      - Profile binding fails (name collision, builtin conflict, cross-adapter,
+        validation, registry, audit) — approval is rolled back to PENDING
 
-    This is an agent-only administrative route — no browser consumer exists.
-    D5/D7/D12 changes are NOT authorized by this route.
+    No-intended/reusable adapters (no ``intended_profile_name``) are approved
+    without auto-binding — they retain explicit advanced Bind recovery.
     """
+    # Determine whether to auto-bind: only when the adapter has an
+    # intended_profile_name (submitted via the adapter-submission path).
+    # No-intended adapters (master-bearer registration path) retain
+    # explicit advanced Bind.
+    auto_bind = False
+    adapter_pre_check = get_adapter(adapter_id)
+    if adapter_pre_check is not None and adapter_pre_check.intended_profile_name:
+        auto_bind = True
+
     try:
         entry = approve_adapter(
             adapter_id=adapter_id,
@@ -613,13 +643,20 @@ def approve_registered_adapter(
             contract_version=body.contract_version,
             workspace_adapter=body.workspace_adapter,
             approved_by="founder/master-bearer",
+            auto_bind_profile=auto_bind,
         )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         )
-    return _entry_to_response(entry)
+
+    # Build response with profile binding info when available
+    response = _entry_to_response(entry).model_dump()
+    profile_bound = getattr(entry, "profile_bound", None)
+    if profile_bound is not None:
+        response["profile_bound"] = profile_bound
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -873,7 +910,10 @@ def get_contract_reference(request: Request) -> dict:
                 "Submit the adapter wrapper executable for the intended profile. "
                 "Requires the same adapter-purpose hrreg_ token and a completed "
                 "conformance challenge. Submission creates ONLY the exact PENDING "
-                "adapter; founder approval and management binding are separate steps."
+                "adapter; founder approval is a separate Settings-only step. "
+                "For adapters with an intended profile, approval atomically creates "
+                "and connects the profile (seq237); explicit Bind is only needed for "
+                "advanced recovery of approved no-intended adapters."
             ),
         },
         "probe": {
@@ -954,14 +994,24 @@ def bind_adapter_profile(
 ) -> dict:
     """Bind a profile name to an APPROVED custom adapter (THR-107 seq141).
 
-    Standard daemon-bearer management endpoint. Binds the intended profile
-    name to an APPROVED adapter id via ``command_adapter_id:
-    custom-adapter:<id>``.
+    Standard daemon-bearer management endpoint. Two paths:
+    - **Normal / intended-profile**: the request ``profile_name`` must
+      exactly match the adapter's ``intended_profile_name``. This path is
+      reachable during advanced recovery when an intended-profile adapter
+      was approved without auto-bind (legacy state).
+    - **Recovery**: for an approved adapter with no ``intended_profile_name``
+      whose server eligibility is ``recovery_ready``, the caller supplies a
+      valid profile name for explicit Bind recovery. The server validates
+      D7B custom-adapter requirements, checks for built-in name collisions,
+      and verifies on-disk integrity.
+    Both paths bind via ``command_adapter_id: custom-adapter:<id>``.
 
     Gating checks (exact order):
     1. Adapter exists (404 if unknown)
     2. Adapter is APPROVED (422 if PENDING or unknown status)
-    3. Adapter's intended_profile_name matches request profile_name (422)
+    3. When intended_profile_name is set, the request profile_name must
+       match exactly; when None (recovery_ready), the caller selects a
+       valid profile name (422 on mismatch or invalid name)
     4. Profile name does not collide with a built-in (422)
     5. On-disk adapter is still executable with matching SHA-256 (422)
     6. D7B custom-adapter validation passes (orchestrator-rejected → 422)
@@ -992,8 +1042,10 @@ def bind_adapter_profile(
             ),
         )
 
-    # 3. intended_profile_name must match
-    if entry.intended_profile_name != profile_name:
+    # 3. intended_profile_name must match when present.
+    #     When intended is None (master-bearer registration), the caller
+    #     explicitly provides the profile name for advanced Bind recovery.
+    if entry.intended_profile_name is not None and entry.intended_profile_name != profile_name:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
@@ -1066,7 +1118,7 @@ def bind_adapter_profile(
                     f"before bind. The adapter must be founder-approved."
                 ),
             )
-        if re_read_entry.intended_profile_name != profile_name:
+        if re_read_entry.intended_profile_name is not None and re_read_entry.intended_profile_name != profile_name:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
