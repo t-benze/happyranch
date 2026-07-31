@@ -321,11 +321,16 @@ conflict-detection, and no-auto-mutation guarantees.
 
 ### Executor binary-path resolution (THR-085 / THR-107 seq155)
 
-Every built-in and custom executor profile requires a valid explicit
-machine-local binary registry entry before launch. At spawn time, each
+Built-in and generic-CLI custom executor profiles require a valid explicit
+machine-local binary registry entry before launch. Custom-adapter profiles
+(``command_adapter_id: custom-adapter:<id>``) are an exception — they use
+the exact founder-APPROVED, hash-verified absolute adapter executable as their
+launch artifact and do **not** require a separate ``executors.json`` record
+keyed by the profile name. At spawn time, each
 executor's CLI binary is resolved as follows:
 
-1. **Machine-local registry** — consult the per-host binary-path registry at
+1. **Machine-local registry** — for non-custom-adapter profiles, consult the
+   per-host binary-path registry at
    `<daemon-home>/executors.json`. The executor name (e.g. `claude`) is the sole
    resolution key (THR-107 seq155 hard no-PATH cutover).  If the name is
    registered, validate the stored path: it must exist and be executable.
@@ -337,8 +342,15 @@ executor's CLI binary is resolved as follows:
    the fix (`happyranch executor-binaries register <kind> --path <absolute-path>`).
    **Never discover, resolve, or auto-pin a PATH executable** (THR-107 seq155).
 
+**Custom-adapter profiles** resolve the adapter executable directly from
+the approved adapter entry — its absolute path, SHA-256 hash, version, and
+contract version are verified at construction time and re-verified before
+each ``Popen``. Missing, tampered, non-regular, or non-executable adapters
+fail closed.
+
 Absolute `cli_path` values in Settings are never used as a bypass — only
-an explicit `executors.json` entry keyed by the executor name permits launch.
+an explicit ``executors.json`` entry keyed by the executor name (or, for
+custom-adapter profiles, the approved adapter entry) permits launch.
 This applies to all four built-ins (claude, codex, opencode, pi), generic-CLI
 custom profiles, and custom-adapter-backed profiles.
 

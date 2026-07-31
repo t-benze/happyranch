@@ -142,19 +142,34 @@ spawn time (THR-085). The daemon resolves binaries exclusively from the machine-
 Registration is the sole availability gate; headless daemons and fresh machines must
 have every executor explicitly registered.
 
-```bash
-# Register with explicit path (override):
-happyranch executor-binaries register claude --path /opt/homebrew/bin/claude
+**Exception — custom-adapter profiles:** profiles with
+``command_adapter_id: custom-adapter:<id>`` use the exact founder-APPROVED,
+hash-verified absolute adapter executable as their launch artifact — they do **not**
+require a separate ``executors.json`` record keyed by their profile name.
+All other profiles (built-ins, generic-cli custom) always resolve through
+``executors.json``.
 
-# Register a binary with an explicit absolute path (REQUIRED):
+```bash
+# Register with explicit path (required):
 happyranch executor-binaries register claude --path /opt/homebrew/bin/claude
 
 # List all registered binaries:
 happyranch executor-binaries list
+
+# Conditionally remove a binary registration (kind + exact path must match):
+happyranch executor-binaries remove <kind> --expected-path <absolute-path>
 ```
 
 `--path` is **required** — omission does NOT fall back to PATH resolution
 (THR-107 seq155). The operator must supply an explicit absolute path.
+
+``happyranch executor-binaries remove`` atomically deletes a binary registration
+when both ``kind`` and ``--expected-path`` match the stored record exactly:
+200 prints the removed registration; 404 reports no registration; 409 reports a
+stale observed path (refresh with ``list`` and retry); 422 reports validation/
+built-in-protection/name-mismatch errors. This command removes machine-local
+binary registrations only — it does **not** delete adapters, profiles, or other
+daemon state.
 
 ### Token usage
 
