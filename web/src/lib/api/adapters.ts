@@ -1,9 +1,11 @@
-/** Custom adapter API client (THR-107 seq141 + removal).
+/** Custom adapter API client (THR-107 seq141 + removal + seq220).
 
-GET    /api/v1/runtime/adapters              - list all adapters
-GET    /api/v1/runtime/adapters/{id}         - poll adapter status
-POST   /api/v1/runtime/adapters/{id}/bind-profile  - bind approved adapter to profile
-DELETE /api/v1/runtime/adapters/{id}         - remove an approved adapter (THR-107)
+GET    /api/v1/runtime/adapters                     - list all adapters
+GET    /api/v1/runtime/adapters/{id}                - poll adapter status
+POST   /api/v1/runtime/adapters/{id}/approve        - approve pending adapter (seq220)
+POST   /api/v1/runtime/adapters/{id}/reject          - reject/remove pending adapter (seq220)
+POST   /api/v1/runtime/adapters/{id}/bind-profile    - bind approved adapter to profile
+DELETE /api/v1/runtime/adapters/{id}                 - remove an approved adapter (THR-107)
  */
 import { request } from './client';
 
@@ -84,6 +86,37 @@ export interface RemoveAdapterResponse {
   name: string;
 }
 
+/** Request body for adapter approval — 6 material identity facts.
+ *  Every field MUST match the server's durable snapshot exactly. */
+export interface ApproveAdapterRequest {
+  executable: string;
+  executable_hash: string;
+  version: string;
+  capabilities: string[];
+  contract_version: number;
+  workspace_adapter: string;
+}
+
+export interface ApproveAdapterResponse extends AdapterEntry {}
+
+/** Request body for adapter rejection — same 6 material identity facts
+ *  as approval. Every field MUST match the server's durable snapshot.
+ *  Rejects stale, re-registered, and hash-changed snapshots. */
+export interface RejectAdapterRequest {
+  executable: string;
+  executable_hash: string;
+  version: string;
+  capabilities: string[];
+  contract_version: number;
+  workspace_adapter: string;
+}
+
+export interface RejectAdapterResponse {
+  id: string;
+  rejected: boolean;
+  name: string;
+}
+
 /** List all registered custom adapters (bearer-authenticated management endpoint). */
 export const listAdapters = (): Promise<AdapterEntry[]> =>
   request('/runtime/adapters');
@@ -115,5 +148,42 @@ export const removeAdapter = (
 ): Promise<RemoveAdapterResponse> =>
   request(`/runtime/adapters/${adapterId}`, {
     method: 'DELETE',
+    body,
+  });
+
+/** Approve a PENDING custom adapter (THR-107 seq220 founder-gated).
+ *  The caller MUST supply the exact 6 material identity facts of the
+ *  PENDING durable snapshot — the server rejects stale/mismatched snapshots.
+ *
+ *  Throws ApiError on:
+ *  - 401: missing/invalid bearer token
+ *  - 404: adapter not found
+ *  - 422: snapshot mismatch, not PENDING, or already approved with different facts
+ */
+export const approveAdapter = (
+  adapterId: string,
+  body: ApproveAdapterRequest,
+): Promise<ApproveAdapterResponse> =>
+  request(`/runtime/adapters/${adapterId}/approve`, {
+    method: 'POST',
+    body,
+  });
+
+/** Reject/remove a PENDING custom adapter (THR-107 seq220 founder-gated).
+ *  The caller MUST supply the exact 6 material identity facts of the
+ *  PENDING durable snapshot — the server rejects stale/mismatched snapshots.
+ *  No persisted rejected status; atomically removes the PENDING entry.
+ *
+ *  Throws ApiError on:
+ *  - 401: missing/invalid bearer token
+ *  - 404: adapter not found
+ *  - 422: snapshot mismatch or not PENDING
+ */
+export const rejectAdapter = (
+  adapterId: string,
+  body: RejectAdapterRequest,
+): Promise<RejectAdapterResponse> =>
+  request(`/runtime/adapters/${adapterId}/reject`, {
+    method: 'POST',
     body,
   });

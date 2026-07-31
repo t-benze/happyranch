@@ -3596,6 +3596,24 @@
         ]
       }
     },
+    "/api/v1/runtime/adapters/{adapter_id}/reject": {
+      "POST": {
+        "params": [
+          [
+            "adapter_id",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/runtime/use": {
       "POST": {
         "params": [
