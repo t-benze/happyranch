@@ -789,6 +789,8 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
           approved_by: null,
           intended_profile_name: profileName,
           eligibility: null,
+          dependency_manifest_version: null,
+          dependencies: [],
         };
       });
 
@@ -821,6 +823,8 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         approved_by: 'founder',
         intended_profile_name: profileName,
         eligibility: 'already_bound',
+        dependency_manifest_version: null,
+        dependencies: [],
       });
 
       // Connected card — the onboarding mount uses a heading for the connected state.
@@ -867,6 +871,8 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
           approved_by: null,
           intended_profile_name: profileName,
           eligibility: null,
+          dependency_manifest_version: null,
+          dependencies: [],
         };
       });
 
@@ -896,6 +902,8 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         approved_by: 'founder',
         intended_profile_name: profileName,
         eligibility: 'ready_to_bind',
+        dependency_manifest_version: null,
+        dependencies: [],
       });
 
       // The submitted state should still show (no Connected card).

@@ -240,6 +240,17 @@ or revert the deployment. Legacy stored profiles are never auto-mutated.
 **D5 baseline-only:** the custom adapter contract introduces no allow-rule,
 sandbox, network-access, filesystem-access, or permission changes.
 
+**THR-107 seq244 dependency manifest:** new adapter registrations
+require ``dependency_manifest_version: 1`` with a non-empty ``dependencies``
+list (each: ``{executable: absolute-path, sha256: hex}``). Every declared
+child executable must exist, be a regular executable file, and match its
+declared SHA-256 at registration and again before each launch.
+Manifest-adapters cannot rely on ambient PATH — the runtime scrubs PATH to
+``/usr/bin:/bin``. ``token_metering`` capability requires truthful non-null
+``token_usage`` at conformance. Legacy entries without the manifest are
+never auto-mutated. A dependency or wrapper change requires re-submission
+and founder re-approval.
+
 The code-level definition is ``runtime/orchestrator/adapter_contract.py``
 (Pydantic models). The canonical contract surface for external consumers is the
 ``GET /api/v1/runtime/adapters/contract-reference`` endpoint (THR-107 seq184),

@@ -48,6 +48,10 @@ export interface AdapterEntry {
   intended_profile_name: string | null;
   /** Server-authoritative eligibility — browser MUST NOT recompute. */
   eligibility: AdapterEligibility;
+  /** THR-107 seq244: dependency manifest version (null for legacy). */
+  dependency_manifest_version: number | null;
+  /** THR-107 seq244: declared child executable dependencies. */
+  dependencies: Array<{ executable: string; sha256: string }>;
 }
 
 export interface AdapterListResponse {
