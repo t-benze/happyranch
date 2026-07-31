@@ -1259,6 +1259,23 @@ class CustomAdapterExecutor:
         # set by the caller (orchestrator, thread_runner, etc.).
         # Must contain at minimum: agent, org, invocation_kind.
         self._invocation_context = invocation_context or {}
+        # THR-107 seq244: declared dependency manifest (None for legacy)
+        self._dependency_manifest_version: int | None = None
+        self._dependencies: list[dict] = []
+
+    def set_dependency_manifest(
+        self,
+        dependency_manifest_version: int | None,
+        dependencies: list[dict],
+    ) -> None:
+        """Set the dependency manifest BEFORE run().
+
+        Called by build_executor after resolving the adapter entry.
+        Must be called before run() for new-manifest adapters; legacy
+        adapters omit this call and get the legacy behavior.
+        """
+        self._dependency_manifest_version = dependency_manifest_version
+        self._dependencies = dependencies or []
 
     def set_invocation_context(
         self,
@@ -1428,6 +1445,80 @@ class CustomAdapterExecutor:
                     ),
                 )
 
+            # ── THR-107 seq244: Revalidate every declared dependency ──
+            # Per-brief requirement 3: revalidate every declared dependency
+            # path type/executability/hash before EVERY launch attempt.
+            # This is inside _launch so throttle retries re-verify.
+            if self._dependency_manifest_version is not None and self._dependencies:
+                for dep in self._dependencies:
+                    dep_exe = dep.get("executable", "")
+                    dep_hash = dep.get("sha256", "")
+                    # Verify path exists, is regular file, is executable
+                    dep_path = Path(dep_exe)
+                    if not dep_path.exists():
+                        return ExecutorResult(
+                            success=False,
+                            duration_seconds=int(time.monotonic() - start_time),
+                            session_id=sid,
+                            error=(
+                                f"Declared dependency {dep_exe!r} no longer exists. "
+                                f"Re-submit the adapter with a valid dependency and "
+                                f"obtain founder approval."
+                            ),
+                        )
+                    if not dep_path.is_file():
+                        return ExecutorResult(
+                            success=False,
+                            duration_seconds=int(time.monotonic() - start_time),
+                            session_id=sid,
+                            error=(
+                                f"Declared dependency {dep_exe!r} is not a regular file. "
+                                f"Re-submit the adapter with a valid dependency and "
+                                f"obtain founder approval."
+                            ),
+                        )
+                    if not os.access(dep_path, os.X_OK):
+                        return ExecutorResult(
+                            success=False,
+                            duration_seconds=int(time.monotonic() - start_time),
+                            session_id=sid,
+                            error=(
+                                f"Declared dependency {dep_exe!r} is not executable. "
+                                f"Re-submit the adapter with a valid dependency and "
+                                f"obtain founder approval."
+                            ),
+                        )
+                    # Verify hash
+                    current_dep_hash = compute_sha256(dep_exe)
+                    if current_dep_hash != dep_hash:
+                        return ExecutorResult(
+                            success=False,
+                            duration_seconds=int(time.monotonic() - start_time),
+                            session_id=sid,
+                            error=(
+                                f"Declared dependency {dep_exe!r} hash mismatch: "
+                                f"expected {dep_hash[:12]}..., got {current_dep_hash[:12]}... "
+                                f"The dependency has been modified since approval. "
+                                f"Re-submit the adapter with the updated dependency "
+                                f"and obtain founder approval."
+                            ),
+                        )
+
+            # ── THR-107 seq244: PATH-scrubbed process environment ──
+            # When a dependency manifest is declared, the adapter cannot
+            # silently rely on ambient PATH.  We construct a narrowly scoped
+            # environment with PATH scrubbed to only /usr/bin:/bin so the
+            # adapter wrapper MUST use the declared absolute child paths.
+            # Legacy entries (no manifest) retain their existing env.
+            if self._dependency_manifest_version is not None and self._dependencies:
+                base_env = _callee_env()
+                # Keep only /usr/bin:/bin as safe system directories
+                # so core system utilities (sh, env, etc.) still work.
+                base_env["PATH"] = "/usr/bin:/bin"
+                launch_env = base_env
+            else:
+                launch_env = _callee_env()
+
             try:
                 proc = subprocess.Popen(
                     [self._adapter_executable],
@@ -1436,7 +1527,7 @@ class CustomAdapterExecutor:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    env=_callee_env(),
+                    env=launch_env,
                 )
             except (FileNotFoundError, OSError, PermissionError) as exc:
                 return ExecutorResult(

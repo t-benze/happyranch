@@ -169,7 +169,7 @@ class TestAdapterStore:
             executable="/usr/local/bin/test-adapter",
             executable_hash="abc123",
             version="1.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
             contract_version=1,
             workspace_adapter="pi",
             status="pending",
@@ -185,7 +185,7 @@ class TestAdapterStore:
         assert loaded_entry.executable == "/usr/local/bin/test-adapter"
         assert loaded_entry.executable_hash == "abc123"
         assert loaded_entry.status == "pending"
-        assert loaded_entry.capabilities == ["token_metering"]
+        assert loaded_entry.capabilities == []
 
     def test_save_overwrites_existing(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
@@ -509,7 +509,7 @@ class TestCustomAdapterRegistration:
         entry = register_custom_adapter(
             executable=str(script),
             version="1.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
             workspace_adapter="pi",
             registered_by="dev_agent",
         )
@@ -517,7 +517,7 @@ class TestCustomAdapterRegistration:
         assert entry.status == "pending"
         assert entry.executable == str(script)
         assert entry.version == "1.0.0"
-        assert entry.capabilities == ["token_metering"]
+        assert entry.capabilities == []
         assert entry.workspace_adapter == "pi"
         assert entry.executable_hash != ""
         assert len(entry.executable_hash) == 64  # SHA-256 hex digest
@@ -636,7 +636,7 @@ class TestReRegistration:
         entry1 = register_custom_adapter(
             executable=str(script1),
             version="1.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
         )
         assert entry1.status == "pending"
 
@@ -667,7 +667,7 @@ class TestReRegistration:
         entry2 = register_custom_adapter(
             executable=str(script2),
             version="2.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
         )
         # Must be pending, never silently approved
         assert entry2.status == "pending"
@@ -684,7 +684,7 @@ class TestReRegistration:
         entry1 = register_custom_adapter(
             executable=str(script),
             version="1.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
         )
         assert entry1.status == "pending"
 
@@ -692,7 +692,7 @@ class TestReRegistration:
         entry2 = register_custom_adapter(
             executable=str(script),
             version="1.0.0",
-            capabilities=["token_metering", "session_resume"],
+            capabilities=["session_resume"],
         )
         assert entry2.status == "pending"
         # Only one entry in store
@@ -706,13 +706,13 @@ class TestReRegistration:
         entry1 = register_custom_adapter(
             executable=str(script),
             version="1.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
         )
 
         entry2 = register_custom_adapter(
             executable=str(script),
             version="1.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
         )
 
         # Should preserve registration metadata
@@ -990,6 +990,7 @@ class TestAdapterRoutesAuthentication:
         paths_mod.ensure_token()
         token = paths_mod.read_token()
         script = _make_fake_adapter_script(tmp_path, "auth-works-adapter")
+        dep_hash = compute_sha256(str(script))
         app = FastAPI()
         app.include_router(router, prefix="/api/v1")
         client = TestClient(app)
@@ -997,8 +998,10 @@ class TestAdapterRoutesAuthentication:
         r = client.post("/api/v1/runtime/adapters/register", json={
             "executable": str(script),
             "version": "1.0.0",
-            "capabilities": ["token_metering"],
+            "capabilities": [],
             "workspace_adapter": "pi",
+            "dependency_manifest_version": 1,
+            "dependencies": [{"executable": str(script), "sha256": dep_hash}],
         })
         assert r.status_code == 200
         body = r.json()
@@ -1019,6 +1022,7 @@ class TestAdapterRoutesAuthentication:
         paths_mod.ensure_token()
         token = paths_mod.read_token()
         script = _make_fake_adapter_script(tmp_path, "disclosure-adapter")
+        dep_hash = compute_sha256(str(script))
         app = FastAPI()
         app.include_router(router, prefix="/api/v1")
         client = TestClient(app)
@@ -1029,6 +1033,8 @@ class TestAdapterRoutesAuthentication:
             "version": "1.0.0",
             "capabilities": [],
             "workspace_adapter": "pi",
+            "dependency_manifest_version": 1,
+            "dependencies": [{"executable": str(script), "sha256": dep_hash}],
         })
         assert r.status_code == 200
         adapter_id = r.json()["id"]
@@ -1600,7 +1606,7 @@ class TestApprovalGate:
         return register_custom_adapter(
             executable=str(script),
             version="1.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
             workspace_adapter="pi",
         )
 
@@ -1784,7 +1790,7 @@ class TestApprovalGate:
         # capabilities mismatch
         with pytest.raises(ValueError, match="capabilities mismatch"):
             approve_adapter(
-                **{**base, "capabilities": ["token_metering", "unknown_cap"]}
+                **{**base, "capabilities": ["unknown_cap"]}
             )
 
         # contract_version mismatch
@@ -1836,7 +1842,7 @@ class TestApprovalGate:
         entry2 = register_custom_adapter(
             executable=str(script2),
             version="2.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
             workspace_adapter="pi",
         )
         assert entry2.status == "pending"
@@ -1935,7 +1941,7 @@ class TestResolveAdapterHashVerification:
         entry = register_custom_adapter(
             executable=str(script),
             version="1.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
             workspace_adapter="pi",
         )
         approved = approve_adapter(
@@ -2056,14 +2062,24 @@ class TestApproveRoute:
 
     def _register_as_authed(
         self, client, token, script, version="1.0.0", capabilities=None,
-        workspace_adapter="pi"
+        workspace_adapter="pi", dep_exe=None,
     ):
-        """Helper: authenticated register, returns response json."""
+        """Helper: authenticated register, returns response json.
+
+        THR-107 seq244: requires dependency_manifest_version and dependencies.
+        When ``dep_exe`` is provided, it is used as the declared dependency;
+        otherwise the adapter script itself is reused as a trivial dependency.
+        """
+        from runtime.orchestrator.adapter_store import compute_sha256 as _sha
+        dep = dep_exe if dep_exe is not None else script
+        dep_hash = _sha(str(dep))
         r = client.post("/api/v1/runtime/adapters/register", json={
             "executable": str(script),
             "version": version,
-            "capabilities": capabilities or ["token_metering"],
+            "capabilities": capabilities or [],
             "workspace_adapter": workspace_adapter,
+            "dependency_manifest_version": 1,
+            "dependencies": [{"executable": str(dep), "sha256": dep_hash}],
         })
         assert r.status_code == 200
         return r.json()
@@ -2106,6 +2122,8 @@ class TestApproveRoute:
                 "capabilities": registered["capabilities"],
                 "contract_version": registered["contract_version"],
                 "workspace_adapter": registered["workspace_adapter"],
+                "dependency_manifest_version": registered.get("dependency_manifest_version"),
+                "dependencies": registered.get("dependencies", []),
             },
         )
         assert r.status_code == 200
@@ -2140,6 +2158,8 @@ class TestApproveRoute:
                 "capabilities": registered["capabilities"],
                 "contract_version": registered["contract_version"],
                 "workspace_adapter": registered["workspace_adapter"],
+                "dependency_manifest_version": registered.get("dependency_manifest_version"),
+                "dependencies": registered.get("dependencies", []),
             },
         )
         assert r.status_code == 422
@@ -2187,6 +2207,8 @@ class TestApproveRoute:
             "capabilities": registered["capabilities"],
             "contract_version": registered["contract_version"],
             "workspace_adapter": registered["workspace_adapter"],
+            "dependency_manifest_version": registered.get("dependency_manifest_version"),
+            "dependencies": registered.get("dependencies", []),
         }
 
         r1 = client.post(
@@ -2255,6 +2277,8 @@ class TestApproveRoute:
             "capabilities": registered1["capabilities"],
             "contract_version": registered1["contract_version"],
             "workspace_adapter": registered1["workspace_adapter"],
+            "dependency_manifest_version": registered1.get("dependency_manifest_version"),
+            "dependencies": registered1.get("dependencies", []),
         })
         assert r.status_code == 422
 
@@ -2292,6 +2316,8 @@ class TestApproveRoute:
                 "capabilities": registered["capabilities"],
                 "contract_version": registered["contract_version"],
                 "workspace_adapter": registered["workspace_adapter"],
+                "dependency_manifest_version": registered.get("dependency_manifest_version"),
+                "dependencies": registered.get("dependencies", []),
             },
         )
         assert r_approve.status_code == 200
@@ -2325,7 +2351,7 @@ class TestApproveRoute:
         entry = register_custom_adapter(
             executable=str(script),
             version="1.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
             workspace_adapter="pi",
         )
         approve_adapter(
@@ -2498,7 +2524,7 @@ class TestD4AtomicApprovalReRegistration:
         return register_custom_adapter(
             executable=str(script),
             version=version,
-            capabilities=["token_metering"],
+            capabilities=[],
             workspace_adapter="pi",
         )
 
@@ -2589,7 +2615,7 @@ class TestD4AtomicApprovalReRegistration:
         entry2 = register_custom_adapter(
             executable=str(script2),
             version="2.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
             workspace_adapter="pi",
         )
         assert entry2.status == "pending"
@@ -2649,7 +2675,7 @@ class TestD4AtomicApprovalReRegistration:
                 entry = register_custom_adapter(
                     executable=str(script2),
                     version="2.0.0",
-                    capabilities=["token_metering"],
+                    capabilities=[],
                     workspace_adapter="pi",
                 )
                 rereg_result.append(("ok", entry))
@@ -2742,7 +2768,7 @@ class TestD4AtomicApprovalReRegistration:
         register_custom_adapter(
             executable=str(script2),
             version="2.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
             workspace_adapter="pi",
         )
         rereg_first.set()
@@ -2820,7 +2846,7 @@ class TestD4AtomicApprovalReRegistration:
                 entry = register_custom_adapter(
                     executable=str(script_b2),
                     version="2.0.0",
-                    capabilities=["token_metering"],
+                    capabilities=[],
                     workspace_adapter="pi",
                 )
                 results["rereg_b"] = ("ok", entry)
@@ -2910,7 +2936,7 @@ class TestD4AtomicApprovalReRegistration:
         register_custom_adapter(
             executable=str(script2),
             version="2.0.0",
-            capabilities=["token_metering"],
+            capabilities=[],
             workspace_adapter="pi",
         )
 

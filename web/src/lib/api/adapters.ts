@@ -48,6 +48,10 @@ export interface AdapterEntry {
   intended_profile_name: string | null;
   /** Server-authoritative eligibility — browser MUST NOT recompute. */
   eligibility: AdapterEligibility;
+  /** THR-107 seq244: dependency manifest version (null for legacy). */
+  dependency_manifest_version: number | null;
+  /** THR-107 seq244: declared child executable dependencies. */
+  dependencies: Array<{ executable: string; sha256: string }>;
 }
 
 export interface AdapterListResponse {
@@ -68,7 +72,8 @@ export interface BindProfileResponse {
 }
 
 /** Request body for adapter removal — every material identity/binding fact
- *  MUST match the server's durable snapshot exactly. */
+ *  MUST match the server's durable snapshot exactly.
+ *  THR-107 seq244 fix-forward: includes dependency manifest facts. */
 export interface RemoveAdapterRequest {
   executable: string;
   executable_hash: string;
@@ -78,6 +83,10 @@ export interface RemoveAdapterRequest {
   workspace_adapter: string;
   name: string;
   intended_profile_name: string | null;
+  /** THR-107 seq244: dependency manifest version (null for legacy). */
+  dependency_manifest_version: number | null;
+  /** THR-107 seq244: declared child executable dependencies (null/empty for legacy). */
+  dependencies: Array<{ executable: string; sha256: string }> | null;
 }
 
 export interface RemoveAdapterResponse {
@@ -86,8 +95,10 @@ export interface RemoveAdapterResponse {
   name: string;
 }
 
-/** Request body for adapter approval — 6 material identity facts.
- *  Every field MUST match the server's durable snapshot exactly. */
+/** Request body for adapter approval — 6 material identity facts
+ *  plus optional dependency manifest facts.
+ *  Every field MUST match the server's durable snapshot exactly.
+ *  THR-107 seq244 fix-forward: includes dependency manifest facts. */
 export interface ApproveAdapterRequest {
   executable: string;
   executable_hash: string;
@@ -95,6 +106,10 @@ export interface ApproveAdapterRequest {
   capabilities: string[];
   contract_version: number;
   workspace_adapter: string;
+  /** THR-107 seq244: dependency manifest version (null for legacy). */
+  dependency_manifest_version: number | null;
+  /** THR-107 seq244: declared child executable dependencies (null/empty for legacy). */
+  dependencies: Array<{ executable: string; sha256: string }> | null;
 }
 
 /** Response from adapter approval (THR-107 seq237).
@@ -109,8 +124,10 @@ export interface ApproveAdapterResponse extends AdapterEntry {
 }
 
 /** Request body for adapter rejection — same 6 material identity facts
- *  as approval. Every field MUST match the server's durable snapshot.
- *  Rejects stale, re-registered, and hash-changed snapshots. */
+ *  as approval plus optional dependency manifest facts.
+ *  Every field MUST match the server's durable snapshot.
+ *  Rejects stale, re-registered, and hash-changed snapshots.
+ *  THR-107 seq244 fix-forward: includes dependency manifest facts. */
 export interface RejectAdapterRequest {
   executable: string;
   executable_hash: string;
@@ -118,6 +135,10 @@ export interface RejectAdapterRequest {
   capabilities: string[];
   contract_version: number;
   workspace_adapter: string;
+  /** THR-107 seq244: dependency manifest version (null for legacy). */
+  dependency_manifest_version: number | null;
+  /** THR-107 seq244: declared child executable dependencies (null/empty for legacy). */
+  dependencies: Array<{ executable: string; sha256: string }> | null;
 }
 
 export interface RejectAdapterResponse {

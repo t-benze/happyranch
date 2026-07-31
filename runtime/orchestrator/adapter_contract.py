@@ -22,10 +22,18 @@ D12: finalized stable external contract — this module is the authoritative
 code-level reference; the unified-adapter architecture spec §2 is the
 normative prose. Protocol/05b, 05c, executor guide, and envelope design spec
 parity shipped in the same PR.
+
+THR-107 seq244: dependency-manifest extension — adds ``DependencyManifest``
+and ``DependencyRecord`` models for declared child executable dependencies.
+This is an independently versioned registration extension that does NOT
+change the AdapterInput/AdapterOutput contract version.  The
+``dependency_manifest_version`` field is separate from ``contract_version``.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Annotated, Any
+
+from pydantic import BaseModel, BeforeValidator, Field
 
 
 # ---------------------------------------------------------------------------
@@ -135,3 +143,53 @@ class AdapterOutput(BaseModel):
     adapter_metadata: AdapterMetadata = Field(..., description="Provenance metadata from the adapter")
     child_session_id: str | None = Field(None, description="Future: spawned child session id")
     raw_forensics_ref: str | None = Field(None, description="Path/ref to raw forensic capture")
+
+
+# ---------------------------------------------------------------------------
+# THR-107 seq244: Dependency Manifest Extension
+# ---------------------------------------------------------------------------
+
+
+class DependencyRecord(BaseModel):
+    """A single declared child executable dependency.
+
+    Each record binds an absolute path to a SHA-256 hex digest.
+    The executable must be an absolute path, must exist, must be a
+    regular file, must be executable, and must match the declared hash.
+    """
+    executable: str = Field(..., description="Absolute path to the child executable")
+    sha256: str = Field(..., description="SHA-256 hex digest of the executable", min_length=64, max_length=64)
+
+
+def _strict_int_for_manifest(v: Any) -> int:
+    """Reject non-strict integers (float, string, bool) at the boundary.
+
+    Pydantic int coercion silently accepts JSON 1.0, ``"1"``, and ``true``.
+    This validator runs in ``mode='before'`` so it sees the raw JSON-decoded
+    Python value and rejects anything that is not exactly ``int`` (excluding
+    ``bool``, which is a subclass of ``int`` in Python).
+    """
+    if isinstance(v, bool):
+        raise ValueError(
+            "dependency_manifest_version must be an integer, not a boolean"
+        )
+    if not isinstance(v, int):
+        raise ValueError(
+            f"dependency_manifest_version must be an integer, got {type(v).__name__}"
+        )
+    return v
+
+
+class DependencyManifest(BaseModel):
+    """Independently versioned dependency manifest extension.
+
+    This is a SEPARATE versioning space from AdapterInput/AdapterOutput
+    ``contract_version``.  The ``dependency_manifest_version`` field can
+    evolve independently.
+
+    A non-empty ``dependencies`` list is REQUIRED for new submissions.
+    Legacy entries (those without this extension) retain their exact
+    current launch behavior and are never auto-mutated.
+    """
+    dependency_manifest_version: Annotated[int, BeforeValidator(_strict_int_for_manifest), Field(ge=1, le=1, description="Version of the dependency manifest contract (must be exactly 1)")]
+    dependencies: list[DependencyRecord] = Field(..., min_length=1, description="Non-empty list of declared child executable dependencies")

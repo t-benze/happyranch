@@ -12,6 +12,9 @@ Atomic write + YAML serialization mirror the executor profile store pattern
 
 D3 scope: PENDING-ONLY. No approval/activation state (D4). No profile
 binding or launch integration (D7). No permission/sandbox expansion (D5).
+
+THR-107 seq244: adds dependency-manifest fields to AdapterEntry for
+persisting declared child executable dependencies.
 """
 from __future__ import annotations
 
@@ -89,6 +92,12 @@ class AdapterEntry:
     THR-107 seq141 adapter-submission fields:
       - intended_profile_name: the profile name the adapter is bound to
         (set during adapter-submission, verified at profile-binding time)
+
+    THR-107 seq244 dependency-manifest fields:
+      - dependency_manifest_version: version of the dependency manifest
+        (None for legacy entries without this extension)
+      - dependencies: list of declared child executable dependency records
+        (empty list for legacy entries)
     """
 
     id: str
@@ -107,6 +116,9 @@ class AdapterEntry:
     approved_by: str | None = None
     # THR-107 seq141: intended profile binding
     intended_profile_name: str | None = None
+    # THR-107 seq244: dependency manifest
+    dependency_manifest_version: int | None = None
+    dependencies: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Serialize to a plain dict for YAML persistence."""
@@ -129,6 +141,11 @@ class AdapterEntry:
             d["approved_by"] = self.approved_by
         if self.intended_profile_name is not None:
             d["intended_profile_name"] = self.intended_profile_name
+        # THR-107 seq244: dependency manifest (None/empty → omitted for legacy)
+        if self.dependency_manifest_version is not None:
+            d["dependency_manifest_version"] = self.dependency_manifest_version
+        if self.dependencies:
+            d["dependencies"] = self.dependencies
         return d
 
     @classmethod
@@ -149,6 +166,8 @@ class AdapterEntry:
             approved_at=d.get("approved_at"),
             approved_by=d.get("approved_by"),
             intended_profile_name=d.get("intended_profile_name"),
+            dependency_manifest_version=d.get("dependency_manifest_version"),
+            dependencies=d.get("dependencies", []),
         )
 
 

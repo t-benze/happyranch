@@ -415,6 +415,8 @@ class ExecutorRegistry:
             "hash": entry.executable_hash,
             "version": entry.version,
             "contract_version": entry.contract_version,
+            "dependency_manifest_version": entry.dependency_manifest_version,
+            "dependencies": entry.dependencies,
         }
 
     @classmethod
@@ -801,7 +803,7 @@ def build_executor(
                 f"approved. Register, approve, and bind the adapter first."
             )
         from runtime.orchestrator.executors import CustomAdapterExecutor
-        return CustomAdapterExecutor(
+        executor = CustomAdapterExecutor(
             profile_name=name,
             adapter_entry_id=cmd_adapter[len("custom-adapter:"):],
             adapter_executable=binding["executable"],
@@ -810,6 +812,12 @@ def build_executor(
             adapter_contract_version=binding["contract_version"],
             provider=name,
         )
+        # THR-107 seq244: set dependency manifest on the executor
+        executor.set_dependency_manifest(
+            binding.get("dependency_manifest_version"),
+            binding.get("dependencies", []),
+        )
+        return executor
 
     # Custom profile — GenericCliExecutor (unchanged, no adapter injected)
     assert profile.argv_template is not None

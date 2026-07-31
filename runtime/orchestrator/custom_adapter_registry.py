@@ -12,6 +12,9 @@ network/filesystem expansion.
 
 Re-registration semantics: a changed artifact/path/hash/capabilities produces
 a plainly pending result — approval is never silently retained.
+
+THR-107 seq244: dependency-manifest extension — validates declared child
+executable dependencies at registration and re-validates at launch.
 """
 from __future__ import annotations
 
@@ -81,6 +84,120 @@ def validate_executable_path(executable: str) -> Path:
         )
 
     return path
+
+
+# ---------------------------------------------------------------------------
+# THR-107 seq244: Dependency manifest validation
+# ---------------------------------------------------------------------------
+
+
+def validate_dependency_record(dep: dict) -> dict:
+    """Validate a single dependency record at registration/submission time.
+
+    A valid dependency record MUST have:
+      - executable: absolute path, exists, regular file, executable
+      - sha256: 64-char hex string matching the file's SHA-256 digest
+
+    Returns the normalized dict with resolved absolute executable path.
+
+    Raises ``ValueError`` on any validation failure.
+    """
+    if not isinstance(dep, dict):
+        raise ValueError(f"Dependency record must be a JSON object, got {type(dep).__name__}")
+
+    executable = dep.get("executable")
+    if not executable or not isinstance(executable, str):
+        raise ValueError(f"Dependency record must have a non-empty 'executable' string")
+
+    declared_sha = dep.get("sha256")
+    if not declared_sha or not isinstance(declared_sha, str):
+        raise ValueError(f"Dependency record must have a non-empty 'sha256' string")
+    if len(declared_sha) != 64:
+        raise ValueError(
+            f"Dependency sha256 must be a 64-char hex digest, got {len(declared_sha)} chars"
+        )
+    # Validate it's hex
+    try:
+        int(declared_sha, 16)
+    except (ValueError, TypeError):
+        raise ValueError(f"Dependency sha256 is not valid hex: {declared_sha[:20]}...")
+
+    # Validate the executable path (absolute, exists, regular file, executable)
+    dep_path = validate_executable_path(executable)
+
+    # Verify the declared hash matches the on-disk file
+    actual_hash = compute_sha256(str(dep_path))
+    if actual_hash != declared_sha:
+        raise ValueError(
+            f"Dependency {dep_path} sha256 mismatch: "
+            f"declared {declared_sha[:12]}..., actual {actual_hash[:12]}..."
+        )
+
+    # Check for duplicate entries (same executable) — the caller checks
+    # across the whole manifest, but we validate the record in isolation.
+    return {"executable": str(dep_path), "sha256": declared_sha}
+
+
+def validate_dependency_manifest(
+    dependency_manifest_version: int | None,
+    dependencies: list[dict] | None,
+) -> tuple[int | None, list[dict]]:
+    """Validate the dependency manifest extension at registration time.
+
+    For new submissions (non-None manifest version):
+      - ``dependency_manifest_version`` must be exactly 1
+      - ``dependencies`` must be a non-empty list
+      - Each record is validated via ``validate_dependency_record``
+      - No duplicate executables are allowed
+
+    For legacy entries (manifest version is None):
+      - ``dependencies`` must be None or empty
+      - Returns (None, []) — legacy status is preserved
+
+    Returns a tuple of (dependency_manifest_version, normalized_dependencies).
+    Raises ``ValueError`` with actionable message on any violation.
+    """
+    if dependency_manifest_version is None:
+        # Legacy entry — no dependency manifest
+        if dependencies is not None and len(dependencies) > 0:
+            raise ValueError(
+                "dependency_manifest_version is required when dependencies are provided"
+            )
+        return (None, [])
+    if not isinstance(dependency_manifest_version, int) or isinstance(dependency_manifest_version, bool):
+        raise ValueError(
+            f"dependency_manifest_version must be an integer, got {type(dependency_manifest_version).__name__}"
+        )
+    if dependency_manifest_version != 1:
+        raise ValueError(
+            f"dependency_manifest_version must be exactly 1, got {dependency_manifest_version}"
+        )
+
+    # Dependencies must be a non-empty list
+    if dependencies is None or not isinstance(dependencies, list):
+        raise ValueError(
+            "dependencies must be a non-empty list when dependency_manifest_version is set"
+        )
+    if len(dependencies) == 0:
+        raise ValueError(
+            "dependencies must be a non-empty list when dependency_manifest_version is set"
+        )
+
+    # Validate each dependency record
+    normalized: list[dict] = []
+    seen_executables: set[str] = set()
+    for dep in dependencies:
+        normalized_dep = validate_dependency_record(dep)
+        exe = normalized_dep["executable"]
+        if exe in seen_executables:
+            raise ValueError(
+                f"Duplicate dependency executable: {exe!r}. "
+                f"Each child executable may appear only once."
+            )
+        seen_executables.add(exe)
+        normalized.append(normalized_dep)
+
+    return (dependency_manifest_version, normalized)
 
 
 def validate_version(version: str) -> str:
@@ -557,6 +674,8 @@ def register_custom_adapter(
     workspace_adapter: str = "pi",
     registered_by: str = "",
     intended_profile_name: str | None = None,
+    dependency_manifest_version: int | None = None,
+    dependencies: list[dict] | None = None,
 ) -> AdapterEntry:
     """Register a custom adapter executable.
 
@@ -569,9 +688,11 @@ def register_custom_adapter(
     2. Validate ``version`` (non-empty string)
     3. Validate ``capabilities`` (list of non-empty strings)
     4. Validate ``workspace_adapter`` (one of claude/codex/opencode/pi)
-    5. Compute SHA-256 of the executable file
-    6. Run the conformance probe (bounded stdin/stdout)
-    7. Build and persist an ``AdapterEntry`` with status="pending"
+    5. Validate dependency manifest (THR-107 seq244: new submissions MUST
+       declare dependencies; legacy None is allowed for backward compat)
+    6. Compute SHA-256 of the executable file
+    7. Run the conformance probe (bounded stdin/stdout)
+    8. Build and persist an ``AdapterEntry`` with status="pending"
 
     Re-registration: if an adapter with a derived id already exists AND
     its executable/hash/capabilities differ, the new entry replaces the
@@ -584,6 +705,13 @@ def register_custom_adapter(
             and the entry records this binding. The submission endpoint
             MUST set this; the generic master-bearer registration path
             leaves it None.
+        dependency_manifest_version: When set (THR-107 seq244), the version
+            of the dependency manifest contract (must be exactly 1). New
+            submissions (both register and submit paths) must declare
+            this with a non-empty dependencies list.
+        dependencies: List of dependency records, each with ``executable``
+            (absolute path) and ``sha256`` (SHA-256 hex). Required when
+            ``dependency_manifest_version`` is set.
 
     Returns the persisted ``AdapterEntry``.
 
@@ -604,7 +732,12 @@ def register_custom_adapter(
             raise ValueError("intended_profile_name must be a non-empty string")
         intended_profile_name = intended_profile_name.strip()
 
-    # Step 5: Compute SHA-256
+    # Step 5: Validate dependency manifest (seq244 — before any durable work)
+    dep_manifest_version, normalized_deps = validate_dependency_manifest(
+        dependency_manifest_version, dependencies
+    )
+
+    # Step 6: Compute SHA-256
     file_hash = compute_sha256(str(executable_path))
 
     # Generate adapter id — server-derived from intended_profile_name when
@@ -616,10 +749,33 @@ def register_custom_adapter(
         adapter_name = Path(executable).name  # Use filename as default name
         adapter_id = generate_adapter_id(adapter_name)
 
-    # Step 6: Conformance probe (spawns subprocess — no durable residue on failure)
-    run_conformance_probe(str(executable_path), adapter_id)
+    # Step 7: Conformance probe (spawns subprocess — no durable residue on failure)
+    conformance_output = run_conformance_probe(str(executable_path), adapter_id)
 
-    # Step 7: Build and persist atomically with competing writes.
+    # seq244: Token-metering truthfulness — if capabilities include
+    # "token_metering", the conformance probe MUST produce a valid
+    # non-null token_usage with at least one numeric (non-null)
+    # accounting field.
+    if "token_metering" in capabilities:
+        if conformance_output.token_usage is None:
+            raise ValueError(
+                f"Adapter {adapter_id!r} declares token_metering capability "
+                f"but the conformance probe returned no token_usage. "
+                f"An adapter declaring token_metering must emit valid, "
+                f"non-null token_usage at conformance time."
+            )
+        tu = conformance_output.token_usage
+        if (tu.input_tokens is None and tu.output_tokens is None
+                and tu.cache_read_tokens is None and tu.cache_creation_tokens is None
+                and tu.reasoning_tokens is None):
+            raise ValueError(
+                f"Adapter {adapter_id!r} declares token_metering capability "
+                f"but the conformance probe returned token_usage with all "
+                f"accounting fields null. An adapter declaring token_metering "
+                f"must report at least one numeric token count."
+            )
+
+    # Step 8: Build and persist atomically with competing writes.
     # Acquire the store lock so that no concurrent approval or
     # registration can interleave between the existing-entry check
     # and the durable write.
@@ -661,17 +817,21 @@ def register_custom_adapter(
             approved_at=None,
             approved_by=None,
             intended_profile_name=intended_profile_name,
+            dependency_manifest_version=dep_manifest_version,
+            dependencies=normalized_deps,
         )
 
         # Re-registration guard: if existing entry differs, status MUST be
-        # pending.  If identical (same executable, hash, caps), keep original
-        # status (forward-compat for D4 approval).
+        # pending.  If identical (same executable, hash, caps, deps), keep
+        # original status (forward-compat for D4 approval).
         if existing is not None:
             if (existing.executable == str(executable_path) and
                     existing.executable_hash == file_hash and
                     existing.version == version and
                     existing.capabilities == capabilities and
-                    existing.workspace_adapter == workspace_adapter):
+                    existing.workspace_adapter == workspace_adapter and
+                    existing.dependency_manifest_version == dep_manifest_version and
+                    existing.dependencies == normalized_deps):
                 # Identical — preserve original registration metadata
                 entry = AdapterEntry(
                     id=entry.id,
@@ -688,6 +848,8 @@ def register_custom_adapter(
                     approved_at=None,
                     approved_by=None,
                     intended_profile_name=intended_profile_name,
+                    dependency_manifest_version=dep_manifest_version,
+                    dependencies=normalized_deps,
                 )
             else:
                 # Changed — new registration, pending
@@ -880,6 +1042,8 @@ def approve_adapter(
     workspace_adapter: str,
     approved_by: str = "founder/master-bearer",
     auto_bind_profile: bool = False,
+    dependency_manifest_version: int | None = None,
+    dependencies: list[dict] | None = None,
 ) -> AdapterEntry:
     """Approve a pending custom adapter (D4 founder-gated approval gate).
 
@@ -897,8 +1061,9 @@ def approve_adapter(
     adapter is already APPROVED and the profile is already bound, the
     existing entry is returned with ``profile_bound: already_bound``.
 
-    **Atomicity (D4 REVISE)**: the durable comparison of all six approval
-    facts and the PENDING→APPROVED transition is serialized with competing
+    **Atomicity (D4 REVISE)**: the durable comparison of all approval
+    facts, including the optional dependency manifest, and the
+    PENDING→APPROVED transition is serialized with competing
     registration writes via a store-level lock.  After acquiring the lock
     the function reloads the entry from disk and re-validates every fact
     at the commit boundary.  A changed re-registration that won the lock
@@ -957,6 +1122,10 @@ def approve_adapter(
                 f"it must be in PENDING state before approval."
             )
 
+        # Normalize deps for comparison (None vs [] are equivalent for legacy)
+        _req_deps = dependencies or []
+        _entry_deps = entry.dependencies or []
+
         # Exact-idempotence: if already APPROVED with identical facts, return as-is
         if entry.status == "approved":
             if (entry.executable == executable and
@@ -964,7 +1133,9 @@ def approve_adapter(
                     entry.version == version and
                     entry.capabilities == capabilities and
                     entry.contract_version == contract_version and
-                    entry.workspace_adapter == workspace_adapter):
+                    entry.workspace_adapter == workspace_adapter and
+                    entry.dependency_manifest_version == dependency_manifest_version and
+                    _entry_deps == _req_deps):
                 logger.info(
                     "approve_adapter: adapter %r already approved with identical "
                     "facts — idempotent no-op", adapter_id
@@ -1020,6 +1191,18 @@ def approve_adapter(
                 f"store has {entry.workspace_adapter!r}, "
                 f"approval request has {workspace_adapter!r}"
             )
+        if entry.dependency_manifest_version != dependency_manifest_version:
+            raise ValueError(
+                f"dependency_manifest_version mismatch for {adapter_id!r}: "
+                f"store has {entry.dependency_manifest_version!r}, "
+                f"approval request has {dependency_manifest_version!r}"
+            )
+        if _entry_deps != _req_deps:
+            raise ValueError(
+                f"dependencies mismatch for {adapter_id!r}: "
+                f"store has {len(_entry_deps)} record(s), "
+                f"approval request has {len(_req_deps)} record(s)"
+            )
 
         # Transition from PENDING → APPROVED
         now = datetime.now(timezone.utc).isoformat()
@@ -1038,6 +1221,8 @@ def approve_adapter(
             approved_at=now,
             approved_by=approved_by,
             intended_profile_name=entry.intended_profile_name,
+            dependency_manifest_version=entry.dependency_manifest_version,
+            dependencies=entry.dependencies,
         )
         _save_adapter_locked(approved_entry)
         logger.info(
@@ -1060,7 +1245,8 @@ def approve_adapter(
                     adapter_id, entry.intended_profile_name,
                 )
             except ValueError:
-                # Rollback: restore adapter to PENDING
+                # Rollback: restore adapter to PENDING, preserving every
+                # durable identity fact including the seq244 dependency manifest.
                 rolled_back = AdapterEntry(
                     id=entry.id,
                     name=entry.name,
@@ -1076,6 +1262,8 @@ def approve_adapter(
                     approved_at=None,
                     approved_by=None,
                     intended_profile_name=entry.intended_profile_name,
+                    dependency_manifest_version=entry.dependency_manifest_version,
+                    dependencies=entry.dependencies,
                 )
                 _save_adapter_locked(rolled_back)
                 logger.warning(

@@ -49,9 +49,12 @@ changes, or auth/bearer-flow changes.
 from __future__ import annotations
 
 import json
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+
+from runtime.orchestrator.adapter_contract import _strict_int_for_manifest
 
 from runtime.daemon.auth import require_registration_token, require_token
 from runtime.orchestrator.adapter_store import acquire_store_lock, release_store_lock
@@ -90,6 +93,10 @@ class AdapterRegisterRequest(BaseModel):
     """Request body for custom adapter registration.
 
     D3 fields only — no approval, no profile binding, no sandbox flags.
+
+    THR-107 seq244: adds ``dependency_manifest_version`` and ``dependencies``
+    fields. New submissions MUST declare a non-empty dependencies list with
+    ``dependency_manifest_version: 1``.
     """
 
     executable: str = Field(
@@ -109,6 +116,24 @@ class AdapterRegisterRequest(BaseModel):
     workspace_adapter: str = Field(
         default="pi",
         description="Workspace preparation adapter: claude, codex, opencode, or pi.",
+    )
+    dependency_manifest_version: Annotated[int, BeforeValidator(_strict_int_for_manifest)] = Field(
+        ...,
+        ge=1,
+        le=1,
+        description=(
+            "Version of the dependency manifest contract. Required for new "
+            "submissions (must be exactly 1)."
+        ),
+    )
+    dependencies: list[dict] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "List of declared child executable dependencies. Each entry must "
+            "have 'executable' (absolute path) and 'sha256' (SHA-256 hex). "
+            "Required and non-empty."
+        ),
     )
 
     model_config = {"extra": "forbid"}
@@ -139,6 +164,8 @@ class AdapterEntryResponse(BaseModel):
     approved_at: str | None = None
     approved_by: str | None = None
     intended_profile_name: str | None = None
+    dependency_manifest_version: int | None = None
+    dependencies: list[dict] = []
     eligibility: str | None = Field(
         None,
         description=(
@@ -161,6 +188,8 @@ class AdapterSubmitRequest(BaseModel):
     The candidate CLI submits its v1 adapter wrapper executable. The token
     carries the intended profile name — the candidate request does NOT
     choose a different adapter target.
+
+    THR-107 seq244: adds ``dependency_manifest_version`` and ``dependencies``.
     """
 
     executable: str = Field(
@@ -180,6 +209,17 @@ class AdapterSubmitRequest(BaseModel):
     workspace_adapter: str = Field(
         default="pi",
         description="Workspace preparation adapter.",
+    )
+    dependency_manifest_version: Annotated[int, BeforeValidator(_strict_int_for_manifest)] = Field(
+        ...,
+        ge=1,
+        le=1,
+        description="Version of the dependency manifest contract (must be exactly 1 for new submissions).",
+    )
+    dependencies: list[dict] = Field(
+        ...,
+        min_length=1,
+        description="List of declared child executable dependencies.",
     )
 
     model_config = {"extra": "forbid"}
@@ -258,6 +298,20 @@ class AdapterRemoveRequest(BaseModel):
         None,
         description="Intended profile name (must match store exactly, null allowed).",
     )
+    dependency_manifest_version: int | None = Field(
+        None,
+        description=(
+            "Dependency manifest version (must match store exactly). "
+            "None for legacy entries without a manifest."
+        ),
+    )
+    dependencies: list[dict] | None = Field(
+        None,
+        description=(
+            "List of declared child executable dependencies (must match store "
+            "exactly in order and content). None/empty for legacy entries."
+        ),
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -267,6 +321,10 @@ class AdapterApproveRequest(BaseModel):
 
     Every field MUST match the durable store entry exactly.
     This binds the exact artifact snapshot the founder inspected.
+
+    THR-107 seq244 fix-forward: includes dependency_manifest_version
+    and dependencies so the founder attests to the immutable dependency
+    manifest facts.
     """
 
     executable: str = Field(
@@ -296,6 +354,20 @@ class AdapterApproveRequest(BaseModel):
         ...,
         description="Workspace preparation adapter (must match store exactly).",
         min_length=1,
+    )
+    dependency_manifest_version: int | None = Field(
+        None,
+        description=(
+            "Dependency manifest version (must match store exactly). "
+            "None for legacy entries without a manifest."
+        ),
+    )
+    dependencies: list[dict] | None = Field(
+        None,
+        description=(
+            "List of declared child executable dependencies (must match store "
+            "exactly in order and content). None/empty for legacy entries."
+        ),
     )
 
     model_config = {"extra": "forbid"}
@@ -308,6 +380,10 @@ class AdapterRejectRequest(BaseModel):
     Rejects stale, re-registered, and hash-changed snapshots.
     Same material identity facts as approval — the caller attests to the
     exact PENDING artifact being rejected.
+
+    THR-107 seq244 fix-forward: includes dependency_manifest_version
+    and dependencies so the caller attests to the immutable dependency
+    manifest facts.
     """
 
     executable: str = Field(
@@ -337,6 +413,20 @@ class AdapterRejectRequest(BaseModel):
         ...,
         description="Workspace preparation adapter (must match store exactly).",
         min_length=1,
+    )
+    dependency_manifest_version: int | None = Field(
+        None,
+        description=(
+            "Dependency manifest version (must match store exactly). "
+            "None for legacy entries without a manifest."
+        ),
+    )
+    dependencies: list[dict] | None = Field(
+        None,
+        description=(
+            "List of declared child executable dependencies (must match store "
+            "exactly in order and content). None/empty for legacy entries."
+        ),
     )
 
     model_config = {"extra": "forbid"}
@@ -358,6 +448,8 @@ def _adapter_snapshot_mismatch(entry, body: AdapterRemoveRequest) -> str | None:
         ("workspace_adapter", entry.workspace_adapter, body.workspace_adapter),
         ("name", entry.name, body.name),
         ("intended_profile_name", entry.intended_profile_name, body.intended_profile_name),
+        ("dependency_manifest_version", entry.dependency_manifest_version, body.dependency_manifest_version),
+        ("dependencies", entry.dependencies, body.dependencies or []),
     ]
     for field, store_val, req_val in facts:
         if store_val != req_val:
@@ -500,6 +592,8 @@ def _entry_to_response(entry) -> AdapterEntryResponse:
         approved_at=entry.approved_at,
         approved_by=entry.approved_by,
         intended_profile_name=entry.intended_profile_name,
+        dependency_manifest_version=entry.dependency_manifest_version,
+        dependencies=entry.dependencies,
         eligibility=_compute_eligibility(entry),
     )
 
@@ -552,6 +646,8 @@ def register_adapter(body: AdapterRegisterRequest) -> AdapterEntryResponse:
             capabilities=body.capabilities,
             workspace_adapter=body.workspace_adapter,
             registered_by="",
+            dependency_manifest_version=body.dependency_manifest_version,
+            dependencies=body.dependencies,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -644,6 +740,8 @@ def approve_registered_adapter(
             workspace_adapter=body.workspace_adapter,
             approved_by="founder/master-bearer",
             auto_bind_profile=auto_bind,
+            dependency_manifest_version=body.dependency_manifest_version,
+            dependencies=body.dependencies,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -752,6 +850,8 @@ def submit_adapter(
             workspace_adapter=body.workspace_adapter,
             registered_by=f"adapter-submission:{intended_profile}",
             intended_profile_name=intended_profile,
+            dependency_manifest_version=body.dependency_manifest_version,
+            dependencies=body.dependencies,
         )
     except ValueError as exc:
         # Release the token on failure so it remains retryable
@@ -827,7 +927,7 @@ def get_contract_reference(request: Request) -> dict:
     # endpoint. The candidate may fetch the contract multiple times before
     # proceeding to conformance check-ins and submission.
 
-    from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput
+    from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput, DependencyManifest, DependencyRecord
     from runtime.orchestrator.custom_adapter_registry import build_probe_input
 
     # Build a minimal self-test fixture from the real probe builder.
@@ -913,9 +1013,97 @@ def get_contract_reference(request: Request) -> dict:
                 "adapter; founder approval is a separate Settings-only step. "
                 "For adapters with an intended profile, approval atomically creates "
                 "and connects the profile (seq237); explicit Bind is only needed for "
-                "advanced recovery of approved no-intended adapters."
+                "advanced recovery of approved no-intended adapters. "
+                "New submissions MUST include dependency_manifest_version: 1 and a "
+                "non-empty dependencies list declaring every child executable the "
+                "adapter wrapper invokes."
+            ),
+            "body_schema": {
+                "description": "Adapter submission request body",
+                "required_fields": [
+                    "executable", "version", "capabilities",
+                    "dependency_manifest_version", "dependencies",
+                ],
+                "fields": {
+                    "executable": "Absolute path to the adapter wrapper executable",
+                    "version": "Adapter version string",
+                    "capabilities": "Declared capabilities list",
+                    "workspace_adapter": "Workspace preparation adapter (default: pi)",
+                    "dependency_manifest_version": (
+                        "Integer. Must be 1 for new submissions. "
+                        "Separate versioning space from contract_version."
+                    ),
+                    "dependencies": (
+                        "Non-empty list of dependency records. Each record has: "
+                        "executable (absolute path, must be regular + executable "
+                        "on disk, never a bare command name or PATH-resolved) and "
+                        "sha256 (64-char hex matching the on-disk file). "
+                        "Duplicates are rejected. "
+                        "An adapter declaring this manifest must invoke "
+                        "child executables by their exact declared absolute "
+                        "paths — the runtime scrubs PATH for manifest-adapters. "
+                        "A dependency change requires re-submission and founder "
+                        "re-approval."
+                    ),
+                },
+            },
+        },
+        "dependency_manifest": {
+            "description": (
+                "The dependency manifest is an independently versioned extension "
+                "that declares every child executable the adapter wrapper invokes. "
+                "This is required for new submissions and provides durable trust "
+                "boundaries: every declared dependency is hash-verified at "
+                "registration and re-verified before EVERY launch attempt."
+            ),
+            "dependency_manifest_version": 1,
+            "dependency_manifest_schema": DependencyManifest.model_json_schema(),
+            "dependency_record_schema": DependencyRecord.model_json_schema(),
+            "rules": {
+                "new_submission_required": True,
+                "non_empty_required": True,
+                "duplicates_rejected": True,
+                "absolute_path_only": True,
+                "no_path_fallback": True,
+                "hash_at_registration": True,
+                "hash_before_every_launch": True,
+                "change_requires_resubmit": True,
+                "legacy_entries_preserved": True,
+            },
+            "example": {
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {
+                        "executable": "/usr/local/bin/some-child-cli",
+                        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    }
+                ],
+            },
+        },
+        "token_metering": {
+            "description": (
+                "Adapters that declare the token_metering capability MUST produce "
+                "a valid, non-null token_usage in their AdapterOutput at conformance "
+                "time. The token_usage object must not be null, and at least one of "
+                "input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, "
+                "or reasoning_tokens must be a non-null integer. Zero is a legitimate "
+                "count. An absent, null, or all-accounting-fields-null token_usage "
+                "fails the conformance probe. Adapters without token_metering capability "
+                "may omit token_usage and retain current behavior."
+            ),
+            "probe_expectation": (
+                "The conformance probe runs the adapter with a sample AdapterInput. "
+                "A token_metering adapter must return a structurally valid token_usage. "
+                "The runtime does not fabricate, default, or infer accounting — the "
+                "adapter must truthfully report what its child CLI consumed."
             ),
         },
+        "reapproval_rule": (
+            "Any change to the adapter executable, its hash, declared dependencies, "
+            "or capabilities requires re-submission and founder re-approval. The "
+            "approved snapshot is immutable — a tampered or stale dependency blocks "
+            "launch with an actionable error."
+        ),
         "probe": {
             "description": (
                 "Before registration, the server runs a conformance probe against "
@@ -1251,7 +1439,8 @@ def _audit_adapter_remove(
       action  = "adapter_removed"
       payload = {adapter_id, name, executable, executable_hash, version,
                  capabilities, contract_version, workspace_adapter,
-                 intended_profile_name, status}
+                 intended_profile_name, status,
+                 dependency_manifest_version, dependencies}
     """
     from runtime.infrastructure.database import Database
     from runtime.runtime import daemon_home
@@ -1274,6 +1463,8 @@ def _audit_adapter_remove(
                 "workspace_adapter": removed_snapshot.get("workspace_adapter", ""),
                 "intended_profile_name": removed_snapshot.get("intended_profile_name"),
                 "status": removed_snapshot.get("status", ""),
+                "dependency_manifest_version": removed_snapshot.get("dependency_manifest_version"),
+                "dependencies": removed_snapshot.get("dependencies", []),
             },
         )
         db.commit()
@@ -1445,7 +1636,8 @@ def _audit_adapter_reject(
       action  = "adapter_rejected"
       payload = {adapter_id, name, executable, executable_hash, version,
                  capabilities, contract_version, workspace_adapter,
-                 intended_profile_name, status}
+                 intended_profile_name, status,
+                 dependency_manifest_version, dependencies}
     """
     from runtime.infrastructure.database import Database
     from runtime.runtime import daemon_home
@@ -1468,6 +1660,8 @@ def _audit_adapter_reject(
                 "workspace_adapter": rejected_snapshot.get("workspace_adapter", ""),
                 "intended_profile_name": rejected_snapshot.get("intended_profile_name"),
                 "status": rejected_snapshot.get("status", ""),
+                "dependency_manifest_version": rejected_snapshot.get("dependency_manifest_version"),
+                "dependencies": rejected_snapshot.get("dependencies", []),
             },
         )
         db.commit()
@@ -1525,7 +1719,9 @@ def reject_pending_adapter(
         )
 
     # 3. Exact-snapshot match against all material identity facts.
-    #    Use the same predicate shape as approval — 6 material fields.
+    #    Includes dependency manifest facts (THR-107 seq244 fix-forward).
+    _req_deps = body.dependencies or []
+    _entry_deps = entry.dependencies or []
     facts = [
         ("executable", entry.executable, body.executable),
         ("executable_hash", entry.executable_hash, body.executable_hash),
@@ -1533,6 +1729,8 @@ def reject_pending_adapter(
         ("capabilities", entry.capabilities, body.capabilities),
         ("contract_version", entry.contract_version, body.contract_version),
         ("workspace_adapter", entry.workspace_adapter, body.workspace_adapter),
+        ("dependency_manifest_version", entry.dependency_manifest_version, body.dependency_manifest_version),
+        ("dependencies", _entry_deps, _req_deps),
     ]
     for field, store_val, req_val in facts:
         if store_val != req_val:
@@ -1574,6 +1772,8 @@ def reject_pending_adapter(
             ("capabilities", re_read_entry.capabilities, body.capabilities),
             ("contract_version", re_read_entry.contract_version, body.contract_version),
             ("workspace_adapter", re_read_entry.workspace_adapter, body.workspace_adapter),
+            ("dependency_manifest_version", re_read_entry.dependency_manifest_version, body.dependency_manifest_version),
+            ("dependencies", re_read_entry.dependencies or [], body.dependencies or []),
         ]:
             if store_val != req_val:
                 raise HTTPException(

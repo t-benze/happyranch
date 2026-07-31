@@ -124,6 +124,13 @@ runtime. The server-derived schema is canonical. Key invariants:
   ``generic-cli`` or revert the deployment.
 - **D5 baseline-only posture:** the custom adapter contract introduces no allow-rule,
   sandbox, network-access, filesystem-access, or permission changes.
+- **THR-107 seq244 dependency manifest:** new adapter registrations require
+  ``dependency_manifest_version: 1`` with a non-empty list of declared child
+  executable dependencies (absolute path + SHA-256). Dependencies are validated
+  at registration and re-verified before every launch. Manifest-adapters cannot
+  rely on ambient PATH — the runtime scrubs PATH to ``/usr/bin:/bin``.
+  ``token_metering`` capability enforces truthful non-null token_usage at
+  conformance. Legacy entries without the manifest are preserved unchanged.
 
 The signed architecture is at
 ``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``.

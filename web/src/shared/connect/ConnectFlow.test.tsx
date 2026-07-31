@@ -67,6 +67,8 @@ function makeAdapter(
     approved_by: 'founder',
     intended_profile_name: overrides.intended_profile_name ?? 'kimi',
     eligibility: (overrides.eligibility ?? 'ready_to_bind') as import('@/lib/api/adapters').AdapterEligibility,
+    dependency_manifest_version: null,
+    dependencies: [],
   };
 }
 

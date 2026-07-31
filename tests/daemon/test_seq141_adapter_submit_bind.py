@@ -34,7 +34,37 @@ from runtime.daemon.registration_token import (
 from runtime.orchestrator.runtime_executor_store import (
     load_runtime_profiles,
 )
-from runtime.orchestrator.adapter_store import load_adapters
+from runtime.orchestrator.adapter_store import compute_sha256, load_adapters
+
+
+def _dep_manifest(script: Path) -> dict:
+    """Return the required dependency-manifest fields for a submit payload."""
+    return {
+        "dependency_manifest_version": 1,
+        "dependencies": [{"executable": str(script), "sha256": compute_sha256(str(script))}],
+    }
+
+
+def _approval_snapshot(data: dict) -> dict:
+    """Return every immutable fact required to approve a fresh adapter."""
+    return {
+        "executable": data["executable"],
+        "executable_hash": data["executable_hash"],
+        "version": data["version"],
+        "capabilities": data["capabilities"],
+        "contract_version": data["contract_version"],
+        "workspace_adapter": data["workspace_adapter"],
+        "dependency_manifest_version": data.get("dependency_manifest_version"),
+        "dependencies": data.get("dependencies"),
+    }
+
+
+def _entry_manifest(entry) -> dict:
+    """Reconstruct the exact manifest snapshot for a stored adapter entry."""
+    return {
+        "dependency_manifest_version": entry.dependency_manifest_version,
+        "dependencies": entry.dependencies,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +205,7 @@ class TestSubmitAuthIsolation:
                 "version": "1.0.0",
                 "capabilities": [],
                 "workspace_adapter": "pi",
+                **_dep_manifest(script),
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -198,6 +229,7 @@ class TestSubmitAuthIsolation:
                 "version": "1.0.0",
                 "capabilities": [],
                 "workspace_adapter": "pi",
+                **_dep_manifest(script),
             },
             headers={"Authorization": f"Bearer {master_token}"},
         )
@@ -217,6 +249,7 @@ class TestSubmitAuthIsolation:
             json={
                 "executable": str(script),
                 "version": "1.0.0",
+                **_dep_manifest(script),
             },
         )
         assert resp.status_code == 401, resp.text
@@ -244,6 +277,7 @@ class TestSubmitGating:
             json={
                 "executable": str(script),
                 "version": "1.0.0",
+                **_dep_manifest(script),
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -264,6 +298,7 @@ class TestSubmitGating:
             json={
                 "executable": str(script),
                 "version": "1.0.0",
+                **_dep_manifest(script),
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -282,6 +317,7 @@ class TestSubmitGating:
             json={
                 "executable": str(script),
                 "version": "1.0.0",
+                **_dep_manifest(script),
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -301,6 +337,7 @@ class TestSubmitGating:
             json={
                 "executable": str(script),
                 "version": "1.0.0",
+                **_dep_manifest(script),
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -320,7 +357,7 @@ class TestSubmitGating:
         # Submit
         resp = client.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -352,7 +389,7 @@ class TestSubmitReplay:
         # First submission succeeds
         resp = client.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -360,7 +397,7 @@ class TestSubmitReplay:
         # Replay fails
         resp = client.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code in (401, 409, 422), f"Unexpected {resp.status_code}: {resp.text}"
@@ -378,7 +415,7 @@ class TestSubmitReplay:
             client = TestClient(app)
             resp = client.post(
                 "/api/v1/runtime/adapters/submit",
-                json={"executable": str(script), "version": "1.0.0"},
+                json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
                 headers={"Authorization": f"Bearer {token}"},
             )
             with lock:
@@ -415,7 +452,7 @@ class TestMetadataRetentionThroughApproval:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -428,14 +465,7 @@ class TestMetadataRetentionThroughApproval:
         mc = self._master_client(app, master_token)
         resp = mc.post(
             f"/api/v1/runtime/adapters/{adapter_id}/approve",
-            json={
-                "executable": data["executable"],
-                "executable_hash": data["executable_hash"],
-                "version": data["version"],
-                "capabilities": data["capabilities"],
-                "contract_version": data["contract_version"],
-                "workspace_adapter": data["workspace_adapter"],
-            },
+            json=_approval_snapshot(data),
         )
         assert resp.status_code == 200, resp.text
         approved = resp.json()
@@ -454,7 +484,7 @@ class TestMetadataRetentionThroughApproval:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -465,14 +495,7 @@ class TestMetadataRetentionThroughApproval:
         mc = self._master_client(app, master_token)
         resp = mc.post(
             f"/api/v1/runtime/adapters/{adapter_id}/approve",
-            json={
-                "executable": data["executable"],
-                "executable_hash": data["executable_hash"],
-                "version": data["version"],
-                "capabilities": data["capabilities"],
-                "contract_version": data["contract_version"],
-                "workspace_adapter": data["workspace_adapter"],
-            },
+            json=_approval_snapshot(data),
         )
         assert resp.status_code == 200
 
@@ -507,7 +530,7 @@ class TestBindGating:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200, resp.text
@@ -516,14 +539,7 @@ class TestBindGating:
         mc = self._master_client(app, master_token)
         resp = mc.post(
             f"/api/v1/runtime/adapters/{adapter_id}/approve",
-            json={
-                "executable": data["executable"],
-                "executable_hash": data["executable_hash"],
-                "version": data["version"],
-                "capabilities": data["capabilities"],
-                "contract_version": data["contract_version"],
-                "workspace_adapter": data["workspace_adapter"],
-            },
+            json=_approval_snapshot(data),
         )
         assert resp.status_code == 200, resp.text
         return adapter_id
@@ -537,7 +553,7 @@ class TestBindGating:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -597,7 +613,7 @@ class TestBindGating:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -608,14 +624,7 @@ class TestBindGating:
         mc = self._master_client(app, master_token)
         resp = mc.post(
             f"/api/v1/runtime/adapters/{adapter_id}/approve",
-            json={
-                "executable": data["executable"],
-                "executable_hash": data["executable_hash"],
-                "version": data["version"],
-                "capabilities": data["capabilities"],
-                "contract_version": data["contract_version"],
-                "workspace_adapter": data["workspace_adapter"],
-            },
+            json=_approval_snapshot(data),
         )
         # Approval auto-binds but builtin collision causes rollback → 422
         assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
@@ -626,6 +635,90 @@ class TestBindGating:
         resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
         assert resp.status_code == 200
         assert resp.json()["status"] == "pending"
+
+        # seq244: dependency manifest MUST be preserved through the
+        # failed-auto-bind rollback — the durable identity facts are
+        # immutable until the founder explicitly re-registers.
+        assert resp.json()["dependency_manifest_version"] == 1, (
+            "dependency_manifest_version must survive failed-auto-bind rollback"
+        )
+        assert isinstance(resp.json()["dependencies"], list), (
+            "dependencies must survive failed-auto-bind rollback as a list"
+        )
+        assert len(resp.json()["dependencies"]) == 1, (
+            "dependencies list must preserve exact record count after rollback"
+        )
+        dep = resp.json()["dependencies"][0]
+        assert dep["executable"] == str(script), (
+            "dependency executable path must be preserved through rollback"
+        )
+        assert dep["sha256"] == compute_sha256(str(script)), (
+            "dependency SHA-256 must be preserved through rollback"
+        )
+
+    def test_rollback_manifest_preserves_re_registration_guard(self, app_and_client,
+                                                                route_setup, token_store):
+        """Re-registration after failed-auto-bind rollback honours the fresh
+        manifest identity — a re-submit without dependency_manifest_version is
+        rejected (not silently treated as legacy).
+        """
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "codex")
+        script = _make_conformant_adapter_script(route_setup, "codex-adapter")
+
+        c = TestClient(app)
+        # 1) Submit with strict manifest
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        adapter_id = data["id"]
+        original_manifest_version = data["dependency_manifest_version"]
+        original_deps = data["dependencies"]
+
+        # 2) Approve → auto-bind collision → rollback to PENDING
+        mc = self._master_client(app, master_token)
+        resp = mc.post(
+            f"/api/v1/runtime/adapters/{adapter_id}/approve",
+            json=_approval_snapshot(data),
+        )
+        assert resp.status_code == 422
+
+        # 3) Verify rollback preserved manifest
+        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "pending"
+        assert resp.json()["dependency_manifest_version"] == original_manifest_version
+        assert resp.json()["dependencies"] == original_deps
+
+        # 4) Re-register the SAME adapter identity WITHOUT a dependency
+        #    manifest — this must be REJECTED (422), proving the adapter
+        #    is still treated as a fresh-manifest identity, not silently
+        #    reclassed as legacy.
+        new_token = _mint_adapter_token(store, "codex2")
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={"executable": str(script), "version": "1.0.0"},
+            headers={"Authorization": f"Bearer {new_token}"},
+        )
+        assert resp.status_code == 422, (
+            f"Expected 422 for re-registration without manifest, got {resp.status_code}"
+        )
+        detail = resp.json()["detail"]
+        # Pydantic validation errors may return detail as a list of objects
+        detail_str = str(detail).lower()
+        assert "dependency_manifest_version" in detail_str or (
+            "manifest" in detail_str
+        ), f"Rejection should reference manifest: {detail}"
+
+        # 5) Verify the existing PENDING adapter remains untouched
+        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert resp.status_code == 200
+        assert resp.json()["dependency_manifest_version"] == original_manifest_version
+        assert resp.json()["dependencies"] == original_deps
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +740,7 @@ class TestBindDurablePersistence:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200, resp.text
@@ -656,14 +749,7 @@ class TestBindDurablePersistence:
         mc = self._master_client(app, master_token)
         resp = mc.post(
             f"/api/v1/runtime/adapters/{adapter_id}/approve",
-            json={
-                "executable": data["executable"],
-                "executable_hash": data["executable_hash"],
-                "version": data["version"],
-                "capabilities": data["capabilities"],
-                "contract_version": data["contract_version"],
-                "workspace_adapter": data["workspace_adapter"],
-            },
+            json=_approval_snapshot(data),
         )
         assert resp.status_code == 200, resp.text
         return adapter_id
@@ -736,7 +822,7 @@ class TestRaceSafety:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -751,14 +837,7 @@ class TestRaceSafety:
             mc = self._master_client(app, master_token)
             resp = mc.post(
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
-                json={
-                    "executable": data["executable"],
-                    "executable_hash": data["executable_hash"],
-                    "version": data["version"],
-                    "capabilities": data["capabilities"],
-                    "contract_version": data["contract_version"],
-                    "workspace_adapter": data["workspace_adapter"],
-                },
+                json=_approval_snapshot(data),
             )
             approve_results.append(resp.status_code)
 
@@ -811,6 +890,7 @@ class TestRaceSafety:
                 "version": adapter_entry.version,
                 "capabilities": adapter_entry.capabilities,
                 "workspace_adapter": adapter_entry.workspace_adapter,
+                **_entry_manifest(adapter_entry),
             },
             headers={"Authorization": f"Bearer {token2}"},
         )
@@ -834,7 +914,7 @@ class TestRaceSafety:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200, resp.text
@@ -843,14 +923,7 @@ class TestRaceSafety:
         c.headers.update({"Authorization": f"Bearer {master_token}"})
         resp = c.post(
             f"/api/v1/runtime/adapters/{adapter_id}/approve",
-            json={
-                "executable": data["executable"],
-                "executable_hash": data["executable_hash"],
-                "version": data["version"],
-                "capabilities": data["capabilities"],
-                "contract_version": data["contract_version"],
-                "workspace_adapter": data["workspace_adapter"],
-            },
+            json=_approval_snapshot(data),
         )
         assert resp.status_code == 200, resp.text
         return adapter_id
@@ -893,6 +966,7 @@ class TestRaceSafety:
                 "version": adapter_entry.version,
                 "capabilities": adapter_entry.capabilities,
                 "workspace_adapter": adapter_entry.workspace_adapter,
+                **_entry_manifest(adapter_entry),
             },
             headers={"Authorization": f"Bearer {token2}"},
         )
@@ -955,6 +1029,7 @@ class TestRaceSafety:
                 "version": adapter_entry.version,
                 "capabilities": adapter_entry.capabilities,
                 "workspace_adapter": adapter_entry.workspace_adapter,
+                **_entry_manifest(adapter_entry),
             },
             headers={"Authorization": f"Bearer {token2}"},
         )
@@ -989,7 +1064,7 @@ class TestRaceSafety:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -1013,14 +1088,7 @@ class TestRaceSafety:
             mc = self._master_client(app, master_token)
             resp = mc.post(
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
-                json={
-                    "executable": data["executable"],
-                    "executable_hash": data["executable_hash"],
-                    "version": data["version"],
-                    "capabilities": data["capabilities"],
-                    "contract_version": data["contract_version"],
-                    "workspace_adapter": data["workspace_adapter"],
-                },
+                json=_approval_snapshot(data),
             )
             assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
             # Adapter back to PENDING
@@ -1047,7 +1115,7 @@ class TestRaceSafety:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -1079,14 +1147,7 @@ class TestRaceSafety:
             mc = self._master_client(app, master_token)
             resp = mc.post(
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
-                json={
-                    "executable": data["executable"],
-                    "executable_hash": data["executable_hash"],
-                    "version": data["version"],
-                    "capabilities": data["capabilities"],
-                    "contract_version": data["contract_version"],
-                    "workspace_adapter": data["workspace_adapter"],
-                },
+                json=_approval_snapshot(data),
             )
             assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
             re_read = load_adapters().get(adapter_id)
@@ -1139,6 +1200,7 @@ class TestRaceSafety:
                 "version": adapter_entry.version,
                 "capabilities": adapter_entry.capabilities,
                 "workspace_adapter": adapter_entry.workspace_adapter,
+                **_entry_manifest(adapter_entry),
             },
             headers={"Authorization": f"Bearer {token2}"},
         )
@@ -1168,7 +1230,7 @@ class TestRaceSafety:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -1191,14 +1253,7 @@ class TestRaceSafety:
             mc = self._master_client(app, master_token)
             resp = mc.post(
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
-                json={
-                    "executable": data["executable"],
-                    "executable_hash": data["executable_hash"],
-                    "version": data["version"],
-                    "capabilities": data["capabilities"],
-                    "contract_version": data["contract_version"],
-                    "workspace_adapter": data["workspace_adapter"],
-                },
+                json=_approval_snapshot(data),
             )
             assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
             re_read = load_adapters().get(adapter_id)
@@ -1363,7 +1418,7 @@ class TestRaceSafety:
         c = TestClient(app)
         resp = c.post(
             "/api/v1/runtime/adapters/submit",
-            json={"executable": str(script), "version": "1.0.0"},
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -1385,14 +1440,7 @@ class TestRaceSafety:
         try:
             resp = mc.post(
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
-                json={
-                    "executable": data["executable"],
-                    "executable_hash": data["executable_hash"],
-                    "version": data["version"],
-                    "capabilities": data["capabilities"],
-                    "contract_version": data["contract_version"],
-                    "workspace_adapter": data["workspace_adapter"],
-                },
+                json=_approval_snapshot(data),
             )
             assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
             re_read = load_adapters().get(adapter_id)
@@ -1427,14 +1475,7 @@ class TestRaceSafety:
         try:
             resp = mc.post(
                 f"/api/v1/runtime/adapters/{adapter_id}/approve",
-                json={
-                    "executable": data["executable"],
-                    "executable_hash": data["executable_hash"],
-                    "version": data["version"],
-                    "capabilities": data["capabilities"],
-                    "contract_version": data["contract_version"],
-                    "workspace_adapter": data["workspace_adapter"],
-                },
+                json=_approval_snapshot(data),
             )
             assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
             re_read = load_adapters().get(adapter_id)
@@ -1511,6 +1552,7 @@ class TestRaceSafety:
                     "version": adapter_entry.version,
                     "capabilities": adapter_entry.capabilities,
                     "workspace_adapter": adapter_entry.workspace_adapter,
+                    **_entry_manifest(adapter_entry),
                 },
                 headers={"Authorization": f"Bearer {token2}"},
             )
@@ -1769,6 +1811,7 @@ class TestContractReferenceHappyPath:
                 "version": "1.0.0",
                 "capabilities": [],
                 "workspace_adapter": "pi",
+                **_dep_manifest(script),
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -2024,3 +2067,108 @@ class TestContractReferenceOpenApi:
         assert isinstance(data["adapter_output_schema"], dict)
         assert isinstance(data["rules"], dict)
         assert isinstance(data["submission"], dict)
+
+
+class TestSubmitStrictManifestVersion:
+    """THR-107 seq244 fix-forward: strict integer enforcement on submit route.
+
+    dependency_manifest_version must be literally JSON integer 1.
+    JSON 1.0, "1", and true are rejected with 422 before any
+    conformance probe or durable persistence.
+    """
+
+    _ADAPTER = "strict-int-submit"
+
+    @pytest.mark.parametrize("bad_value,label", [
+        (1.0, "float-1.0"),
+        ("1", "string-1"),
+        (True, "bool-true"),
+    ])
+    def test_submit_route_rejects_non_strict_int_422(
+        self,
+        app_and_client,
+        route_setup,
+        token_store,
+        monkeypatch,
+        bad_value,
+        label,
+    ):
+        """Submit route returns 422, probe not called, no persistence."""
+        from unittest.mock import MagicMock
+        spy = MagicMock()
+        monkeypatch.setattr(
+            "runtime.daemon.routes.adapters.register_custom_adapter",
+            spy,
+        )
+
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, f"cli-{label}")
+        script = _make_conformant_adapter_script(
+            route_setup, f"{label}-adapter"
+        )
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": str(script),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": bad_value,
+                "dependencies": [
+                    {"executable": str(script), "sha256": compute_sha256(str(script))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422, (
+            f"submit route: expected 422 for {label}, got {resp.status_code}: {resp.text}"
+        )
+        spy.assert_not_called()
+        assert load_adapters() == {}
+
+    def test_submit_route_accepts_int_1_probe_and_persist(
+        self,
+        app_and_client,
+        route_setup,
+        token_store,
+        monkeypatch,
+    ):
+        """Submit route accepts literal int 1, probe called, adapter persisted."""
+        from unittest.mock import MagicMock
+        from runtime.orchestrator.custom_adapter_registry import (
+            register_custom_adapter as _real,
+        )
+        spy = MagicMock(wraps=_real)
+        monkeypatch.setattr(
+            "runtime.daemon.routes.adapters.register_custom_adapter",
+            spy,
+        )
+
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "cli-int-1")
+        script = _make_conformant_adapter_script(route_setup, "int1-adapter")
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/runtime/adapters/submit",
+            json={
+                "executable": str(script),
+                "version": "1.0.0",
+                "capabilities": [],
+                "workspace_adapter": "pi",
+                "dependency_manifest_version": 1,
+                "dependencies": [
+                    {"executable": str(script), "sha256": compute_sha256(str(script))}
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["dependency_manifest_version"] == 1
+        assert data["status"] == "pending"
+        spy.assert_called_once()
+        adapters = load_adapters()
+        assert len(adapters) == 1
