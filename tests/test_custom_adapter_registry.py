@@ -990,6 +990,7 @@ class TestAdapterRoutesAuthentication:
         paths_mod.ensure_token()
         token = paths_mod.read_token()
         script = _make_fake_adapter_script(tmp_path, "auth-works-adapter")
+        dep_hash = compute_sha256(str(script))
         app = FastAPI()
         app.include_router(router, prefix="/api/v1")
         client = TestClient(app)
@@ -999,6 +1000,8 @@ class TestAdapterRoutesAuthentication:
             "version": "1.0.0",
             "capabilities": [],
             "workspace_adapter": "pi",
+            "dependency_manifest_version": 1,
+            "dependencies": [{"executable": str(script), "sha256": dep_hash}],
         })
         assert r.status_code == 200
         body = r.json()
@@ -1019,6 +1022,7 @@ class TestAdapterRoutesAuthentication:
         paths_mod.ensure_token()
         token = paths_mod.read_token()
         script = _make_fake_adapter_script(tmp_path, "disclosure-adapter")
+        dep_hash = compute_sha256(str(script))
         app = FastAPI()
         app.include_router(router, prefix="/api/v1")
         client = TestClient(app)
@@ -1029,6 +1033,8 @@ class TestAdapterRoutesAuthentication:
             "version": "1.0.0",
             "capabilities": [],
             "workspace_adapter": "pi",
+            "dependency_manifest_version": 1,
+            "dependencies": [{"executable": str(script), "sha256": dep_hash}],
         })
         assert r.status_code == 200
         adapter_id = r.json()["id"]
@@ -2056,14 +2062,24 @@ class TestApproveRoute:
 
     def _register_as_authed(
         self, client, token, script, version="1.0.0", capabilities=None,
-        workspace_adapter="pi"
+        workspace_adapter="pi", dep_exe=None,
     ):
-        """Helper: authenticated register, returns response json."""
+        """Helper: authenticated register, returns response json.
+
+        THR-107 seq244: requires dependency_manifest_version and dependencies.
+        When ``dep_exe`` is provided, it is used as the declared dependency;
+        otherwise the adapter script itself is reused as a trivial dependency.
+        """
+        from runtime.orchestrator.adapter_store import compute_sha256 as _sha
+        dep = dep_exe if dep_exe is not None else script
+        dep_hash = _sha(str(dep))
         r = client.post("/api/v1/runtime/adapters/register", json={
             "executable": str(script),
             "version": version,
             "capabilities": capabilities or [],
             "workspace_adapter": workspace_adapter,
+            "dependency_manifest_version": 1,
+            "dependencies": [{"executable": str(dep), "sha256": dep_hash}],
         })
         assert r.status_code == 200
         return r.json()
@@ -2106,6 +2122,8 @@ class TestApproveRoute:
                 "capabilities": registered["capabilities"],
                 "contract_version": registered["contract_version"],
                 "workspace_adapter": registered["workspace_adapter"],
+                "dependency_manifest_version": registered.get("dependency_manifest_version"),
+                "dependencies": registered.get("dependencies", []),
             },
         )
         assert r.status_code == 200
@@ -2140,6 +2158,8 @@ class TestApproveRoute:
                 "capabilities": registered["capabilities"],
                 "contract_version": registered["contract_version"],
                 "workspace_adapter": registered["workspace_adapter"],
+                "dependency_manifest_version": registered.get("dependency_manifest_version"),
+                "dependencies": registered.get("dependencies", []),
             },
         )
         assert r.status_code == 422
@@ -2187,6 +2207,8 @@ class TestApproveRoute:
             "capabilities": registered["capabilities"],
             "contract_version": registered["contract_version"],
             "workspace_adapter": registered["workspace_adapter"],
+            "dependency_manifest_version": registered.get("dependency_manifest_version"),
+            "dependencies": registered.get("dependencies", []),
         }
 
         r1 = client.post(
@@ -2255,6 +2277,8 @@ class TestApproveRoute:
             "capabilities": registered1["capabilities"],
             "contract_version": registered1["contract_version"],
             "workspace_adapter": registered1["workspace_adapter"],
+            "dependency_manifest_version": registered1.get("dependency_manifest_version"),
+            "dependencies": registered1.get("dependencies", []),
         })
         assert r.status_code == 422
 
@@ -2292,6 +2316,8 @@ class TestApproveRoute:
                 "capabilities": registered["capabilities"],
                 "contract_version": registered["contract_version"],
                 "workspace_adapter": registered["workspace_adapter"],
+                "dependency_manifest_version": registered.get("dependency_manifest_version"),
+                "dependencies": registered.get("dependencies", []),
             },
         )
         assert r_approve.status_code == 200

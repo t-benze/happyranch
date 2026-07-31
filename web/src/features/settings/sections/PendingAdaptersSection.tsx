@@ -54,10 +54,13 @@ function buildApproveBody(adapter: AdapterEntry) {
     capabilities: adapter.capabilities,
     contract_version: adapter.contract_version,
     workspace_adapter: adapter.workspace_adapter,
+    // THR-107 seq244: include dependency manifest facts in the action snapshot
+    dependency_manifest_version: adapter.dependency_manifest_version,
+    dependencies: adapter.dependencies?.length ? adapter.dependencies : null,
   };
 }
 
-/** Build the 6-field exact snapshot body for rejection. */
+/** Build the exact snapshot body for rejection (same shape as approval). */
 function buildRejectBody(adapter: AdapterEntry) {
   return buildApproveBody(adapter);
 }

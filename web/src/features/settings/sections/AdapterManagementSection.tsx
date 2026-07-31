@@ -53,6 +53,9 @@ function buildRemoveBody(adapter: AdapterEntry): RemoveAdapterRequest {
     workspace_adapter: adapter.workspace_adapter,
     name: adapter.name,
     intended_profile_name: adapter.intended_profile_name,
+    // THR-107 seq244: include dependency manifest facts in the action snapshot
+    dependency_manifest_version: adapter.dependency_manifest_version,
+    dependencies: adapter.dependencies?.length ? adapter.dependencies : null,
   };
 }
 

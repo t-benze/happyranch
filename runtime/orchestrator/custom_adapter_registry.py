@@ -164,8 +164,6 @@ def validate_dependency_manifest(
                 "dependency_manifest_version is required when dependencies are provided"
             )
         return (None, [])
-
-    # New manifest: version must be >= 1
     if not isinstance(dependency_manifest_version, int) or isinstance(dependency_manifest_version, bool):
         raise ValueError(
             f"dependency_manifest_version must be an integer, got {type(dependency_manifest_version).__name__}"
@@ -888,6 +886,8 @@ def approve_adapter(
     contract_version: int,
     workspace_adapter: str,
     approved_by: str = "founder/master-bearer",
+    dependency_manifest_version: int | None = None,
+    dependencies: list[dict] | None = None,
 ) -> AdapterEntry:
     """Approve a pending custom adapter (D4 founder-gated approval gate).
 
@@ -896,8 +896,9 @@ def approve_adapter(
     snapshot the founder inspected — every material identity fact is compared
     against the durable store entry.
 
-    **Atomicity (D4 REVISE)**: the durable comparison of all six approval
-    facts and the PENDING→APPROVED transition is serialized with competing
+    **Atomicity (D4 REVISE)**: the durable comparison of all approval
+    facts (including optional dependency manifest) and the PENDING→APPROVED
+    transition is serialized with competing
     registration writes via a store-level lock.  After acquiring the lock
     the function reloads the entry from disk and re-validates every fact
     at the commit boundary.  A changed re-registration that won the lock
@@ -951,6 +952,10 @@ def approve_adapter(
                 f"it must be in PENDING state before approval."
             )
 
+        # Normalize deps for comparison (None vs [] are equivalent for legacy)
+        _req_deps = dependencies or []
+        _entry_deps = entry.dependencies or []
+
         # Exact-idempotence: if already APPROVED with identical facts, return as-is
         if entry.status == "approved":
             if (entry.executable == executable and
@@ -958,7 +963,9 @@ def approve_adapter(
                     entry.version == version and
                     entry.capabilities == capabilities and
                     entry.contract_version == contract_version and
-                    entry.workspace_adapter == workspace_adapter):
+                    entry.workspace_adapter == workspace_adapter and
+                    entry.dependency_manifest_version == dependency_manifest_version and
+                    _entry_deps == _req_deps):
                 logger.info(
                     "approve_adapter: adapter %r already approved with identical "
                     "facts — idempotent no-op", adapter_id
@@ -1013,6 +1020,18 @@ def approve_adapter(
                 f"workspace_adapter mismatch for {adapter_id!r}: "
                 f"store has {entry.workspace_adapter!r}, "
                 f"approval request has {workspace_adapter!r}"
+            )
+        if entry.dependency_manifest_version != dependency_manifest_version:
+            raise ValueError(
+                f"dependency_manifest_version mismatch for {adapter_id!r}: "
+                f"store has {entry.dependency_manifest_version!r}, "
+                f"approval request has {dependency_manifest_version!r}"
+            )
+        if _entry_deps != _req_deps:
+            raise ValueError(
+                f"dependencies mismatch for {adapter_id!r}: "
+                f"store has {len(_entry_deps)} record(s), "
+                f"approval request has {len(_req_deps)} record(s)"
             )
 
         # Transition from PENDING → APPROVED
