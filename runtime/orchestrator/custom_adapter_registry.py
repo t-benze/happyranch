@@ -715,6 +715,161 @@ def list_adapters() -> list[AdapterEntry]:
     return list(load_adapters().values())
 
 
+def _perform_adapter_profile_binding(
+    adapter_id: str,
+    profile_name: str,
+    workspace_adapter: str,
+) -> dict:
+    """Bind a named custom profile to an APPROVED adapter (THR-107 seq237).
+
+    Precondition: the caller already holds ``acquire_store_lock()`` and the
+    adapter has just been transitioned to APPROVED under that lock.  This
+    function is NOT reentrant — it does not re-acquire the lock.
+
+    Steps:
+    1. Validate intended profile name (no builtin collision)
+    2. Validate on-disk adapter integrity (resolve_adapter)
+    3. Validate D7B custom adapter binding
+    4. Build + validate profile config
+    5. Snapshot pre-bind state for compensating rollback
+    6. Write durable runtime profile
+    7. Replace in-memory registry
+    8. Audit the binding
+
+    On any post-durable-write failure, restores pre-request state and
+    raises ``ValueError`` so the caller can roll back approval.
+
+    Returns a dict ``{profile_name, command_adapter_id, workspace_adapter_id,
+    kind, status, adapter_id}`` describing the bound profile.
+    """
+    from runtime.orchestrator.executor_registry import ExecutorRegistry, get_registry
+    from runtime.orchestrator.runtime_executor_store import (
+        load_runtime_profiles,
+        remove_runtime_profile,
+        save_runtime_profile,
+    )
+    from runtime.infrastructure.database import Database
+    from runtime.runtime import daemon_home
+
+    registry = get_registry()
+
+    # 1. Profile name must not collide with a built-in
+    BUILTIN_KINDS_NAMES = {"claude", "codex", "opencode", "pi"}
+    if profile_name.lower() in BUILTIN_KINDS_NAMES:
+        raise ValueError(
+            f"Profile name {profile_name!r} collides with a built-in "
+            f"executor. Choose a different name."
+        )
+
+    # 2. On-disk integrity check via resolve_adapter (re-validates hash)
+    resolved = resolve_adapter(adapter_id)
+    if resolved is None:
+        raise ValueError(
+            f"Adapter {adapter_id!r} is approved but the on-disk "
+            f"executable is missing, not executable, or has a hash "
+            f"mismatch. Re-register the adapter."
+        )
+
+    # 3. D7B custom-adapter validation
+    try:
+        ExecutorRegistry._validate_custom_adapter_binding(adapter_id)
+    except ValueError as exc:
+        raise ValueError(str(exc))
+
+    # 4. Build + validate profile config
+    profile_cfg = {
+        "command": None,
+        "argv_template": None,
+        "workspace_adapter_id": workspace_adapter,
+        "command_adapter_id": f"custom-adapter:{adapter_id}",
+    }
+    try:
+        profile = ExecutorRegistry.validate_custom_profile_config(
+            profile_name, profile_cfg
+        )
+    except ValueError as exc:
+        raise ValueError(str(exc))
+
+    # 5. Snapshot pre-request state for compensating rollback
+    pre_request_profiles = dict(load_runtime_profiles())
+    pre_request_in_memory = registry.get_profile(profile_name)
+
+    # Check for cross-adapter profile conflict
+    existing_profile = registry.get_profile(profile_name)
+    if existing_profile is not None:
+        existing_cmd = getattr(existing_profile, "command_adapter_id", None) or ""
+        if existing_cmd != f"custom-adapter:{adapter_id}":
+            raise ValueError(
+                f"Profile {profile_name!r} already exists and is bound to "
+                f"a different adapter ({existing_cmd}). Cannot bind adapter "
+                f"{adapter_id!r} to this profile name."
+            )
+
+    # Also check durable profiles for cross-adapter conflict
+    durable_conflict = any(
+        name == profile_name and cfg.get("command_adapter_id") != f"custom-adapter:{adapter_id}"
+        for name, cfg in pre_request_profiles.items()
+    )
+    if durable_conflict:
+        raise ValueError(
+            f"A durable runtime profile named {profile_name!r} is already "
+            f"bound to a different adapter. Remove the existing profile "
+            f"first before binding to adapter {adapter_id!r}."
+        )
+
+    durable_committed = False
+    try:
+        # 6. Write the durable runtime store first
+        save_runtime_profile(profile_name, profile_cfg)
+        durable_committed = True
+
+        # 7. Replace in the in-memory registry
+        registry.replace_custom_profile(profile)
+
+        # 8. Audit the successful binding
+        audit_db_path = daemon_home() / "runtime-audit.db"
+        db = Database(audit_db_path)
+        try:
+            db.insert_audit_log_uncommitted(
+                task_id=f"executor:{profile_name}",
+                agent="founder",
+                action="executor_registered",
+                payload={
+                    "adapter_id": adapter_id,
+                    "command_adapter_id": f"custom-adapter:{adapter_id}",
+                    "workspace_adapter_id": workspace_adapter,
+                    "bound_via": "approve_and_bind",
+                },
+            )
+            db.commit()
+        finally:
+            db.close()
+    except BaseException:
+        if durable_committed:
+            # Compensating rollback: restore both durable and in-memory surfaces
+            if profile_name in pre_request_profiles:
+                save_runtime_profile(profile_name, pre_request_profiles[profile_name])
+            else:
+                remove_runtime_profile(profile_name)
+            if pre_request_in_memory is not None:
+                registry.replace_custom_profile(pre_request_in_memory)
+            else:
+                registry.unregister_custom_profile(profile_name)
+        raise ValueError(
+            "Profile binding failed after durable write; "
+            "pre-request state has been restored."
+        )
+
+    return {
+        "profile_name": profile.name,
+        "command_adapter_id": profile.command_adapter_id,
+        "workspace_adapter_id": profile.workspace_adapter_id,
+        "kind": profile.kind,
+        "status": "connected",
+        "adapter_id": adapter_id,
+    }
+
+
 def approve_adapter(
     adapter_id: str,
     executable: str,
@@ -724,6 +879,7 @@ def approve_adapter(
     contract_version: int,
     workspace_adapter: str,
     approved_by: str = "founder/master-bearer",
+    auto_bind_profile: bool = False,
 ) -> AdapterEntry:
     """Approve a pending custom adapter (D4 founder-gated approval gate).
 
@@ -731,6 +887,15 @@ def approve_adapter(
     APPROVED. The approval request MUST bind the exact durable artifact
     snapshot the founder inspected — every material identity fact is compared
     against the durable store entry.
+
+    **THR-107 seq237**: when ``auto_bind_profile`` is True and the adapter
+    has a nonempty ``intended_profile_name``, this function atomically
+    approves the snapshot AND creates/binds the named custom profile
+    (``command_adapter_id: custom-adapter:<id>``) in the same lock-backed
+    critical section. If binding fails, the approval is rolled back to
+    PENDING and no partial state is left. For idempotent retries, if the
+    adapter is already APPROVED and the profile is already bound, the
+    existing entry is returned with ``profile_bound: already_bound``.
 
     **Atomicity (D4 REVISE)**: the durable comparison of all six approval
     facts and the PENDING→APPROVED transition is serialized with competing
@@ -754,6 +919,11 @@ def approve_adapter(
       - Any malformed/empty values are provided
       - A competing re-registration changed the entry between the caller's
         inspection and the commit boundary (stale approval)
+      - Profile binding fails (name collision, validation, registry, audit)
+
+    Returns the approved ``AdapterEntry``. When ``auto_bind_profile`` was
+    True and the profile was bound, ``entry.profile_bound`` is set to the
+    bind result dict (read by the route to include in the response).
 
     This is NOT authorization for D5/D7/D12 changes — only the approval
     transition within D4 scope.
@@ -874,6 +1044,48 @@ def approve_adapter(
             "approve_adapter: adapter %r approved at %s by %s",
             adapter_id, now, approved_by,
         )
+
+        # THR-107 seq237: atomically bind profile when requested
+        # and the adapter has an intended_profile_name
+        profile_bind_result = None
+        if auto_bind_profile and entry.intended_profile_name:
+            try:
+                profile_bind_result = _perform_adapter_profile_binding(
+                    adapter_id=adapter_id,
+                    profile_name=entry.intended_profile_name,
+                    workspace_adapter=entry.workspace_adapter,
+                )
+                logger.info(
+                    "approve_adapter: adapter %r profile %r bound in same transaction",
+                    adapter_id, entry.intended_profile_name,
+                )
+            except ValueError:
+                # Rollback: restore adapter to PENDING
+                rolled_back = AdapterEntry(
+                    id=entry.id,
+                    name=entry.name,
+                    executable=entry.executable,
+                    executable_hash=entry.executable_hash,
+                    version=entry.version,
+                    capabilities=entry.capabilities,
+                    contract_version=entry.contract_version,
+                    workspace_adapter=entry.workspace_adapter,
+                    status="pending",
+                    registered_at=entry.registered_at,
+                    registered_by=entry.registered_by,
+                    approved_at=None,
+                    approved_by=None,
+                    intended_profile_name=entry.intended_profile_name,
+                )
+                _save_adapter_locked(rolled_back)
+                logger.warning(
+                    "approve_adapter: profile binding failed for %r — "
+                    "rolled back approval to PENDING", adapter_id,
+                )
+                raise
+
+        # Attach binding result for the route to include in response
+        approved_entry.profile_bound = profile_bind_result  # type: ignore[attr-defined]
         return approved_entry
     finally:
         release_store_lock()

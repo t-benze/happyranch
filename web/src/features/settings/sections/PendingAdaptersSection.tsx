@@ -1,12 +1,21 @@
 /**
  * PendingAdaptersSection — the Settings ▸ Executors founder-only pending
- * adapter approvals area (THR-107 seq220, fix-forward TASK-3805).
+ * adapter approvals area (THR-107 seq237).
  *
  * Rendered ABOVE Custom CLIs (CustomProfilesSection). Lists only PENDING
  * adapters with Approve/Reject controls that require explicit confirm/cancel
- * naming the exact SHA-256 snapshot. Approve transitions PENDING → APPROVED
- * and then shows the shared RecoveryBindCard (canonical bind → server poll →
- * durable connected lifecycle). Reject atomically removes the PENDING entry.
+ * naming the exact SHA-256 snapshot.
+ *
+ * **THR-107 seq237**: For adapters with an ``intended_profile_name``,
+ * Approve now atomically approves AND creates/binds the named custom profile
+ * in one server transaction. The UI shows Connected immediately after refetch
+ * — no client-side Bind follow-up needed. The action truthfully "approves
+ * and connects" the named profile.
+ *
+ * **Advanced Bind (recovery/legacy)**: Adapters without an
+ * intended_profile_name (master-bearer registration path) are approved
+ * without auto-binding and retain explicit advanced Bind via the shared
+ * RecoveryBindCard. This is labeled as recovery/legacy.
  *
  * HONESTY FENCE: only fields the API returns are rendered. The server is the
  * single source of truth for eligibility and snapshot validity.
@@ -145,10 +154,21 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
     return <ConnectedAdapterCard adapter={adapter} />;
   }
 
-  // If adapter is APPROVED and ready to bind, use the shared RecoveryBindCard.
+  // If adapter is APPROVED and ready to bind (legacy/recovery: approved but
+  // not auto-bound — e.g. master-bearer registration without intended_profile),
+  // use the shared RecoveryBindCard for explicit advanced Bind.
+  // THR-107 seq237: normal approval with intended_profile_name auto-binds,
+  // so this path is only for legacy/recovery scenarios.
   if (adapter.status === 'approved' && adapter.eligibility === 'ready_to_bind' && adapter.intended_profile_name) {
     return (
       <div data-testid={`pending-adapter-row-${adapter.id}`}>
+        <div className="mb-2">
+          <span
+            className="text-mono-sm bg-surface-sunken text-text-muted inline-flex items-center rounded-full px-2 py-0.5 font-semibold"
+          >
+            recovery
+          </span>
+        </div>
         <RecoveryBindCard
           adapter={{
             adapterId: adapter.id,
@@ -238,11 +258,13 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
 
       {/* Approve / Reject actions */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {/* Approve */}
+        {/* Approve (seq237: approve and connect for intended-profile adapters) */}
         {approveConfirming ? (
           <>
             <p className="w-full text-text-secondary text-xs mb-1">
-              Confirm approval of adapter{' '}
+              {adapter.intended_profile_name
+                ? `Confirm approval and connection of adapter — this will bind profile ${adapter.intended_profile_name}`
+                : 'Confirm approval of adapter'}{' '}
               <code className="font-mono bg-surface-sunken rounded px-1">
                 {adapter.executable_hash}
               </code>
@@ -254,7 +276,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
               disabled={approve.isPending}
               data-testid={`adapter-confirm-approve-${adapter.id}`}
             >
-              {approve.isPending ? 'Approving…' : 'Confirm approve'}
+              {approve.isPending ? 'Approving…' : adapter.intended_profile_name ? 'Confirm approve & connect' : 'Confirm approve'}
             </Button>
             <Button
               type="button"
@@ -273,7 +295,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
             data-testid={`adapter-approve-${adapter.id}`}
           >
             <Check aria-hidden="true" size={14} />
-            Approve
+            {adapter.intended_profile_name ? 'Approve & connect' : 'Approve'}
           </Button>
         )}
 
@@ -353,8 +375,9 @@ export function PendingAdaptersSection(): JSX.Element {
       <div>
         <h3 className="text-text-primary text-sm font-semibold">Pending Adapter Approvals</h3>
         <p className="text-text-secondary mt-1 text-sm">
-          Adapters awaiting founder approval. Approve to make them available for
-          profile binding or reject to remove them.
+          Adapters awaiting founder approval. Approving a named adapter atomically
+          approves and connects its profile in one action. Legacy adapters without
+          a named profile use advanced Bind recovery after approval.
         </p>
       </div>
 

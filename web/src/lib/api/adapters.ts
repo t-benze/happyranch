@@ -97,7 +97,16 @@ export interface ApproveAdapterRequest {
   workspace_adapter: string;
 }
 
-export type ApproveAdapterResponse = AdapterEntry;
+/** Response from adapter approval (THR-107 seq237).
+ *  Includes all AdapterEntry fields plus optional profile_binding info
+ *  when the adapter had an intended_profile_name and was auto-bound. */
+export interface ApproveAdapterResponse extends AdapterEntry {
+  /** Present when the adapter was auto-bound to its intended profile.
+   *  Contains {profile_name, command_adapter_id, workspace_adapter_id,
+   *  kind, status, adapter_id}. Absent for no-intended adapters or when
+   *  the profile was already bound (idempotent retry). */
+  profile_bound?: BindProfileResponse | null;
+}
 
 /** Request body for adapter rejection — same 6 material identity facts
  *  as approval. Every field MUST match the server's durable snapshot.
@@ -151,14 +160,23 @@ export const removeAdapter = (
     body,
   });
 
-/** Approve a PENDING custom adapter (THR-107 seq220 founder-gated).
+/** Approve a PENDING custom adapter (THR-107 seq237 founder-gated).
  *  The caller MUST supply the exact 6 material identity facts of the
  *  PENDING durable snapshot — the server rejects stale/mismatched snapshots.
+ *
+ *  **THR-107 seq237**: When the adapter has an intended_profile_name, the
+ *  server atomically approves AND creates/binds the named custom profile in
+ *  one transaction. The response includes ``profile_bound`` with the binding
+ *  result. No client-side bind follow-up is needed — a refetch shows
+ *  eligibility='already_bound' and Connected.
+ *
+ *  Adapters without intended_profile_name retain explicit advanced Bind.
  *
  *  Throws ApiError on:
  *  - 401: missing/invalid bearer token
  *  - 404: adapter not found
- *  - 422: snapshot mismatch, not PENDING, or already approved with different facts
+ *  - 422: snapshot mismatch, not PENDING, already approved with different
+ *         facts, or profile binding failure (rolled back to PENDING)
  */
 export const approveAdapter = (
   adapterId: string,

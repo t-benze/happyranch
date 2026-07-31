@@ -582,8 +582,8 @@ def get_adapter_entry(adapter_id: str) -> AdapterEntryResponse:
 def approve_registered_adapter(
     adapter_id: str,
     body: AdapterApproveRequest,
-) -> AdapterEntryResponse:
-    """Approve a pending custom adapter (D4 founder-gated approval gate).
+) -> dict:
+    """Approve a pending custom adapter (THR-107 seq237: approve + optionally bind profile).
 
     This is a deliberate, explicit transition from durable PENDING to durable
     APPROVED. The request body carries the exact durable artifact snapshot the
@@ -591,18 +591,36 @@ def approve_registered_adapter(
     capabilities, contract_version, workspace_adapter) is compared against the
     durable store entry.
 
-    Exact-idempotence: if the adapter is already APPROVED with identical stored
-    immutable facts, the existing entry is returned unchanged.
+    **THR-107 seq237**: When the adapter has a nonempty ``intended_profile_name``,
+    this endpoint atomically approves the snapshot AND creates/binds that same
+    named custom profile (``command_adapter_id: custom-adapter:<id>``) in one
+    server transaction. Settings' single confirmation must refetch durable state
+    and show Connected; it must make no client-side bind follow-up.
 
-    Fails with 422 when:
+    Exact-idempotence: if the adapter is already APPROVED with identical stored
+    immutable facts, the existing entry is returned unchanged. If the profile is
+    already bound, the response includes ``profile_bound: already_bound``.
+
+    Fails closed with 422 when:
       - Unknown adapter id
       - Entry is not PENDING (already-approved incompatible repeat, non-pending)
       - Any snapshot fact mismatches the store
       - Malformed/empty values
+      - Profile binding fails (name collision, builtin conflict, cross-adapter,
+        validation, registry, audit) — approval is rolled back to PENDING
 
-    This is an agent-only administrative route — no browser consumer exists.
-    D5/D7/D12 changes are NOT authorized by this route.
+    No-intended/reusable adapters (no ``intended_profile_name``) are approved
+    without auto-binding — they retain explicit advanced Bind recovery.
     """
+    # Determine whether to auto-bind: only when the adapter has an
+    # intended_profile_name (submitted via the adapter-submission path).
+    # No-intended adapters (master-bearer registration path) retain
+    # explicit advanced Bind.
+    auto_bind = False
+    adapter_pre_check = get_adapter(adapter_id)
+    if adapter_pre_check is not None and adapter_pre_check.intended_profile_name:
+        auto_bind = True
+
     try:
         entry = approve_adapter(
             adapter_id=adapter_id,
@@ -613,13 +631,20 @@ def approve_registered_adapter(
             contract_version=body.contract_version,
             workspace_adapter=body.workspace_adapter,
             approved_by="founder/master-bearer",
+            auto_bind_profile=auto_bind,
         )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         )
-    return _entry_to_response(entry)
+
+    # Build response with profile binding info when available
+    response = _entry_to_response(entry).model_dump()
+    profile_bound = getattr(entry, "profile_bound", None)
+    if profile_bound is not None:
+        response["profile_bound"] = profile_bound
+    return response
 
 
 # ---------------------------------------------------------------------------
