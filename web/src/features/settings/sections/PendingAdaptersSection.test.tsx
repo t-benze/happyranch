@@ -154,8 +154,9 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
 
   /* ---- Approve flow ---- */
 
-  test('approve: requires confirm step showing sha256 short hash', async () => {
-    mockListAdapters(makePendingAdapter());
+  test('approve: confirm step names the exact 64-char SHA-256 hash (no prefix/ellipsis)', async () => {
+    const fullHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+    mockListAdapters(makePendingAdapter({ executable_hash: fullHash }));
     const user = userEvent.setup();
     renderWithProviders(<PendingAdaptersSection />);
     await screen.findByTestId('pending-adapter-row-test-adapter');
@@ -167,11 +168,15 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     // Click Approve → confirm step
     await user.click(screen.getByTestId('adapter-approve-test-adapter'));
     expect(screen.getByTestId('adapter-confirm-approve-test-adapter')).toBeInTheDocument();
-    // Confirm text shows the short hash (present in both the full hash display
-    // AND the confirm prompt — use getAllByText to verify at least 2 occurrences)
+    // Confirm text names the exact full 64-char hash
     expect(screen.getByText(/Confirm approval of adapter/)).toBeInTheDocument();
-    const hashMentions = screen.getAllByText(/e3b0c44298fc/);
-    expect(hashMentions.length).toBeGreaterThanOrEqual(2);
+    // Guard: the full hash (not a prefix) must appear BOTH in the card's SHA-256
+    // field AND in the confirm prompt — at least 2 occurrences of the exact 64-char value
+    const hashElements = screen.getAllByText(fullHash);
+    expect(hashElements.length).toBeGreaterThanOrEqual(2);
+
+    // Regression guard: no abbreviated hash (12-char prefix with ellipsis) should appear
+    expect(screen.queryByText(/…/)).not.toBeInTheDocument();
 
     // Cancel returns to initial
     await user.click(screen.getByText('Cancel'));
@@ -353,8 +358,9 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
 
   /* ---- Reject flow ---- */
 
-  test('reject: requires confirm step showing sha256 short hash', async () => {
-    mockListAdapters(makePendingAdapter());
+  test('reject: confirm step names the exact 64-char SHA-256 hash (no prefix/ellipsis)', async () => {
+    const fullHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+    mockListAdapters(makePendingAdapter({ executable_hash: fullHash }));
     const user = userEvent.setup();
     renderWithProviders(<PendingAdaptersSection />);
     await screen.findByTestId('pending-adapter-row-test-adapter');
@@ -366,6 +372,12 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     await user.click(screen.getByTestId('adapter-reject-test-adapter'));
     expect(screen.getByTestId('adapter-confirm-reject-test-adapter')).toBeInTheDocument();
     expect(screen.getByText(/Confirm rejection of adapter/)).toBeInTheDocument();
+    // Guard: the full 64-char hash (not a prefix) must appear in the confirm prompt
+    const hashElements = screen.getAllByText(fullHash);
+    expect(hashElements.length).toBeGreaterThanOrEqual(2);
+
+    // Regression guard: no abbreviated hash with ellipsis
+    expect(screen.queryByText(/…/)).not.toBeInTheDocument();
 
     // Cancel returns to initial
     await user.click(screen.getByText('Cancel'));

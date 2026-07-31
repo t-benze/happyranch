@@ -62,11 +62,6 @@ function buildRejectBody(adapter: AdapterEntry) {
   return buildApproveBody(adapter);
 }
 
-/** Short hash display — first 12 chars of sha256. */
-function shortHash(hash: string): string {
-  return hash.slice(0, 12) + '\u2026';
-}
-
 /* ── Connected card for already_bound adapters (mirrors RecoveryBindCard's connected state) ── */
 
 function ConnectedAdapterCard({ adapter }: { adapter: AdapterEntry }): JSX.Element {
@@ -249,7 +244,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
             <p className="w-full text-text-secondary text-xs mb-1">
               Confirm approval of adapter{' '}
               <code className="font-mono bg-surface-sunken rounded px-1">
-                {shortHash(adapter.executable_hash)}
+                {adapter.executable_hash}
               </code>
             </p>
             <Button
@@ -288,7 +283,7 @@ function PendingAdapterRow({ adapter }: { adapter: AdapterEntry }): JSX.Element 
             <p className="w-full text-text-secondary text-xs mb-1">
               Confirm rejection of adapter{' '}
               <code className="font-mono bg-surface-sunken rounded px-1">
-                {shortHash(adapter.executable_hash)}
+                {adapter.executable_hash}
               </code>
             </p>
             <Button
