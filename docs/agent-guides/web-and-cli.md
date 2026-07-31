@@ -171,6 +171,20 @@ built-in-protection/name-mismatch errors. This command removes machine-local
 binary registrations only — it does **not** delete adapters, profiles, or other
 daemon state.
 
+**Custom-adapter lifecycle management (THR-107 TASK-3792).** The Settings →
+Executors → Custom Adapters section lists registered custom adapter
+executables (from the durable ``adapters.yaml`` store) with their details:
+id, name, intended profile, executable path, content hash, and approval
+status. APPROVED adapters that are not bound to any custom runtime profile
+can be removed via a guarded confirm/cancel destructive action. Removal
+requires an exact snapshot match — the server rejects stale,
+re-registered, or wrong-target requests. When a custom runtime profile
+references the adapter (``command_adapter_id: custom-adapter:<id>``),
+the remove affordance is suppressed; the profile must be removed first
+from Custom CLIs. The adapter's on-disk executable is never touched —
+removal only deletes the durable registration entry and writes an
+``adapter_removed`` audit row (scope ``adapter:<id>``).
+
 ### Token usage
 
 `happyranch tokens` shows `session_token_usage`. Default is the most recent rows;

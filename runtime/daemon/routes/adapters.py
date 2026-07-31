@@ -199,6 +199,55 @@ class BindProfileRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class AdapterRemoveRequest(BaseModel):
+    """Request body for the THR-107 adapter removal management endpoint.
+
+    Every material identity and binding fact MUST match the durable store
+    entry exactly. This rejects stale snapshots, re-registered adapters,
+    and wrong targets.
+    """
+
+    executable: str = Field(
+        ...,
+        min_length=1,
+        description="Absolute path to the adapter executable (must match store exactly).",
+    )
+    executable_hash: str = Field(
+        ...,
+        min_length=1,
+        description="SHA-256 hex digest of the executable (must match store exactly).",
+    )
+    version: str = Field(
+        ...,
+        min_length=1,
+        description="Adapter version string (must match store exactly).",
+    )
+    capabilities: list[str] = Field(
+        ...,
+        description="Declared capabilities (must match store exactly).",
+    )
+    contract_version: int = Field(
+        ...,
+        description="Contract version (must match store exactly).",
+    )
+    workspace_adapter: str = Field(
+        ...,
+        min_length=1,
+        description="Workspace preparation adapter (must match store exactly).",
+    )
+    name: str = Field(
+        ...,
+        min_length=1,
+        description="Adapter name (must match store exactly).",
+    )
+    intended_profile_name: str | None = Field(
+        None,
+        description="Intended profile name (must match store exactly, null allowed).",
+    )
+
+    model_config = {"extra": "forbid"}
+
+
 class AdapterApproveRequest(BaseModel):
     """Request body for the D4 founder-gated approval route.
 
@@ -238,6 +287,76 @@ class AdapterApproveRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+def _adapter_snapshot_mismatch(entry, body: AdapterRemoveRequest) -> str | None:
+    """Exact-snapshot predicate: returns None when all 8 material
+    identity/binding facts match, or a human-readable error detail.
+
+    This is the SINGLE function used both pre-lock and under-lock so the
+    two checks cannot drift.
+    """
+    facts = [
+        ("executable", entry.executable, body.executable),
+        ("executable_hash", entry.executable_hash, body.executable_hash),
+        ("version", entry.version, body.version),
+        ("capabilities", entry.capabilities, body.capabilities),
+        ("contract_version", entry.contract_version, body.contract_version),
+        ("workspace_adapter", entry.workspace_adapter, body.workspace_adapter),
+        ("name", entry.name, body.name),
+        ("intended_profile_name", entry.intended_profile_name, body.intended_profile_name),
+    ]
+    for field, store_val, req_val in facts:
+        if store_val != req_val:
+            return (
+                f"{field} mismatch for {entry.id!r}: "
+                f"store has {store_val!r}, removal request has {req_val!r}"
+            )
+    return None
+
+
+def _check_no_profile_bound(adapter_id: str) -> None:
+    """Reject with 422 if ANY durable OR live custom profile references
+    command_adapter_id: custom-adapter:<adapter_id>.
+
+    Consults BOTH the durable runtime profile store AND the active
+    in-memory ExecutorRegistry so that a profile loaded-only-into-memory
+    (e.g. registered by a prior request that hasn't yet been written to
+    disk, or a live-only test registration) blocks removal.
+    """
+    command_adapter_ref = f"custom-adapter:{adapter_id}"
+
+    # Durable profiles (load_runtime_profiles).
+    runtime_profiles = load_runtime_profiles()
+    durable_bound = sorted(
+        name
+        for name, cfg in runtime_profiles.items()
+        if cfg.get("command_adapter_id") == command_adapter_ref
+    )
+
+    # Live in-memory profiles (ExecutorRegistry).
+    from runtime.orchestrator.executor_registry import get_registry
+    registry = get_registry()
+    live_bound = sorted(
+        name
+        for name in registry.list_profile_names()
+        if getattr(registry.get_profile(name), "command_adapter_id", None) == command_adapter_ref
+    )
+
+    # Deduplicate across the two sources.
+    all_bound = sorted(set(durable_bound + live_bound))
+
+    if all_bound:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Cannot remove adapter {adapter_id!r}: the following "
+                f"custom runtime profile(s) are bound to it: "
+                f"{', '.join(all_bound)}. "
+                f"Remove the profile(s) first via Settings \u2192 Executors \u2192 "
+                f"Custom CLIs, then retry adapter removal."
+            ),
+        )
+
+
 def _compute_eligibility(entry) -> str | None:
     """Compute server-authoritative recovery eligibility for an adapter.
 
@@ -267,19 +386,40 @@ def _compute_eligibility(entry) -> str | None:
     if profile_name.lower() in BUILTIN_KINDS_NAMES:
         return "builtin_collision"
 
-    # Check profile existence and binding.
+    # Check profile existence and binding — BOTH durable and live.
     from runtime.orchestrator.executor_registry import get_registry
-    registry = get_registry()
-    existing_profile = registry.get_profile(profile_name)
+    command_adapter_ref = f"custom-adapter:{entry.id}"
 
-    if existing_profile is not None:
-        # Profile exists — check what adapter it belongs to.
-        profile_adapter_id = existing_profile.command_adapter_id
-        if profile_adapter_id and profile_adapter_id == f"custom-adapter:{entry.id}":
-            return "already_bound"
-        else:
-            # Profile exists but is bound to a different adapter (or no adapter).
-            return "cross_profile"
+    # Durable profiles.
+    runtime_profiles = load_runtime_profiles()
+    durable_has_this = any(
+        cfg.get("command_adapter_id") == command_adapter_ref
+        for cfg in runtime_profiles.values()
+    )
+    durable_has_other = entry.intended_profile_name and any(
+        name == entry.intended_profile_name and cfg.get("command_adapter_id") != command_adapter_ref
+        for name, cfg in runtime_profiles.items()
+    )
+
+    # Live profiles — scan EVERY custom profile in the ExecutorRegistry,
+    # not just the one at entry.intended_profile_name. A differently-named
+    # custom profile that references custom-adapter:<id> must be detected.
+    registry = get_registry()
+    live_bound_to_this = any(
+        getattr(registry.get_profile(name), "command_adapter_id", None) == command_adapter_ref
+        for name in registry.list_profile_names()
+    )
+    live_has_other = any(
+        name == profile_name
+        and getattr(registry.get_profile(name), "command_adapter_id", None) != command_adapter_ref
+        for name in registry.list_profile_names()
+    )
+
+    if durable_has_this or live_bound_to_this:
+        return "already_bound"
+
+    if live_has_other or durable_has_other:
+        return "cross_profile"
 
     # No profile exists with this name — adapter is bindable.
     return "ready_to_bind"
@@ -987,4 +1127,198 @@ def bind_adapter_profile(
         "kind": profile.kind,
         "status": "connected",
         "adapter_id": adapter_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# THR-107: adapter removal
+# ---------------------------------------------------------------------------
+
+
+def _audit_adapter_remove(
+    *,
+    adapter_id: str,
+    adapter_name: str,
+    removed_snapshot: dict,
+    actor: str = "founder",
+) -> None:
+    """Write a runtime-level adapter-removal audit row.
+
+    Opens (creating if needed) a dedicated runtime-audit.db under
+    daemon_home(), then writes a single audit_log row.  Each call opens a
+    fresh ``Database`` handle and closes it.
+
+    Row shape:
+      task_id = "adapter:<adapter_id>"
+      action  = "adapter_removed"
+      payload = {adapter_id, name, executable, executable_hash, version,
+                 capabilities, contract_version, workspace_adapter,
+                 intended_profile_name, status}
+    """
+    from runtime.infrastructure.database import Database
+    from runtime.runtime import daemon_home
+
+    audit_db_path = daemon_home() / "runtime-audit.db"
+    db = Database(audit_db_path)
+    try:
+        db.insert_audit_log_uncommitted(
+            task_id=f"adapter:{adapter_id}",
+            agent=actor,
+            action="adapter_removed",
+            payload={
+                "adapter_id": adapter_id,
+                "name": removed_snapshot.get("name", ""),
+                "executable": removed_snapshot.get("executable", ""),
+                "executable_hash": removed_snapshot.get("executable_hash", ""),
+                "version": removed_snapshot.get("version", ""),
+                "capabilities": removed_snapshot.get("capabilities", []),
+                "contract_version": removed_snapshot.get("contract_version"),
+                "workspace_adapter": removed_snapshot.get("workspace_adapter", ""),
+                "intended_profile_name": removed_snapshot.get("intended_profile_name"),
+                "status": removed_snapshot.get("status", ""),
+            },
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+@router.delete(
+    "/runtime/adapters/{adapter_id}",
+    dependencies=[require_token()],
+)
+def remove_adapter_entry(
+    adapter_id: str,
+    body: AdapterRemoveRequest,
+) -> dict:
+    """Remove an APPROVED custom adapter (THR-107 founder-gated destructive action).
+
+    Master-bearer-authenticated management endpoint. Removes an APPROVED custom
+    adapter from the durable store. The caller MUST supply an exact durable
+    snapshot (all material identity and binding facts) — the server rejects
+    stale, re-registered, and wrong-target snapshots.
+
+    Gating checks (exact order):
+    1. Adapter exists (404 if unknown)
+    2. Adapter is APPROVED (422 if PENDING or unknown status)
+    3. Every snapshot fact matches the stored adapter (422 on mismatch)
+    4. No custom runtime profile references command_adapter_id
+       custom-adapter:<adapter_id> (422 if bound)
+
+    Under the reentrant adapter-store lock, the adapter is durably removed
+    and an audit entry is written. If auditing fails after durable removal,
+    the exact adapter entry is restored under the lock and a failure is
+    returned — a successful removal is always auditable.
+
+    Lock ordering (documented, compatible with bind/registration):
+      adapter_store_lock → durable removal → audit write
+    """
+    from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+
+    # 1. Adapter exists
+    entry = get_adapter(adapter_id)
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Adapter {adapter_id!r} not found.",
+        )
+
+    # 2. Must be APPROVED
+    if entry.status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Adapter {adapter_id!r} is status={entry.status!r}, "
+                f"not APPROVED. Only APPROVED adapters may be removed."
+            ),
+        )
+
+    # 3. Exact-snapshot match against ALL material identity/binding facts.
+    mis = _adapter_snapshot_mismatch(entry, body)
+    if mis is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=mis,
+        )
+
+    # 4. Reject if ANY durable or live custom runtime profile references
+    #    command_adapter_id: custom-adapter:<adapter_id>
+    _check_no_profile_bound(adapter_id)
+
+    # Snapshot the entry for audit and potential rollback.
+    removed_snapshot = entry.to_dict()
+
+    # Durable removal under the reentrant adapter-store lock.
+    # Serializes against concurrent register/approve/remove operations.
+    acquire_store_lock()
+    try:
+        # Re-read and re-validate at the lock boundary using the exact same
+        # predicate so pre-lock and locked checks CANNOT drift.
+        re_read_entry = get_adapter(adapter_id)
+        if re_read_entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Adapter {adapter_id!r} disappeared before removal.",
+            )
+        if re_read_entry.status != "approved":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Adapter {adapter_id!r} changed to status={re_read_entry.status!r} "
+                    f"before removal."
+                ),
+            )
+        mis = _adapter_snapshot_mismatch(re_read_entry, body)
+        if mis is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Adapter {adapter_id!r} facts changed before removal. "
+                    f"{mis} Refresh the snapshot and retry."
+                ),
+            )
+
+        # Re-check profile binding under the lock (both durable + live).
+        _check_no_profile_bound(adapter_id)
+
+        # Durable removal via the atomic store helper.
+        from runtime.orchestrator.adapter_store import remove_adapter as _store_remove
+        _store_remove(adapter_id)
+
+        # Audit the successful removal.
+        # If auditing fails, restore the exact adapter entry and return failure.
+        try:
+            _audit_adapter_remove(
+                adapter_id=adapter_id,
+                adapter_name=re_read_entry.name,
+                removed_snapshot=removed_snapshot,
+            )
+        except Exception:
+            # Restore the adapter under the lock.
+            from runtime.orchestrator.adapter_store import _save_adapter_locked
+            from runtime.orchestrator.adapter_store import AdapterEntry as AdapterEntryModel
+            restored = AdapterEntryModel.from_dict(removed_snapshot)
+            _save_adapter_locked(restored)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Adapter removal succeeded but audit logging failed; "
+                    "the adapter has been restored. Retry the operation."
+                ),
+            )
+
+    except HTTPException:
+        raise
+    except BaseException:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Adapter removal failed.",
+        )
+    finally:
+        release_store_lock()
+
+    return {
+        "id": adapter_id,
+        "removed": True,
+        "name": removed_snapshot.get("name", ""),
     }

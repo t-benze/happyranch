@@ -202,6 +202,19 @@ first and follow the returned schemas exactly.
    The registration route rejects binding to PENDING, unknown, removed,
    tampered, non-regular, or non-executable adapters before any durable
    mutation, registry mutation, audit write, or token consumption.
+5. **Remove (THR-107)** — founder removes an APPROVED adapter via the
+   management ``DELETE /api/v1/runtime/adapters/{adapter_id}`` route
+   (bearer-authenticated, Settings → Executors → Custom Adapters).
+   The caller MUST supply an exact durable snapshot (all material identity
+   and binding facts) — the server rejects stale, re-registered, and
+   wrong-target snapshots. Removal is rejected when any custom runtime
+   profile references ``command_adapter_id: custom-adapter:<id>`` — the
+   profile must be removed first from Settings → Executors → Custom CLIs.
+   Under the reentrant adapter-store lock the adapter is durably removed
+   and an audit entry (scope ``adapter:<id>``, action ``adapter_removed``)
+   is written. If auditing fails after durable removal, the adapter is
+   restored before the lock is released — a successful removal is always
+   auditable. The adapter's on-disk executable is never touched.
 
 **Per-launch hash verification:** the ``CustomAdapterExecutor`` re-verifies
 path type (exists, regular file, executable) and SHA-256 immediately before

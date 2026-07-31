@@ -125,7 +125,9 @@
     "POST /api/v1/orgs/{slug}/skill-lifecycle/rollback",
     "POST /api/v1/orgs/{slug}/skill-lifecycle/retire",
     "GET /api/v1/runtime/adapters/{adapter_id}",
-    "POST /api/v1/runtime/adapters/{adapter_id}/bind-profile"
+    "POST /api/v1/runtime/adapters/{adapter_id}/bind-profile",
+    "DELETE /api/v1/runtime/adapters/{adapter_id}",
+    "GET /api/v1/runtime/adapters"
   ],
   "excluded": {
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/completion": "agent callback",
@@ -165,7 +167,6 @@
     "POST /api/v1/executors/runtime/conformance-checkin": "cli-only runtime-level conformance check-in (THR-088)",
     "POST /api/v1/executors/runtime/register": "conformance-gated runtime-level executor registration (THR-088)",
     "POST /api/v1/executors/runtime/register-binary": "cli-only runtime-level binary registration via scoped token (THR-088)",
-    "GET /api/v1/runtime/adapters": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
     "POST /api/v1/runtime/adapters/register": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
 
     "POST /api/v1/runtime/adapters/{adapter_id}/approve": "agent-only adapter administration route — founder-gated explicit approval gate (THR-107 D4)",
