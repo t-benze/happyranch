@@ -139,8 +139,18 @@ class TestDependencyManifestValidation:
             validate_dependency_manifest("1", [{"executable": "/bin/sh", "sha256": "a" * 64}])
 
     def test_version_zero_rejected(self):
-        with pytest.raises(ValueError, match=">= 1"):
+        with pytest.raises(ValueError, match="exactly 1"):
             validate_dependency_manifest(0, [{"executable": "/bin/sh", "sha256": "a" * 64}])
+
+    def test_version_two_rejected(self):
+        """Manifest version 2 is rejected — only version 1 is supported."""
+        with pytest.raises(ValueError, match="exactly 1"):
+            validate_dependency_manifest(2, [{"executable": "/bin/sh", "sha256": "a" * 64}])
+
+    def test_version_negative_rejected(self):
+        """Negative manifest version is rejected."""
+        with pytest.raises(ValueError, match="exactly 1"):
+            validate_dependency_manifest(-1, [{"executable": "/bin/sh", "sha256": "a" * 64}])
 
     def test_valid_dependency_record(self, tmp_path: Path):
         exe = _make_fake_exe(tmp_path, "dep1")

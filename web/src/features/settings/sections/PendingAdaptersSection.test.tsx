@@ -217,6 +217,8 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
       capabilities: adapter.capabilities,
       contract_version: adapter.contract_version,
       workspace_adapter: adapter.workspace_adapter,
+      dependency_manifest_version: undefined,
+      dependencies: null,
     });
   });
 
@@ -426,6 +428,8 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
       capabilities: adapter.capabilities,
       contract_version: adapter.contract_version,
       workspace_adapter: adapter.workspace_adapter,
+      dependency_manifest_version: undefined,
+      dependencies: null,
     });
   });
 
