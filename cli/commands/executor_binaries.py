@@ -158,7 +158,7 @@ def cmd_executor_binaries_remove(args: argparse.Namespace) -> None:
         body = r.json()
         removed = body.get("removed", False)
         if removed:
-            print(f"  ✓ removed: {body['kind']}")
+            print(f"  ✓ removed: {body['kind']} -> {expected_path}")
         else:
             print(f"  ⚠ unexpected: removal not confirmed for {body.get('kind', kind)}")
     elif r.status_code == 404:

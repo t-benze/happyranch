@@ -363,6 +363,7 @@ def test_cmd_executor_binaries_remove_happy_path(capsys) -> None:
     out = capsys.readouterr().out
     assert "removed" in out
     assert "my-custom-cli" in out
+    assert "/opt/bin/my-cli" in out
 
 
 def test_cmd_executor_binaries_remove_not_found(capsys) -> None:
@@ -538,6 +539,7 @@ def test_executor_binaries_remove_integration_happy_path(capsys) -> None:
     out = capsys.readouterr().out
     assert "removed" in out
     assert "my-cli" in out
+    assert "/opt/bin/my-cli" in out
 
 
 # ── Integration: parser + handler wired together ─────────────────────────
