@@ -140,6 +140,41 @@ def test_remove_binary_noop_when_missing(tmp_home_path: Path):
     remove_binary("nonexistent")  # Should not raise
 
 
+def test_remove_binary_conditional_exact_match(tmp_home_path: Path):
+    """remove_binary_conditional succeeds when stored path matches expected."""
+    from runtime.orchestrator.executor_binary_registry import (
+        get_binary,
+        remove_binary_conditional,
+        set_binary,
+    )
+    set_binary("d7a-cond", "/my/d7a-path")
+    assert get_binary("d7a-cond") == "/my/d7a-path"
+    result = remove_binary_conditional("d7a-cond", "/my/d7a-path")
+    assert result is True
+    assert get_binary("d7a-cond") is None
+
+
+def test_remove_binary_conditional_path_mismatch(tmp_home_path: Path):
+    """remove_binary_conditional returns False when stored path differs."""
+    from runtime.orchestrator.executor_binary_registry import (
+        get_binary,
+        remove_binary_conditional,
+        set_binary,
+    )
+    set_binary("d7a-cond2", "/actual/path")
+    result = remove_binary_conditional("d7a-cond2", "/stale/path")
+    assert result is False
+    # Entry must remain
+    assert get_binary("d7a-cond2") == "/actual/path"
+
+
+def test_remove_binary_conditional_not_found(tmp_home_path: Path):
+    """remove_binary_conditional returns False when kind is not registered."""
+    from runtime.orchestrator.executor_binary_registry import remove_binary_conditional
+    result = remove_binary_conditional("nonexistent", "/any/path")
+    assert result is False
+
+
 def test_validate_binary_absolute_path(tmp_path: Path):
     """validate_binary returns the supplied path (not resolved target) for THR-107.
 

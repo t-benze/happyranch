@@ -172,6 +172,17 @@ def validate_path(body: ValidateBinaryRequest) -> ValidateBinaryResponse:
 # ---------------------------------------------------------------------------
 
 
+class RemoveBinaryRequest(BaseModel):
+    """Request to conditionally remove a binary path from the registry.
+
+    Both ``expected_name`` and ``expected_path`` must match exactly for
+    the removal to succeed — this prevents race-condition deletion of a
+    concurrently-updated record and guards against path-confusion attacks.
+    """
+    expected_name: str = Field(..., min_length=1, description="Must equal the URL kind exactly")
+    expected_path: str = Field(..., min_length=1, description="Must equal the stored path exactly")
+
+
 class RemoveBinaryResponse(BaseModel):
     """Response after removing a binary path from the registry."""
     kind: str
@@ -179,7 +190,7 @@ class RemoveBinaryResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/v1/executor-binaries/{kind} — remove a binary path
+# DELETE /api/v1/executor-binaries/{kind} — conditionally remove a binary path
 # ---------------------------------------------------------------------------
 
 
@@ -187,21 +198,33 @@ class RemoveBinaryResponse(BaseModel):
     "/executor-binaries/{kind}",
     response_model=RemoveBinaryResponse,
 )
-def delete_binary(kind: str) -> RemoveBinaryResponse:
-    """Remove a stored binary path from the machine-local registry.
+def delete_binary(kind: str, body: RemoveBinaryRequest) -> RemoveBinaryResponse:
+    """Atomically remove a stored binary path from the machine-local registry.
 
     Guards:
-    - The kind must exist in the registry
-    - The stored path's current on-disk name must match the expected kind
-      name (starts with or contains the kind) to prevent removing unrelated
-      entries through path confusion
+    - ``expected_name`` must equal ``kind`` exactly (case-sensitive); a
+      mismatch returns 422.
+    - ``expected_path`` must equal the registry's currently-stored path
+      exactly; a mismatch returns 409 (stale-target / race protection).
     - Built-in kind names (claude, codex, opencode, pi) are blocked from
-      deletion — only custom/test kinds may be removed
+      deletion — only custom/test kinds may be removed.
+    - The load-compare-delete-write cycle is guarded by a registry lock
+      so a concurrent writer cannot replace the record between the check
+      and the removal.
 
-    Returns ``{kind, removed: true}`` on success, 404 if not found.
+    Returns ``{kind, removed: true}`` on success, 404 if not found,
+    409 on expected-path mismatch, 422 on built-in or name mismatch.
     """
     from fastapi import HTTPException, status as http_status
 
+    # Guard 1: expected_name must equal kind exactly
+    if body.expected_name != kind:
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"expected_name {body.expected_name!r} does not match URL kind {kind!r}.",
+        )
+
+    # Guard 2: built-in kinds are blocked
     BUILTIN_KINDS = {"claude", "codex", "opencode", "pi"}
     if kind.lower() in BUILTIN_KINDS:
         raise HTTPException(
@@ -209,6 +232,14 @@ def delete_binary(kind: str) -> RemoveBinaryResponse:
             detail=f"Cannot remove built-in executor kind {kind!r}.",
         )
 
+    # Guard 3 + 4: atomically check stored path matches expected_path AND remove
+    from runtime.orchestrator.executor_binary_registry import remove_binary_conditional
+
+    removed = remove_binary_conditional(kind, body.expected_path)
+    if removed:
+        return RemoveBinaryResponse(kind=kind, removed=True)
+
+    # Determine failure reason for a precise error
     stored = get_binary(kind)
     if stored is None:
         raise HTTPException(
@@ -216,5 +247,9 @@ def delete_binary(kind: str) -> RemoveBinaryResponse:
             detail=f"Executor kind {kind!r} is not in the binary registry.",
         )
 
-    remove_binary(kind)
-    return RemoveBinaryResponse(kind=kind, removed=True)
+    # Stored path exists but differs from expected_path → conflict
+    raise HTTPException(
+        status_code=http_status.HTTP_409_CONFLICT,
+        detail=f"Stored path for {kind!r} ({stored!r}) does not match expected_path ({body.expected_path!r}). "
+               f"The record may have been updated concurrently — refresh and retry.",
+    )

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +116,13 @@ def get_binary(kind: str) -> str | None:
     return load_registry().get(kind.lower())
 
 
+# ---------------------------------------------------------------------------
+# Write lock (single-process multi-threaded daemon model)
+# ---------------------------------------------------------------------------
+
+_registry_lock = threading.Lock()
+
+
 def remove_binary(kind: str) -> None:
     """Remove a stored binary path from the registry.
 
@@ -127,6 +135,33 @@ def remove_binary(kind: str) -> None:
         del current[key]
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(current, fh, indent=2, sort_keys=True)
+
+
+def remove_binary_conditional(kind: str, expected_path: str) -> bool:
+    """Atomically remove a binary path ONLY when the stored path exactly
+    matches ``expected_path``.
+
+    The load-compare-delete-write cycle is guarded by ``_registry_lock`` so
+    a concurrent writer cannot replace the record between the check and the
+    removal.
+
+    Returns ``True`` when the entry was present AND matched AND was removed.
+    Returns ``False`` when the kind is not registered OR the stored path
+    differs from ``expected_path`` (stale-target / race protection).
+    """
+    with _registry_lock:
+        path = _registry_path()
+        current = load_registry()
+        key = kind.lower()
+        stored = current.get(key)
+        if stored is None:
+            return False
+        if stored != expected_path:
+            return False
+        del current[key]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(current, fh, indent=2, sort_keys=True)
+        return True
 
 
 # ---------------------------------------------------------------------------

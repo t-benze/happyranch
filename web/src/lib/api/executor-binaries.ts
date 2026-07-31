@@ -65,6 +65,14 @@ export interface ValidateBinaryResponse {
   error: string | null;
 }
 
+/** Request to conditionally remove a binary path from the registry. */
+export interface RemoveBinaryRequest {
+  /** Must equal the URL kind exactly. */
+  expected_name: string;
+  /** Must equal the stored path exactly. */
+  expected_path: string;
+}
+
 /** Response after removing a binary path from the registry. */
 export interface RemoveBinaryResponse {
   kind: string;
@@ -89,9 +97,12 @@ export const validateExecutorBinary = (
 ): Promise<ValidateBinaryResponse> =>
   request('/executor-binaries/validate', { method: 'POST', body });
 
-/** Remove a stored binary path from the machine-local registry.
+/** Atomically remove a stored binary path from the machine-local registry.
+ *  ``expected_name`` must equal the URL kind exactly and ``expected_path``
+ *  must equal the currently-stored path exactly — mismatch returns 422/409.
  *  Built-in kinds (claude, codex, opencode, pi) are blocked. */
 export const removeExecutorBinary = (
   kind: string,
+  body: RemoveBinaryRequest,
 ): Promise<RemoveBinaryResponse> =>
-  request(`/executor-binaries/${encodeURIComponent(kind)}`, { method: 'DELETE' });
+  request(`/executor-binaries/${encodeURIComponent(kind)}`, { method: 'DELETE', body });

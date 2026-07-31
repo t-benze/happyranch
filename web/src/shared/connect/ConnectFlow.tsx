@@ -69,6 +69,11 @@ export function ConnectFlow({
   const [customSubMode, setCustomSubMode] = useState<'adapter' | 'legacy'>('adapter');
   const [connected, setConnected] = useState<Connected | null>(null);
 
+  // Mount recovery at the shared surface so fresh sessions in default
+  // (builtin) mode can see Bind actions for approved unbound adapters
+  // without requiring the operator to first choose custom CLI.
+  const recovery = useAdapterRecovery();
+
   const switchToCustom = (): void => {
     setMode('custom');
     setCustomSubMode('adapter');
@@ -86,6 +91,16 @@ export function ConnectFlow({
         />
       ) : (
         <>
+          {/* Durable recovery at shared surface: visible in default builtin
+              AND custom modes, not only inside AdapterConnect */}
+          {recovery.state.stage === 'ready' && recovery.state.adapters.length > 0 && (
+            <RecoverySection
+              adapters={recovery.state.adapters}
+              onBindSuccess={(name, executable) =>
+                setConnected({ name, path: executable, via: 'custom' })
+              }
+            />
+          )}
           {formHeading}
           {mode === 'builtin' ? (
             <BuiltinConnect
@@ -237,7 +252,6 @@ export function AdapterConnect({
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   const flow = useAdapterConnect({ onConnected });
-  const recovery = useAdapterRecovery();
 
   const nameIsBuiltin = BUILTINS.has(nameInput.trim());
   const nameValid = NAME_RE.test(nameInput.trim()) && !nameIsBuiltin;
@@ -306,29 +320,6 @@ export function AdapterConnect({
 
   return (
     <div className="mt-6 max-w-lg">
-      {/* ── Durable recovery: show bindable APPROVED adapters ── */}
-      {recovery.state.stage === 'ready' && recovery.state.adapters.length > 0 && (
-        <div className="mb-6 space-y-3">
-          <p className="text-text-primary text-sm font-medium">
-            Approved adapters ready to bind
-          </p>
-          <p className="text-text-muted text-xs">
-            These adapters were submitted and founder-approved but haven&rsquo;t
-            been bound to a profile yet. Click <strong>Bind</strong> to connect
-            each one — approval alone does not create the profile.
-          </p>
-          {recovery.state.adapters.map((a) => (
-            <RecoveryBindCard
-              key={a.adapterId}
-              adapter={a}
-              onBindStart={() => {}}
-              onBindSuccess={(name) =>
-                onConnected({ name, path: a.executable, via: 'custom' })
-              }
-            />
-          ))}
-        </div>
-      )}
       <div className="border-accent/30 bg-accent/5 border-l-2 rounded-r-md px-3 py-2 mb-4">
         <p className="text-text-primary text-sm font-medium">
           Create a custom adapter wrapper
@@ -1085,17 +1076,45 @@ export function ConnectedCard({
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Recovery bind card — bind an APPROVED unbound adapter             */
-/* ------------------------------------------------------------------ */
+/* ── Recovery section shared at top-level ConnectFlow — visible in
+ *  default builtin AND custom modes without operator mode-switch ── */
+
+function RecoverySection({
+  adapters,
+  onBindSuccess,
+}: {
+  adapters: RecoverableAdapter[];
+  onBindSuccess: (name: string, executable: string) => void;
+}): JSX.Element {
+  return (
+    <div className="mb-6 space-y-3 max-w-lg">
+      <p className="text-text-primary text-sm font-medium">
+        Approved adapters ready to bind
+      </p>
+      <p className="text-text-muted text-xs">
+        These adapters were submitted and founder-approved but haven&rsquo;t
+        been bound to a profile yet. Click <strong>Bind</strong> to connect
+        each one — approval alone does not create the profile.
+      </p>
+      {adapters.map((a) => (
+        <RecoveryBindCard
+          key={a.adapterId}
+          adapter={a}
+          onBindSuccess={onBindSuccess}
+        />
+      ))}
+    </div>
+  );
+}
+
+/* ── Recovery bind card — bind an APPROVED unbound adapter ── */
 
 function RecoveryBindCard({
   adapter,
   onBindSuccess,
 }: {
   adapter: RecoverableAdapter;
-  onBindStart: () => void;
-  onBindSuccess: (name: string) => void;
+  onBindSuccess: (name: string, executable: string) => void;
 }): JSX.Element {
   const [state, setState] = useState<'ready' | 'binding' | 'error'>('ready');
   const [error, setError] = useState('');
@@ -1108,7 +1127,7 @@ function RecoveryBindCard({
       await adapters.bindAdapterProfile(adapter.adapterId, {
         profile_name: adapter.profileName,
       });
-      onBindSuccess(adapter.profileName);
+      onBindSuccess(adapter.profileName, adapter.executable);
     } catch (e: unknown) {
       const msg =
         e instanceof Error
