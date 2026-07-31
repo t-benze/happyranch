@@ -947,6 +947,8 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
           approved_by: null,
           intended_profile_name: profileName,
           eligibility: null,
+          dependency_manifest_version: null,
+          dependencies: [],
         };
       });
 
@@ -976,6 +978,8 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         approved_by: 'founder',
         intended_profile_name: profileName,
         eligibility: 'tampered',
+        dependency_manifest_version: null,
+        dependencies: [],
       });
 
       // Wait — the submitted state persists; no bind attempt, no error UI.
@@ -1155,6 +1159,8 @@ describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
           registered_at: new Date().toISOString(), registered_by: 'test',
           approved_at: null, approved_by: null,
           intended_profile_name: profileName, eligibility: null,
+          dependency_manifest_version: null,
+          dependencies: [],
         };
       });
 
@@ -1182,6 +1188,8 @@ describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
         registered_at: new Date().toISOString(), registered_by: 'test',
         approved_at: new Date().toISOString(), approved_by: 'founder',
         intended_profile_name: null, eligibility: 'recovery_ready',
+        dependency_manifest_version: null,
+        dependencies: [],
       });
 
       // Wait for poll to pick up the change — submitted state persists.
@@ -1221,6 +1229,8 @@ describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
           registered_at: new Date().toISOString(), registered_by: 'test',
           approved_at: null, approved_by: null,
           intended_profile_name: profileName, eligibility: null,
+          dependency_manifest_version: null,
+          dependencies: [],
         };
       });
 
@@ -1240,6 +1250,8 @@ describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
         registered_at: new Date().toISOString(), registered_by: 'test',
         approved_at: new Date().toISOString(), approved_by: 'founder',
         intended_profile_name: profileName, eligibility: 'already_bound',
+        dependency_manifest_version: null,
+        dependencies: [],
       });
 
       // Connected card appears — server-authoritative, no client bind.
