@@ -1,5 +1,6 @@
 /** Custom adapter API client (THR-107 seq141).
 
+GET  /api/v1/runtime/adapters         - list all adapters
 GET  /api/v1/runtime/adapters/{id}   - poll adapter status
 POST /api/v1/runtime/adapters/{id}/bind-profile  - bind approved adapter to profile
  */
@@ -22,6 +23,10 @@ export interface AdapterEntry {
   intended_profile_name: string | null;
 }
 
+export interface AdapterListResponse {
+  adapters: AdapterEntry[];
+}
+
 export interface BindProfileRequest {
   profile_name: string;
 }
@@ -34,6 +39,10 @@ export interface BindProfileResponse {
   status: string;
   adapter_id: string;
 }
+
+/** List all registered custom adapters (bearer-authenticated management endpoint). */
+export const listAdapters = (): Promise<AdapterEntry[]> =>
+  request('/runtime/adapters');
 
 export const getAdapter = (adapterId: string): Promise<AdapterEntry> =>
   request(`/runtime/adapters/${adapterId}`);

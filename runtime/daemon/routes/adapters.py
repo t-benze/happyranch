@@ -43,6 +43,8 @@ changes, or auth/bearer-flow changes.
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
@@ -537,6 +539,43 @@ def get_contract_reference(request: Request) -> dict:
     # proceeding to conformance check-ins and submission.
 
     from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput
+    from runtime.orchestrator.custom_adapter_registry import build_probe_input
+
+    # Build a minimal self-test fixture from the real probe builder.
+    probe_input = build_probe_input("example-adapter")
+    probe_fixture = {
+        "description": (
+            "A minimal self-test input/output fixture. The adapter receives "
+            "this AdapterInput on stdin and MUST respond with an AdapterOutput "
+            "where success=true. The server prepares/creates the probe workspace "
+            "at the workspace path in the input — the adapter does not need to "
+            "create it. The adapter has one 30-second wall-clock deadline "
+            "(including post-EOF wait for the subprocess to exit after closing "
+            "its stdout). Stdout and stderr are each capped at 1 MB. Only a "
+            "single JSON AdapterOutput object is accepted on stdout."
+        ),
+        "input": json.loads(probe_input.model_dump_json()),
+        "expected_output": {
+            "success": True,
+            "duration_seconds": 0,
+            "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+            "returncode": 0,
+            "stdout_tail": "conformance probe OK",
+            "stderr_tail": "",
+            "result": {"text": "conformance probe OK"},
+            "token_usage": None,
+            "error": None,
+            "agent_session_id": None,
+            "rate_limited": False,
+            "adapter_metadata": {
+                "adapter": "example-adapter",
+                "adapter_version": "1.0.0",
+                "contract_version": 1,
+            },
+            "child_session_id": None,
+            "raw_forensics_ref": None,
+        },
+    }
 
     return {
         "contract_version": 1,
@@ -584,6 +623,26 @@ def get_contract_reference(request: Request) -> dict:
                 "conformance challenge. Submission creates ONLY the exact PENDING "
                 "adapter; founder approval and management binding are separate steps."
             ),
+        },
+        "probe": {
+            "description": (
+                "Before registration, the server runs a conformance probe against "
+                "the submitted executable. The server prepares/creates the probe "
+                "workspace directory at the path specified in the probe input. "
+                "The adapter has one 30-second wall-clock deadline including "
+                "post-EOF wait. It must write exactly one syntactically valid "
+                "AdapterOutput JSON object to stdout with success=true. Stdout "
+                "and stderr are each capped at 1 MB. Diagnostics, logging, and "
+                "errors must go to stderr only. A syntactically valid "
+                "AdapterOutput with success=false returns a 4xx detail containing "
+                "the safely capped error field and stderr_tail sufficient for "
+                "debugging without daemon source access."
+            ),
+            "deadline_seconds": 30,
+            "max_stdout_bytes": 1_048_576,
+            "max_stderr_bytes": 1_048_576,
+            "requires_success_true": True,
+            "self_test_fixture": probe_fixture,
         },
     }
 

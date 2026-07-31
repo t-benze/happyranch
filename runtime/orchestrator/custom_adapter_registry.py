@@ -297,6 +297,10 @@ def build_probe_input(adapter_name: str) -> AdapterInput:
     The probe input is a lightweight sample invocation that lets the adapter
     demonstrate it can parse the contract and produce valid output. It does
     NOT exercise a real agentic session — it only validates the contract shapes.
+
+    The workspace path is a real temporary directory created by the probe
+    runner — the adapter can read/write files there but must operate within
+    the probe deadline.
     """
     from runtime.orchestrator.adapter_contract import (
         ExecutorContext,
@@ -351,6 +355,16 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
     """
     probe_input = build_probe_input(adapter_name)
     input_json = probe_input.model_dump_json()
+
+    # Prepare the probe workspace — the server creates this directory
+    # so the adapter does not need to create it.
+    probe_workspace = Path(probe_input.workspace)
+    try:
+        probe_workspace.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(
+            f"Failed to create probe workspace {probe_workspace}: {exc}"
+        ) from exc
 
     try:
         proc = subprocess.Popen(
@@ -489,8 +503,15 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
 
     # Basic sanity: success must be true
     if not output.success:
+        error_msg = output.error or "(no error message)"
+        # Safe cap: never leak unbounded output
+        capped_error = error_msg[:500]
+        stderr_tail = ""
+        if stderr_bytes:
+            stderr_tail = stderr_bytes.decode("utf-8", errors="replace")[-2000:]
         raise ValueError(
-            f"Conformance probe reported success=false for {executable!r}"
+            f"Conformance probe reported success=false for {executable!r}. "
+            f"Error: {capped_error}. Stderr tail: {stderr_tail[:500]}"
         )
 
     return output

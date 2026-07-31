@@ -384,6 +384,40 @@ class ExecutorRegistry:
         return existing is not None
 
     @classmethod
+    def _resolve_custom_adapter_eligibility(cls, profile: ExecutorProfile) -> dict | None:
+        """Check whether a custom-adapter profile is launchable.
+
+        Returns a dict with ``{executable, hash, version, contract_version}``
+        when the adapter is APPROVED, hash-verified, and on-disk executable
+        is intact. Returns ``None`` when the adapter is pending, tampered,
+        missing, or otherwise not launchable.
+
+        This is the SINGLE central eligibility predicate consumed by:
+        - ``/health/prereqs`` (present flag)
+        - runtime-profile list (availability)
+        - Agent-page selection data (``useExecutorOptions``)
+        - ``build_executor`` (resolve → validate → build)
+        - ``CustomAdapterExecutor`` (pre-launch verification)
+
+        It performs the same exact resolve_adapter → hash check as the
+        launch path without side effects.
+        """
+        cmd_adapter = profile.command_adapter_id or ""
+        if not cmd_adapter.startswith("custom-adapter:"):
+            return None
+        adapter_id = cmd_adapter[len("custom-adapter:"):]
+        from runtime.orchestrator.custom_adapter_registry import resolve_adapter
+        entry = resolve_adapter(adapter_id)
+        if entry is None:
+            return None
+        return {
+            "executable": entry.executable,
+            "hash": entry.executable_hash,
+            "version": entry.version,
+            "contract_version": entry.contract_version,
+        }
+
+    @classmethod
     def _validate_custom_adapter_binding(cls, adapter_id: str) -> dict:
         """Validate that an adapter id refers to an APPROVED, hash-verified adapter.
 
@@ -756,13 +790,20 @@ def build_executor(
     # ── D7B: Custom-adapter profile routing ──────────────────────────────
     cmd_adapter = profile.command_adapter_id or ""
     if cmd_adapter.startswith("custom-adapter:"):
-        adapter_id = cmd_adapter[len("custom-adapter:"):]
-        # Validate adapter is still approved + hash-verified at launch time
-        binding = ExecutorRegistry._validate_custom_adapter_binding(adapter_id)
+        # Central eligibility check — same predicate as health/prereqs,
+        # runtime profiles, Agent-page, and CustomAdapterExecutor pre-launch.
+        binding = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
+        if binding is None:
+            adapter_id = cmd_adapter[len("custom-adapter:"):]
+            raise ValueError(
+                f"Custom adapter {adapter_id!r} for profile {name!r} is not "
+                f"launchable: adapter is pending, tampered, missing, or not "
+                f"approved. Register, approve, and bind the adapter first."
+            )
         from runtime.orchestrator.executors import CustomAdapterExecutor
         return CustomAdapterExecutor(
             profile_name=name,
-            adapter_entry_id=adapter_id,
+            adapter_entry_id=cmd_adapter[len("custom-adapter:"):],
             adapter_executable=binding["executable"],
             adapter_hash=binding["hash"],
             adapter_version=binding["version"],

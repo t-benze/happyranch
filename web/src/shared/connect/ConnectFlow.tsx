@@ -32,8 +32,9 @@ import {
   NAME_RE,
   useRuntimeConnect,
   useAdapterConnect,
+  useAdapterRecovery,
 } from './useRuntimeConnect';
-import type { Connected, ConnectMode, Kind } from './useRuntimeConnect';
+import type { Connected, ConnectMode, Kind, RecoverableAdapter } from './useRuntimeConnect';
 
 interface ConnectFlowProps {
   /** Outer wrapper class. Onboarding passes its page-section spacing. */
@@ -236,6 +237,7 @@ export function AdapterConnect({
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   const flow = useAdapterConnect({ onConnected });
+  const recovery = useAdapterRecovery();
 
   const nameIsBuiltin = BUILTINS.has(nameInput.trim());
   const nameValid = NAME_RE.test(nameInput.trim()) && !nameIsBuiltin;
@@ -301,8 +303,32 @@ export function AdapterConnect({
   }
 
   // Form state
+
   return (
     <div className="mt-6 max-w-lg">
+      {/* ── Durable recovery: show bindable APPROVED adapters ── */}
+      {recovery.state.stage === 'ready' && recovery.state.adapters.length > 0 && (
+        <div className="mb-6 space-y-3">
+          <p className="text-text-primary text-sm font-medium">
+            Approved adapters ready to bind
+          </p>
+          <p className="text-text-muted text-xs">
+            These adapters were submitted and founder-approved but haven&rsquo;t
+            been bound to a profile yet. Click <strong>Bind</strong> to connect
+            each one — approval alone does not create the profile.
+          </p>
+          {recovery.state.adapters.map((a) => (
+            <RecoveryBindCard
+              key={a.adapterId}
+              adapter={a}
+              onBindStart={() => {}}
+              onBindSuccess={(name) =>
+                onConnected({ name, path: a.executable, via: 'custom' })
+              }
+            />
+          ))}
+        </div>
+      )}
       <div className="border-accent/30 bg-accent/5 border-l-2 rounded-r-md px-3 py-2 mb-4">
         <p className="text-text-primary text-sm font-medium">
           Create a custom adapter wrapper
@@ -1056,6 +1082,82 @@ export function ConnectedCard({
         </Button>
       </div>
     </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Recovery bind card — bind an APPROVED unbound adapter             */
+/* ------------------------------------------------------------------ */
+
+function RecoveryBindCard({
+  adapter,
+  onBindSuccess,
+}: {
+  adapter: RecoverableAdapter;
+  onBindStart: () => void;
+  onBindSuccess: (name: string) => void;
+}): JSX.Element {
+  const [state, setState] = useState<'ready' | 'binding' | 'error'>('ready');
+  const [error, setError] = useState('');
+
+  const bind = async (): Promise<void> => {
+    setState('binding');
+    setError('');
+    try {
+      const { adapters } = await import('@/lib/api');
+      await adapters.bindAdapterProfile(adapter.adapterId, {
+        profile_name: adapter.profileName,
+      });
+      onBindSuccess(adapter.profileName);
+    } catch (e: unknown) {
+      const msg =
+        e instanceof Error
+          ? e.message
+          : 'Bind failed. Retry or contact the founder.';
+      setError(msg);
+      setState('error');
+    }
+  };
+
+  return (
+    <div className="border-border-default bg-surface rounded-lg border p-4">
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-text-primary text-sm font-medium">
+            <span className="font-mono">{adapter.profileName}</span>
+          </p>
+          <p className="text-text-muted mt-0.5 text-xs break-all font-mono">
+            {adapter.executable}
+          </p>
+          <p className="text-text-muted mt-0.5 text-xs">
+            Workspace adapter:{' '}
+            <span className="font-mono">{adapter.workspaceAdapter}</span>
+          </p>
+        </div>
+        <Button
+          onClick={() => { void bind(); }}
+          disabled={state === 'binding'}
+          size="sm"
+        >
+          {state === 'binding' ? (
+            <>
+              <Spinner className="mr-1 h-3 w-3" />
+              Binding…
+            </>
+          ) : (
+            <>
+              Bind{' '}
+              <span className="font-mono">{adapter.profileName}</span>
+            </>
+          )}
+        </Button>
+      </div>
+      {state === 'error' && (
+        <p className="text-feedback-danger mt-2 text-xs" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

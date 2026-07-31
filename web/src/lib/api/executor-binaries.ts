@@ -65,6 +65,12 @@ export interface ValidateBinaryResponse {
   error: string | null;
 }
 
+/** Response after removing a binary path from the registry. */
+export interface RemoveBinaryResponse {
+  kind: string;
+  removed: boolean;
+}
+
 /** List all executor kinds with a stored path plus their current validity. */
 export const listExecutorBinaries = (): Promise<BinaryRegistryList> =>
   request('/executor-binaries');
@@ -82,3 +88,10 @@ export const validateExecutorBinary = (
   body: ValidateBinaryRequest,
 ): Promise<ValidateBinaryResponse> =>
   request('/executor-binaries/validate', { method: 'POST', body });
+
+/** Remove a stored binary path from the machine-local registry.
+ *  Built-in kinds (claude, codex, opencode, pi) are blocked. */
+export const removeExecutorBinary = (
+  kind: string,
+): Promise<RemoveBinaryResponse> =>
+  request(`/executor-binaries/${encodeURIComponent(kind)}`, { method: 'DELETE' });

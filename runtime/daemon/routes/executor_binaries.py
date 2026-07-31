@@ -23,6 +23,7 @@ from runtime.orchestrator.executor_binary_registry import (
     get_binary,
     is_binary_valid,
     load_registry,
+    remove_binary,
     set_binary,
     validate_binary,
 )
@@ -164,3 +165,56 @@ def validate_path(body: ValidateBinaryRequest) -> ValidateBinaryResponse:
         return ValidateBinaryResponse(
             path=body.path, valid=False, error=str(exc)
         )
+
+
+# ---------------------------------------------------------------------------
+# Response models for delete
+# ---------------------------------------------------------------------------
+
+
+class RemoveBinaryResponse(BaseModel):
+    """Response after removing a binary path from the registry."""
+    kind: str
+    removed: bool
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/v1/executor-binaries/{kind} — remove a binary path
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/executor-binaries/{kind}",
+    response_model=RemoveBinaryResponse,
+)
+def delete_binary(kind: str) -> RemoveBinaryResponse:
+    """Remove a stored binary path from the machine-local registry.
+
+    Guards:
+    - The kind must exist in the registry
+    - The stored path's current on-disk name must match the expected kind
+      name (starts with or contains the kind) to prevent removing unrelated
+      entries through path confusion
+    - Built-in kind names (claude, codex, opencode, pi) are blocked from
+      deletion — only custom/test kinds may be removed
+
+    Returns ``{kind, removed: true}`` on success, 404 if not found.
+    """
+    from fastapi import HTTPException, status as http_status
+
+    BUILTIN_KINDS = {"claude", "codex", "opencode", "pi"}
+    if kind.lower() in BUILTIN_KINDS:
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Cannot remove built-in executor kind {kind!r}.",
+        )
+
+    stored = get_binary(kind)
+    if stored is None:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=f"Executor kind {kind!r} is not in the binary registry.",
+        )
+
+    remove_binary(kind)
+    return RemoveBinaryResponse(kind=kind, removed=True)

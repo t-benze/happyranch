@@ -1562,13 +1562,19 @@ class TestThrottleIntegration:
 
 
 class TestCustomAdapterBinaryPreflight:
-    """THR-107 seq155: custom-adapter profiles must have a valid machine-local
-    binary registry entry BEFORE any adapter subprocess attempt.  Missing or
-    stale pins fail closed with an actionable remediation command."""
+    """THR-107: Custom-adapter profiles launch through their APPROVED,
+    hash-verified adapter executable WITHOUT requiring a separate
+    executors.json entry for the profile name. The approved adapter
+    artifact IS the explicit registered launch artifact.
 
-    def test_missing_pin_fails_before_popen(self, tmp_path):
-        """An unregistered custom-adapter profile returns ExecutorBinaryBlocked
-        before subprocess.Popen is ever called."""
+    The old profile-pin prerequisite (checking executors.json for the
+    profile name) has been removed — custom-adapter profiles do not
+    need a binary registry entry."""
+
+    def test_launches_without_binary_registry_entry(self, tmp_path):
+        """A custom-adapter profile launches successfully WITHOUT an
+        executors.json entry — the approved adapter executable is the
+        sole launch artifact."""
         from runtime.orchestrator.adapter_store import compute_sha256
         from runtime.orchestrator.executor_binary_registry import remove_binary
 
@@ -1592,125 +1598,141 @@ class TestCustomAdapterBinaryPreflight:
             agent="dev_agent", org="happyranch", invocation_kind="task",
         )
 
-        with patch("subprocess.Popen") as mock_popen:
-            result = executor.run(workspace=tmp_path, prompt="test prompt")
+        result = executor.run(workspace=tmp_path, prompt="test prompt", session_id="test-sess")
 
-        assert not result.success
-        assert "happyranch executor-binaries register" in (result.error or "")
-        assert "unregistered-ca" in (result.error or "")
-        mock_popen.assert_not_called()
-
-    def test_stale_regular_file_pin_fails_before_popen(self, tmp_path):
-        """A stale pin (executable removed after registration) fails before
-        subprocess.Popen with an actionable remediation."""
-        from runtime.orchestrator.adapter_store import compute_sha256
-        from runtime.orchestrator.executor_binary_registry import set_binary
-
-        output = _valid_adapter_output()
-        exe_path = _make_test_adapter_executable(tmp_path, output)
-        exe_hash = compute_sha256(exe_path)
-
-        stale_path = str(tmp_path / "stale-ca-exe")
-        # Write a real executable, register it, then delete it so the pin goes stale.
-        import shutil
-        shutil.copy(exe_path, stale_path)
-        set_binary("stale-ca", stale_path)
-        import os as _os
-        _os.unlink(stale_path)
-
-        executor = CustomAdapterExecutor(
-            profile_name="stale-ca",
-            adapter_entry_id="test-adapter",
-            adapter_executable=exe_path,
-            adapter_hash=exe_hash,
-            adapter_version="1.0.0",
-            adapter_contract_version=1,
-            provider="test",
-        )
-        executor.set_invocation_context(
-            agent="dev_agent", org="happyranch", invocation_kind="task",
-        )
-
-        with patch("subprocess.Popen") as mock_popen:
-            result = executor.run(workspace=tmp_path, prompt="test prompt")
-
-        assert not result.success
-        assert "happyranch executor-binaries register" in (result.error or "")
-        assert "stale-ca" in (result.error or "")
-        mock_popen.assert_not_called()
-
-    def test_stale_symlink_pin_fails_before_popen(self, tmp_path):
-        """A stale symlink pin (symlink target removed after registration)
-        fails before subprocess.Popen with an actionable remediation.
-        Valid stable-symlink spelling remains intact."""
-        from runtime.orchestrator.adapter_store import compute_sha256
-        from runtime.orchestrator.executor_binary_registry import set_binary
-
-        output = _valid_adapter_output()
-        exe_path = _make_test_adapter_executable(tmp_path, output)
-        exe_hash = compute_sha256(exe_path)
-
-        # Create a symlink to a real executable, register the link, then
-        # remove the target so the symlink goes stale.
-        symlink_path = tmp_path / "symlink-to-ca"
-        import os as _os
-        _os.symlink(exe_path, str(symlink_path))
-        set_binary("symlink-ca", str(symlink_path))
-        _os.unlink(exe_path)
-
-        executor = CustomAdapterExecutor(
-            profile_name="symlink-ca",
-            adapter_entry_id="test-adapter",
-            adapter_executable=exe_path,
-            adapter_hash=exe_hash,
-            adapter_version="1.0.0",
-            adapter_contract_version=1,
-            provider="test",
-        )
-        executor.set_invocation_context(
-            agent="dev_agent", org="happyranch", invocation_kind="task",
-        )
-
-        with patch("subprocess.Popen") as mock_popen:
-            result = executor.run(workspace=tmp_path, prompt="test prompt")
-
-        assert not result.success
-        assert "happyranch executor-binaries register" in (result.error or "")
-        assert "symlink-ca" in (result.error or "")
-        mock_popen.assert_not_called()
-
-    def test_valid_registered_symlink_launches(self, tmp_path):
-        """A valid stable symlink spelling in the registry with an existing
-        target allows the custom adapter to launch."""
-        from runtime.orchestrator.adapter_store import compute_sha256
-        from runtime.orchestrator.executor_binary_registry import set_binary
-
-        output = _valid_adapter_output(session_id="sess-sym")
-        exe_path = _make_test_adapter_executable(tmp_path, output)
-        exe_hash = compute_sha256(exe_path)
-
-        # Create a symlink to the executable and register the symlink path.
-        symlink_path = tmp_path / "valid-symlink"
-        import os as _os
-        _os.symlink(exe_path, str(symlink_path))
-        set_binary("valid-symlink-ca", str(symlink_path))
-
-        executor = CustomAdapterExecutor(
-            profile_name="valid-symlink-ca",
-            adapter_entry_id="test-adapter",
-            adapter_executable=exe_path,
-            adapter_hash=exe_hash,
-            adapter_version="1.0.0",
-            adapter_contract_version=1,
-            provider="test",
-        )
-        executor.set_invocation_context(
-            agent="dev_agent", org="happyranch", invocation_kind="task",
-        )
-
-        result = executor.run(
-            workspace=tmp_path, prompt="test prompt", session_id="sess-sym"
-        )
-
-        assert result.success, f"Valid symlink should launch: {result.error}"
+        # Launch succeeds without executors.json entry — the approved adapter
+        # executable is the launch artifact.
+        assert result.success, f"Expected success, got: {result.error}"
         assert result.token_usage is not None
+        assert result.token_usage.input_tokens == 100
+        assert result.token_usage.output_tokens == 50
+
+    def test_hash_mismatch_still_fails_closed(self, tmp_path):
+        """Hash mismatch at launch still fails closed — the per-launch
+        hash verification remains intact even without the profile-pin check."""
+        from runtime.orchestrator.adapter_store import compute_sha256
+
+        output = _valid_adapter_output()
+        exe_path = _make_test_adapter_executable(tmp_path, output)
+
+        executor = CustomAdapterExecutor(
+            profile_name="hash-mismatch-ca",
+            adapter_entry_id="test-adapter",
+            adapter_executable=exe_path,
+            adapter_hash="deadbeef" * 8,  # wrong hash
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        result = executor.run(workspace=tmp_path, prompt="test prompt")
+
+        assert not result.success
+        assert "hash mismatch" in (result.error or "").lower()
+
+    def test_adapter_executable_missing_fails_closed(self, tmp_path):
+        """If the adapter executable doesn't exist at launch time, fail closed."""
+        missing_path = str(tmp_path / "nonexistent-adapter")
+
+        executor = CustomAdapterExecutor(
+            profile_name="missing-exe-ca",
+            adapter_entry_id="test-adapter",
+            adapter_executable=missing_path,
+            adapter_hash="abc123",
+            adapter_version="1.0.0",
+            adapter_contract_version=1,
+            provider="test",
+        )
+        executor.set_invocation_context(
+            agent="dev_agent", org="happyranch", invocation_kind="task",
+        )
+
+        result = executor.run(workspace=tmp_path, prompt="test prompt")
+
+        assert not result.success
+        assert "no longer exists" in (result.error or "").lower()
+
+
+class TestCentralizedAdapterEligibility:
+    """Executors with command_adapter_id custom-adapter:<id> are launchable
+    when the adapter is APPROVED + hash-verified — no executors.json entry
+    required."""
+
+    def test_approved_adapter_is_eligible(self):
+        """_resolve_custom_adapter_eligibility returns binding dict when
+        adapter is APPROVED and hash-verified."""
+        from runtime.orchestrator.executor_registry import ExecutorProfile, ExecutorRegistry
+        from runtime.orchestrator.adapter_store import AdapterEntry, compute_sha256, _save_adapter_locked, acquire_store_lock, release_store_lock
+        import tempfile, os as _os
+
+        # Create a real executable file
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".py")
+        try:
+            tmp.write(b'#!/usr/bin/env python3\nprint("ok")')
+            tmp.flush()
+            _os.chmod(tmp.name, 0o755)
+            exe_hash = compute_sha256(tmp.name)
+
+            # Create an APPROVED adapter entry
+            entry = AdapterEntry(
+                id="test-elig-adapter",
+                name="test-elig",
+                executable=tmp.name,
+                executable_hash=exe_hash,
+                version="1.0.0",
+                capabilities=["token_metering"],
+                contract_version=1,
+                workspace_adapter="pi",
+                status="approved",
+                registered_at="2026-01-01T00:00:00Z",
+                approved_at="2026-01-02T00:00:00Z",
+                approved_by="founder",
+                intended_profile_name="test-elig",
+            )
+            acquire_store_lock()
+            try:
+                _save_adapter_locked(entry)
+            finally:
+                release_store_lock()
+
+            profile = ExecutorProfile(
+                name="test-elig",
+                kind="custom",
+                command_adapter_id="custom-adapter:test-elig-adapter",
+            )
+
+            binding = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
+            assert binding is not None
+            assert binding["executable"] == tmp.name
+            assert binding["hash"] == exe_hash
+        finally:
+            _os.unlink(tmp.name)
+
+    def test_pending_adapter_not_eligible(self):
+        """PENDING adapters are not launchable."""
+        from runtime.orchestrator.executor_registry import ExecutorProfile, ExecutorRegistry
+
+        profile = ExecutorProfile(
+            name="pending-test",
+            kind="custom",
+            command_adapter_id="custom-adapter:nonexistent-adapter",
+        )
+
+        binding = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
+        assert binding is None
+
+    def test_generic_cli_profile_not_eligible(self):
+        """Generic-cli profiles are not custom-adapter eligible."""
+        from runtime.orchestrator.executor_registry import ExecutorProfile, ExecutorRegistry
+
+        profile = ExecutorProfile(
+            name="generic-test",
+            kind="custom",
+            command_adapter_id="generic-cli",
+        )
+
+        binding = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
+        assert binding is None
