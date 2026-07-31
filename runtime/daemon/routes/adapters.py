@@ -37,6 +37,11 @@ GET /api/v1/runtime/adapters
 GET /api/v1/runtime/adapters/{adapter_id}
     Get a single adapter by id (D4: includes approved_at/by).
 
+POST /api/v1/runtime/adapters/{adapter_id}/reject  (THR-107 seq220)
+    Founder-gated pending-adapter rejection gate. Atomically validates
+    the exact PENDING durable snapshot and removes it. No persisted
+    rejected status; no SQLite/schema change. Audit entry written.
+
 D4 scope: approval transition only. No D5 permission/sandbox expansion,
 D7 profile binding/launch, D12 ExecutorResult/protocol changes, SQLite
 changes, or auth/bearer-flow changes.
@@ -253,6 +258,47 @@ class AdapterApproveRequest(BaseModel):
 
     Every field MUST match the durable store entry exactly.
     This binds the exact artifact snapshot the founder inspected.
+    """
+
+    executable: str = Field(
+        ...,
+        description="Absolute path to the adapter executable (must match store exactly).",
+        min_length=1,
+    )
+    executable_hash: str = Field(
+        ...,
+        description="SHA-256 hex digest of the executable (must match store exactly).",
+        min_length=1,
+    )
+    version: str = Field(
+        ...,
+        description="Adapter version string (must match store exactly).",
+        min_length=1,
+    )
+    capabilities: list[str] = Field(
+        ...,
+        description="Declared capabilities (must match store exactly).",
+    )
+    contract_version: int = Field(
+        ...,
+        description="Contract version (must match store exactly).",
+    )
+    workspace_adapter: str = Field(
+        ...,
+        description="Workspace preparation adapter (must match store exactly).",
+        min_length=1,
+    )
+
+    model_config = {"extra": "forbid"}
+
+
+class AdapterRejectRequest(BaseModel):
+    """Request body for the THR-107 founder-gated pending-rejection route.
+
+    Every field MUST match the durable store entry exactly.
+    Rejects stale, re-registered, and hash-changed snapshots.
+    Same material identity facts as approval — the caller attests to the
+    exact PENDING artifact being rejected.
     """
 
     executable: str = Field(
@@ -1321,4 +1367,211 @@ def remove_adapter_entry(
         "id": adapter_id,
         "removed": True,
         "name": removed_snapshot.get("name", ""),
+    }
+
+
+# ---------------------------------------------------------------------------
+# THR-107 seq220: pending adapter rejection
+# ---------------------------------------------------------------------------
+
+
+def _audit_adapter_reject(
+    *,
+    adapter_id: str,
+    adapter_name: str,
+    rejected_snapshot: dict,
+    actor: str = "founder",
+) -> None:
+    """Write a runtime-level adapter-rejection audit row.
+
+    Opens (creating if needed) a dedicated runtime-audit.db under
+    daemon_home(), then writes a single audit_log row.  Each call opens a
+    fresh ``Database`` handle and closes it.
+
+    Row shape:
+      task_id = "adapter:<adapter_id>"
+      action  = "adapter_rejected"
+      payload = {adapter_id, name, executable, executable_hash, version,
+                 capabilities, contract_version, workspace_adapter,
+                 intended_profile_name, status}
+    """
+    from runtime.infrastructure.database import Database
+    from runtime.runtime import daemon_home
+
+    audit_db_path = daemon_home() / "runtime-audit.db"
+    db = Database(audit_db_path)
+    try:
+        db.insert_audit_log_uncommitted(
+            task_id=f"adapter:{adapter_id}",
+            agent=actor,
+            action="adapter_rejected",
+            payload={
+                "adapter_id": adapter_id,
+                "name": rejected_snapshot.get("name", ""),
+                "executable": rejected_snapshot.get("executable", ""),
+                "executable_hash": rejected_snapshot.get("executable_hash", ""),
+                "version": rejected_snapshot.get("version", ""),
+                "capabilities": rejected_snapshot.get("capabilities", []),
+                "contract_version": rejected_snapshot.get("contract_version"),
+                "workspace_adapter": rejected_snapshot.get("workspace_adapter", ""),
+                "intended_profile_name": rejected_snapshot.get("intended_profile_name"),
+                "status": rejected_snapshot.get("status", ""),
+            },
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+@router.post(
+    "/runtime/adapters/{adapter_id}/reject",
+    dependencies=[require_token()],
+)
+def reject_pending_adapter(
+    adapter_id: str,
+    body: AdapterRejectRequest,
+) -> dict:
+    """Reject/remove a PENDING custom adapter (THR-107 seq220 founder-gated).
+
+    Master-bearer-authenticated management endpoint. Rejects a PENDING custom
+    adapter by atomically removing it from the durable store. The caller MUST
+    supply an exact durable snapshot (all 6 material identity facts) — the
+    server rejects stale, re-registered, and hash-changed snapshots.
+
+    This endpoint does NOT introduce a persisted rejected status or any
+    SQLite/schema change. Rejection is durable removal with audit.
+
+    Gating checks (exact order):
+    1. Adapter exists (404 if unknown)
+    2. Adapter is PENDING (422 if APPROVED or unknown status)
+    3. Every snapshot fact matches the stored adapter (422 on mismatch)
+
+    Under the reentrant adapter-store lock, the adapter is durably removed
+    and an audit entry is written. If auditing fails after durable removal,
+    the exact adapter entry is restored under the lock and a failure is
+    returned — a successful rejection is always auditable.
+
+    Lock ordering (documented, compatible with register/approve/bind):
+      adapter_store_lock → durable removal → audit write
+    """
+    # 1. Adapter exists
+    entry = get_adapter(adapter_id)
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Adapter {adapter_id!r} not found.",
+        )
+
+    # 2. Must be PENDING
+    if entry.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Adapter {adapter_id!r} is status={entry.status!r}, "
+                f"not PENDING. Only PENDING adapters may be rejected."
+            ),
+        )
+
+    # 3. Exact-snapshot match against all material identity facts.
+    #    Use the same predicate shape as approval — 6 material fields.
+    facts = [
+        ("executable", entry.executable, body.executable),
+        ("executable_hash", entry.executable_hash, body.executable_hash),
+        ("version", entry.version, body.version),
+        ("capabilities", entry.capabilities, body.capabilities),
+        ("contract_version", entry.contract_version, body.contract_version),
+        ("workspace_adapter", entry.workspace_adapter, body.workspace_adapter),
+    ]
+    for field, store_val, req_val in facts:
+        if store_val != req_val:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"{field} mismatch for {adapter_id!r}: "
+                    f"store has {store_val!r}, reject request has {req_val!r}"
+                ),
+            )
+
+    # Snapshot the entry for audit and potential rollback.
+    rejected_snapshot = entry.to_dict()
+
+    # Durable removal under the reentrant adapter-store lock.
+    # Serializes against concurrent register/approve/remove operations.
+    acquire_store_lock()
+    try:
+        # Re-read and re-validate at the lock boundary — same predicate,
+        # so pre-lock and locked checks CANNOT drift.
+        re_read_entry = get_adapter(adapter_id)
+        if re_read_entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Adapter {adapter_id!r} disappeared before rejection.",
+            )
+        if re_read_entry.status != "pending":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Adapter {adapter_id!r} changed to status={re_read_entry.status!r} "
+                    f"before rejection."
+                ),
+            )
+        for field, store_val, req_val in [
+            ("executable", re_read_entry.executable, body.executable),
+            ("executable_hash", re_read_entry.executable_hash, body.executable_hash),
+            ("version", re_read_entry.version, body.version),
+            ("capabilities", re_read_entry.capabilities, body.capabilities),
+            ("contract_version", re_read_entry.contract_version, body.contract_version),
+            ("workspace_adapter", re_read_entry.workspace_adapter, body.workspace_adapter),
+        ]:
+            if store_val != req_val:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"Adapter {adapter_id!r} facts changed before rejection. "
+                        f"{field} mismatch: store has {store_val!r}, "
+                        f"reject request has {req_val!r}. "
+                        f"Refresh the snapshot and retry."
+                    ),
+                )
+
+        # Durable removal via the atomic store helper.
+        from runtime.orchestrator.adapter_store import remove_adapter as _store_remove
+        _store_remove(adapter_id)
+
+        # Audit the successful rejection.
+        # If auditing fails, restore the exact adapter entry and return failure.
+        try:
+            _audit_adapter_reject(
+                adapter_id=adapter_id,
+                adapter_name=re_read_entry.name,
+                rejected_snapshot=rejected_snapshot,
+            )
+        except Exception:
+            # Restore the adapter under the lock.
+            from runtime.orchestrator.adapter_store import _save_adapter_locked
+            from runtime.orchestrator.adapter_store import AdapterEntry as AdapterEntryModel
+            restored = AdapterEntryModel.from_dict(rejected_snapshot)
+            _save_adapter_locked(restored)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Adapter rejection succeeded but audit logging failed; "
+                    "the adapter has been restored. Retry the operation."
+                ),
+            )
+
+    except HTTPException:
+        raise
+    except BaseException:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Adapter rejection failed.",
+        )
+    finally:
+        release_store_lock()
+
+    return {
+        "id": adapter_id,
+        "rejected": True,
+        "name": rejected_snapshot.get("name", ""),
     }
