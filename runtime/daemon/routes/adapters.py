@@ -114,6 +114,10 @@ class AdapterEntryResponse(BaseModel):
 
     Mirrors ``AdapterEntry`` fields. D4: includes approved_at/approved_by.
     THR-107 seq141: includes intended_profile_name.
+
+    THR-107 recovery eligibility (TASK-3784): includes server-authoritative
+    ``eligibility`` — derived entirely from durable server state so the
+    browser never recomputes hash/tamper eligibility.
     """
 
     id: str
@@ -130,6 +134,20 @@ class AdapterEntryResponse(BaseModel):
     approved_at: str | None = None
     approved_by: str | None = None
     intended_profile_name: str | None = None
+    eligibility: str | None = Field(
+        None,
+        description=(
+            "Server-authoritative adapter recovery eligibility. One of:"
+            " 'ready_to_bind' — approved, hash-valid, intended profile not yet bound;"
+            " 'already_bound' — profile exists and is bound to this adapter;"
+            " 'cross_profile' — profile exists but is bound to a DIFFERENT adapter;"
+            " 'builtin_collision' — intended profile name is a built-in;"
+            " 'tampered' — approved but on-disk hash mismatch or missing;"
+            " 'pending' — adapter is PENDING (not yet approved);"
+            " 'not_intended' — no intended_profile_name set;"
+            " None — not applicable (not approved, or unknown state)."
+        ),
+    )
 
 
 class AdapterSubmitRequest(BaseModel):
@@ -220,6 +238,53 @@ class AdapterApproveRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+def _compute_eligibility(entry) -> str | None:
+    """Compute server-authoritative recovery eligibility for an adapter.
+
+    This is the single source of truth — the browser MUST NOT recompute
+    hash/tamper eligibility.  The eligibility captures exactly the
+    conditions already enforced by bind_adapter_profile.
+
+    Returns None when the adapter is not approved (PENDING / unknown status).
+    """
+    if entry.status != "approved":
+        return None
+
+    # No intended profile → nothing to recover.
+    if not entry.intended_profile_name:
+        return "not_intended"
+
+    profile_name = entry.intended_profile_name
+
+    # Check on-disk integrity (hash + executable).  resolve_adapter re-validates
+    # file existence, executable permission, and SHA-256 hash.
+    resolved = resolve_adapter(entry.id)
+    if resolved is None:
+        return "tampered"
+
+    # Check if the intended profile name is a built-in.
+    BUILTIN_KINDS_NAMES = {"claude", "codex", "opencode", "pi"}
+    if profile_name.lower() in BUILTIN_KINDS_NAMES:
+        return "builtin_collision"
+
+    # Check profile existence and binding.
+    from runtime.orchestrator.executor_registry import get_registry
+    registry = get_registry()
+    existing_profile = registry.get_profile(profile_name)
+
+    if existing_profile is not None:
+        # Profile exists — check what adapter it belongs to.
+        profile_adapter_id = existing_profile.command_adapter_id
+        if profile_adapter_id and profile_adapter_id == f"custom-adapter:{entry.id}":
+            return "already_bound"
+        else:
+            # Profile exists but is bound to a different adapter (or no adapter).
+            return "cross_profile"
+
+    # No profile exists with this name — adapter is bindable.
+    return "ready_to_bind"
+
+
 def _entry_to_response(entry) -> AdapterEntryResponse:
     """Map an ``AdapterEntry`` to the response model."""
     return AdapterEntryResponse(
@@ -237,6 +302,7 @@ def _entry_to_response(entry) -> AdapterEntryResponse:
         approved_at=entry.approved_at,
         approved_by=entry.approved_by,
         intended_profile_name=entry.intended_profile_name,
+        eligibility=_compute_eligibility(entry),
     )
 
 

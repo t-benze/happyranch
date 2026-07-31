@@ -20,10 +20,12 @@ from pydantic import BaseModel, Field
 
 from runtime.daemon.auth import require_token
 from runtime.orchestrator.executor_binary_registry import (
+    RemoveBinaryResult,
     get_binary,
     is_binary_valid,
     load_registry,
     remove_binary,
+    remove_binary_conditional,
     set_binary,
     validate_binary,
 )
@@ -197,6 +199,12 @@ class RemoveBinaryResponse(BaseModel):
 @router.delete(
     "/executor-binaries/{kind}",
     response_model=RemoveBinaryResponse,
+    responses={
+        200: {"description": "Binary path successfully removed."},
+        404: {"description": "Executor kind not found in the binary registry."},
+        409: {"description": "Stored path does not match expected_path (concurrent update)."},
+        422: {"description": "Validation error — expected_name mismatch, built-in kind, or other rule violation."},
+    },
 )
 def delete_binary(kind: str, body: RemoveBinaryRequest) -> RemoveBinaryResponse:
     """Atomically remove a stored binary path from the machine-local registry.
@@ -232,16 +240,15 @@ def delete_binary(kind: str, body: RemoveBinaryRequest) -> RemoveBinaryResponse:
             detail=f"Cannot remove built-in executor kind {kind!r}.",
         )
 
-    # Guard 3 + 4: atomically check stored path matches expected_path AND remove
-    from runtime.orchestrator.executor_binary_registry import remove_binary_conditional
-
-    removed = remove_binary_conditional(kind, body.expected_path)
-    if removed:
+    # Guard 3 + 4: atomically check stored path matches expected_path AND remove.
+    # The result is derived entirely from the lock-guarded critical section —
+    # no re-read afterward to classify a race.
+    result: RemoveBinaryResult = remove_binary_conditional(kind, body.expected_path)
+    if result.removed:
         return RemoveBinaryResponse(kind=kind, removed=True)
 
-    # Determine failure reason for a precise error
-    stored = get_binary(kind)
-    if stored is None:
+    # Classify failure from the atomically observed state.
+    if result.stored_value is None:
         raise HTTPException(
             status_code=http_status.HTTP_404_NOT_FOUND,
             detail=f"Executor kind {kind!r} is not in the binary registry.",
@@ -250,6 +257,9 @@ def delete_binary(kind: str, body: RemoveBinaryRequest) -> RemoveBinaryResponse:
     # Stored path exists but differs from expected_path → conflict
     raise HTTPException(
         status_code=http_status.HTTP_409_CONFLICT,
-        detail=f"Stored path for {kind!r} ({stored!r}) does not match expected_path ({body.expected_path!r}). "
-               f"The record may have been updated concurrently — refresh and retry.",
+        detail=(
+            f"Stored path for {kind!r} ({result.stored_value!r}) does not match "
+            f"expected_path ({body.expected_path!r}). "
+            f"The record may have been updated concurrently — refresh and retry."
+        ),
     )

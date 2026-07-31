@@ -423,15 +423,15 @@ export type RecoveryState =
   | { stage: 'error'; message: string };
 
 /**
- * Discover APPROVED adapters from durable server state (GET
- * /runtime/adapters list) whose intended_profile_name is nonempty
- * but whose matching runtime custom profile is absent or not bound
- * to that adapter.
+ * Discover APPROVED bindable adapters from durable server state using the
+ * server-authoritative ``eligibility`` field (TASK-3784).  The browser MUST
+ * NOT recompute hash/tamper eligibility — this hook uses the server's
+ * ``eligibility`` value directly.
  *
  * Used identically by onboarding and Settings → Executors to show
  * a truthful "Bind <profile>" recovery action after refresh or a
- * new session. Approval is NOT profile creation — this hook
- * reveals adapters that are approved but unbound.
+ * new session.  Only adapters with ``eligibility === 'ready_to_bind'``
+ * are shown as recoverable.
  */
 export function useAdapterRecovery(): {
   state: RecoveryState;
@@ -446,21 +446,12 @@ export function useAdapterRecovery(): {
     staleTime: 15_000,
   });
 
-  const profilesQuery = useQuery({
-    queryKey: ['runtime-profiles'],
-    queryFn: () =>
-      import('@/lib/api').then(({ runtimeExecutors }) =>
-        runtimeExecutors.listRuntimeProfiles(),
-      ),
-    staleTime: 15_000,
-  });
-
   useEffect(() => {
-    if (adaptersQuery.isLoading || profilesQuery.isLoading) {
+    if (adaptersQuery.isLoading) {
       setRecoveryState({ stage: 'loading' });
       return;
     }
-    if (adaptersQuery.isError || profilesQuery.isError) {
+    if (adaptersQuery.isError) {
       setRecoveryState({
         stage: 'error',
         message: 'Could not load adapter state from the daemon.',
@@ -469,28 +460,14 @@ export function useAdapterRecovery(): {
     }
 
     const adapters = adaptersQuery.data ?? [];
-    const profiles = profilesQuery.data?.profiles ?? [];
 
-    // Build set of profile names bound to adapters via custom-adapter:<id>
-    const boundAdapterIds = new Set<string>();
-    for (const p of profiles) {
-      const cmdAdapter = p.command_adapter_id ?? '';
-      if (cmdAdapter.startsWith('custom-adapter:')) {
-        boundAdapterIds.add(cmdAdapter.slice('custom-adapter:'.length));
-      }
-    }
-
+    // Use the server-authoritative eligibility field — never recompute.
     const recoverable: RecoverableAdapter[] = [];
     for (const a of adapters) {
-      if (a.status !== 'approved') continue;
-      const profileName = a.intended_profile_name;
-      if (!profileName) continue;
-      // Skip if already bound to a profile
-      if (boundAdapterIds.has(a.id)) continue;
-
+      if (a.eligibility !== 'ready_to_bind') continue;
       recoverable.push({
         adapterId: a.id,
-        profileName,
+        profileName: a.intended_profile_name ?? '',
         executable: a.executable,
         workspaceAdapter: a.workspace_adapter,
       });
@@ -501,12 +478,10 @@ export function useAdapterRecovery(): {
     } else {
       setRecoveryState({ stage: 'ready', adapters: recoverable });
     }
-  }, [adaptersQuery.data, adaptersQuery.isLoading, adaptersQuery.isError,
-      profilesQuery.data, profilesQuery.isLoading, profilesQuery.isError]);
+  }, [adaptersQuery.data, adaptersQuery.isLoading, adaptersQuery.isError]);
 
   const refetch = (): void => {
     void adaptersQuery.refetch();
-    void profilesQuery.refetch();
   };
 
   return { state: recoveryState, refetch };

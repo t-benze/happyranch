@@ -785,6 +785,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
           approved_at: null,
           approved_by: null,
           intended_profile_name: profileName,
+          eligibility: null,
         };
       });
 
@@ -814,6 +815,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         approved_at: new Date().toISOString(),
         approved_by: 'founder',
         intended_profile_name: profileName,
+        eligibility: 'not_intended',
       });
       vi.spyOn(adaptersApi, 'bindAdapterProfile').mockResolvedValue({
         profile_name: profileName,
@@ -861,6 +863,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         approved_at: null,
         approved_by: null,
         intended_profile_name: profileName,
+        eligibility: null,
       });
 
       renderPage();
@@ -885,6 +888,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         approved_at: new Date().toISOString(),
         approved_by: 'founder',
         intended_profile_name: profileName,
+        eligibility: 'not_intended',
       });
       vi.spyOn(adaptersApi, 'bindAdapterProfile').mockRejectedValue(
         new Error('Adapter artifact changed before bind.'),

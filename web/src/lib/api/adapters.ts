@@ -6,6 +6,28 @@ POST /api/v1/runtime/adapters/{id}/bind-profile  - bind approved adapter to prof
  */
 import { request } from './client';
 
+/** Server-authoritative recovery eligibility (THR-107 TASK-3784).
+ *  The browser MUST NOT recompute hash/tamper eligibility — this field
+ *  is the single source of truth derived from durable server state.
+ *
+ *  - 'ready_to_bind': approved + hash-valid + profile absent → show Bind
+ *  - 'already_bound': profile exists bound to this adapter → show Connected
+ *  - 'cross_profile': profile exists bound to DIFFERENT adapter → no Bind/Connected
+ *  - 'builtin_collision': intended profile name is a built-in → no Bind
+ *  - 'tampered': on-disk hash mismatch / missing → no Bind
+ *  - 'pending': adapter is PENDING → not recoverable
+ *  - 'not_intended': no intended_profile_name → not recoverable
+ *  - null: not approved / unknown → not recoverable */
+export type AdapterEligibility =
+  | 'ready_to_bind'
+  | 'already_bound'
+  | 'cross_profile'
+  | 'builtin_collision'
+  | 'tampered'
+  | 'pending'
+  | 'not_intended'
+  | null;
+
 export interface AdapterEntry {
   id: string;
   name: string;
@@ -21,6 +43,8 @@ export interface AdapterEntry {
   approved_at: string | null;
   approved_by: string | null;
   intended_profile_name: string | null;
+  /** Server-authoritative eligibility — browser MUST NOT recompute. */
+  eligibility: AdapterEligibility;
 }
 
 export interface AdapterListResponse {

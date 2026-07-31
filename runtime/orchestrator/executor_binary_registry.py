@@ -8,6 +8,12 @@ isolated from the shared config.yaml surface.
 
 The registry is the SOLE resolution source for executor binaries (THR-107 seq155).
 PATH discovery, shutil.which, and auto-pinning are never used.
+
+CONCURRENCY: Every read-modify-write path (save_registry, set_binary,
+remove_binary, remove_binary_conditional) and any direct writer shares
+ONE lock (_registry_lock).  Public APIs acquire the lock once and delegate
+to unlocked internal helpers — callers inside the module that already hold
+the lock use the unlocked forms directly to avoid non-reentrant deadlock.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import json
 import logging
 import os
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -38,12 +45,19 @@ def _registry_path() -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Read
+# Write lock (single-process multi-threaded daemon model)
+# ---------------------------------------------------------------------------
+
+_registry_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Internal unlocked helpers — assume caller holds _registry_lock
 # ---------------------------------------------------------------------------
 
 
-def load_registry() -> dict[str, str]:
-    """Load the machine-local binary path registry.
+def _load_registry_unlocked() -> dict[str, str]:
+    """Load the machine-local binary path registry (caller must hold ``_registry_lock``).
 
     Returns a dict mapping executor kind names (lowercase bare strings like
     'claude', 'codex', 'opencode', 'pi') to absolute binary paths.
@@ -74,9 +88,79 @@ def load_registry() -> dict[str, str]:
     return cleaned
 
 
+def _save_registry_unlocked(entries: dict[str, str]) -> None:
+    """Atomically write the machine-local binary path registry (caller must hold
+    ``_registry_lock``).
+
+    ``entries`` is a dict mapping executor kind names to absolute paths.
+    Existing entries not present in ``entries`` are preserved (the call updates
+    or adds keys; it does not replace the whole file).
+
+    Paths are not validated here — validation is the caller's responsibility.
+    """
+    path = _registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    current = _load_registry_unlocked()
+    merged = {**current, **entries}
+
+    tmp = path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(merged, fh, indent=2, sort_keys=True)
+    tmp.replace(path)
+
+
+def _remove_binary_unlocked(kind: str) -> None:
+    """Remove a stored binary path from the registry (caller must hold
+    ``_registry_lock``).
+
+    No-op when the kind is not registered.
+    """
+    path = _registry_path()
+    current = _load_registry_unlocked()
+    key = kind.lower()
+    if key in current:
+        del current[key]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(current, fh, indent=2, sort_keys=True)
+
+
 # ---------------------------------------------------------------------------
-# Write
+# Conditional delete outcome
 # ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RemoveBinaryResult:
+    """Atomic conditional-delete outcome returned by ``remove_binary_conditional``.
+
+    Never re-reads the registry after a write — the result is derived entirely
+    from the in-memory state observed during the locked critical section.
+    """
+    removed: bool
+    """``True`` when the entry was present AND matched AND was removed."""
+
+    stored_value: str | None = None
+    """The value that was stored at the time of the conditional check, if any.
+    ``None`` when the key was absent.  When ``removed`` is ``True`` this is
+    the now-deleted value; when ``removed`` is ``False`` and the key exists
+    this is the value that did NOT match ``expected_path``."""
+
+
+# ---------------------------------------------------------------------------
+# Public APIs — acquire _registry_lock once, delegate to unlocked helpers
+# ---------------------------------------------------------------------------
+
+
+def load_registry() -> dict[str, str]:
+    """Load the machine-local binary path registry.
+
+    Returns a dict mapping executor kind names (lowercase bare strings like
+    'claude', 'codex', 'opencode', 'pi') to absolute binary paths.
+
+    Returns an empty dict when the file does not exist yet — no error.
+    """
+    with _registry_lock:
+        return _load_registry_unlocked()
 
 
 def save_registry(entries: dict[str, str]) -> None:
@@ -88,39 +172,20 @@ def save_registry(entries: dict[str, str]) -> None:
 
     Paths are not validated here — validation is the caller's responsibility.
     """
-    path = _registry_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Preserve existing entries, then overlay the new ones.
-    current = load_registry()
-    merged = {**current, **entries}
-
-    tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(merged, fh, indent=2, sort_keys=True)
-    tmp.replace(path)
-
-
-# ---------------------------------------------------------------------------
-# Single-entry helpers
-# ---------------------------------------------------------------------------
+    with _registry_lock:
+        _save_registry_unlocked(entries)
 
 
 def set_binary(kind: str, binary_path: str) -> None:
     """Register or update the binary path for an executor kind."""
-    save_registry({kind.lower(): binary_path})
+    with _registry_lock:
+        _save_registry_unlocked({kind.lower(): binary_path})
 
 
 def get_binary(kind: str) -> str | None:
     """Return the stored binary path for ``kind``, or None."""
-    return load_registry().get(kind.lower())
-
-
-# ---------------------------------------------------------------------------
-# Write lock (single-process multi-threaded daemon model)
-# ---------------------------------------------------------------------------
-
-_registry_lock = threading.Lock()
+    with _registry_lock:
+        return _load_registry_unlocked().get(kind.lower())
 
 
 def remove_binary(kind: str) -> None:
@@ -128,16 +193,11 @@ def remove_binary(kind: str) -> None:
 
     No-op when the kind is not registered.
     """
-    path = _registry_path()
-    current = load_registry()
-    key = kind.lower()
-    if key in current:
-        del current[key]
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(current, fh, indent=2, sort_keys=True)
+    with _registry_lock:
+        _remove_binary_unlocked(kind)
 
 
-def remove_binary_conditional(kind: str, expected_path: str) -> bool:
+def remove_binary_conditional(kind: str, expected_path: str) -> RemoveBinaryResult:
     """Atomically remove a binary path ONLY when the stored path exactly
     matches ``expected_path``.
 
@@ -145,23 +205,23 @@ def remove_binary_conditional(kind: str, expected_path: str) -> bool:
     a concurrent writer cannot replace the record between the check and the
     removal.
 
-    Returns ``True`` when the entry was present AND matched AND was removed.
-    Returns ``False`` when the kind is not registered OR the stored path
-    differs from ``expected_path`` (stale-target / race protection).
+    Returns a ``RemoveBinaryResult`` dataclass with:
+    - ``removed``: True when the entry was present AND matched AND was removed.
+    - ``stored_value``: the value stored at check time (None if absent).
     """
     with _registry_lock:
         path = _registry_path()
-        current = load_registry()
+        current = _load_registry_unlocked()
         key = kind.lower()
         stored = current.get(key)
         if stored is None:
-            return False
+            return RemoveBinaryResult(removed=False, stored_value=None)
         if stored != expected_path:
-            return False
+            return RemoveBinaryResult(removed=False, stored_value=stored)
         del current[key]
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(current, fh, indent=2, sort_keys=True)
-        return True
+        return RemoveBinaryResult(removed=True, stored_value=stored)
 
 
 # ---------------------------------------------------------------------------
