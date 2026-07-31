@@ -60,7 +60,7 @@ export const FIELD_CLASS =
  *  register route + body while the conformance challenge stays identical:
  *  'binary' → register-binary (built-in path, kind carried by the token),
  *  'profile' → register (legacy custom profile via generic-cli),
- *  'adapter' → adapter-submission (v1 wrapper → PENDING → approval → bind). */
+ *  'adapter' → adapter-submission (v1 wrapper → PENDING → founder approves & connects atomically, seq237). */
 export type ConnectTarget = 'binary' | 'profile' | 'adapter';
 
 export function buildConnectPrompt(
@@ -268,8 +268,9 @@ export function buildAdapterConnectPrompt(
     `#         "capabilities":["token_metering"],"workspace_adapter":"pi"}`,
     ``,
     `# Submission creates ONLY the exact PENDING adapter. Founder approval`,
-    `# is a separate step. After approval, the existing authenticated`,
-    `# management bind links the adapter to the "${name}" profile.`,
+    `# is a separate, Settings-only step. When the founder approves, the`,
+    `# server atomically approves AND connects the "${name}" profile — one`,
+    `# action, no follow-up bind needed.`,
     `# No auto-approval, no token disclosure beyond this prompt.`,
     ``,
     `# This token is valid for about 30 minutes. This screen updates live.`,
@@ -285,7 +286,9 @@ export type AdapterState =
 
 /** Shared hook for the adapter-backed custom-CLI connection (THR-107 seq141).
  *  Mints an adapter-purpose token → CLI creates/submits v1 adapter wrapper
- *  → UI polls adapter status → binds profile when APPROVED. */
+ *  → UI polls adapter status → Connected when server reports already_bound.
+ *  Normal intended-profile approval is atomic (seq237): the server
+ *  approves and connects in one transaction — no client-side bind. */
 export function useAdapterConnect({
   onConnected,
 }: {

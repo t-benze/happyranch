@@ -124,6 +124,76 @@ def test_adapter_entry_eligibility_includes_recovery_ready() -> None:
     )
 
 
+# ── BindProfileRequest + bind-profile operation semantic test (TASK-3841 fix-forward) ─
+
+def test_bind_profile_contract_describes_both_paths() -> None:
+    """BindProfileRequest and bind-profile operation MUST describe both binding paths.
+
+    TASK-3839 found the published contract still claimed the request must
+    unconditionally match intended_profile_name, while the runtime
+    deliberately accepts a caller-selected name for approved no-intended
+    (recovery_ready) adapters.  This test is a fail-closed semantic guard:
+    it inspects the generated schema and operation descriptions.
+    """
+    app = create_app(DaemonState.idle(Settings()))
+    full = app.openapi()
+
+    # ── BindProfileRequest schema ──
+    schemas = full.get("components", {}).get("schemas", {})
+    bp_schema = schemas.get("BindProfileRequest", {})
+    assert bp_schema, "BindProfileRequest schema missing from OpenAPI components"
+
+    schema_desc = bp_schema.get("description", "")
+    assert "recovery_ready" in schema_desc, (
+        f"BindProfileRequest schema description must include 'recovery_ready'.\n"
+        f"Current description:\n{schema_desc}"
+    )
+    assert "intended_profile_name" in schema_desc, (
+        f"BindProfileRequest schema description must mention 'intended_profile_name'.\n"
+        f"Current description:\n{schema_desc}"
+    )
+
+    profile_prop = bp_schema.get("properties", {}).get("profile_name", {})
+    assert profile_prop, "BindProfileRequest.profile_name property missing from schema"
+    prop_desc = profile_prop.get("description", "")
+    assert "recovery_ready" in prop_desc, (
+        f"profile_name field description must include 'recovery_ready'.\n"
+        f"Current description:\n{prop_desc}"
+    )
+    assert "intended" in prop_desc, (
+        f"profile_name field description must describe intended-profile matching.\n"
+        f"Current description:\n{prop_desc}"
+    )
+
+    # ── Reject unconditional intended-name-only claim ──
+    assert "caller-selected" in prop_desc.lower() or "caller selected" in prop_desc.lower(), (
+        f"profile_name field description must mention caller-selected name for recovery.\n"
+        f"Current description:\n{prop_desc}"
+    )
+
+    # ── bind-profile POST operation ──
+    paths = full.get("paths", {})
+    bind_path = None
+    for path_key, path_val in paths.items():
+        if path_key.endswith("bind-profile"):
+            bind_path = path_val
+            break
+    assert bind_path is not None, "bind-profile path missing from OpenAPI"
+
+    post_op = bind_path.get("post", {})
+    assert post_op, "bind-profile POST operation missing"
+
+    op_desc = post_op.get("description", "")
+    assert "recovery_ready" in op_desc, (
+        f"bind-profile operation description must include 'recovery_ready'.\n"
+        f"Current description:\n{op_desc}"
+    )
+    assert "intended_profile_name" in op_desc, (
+        f"bind-profile operation description must mention intended_profile_name.\n"
+        f"Current description:\n{op_desc}"
+    )
+
+
 # ── ScheduleEditBody null-type regression ─────────────────────────────
 
 _NON_NULLABLE_EDIT_FIELDS = ["fire_at", "recurrence", "timezone"]

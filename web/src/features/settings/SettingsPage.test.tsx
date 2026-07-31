@@ -1125,6 +1125,39 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(promptText).toContain('required by the registration token challenge');
     expect(promptText).toContain('NOT an');
   });
+
+  // ── seq237 atomic approve-and-connect prompt test (TASK-3841 fix-forward) ──
+
+  test('seq237: normal prompt says atomic approve-and-connect, not approve-then-Bind', async () => {
+    server.use(
+      http.post('/api/v1/auth/registration-token/runtime', () =>
+        HttpResponse.json({
+          token: 'hr_tok_SETTINGS_SEQ237',
+          expires_at: Math.floor(Date.now() / 1000) + 1800,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/settings/executors`);
+    await openConnect(user);
+    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
+    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText(/name this cli/i), 'seq237-normal');
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const promptText = document.querySelector('pre')?.textContent || '';
+
+    // Normal flow: atomic approve-and-connect
+    expect(promptText).toContain('atomically approves');
+    expect(promptText).toContain('connects the');
+    expect(promptText).toContain('no follow-up bind needed');
+
+    // Must NOT contain obsolete approve-then-Bind lifecycle
+    expect(promptText).not.toContain('management bind');
+    expect(promptText).not.toContain('After approval, the existing authenticated');
+  });
 });
 
 describe('SettingsPage — keyboard shortcuts', () => {

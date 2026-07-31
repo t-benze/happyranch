@@ -188,17 +188,26 @@ class AdapterSubmitRequest(BaseModel):
 class BindProfileRequest(BaseModel):
     """Request body for the seq141 profile-binding management endpoint.
 
-    The caller provides the profile name to bind. The server verifies:
-    - adapter exists and is APPROVED
-    - adapter's intended_profile_name matches the request's profile_name
-    - D7B custom-adapter validation passes
-    - profile_name does not collide with a built-in
+    Two binding paths, server-enforced by durable adapter state:
+    - When the adapter has an ``intended_profile_name``, the caller MUST
+      supply that exact name — the server rejects any mismatch (422).
+    - For an approved no-intended adapter whose server eligibility is
+      ``recovery_ready``, Settings may supply a caller-selected valid
+      profile name for advanced recovery. The server verifies D7B
+      custom-adapter validation, on-disk integrity, and that the name
+      does not collide with a built-in.
+    The adapter must exist and be APPROVED; any other status is rejected.
     """
 
     profile_name: str = Field(
         ...,
         min_length=1,
-        description="The executor profile name to bind to the approved adapter.",
+        description=(
+            "The executor profile name to bind. For adapters with an "
+            "intended profile this must exactly match it. For approved "
+            "no-intended (recovery_ready) adapters, provide a valid "
+            "caller-selected profile name for explicit Bind recovery."
+        ),
     )
 
     model_config = {"extra": "forbid"}
@@ -901,7 +910,10 @@ def get_contract_reference(request: Request) -> dict:
                 "Submit the adapter wrapper executable for the intended profile. "
                 "Requires the same adapter-purpose hrreg_ token and a completed "
                 "conformance challenge. Submission creates ONLY the exact PENDING "
-                "adapter; founder approval and management binding are separate steps."
+                "adapter; founder approval is a separate Settings-only step. "
+                "For adapters with an intended profile, approval atomically creates "
+                "and connects the profile (seq237); explicit Bind is only needed for "
+                "advanced recovery of approved no-intended adapters."
             ),
         },
         "probe": {
@@ -982,14 +994,24 @@ def bind_adapter_profile(
 ) -> dict:
     """Bind a profile name to an APPROVED custom adapter (THR-107 seq141).
 
-    Standard daemon-bearer management endpoint. Binds the intended profile
-    name to an APPROVED adapter id via ``command_adapter_id:
-    custom-adapter:<id>``.
+    Standard daemon-bearer management endpoint. Two paths:
+    - **Normal / intended-profile**: the request ``profile_name`` must
+      exactly match the adapter's ``intended_profile_name``. This path is
+      reachable during advanced recovery when an intended-profile adapter
+      was approved without auto-bind (legacy state).
+    - **Recovery**: for an approved adapter with no ``intended_profile_name``
+      whose server eligibility is ``recovery_ready``, the caller supplies a
+      valid profile name for explicit Bind recovery. The server validates
+      D7B custom-adapter requirements, checks for built-in name collisions,
+      and verifies on-disk integrity.
+    Both paths bind via ``command_adapter_id: custom-adapter:<id>``.
 
     Gating checks (exact order):
     1. Adapter exists (404 if unknown)
     2. Adapter is APPROVED (422 if PENDING or unknown status)
-    3. Adapter's intended_profile_name matches request profile_name (422)
+    3. When intended_profile_name is set, the request profile_name must
+       match exactly; when None (recovery_ready), the caller selects a
+       valid profile name (422 on mismatch or invalid name)
     4. Profile name does not collide with a built-in (422)
     5. On-disk adapter is still executable with matching SHA-256 (422)
     6. D7B custom-adapter validation passes (orchestrator-rejected → 422)
