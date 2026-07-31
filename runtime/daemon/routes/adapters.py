@@ -415,9 +415,12 @@ def _compute_eligibility(entry) -> str | None:
     if entry.status != "approved":
         return None
 
-    # No intended profile → nothing to recover.
+    # No intended profile → advanced recovery if adapter is hash/integrity-valid.
     if not entry.intended_profile_name:
-        return "not_intended"
+        resolved = resolve_adapter(entry.id)
+        if resolved is None:
+            return "tampered"
+        return "recovery_ready"
 
     profile_name = entry.intended_profile_name
 
@@ -1017,8 +1020,10 @@ def bind_adapter_profile(
             ),
         )
 
-    # 3. intended_profile_name must match
-    if entry.intended_profile_name != profile_name:
+    # 3. intended_profile_name must match when present.
+    #     When intended is None (master-bearer registration), the caller
+    #     explicitly provides the profile name for advanced Bind recovery.
+    if entry.intended_profile_name is not None and entry.intended_profile_name != profile_name:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
@@ -1091,7 +1096,7 @@ def bind_adapter_profile(
                     f"before bind. The adapter must be founder-approved."
                 ),
             )
-        if re_read_entry.intended_profile_name != profile_name:
+        if re_read_entry.intended_profile_name is not None and re_read_entry.intended_profile_name != profile_name:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(

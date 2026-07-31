@@ -526,7 +526,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
 
     // The pending adapter should NOT appear in RecoverySection either,
     // since RecoverySection only shows approved ready_to_bind adapters.
-    expect(screen.queryByText(/Approved adapters ready to bind/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Advanced recovery \/ legacy adapters/)).not.toBeInTheDocument();
   });
 
   test('ConnectFlow (onboarding) shows RecoverySection for approved ready-to-bind adapters but without Approve/Reject', async () => {
@@ -543,7 +543,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
 
     // RecoverySection should appear with the approved adapter
     await waitFor(() => {
-      expect(screen.getByText(/Approved adapters ready to bind/)).toBeInTheDocument();
+      expect(screen.getByText(/Advanced recovery \/ legacy adapters/)).toBeInTheDocument();
     });
 
     // The Bind button should be visible

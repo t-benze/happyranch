@@ -281,7 +281,6 @@ export type AdapterState =
   | { stage: 'form' }
   | { stage: 'waiting'; name: string; token: string; expired: boolean; adapterId: string }
   | { stage: 'submitted'; name: string; adapterId: string; status: string }
-  | { stage: 'bind_failed'; name: string; adapterId: string; error: string }
   | { stage: 'connected'; name: string; adapterId: string };
 
 /** Shared hook for the adapter-backed custom-CLI connection (THR-107 seq141).
@@ -357,36 +356,16 @@ export function useAdapterConnect({
     }
   }, [adapterEntry, state.stage, name, adapterIdForPoll]);
 
-  // Transition: submitted → connected when adapter is APPROVED → bind profile
-  const bindMutation = useMutation({
-    mutationFn: (aid: string) =>
-      import('@/lib/api').then(({ adapters }) =>
-        adapters.bindAdapterProfile(aid, { profile_name: name }),
-      ),
-    onSuccess: () => {
-      setState({ stage: 'connected', name, adapterId: adapterIdForPoll });
-      onConnected({ name, path: null, via: 'custom' });
-    },
-    onError: (error: unknown) => {
-      const message =
-        error instanceof Error ? error.message : 'Bind failed — retry or contact the founder.';
-      setState({ stage: 'bind_failed', name, adapterId: adapterIdForPoll, error: message });
-    },
-  });
-
-  const retryBind = (): void => {
-    if (!bindMutation.isPending) bindMutation.mutate(adapterIdForPoll);
-  };
-
+  // Transition: submitted → connected when server confirms atomically bound.
+  // No client-side bind — approval is an atomic server transaction (seq237).
+  // The server-authoritative ``eligibility`` value is the single source of truth.
   useEffect(() => {
     if (state.stage !== 'submitted') return;
-    if (adapterEntry && adapterEntry.status === 'approved') {
-      // Auto-bind the approved adapter to the profile
-      if (!bindMutation.isPending && !bindMutation.isSuccess) {
-        bindMutation.mutate(adapterIdForPoll);
-      }
+    if (adapterEntry && adapterEntry.eligibility === 'already_bound') {
+      setState({ stage: 'connected', name, adapterId: adapterIdForPoll });
+      onConnected({ name, path: null, via: 'custom' });
     }
-  }, [adapterEntry, state.stage, adapterIdForPoll, bindMutation]);
+  }, [adapterEntry, state.stage, adapterIdForPoll, onConnected, name]);
 
   const start = (n: string): void => {
     if (n && !mint.isPending) mint.mutate(n);
@@ -401,7 +380,7 @@ export function useAdapterConnect({
     mint.reset();
   };
 
-  return { state, name, token, adapterId: adapterIdForPoll, mint, start, regenerate, back, bindMutation, retryBind };
+  return { state, name, token, adapterId: adapterIdForPoll, mint, start, regenerate, back };
 }
 
 /* ------------------------------------------------------------------ */

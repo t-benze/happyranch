@@ -19,7 +19,8 @@ import { request } from './client';
  *  - 'builtin_collision': intended profile name is a built-in → no Bind
  *  - 'tampered': on-disk hash mismatch / missing → no Bind
  *  - 'pending': adapter is PENDING → not recoverable
- *  - 'not_intended': no intended_profile_name → not recoverable
+ *  - 'not_intended': no intended_profile_name → not recoverable (legacy pre-seq237)
+ *  - 'recovery_ready': no intended_profile_name + hash-valid → advanced Bind recovery
  *  - null: not approved / unknown → not recoverable */
 export type AdapterEligibility =
   | 'ready_to_bind'
@@ -29,6 +30,7 @@ export type AdapterEligibility =
   | 'tampered'
   | 'pending'
   | 'not_intended'
+  | 'recovery_ready'
   | null;
 
 export interface AdapterEntry {

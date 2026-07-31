@@ -757,18 +757,21 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
   });
 
   test(
-    'adapter lifecycle: submitted PENDING → poll APPROVED → bind → Connected',
+    'adapter lifecycle: submitted PENDING → server-confirmed already_bound → Connected (no client bind)',
     async () => {
       const user = userEvent.setup();
       const profileName = 'onb-lifecycle-cli';
       const adapterId = `${profileName}-adapter`;
 
-      // Spy mint + adapter poll API (matching the existing test pattern).
+      // Spy mint + adapter poll API.
       vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
         .mockResolvedValue({ token: 'hr_tok_ONB_LC', expires_at: Date.now() / 1000 + 1800 });
 
-      // Mock the adapter poll: return PENDING first, then the hook transitions.
+      // Spy bindAdapterProfile to verify it is NEVER called.
       const { adapters: adaptersApi } = await import('@/lib/api');
+      const bindSpy = vi.spyOn(adaptersApi, 'bindAdapterProfile');
+
+      // Mock the adapter poll: return PENDING first.
       vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
         return {
           id: adapterId,
@@ -799,7 +802,9 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
       await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
       expect(screen.getByText(adapterId)).toBeInTheDocument();
 
-      // Transition to APPROVED → auto-bind → Connected.
+      // Transition: server confirms atomically bound (seq237) — onboarding
+      // does NOT call bindAdapterProfile; it reads the server-authoritative
+      // eligibility field directly.
       vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
         id: adapterId,
         name: profileName,
@@ -815,15 +820,7 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         approved_at: new Date().toISOString(),
         approved_by: 'founder',
         intended_profile_name: profileName,
-        eligibility: 'not_intended',
-      });
-      vi.spyOn(adaptersApi, 'bindAdapterProfile').mockResolvedValue({
-        profile_name: profileName,
-        command_adapter_id: `custom-adapter:${adapterId}`,
-        workspace_adapter_id: 'pi',
-        kind: 'custom',
-        status: 'connected',
-        adapter_id: adapterId,
+        eligibility: 'already_bound',
       });
 
       // Connected card — the onboarding mount uses a heading for the connected state.
@@ -832,38 +829,45 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
       expect(
         screen.getByText(/you can manage your clis anytime from settings/i),
       ).toBeInTheDocument();
+
+      // Adversarial: no bind request was issued — onboarding is server-status-only.
+      expect(bindSpy).not.toHaveBeenCalled();
     },
     15000,
   );
 
   test(
-    'adapter lifecycle: bind failure → error state → Retry → Connected',
+    'adapter lifecycle: stale/conflict response does not false-connect',
     async () => {
       const user = userEvent.setup();
-      const profileName = 'onb-bindfail-cli';
+      const profileName = 'onb-stale-cli';
       const adapterId = `${profileName}-adapter`;
 
-      // Spy mint + adapter poll API.
       vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-        .mockResolvedValue({ token: 'hr_tok_ONB_BF', expires_at: Date.now() / 1000 + 1800 });
+        .mockResolvedValue({ token: 'hr_tok_STALE', expires_at: Date.now() / 1000 + 1800 });
 
       const { adapters: adaptersApi } = await import('@/lib/api');
-      vi.spyOn(adaptersApi, 'getAdapter').mockResolvedValue({
-        id: adapterId,
-        name: profileName,
-        executable: '/tmp/test-adapter',
-        executable_hash: 'abc123',
-        version: '1.0.0',
-        capabilities: [],
-        contract_version: 1,
-        workspace_adapter: 'pi',
-        status: 'pending',
-        registered_at: new Date().toISOString(),
-        registered_by: 'test',
-        approved_at: null,
-        approved_by: null,
-        intended_profile_name: profileName,
-        eligibility: null,
+      const bindSpy = vi.spyOn(adaptersApi, 'bindAdapterProfile');
+
+      // Mock poll: PENDING first, then approved with NOT already_bound.
+      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
+        return {
+          id: adapterId,
+          name: profileName,
+          executable: '/tmp/test-adapter',
+          executable_hash: 'abc123',
+          version: '1.0.0',
+          capabilities: [],
+          contract_version: 1,
+          workspace_adapter: 'pi',
+          status: 'pending',
+          registered_at: new Date().toISOString(),
+          registered_by: 'test',
+          approved_at: null,
+          approved_by: null,
+          intended_profile_name: profileName,
+          eligibility: null,
+        };
       });
 
       renderPage();
@@ -872,7 +876,10 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
       await user.type(await screen.findByLabelText(/name this cli/i), profileName);
       await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
 
-      // Show APPROVED adapter, but bind FAILS → AdapterBindFailedBody.
+      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+
+      // Switch poll: approved but eligibility is 'ready_to_bind', not 'already_bound'.
+      // The server has NOT bound the profile yet — onboarding MUST NOT false-connect.
       vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
         id: adapterId,
         name: profileName,
@@ -888,31 +895,87 @@ describe('OnboardingPage — Step 1 (adapter-backed default flow)', () => {
         approved_at: new Date().toISOString(),
         approved_by: 'founder',
         intended_profile_name: profileName,
-        eligibility: 'not_intended',
-      });
-      vi.spyOn(adaptersApi, 'bindAdapterProfile').mockRejectedValue(
-        new Error('Adapter artifact changed before bind.'),
-      );
-
-      await screen.findByText(/bind failed/i, {}, { timeout: 10000 });
-      const retryButton = screen.getByRole('button', { name: /retry bind/i });
-      expect(retryButton).toBeInTheDocument();
-
-      // Retry with success.
-      vi.mocked(adaptersApi.bindAdapterProfile).mockResolvedValue({
-        profile_name: profileName,
-        command_adapter_id: `custom-adapter:${adapterId}`,
-        workspace_adapter_id: 'pi',
-        kind: 'custom',
-        status: 'connected',
-        adapter_id: adapterId,
+        eligibility: 'ready_to_bind',
       });
 
-      await user.click(retryButton);
-      await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+      // The submitted state should still show (no Connected card).
+      // The adapter ID should still be visible in the submitted state.
+      await screen.findByText(adapterId, {}, { timeout: 10000 });
+
+      // No bind was issued and no Connected heading appeared.
+      expect(bindSpy).not.toHaveBeenCalled();
       expect(
-        screen.getByText(/you can manage your clis anytime from settings/i),
-      ).toBeInTheDocument();
+        screen.queryByRole('heading', { name: new RegExp(profileName, 'i') }),
+      ).not.toBeInTheDocument();
+    },
+    15000,
+  );
+
+  test(
+    'adapter lifecycle: bind/failure UI is absent from onboarding',
+    async () => {
+      const user = userEvent.setup();
+      const profileName = 'onb-nobind-cli';
+      const adapterId = `${profileName}-adapter`;
+
+      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+        .mockResolvedValue({ token: 'hr_tok_NOBIND', expires_at: Date.now() / 1000 + 1800 });
+
+      const { adapters: adaptersApi } = await import('@/lib/api');
+      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
+        return {
+          id: adapterId,
+          name: profileName,
+          executable: '/tmp/test-adapter',
+          executable_hash: 'abc123',
+          version: '1.0.0',
+          capabilities: [],
+          contract_version: 1,
+          workspace_adapter: 'pi',
+          status: 'pending',
+          registered_at: new Date().toISOString(),
+          registered_by: 'test',
+          approved_at: null,
+          approved_by: null,
+          intended_profile_name: profileName,
+          eligibility: null,
+        };
+      });
+
+      renderPage();
+      await goAdapter(user);
+
+      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+
+      // Poll with approved but NOT already_bound — the old code would have
+      // tried to bind here. Verify no bind UI elements appear.
+      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
+        id: adapterId,
+        name: profileName,
+        executable: '/tmp/test-adapter',
+        executable_hash: 'abc123',
+        version: '1.0.0',
+        capabilities: [],
+        contract_version: 1,
+        workspace_adapter: 'pi',
+        status: 'approved',
+        registered_at: new Date().toISOString(),
+        registered_by: 'test',
+        approved_at: new Date().toISOString(),
+        approved_by: 'founder',
+        intended_profile_name: profileName,
+        eligibility: 'tampered',
+      });
+
+      // Wait — the submitted state persists; no bind attempt, no error UI.
+      await screen.findByText(adapterId, {}, { timeout: 10000 });
+
+      // No bind/retry UI should appear.
+      expect(screen.queryByText(/bind failed/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /retry bind/i })).not.toBeInTheDocument();
     },
     15000,
   );

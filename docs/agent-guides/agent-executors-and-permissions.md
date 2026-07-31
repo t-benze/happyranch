@@ -193,15 +193,21 @@ first and follow the returned schemas exactly.
 2. **Conform** — bounded stdin/stdout conformance probe (``POST
    /api/v1/runtime/adapters/{id}/conformance``) validates the adapter speaks v1
    ``AdapterInput``/``AdapterOutput``.
-3. **Approve** — founder explicitly approves the exact artifact snapshot
-   (``POST /api/v1/runtime/adapters/{id}/approve``) binding path, hash, version,
-   capabilities, and contract_version. Only APPROVED adapters can bind to
-   profiles or launch.
-4. **Bind → re-register → launch → verify** — operator sets
-   ``command_adapter_id: custom-adapter:<id>`` on a profile and re-registers.
-   The registration route rejects binding to PENDING, unknown, removed,
-   tampered, non-regular, or non-executable adapters before any durable
-   mutation, registry mutation, audit write, or token consumption.
+3. **Approve & connect (THR-107 seq237)** — founder explicitly approves the exact
+   artifact snapshot (``POST /api/v1/runtime/adapters/{id}/approve``) binding
+   path, hash, version, capabilities, and contract_version. **When the adapter
+   has an ``intended_profile_name``**, the server atomically approves the snapshot
+   AND creates/binds that named custom profile (``command_adapter_id: custom-adapter:<id>``)
+   in one transaction — no client-side bind follow-up is needed. Adapters without
+   an intended profile (master-bearer registration) are approved without auto-binding
+   and retain explicit advanced Bind recovery via Settings.
+4. **Advanced Bind recovery** — for approved adapters without an intended profile
+   (``recovery_ready`` eligibility), the founder provides an explicit profile name
+   through ``POST /api/v1/runtime/adapters/{id}/bind-profile``. Only APPROVED
+   adapters with hash-verified artifacts can bind. The registration route rejects
+   binding to PENDING, unknown, removed, tampered, non-regular, or non-executable
+   adapters before any durable mutation, registry mutation, audit write, or token
+   consumption. **This path is secondary to atomic approve-and-bind (seq237).**
 5. **Remove (THR-107)** — founder removes an APPROVED adapter via the
    management ``DELETE /api/v1/runtime/adapters/{adapter_id}`` route
    (bearer-authenticated, Settings → Executors → Custom Adapters).

@@ -56,6 +56,9 @@ interface ConnectFlowProps {
   /** Primary action rendered before "Connect another" on the connected card
    *  (onboarding: Continue → Step 2). Omit for none. */
   connectedPrimaryAction?: ReactNode;
+  /** Show the recovery section for approved unbound adapters.
+   *  Settings=true (default), onboarding=false. */
+  showRecovery?: boolean;
 }
 
 export function ConnectFlow({
@@ -66,6 +69,7 @@ export function ConnectFlow({
   waitingSkipSlot,
   connectedSubtitle,
   connectedPrimaryAction,
+  showRecovery = true,
 }: ConnectFlowProps): JSX.Element {
   const [mode, setMode] = useState<ConnectMode>('builtin');
   const [customSubMode, setCustomSubMode] = useState<'adapter' | 'legacy'>('adapter');
@@ -94,8 +98,9 @@ export function ConnectFlow({
       ) : (
         <>
           {/* Durable recovery at shared surface: visible in default builtin
-              AND custom modes, not only inside AdapterConnect */}
-          {recovery.state.stage === 'ready' && recovery.state.adapters.length > 0 && (
+              AND custom modes, not only inside AdapterConnect.
+              Gated by showRecovery: onboarding is server-status-only. */}
+          {showRecovery && recovery.state.stage === 'ready' && recovery.state.adapters.length > 0 && (
             <RecoverySection
               adapters={recovery.state.adapters}
               onBindSuccess={(name, executable) =>
@@ -290,20 +295,7 @@ export function AdapterConnect({
     );
   }
 
-  // Bind failed state — approved but bind errored; show error + retry
-  if (flow.state.stage === 'bind_failed') {
-    return (
-      <AdapterBindFailedBody
-        name={flow.state.name}
-        adapterId={flow.state.adapterId}
-        error={flow.state.error}
-        onRetry={() => flow.retryBind()}
-        onBack={flow.back}
-      />
-    );
-  }
-
-  // Connected state — adapter was approved and bound
+  // Connected state — server confirmed atomically bound (seq237)
   if (flow.state.stage === 'connected') {
     return (
       <ConnectedCard
@@ -1091,12 +1083,11 @@ function RecoverySection({
   return (
     <div className="mb-6 space-y-3 max-w-lg">
       <p className="text-text-primary text-sm font-medium">
-        Approved adapters ready to bind
+        Advanced recovery / legacy adapters
       </p>
       <p className="text-text-muted text-xs">
-        These adapters were submitted and founder-approved but haven&rsquo;t
-        been bound to a profile yet. Click <strong>Bind</strong> to connect
-        each one — approval alone does not create the profile.
+        These adapters were approved without an automated profile binding.
+        Click <strong>Bind</strong> to connect each one to an executor profile.
       </p>
       {adapters.map((a) => (
         <RecoveryBindCard

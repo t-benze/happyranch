@@ -71,19 +71,27 @@ runtime. The server-derived schema is canonical. Key invariants:
     atomically validates the six material identity facts (executable, executable_hash,
     version, capabilities, contract_version, workspace_adapter) of the exact durable
     snapshot. Any mismatch, missing adapter, non-PENDING state, or already-approved
-    incompatible repeat fails before persistence. On success, the adapter enters
-    **APPROVED** with ``approved_at`` and ``approved_by`` provenance. Approval alone
-    does NOT create a profile — the adapter must still be bound.
+    incompatible repeat fails before persistence. **THR-107 seq237:** When the adapter
+    has an ``intended_profile_name``, the server atomically approves the snapshot AND
+    creates/binds that named custom profile in one transaction — ``eligibility`` becomes
+    ``already_bound`` immediately, and no client-side bind follow-up is needed. Adapters
+    without an intended profile (master-bearer registration path) are approved without
+    auto-binding; they retain explicit advanced Bind recovery via Settings.
+  - **PENDING exact-snapshot founder reject/removal:**
   - **PENDING exact-snapshot founder reject/removal:**
     ``POST /runtime/adapters/{id}/reject`` atomically validates the same six
     material identity facts and removes the PENDING durable entry. Rejects stale,
     hash-changed (re-registered), and non-PENDING snapshots without mutation. No
     persisted rejected status — the PENDING entry is removed. No SQLite/schema change.
-  - **APPROVED bind:** ``POST /runtime/adapters/{id}/bind-profile`` binds a profile
-    name to the APPROVED adapter. After binding, the server reports
-    ``eligibility: already_bound`` for that adapter. The durable UI must retain
-    and render the adapter as Connected after a fresh render from a server
-    ``already_bound`` response — not filter or unmount it.
+  - **APPROVED bind (recovery / legacy):** ``POST /runtime/adapters/{id}/bind-profile``
+    binds a profile name to the APPROVED adapter. For adapters with a non-null
+    ``intended_profile_name``, the caller must supply the exact intended name.
+    For adapters without an intended profile (``recovery_ready`` eligibility), the
+    founder explicitly provides the desired profile name. After binding, the server
+    reports ``eligibility: already_bound`` for that adapter. The durable UI must
+    retain and render the adapter as Connected after a fresh render from a server
+    ``already_bound`` response — not filter or unmount it. **This route is now
+    secondary to atomic approve-and-bind (seq237) for adapters with intended profiles.**
   - **Approved-only removal:** ``DELETE /runtime/adapters/{id}`` removes an
     APPROVED custom adapter with an exact snapshot of all material identity/binding
     facts. Rejects stale, re-registered, wrong-target, and profile-referenced
@@ -106,8 +114,10 @@ runtime. The server-derived schema is canonical. Key invariants:
   modules from adapter executables.
 - **Legacy generic-cli profiles remain readable** and are never auto-mutated.
   The operator path to adopt custom adapters is: register executable → conformance
-  → PENDING → founder exact-snapshot approve (or reject) → APPROVED →
-  bind profile (``command_adapter_id: custom-adapter:<id>``) →
+  → PENDING → founder exact-snapshot approve (or reject) → APPROVED +
+  atomic profile bind for intended adapters (``already_bound``) OR
+  advanced Bind recovery for no-intended adapters (``recovery_ready``)
+  → re-register → launch/verify. PENDING rejection atomically removes the entry
   re-register → launch/verify. PENDING rejection atomically removes the entry
   with no persisted rejected status. Approved-only removal is a separate
   DELETE path for APPROVED adapters. Rollback: re-register the profile as
