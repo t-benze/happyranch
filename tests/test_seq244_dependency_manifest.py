@@ -134,9 +134,17 @@ class TestDependencyManifestValidation:
         with pytest.raises(ValueError, match="non-empty list"):
             validate_dependency_manifest(1, [])
 
-    def test_invalid_manifest_version_type(self):
+    def test_invalid_manifest_version_type_string(self):
         with pytest.raises(ValueError, match="integer"):
             validate_dependency_manifest("1", [{"executable": "/bin/sh", "sha256": "a" * 64}])
+
+    def test_invalid_manifest_version_type_float(self):
+        with pytest.raises(ValueError, match="integer"):
+            validate_dependency_manifest(1.0, [{"executable": "/bin/sh", "sha256": "a" * 64}])
+
+    def test_invalid_manifest_version_type_bool(self):
+        with pytest.raises(ValueError, match="integer"):
+            validate_dependency_manifest(True, [{"executable": "/bin/sh", "sha256": "a" * 64}])
 
     def test_version_zero_rejected(self):
         with pytest.raises(ValueError, match="exactly 1"):

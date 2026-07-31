@@ -2169,10 +2169,18 @@ class TestSubmitStrictManifestVersion:
         app_and_client,
         route_setup,
         token_store,
+        monkeypatch,
         bad_value,
         label,
     ):
-        """Submit route returns 422 for float/string/bool manifest version."""
+        """Submit route returns 422, probe not called, no persistence."""
+        from unittest.mock import MagicMock
+        spy = MagicMock()
+        monkeypatch.setattr(
+            "runtime.daemon.routes.adapters.register_custom_adapter",
+            spy,
+        )
+
         app, master_token, store = app_and_client
         token = _mint_adapter_token(store, f"cli-{label}")
         script = _make_conformant_adapter_script(
@@ -2197,14 +2205,27 @@ class TestSubmitStrictManifestVersion:
         assert resp.status_code == 422, (
             f"submit route: expected 422 for {label}, got {resp.status_code}: {resp.text}"
         )
+        spy.assert_not_called()
+        assert load_adapters() == {}
 
-    def test_submit_route_accepts_int_1(
+    def test_submit_route_accepts_int_1_probe_and_persist(
         self,
         app_and_client,
         route_setup,
         token_store,
+        monkeypatch,
     ):
-        """Submit route accepts literal JSON integer 1."""
+        """Submit route accepts literal int 1, probe called, adapter persisted."""
+        from unittest.mock import MagicMock
+        from runtime.orchestrator.custom_adapter_registry import (
+            register_custom_adapter as _real,
+        )
+        spy = MagicMock(wraps=_real)
+        monkeypatch.setattr(
+            "runtime.daemon.routes.adapters.register_custom_adapter",
+            spy,
+        )
+
         app, master_token, store = app_and_client
         token = _mint_adapter_token(store, "cli-int-1")
         script = _make_conformant_adapter_script(route_setup, "int1-adapter")
@@ -2227,3 +2248,7 @@ class TestSubmitStrictManifestVersion:
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["dependency_manifest_version"] == 1
+        assert data["status"] == "pending"
+        spy.assert_called_once()
+        adapters = load_adapters()
+        assert len(adapters) == 1

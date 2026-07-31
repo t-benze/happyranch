@@ -440,9 +440,16 @@ class TestStrictIntTypeEnforcement:
     # -- Route-level HTTP tests (register route) --
 
     def test_register_route_float_1_0_no_persistence(
-        self, client: TestClient, tmp_path: Path
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """JSON 1.0 rejected at register route (422), no persistence."""
+        """JSON 1.0 rejected at register route (422), probe not called, no persistence."""
+        from unittest.mock import MagicMock
+        spy = MagicMock()
+        monkeypatch.setattr(
+            "runtime.daemon.routes.adapters.register_custom_adapter",
+            spy,
+        )
+
         script = _make_conformant_adapter_script(tmp_path, "float-reg-adapter")
         dep_exe = _make_fake_exe(tmp_path, "dep-float-reg")
         dep_hash = compute_sha256(str(dep_exe))
@@ -459,11 +466,19 @@ class TestStrictIntTypeEnforcement:
         resp = client.post("/api/v1/runtime/adapters/register", json=body)
         assert resp.status_code == 422, resp.text
         assert load_adapters() == {}
+        spy.assert_not_called()
 
     def test_register_route_string_1_no_persistence(
-        self, client: TestClient, tmp_path: Path
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """JSON "1" rejected at register route (422), no persistence."""
+        """JSON "1" rejected at register route (422), probe not called, no persistence."""
+        from unittest.mock import MagicMock
+        spy = MagicMock()
+        monkeypatch.setattr(
+            "runtime.daemon.routes.adapters.register_custom_adapter",
+            spy,
+        )
+
         script = _make_conformant_adapter_script(tmp_path, "str-reg-adapter")
         dep_exe = _make_fake_exe(tmp_path, "dep-str-reg")
         dep_hash = compute_sha256(str(dep_exe))
@@ -480,11 +495,19 @@ class TestStrictIntTypeEnforcement:
         resp = client.post("/api/v1/runtime/adapters/register", json=body)
         assert resp.status_code == 422, resp.text
         assert load_adapters() == {}
+        spy.assert_not_called()
 
     def test_register_route_bool_true_no_persistence(
-        self, client: TestClient, tmp_path: Path
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """JSON true rejected at register route (422), no persistence."""
+        """JSON true rejected at register route (422), probe not called, no persistence."""
+        from unittest.mock import MagicMock
+        spy = MagicMock()
+        monkeypatch.setattr(
+            "runtime.daemon.routes.adapters.register_custom_adapter",
+            spy,
+        )
+
         script = _make_conformant_adapter_script(tmp_path, "bool-reg-adapter")
         dep_exe = _make_fake_exe(tmp_path, "dep-bool-reg")
         dep_hash = compute_sha256(str(dep_exe))
@@ -501,6 +524,43 @@ class TestStrictIntTypeEnforcement:
         resp = client.post("/api/v1/runtime/adapters/register", json=body)
         assert resp.status_code == 422, resp.text
         assert load_adapters() == {}
+        spy.assert_not_called()
+
+    def test_register_route_int_1_probe_and_persist(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Literal int 1 accepted, probe called, adapter persisted in store."""
+        from unittest.mock import MagicMock
+        from runtime.orchestrator.custom_adapter_registry import (
+            register_custom_adapter as _real,
+        )
+        spy = MagicMock(wraps=_real)
+        monkeypatch.setattr(
+            "runtime.daemon.routes.adapters.register_custom_adapter",
+            spy,
+        )
+
+        script = _make_conformant_adapter_script(tmp_path, "int1-reg-adapter")
+        dep_exe = _make_fake_exe(tmp_path, "dep-int1-reg")
+        dep_hash = compute_sha256(str(dep_exe))
+
+        body = {
+            "executable": str(script),
+            "version": "1.0.0",
+            "capabilities": [],
+            "workspace_adapter": "pi",
+            "dependency_manifest_version": 1,
+            "dependencies": [{"executable": str(dep_exe), "sha256": dep_hash}],
+        }
+
+        resp = client.post("/api/v1/runtime/adapters/register", json=body)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "pending"
+        assert data["dependency_manifest_version"] == 1
+        spy.assert_called_once()
+        adapters = load_adapters()
+        assert len(adapters) == 1
 
 
 # ---------------------------------------------------------------------------
