@@ -2,14 +2,17 @@
  * TodosPage — the main list view for agent Todos (scheduled commitments).
  * Routes at /orgs/:slug/todos.
  *
+ * When the route includes a :scheduleId param (/orgs/:slug/todos/:scheduleId),
+ * the detail pane is shown.  Row clicks navigate via React Router Link
+ * (no nested interactive controls).  Back navigates to the bare list route.
+ *
+ * Time displays use the stored IANA timezone via helpers in ./timezone.ts.
+ *
  * Compose from existing design-system tokens and patterns; no arbitrary
  * values. Fidelity target: the reference design at 1440×900.
  *
  * States: loading, error (retryable), empty, filtered-empty, populated
  * (grouped by status section).
- *
- * Filter groups: All, Active, Paused, Needs attention, History.
- * Agent filter: All agents (default) + per-agent from the backed list.
  */
 import { useState } from 'react'
 import { useParams } from 'react-router-dom'
@@ -34,7 +37,6 @@ export function TodosPage(): JSX.Element {
   const org = slug ?? ''
   const [activeFilter, setActiveFilter] = useState<FilterGroup>('all')
   const [agentFilter, setAgentFilter] = useState<string | undefined>(undefined)
-  const [selectedTodoId, setSelectedTodoId] = useState<string | null>(routeScheduleId ?? null)
 
   const { data, isLoading, isError, refetch } = useTodoList(org, {
     agent: agentFilter,
@@ -71,12 +73,12 @@ export function TodosPage(): JSX.Element {
     ['failed', 'timeout'].includes(s.status),
   ).length
 
-  // If detail is selected, show the detail page
-  if (selectedTodoId) {
+  // If detail is selected via route, show the detail page.
+  // Back navigates to /orgs/:slug/todos (the list route).
+  if (routeScheduleId) {
     return (
       <TodoDetailPage
-        scheduleId={selectedTodoId}
-        onBack={() => setSelectedTodoId(null)}
+        scheduleId={routeScheduleId}
       />
     )
   }
@@ -215,7 +217,6 @@ export function TodosPage(): JSX.Element {
                   <TodoRow
                     key={schedule.schedule_id}
                     schedule={schedule}
-                    onClick={() => setSelectedTodoId(schedule.schedule_id)}
                   />
                 ))}
               </div>

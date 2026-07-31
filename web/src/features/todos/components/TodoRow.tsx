@@ -1,53 +1,30 @@
 /**
  * TodoRow — a single schedule row in the Todos list.
- * Pure presentational; actions call back to the parent.
+ *
+ * The entire row is a navigation link to /orgs/:slug/todos/:scheduleId.
+ * No nested interactive controls — the schedule_id is rendered as plain
+ * text, not as a child link.
+ *
+ * Time rendering uses the stored IANA timezone (schedule.timezone).
  */
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import type { ScheduleRecord } from '@/lib/api/types'
 import { StatusPill } from './StatusPill'
 import { TODO_STRINGS } from '../strings'
+import { formatFireAtInTz } from '../timezone'
 import { cn } from '@/lib/utils'
 
 interface TodoRowProps {
   schedule: ScheduleRecord
-  onClick: () => void
 }
 
-/** Format a UTC fire_at to a display string: "Sat Jul 25 · 09:00" */
-function formatFireAt(fireAt: string): string {
-  try {
-    const d = new Date(fireAt)
-    if (isNaN(d.getTime())) return fireAt
-    return d.toLocaleDateString('en-US', {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      timeZone: 'UTC',
-    }) + ' · ' + d.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      timeZone: 'UTC',
-    })
-  } catch {
-    return fireAt
-  }
-}
-
-/** Describe the schedule type in a concise human line. */
+/** Describe the schedule type in a concise human line using the stored tz. */
 function scheduleLine(s: ScheduleRecord): string {
+  const tz = s.timezone || 'UTC'
   if (s.kind === 'one_shot') {
-    const d = s.fire_at ? new Date(s.fire_at) : null
-    if (d && !isNaN(d.getTime())) {
-      return `Once on ${d.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-        timeZone: 'UTC',
-      })} at ${d.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        timeZone: 'UTC',
-      })}`
+    if (s.fire_at) {
+      const formatted = formatFireAtInTz(s.fire_at, tz)
+      if (formatted !== s.fire_at) return `Once · ${formatted}`
     }
     return 'One-shot'
   }
@@ -88,22 +65,28 @@ function agentInitials(name: string): string {
     .join('')
 }
 
-export function TodoRow({ schedule, onClick }: TodoRowProps): JSX.Element {
+export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
   const { slug } = useParams<{ slug: string }>()
   const isTerminal = ['fired', 'expired', 'cancelled', 'failed', 'timeout'].includes(
     schedule.status,
   )
   const showNextFire = schedule.status === 'armed' || schedule.status === 'firing'
-  const fireAtDisplay = schedule.fire_at ? formatFireAt(schedule.fire_at) : ''
+  const tz = schedule.timezone || 'UTC'
+
+  // Fire-at display in the stored IANA timezone
+  const fireAtDisplay = showNextFire && schedule.fire_at
+    ? formatFireAtInTz(schedule.fire_at, tz)
+    : ''
+
   const expiry = expiryLine(schedule)
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <Link
+      to={`/orgs/${slug}/todos/${schedule.schedule_id}`}
       className={cn(
         'flex w-full flex-col gap-2.5 px-5 py-4 text-left transition-colors hover:bg-bg-subtle',
         'border-b border-border-subtle last:border-b-0',
+        'block', // ensure full-width clickable area
       )}
     >
       {/* Row top: status pill + commitment + next-fire */}
@@ -154,18 +137,11 @@ export function TodoRow({ schedule, onClick }: TodoRowProps): JSX.Element {
           {schedule.fire_count > 0 && (
             <span>{schedule.fire_count} {TODO_STRINGS.runsLabel}</span>
           )}
-          <a
-            href={`/orgs/${slug}/todos/${schedule.schedule_id}`}
-            onClick={(e) => {
-              e.stopPropagation()
-              // Let the Link navigate naturally
-            }}
-            className="font-mono text-xs text-fg-subtle hover:text-fg-muted"
-          >
+          <span className="font-mono text-xs text-fg-subtle">
             {schedule.schedule_id}
-          </a>
+          </span>
         </div>
       </div>
-    </button>
+    </Link>
   )
 }

@@ -3,8 +3,20 @@
  * weekday + time + timezone for weekly). Source instruction and
  * normalized brief remain read-only.
  *
+ * For weekly edits, the outbound body carries:
+ *   recurrence: { day, time, tz }
+ *   timezone:  same as recurrence.tz
+ *   fire_at:   the correct NEXT weekly occurrence in the selected IANA tz
+ *
+ * The preview renders in the selected IANA timezone (not UTC / browser-local).
+ *
  * States: normal edit, validation rejection (shows error inline), 409
- * conflict (explicit reload prompt).
+ * conflict (explicit reload prompt).  Because the backend contract
+ * returns `code: "state_conflict"` for ALL 409 responses (both
+ * genuine-firing conflicts and field-validation rejections), the
+ * client currently cannot unambiguously distinguish the two — all 409
+ * responses show the full reload prompt.  This limitation is an
+ * accepted v1 behaviour pending a richer backend error contract.
  */
 import { useState, useEffect, useMemo } from 'react'
 import {
@@ -24,6 +36,7 @@ import {
   SelectItem,
 } from '@/design-system/primitives/Select'
 import type { ScheduleRecord, ScheduleEditFields } from '@/lib/api/types'
+import { nextWeeklyOccurrence, formatPreviewInTz } from '../timezone'
 
 const WEEKDAYS = [
   { value: 'Mon', label: 'Monday' },
@@ -90,15 +103,32 @@ export function EditDialog({
   // Reset form state when the schedule or open state changes
   useEffect(() => {
     if (!open) return
-    // Parse fire_at into date+time parts for one-shot
+    const tz = schedule.timezone || 'UTC'
+
+    // Parse fire_at into date+time parts for one-shot — in the stored IANA tz
     if (!isWeekly && schedule.fire_at) {
       try {
         const d = new Date(schedule.fire_at)
         if (!isNaN(d.getTime())) {
-          setFireAtDate(d.toISOString().slice(0, 10))
-          setFireAtTime(
-            d.toTimeString().slice(0, 5)
-          )
+          // Render the date in the stored tz
+          const dateFmt = new Intl.DateTimeFormat('en-CA', { // en-CA → yyyy-MM-dd
+            timeZone: tz,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          })
+          const timeFmt = new Intl.DateTimeFormat('en-US', {
+            timeZone: tz,
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          })
+          setFireAtDate(dateFmt.format(d))
+          // Extract HH:MM from the formatted time
+          const timeParts = timeFmt.formatToParts(d)
+          const hh = timeParts.find((p) => p.type === 'hour')?.value ?? '00'
+          const mm = timeParts.find((p) => p.type === 'minute')?.value ?? '00'
+          setFireAtTime(`${hh}:${mm}`)
         }
       } catch {
         // leave empty
@@ -108,35 +138,39 @@ export function EditDialog({
       setWeekday(initialRecurrence.day ?? 'Mon')
       setWeeklyTime(initialRecurrence.time ?? '09:00')
     }
-    setTimezone(schedule.timezone || 'UTC')
+    setTimezone(tz)
   }, [open, schedule, isWeekly, initialRecurrence.day, initialRecurrence.time])
 
-  // Preview next fire for display (naive, local-only for visual feedback)
-  const nextFirePreview = useMemo(() => {
+  // Preview next fire in the selected IANA timezone (not browser-local).
+  const nextFirePreview = useMemo((): { date: Date; tz: string } | null => {
+    const tz = timezone || 'UTC'
     if (isWeekly) {
-      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-      const target = days.indexOf(weekday)
-      if (target < 0) return null
-      const now = new Date()
-      const [h, m] = weeklyTime.split(':').map(Number)
-      const d = new Date(now)
-      d.setDate(d.getDate() + ((target + 7 - d.getDay()) % 7 || 7))
-      d.setHours(h || 9, m || 0, 0, 0)
-      if (d <= now) d.setDate(d.getDate() + 7)
-      return d
+      const iso = nextWeeklyOccurrence(weekday, weeklyTime, tz)
+      if (!iso) return null
+      return { date: new Date(iso), tz }
     }
     if (fireAtDate && fireAtTime) {
       const d = new Date(`${fireAtDate}T${fireAtTime}:00`)
-      return isNaN(d.getTime()) ? null : d
+      if (isNaN(d.getTime())) return null
+      return { date: d, tz }
     }
     return null
-  }, [isWeekly, weekday, weeklyTime, fireAtDate, fireAtTime])
+  }, [isWeekly, weekday, weeklyTime, fireAtDate, fireAtTime, timezone])
 
   const handleSave = async () => {
     const fields: ScheduleEditFields = {}
+
     if (isWeekly) {
-      fields.recurrence = { day: weekday, time: weeklyTime }
-      if (timezone) fields.timezone = timezone
+      const tz = timezone || 'UTC'
+      // Outbound recurrence literally carries selected weekday/time/tz.
+      fields.recurrence = { day: weekday, time: weeklyTime, tz }
+      // Top-level timezone equals recurrence.tz.
+      fields.timezone = tz
+      // Compute the correct next weekly occurrence in the selected IANA tz.
+      const fireAtIso = nextWeeklyOccurrence(weekday, weeklyTime, tz)
+      if (fireAtIso) {
+        fields.fire_at = fireAtIso
+      }
     } else {
       if (fireAtDate && fireAtTime) {
         fields.fire_at = `${fireAtDate}T${fireAtTime}:00`
@@ -259,22 +293,14 @@ export function EditDialog({
             </Select>
           </div>
 
-          {/* Preview next fire */}
+          {/* Preview next fire — rendered in the selected IANA tz */}
           {nextFirePreview && (
             <div className="rounded border border-border-subtle bg-bg-subtle px-3 py-2">
-              <span className="text-xs text-fg-subtle">Expected next fire · {timezone}</span>
+              <span className="text-xs text-fg-subtle">
+                Expected next fire · {nextFirePreview.tz}
+              </span>
               <p className="text-sm font-semibold text-fg">
-                {nextFirePreview.toLocaleDateString('en-US', {
-                  weekday: 'short',
-                  month: 'short',
-                  day: 'numeric',
-                  year: 'numeric',
-                })}{' '}
-                ·{' '}
-                {nextFirePreview.toLocaleTimeString('en-US', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
+                {formatPreviewInTz(nextFirePreview.date, nextFirePreview.tz)}
               </p>
             </div>
           )}

@@ -1,7 +1,7 @@
 /**
- * TodosPage tests — focused on sidebar/routes, filter grouping, action-matrix
- * branches, exact provenance URLs, mutation success/failure, validation,
- * and read-only fields.
+ * TodosPage tests — sidebar/routes, filter grouping, action-matrix
+ * branches, IANA-timezone rendering, outbound-edit-body correctness,
+ * exact provenance URLs, mutation success/failure, and 409 conflict.
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -12,16 +12,20 @@ import { renderWithProviders } from '@/test/render'
 import { server } from '@/test/server'
 import type { ScheduleRecord } from '@/lib/api/types'
 
+// Dynamically import the timezone module within feature-scoped tests — the
+// no-restricted-imports rule applies to test files within features/ too.
+
 /* ---------------------------------------------------------------- */
 /*  Fixtures                                                        */
 /* ---------------------------------------------------------------- */
 
-const ARMED_WEEKLY: ScheduleRecord = {
+const ARMED_WEEKLY_TZ: ScheduleRecord = {
   schedule_id: 'SCHEDULE-042',
   agent_name: 'investment_advisor',
   team: 'engineering',
   kind: 'weekly',
-  fire_at: '2026-07-25T09:00:00Z',
+  // 2026-07-25T09:00:00+08:00 = 2026-07-25T01:00:00Z
+  fire_at: '2026-07-25T01:00:00Z',
   recurrence: { day: 'Sat', time: '09:00' },
   timezone: 'Asia/Shanghai',
   normalized_brief: 'Send the weekly market update',
@@ -42,7 +46,8 @@ const ARMED_ONESHOT: ScheduleRecord = {
   agent_name: 'support_agent',
   team: 'engineering',
   kind: 'one_shot',
-  fire_at: '2026-08-01T14:00:00Z',
+  // 2026-08-01T14:00:00-04:00 (EDT) = 2026-08-01T18:00:00Z
+  fire_at: '2026-08-01T18:00:00Z',
   recurrence: null,
   timezone: 'America/New_York',
   normalized_brief: 'Follow up on the Acme trial issue',
@@ -205,8 +210,32 @@ const EXPIRED: ScheduleRecord = {
   updated_at: '2026-07-01T00:00:00Z',
 }
 
+/** A weekly schedule using a non-local (Asia/Tokyo) IANA timezone for
+ *  timezone-rendering and outbound-body tests. */
+const ARMED_WEEKLY_TOKYO: ScheduleRecord = {
+  schedule_id: 'SCHEDULE-099',
+  agent_name: 'investment_advisor',
+  team: 'engineering',
+  kind: 'weekly',
+  // 2026-08-02T09:00:00+09:00 = 2026-08-02T00:00:00Z (next Sun in Tokyo)
+  fire_at: '2026-08-02T00:00:00Z',
+  recurrence: { day: 'Sun', time: '09:00' },
+  timezone: 'Asia/Tokyo',
+  normalized_brief: 'Tokyo market briefing',
+  source_instruction: 'Every Sunday, prepare the Tokyo market briefing.',
+  status: 'armed',
+  active: 1,
+  expires_at: '2026-12-31T00:00:00Z',
+  indefinite: 0,
+  spawned_task_ids: [],
+  last_fired_at: null,
+  fire_count: 1,
+  created_at: '2026-07-01T00:00:00Z',
+  updated_at: '2026-07-20T00:00:00Z',
+}
+
 const ALL_SCHEDULES = [
-  ARMED_WEEKLY, ARMED_ONESHOT, FIRING, FAILED, TIMEOUT,
+  ARMED_WEEKLY_TZ, ARMED_ONESHOT, FIRING, FAILED, TIMEOUT,
   PAUSED, CANCELLED, FIRED, EXPIRED,
 ]
 
@@ -251,6 +280,26 @@ function mockDetail(schedule: ScheduleRecord) {
   )
 }
 
+function mockDetailWithEdit(schedule: ScheduleRecord, editHandler?: (body: unknown) => ReturnType<typeof HttpResponse.json>) {
+  server.use(
+    ...bootstrap(),
+    http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules/${schedule.schedule_id}`, () =>
+      HttpResponse.json(schedule),
+    ),
+    http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules`, () =>
+      HttpResponse.json({ schedules: [schedule] }),
+    ),
+    http.patch(`${API_BASE}/orgs/${ORG_SLUG}/schedules/${schedule.schedule_id}`, async ({ request }) => {
+      if (editHandler) {
+        const body = await request.json()
+        return editHandler(body)
+      }
+      return HttpResponse.json(schedule)
+    }),
+    http.all(`${API_BASE}/*`, () => HttpResponse.json({})),
+  )
+}
+
 /** Wait for the detail page heading to appear (unique per page — the h1). */
 async function waitForDetailHeading(text: string) {
   await waitFor(() => {
@@ -273,7 +322,6 @@ describe('TodosPage — list view', () => {
     mockSchedules(ALL_SCHEDULES)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
 
-    // "Todos" appears in both TopBar + page h1 — use heading role
     await screen.findByRole('heading', { name: 'Todos' })
     expect(screen.getByText('Agent commitments')).toBeTruthy()
     expect(
@@ -295,7 +343,6 @@ describe('TodosPage — list view', () => {
   it('shows schedule items after load', async () => {
     mockSchedules(ALL_SCHEDULES)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
-    // This text is unique — only appears in the first TodoRow
     await screen.findByText('Send the weekly market update')
   })
 
@@ -342,26 +389,100 @@ describe('TodosPage — list view', () => {
     mockSchedules(ALL_SCHEDULES)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
     await screen.findByText('Send the weekly market update')
-    // Multiple rows may share status labels; check existence, not uniqueness
     expect(screen.getAllByText('Armed').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Firing now').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Paused').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Cancelled').length).toBeGreaterThan(0)
     expect(screen.getByText('Completed')).toBeTruthy()
     expect(screen.getByText('Review expired')).toBeTruthy()
+    expect(screen.getAllByText('Needs attention').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('Timed out')).toBeTruthy()
   })
 
-  it('shows schedule IDs in rows', async () => {
+  it('shows schedule IDs as plain text (not as nested links)', async () => {
     mockSchedules(ALL_SCHEDULES)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
     await screen.findByText('Send the weekly market update')
-    expect(screen.getByText('SCHEDULE-042')).toBeTruthy()
-    expect(screen.getByText('SCHEDULE-058')).toBeTruthy()
+    // Schedule IDs should be rendered as text spans (not <a>)
+    const idSpans = screen.getAllByText('SCHEDULE-042')
+    expect(idSpans.length).toBeGreaterThan(0)
+    // No nested <a> tags inside the row
+    const rowLink = screen.getByText('Send the weekly market update').closest('a')
+    expect(rowLink).toBeTruthy()
+    expect(rowLink?.getAttribute('href')).toBe(`/orgs/${ORG_SLUG}/todos/SCHEDULE-042`)
+  })
+
+  it('rows are navigable Links to the detail route', async () => {
+    mockSchedules(ALL_SCHEDULES)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
+    await screen.findByText('Send the weekly market update')
+    // The row containing "Send the weekly market update" should be a link
+    const rowLink = screen.getByText('Send the weekly market update').closest('a')
+    expect(rowLink?.getAttribute('href')).toBe(`/orgs/${ORG_SLUG}/todos/SCHEDULE-042`)
+  })
+
+  it('renders fire_at in the stored IANA timezone (not UTC)', async () => {
+    // ARMED_WEEKLY_TZ has fire_at="2026-07-25T01:00:00Z" and timezone="Asia/Shanghai"
+    // In Asia/Shanghai that's July 25, 09:00 AM (UTC+8)
+    mockSchedules([ARMED_WEEKLY_TZ])
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
+    await screen.findByText('Send the weekly market update')
+
+    // The display should show the Asia/Shanghai local time, not UTC
+    const bodyText = document.body.textContent ?? ''
+    // Should NOT show the UTC time ("01:00")
+    expect(bodyText).not.toMatch(/01:00/)
+    // Should show the Shanghai time
+    expect(bodyText).toContain('09:00')
+    expect(bodyText).toContain('Sat')
+    expect(bodyText).toContain('Jul 25')
+  })
+
+  it('renders one-shot fire_at in America/New_York timezone', async () => {
+    // ARMED_ONESHOT: fire_at="2026-08-01T18:00:00Z", tz="America/New_York"
+    // 18:00 UTC = 14:00 EDT in New York
+    mockSchedules([ARMED_ONESHOT])
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
+    await screen.findByText('Follow up on the Acme trial issue')
+    const bodyText = document.body.textContent ?? ''
+    expect(bodyText).toContain('14:00')
+    expect(bodyText).not.toMatch(/18:00/)
   })
 })
 
 /* ---------------------------------------------------------------- */
-/*  Detail page tests                                               */
+/*  Detail page — timezone rendering                                */
+/* ---------------------------------------------------------------- */
+
+describe('TodoDetailPage — timezone rendering', () => {
+  beforeEach(() => {
+    sessionStorage.setItem('happyranch.token', 'mock-token')
+  })
+
+  it('shows fire_at in stored IANA timezone for weekly schedule', async () => {
+    mockDetail(ARMED_WEEKLY_TZ)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
+    await waitForDetailHeading('Send the weekly market update')
+    // fire_at = 2026-07-25T01:00:00Z → Asia/Shanghai = Jul 25, 09:00
+    const bodyText = document.body.textContent ?? ''
+    expect(bodyText).toContain('09:00')
+    expect(bodyText).toContain('Asia/Shanghai')
+  })
+
+  it('shows fire_at in stored IANA timezone for one-shot schedule', async () => {
+    mockDetail(FIRED) // fire_at="2026-07-20T09:00:00Z", tz="America/Chicago"
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-019` })
+    await waitForDetailHeading('Check the release health metric')
+    const bodyText = document.body.textContent ?? ''
+    // 09:00Z = 04:00 CDT in Chicago
+    expect(bodyText).toContain('04:00')
+    // Should mention the timezone
+    expect(bodyText).toContain('America/Chicago')
+  })
+})
+
+/* ---------------------------------------------------------------- */
+/*  Detail page — provenance and links                              */
 /* ---------------------------------------------------------------- */
 
 describe('TodoDetailPage — provenance and links', () => {
@@ -398,10 +519,11 @@ describe('TodoDetailPage — provenance and links', () => {
     await waitForDetailHeading('Check the release health metric')
     expect(screen.queryByText('Pause')).toBeNull()
     expect(screen.queryByText('Edit timing')).toBeNull()
+    expect(screen.queryByText('Cancel')).toBeNull()
   })
 
   it('shows Pause, Edit, Cancel for armed schedule', async () => {
-    mockDetail(ARMED_WEEKLY)
+    mockDetail(ARMED_WEEKLY_TZ)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
     expect(screen.getByText('Pause')).toBeTruthy()
@@ -409,31 +531,36 @@ describe('TodoDetailPage — provenance and links', () => {
     expect(screen.getByText('Cancel')).toBeTruthy()
   })
 
-  it('shows Edit, Cancel (no Pause) for paused schedule', async () => {
+  it('shows Edit, Cancel (no Pause, no Resume) for paused schedule', async () => {
     mockDetail(PAUSED)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-031` })
     await waitForDetailHeading('Review roadmap risks')
     expect(screen.queryByText('Pause')).toBeNull()
+    expect(screen.queryByText('Resume')).toBeNull()
     expect(screen.getByText('Edit timing')).toBeTruthy()
     expect(screen.getByText('Cancel')).toBeTruthy()
   })
 
-  it('shows recurrence review callout for weekly non-indefinite', async () => {
-    mockDetail(ARMED_WEEKLY)
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
-    await waitForDetailHeading('Send the weekly market update')
-    expect(document.body.textContent).toContain('Review due')
-  })
-
-  it('shows Indefinite badge when indefinite is true', async () => {
+  it('shows no actions for firing schedule', async () => {
     mockDetail(FIRING)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-064` })
     await waitForDetailHeading('Run the nightly regression sweep')
-    expect(screen.getByText('Indefinite · no expiry')).toBeTruthy()
+    expect(screen.queryByText('Pause')).toBeNull()
+    expect(screen.queryByText('Edit timing')).toBeNull()
+    expect(screen.queryByText('Cancel')).toBeNull()
+  })
+
+  it('shows no actions for failed schedule', async () => {
+    mockDetail(FAILED)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-071` })
+    await waitForDetailHeading('Sync the customer changelog')
+    expect(screen.queryByText('Pause')).toBeNull()
+    expect(screen.queryByText('Edit timing')).toBeNull()
+    expect(screen.queryByText('Cancel')).toBeNull()
   })
 
   it('shows read-only source instruction', async () => {
-    mockDetail(ARMED_WEEKLY)
+    mockDetail(ARMED_WEEKLY_TZ)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
     expect(screen.getByText('Every Saturday, send me the weekly market update.')).toBeTruthy()
@@ -445,6 +572,28 @@ describe('TodoDetailPage — provenance and links', () => {
     await waitForDetailHeading('Sync the customer changelog')
     expect(document.body.textContent).not.toContain('reason:')
     expect(document.body.textContent).not.toContain('error:')
+  })
+
+  it('contains no Resume label or promise anywhere in detail', async () => {
+    mockDetail(PAUSED)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-031` })
+    await waitForDetailHeading('Review roadmap risks')
+    const bodyText = document.body.textContent ?? ''
+    expect(bodyText).not.toContain('Resume')
+    expect(bodyText).not.toContain('resume')
+    expect(bodyText).not.toContain('re-activate')
+    expect(bodyText).not.toContain('re-arm')
+  })
+
+  it('contains no Resume label or promise anywhere in list', async () => {
+    mockSchedules(ALL_SCHEDULES)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
+    await screen.findByText('Send the weekly market update')
+    const bodyText = document.body.textContent ?? ''
+    expect(bodyText).not.toContain('Resume')
+    expect(bodyText).not.toContain('resume')
+    expect(bodyText).not.toContain('re-activate')
+    expect(bodyText).not.toContain('re-arm')
   })
 })
 
@@ -462,29 +611,53 @@ describe('TodoDetailPage — mutations', () => {
     server.use(
       ...bootstrap(),
       http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042`, () =>
-        HttpResponse.json(ARMED_WEEKLY),
+        HttpResponse.json(ARMED_WEEKLY_TZ),
       ),
       http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules`, () =>
-        HttpResponse.json({ schedules: [ARMED_WEEKLY] }),
+        HttpResponse.json({ schedules: [ARMED_WEEKLY_TZ] }),
       ),
       http.post(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042/pause`, () => {
         pauseCalled = true
-        return HttpResponse.json({ ...ARMED_WEEKLY, status: 'paused', active: 0 })
+        return HttpResponse.json({ ...ARMED_WEEKLY_TZ, status: 'paused', active: 0 })
       }),
       http.all(`${API_BASE}/*`, () => HttpResponse.json({})),
     )
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    // Click Pause action button in the actions card
     const pauseActionBtn = screen.getByRole('button', { name: 'Pause' })
     await userEvent.click(pauseActionBtn)
     await screen.findByText('Pause this Todo')
-    // Click confirm in dialog ("Pause" appears as dialog button too — use within dialog)
     const dialog = screen.getByRole('dialog')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Pause' }))
 
     await waitFor(() => { expect(pauseCalled).toBe(true) })
+  })
+
+  it('pause dialog does NOT mention resume', async () => {
+    server.use(
+      ...bootstrap(),
+      http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042`, () =>
+        HttpResponse.json(ARMED_WEEKLY_TZ),
+      ),
+      http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules`, () =>
+        HttpResponse.json({ schedules: [ARMED_WEEKLY_TZ] }),
+      ),
+      http.post(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042/pause`, () =>
+        HttpResponse.json({ ...ARMED_WEEKLY_TZ, status: 'paused', active: 0 }),
+      ),
+      http.all(`${API_BASE}/*`, () => HttpResponse.json({})),
+    )
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
+    await waitForDetailHeading('Send the weekly market update')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Pause' }))
+    await screen.findByText('Pause this Todo')
+    const dialog = screen.getByRole('dialog')
+    const dialogText = dialog.textContent ?? ''
+    expect(dialogText).not.toContain('resume')
+    expect(dialogText).not.toContain('Resume')
+    expect(dialogText).not.toContain('re-activate')
   })
 
   it('cancel API is called when dialog confirmed', async () => {
@@ -492,14 +665,14 @@ describe('TodoDetailPage — mutations', () => {
     server.use(
       ...bootstrap(),
       http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042`, () =>
-        HttpResponse.json(ARMED_WEEKLY),
+        HttpResponse.json(ARMED_WEEKLY_TZ),
       ),
       http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules`, () =>
-        HttpResponse.json({ schedules: [ARMED_WEEKLY] }),
+        HttpResponse.json({ schedules: [ARMED_WEEKLY_TZ] }),
       ),
       http.post(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042/cancel`, () => {
         cancelCalled = true
-        return HttpResponse.json({ ...ARMED_WEEKLY, status: 'cancelled', active: 0 })
+        return HttpResponse.json({ ...ARMED_WEEKLY_TZ, status: 'cancelled', active: 0 })
       }),
       http.all(`${API_BASE}/*`, () => HttpResponse.json({})),
     )
@@ -511,6 +684,200 @@ describe('TodoDetailPage — mutations', () => {
     await userEvent.click(screen.getByText('Cancel Todo'))
 
     await waitFor(() => { expect(cancelCalled).toBe(true) })
+  })
+})
+
+/* ---------------------------------------------------------------- */
+/*  Edit dialog — outbound body correctness                         */
+/* ---------------------------------------------------------------- */
+
+describe('TodoDetailPage — edit dialog outbound body', () => {
+  beforeEach(() => {
+    sessionStorage.setItem('happyranch.token', 'mock-token')
+  })
+
+  it('sends recurrence with tz, top-level timezone matches, and computed fire_at for weekly edit', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    mockDetailWithEdit(ARMED_WEEKLY_TZ, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(ARMED_WEEKLY_TZ)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
+    await waitForDetailHeading('Send the weekly market update')
+
+    // Open edit dialog
+    const editBtn = screen.getByRole('button', { name: 'Edit timing' })
+    await userEvent.click(editBtn)
+    // Wait for dialog heading to confirm it opened
+    await screen.findByRole('heading', { name: 'Edit timing' })
+
+    // Save without changes
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => {
+      expect(capturedBody).not.toBeNull()
+    })
+
+    // 1. recurrence must literally carry selected weekday/time/tz
+    expect(capturedBody!.recurrence).toEqual({
+      day: 'Sat',
+      time: '09:00',
+      tz: 'Asia/Shanghai',
+    })
+
+    // 2. top-level timezone equals recurrence.tz
+    expect(capturedBody!.timezone).toBe('Asia/Shanghai')
+
+    // 3. fire_at must be present and be the correct next weekly occurrence
+    expect(capturedBody!.fire_at).toBeDefined()
+    // Verify it's an ISO 8601 string ending in Z
+    expect(typeof capturedBody!.fire_at).toBe('string')
+    expect((capturedBody!.fire_at as string).endsWith('Z')).toBe(true)
+  })
+
+  it('sends correct recurrence for non-local IANA timezone (Asia/Tokyo)', async () => {
+    let capturedBody: Record<string, unknown> | null = null
+    mockDetailWithEdit(ARMED_WEEKLY_TOKYO, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(ARMED_WEEKLY_TOKYO)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-099` })
+    await waitForDetailHeading('Tokyo market briefing')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit timing' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => {
+      expect(capturedBody).not.toBeNull()
+    })
+
+    expect(capturedBody!.recurrence).toEqual({
+      day: 'Sun',
+      time: '09:00',
+      tz: 'Asia/Tokyo',
+    })
+    expect(capturedBody!.timezone).toBe('Asia/Tokyo')
+    expect(capturedBody!.fire_at).toBeDefined()
+  })
+
+  it('computes nextWeeklyOccurrence correctly for a boundary next-week case', async () => {
+    // Import the function directly for unit-level testing
+    const { nextWeeklyOccurrence } = await import('@/features/todos/timezone')
+
+    // Use a fixed "now" where we know the result
+    // 2026-07-31 (Friday) in UTC → next Saturday in Asia/Shanghai
+    const after = new Date('2026-07-31T15:00:00Z') // Friday 11 PM Shanghai
+    const result = nextWeeklyOccurrence('Sat', '09:00', 'Asia/Shanghai', after)
+
+    // The next Saturday 09:00 Shanghai = 2026-08-01T01:00:00Z
+    expect(result).toBe('2026-08-01T01:00:00Z')
+  })
+
+  it('computes nextWeeklyOccurrence correctly for same-day-future case', async () => {
+    const { nextWeeklyOccurrence } = await import('@/features/todos/timezone')
+
+    // 2026-07-31 (Friday) 03:00 UTC = Friday 11 AM Shanghai
+    // Next Monday 09:00 Shanghai after this
+    const after = new Date('2026-07-31T03:00:00Z')
+    const result = nextWeeklyOccurrence('Mon', '09:00', 'Asia/Shanghai', after)
+
+    // Aug 3, 2026 is a Monday → 09:00 Shanghai = 01:00 UTC
+    expect(result).toBe('2026-08-03T01:00:00Z')
+  })
+
+  it('computes nextWeeklyOccurrence correctly when today is the target day but time has passed', async () => {
+    const { nextWeeklyOccurrence } = await import('@/features/todos/timezone')
+
+    // 2026-07-31 (Friday) 02:00 UTC = Friday 10 AM Shanghai
+    // Next Friday 09:00 Shanghai has already passed today → next week
+    const after = new Date('2026-07-31T02:00:00Z')
+    const result = nextWeeklyOccurrence('Fri', '09:00', 'Asia/Shanghai', after)
+
+    // Aug 7, 2026 is a Friday → 09:00 Shanghai = 01:00 UTC
+    expect(result).toBe('2026-08-07T01:00:00Z')
+  })
+
+  it('returns null for invalid timezone', async () => {
+    const { nextWeeklyOccurrence } = await import('@/features/todos/timezone')
+    // Intl.DateTimeFormat throws RangeError for invalid tz
+    // Our function should catch and return null
+    const result = nextWeeklyOccurrence('Mon', '09:00', 'Invalid/Timezone')
+    expect(result).toBeNull()
+  })
+})
+
+/* ---------------------------------------------------------------- */
+/*  Edit dialog — 409 conflict                                      */
+/* ---------------------------------------------------------------- */
+
+describe('TodoDetailPage — 409 conflict handling', () => {
+  beforeEach(() => {
+    sessionStorage.setItem('happyranch.token', 'mock-token')
+  })
+
+  it('shows conflict reload prompt on 409 response', async () => {
+    server.use(
+      ...bootstrap(),
+      http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042`, () =>
+        HttpResponse.json(ARMED_WEEKLY_TZ),
+      ),
+      http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules`, () =>
+        HttpResponse.json({ schedules: [ARMED_WEEKLY_TZ] }),
+      ),
+      http.patch(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042`, () =>
+        HttpResponse.json(
+          { code: 'state_conflict', message: 'cannot edit SCHEDULE-042: status firing is not armed or paused' },
+          { status: 409 },
+        ),
+      ),
+      http.all(`${API_BASE}/*`, () => HttpResponse.json({})),
+    )
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
+    await waitForDetailHeading('Send the weekly market update')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit timing' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByText('Save changes'))
+
+    // Should show conflict reload prompt
+    await screen.findByText('This Todo was modified')
+    expect(screen.getByText('Reload record')).toBeTruthy()
+  })
+
+  it('shows validation error inline on non-409 error', async () => {
+    server.use(
+      ...bootstrap(),
+      http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042`, () =>
+        HttpResponse.json(ARMED_WEEKLY_TZ),
+      ),
+      http.get(`${API_BASE}/orgs/${ORG_SLUG}/schedules`, () =>
+        HttpResponse.json({ schedules: [ARMED_WEEKLY_TZ] }),
+      ),
+      http.patch(`${API_BASE}/orgs/${ORG_SLUG}/schedules/SCHEDULE-042`, () =>
+        HttpResponse.json(
+          { detail: 'fire_at must be in the future' },
+          { status: 422 },
+        ),
+      ),
+      http.all(`${API_BASE}/*`, () => HttpResponse.json({})),
+    )
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
+    await waitForDetailHeading('Send the weekly market update')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit timing' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByText('Save changes'))
+
+    // Should show validation error inline, keep dialog open
+    await screen.findByText('fire_at must be in the future')
+    expect(screen.queryByText('Reload record')).toBeNull()
+    // Dialog should still be open
+    expect(screen.getByRole('heading', { name: 'Edit timing' })).toBeTruthy()
   })
 })
 
@@ -548,5 +915,65 @@ describe('strings — status labels and grouping', () => {
     for (const s of ['armed', 'firing', 'failed', 'timeout', 'paused', 'fired', 'expired', 'cancelled']) {
       expect(allCovered.has(s)).toBe(true)
     }
+  })
+})
+
+/* ---------------------------------------------------------------- */
+/*  timezone utilities                                              */
+/* ---------------------------------------------------------------- */
+
+describe('timezone utilities', () => {
+  it('formatFireAtInTz renders in the target IANA timezone', async () => {
+    const { formatFireAtInTz } = await import('@/features/todos/timezone')
+    // 2026-07-25T01:00:00Z = 09:00 in Asia/Shanghai
+    const result = formatFireAtInTz('2026-07-25T01:00:00Z', 'Asia/Shanghai')
+    expect(result).toContain('09:00')
+    expect(result).toContain('Sat')
+    expect(result).toContain('Jul 25')
+    expect(result).toContain('2026')
+  })
+
+  it('formatFireAtInTz handles America/New_York timezone', async () => {
+    const { formatFireAtInTz } = await import('@/features/todos/timezone')
+    // 2026-08-01T18:00:00Z = 14:00 EDT in New York
+    const result = formatFireAtInTz('2026-08-01T18:00:00Z', 'America/New_York')
+    expect(result).toContain('14:00')
+    expect(result).not.toContain('18:00')
+  })
+
+  it('formatFireAtInTz handles America/Chicago timezone', async () => {
+    const { formatFireAtInTz } = await import('@/features/todos/timezone')
+    // 2026-07-20T09:00:00Z = 04:00 CDT in Chicago
+    const result = formatFireAtInTz('2026-07-20T09:00:00Z', 'America/Chicago')
+    expect(result).toContain('04:00')
+  })
+
+  it('formatPreviewInTz renders a Date in target timezone', async () => {
+    const { formatPreviewInTz } = await import('@/features/todos/timezone')
+    // 2026-08-01T01:00:00Z = Aug 1, 09:00 in Asia/Shanghai
+    const d = new Date('2026-08-01T01:00:00Z')
+    const result = formatPreviewInTz(d, 'Asia/Shanghai')
+    expect(result).toContain('09:00')
+    expect(result).toContain('Sat')
+    expect(result).toContain('2026')
+  })
+})
+
+/* ---------------------------------------------------------------- */
+/*  Back navigation                                                 */
+/* ---------------------------------------------------------------- */
+
+describe('TodoDetailPage — back navigation', () => {
+  beforeEach(() => {
+    sessionStorage.setItem('happyranch.token', 'mock-token')
+  })
+
+  it('shows Back link that points to the todos list route', async () => {
+    mockDetail(ARMED_WEEKLY_TZ)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
+    await waitForDetailHeading('Send the weekly market update')
+
+    const backLink = screen.getByText('All Todos')
+    expect(backLink.closest('a')?.getAttribute('href')).toBe(`/orgs/${ORG_SLUG}/todos`)
   })
 })

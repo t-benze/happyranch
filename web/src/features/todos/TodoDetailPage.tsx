@@ -5,14 +5,23 @@
  * Shows the schedule's full provenance: normalized commitment, source
  * instruction, owner, schedule details, spawned tasks, and audit link.
  *
+ * All absolute time displays use the stored IANA timezone
+ * (schedule.timezone), not UTC or browser-local.
+ *
  * Actions per the exact action matrix:
  *   Armed: Pause, Edit, Cancel
  *   Paused: Edit, Cancel
- *   All others: read-only (no actions)
+ *   All others: read-only (no actions, no Resume)
  *
- * Data provenance: no fabricated failure cause, task, issuer, diagnostics,
- * or schedule data. Spawned task IDs link to real task-detail routes.
- * Activity link goes to filtered audit.
+ * 409 responses from the backend use the same `code: "state_conflict"`
+ * for both genuine-firing conflicts and field-validation errors.  Since
+ * the contract does not unambiguously distinguish the two, all 409
+ * responses show the full Reload prompt.  This is an accepted v1
+ * limitation.
+ *
+ * Data provenance: no fabricated failure cause, task, issuer,
+ * diagnostics, or schedule data.  Spawned task IDs link to real
+ * task-detail routes.  Activity link goes to filtered audit.
  */
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -23,14 +32,14 @@ import { useTodoDetail, usePauseTodo, useCancelTodo, useEditTodo } from './hooks
 import { StatusPill } from './components/StatusPill'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { EditDialog } from './components/EditDialog'
+import { formatFireAtInTz } from './timezone'
 import type { ScheduleRecord, ScheduleEditFields } from '@/lib/api/types'
 
 interface TodoDetailPageProps {
   scheduleId: string
-  onBack: () => void
 }
 
-/** Format a UTC timestamp to a readable date. */
+/** Format a UTC timestamp to a readable date (for metadata, not fire times). */
 function fmtDate(iso: string): string {
   try {
     const d = new Date(iso)
@@ -57,21 +66,13 @@ function agentInitials(name: string): string {
     .join('')
 }
 
-/** Describe the schedule concisely for the detail view. */
+/** Describe the schedule concisely for the detail view, in stored IANA tz. */
 function describeSchedule(s: ScheduleRecord): string {
+  const tz = s.timezone || 'UTC'
   if (s.kind === 'one_shot') {
-    const d = s.fire_at ? new Date(s.fire_at) : null
-    if (d && !isNaN(d.getTime())) {
-      return `One-shot · fires on ${d.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-        timeZone: 'UTC',
-      })} at ${d.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        timeZone: 'UTC',
-      })}`
+    if (s.fire_at) {
+      const formatted = formatFireAtInTz(s.fire_at, tz)
+      if (formatted !== s.fire_at) return `One-shot · fires on ${formatted}`
     }
     return 'One-shot schedule'
   }
@@ -89,26 +90,11 @@ function describeSchedule(s: ScheduleRecord): string {
   return line
 }
 
-/** Fire-at display with timezone. */
+/** Fire-at display in the stored IANA timezone. */
 function fireAtDisplay(s: ScheduleRecord): string {
   if (!s.fire_at) return 'Not scheduled'
-  try {
-    const d = new Date(s.fire_at)
-    if (isNaN(d.getTime())) return s.fire_at
-    return `${d.toLocaleDateString('en-US', {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      timeZone: 'UTC',
-    })} · ${d.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      timeZone: 'UTC',
-    })}`
-  } catch {
-    return s.fire_at
-  }
+  const tz = s.timezone || 'UTC'
+  return formatFireAtInTz(s.fire_at, tz)
 }
 
 /** Derive the actions available for a given status. */
@@ -131,7 +117,6 @@ function terminalExplanation(s: ScheduleRecord): string | null {
 
 export function TodoDetailPage({
   scheduleId,
-  onBack,
 }: TodoDetailPageProps): JSX.Element {
   const { slug } = useParams<{ slug: string }>()
   const org = slug ?? ''
@@ -198,9 +183,14 @@ export function TodoDetailPage({
       await editMutation.mutateAsync({ scheduleId, fields })
       setEditOpen(false)
     } catch (err: unknown) {
-      const status = (err as { status?: number })?.status
-      const msg = (err as { message?: string })?.message ?? 'Edit failed.'
+      const apiErr = err as { status?: number; message?: string; detail?: unknown }
+      const status = apiErr.status
+      // ApiError stores the response detail in .detail (may be string or object).
+      const msg = typeof apiErr.detail === 'string' ? apiErr.detail : (apiErr.message ?? 'Edit failed.')
       if (status === 409) {
+        // Backend contract: all 409 responses carry code:"state_conflict".
+        // Cannot unambiguously distinguish status-conflict from validation
+        // errors — show the full Reload prompt for all.
         setConflict(true)
       } else {
         setValidationError(msg)
@@ -208,17 +198,18 @@ export function TodoDetailPage({
     }
   }
 
+  const tz = schedule.timezone || 'UTC'
+
   return (
     <ContentWrap>
       {/* Back button */}
-      <button
-        type="button"
-        onClick={onBack}
+      <Link
+        to={`/orgs/${org}/todos`}
         className="inline-flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg mb-4 transition-colors"
       >
         <ArrowLeft size={16} />
         All Todos
-      </button>
+      </Link>
 
       {/* Header: status pill + title + agent */}
       <div className="mb-6">
@@ -262,9 +253,9 @@ export function TodoDetailPage({
                 </span>
                 <p className="text-sm font-semibold text-fg">
                   {fireAtDisplay(schedule)}
-                  {schedule.timezone && (
+                  {tz && (
                     <span className="ml-1 font-normal text-fg-muted">
-                      {schedule.timezone}
+                      {tz}
                     </span>
                   )}
                 </p>
@@ -349,7 +340,7 @@ export function TodoDetailPage({
 
         {/* Right rail */}
         <div className="space-y-5">
-          {/* Actions */}
+          {/* Actions — exact matrix: armed=Pause/Edit/Cancel, paused=Edit/Cancel, others=readonly */}
           {actions !== 'readonly' && (
             <div className="rounded-2xl border border-border bg-bg-raised p-5 space-y-2">
               <h2 className="text-xs font-semibold text-fg-subtle uppercase tracking-wider mb-3">
@@ -434,7 +425,7 @@ export function TodoDetailPage({
             open={pauseOpen}
             onOpenChange={setPauseOpen}
             title="Pause this Todo"
-            description="This Todo will not fire while paused. You can resume it later from the paused list."
+            description="This Todo will not fire while paused."
             confirmLabel="Pause"
             confirmVariant="default"
             loading={pauseMutation.isPending}

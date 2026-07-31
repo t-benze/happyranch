@@ -1,6 +1,9 @@
 /**
  * ConfirmDialog — reusable confirmation surface for pause/cancel.
  * Uses the existing Dialog primitive from the design system.
+ *
+ * v1 has no Resume endpoint — the dialog text must never promise or
+ * imply a resume path.
  */
 import {
   Dialog,
