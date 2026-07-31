@@ -1245,7 +1245,8 @@ def approve_adapter(
                     adapter_id, entry.intended_profile_name,
                 )
             except ValueError:
-                # Rollback: restore adapter to PENDING
+                # Rollback: restore adapter to PENDING, preserving every
+                # durable identity fact including the seq244 dependency manifest.
                 rolled_back = AdapterEntry(
                     id=entry.id,
                     name=entry.name,
@@ -1261,6 +1262,8 @@ def approve_adapter(
                     approved_at=None,
                     approved_by=None,
                     intended_profile_name=entry.intended_profile_name,
+                    dependency_manifest_version=entry.dependency_manifest_version,
+                    dependencies=entry.dependencies,
                 )
                 _save_adapter_locked(rolled_back)
                 logger.warning(

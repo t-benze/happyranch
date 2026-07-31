@@ -636,6 +636,90 @@ class TestBindGating:
         assert resp.status_code == 200
         assert resp.json()["status"] == "pending"
 
+        # seq244: dependency manifest MUST be preserved through the
+        # failed-auto-bind rollback — the durable identity facts are
+        # immutable until the founder explicitly re-registers.
+        assert resp.json()["dependency_manifest_version"] == 1, (
+            "dependency_manifest_version must survive failed-auto-bind rollback"
+        )
+        assert isinstance(resp.json()["dependencies"], list), (
+            "dependencies must survive failed-auto-bind rollback as a list"
+        )
+        assert len(resp.json()["dependencies"]) == 1, (
+            "dependencies list must preserve exact record count after rollback"
+        )
+        dep = resp.json()["dependencies"][0]
+        assert dep["executable"] == str(script), (
+            "dependency executable path must be preserved through rollback"
+        )
+        assert dep["sha256"] == compute_sha256(str(script)), (
+            "dependency SHA-256 must be preserved through rollback"
+        )
+
+    def test_rollback_manifest_preserves_re_registration_guard(self, app_and_client,
+                                                                route_setup, token_store):
+        """Re-registration after failed-auto-bind rollback honours the fresh
+        manifest identity — a re-submit without dependency_manifest_version is
+        rejected (not silently treated as legacy).
+        """
+        app, master_token, store = app_and_client
+        token = _mint_adapter_token(store, "codex")
+        script = _make_conformant_adapter_script(route_setup, "codex-adapter")
+
+        c = TestClient(app)
+        # 1) Submit with strict manifest
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={"executable": str(script), "version": "1.0.0", **_dep_manifest(script)},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        adapter_id = data["id"]
+        original_manifest_version = data["dependency_manifest_version"]
+        original_deps = data["dependencies"]
+
+        # 2) Approve → auto-bind collision → rollback to PENDING
+        mc = self._master_client(app, master_token)
+        resp = mc.post(
+            f"/api/v1/runtime/adapters/{adapter_id}/approve",
+            json=_approval_snapshot(data),
+        )
+        assert resp.status_code == 422
+
+        # 3) Verify rollback preserved manifest
+        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "pending"
+        assert resp.json()["dependency_manifest_version"] == original_manifest_version
+        assert resp.json()["dependencies"] == original_deps
+
+        # 4) Re-register the SAME adapter identity WITHOUT a dependency
+        #    manifest — this must be REJECTED (422), proving the adapter
+        #    is still treated as a fresh-manifest identity, not silently
+        #    reclassed as legacy.
+        new_token = _mint_adapter_token(store, "codex2")
+        resp = c.post(
+            "/api/v1/runtime/adapters/submit",
+            json={"executable": str(script), "version": "1.0.0"},
+            headers={"Authorization": f"Bearer {new_token}"},
+        )
+        assert resp.status_code == 422, (
+            f"Expected 422 for re-registration without manifest, got {resp.status_code}"
+        )
+        detail = resp.json()["detail"]
+        # Pydantic validation errors may return detail as a list of objects
+        detail_str = str(detail).lower()
+        assert "dependency_manifest_version" in detail_str or (
+            "manifest" in detail_str
+        ), f"Rejection should reference manifest: {detail}"
+
+        # 5) Verify the existing PENDING adapter remains untouched
+        resp = mc.get(f"/api/v1/runtime/adapters/{adapter_id}")
+        assert resp.status_code == 200
+        assert resp.json()["dependency_manifest_version"] == original_manifest_version
+        assert resp.json()["dependencies"] == original_deps
+
 
 # ---------------------------------------------------------------------------
 # 6. Bind durable persistence
