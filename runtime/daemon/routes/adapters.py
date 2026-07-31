@@ -49,9 +49,12 @@ changes, or auth/bearer-flow changes.
 from __future__ import annotations
 
 import json
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+
+from runtime.orchestrator.adapter_contract import _strict_int_for_manifest
 
 from runtime.daemon.auth import require_registration_token, require_token
 from runtime.orchestrator.adapter_store import acquire_store_lock, release_store_lock
@@ -114,7 +117,7 @@ class AdapterRegisterRequest(BaseModel):
         default="pi",
         description="Workspace preparation adapter: claude, codex, opencode, or pi.",
     )
-    dependency_manifest_version: int = Field(
+    dependency_manifest_version: Annotated[int, BeforeValidator(_strict_int_for_manifest)] = Field(
         ...,
         ge=1,
         le=1,
@@ -207,7 +210,7 @@ class AdapterSubmitRequest(BaseModel):
         default="pi",
         description="Workspace preparation adapter.",
     )
-    dependency_manifest_version: int = Field(
+    dependency_manifest_version: Annotated[int, BeforeValidator(_strict_int_for_manifest)] = Field(
         ...,
         ge=1,
         le=1,

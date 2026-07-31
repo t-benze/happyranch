@@ -31,7 +31,9 @@ change the AdapterInput/AdapterOutput contract version.  The
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Annotated, Any
+
+from pydantic import BaseModel, BeforeValidator, Field
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +161,25 @@ class DependencyRecord(BaseModel):
     sha256: str = Field(..., description="SHA-256 hex digest of the executable", min_length=64, max_length=64)
 
 
+def _strict_int_for_manifest(v: Any) -> int:
+    """Reject non-strict integers (float, string, bool) at the boundary.
+
+    Pydantic int coercion silently accepts JSON 1.0, ``"1"``, and ``true``.
+    This validator runs in ``mode='before'`` so it sees the raw JSON-decoded
+    Python value and rejects anything that is not exactly ``int`` (excluding
+    ``bool``, which is a subclass of ``int`` in Python).
+    """
+    if isinstance(v, bool):
+        raise ValueError(
+            "dependency_manifest_version must be an integer, not a boolean"
+        )
+    if not isinstance(v, int):
+        raise ValueError(
+            f"dependency_manifest_version must be an integer, got {type(v).__name__}"
+        )
+    return v
+
+
 class DependencyManifest(BaseModel):
     """Independently versioned dependency manifest extension.
 
@@ -170,5 +191,5 @@ class DependencyManifest(BaseModel):
     Legacy entries (those without this extension) retain their exact
     current launch behavior and are never auto-mutated.
     """
-    dependency_manifest_version: int = Field(..., ge=1, le=1, description="Version of the dependency manifest contract (must be exactly 1)")
+    dependency_manifest_version: Annotated[int, BeforeValidator(_strict_int_for_manifest), Field(ge=1, le=1, description="Version of the dependency manifest contract (must be exactly 1)")]
     dependencies: list[DependencyRecord] = Field(..., min_length=1, description="Non-empty list of declared child executable dependencies")

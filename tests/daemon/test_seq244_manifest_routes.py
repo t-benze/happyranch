@@ -353,6 +353,157 @@ class TestFreshRouteVersionEnforcement:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Strict integer type enforcement (reject float, string, boolean)
+# ---------------------------------------------------------------------------
+
+
+class TestStrictIntTypeEnforcement:
+    """dependency_manifest_version must be literally JSON integer 1.
+
+    Pydantic int coercion silently accepts 1.0, "1", and true.
+    The BeforeValidator _strict_int_for_manifest rejects these at
+    the Pydantic boundary before conformance or persistence.
+    """
+
+    # -- Model-level strict-int rejection (parameterized) --
+    _STRICT_REJECT_MODELS = [
+        ("DependencyManifest", "runtime.orchestrator.adapter_contract", "DependencyManifest"),
+        ("AdapterRegisterRequest", "runtime.daemon.routes.adapters", "AdapterRegisterRequest"),
+        ("AdapterSubmitRequest", "runtime.daemon.routes.adapters", "AdapterSubmitRequest"),
+    ]
+
+    @pytest.mark.parametrize("bad_value,label", [
+        (1.0, "float-1.0"),
+        ("1", "string-1"),
+        (True, "bool-true"),
+    ])
+    @pytest.mark.parametrize("model_name,import_from,class_name", _STRICT_REJECT_MODELS)
+    def test_model_rejects_non_strict_int(
+        self, bad_value, label, model_name, import_from, class_name
+    ):
+        """Every fresh Pydantic model rejects float/string/bool for the field."""
+        import importlib
+        from pydantic import ValidationError
+
+        mod = importlib.import_module(import_from)
+        cls = getattr(mod, class_name)
+
+        with pytest.raises(ValidationError):
+            cls(
+                executable="/usr/bin/echo",
+                version="1.0.0",
+                capabilities=[],
+                dependency_manifest_version=bad_value,
+                dependencies=[
+                    {"executable": "/usr/bin/python3", "sha256": "a" * 64}
+                ],
+            )
+
+    def test_model_accepts_strict_int_1(self):
+        """Every fresh model accepts literal Python int 1."""
+        from runtime.daemon.routes.adapters import (
+            AdapterRegisterRequest,
+            AdapterSubmitRequest,
+        )
+        from runtime.orchestrator.adapter_contract import (
+            DependencyManifest,
+            DependencyRecord,
+        )
+
+        # All three models accept int 1
+        r = AdapterRegisterRequest(
+            executable="/usr/bin/echo",
+            version="1.0.0",
+            capabilities=[],
+            dependency_manifest_version=1,
+            dependencies=[{"executable": "/usr/bin/python3", "sha256": "a" * 64}],
+        )
+        assert r.dependency_manifest_version == 1
+
+        s = AdapterSubmitRequest(
+            executable="/usr/bin/echo",
+            version="1.0.0",
+            capabilities=[],
+            dependency_manifest_version=1,
+            dependencies=[{"executable": "/usr/bin/python3", "sha256": "a" * 64}],
+        )
+        assert s.dependency_manifest_version == 1
+
+        m = DependencyManifest(
+            dependency_manifest_version=1,
+            dependencies=[
+                DependencyRecord(executable="/usr/bin/python3", sha256="a" * 64)
+            ],
+        )
+        assert m.dependency_manifest_version == 1
+
+    # -- Route-level HTTP tests (register route) --
+
+    def test_register_route_float_1_0_no_persistence(
+        self, client: TestClient, tmp_path: Path
+    ):
+        """JSON 1.0 rejected at register route (422), no persistence."""
+        script = _make_conformant_adapter_script(tmp_path, "float-reg-adapter")
+        dep_exe = _make_fake_exe(tmp_path, "dep-float-reg")
+        dep_hash = compute_sha256(str(dep_exe))
+
+        body = {
+            "executable": str(script),
+            "version": "1.0.0",
+            "capabilities": [],
+            "workspace_adapter": "pi",
+            "dependency_manifest_version": 1.0,
+            "dependencies": [{"executable": str(dep_exe), "sha256": dep_hash}],
+        }
+
+        resp = client.post("/api/v1/runtime/adapters/register", json=body)
+        assert resp.status_code == 422, resp.text
+        assert load_adapters() == {}
+
+    def test_register_route_string_1_no_persistence(
+        self, client: TestClient, tmp_path: Path
+    ):
+        """JSON "1" rejected at register route (422), no persistence."""
+        script = _make_conformant_adapter_script(tmp_path, "str-reg-adapter")
+        dep_exe = _make_fake_exe(tmp_path, "dep-str-reg")
+        dep_hash = compute_sha256(str(dep_exe))
+
+        body = {
+            "executable": str(script),
+            "version": "1.0.0",
+            "capabilities": [],
+            "workspace_adapter": "pi",
+            "dependency_manifest_version": "1",
+            "dependencies": [{"executable": str(dep_exe), "sha256": dep_hash}],
+        }
+
+        resp = client.post("/api/v1/runtime/adapters/register", json=body)
+        assert resp.status_code == 422, resp.text
+        assert load_adapters() == {}
+
+    def test_register_route_bool_true_no_persistence(
+        self, client: TestClient, tmp_path: Path
+    ):
+        """JSON true rejected at register route (422), no persistence."""
+        script = _make_conformant_adapter_script(tmp_path, "bool-reg-adapter")
+        dep_exe = _make_fake_exe(tmp_path, "dep-bool-reg")
+        dep_hash = compute_sha256(str(dep_exe))
+
+        body = {
+            "executable": str(script),
+            "version": "1.0.0",
+            "capabilities": [],
+            "workspace_adapter": "pi",
+            "dependency_manifest_version": True,
+            "dependencies": [{"executable": str(dep_exe), "sha256": dep_hash}],
+        }
+
+        resp = client.post("/api/v1/runtime/adapters/register", json=body)
+        assert resp.status_code == 422, resp.text
+        assert load_adapters() == {}
+
+
+# ---------------------------------------------------------------------------
 # 2. Approve with matching/stale manifest facts
 # ---------------------------------------------------------------------------
 
