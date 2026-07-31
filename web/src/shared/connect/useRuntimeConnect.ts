@@ -235,13 +235,21 @@ export function buildAdapterConnectPrompt(
     ``,
     `# 1. Create a v1 adapter wrapper executable. Exact I/O contract:`,
     `#    - Read exactly one v1 AdapterInput JSON object from stdin`,
+    `#    - The server prepares/creates the workspace directory — you do`,
+    `#      not need to create it`,
     `#    - Invoke your CLI with truthful prompt, workspace, and timeout`,
     `#      context from the input`,
+    `#    - You have one 30-second wall-clock deadline (including post-EOF`,
+    `#      wait for your subprocess to exit after closing stdout)`,
     `#    - Write exactly one v1 AdapterOutput JSON object to stdout`,
     `#    - No non-JSON diagnostics on stdout`,
     `#    - Use stderr for all diagnostics, logging, and errors`,
     `#    - Exit after writing the output (single-invocation wrapper)`,
-    `#    Max output: 1 MB. Follow the schemas from step 0 exactly.`,
+    `#    - Max output: 1 MB stdout, 1 MB stderr`,
+    `#    - A syntactically valid AdapterOutput with success=false returns`,
+    `#      a 4xx error with your error field and stderr_tail for debugging`,
+    `#    Follow the schemas from step 0 exactly. The self-test fixture in`,
+    `#    the contract reference shows a minimal valid input/output pair.`,
     ``,
     `# 2. Complete the conformance challenge — POST each step id to`,
     `#    ${base}/executors/runtime/conformance-checkin`,
@@ -394,4 +402,87 @@ export function useAdapterConnect({
   };
 
   return { state, name, token, adapterId: adapterIdForPoll, mint, start, regenerate, back, bindMutation, retryBind };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Durable recovery — discover APPROVED unbound adapters from server  */
+/* ------------------------------------------------------------------ */
+
+/** An adapter that is APPROVED but not yet bound to a profile. */
+export interface RecoverableAdapter {
+  adapterId: string;
+  profileName: string;
+  executable: string;
+  workspaceAdapter: string;
+}
+
+export type RecoveryState =
+  | { stage: 'loading' }
+  | { stage: 'empty' }
+  | { stage: 'ready'; adapters: RecoverableAdapter[] }
+  | { stage: 'error'; message: string };
+
+/**
+ * Discover APPROVED bindable adapters from durable server state using the
+ * server-authoritative ``eligibility`` field (TASK-3784).  The browser MUST
+ * NOT recompute hash/tamper eligibility — this hook uses the server's
+ * ``eligibility`` value directly.
+ *
+ * Used identically by onboarding and Settings → Executors to show
+ * a truthful "Bind <profile>" recovery action after refresh or a
+ * new session.  Only adapters with ``eligibility === 'ready_to_bind'``
+ * are shown as recoverable.
+ */
+export function useAdapterRecovery(): {
+  state: RecoveryState;
+  refetch: () => void;
+} {
+  const [recoveryState, setRecoveryState] = useState<RecoveryState>({ stage: 'loading' });
+
+  const adaptersQuery = useQuery({
+    queryKey: ['adapters', 'list'],
+    queryFn: () =>
+      import('@/lib/api').then(({ adapters }) => adapters.listAdapters()),
+    staleTime: 15_000,
+  });
+
+  useEffect(() => {
+    if (adaptersQuery.isLoading) {
+      setRecoveryState({ stage: 'loading' });
+      return;
+    }
+    if (adaptersQuery.isError) {
+      setRecoveryState({
+        stage: 'error',
+        message: 'Could not load adapter state from the daemon.',
+      });
+      return;
+    }
+
+    const adapters = adaptersQuery.data ?? [];
+
+    // Use the server-authoritative eligibility field — never recompute.
+    const recoverable: RecoverableAdapter[] = [];
+    for (const a of adapters) {
+      if (a.eligibility !== 'ready_to_bind') continue;
+      recoverable.push({
+        adapterId: a.id,
+        profileName: a.intended_profile_name ?? '',
+        executable: a.executable,
+        workspaceAdapter: a.workspace_adapter,
+      });
+    }
+
+    if (recoverable.length === 0) {
+      setRecoveryState({ stage: 'empty' });
+    } else {
+      setRecoveryState({ stage: 'ready', adapters: recoverable });
+    }
+  }, [adaptersQuery.data, adaptersQuery.isLoading, adaptersQuery.isError]);
+
+  const refetch = (): void => {
+    void adaptersQuery.refetch();
+  };
+
+  return { state: recoveryState, refetch };
 }

@@ -140,6 +140,49 @@ def test_remove_binary_noop_when_missing(tmp_home_path: Path):
     remove_binary("nonexistent")  # Should not raise
 
 
+def test_remove_binary_conditional_exact_match(tmp_home_path: Path):
+    """remove_binary_conditional succeeds when stored path matches expected."""
+    from runtime.orchestrator.executor_binary_registry import (
+        RemoveBinaryResult,
+        get_binary,
+        remove_binary_conditional,
+        set_binary,
+    )
+    set_binary("d7a-cond", "/my/d7a-path")
+    assert get_binary("d7a-cond") == "/my/d7a-path"
+    result: RemoveBinaryResult = remove_binary_conditional("d7a-cond", "/my/d7a-path")
+    assert result.removed is True
+    assert result.stored_value == "/my/d7a-path"
+    assert get_binary("d7a-cond") is None
+
+
+def test_remove_binary_conditional_path_mismatch(tmp_home_path: Path):
+    """remove_binary_conditional returns False when stored path differs."""
+    from runtime.orchestrator.executor_binary_registry import (
+        RemoveBinaryResult,
+        get_binary,
+        remove_binary_conditional,
+        set_binary,
+    )
+    set_binary("d7a-cond2", "/actual/path")
+    result: RemoveBinaryResult = remove_binary_conditional("d7a-cond2", "/stale/path")
+    assert result.removed is False
+    assert result.stored_value == "/actual/path"
+    # Entry must remain
+    assert get_binary("d7a-cond2") == "/actual/path"
+
+
+def test_remove_binary_conditional_not_found(tmp_home_path: Path):
+    """remove_binary_conditional returns False when kind is not registered."""
+    from runtime.orchestrator.executor_binary_registry import (
+        RemoveBinaryResult,
+        remove_binary_conditional,
+    )
+    result: RemoveBinaryResult = remove_binary_conditional("nonexistent", "/any/path")
+    assert result.removed is False
+    assert result.stored_value is None
+
+
 def test_validate_binary_absolute_path(tmp_path: Path):
     """validate_binary returns the supplied path (not resolved target) for THR-107.
 
@@ -406,6 +449,148 @@ def test_registered_valid_vs_path_uses_registry(tmp_path, monkeypatch):
     # Must use registered path, NOT the PATH binary
     assert result == str(reg_bin)
     assert result != str(path_bin)
+
+
+# ─────────────────────────────────────────────────────────────────
+# Concurrency tests — every read-modify-write path shares one lock
+# ─────────────────────────────────────────────────────────────────
+
+
+def test_concurrent_registration_and_delete_is_atomic(tmp_home_path: Path):
+    """A concurrent registration update cannot be lost or incorrectly deleted.
+
+    Deterministic interleaving test: thread A deletes a kind with a stale
+    expected_path, thread B updates the same kind to a new path.  The
+    delete must return ``removed=False`` (path mismatch) and the update
+    must persist — the final registry must contain the updated path, not
+    a partial or vacuum result.
+    """
+    import threading
+
+    from runtime.orchestrator.executor_binary_registry import (
+        RemoveBinaryResult,
+        get_binary,
+        load_registry,
+        remove_binary_conditional,
+        set_binary,
+    )
+
+    # Phase 0 — seed initial entry.
+    set_binary("d7a-concur", "/old/path")
+    assert get_binary("d7a-concur") == "/old/path"
+
+    # Results collected across threads.
+    results: dict[str, RemoveBinaryResult | str | None] = {}
+    barrier = threading.Barrier(3, timeout=5)
+
+    def deleter():
+        barrier.wait()  # all threads ready
+        barrier.wait()  # synchronize start
+        r = remove_binary_conditional("d7a-concur", "/old/path")
+        results["delete"] = r
+
+    def updater():
+        barrier.wait()  # all threads ready
+        barrier.wait()  # synchronize start
+        set_binary("d7a-concur", "/new/path")
+        results["update"] = "done"
+
+    t_del = threading.Thread(target=deleter)
+    t_upd = threading.Thread(target=updater)
+
+    # Start both threads — both wait on barrier, then race.
+    t_del.start()
+    t_upd.start()
+
+    # Main thread participates in barrier so all start together.
+    barrier.wait()
+    barrier.wait()
+
+    t_del.join(timeout=5)
+    t_upd.join(timeout=5)
+
+    # After both threads complete, the registry MUST contain the updated path
+    # (or be empty if the delete won the race).  It must NEVER contain the old
+    # path alone, and the delete's outcome must be consistent with the final
+    # state.
+    final = load_registry()
+    final_path = final.get("d7a-concur")
+
+    delete_result = results.get("delete")
+    assert isinstance(delete_result, RemoveBinaryResult)
+
+    if delete_result.removed:
+        # Delete won the race — old path was matched and removed.
+        # The concurrent update may or may not have landed after the delete.
+        assert final_path in (None, "/new/path"), (
+            f"After successful delete, unexpected final path: {final_path}"
+        )
+    else:
+        # Delete lost — the update changed the path first.
+        # The delete result must report the mismatch correctly.
+        assert delete_result.stored_value == "/new/path", (
+            f"Delete reported stored_value={delete_result.stored_value!r}, expected /new/path"
+        )
+        assert final_path == "/new/path", (
+            f"After failed delete, final path must be /new/path, got {final_path!r}"
+        )
+
+
+def test_concurrent_register_and_remove_atomic(tmp_home_path: Path):
+    """A concurrent register must not be lost by a remove of the same kind.
+
+    Interleaving: thread A calls save_registry for kind X (load+merge+write),
+    thread B calls remove_binary for kind X (load+delete+write).  The final
+    registry MUST reflect one complete operation, not a half-applied merge.
+    """
+    import threading
+
+    from runtime.orchestrator.executor_binary_registry import (
+        load_registry,
+        remove_binary,
+        save_registry,
+    )
+
+    # Seed
+    save_registry({"d7a-rw": "/path/a"})
+
+    barrier = threading.Barrier(3, timeout=5)
+    errors: list[Exception] = []
+
+    def writer():
+        try:
+            barrier.wait()
+            barrier.wait()
+            save_registry({"d7a-rw": "/path/b"})
+        except Exception as e:
+            errors.append(e)
+
+    def remover():
+        try:
+            barrier.wait()
+            barrier.wait()
+            remove_binary("d7a-rw")
+        except Exception as e:
+            errors.append(e)
+
+    t_w = threading.Thread(target=writer)
+    t_r = threading.Thread(target=remover)
+    t_w.start()
+    t_r.start()
+    barrier.wait()
+    barrier.wait()
+    t_w.join(timeout=5)
+    t_r.join(timeout=5)
+
+    assert not errors, f"Unexpected errors in threads: {errors}"
+
+    final = load_registry()
+    final_path = final.get("d7a-rw")
+    # Must be either None (remove won) or /path/b (writer won), but NOT
+    # /path/a (an inconsistency: partial read-modify-write).
+    assert final_path in (None, "/path/b"), (
+        f"Inconsistent final state: {final_path!r}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────

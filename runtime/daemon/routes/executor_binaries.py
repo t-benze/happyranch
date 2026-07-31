@@ -20,9 +20,12 @@ from pydantic import BaseModel, Field
 
 from runtime.daemon.auth import require_token
 from runtime.orchestrator.executor_binary_registry import (
+    RemoveBinaryResult,
     get_binary,
     is_binary_valid,
     load_registry,
+    remove_binary,
+    remove_binary_conditional,
     set_binary,
     validate_binary,
 )
@@ -164,3 +167,99 @@ def validate_path(body: ValidateBinaryRequest) -> ValidateBinaryResponse:
         return ValidateBinaryResponse(
             path=body.path, valid=False, error=str(exc)
         )
+
+
+# ---------------------------------------------------------------------------
+# Response models for delete
+# ---------------------------------------------------------------------------
+
+
+class RemoveBinaryRequest(BaseModel):
+    """Request to conditionally remove a binary path from the registry.
+
+    Both ``expected_name`` and ``expected_path`` must match exactly for
+    the removal to succeed — this prevents race-condition deletion of a
+    concurrently-updated record and guards against path-confusion attacks.
+    """
+    expected_name: str = Field(..., min_length=1, description="Must equal the URL kind exactly")
+    expected_path: str = Field(..., min_length=1, description="Must equal the stored path exactly")
+
+
+class RemoveBinaryResponse(BaseModel):
+    """Response after removing a binary path from the registry."""
+    kind: str
+    removed: bool
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/v1/executor-binaries/{kind} — conditionally remove a binary path
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/executor-binaries/{kind}",
+    response_model=RemoveBinaryResponse,
+    responses={
+        200: {"description": "Binary path successfully removed."},
+        404: {"description": "Executor kind not found in the binary registry."},
+        409: {"description": "Stored path does not match expected_path (concurrent update)."},
+        422: {"description": "Validation error — expected_name mismatch, built-in kind, or other rule violation."},
+    },
+)
+def delete_binary(kind: str, body: RemoveBinaryRequest) -> RemoveBinaryResponse:
+    """Atomically remove a stored binary path from the machine-local registry.
+
+    Guards:
+    - ``expected_name`` must equal ``kind`` exactly (case-sensitive); a
+      mismatch returns 422.
+    - ``expected_path`` must equal the registry's currently-stored path
+      exactly; a mismatch returns 409 (stale-target / race protection).
+    - Built-in kind names (claude, codex, opencode, pi) are blocked from
+      deletion — only custom/test kinds may be removed.
+    - The load-compare-delete-write cycle is guarded by a registry lock
+      so a concurrent writer cannot replace the record between the check
+      and the removal.
+
+    Returns ``{kind, removed: true}`` on success, 404 if not found,
+    409 on expected-path mismatch, 422 on built-in or name mismatch.
+    """
+    from fastapi import HTTPException, status as http_status
+
+    # Guard 1: expected_name must equal kind exactly
+    if body.expected_name != kind:
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"expected_name {body.expected_name!r} does not match URL kind {kind!r}.",
+        )
+
+    # Guard 2: built-in kinds are blocked
+    BUILTIN_KINDS = {"claude", "codex", "opencode", "pi"}
+    if kind.lower() in BUILTIN_KINDS:
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Cannot remove built-in executor kind {kind!r}.",
+        )
+
+    # Guard 3 + 4: atomically check stored path matches expected_path AND remove.
+    # The result is derived entirely from the lock-guarded critical section —
+    # no re-read afterward to classify a race.
+    result: RemoveBinaryResult = remove_binary_conditional(kind, body.expected_path)
+    if result.removed:
+        return RemoveBinaryResponse(kind=kind, removed=True)
+
+    # Classify failure from the atomically observed state.
+    if result.stored_value is None:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=f"Executor kind {kind!r} is not in the binary registry.",
+        )
+
+    # Stored path exists but differs from expected_path → conflict
+    raise HTTPException(
+        status_code=http_status.HTTP_409_CONFLICT,
+        detail=(
+            f"Stored path for {kind!r} ({result.stored_value!r}) does not match "
+            f"expected_path ({body.expected_path!r}). "
+            f"The record may have been updated concurrently — refresh and retry."
+        ),
+    )

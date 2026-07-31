@@ -12,7 +12,7 @@ from runtime.orchestrator.executor_binary_registry import (
     get_binary,
     is_binary_valid,
 )
-from runtime.orchestrator.executor_registry import get_registry
+from runtime.orchestrator.executor_registry import ExecutorRegistry, get_registry
 
 router = APIRouter()
 
@@ -147,17 +147,33 @@ def health_prereqs(request: Request) -> PrereqsResponse:
         if profile is None:
             continue
         if profile.kind == "custom":
-            # Custom profile — requires an explicit executors.json entry
-            # keyed by the profile name (THR-107 seq155).  Same gate as
-            # built-ins; no shutil.which fallback.
-            stored = get_binary(name)
-            registered = stored is not None and is_binary_valid(stored)
-            results.append(ExecutorPrereq(
-                tool=name,
-                present=registered,
-                path=stored if registered else None,
-                hint=_hint_for(name),
-            ))
+            # Custom-adapter profiles: eligibility is determined by the
+            # adapter store (APPROVED + hash-verified), NOT by executors.json.
+            # The approved adapter executable IS the launch artifact.
+            # Generic-cli profiles: require executors.json entry (seq155).
+            cmd_adapter = profile.command_adapter_id or ""
+            if cmd_adapter.startswith("custom-adapter:"):
+                eligibility = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
+                adapter_present = eligibility is not None
+                adapter_path = eligibility["executable"] if eligibility else None
+                results.append(ExecutorPrereq(
+                    tool=name,
+                    present=adapter_present,
+                    path=adapter_path,
+                    hint=_hint_for(name),
+                ))
+            else:
+                # Generic-cli custom profile — requires an explicit executors.json entry
+                # keyed by the profile name (THR-107 seq155).  Same gate as
+                # built-ins; no shutil.which fallback.
+                stored = get_binary(name)
+                registered = stored is not None and is_binary_valid(stored)
+                results.append(ExecutorPrereq(
+                    tool=name,
+                    present=registered,
+                    path=stored if registered else None,
+                    hint=_hint_for(name),
+                ))
         else:
             # Built-in — presence is determined solely by the machine-local
             # binary registry (executors.json).  Optional Settings CLI

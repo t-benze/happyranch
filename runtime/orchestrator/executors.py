@@ -1314,21 +1314,6 @@ class CustomAdapterExecutor:
 
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
 
-        # ── THR-107 seq155: profile-pin preflight ──────────────────────
-        # Every custom-adapter profile must have a valid machine-local
-        # binary registry entry keyed by the profile name before any
-        # adapter subprocess attempt.  Missing or stale pin fails closed
-        # here with an actionable remediation command.
-        try:
-            _resolve_binary(self._profile_name)
-        except ExecutorBinaryBlocked as exc:
-            return ExecutorResult(
-                success=False,
-                duration_seconds=0,
-                session_id=session_id or "",
-                error=str(exc),
-            )
-
         # ── D7B: Fail closed if invocation context is missing/incomplete ──
         ctx = self._invocation_context
         missing = []

@@ -167,6 +167,9 @@ conformance-passed, founder-APPROVED custom adapter executable. The
 ``AdapterInput`` JSON on stdin and parses the v1 ``AdapterOutput`` JSON from
 stdout. No ``argv_template``, ``command``, or PATH resolution is used — the
 adapter executable's absolute path is resolved from the approved adapter entry.
+Custom-adapter profiles do **not** require a separate ``executors.json`` record
+keyed by their profile name — the approved adapter's absolute path IS the launch
+artifact, verified by hash at every launch.
 
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
@@ -375,10 +378,14 @@ management reads/writes, not registration):
   (workspace adapter selector) and `command_adapter_id` (command adapter
   selector), plus deprecated aliases `adapter`, `adapter_id` (workspace
   aliases only), and `command_adapter` (command alias only), with a
-  `present`/`path` signal mirroring `/health/prereqs`. Both **custom
-  profiles** and **built-ins** derive `present`/`path` from the
+  `present`/`path` signal mirroring `/health/prereqs`. Custom
+  profiles (generic-CLI) and **built-ins** derive `present`/`path` from the
   machine-local binary registry (``executors.json``) keyed by the
-  profile name — the same gating for both (THR-107 seq155).  No
+  profile name — the same gating for both (THR-107 seq155).  Custom-adapter
+  profiles (``command_adapter_id: custom-adapter:<id>``) are an exception —
+  they use the exact founder-APPROVED, hash-verified absolute adapter
+  executable as their launch artifact and do **not** require a separate
+  ``executors.json`` record.  No
   ``shutil.which`` or PATH-based fallback is used.  Built-in presence
   is not reflected in this route (this route lists only custom profiles
   from the runtime store — use ``/health/prereqs`` for built-in

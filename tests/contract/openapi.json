@@ -226,6 +226,26 @@
         ]
       }
     },
+    "/api/v1/executor-binaries/{kind}": {
+      "DELETE": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "kind",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
     "/api/v1/executors/runtime/conformance-checkin": {
       "POST": {
         "params": [

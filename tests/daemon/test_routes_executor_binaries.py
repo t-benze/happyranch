@@ -309,3 +309,197 @@ def test_register_symlink_becomes_stale_when_target_gone(client, tmp_path):
     )
     assert r_val2.json()["valid"] is False
     assert r_val2.json()["error"] is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DELETE /api/v1/executor-binaries/{kind} — guarded conditional removal
+# ═══════════════════════════════════════════════════════════════════════════
+
+import json
+
+
+def test_delete_success_exact_match(client, tmp_path):
+    """DELETE with matching expected_name + expected_path removes the entry."""
+    bin_exe = tmp_path / "d7a-test-bin"
+    bin_exe.touch(mode=0o755)
+
+    # Register a test kind
+    r = client.post(
+        "/api/v1/executor-binaries/register",
+        json={"kind": "d7a-tester", "path": str(bin_exe)},
+    )
+    assert r.status_code == 200
+
+    # Delete with exact match (use request() for DELETE with body)
+    r_del = client.request(
+        "DELETE",
+        "/api/v1/executor-binaries/d7a-tester",
+        content=json.dumps({"expected_name": "d7a-tester", "expected_path": str(bin_exe)}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r_del.status_code == 200
+    body = r_del.json()
+    assert body["kind"] == "d7a-tester"
+    assert body["removed"] is True
+
+    # Verify no longer listed
+    r_list = client.get("/api/v1/executor-binaries")
+    entries = r_list.json()["entries"]
+    assert not any(e["kind"] == "d7a-tester" for e in entries)
+
+
+def test_delete_expected_name_mismatch(client, tmp_path):
+    """DELETE returns 422 when expected_name does not equal the URL kind."""
+    bin_exe = tmp_path / "d7a-match-name"
+    bin_exe.touch(mode=0o755)
+
+    client.post(
+        "/api/v1/executor-binaries/register",
+        json={"kind": "d7a-match-name", "path": str(bin_exe)},
+    )
+
+    r = client.request(
+        "DELETE",
+        "/api/v1/executor-binaries/d7a-match-name",
+        content=json.dumps({"expected_name": "different-name", "expected_path": str(bin_exe)}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "expected_name" in detail.lower()
+    assert "d7a-match-name" in detail
+
+    # Entry must not be removed
+    r_list = client.get("/api/v1/executor-binaries")
+    entries = r_list.json()["entries"]
+    assert any(e["kind"] == "d7a-match-name" for e in entries)
+
+
+def test_delete_stale_expected_path_returns_409(client, tmp_path):
+    """DELETE returns 409 when expected_path differs from the stored path.
+
+    THR-107 race protection: a concurrent writer updated the entry
+    between the operator's observation and the DELETE request, so we
+    must reject to avoid deleting the wrong target.
+    """
+    bin1 = tmp_path / "d7a-stale-v1"
+    bin2 = tmp_path / "d7a-stale-v2"
+    bin1.touch(mode=0o755)
+    bin2.touch(mode=0o755)
+
+    client.post(
+        "/api/v1/executor-binaries/register",
+        json={"kind": "d7a-stale", "path": str(bin1)},
+    )
+
+    # Concurrent writer updates to bin2 (simulating race)
+    client.post(
+        "/api/v1/executor-binaries/register",
+        json={"kind": "d7a-stale", "path": str(bin2)},
+    )
+
+    # Now try to delete with the STALE observed path (bin1)
+    r = client.request(
+        "DELETE",
+        "/api/v1/executor-binaries/d7a-stale",
+        content=json.dumps({"expected_name": "d7a-stale", "expected_path": str(bin1)}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert "does not match" in detail.lower() or "expected_path" in detail.lower()
+
+    # Entry must still exist with the new path
+    r_list = client.get("/api/v1/executor-binaries")
+    entries = r_list.json()["entries"]
+    d7a_entry = next(e for e in entries if e["kind"] == "d7a-stale")
+    assert d7a_entry["path"] == str(bin2)
+
+
+def test_delete_race_protection_atomic(client, tmp_path):
+    """The compare+delete is atomic — a later-updated entry is never removed
+    when the observed path is stale."""
+    bin1 = tmp_path / "d7a-atomic-v1"
+    bin2 = tmp_path / "d7a-atomic-v2"
+    bin1.touch(mode=0o755)
+    bin2.touch(mode=0o755)
+
+    client.post(
+        "/api/v1/executor-binaries/register",
+        json={"kind": "d7a-atomic", "path": str(bin1)},
+    )
+
+    # Update to bin2
+    client.post(
+        "/api/v1/executor-binaries/register",
+        json={"kind": "d7a-atomic", "path": str(bin2)},
+    )
+
+    # Delete with bin1 path (stale) → 409
+    r = client.request(
+        "DELETE",
+        "/api/v1/executor-binaries/d7a-atomic",
+        content=json.dumps({"expected_name": "d7a-atomic", "expected_path": str(bin1)}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 409
+
+    # Delete with bin2 path (current) → 200
+    r2 = client.request(
+        "DELETE",
+        "/api/v1/executor-binaries/d7a-atomic",
+        content=json.dumps({"expected_name": "d7a-atomic", "expected_path": str(bin2)}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["removed"] is True
+
+    # Now gone
+    r_list = client.get("/api/v1/executor-binaries")
+    entries = r_list.json()["entries"]
+    assert not any(e["kind"] == "d7a-atomic" for e in entries)
+
+
+def test_delete_builtin_kind_rejected(client, tmp_path):
+    """DELETE of a built-in kind (claude, codex, opencode, pi) returns 422."""
+    bin_exe = tmp_path / "claude-bin"
+    bin_exe.touch(mode=0o755)
+
+    # Register first (required for the test to be meaningful)
+    client.post(
+        "/api/v1/executor-binaries/register",
+        json={"kind": "claude", "path": str(bin_exe)},
+    )
+
+    r = client.request(
+        "DELETE",
+        "/api/v1/executor-binaries/claude",
+        content=json.dumps({"expected_name": "claude", "expected_path": str(bin_exe)}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 422
+    assert "built-in" in r.json()["detail"].lower() or "cannot remove" in r.json()["detail"].lower()
+
+
+def test_delete_nonexistent_kind_returns_404(client):
+    """DELETE for an unregistered kind returns 404."""
+    r = client.request(
+        "DELETE",
+        "/api/v1/executor-binaries/no-such-kind",
+        content=json.dumps({"expected_name": "no-such-kind", "expected_path": "/no/such/path"}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 404
+
+
+def test_delete_requires_auth(app, tmp_home):
+    """DELETE route requires bearer auth."""
+    from fastapi.testclient import TestClient
+    client_noauth = TestClient(app)
+    r = client_noauth.request(
+        "DELETE",
+        "/api/v1/executor-binaries/some-kind",
+        content=json.dumps({"expected_name": "some-kind", "expected_path": "/some/path"}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 401

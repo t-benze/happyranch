@@ -43,6 +43,8 @@ changes, or auth/bearer-flow changes.
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
@@ -112,6 +114,10 @@ class AdapterEntryResponse(BaseModel):
 
     Mirrors ``AdapterEntry`` fields. D4: includes approved_at/approved_by.
     THR-107 seq141: includes intended_profile_name.
+
+    THR-107 recovery eligibility (TASK-3784): includes server-authoritative
+    ``eligibility`` — derived entirely from durable server state so the
+    browser never recomputes hash/tamper eligibility.
     """
 
     id: str
@@ -128,6 +134,20 @@ class AdapterEntryResponse(BaseModel):
     approved_at: str | None = None
     approved_by: str | None = None
     intended_profile_name: str | None = None
+    eligibility: str | None = Field(
+        None,
+        description=(
+            "Server-authoritative adapter recovery eligibility. One of:"
+            " 'ready_to_bind' — approved, hash-valid, intended profile not yet bound;"
+            " 'already_bound' — profile exists and is bound to this adapter;"
+            " 'cross_profile' — profile exists but is bound to a DIFFERENT adapter;"
+            " 'builtin_collision' — intended profile name is a built-in;"
+            " 'tampered' — approved but on-disk hash mismatch or missing;"
+            " 'pending' — adapter is PENDING (not yet approved);"
+            " 'not_intended' — no intended_profile_name set;"
+            " None — not applicable (not approved, or unknown state)."
+        ),
+    )
 
 
 class AdapterSubmitRequest(BaseModel):
@@ -218,6 +238,53 @@ class AdapterApproveRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+def _compute_eligibility(entry) -> str | None:
+    """Compute server-authoritative recovery eligibility for an adapter.
+
+    This is the single source of truth — the browser MUST NOT recompute
+    hash/tamper eligibility.  The eligibility captures exactly the
+    conditions already enforced by bind_adapter_profile.
+
+    Returns None when the adapter is not approved (PENDING / unknown status).
+    """
+    if entry.status != "approved":
+        return None
+
+    # No intended profile → nothing to recover.
+    if not entry.intended_profile_name:
+        return "not_intended"
+
+    profile_name = entry.intended_profile_name
+
+    # Check on-disk integrity (hash + executable).  resolve_adapter re-validates
+    # file existence, executable permission, and SHA-256 hash.
+    resolved = resolve_adapter(entry.id)
+    if resolved is None:
+        return "tampered"
+
+    # Check if the intended profile name is a built-in.
+    BUILTIN_KINDS_NAMES = {"claude", "codex", "opencode", "pi"}
+    if profile_name.lower() in BUILTIN_KINDS_NAMES:
+        return "builtin_collision"
+
+    # Check profile existence and binding.
+    from runtime.orchestrator.executor_registry import get_registry
+    registry = get_registry()
+    existing_profile = registry.get_profile(profile_name)
+
+    if existing_profile is not None:
+        # Profile exists — check what adapter it belongs to.
+        profile_adapter_id = existing_profile.command_adapter_id
+        if profile_adapter_id and profile_adapter_id == f"custom-adapter:{entry.id}":
+            return "already_bound"
+        else:
+            # Profile exists but is bound to a different adapter (or no adapter).
+            return "cross_profile"
+
+    # No profile exists with this name — adapter is bindable.
+    return "ready_to_bind"
+
+
 def _entry_to_response(entry) -> AdapterEntryResponse:
     """Map an ``AdapterEntry`` to the response model."""
     return AdapterEntryResponse(
@@ -235,6 +302,7 @@ def _entry_to_response(entry) -> AdapterEntryResponse:
         approved_at=entry.approved_at,
         approved_by=entry.approved_by,
         intended_profile_name=entry.intended_profile_name,
+        eligibility=_compute_eligibility(entry),
     )
 
 
@@ -537,6 +605,43 @@ def get_contract_reference(request: Request) -> dict:
     # proceeding to conformance check-ins and submission.
 
     from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput
+    from runtime.orchestrator.custom_adapter_registry import build_probe_input
+
+    # Build a minimal self-test fixture from the real probe builder.
+    probe_input = build_probe_input("example-adapter")
+    probe_fixture = {
+        "description": (
+            "A minimal self-test input/output fixture. The adapter receives "
+            "this AdapterInput on stdin and MUST respond with an AdapterOutput "
+            "where success=true. The server prepares/creates the probe workspace "
+            "at the workspace path in the input — the adapter does not need to "
+            "create it. The adapter has one 30-second wall-clock deadline "
+            "(including post-EOF wait for the subprocess to exit after closing "
+            "its stdout). Stdout and stderr are each capped at 1 MB. Only a "
+            "single JSON AdapterOutput object is accepted on stdout."
+        ),
+        "input": json.loads(probe_input.model_dump_json()),
+        "expected_output": {
+            "success": True,
+            "duration_seconds": 0,
+            "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+            "returncode": 0,
+            "stdout_tail": "conformance probe OK",
+            "stderr_tail": "",
+            "result": {"text": "conformance probe OK"},
+            "token_usage": None,
+            "error": None,
+            "agent_session_id": None,
+            "rate_limited": False,
+            "adapter_metadata": {
+                "adapter": "example-adapter",
+                "adapter_version": "1.0.0",
+                "contract_version": 1,
+            },
+            "child_session_id": None,
+            "raw_forensics_ref": None,
+        },
+    }
 
     return {
         "contract_version": 1,
@@ -584,6 +689,26 @@ def get_contract_reference(request: Request) -> dict:
                 "conformance challenge. Submission creates ONLY the exact PENDING "
                 "adapter; founder approval and management binding are separate steps."
             ),
+        },
+        "probe": {
+            "description": (
+                "Before registration, the server runs a conformance probe against "
+                "the submitted executable. The server prepares/creates the probe "
+                "workspace directory at the path specified in the probe input. "
+                "The adapter has one 30-second wall-clock deadline including "
+                "post-EOF wait. It must write exactly one syntactically valid "
+                "AdapterOutput JSON object to stdout with success=true. Stdout "
+                "and stderr are each capped at 1 MB. Diagnostics, logging, and "
+                "errors must go to stderr only. A syntactically valid "
+                "AdapterOutput with success=false returns a 4xx detail containing "
+                "the safely capped error field and stderr_tail sufficient for "
+                "debugging without daemon source access."
+            ),
+            "deadline_seconds": 30,
+            "max_stdout_bytes": 1_048_576,
+            "max_stderr_bytes": 1_048_576,
+            "requires_success_true": True,
+            "self_test_fixture": probe_fixture,
         },
     }
 

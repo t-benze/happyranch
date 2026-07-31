@@ -30,6 +30,12 @@ the CLI on `PATH` is not enough — HappyRanch never discovers or auto-resolves
 PATH executables for executor launch; only a valid profile-name registration in
 `executors.json` makes a profile launchable.
 
+**Exception — custom-adapter profiles:** profiles configured with
+`command_adapter_id: custom-adapter:<id>` use the exact founder-APPROVED,
+hash-verified absolute adapter executable as their launch artifact — they do
+**not** require a separate `executors.json` record. All other profiles
+(built-ins, generic-CLI custom) always resolve through `executors.json`.
+
 ## Check Readiness
 
 The web onboarding page and Settings → Executor Binaries show which executor

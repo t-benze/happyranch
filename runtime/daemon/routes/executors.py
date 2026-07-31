@@ -1366,12 +1366,29 @@ def list_runtime_executor_profiles() -> RuntimeProfileList:
     for name in sorted(stored.keys()):
         entry = stored[name]
         command = entry.get("command")
-        # Custom profile — derive present/path from the machine-local
-        # binary registry keyed by the profile name (THR-107 seq155).
-        # Same gate as /health/prereqs built-ins; no shutil.which fallback.
-        stored_binary = get_binary(name)
-        present = stored_binary is not None and is_binary_valid(stored_binary)
-        path = stored_binary if present else None
+        # ── Determine present/path for this profile ──
+        # Custom-adapter profiles: eligibility is from the adapter store
+        # (APPROVED + hash-verified), NOT from executors.json.
+        # Generic-cli custom profiles: require executors.json entry.
+        cmd_adapter_raw = entry.get("command_adapter_id")
+        if isinstance(cmd_adapter_raw, str) and cmd_adapter_raw.startswith("custom-adapter:"):
+            # Build a temporary ExecutorProfile for the eligibility check
+            from runtime.orchestrator.executor_registry import ExecutorRegistry, ExecutorProfile
+            temp_profile = ExecutorProfile(
+                name=name,
+                kind="custom",
+                command_adapter_id=cmd_adapter_raw,
+            )
+            eligibility = ExecutorRegistry._resolve_custom_adapter_eligibility(temp_profile)
+            present = eligibility is not None
+            path = eligibility["executable"] if eligibility else None
+        else:
+            # Generic-cli custom profile — derive present/path from the machine-local
+            # binary registry keyed by the profile name (THR-107 seq155).
+            # Same gate as /health/prereqs built-ins; no shutil.which fallback.
+            stored_binary = get_binary(name)
+            present = stored_binary is not None and is_binary_valid(stored_binary)
+            path = stored_binary if present else None
         # D6: dual-read command adapter — canonical command_adapter_id wins
         resolved_command_adapter: str | None = "generic-cli"  # default
         cmd_canon = entry.get("command_adapter_id")
