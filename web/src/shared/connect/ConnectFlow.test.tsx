@@ -190,12 +190,12 @@ describe('ConnectFlow — server-authoritative recovery eligibility', () => {
     expect(screen.queryByText('Advanced recovery \/ legacy adapters')).not.toBeInTheDocument();
   }, 10000);
 
-  /* ---- negative: not_intended ---- */
+  /* ---- negative: recovery_ready (Settings consumer, showRecovery=true) ---- */
 
-  test('not_intended adapter (no intended profile) does NOT show Bind', async () => {
+  test('recovery_ready adapter (no intended profile) does NOT show Bind through ConnectFlow recovery section', async () => {
     await mockListAdapters(makeAdapter({
       intended_profile_name: null,
-      eligibility: 'not_intended',
+      eligibility: 'recovery_ready',
     }));
     renderConnect();
 

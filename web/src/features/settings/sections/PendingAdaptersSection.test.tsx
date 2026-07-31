@@ -499,9 +499,9 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
 
   /* ---- Onboarding separation — renders ConnectFlow, proves no Approve/Reject ---- */
 
-  test('ConnectFlow (onboarding) never renders Approve/Reject controls for pending adapters', async () => {
+  test('ConnectFlow (shared component, showRecovery=true) never renders Approve/Reject controls for pending adapters', async () => {
     // Mock adapter list with a pending adapter — the settings section shows
-    // Approve/Reject, but onboarding ConnectFlow (which uses RecoverySection
+    // Approve/Reject, but ConnectFlow with showRecovery=true (Settings consumer)
     // for approved adapters only) should NOT show them.
     mockListAdapters(makePendingAdapter());
 
@@ -529,7 +529,7 @@ describe('PendingAdaptersSection (Settings → Executors → Pending Approvals)'
     expect(screen.queryByText(/Advanced recovery \/ legacy adapters/)).not.toBeInTheDocument();
   });
 
-  test('ConnectFlow (onboarding) shows RecoverySection for approved ready-to-bind adapters but without Approve/Reject', async () => {
+  test('ConnectFlow (shared component, showRecovery=true) shows RecoverySection for approved ready-to-bind adapters but without Approve/Reject', async () => {
     // Approved adapter with ready_to_bind eligibility
     const approvedReady = makePendingAdapter({
       id: 'approved-adapter',

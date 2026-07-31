@@ -407,7 +407,7 @@ export type RecoveryState =
  * NOT recompute hash/tamper eligibility — this hook uses the server's
  * ``eligibility`` value directly.
  *
- * Used identically by onboarding and Settings → Executors to show
+ * Used by Settings → Executors to show
  * a truthful "Bind <profile>" recovery action after refresh or a
  * new session.  Only adapters with ``eligibility === 'ready_to_bind'``
  * are shown as recoverable.

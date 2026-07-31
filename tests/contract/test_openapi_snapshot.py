@@ -81,6 +81,49 @@ def test_openapi_snapshot_matches() -> None:
         raise AssertionError("\n".join(msg_lines))
 
 
+# ── AdapterEntryResponse eligibility semantic test (TASK-3836 fix-forward) ─
+
+
+def test_adapter_entry_eligibility_includes_recovery_ready() -> None:
+    """AdapterEntryResponse.eligibility description MUST include 'recovery_ready'.
+
+    The _compute_eligibility function returns 'recovery_ready' for approved
+    no-intended adapters with valid hash/integrity (TASK-3832).  If the
+    OpenAPI description omits this value, the published contract is
+    semantically wrong — consumers reading the schema won't know this
+    state exists.  This test is a fail-closed semantic guard beyond the
+    path-level snapshot.
+    """
+    app = create_app(DaemonState.idle(Settings()))
+    full = app.openapi()
+
+    schemas = full.get("components", {}).get("schemas", {})
+    adapter_schema = schemas.get("AdapterEntryResponse", {})
+    assert adapter_schema, "AdapterEntryResponse schema missing from OpenAPI components"
+
+    eligibility_prop = adapter_schema.get("properties", {}).get("eligibility", {})
+    assert eligibility_prop, (
+        "eligibility field missing from AdapterEntryResponse schema"
+    )
+
+    description = eligibility_prop.get("description", "")
+    assert "recovery_ready" in description, (
+        f"AdapterEntryResponse.eligibility description must include 'recovery_ready'.\n"
+        f"Current description:\n{description}\n\n"
+        f"_compute_eligibility returns 'recovery_ready' for approved no-intended "
+        f"adapters. If this test fails, update the description in "
+        f"runtime/daemon/routes/adapters.py AdapterEntryResponse.eligibility field "
+        f"to include 'recovery_ready'."
+    )
+
+    # Also verify that 'not_intended' is NOT present (it was removed in TASK-3832).
+    assert "not_intended" not in description, (
+        f"AdapterEntryResponse.eligibility description must NOT include 'not_intended' "
+        f"(replaced by 'recovery_ready' in TASK-3832).\n"
+        f"Current description:\n{description}"
+    )
+
+
 # ── ScheduleEditBody null-type regression ─────────────────────────────
 
 _NON_NULLABLE_EDIT_FIELDS = ["fire_at", "recurrence", "timezone"]

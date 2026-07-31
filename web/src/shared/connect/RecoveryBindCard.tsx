@@ -2,11 +2,9 @@
  * RecoveryBindCard — shared bind → server poll → durable connected lifecycle
  * (THR-107 TASK-3784 durable bind, extracted for TASK-3805 fix-forward).
  *
- * This is the SINGLE canonical bind recovery implementation. Both
- * ConnectFlow/onboarding recovery AND Settings ▸ Executors
- * PendingAdaptersSection invoke the same bind → server poll → durable
- * connected logic — no duplicate state enum, no duplicate effect, no
- * duplicate API polling path.
+ * This is the SINGLE canonical bind recovery implementation for
+ * Settings ▸ Executors PendingAdaptersSection — it invokes the same
+ * bind → server poll → durable connected logic.
  *
  * Bind lifecycle:
  *   ready → binding (POST /bind-profile) → verifying (poll every 1.5s)

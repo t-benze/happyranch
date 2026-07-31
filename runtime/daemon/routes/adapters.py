@@ -149,7 +149,7 @@ class AdapterEntryResponse(BaseModel):
             " 'builtin_collision' — intended profile name is a built-in;"
             " 'tampered' — approved but on-disk hash mismatch or missing;"
             " 'pending' — adapter is PENDING (not yet approved);"
-            " 'not_intended' — no intended_profile_name set;"
+            " 'recovery_ready' — no intended_profile_name set; explicit Bind recovery available;"
             " None — not applicable (not approved, or unknown state)."
         ),
     )

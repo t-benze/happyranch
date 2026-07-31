@@ -22,10 +22,7 @@
  * Onboarding NEVER renders this section — it is Settings-only.
  *
  * BIND RECOVERY (fix-forward TASK-3805): the shared RecoveryBindCard from
- * ConnectFlow is the SINGLE canonical bind implementation — both this
- * section and onboarding RecoverySection invoke the same bind → server
- * poll → durable connected logic. No duplicate state enum, no duplicate
- * effect, no duplicate API polling path.
+ * ConnectFlow is the SINGLE canonical bind implementation — this
  */
 import { useState, useCallback } from 'react';
 import { Check, XCircle, Puzzle, Trash2 } from 'lucide-react';

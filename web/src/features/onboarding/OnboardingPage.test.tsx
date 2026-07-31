@@ -1111,3 +1111,143 @@ describe('OnboardingPage — TTL expiry (THR-107 seq189)', () => {
     vi.useRealTimers();
   });
 });
+
+/* ── Adversarial: onboarding recovery/Bind absence (TASK-3836 fix-forward) ── */
+
+describe('OnboardingPage — recovery Bind UI absent (status-only)', () => {
+  /** Navigate to the adapter-backed custom-CLI form. */
+  async function goAdapter(user: UserEvent): Promise<void> {
+    await user.click(
+      await screen.findByRole('button', { name: /connect a custom cli instead/i }),
+    );
+    expect(
+      await screen.findByLabelText(/name this cli/i),
+    ).toBeInTheDocument();
+  }
+
+  test(
+    'no recovery Bind UI or bind POST when server returns recovery_ready (no-intended, approved unbound)',
+    async () => {
+      const user = userEvent.setup();
+      const profileName = 'onb-norec-cli';
+      const adapterId = `${profileName}-adapter`;
+
+      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+        .mockResolvedValue({ token: 'hr_tok_NOREC', expires_at: Date.now() / 1000 + 1800 });
+
+      const { adapters: adaptersApi } = await import('@/lib/api');
+      const bindSpy = vi.spyOn(adaptersApi, 'bindAdapterProfile');
+
+      // First poll: PENDING (enables submitted state).
+      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
+        return {
+          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
+          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
+          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
+          registered_at: new Date().toISOString(), registered_by: 'test',
+          approved_at: null, approved_by: null,
+          intended_profile_name: profileName, eligibility: null,
+        };
+      });
+
+      renderPage();
+      await goAdapter(user);
+
+      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+      // Transition to submitted via PENDING poll.
+      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+      expect(screen.getByText(adapterId)).toBeInTheDocument();
+
+      // No recovery Bind UI during submitted state.
+      expect(screen.queryByText(/advanced recovery/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/legacy adapters/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
+
+      // Switch poll: approved with recovery_ready (no intended, hash-valid).
+      // Onboarding must NOT show Bind UI and must NOT call bindAdapterProfile.
+      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
+        id: adapterId, name: profileName, executable: '/tmp/test-adapter',
+        executable_hash: 'abc123', version: '1.0.0', capabilities: [],
+        contract_version: 1, workspace_adapter: 'pi', status: 'approved',
+        registered_at: new Date().toISOString(), registered_by: 'test',
+        approved_at: new Date().toISOString(), approved_by: 'founder',
+        intended_profile_name: null, eligibility: 'recovery_ready',
+      });
+
+      // Wait for poll to pick up the change — submitted state persists.
+      // The adapter ID should remain visible, no Connected card.
+      await screen.findByText(adapterId, {}, { timeout: 10000 });
+
+      // Still no recovery Bind UI after transition to recovery_ready.
+      expect(screen.queryByText(/advanced recovery/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/legacy adapters/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
+
+      // Zero bind calls.
+      expect(bindSpy).not.toHaveBeenCalled();
+    },
+    15000,
+  );
+
+  test(
+    'no Bind UI when server reports already_bound — Connected shown without recovery section',
+    async () => {
+      const user = userEvent.setup();
+      const profileName = 'onb-alreadybound-cli';
+      const adapterId = `${profileName}-adapter`;
+
+      vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
+        .mockResolvedValue({ token: 'hr_tok_ALBND', expires_at: Date.now() / 1000 + 1800 });
+
+      const { adapters: adaptersApi } = await import('@/lib/api');
+      const bindSpy = vi.spyOn(adaptersApi, 'bindAdapterProfile');
+
+      // First poll: PENDING.
+      vi.spyOn(adaptersApi, 'getAdapter').mockImplementation(async () => {
+        return {
+          id: adapterId, name: profileName, executable: '/tmp/test-adapter',
+          executable_hash: 'abc123', version: '1.0.0', capabilities: [],
+          contract_version: 1, workspace_adapter: 'pi', status: 'pending',
+          registered_at: new Date().toISOString(), registered_by: 'test',
+          approved_at: null, approved_by: null,
+          intended_profile_name: profileName, eligibility: null,
+        };
+      });
+
+      renderPage();
+      await goAdapter(user);
+
+      await user.type(await screen.findByLabelText(/name this cli/i), profileName);
+      await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+
+      await screen.findByText(/adapter submitted.*awaiting approval/i, {}, { timeout: 10000 });
+
+      // Switch poll: server confirms atomically bound (seq237).
+      vi.mocked(adaptersApi.getAdapter).mockResolvedValue({
+        id: adapterId, name: profileName, executable: '/tmp/test-adapter',
+        executable_hash: 'abc123', version: '1.0.0', capabilities: [],
+        contract_version: 1, workspace_adapter: 'pi', status: 'approved',
+        registered_at: new Date().toISOString(), registered_by: 'test',
+        approved_at: new Date().toISOString(), approved_by: 'founder',
+        intended_profile_name: profileName, eligibility: 'already_bound',
+      });
+
+      // Connected card appears — server-authoritative, no client bind.
+      await screen.findByRole('heading', { name: new RegExp(profileName, 'i') }, { timeout: 10000 });
+      expect(
+        screen.getByText(/you can manage your clis anytime from settings/i),
+      ).toBeInTheDocument();
+
+      // No recovery Bind UI in connected state.
+      expect(screen.queryByText(/advanced recovery/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/legacy adapters/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
+
+      // Zero bind calls.
+      expect(bindSpy).not.toHaveBeenCalled();
+    },
+    15000,
+  );
+});
