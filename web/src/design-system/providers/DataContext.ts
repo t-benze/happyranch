@@ -279,7 +279,7 @@ export interface HealthApi {
 // ---------------------------------------------------------------------------
 
 export interface AssistantApi {
-  useAssistantStatus: () => QueryLike<AssistantStatus>;
+  useAssistantStatus: (enabled: boolean) => QueryLike<AssistantStatus>;
   useInitAssistant: () => MutationLike<{ reconfigure: boolean }, AssistantStatus>;
   useRegisterAssistant: () => MutationLike<AssistantRegisterBody, AssistantStatus>;
   useRepairAssistant: () => MutationLike<void, AssistantStatus>;

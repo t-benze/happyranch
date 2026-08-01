@@ -1,9 +1,12 @@
 /**
  * Real (daemon-backed) implementation of `AssistantApi`.
  *
- * The assistant is a single global surface (not org-scoped): status polls
- * `/assistant/status` every 5 s; each mutation primes the status cache from
- * its response so the UI reflects the new state without waiting for the poll.
+ * The assistant is a single global surface (not org-scoped). Status is fetched
+ * on demand when the `enabled` gate is true (dock open, Settings dialog open,
+ * or the Assistant settings route is displayed). Each mutation primes the
+ * status cache from its response so the UI reflects the new state without
+ * waiting for a poll. There is no scheduled interval — consumers request fresh
+ * reads when they mount.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { assistant as assistantApi } from '@/lib/api';
@@ -14,11 +17,11 @@ import type { AssistantApi, MutationLike, QueryLike } from './DataContext';
 const STATUS_KEY = ['assistant', 'status'];
 const CONVERSATIONS_KEY = ['assistant', 'conversations'];
 
-function useAssistantStatus(): QueryLike<AssistantStatus> {
+function useAssistantStatus(enabled: boolean): QueryLike<AssistantStatus> {
   return useQuery({
     queryKey: STATUS_KEY,
     queryFn: () => assistantApi.getAssistantStatus(),
-    refetchInterval: 5_000,
+    enabled,
   });
 }
 

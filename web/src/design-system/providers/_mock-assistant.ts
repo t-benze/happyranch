@@ -39,7 +39,7 @@ const CONVERSATIONS_FIXTURE: ConversationSummary[] = [
 ];
 
 export const mockAssistantApi: AssistantApi = {
-  useAssistantStatus: () => ok(FIXTURE),
+  useAssistantStatus: (_enabled: boolean) => ok(FIXTURE),
   useInitAssistant: () => noopMutation(),
   useRegisterAssistant: () => noopMutation(),
   useRepairAssistant: () => noopMutation(),
