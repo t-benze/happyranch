@@ -457,6 +457,8 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
     3. Sends the input JSON via stdin.
     4. Reads stdout (capped at 1 MB), parses as ``AdapterOutput`` JSON.
     5. Validates the output against the contract.
+    6. Verifies ``adapter_metadata.adapter`` exactly equals the canonical
+       server-derived adapter ID (``adapter_name``) — provenance invariant.
 
     Returns the parsed ``AdapterOutput`` on success.
 
@@ -467,6 +469,7 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
       - The stdout is not valid JSON
       - The JSON does not validate as ``AdapterOutput``
       - The ``adapter_metadata.contract_version`` is missing or unknown
+      - The ``adapter_metadata.adapter`` does not match the canonical adapter ID
 
     ZERO durable residue is left on failure — this is a pure validation step.
     """
@@ -629,6 +632,18 @@ def run_conformance_probe(executable: str, adapter_name: str) -> AdapterOutput:
         raise ValueError(
             f"Conformance probe reported success=false for {executable!r}. "
             f"Error: {capped_error}. Stderr tail: {stderr_tail[:500]}"
+        )
+
+    # THR-107 seq268: provenance invariant — adapter_metadata.adapter MUST
+    # exactly equal the stable server-derived canonical adapter ID (adapter_name),
+    # never a display name, provider string, or arbitrary identity.
+    if output.adapter_metadata.adapter != adapter_name:
+        raise ValueError(
+            f"Conformance probe adapter identity mismatch: expected "
+            f"{adapter_name!r} (the canonical server-derived adapter ID), "
+            f"got {output.adapter_metadata.adapter!r}. The adapter wrapper's "
+            f"adapter_metadata.adapter MUST exactly equal the stable submitted/"
+            f"approved adapter ID — never a display name or provider string."
         )
 
     return output

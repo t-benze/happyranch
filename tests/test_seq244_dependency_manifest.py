@@ -51,9 +51,11 @@ def _make_fake_adapter_with_deps(
     name: str,
     dep_exes: list[Path] | None = None,
     has_token_metering: bool = False,
-    adapter_id: str = "fake-adapter",
+    adapter_id: str | None = None,
 ) -> Path:
     """Create a fake adapter script that passes conformance with optional deps and token_usage."""
+    if adapter_id is None:
+        adapter_id = name
     dep_section = ""
     if dep_exes:
         dep_json = json.dumps([{"executable": str(d), "sha256": compute_sha256(str(d))} for d in dep_exes])

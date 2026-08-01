@@ -91,7 +91,7 @@ def _make_fake_adapter_script(
             "agent_session_id": None,
             "rate_limited": False,
             "adapter_metadata": {
-                "adapter": "fake-adapter",
+                "adapter": name,
                 "adapter_version": "1.0.0",
                 "contract_version": 1,
             },
@@ -372,7 +372,7 @@ class TestConformanceProbe:
         result = run_conformance_probe(str(script), "conformant-adapter")
         assert result.success is True
         assert result.adapter_metadata.contract_version == 1
-        assert result.adapter_metadata.adapter == "fake-adapter"
+        assert result.adapter_metadata.adapter == "conformant-adapter"
 
     def test_adapter_exit_nonzero_fails(self, tmp_path: Path):
         script = _make_fake_adapter_script(
@@ -492,6 +492,103 @@ class TestConformanceProbe:
         result = run_conformance_probe(str(script), "no-import-adapter")
         assert result.success is True
         # There's no Python import/discovery path — the executable is a subprocess
+
+    def test_conformance_probe_rejects_wrong_adapter_identity(self, tmp_path: Path):
+        """THR-107 seq268: conformance probe rejects adapter_metadata.adapter that doesn't match canonical ID."""
+        script = _make_fake_adapter_script(
+            tmp_path, "real-adapter",
+            output={
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": "ok",
+                "stderr_tail": "",
+                "result": {"text": "ok"},
+                "token_usage": None,
+                "error": None,
+                "agent_session_id": None,
+                "rate_limited": False,
+                "adapter_metadata": {
+                    "adapter": "wrong-provider-string",
+                    "adapter_version": "1.0.0",
+                    "contract_version": 1,
+                },
+                "child_session_id": None,
+                "raw_forensics_ref": None,
+            },
+        )
+        with pytest.raises(ValueError, match="adapter identity mismatch"):
+            run_conformance_probe(str(script), "real-adapter")
+        # Error message must include both expected and received values
+        with pytest.raises(ValueError, match="real-adapter"):
+            run_conformance_probe(str(script), "real-adapter")
+        with pytest.raises(ValueError, match="wrong-provider-string"):
+            run_conformance_probe(str(script), "real-adapter")
+
+    def test_kimi_adapter_reproduction_fixture_exact_id_accepted(self, tmp_path: Path):
+        """THR-107 seq268: kimi-adapter fixture — exact ID accepted, wrong provider/display rejected."""
+        # fixtured adapter that correctly reports adapter="kimi-adapter"
+        good_kimi = _make_fake_adapter_script(
+            tmp_path, "kimi-adapter",
+            output={
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": "kimi ok",
+                "stderr_tail": "",
+                "result": {"text": "kimi ok"},
+                "token_usage": None,
+                "error": None,
+                "agent_session_id": None,
+                "rate_limited": False,
+                "adapter_metadata": {
+                    "adapter": "kimi-adapter",
+                    "adapter_version": "1.0.0",
+                    "contract_version": 1,
+                },
+                "child_session_id": None,
+                "raw_forensics_ref": None,
+            },
+        )
+        result = run_conformance_probe(str(good_kimi), "kimi-adapter")
+        assert result.success is True
+        assert result.adapter_metadata.adapter == "kimi-adapter"
+
+        # A wrapper that reports a display name or provider string instead of
+        # the canonical adapter ID must be rejected.
+        bad_kimi = _make_fake_adapter_script(
+            tmp_path, "kimi-bad",
+            output={
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": "kimi bad",
+                "stderr_tail": "",
+                "result": {"text": "kimi bad"},
+                "token_usage": None,
+                "error": None,
+                "agent_session_id": None,
+                "rate_limited": False,
+                "adapter_metadata": {
+                    "adapter": "Kimi AI",
+                    "adapter_version": "1.0.0",
+                    "contract_version": 1,
+                },
+                "child_session_id": None,
+                "raw_forensics_ref": None,
+            },
+        )
+        with pytest.raises(ValueError, match="adapter identity mismatch"):
+            run_conformance_probe(str(bad_kimi), "kimi-bad")
+        # Error must name the expected canonical ID
+        with pytest.raises(ValueError, match="kimi-bad"):
+            run_conformance_probe(str(bad_kimi), "kimi-bad")
+        # Error must name what was actually received
+        with pytest.raises(ValueError, match="Kimi AI"):
+            run_conformance_probe(str(bad_kimi), "kimi-bad")
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +752,7 @@ class TestReRegistration:
                 "agent_session_id": None,
                 "rate_limited": False,
                 "adapter_metadata": {
-                    "adapter": "fake-adapter",
+                    "adapter": "adapter-v2",
                     "adapter_version": "2.0.0",
                     "contract_version": 1,
                 },
@@ -1329,9 +1426,10 @@ class TestContractVersionExact:
             cv_py = "True" if contract_version else "False"
         else:
             cv_py = repr(contract_version)
-        # Build the adapter_metadata as Python code
+        # Build the adapter_metadata as Python code — use the name as the
+        # canonical adapter identity (provenance invariant).
         meta_lines = [
-            '        "adapter": "fake",',
+            f'        "adapter": "{name}",',
             '        "adapter_version": "1.0.0",',
         ]
         if cv_py is not None:
@@ -1566,7 +1664,7 @@ class TestReRegistrationPreservesPending:
                 "agent_session_id": None,
                 "rate_limited": False,
                 "adapter_metadata": {
-                    "adapter": "fake",
+                    "adapter": "adapter",
                     "adapter_version": "2.0.0",
                     "contract_version": 1,
                 },
@@ -1831,7 +1929,7 @@ class TestApprovalGate:
                 "agent_session_id": None,
                 "rate_limited": False,
                 "adapter_metadata": {
-                    "adapter": "fake",
+                    "adapter": "approval-adapter",
                     "adapter_version": "2.0.0",
                     "contract_version": 1,
                 },
@@ -2256,7 +2354,7 @@ class TestApproveRoute:
                 "agent_session_id": None,
                 "rate_limited": False,
                 "adapter_metadata": {
-                    "adapter": "fake",
+                    "adapter": "rereg-approve-v1",
                     "adapter_version": "2.0.0",
                     "contract_version": 1,
                 },
