@@ -506,6 +506,136 @@ def test_get_recall_payload_missing_task_returns_none(db):
     assert db.get_recall_payload("TASK-404") is None
 
 
+def test_get_recall_payload_includes_verdict_from_task_results(db):
+    """get_recall_payload exposes the structured verdict from the latest task_results row."""
+    db.insert_task(TaskRecord(id="TASK-V1", brief="review task"))
+    db.insert_task_result(
+        task_id="TASK-V1", agent="code_reviewer", session_id="sess-1",
+        status="completed", output_summary="Verdict: APPROVE\n",
+        confidence_score=90, verdict="APPROVE",
+    )
+    payload = db.get_recall_payload("TASK-V1")
+    assert payload is not None
+    assert payload["verdict"] == "APPROVE"
+
+
+def test_get_recall_payload_null_verdict_when_no_task_results(db):
+    """When no task_results rows exist, verdict is None in the payload."""
+    db.insert_task(TaskRecord(id="TASK-V2", brief="no completion"))
+    payload = db.get_recall_payload("TASK-V2")
+    assert payload is not None
+    assert "verdict" in payload
+    assert payload["verdict"] is None
+
+
+def test_get_recall_payload_null_verdict_when_result_has_no_verdict(db):
+    """When the latest task_results row has no verdict column populated, verdict is None."""
+    db.insert_task(TaskRecord(id="TASK-V3", brief="legacy task"))
+    db.insert_task_result(
+        task_id="TASK-V3", agent="old_agent", session_id="sess-2",
+        status="completed", output_summary="Some work done.",
+        confidence_score=85,
+        # No verdict passed — simulates a legacy row before the column existed
+    )
+    payload = db.get_recall_payload("TASK-V3")
+    assert payload is not None
+    assert "verdict" in payload
+    assert payload["verdict"] is None
+
+
+def test_get_recall_payload_deterministic_latest_verdict(db):
+    """The verdict comes from the latest task_results row (deterministic: ORDER BY created_at DESC, id DESC).
+
+    When multiple task_results rows exist for the same task, the one with the
+    most recent created_at wins.  When created_at ties, the highest id breaks the tie.
+    """
+    db.insert_task(TaskRecord(id="TASK-V4", brief="retried task"))
+    # First result: FAIL (older created_at)
+    db.insert_task_result(
+        task_id="TASK-V4", agent="qa_engineer", session_id="sess-3",
+        status="completed", output_summary="Verdict: FAIL\n",
+        confidence_score=50, verdict="FAIL",
+    )
+    # Second result (newer created_at): PASS
+    db.insert_task_result(
+        task_id="TASK-V4", agent="qa_engineer", session_id="sess-4",
+        status="completed", output_summary="Verdict: PASS\n",
+        confidence_score=90, verdict="PASS",
+    )
+    payload = db.get_recall_payload("TASK-V4")
+    assert payload is not None
+    assert payload["verdict"] == "PASS", (
+        f"Expected latest verdict PASS, got {payload['verdict']!r}"
+    )
+
+
+def test_get_recall_payload_result_recency_not_insertion_id(db):
+    """The verdict selection is by created_at recency, not auto-increment id order.
+
+    When a newer result row has a LOWER id (created_at is later but was inserted
+    into a table with a gap from a prior-deleted row), created_at recency wins.
+    """
+    import datetime
+
+    db.insert_task(TaskRecord(id="TASK-RECENCY", brief="recency test"))
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    older = (now - datetime.timedelta(hours=2)).isoformat()
+    newer = (now - datetime.timedelta(hours=1)).isoformat()
+
+    # Insert the first result at a lower id with a NEWER created_at.
+    db.insert_task_result(
+        task_id="TASK-RECENCY", agent="qa_engineer", session_id="sess-new",
+        status="completed", output_summary="Verdict: PASS\n",
+        confidence_score=90, verdict="PASS",
+    )
+    db._conn.execute(
+        "UPDATE task_results SET created_at = ? WHERE task_id = ? AND verdict = 'PASS'",
+        (newer, "TASK-RECENCY"),
+    )
+
+    # Insert a gap-filling dummy row to push the auto-increment counter up.
+    db.insert_task_result(
+        task_id="TASK-GAP-FILLER", agent="gap", session_id="gap-sess",
+        status="completed", output_summary="gap",
+        confidence_score=0, verdict="NONE",
+    )
+
+    # Now insert a second result at a HIGHER id with an OLDER created_at.
+    db.insert_task_result(
+        task_id="TASK-RECENCY", agent="qa_engineer", session_id="sess-old",
+        status="completed", output_summary="Verdict: FAIL\n",
+        confidence_score=50, verdict="FAIL",
+    )
+    db._conn.execute(
+        "UPDATE task_results SET created_at = ? WHERE task_id = ? AND verdict = 'FAIL'",
+        (older, "TASK-RECENCY"),
+    )
+    db._conn.commit()
+
+    # Verify: the higher-id row has OLDER created_at, the lower-id row has NEWER.
+    rows = db._conn.execute(
+        "SELECT id, created_at, verdict FROM task_results WHERE task_id = ? ORDER BY id",
+        ("TASK-RECENCY",),
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[1]["id"] > rows[0]["id"]
+    assert rows[1]["created_at"] < rows[0]["created_at"], (
+        f"Expected older created_at on higher-id row, got "
+        f"id={rows[1]['id']} created_at={rows[1]['created_at']} vs "
+        f"id={rows[0]['id']} created_at={rows[0]['created_at']}"
+    )
+
+    payload = db.get_recall_payload("TASK-RECENCY")
+    assert payload is not None
+    # The NEWER created_at row should win (PASS), not the higher-id row (FAIL).
+    assert payload["verdict"] == "PASS", (
+        f"Expected verdict from newer created_at row (PASS), "
+        f"got {payload['verdict']!r}. The ordering must be by created_at DESC, "
+        f"not id DESC."
+    )
+
+
 def test_update_task_writes_block_kind_and_note(tmp_path):
     from runtime.infrastructure.database import Database
     from runtime.models import TaskRecord, TaskStatus, BlockKind
